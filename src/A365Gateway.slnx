@@ -1,0 +1,12 @@
+<Solution>
+  <Project Path="Gateway.Domain/Gateway.Domain.csproj" />
+  <Project Path="Gateway.Contracts/Gateway.Contracts.csproj" />
+  <Project Path="Gateway.Application/Gateway.Application.csproj" />
+  <Project Path="Gateway.Infrastructure/Gateway.Infrastructure.csproj" />
+  <Project Path="Gateway.Agent365/Gateway.Agent365.csproj" />
+  <Project Path="Gateway.Purview/Gateway.Purview.csproj" />
+  <Project Path="Gateway.Observability/Gateway.Observability.csproj" />
+  <Project Path="Gateway.Api/Gateway.Api.csproj" />
+  <Project Path="Gateway.AdminUi/Gateway.AdminUi.csproj" />
+  <Project Path="Gateway.Provisioning.Worker/Gateway.Provisioning.Worker.csproj" />
+</Solution>

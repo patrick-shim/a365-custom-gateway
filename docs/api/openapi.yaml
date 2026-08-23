@@ -1,0 +1,1786 @@
+openapi: 3.1.0
+info:
+  title: A365 Custom Gateway API
+  description: |
+    Gateway API designed for this solution, not a Microsoft API.
+
+    Bridges external AI agents to Microsoft Agent 365 without requiring those agents
+    to embed the Agent 365 SDK or CLI. Provides both a control plane (registration,
+    provisioning, administration) and a data plane (activity ingestion, AI interaction
+    evaluation, observability export).
+  version: 1.0.0
+  contact:
+    name: Gateway Admin
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://{host}/api/v1
+    description: Gateway API
+    variables:
+      host:
+        default: localhost:5001
+
+security:
+  - entraBearer: []
+
+tags:
+  - name: Agents
+    description: Agent registration and management (control plane)
+  - name: Operations
+    description: Async operation status tracking
+  - name: Audit
+    description: Audit events and provisioning history
+  - name: System
+    description: System configuration and health
+  - name: Activities
+    description: Activity ingestion (data plane)
+  - name: Interactions
+    description: AI interaction submission and evaluation (data plane)
+
+paths:
+  /agents:
+    post:
+      operationId: registerAgent
+      summary: Register a new external agent
+      description: |
+        Creates a new agent registration and starts async provisioning.
+        Returns 202 Accepted with agent and operation URLs.
+
+        Gateway API designed for this solution, not a Microsoft API.
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterAgentRequest'
+            example:
+              externalAgentId: crm-assistant-prod
+              name: CRM Assistant
+              description: Answers customer and sales questions.
+              ownerObjectId: 00000000-0000-0000-0000-000000000001
+              environment: Production
+              features:
+                observabilityMode: Agent365
+                purviewEnabled: true
+                purviewMode: Enforce
+      responses:
+        '202':
+          description: Agent registration accepted, provisioning started
+          headers:
+            Location:
+              schema:
+                type: string
+              description: URL of the created agent resource
+            Operation-Location:
+              schema:
+                type: string
+              description: URL of the provisioning operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterAgentResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Duplicate externalAgentId
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://gateway.example.com/problems/duplicate-external-agent-id
+                title: An agent with this externalAgentId already exists.
+                status: 409
+                code: DUPLICATE_EXTERNAL_AGENT_ID
+        '422':
+          description: Unsupported feature configuration
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+    get:
+      operationId: listAgents
+      summary: List agents with filtering and pagination
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/AgentStatus'
+        - name: environment
+          in: query
+          schema:
+            $ref: '#/components/schemas/Environment'
+        - name: search
+          in: query
+          description: Search in name, externalAgentId, description
+          schema:
+            type: string
+            maxLength: 256
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated list of agents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /agents/{agentId}:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+
+    get:
+      operationId: getAgent
+      summary: Get agent details
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
+      responses:
+        '200':
+          description: Agent details
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      operationId: deleteAgent
+      summary: Delete an agent (async)
+      description: |
+        Starts async deletion. Default preserves Microsoft-side resources
+        unless deleteMicrosoftResources=true.
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - name: deleteMicrosoftResources
+          in: query
+          schema:
+            type: boolean
+            default: false
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Deletion accepted
+          headers:
+            Operation-Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteAgentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /agents/{agentId}/features:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+
+    patch:
+      operationId: updateFeatures
+      summary: Update agent feature configuration
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateFeaturesRequest'
+      responses:
+        '200':
+          description: Features updated
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateFeaturesResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '422':
+          description: Unsupported feature configuration
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /agents/{agentId}:enable:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+
+    post:
+      operationId: enableAgent
+      summary: Enable an agent
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Agent enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentStateChangeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Invalid state transition
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /agents/{agentId}:disable:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+
+    post:
+      operationId: disableAgent
+      summary: Disable an agent
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Agent disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentStateChangeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Invalid state transition
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /agents/{agentId}:retry-provisioning:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+
+    post:
+      operationId: retryProvisioning
+      summary: Retry failed provisioning
+      description: Agent must be in Failed status.
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Retry accepted
+          headers:
+            Operation-Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsyncOperationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Agent is not in Failed status
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /agents/{agentId}:reconcile:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+
+    post:
+      operationId: reconcileAgent
+      summary: Trigger on-demand reconciliation
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Reconciliation started
+          headers:
+            Operation-Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsyncOperationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /operations/{operationId}:
+    parameters:
+      - name: operationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      operationId: getOperation
+      summary: Get operation status
+      tags: [Operations]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+      responses:
+        '200':
+          description: Operation status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /agents/{agentId}/audit-events:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+
+    get:
+      operationId: getAuditEvents
+      summary: Get agent audit history
+      tags: [Audit]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Auditor]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated audit events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /agents/{agentId}/provisioning-history:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+
+    get:
+      operationId: getProvisioningHistory
+      summary: Get provisioning job history
+      tags: [Audit]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Paginated provisioning history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProvisioningHistoryResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /system/config:
+    get:
+      operationId: getSystemConfig
+      summary: Get system configuration
+      tags: [System]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      responses:
+        '200':
+          description: System configuration
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemConfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    patch:
+      operationId: updateSystemConfig
+      summary: Update system configuration
+      tags: [System]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSystemConfigRequest'
+      responses:
+        '200':
+          description: Configuration updated
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemConfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Liveness health check
+      tags: [System]
+      security: []
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [Healthy]
+
+  /health/ready:
+    get:
+      operationId: readinessCheck
+      summary: Readiness health check
+      description: Checks database, Service Bus, and Key Vault connectivity.
+      tags: [System]
+      security: []
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+
+  /agent-activities:
+    post:
+      operationId: submitActivity
+      summary: Submit a single agent activity
+      description: |
+        Data-plane endpoint. Requires ExternalAgent role.
+        Agent-to-client identity binding enforced server-side.
+
+        Gateway API designed for this solution, not a Microsoft API.
+      tags: [Activities]
+      security:
+        - entraBearer: [ExternalAgent]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+        - name: X-Correlation-ID
+          in: header
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitActivityRequest'
+      responses:
+        '202':
+          description: Activity accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityReceipt'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Identity mismatch or agent disabled
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Idempotency conflict
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '413':
+          description: Payload too large
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /agent-activities:batch:
+    post:
+      operationId: submitActivityBatch
+      summary: Submit a batch of agent activities
+      description: |
+        Max 100 events per batch, max 1 MB request body.
+        Supports partial success — each item gets its own status.
+      tags: [Activities]
+      security:
+        - entraBearer: [ExternalAgent]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchActivityRequest'
+      responses:
+        '200':
+          description: Batch processed (may include partial success)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchActivityResponse'
+        '202':
+          description: All activities accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchActivityResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Identity mismatch or agent disabled
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '413':
+          description: Payload too large
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /ai-interactions:
+    post:
+      operationId: submitInteraction
+      summary: Submit an AI interaction (async processing)
+      description: |
+        Accepts the interaction for async Purview audit and observability processing.
+        Does not evaluate Purview policies inline — use /ai-interactions:evaluate for that.
+      tags: [Interactions]
+      security:
+        - entraBearer: [ExternalAgent]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitInteractionRequest'
+      responses:
+        '202':
+          description: Interaction accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InteractionReceipt'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Identity mismatch or agent disabled
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Idempotency conflict
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /ai-interactions:evaluate:
+    post:
+      operationId: evaluateInteraction
+      summary: Evaluate AI interaction inline (Purview enforce)
+      description: |
+        Evaluates prompts/responses against Purview DLP policies synchronously.
+        Returns Allow or 403 Block based on policy evaluation.
+        Requires userContext.tenantUserObjectId for Purview evaluation.
+      tags: [Interactions]
+      security:
+        - entraBearer: [ExternalAgent]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitInteractionRequest'
+      responses:
+        '200':
+          description: Content allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationResult'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Identity mismatch, agent disabled, or content blocked by Purview
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                identityMismatch:
+                  summary: Identity mismatch
+                  value:
+                    type: https://gateway.example.com/problems/agent-identity-mismatch
+                    title: The authenticated identity does not match the specified agent.
+                    status: 403
+                    code: AGENT_IDENTITY_MISMATCH
+                policyBlocked:
+                  summary: Purview policy blocked
+                  value:
+                    type: https://gateway.example.com/problems/purview-policy-blocked
+                    title: Content was blocked by organizational policy.
+                    status: 403
+                    code: PURVIEW_POLICY_BLOCKED
+                    policyActions:
+                      - action: Block
+        '409':
+          description: Idempotency conflict
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          description: Purview dependency unavailable (Enforce mode)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://gateway.example.com/problems/purview-dependency-unavailable
+                title: Purview service is temporarily unavailable.
+                status: 503
+                code: PURVIEW_DEPENDENCY_UNAVAILABLE
+
+components:
+  securitySchemes:
+    entraBearer:
+      type: oauth2
+      description: Microsoft Entra ID OAuth 2.0
+      flows:
+        authorizationCode:
+          authorizationUrl: https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/authorize
+          tokenUrl: https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token
+          scopes:
+            Gateway.Administrator: Full control-plane access
+            Gateway.Operator: Enable/disable agents, retry operations
+            Gateway.Auditor: Read-only audit access
+            Gateway.SupportReader: Health/diagnostics with redaction
+            ExternalAgent: Data-plane access (app role)
+
+  parameters:
+    AgentId:
+      name: agentId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque pagination cursor from previous response
+      schema:
+        type: string
+
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: ETag for optimistic concurrency
+      schema:
+        type: string
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      schema:
+        type: string
+        format: uuid
+
+    IdempotencyKeyRequired:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    AgentStatus:
+      type: string
+      enum: [Draft, Provisioning, AwaitingAdminApproval, Active, Disabled, Failed, Deleting, Deleted, RequiresManualIntervention]
+
+    Environment:
+      type: string
+      enum: [Development, Test, Production]
+
+    ObservabilityMode:
+      type: string
+      enum: [Disabled, GatewayOnly, Agent365]
+
+    PurviewMode:
+      type: string
+      enum: [AuditOnly, Enforce]
+
+    ActivityType:
+      type: string
+      enum: [ToolInvocation, Chat, InvokeAgent, OutputMessages, Custom]
+
+    ActorType:
+      type: string
+      enum: [Agent, User, System]
+
+    ToolOutcome:
+      type: string
+      enum: [Succeeded, Failed, Cancelled]
+
+    OperationType:
+      type: string
+      enum: [ProvisionAgent, DeleteAgent, RetryProvisioning, ReconcileAgent]
+
+    OperationStatus:
+      type: object
+      required: [operationId, type, status, startedAtUtc]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/OperationType'
+        status:
+          type: string
+          enum: [Pending, Running, Completed, Failed, RequiresManualIntervention]
+        currentStep:
+          type: string
+        percentComplete:
+          type: integer
+          minimum: 0
+          maximum: 100
+        agentId:
+          type: string
+          format: uuid
+        startedAtUtc:
+          type: string
+          format: date-time
+        completedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          $ref: '#/components/schemas/OperationError'
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperationStep'
+
+    OperationError:
+      type: object
+      nullable: true
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+
+    OperationStep:
+      type: object
+      required: [step, status]
+      properties:
+        step:
+          type: string
+        status:
+          type: string
+          enum: [Pending, Running, Completed, Failed, Skipped]
+        completedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+
+    AgentFeatures:
+      type: object
+      properties:
+        observabilityMode:
+          $ref: '#/components/schemas/ObservabilityMode'
+        purviewEnabled:
+          type: boolean
+        purviewMode:
+          $ref: '#/components/schemas/PurviewMode'
+
+    Agent365Info:
+      type: object
+      properties:
+        agentId:
+          type: string
+          nullable: true
+        blueprintId:
+          type: string
+          nullable: true
+        instanceId:
+          type: string
+          nullable: true
+
+    ProvisioningInfo:
+      type: object
+      properties:
+        currentStep:
+          type: string
+        percentComplete:
+          type: integer
+        lastError:
+          type: string
+          nullable: true
+
+    RegisterAgentRequest:
+      type: object
+      required: [externalAgentId, name, ownerObjectId, environment]
+      properties:
+        externalAgentId:
+          type: string
+          minLength: 3
+          maxLength: 128
+          pattern: '^[a-zA-Z0-9][a-zA-Z0-9._-]*$'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 256
+        description:
+          type: string
+          maxLength: 2000
+        ownerObjectId:
+          type: string
+          format: uuid
+        environment:
+          $ref: '#/components/schemas/Environment'
+        features:
+          $ref: '#/components/schemas/AgentFeatures'
+
+    RegisterAgentResponse:
+      type: object
+      required: [agentId, externalAgentId, status, operationId, createdAtUtc]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        externalAgentId:
+          type: string
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+        operationId:
+          type: string
+          format: uuid
+        createdAtUtc:
+          type: string
+          format: date-time
+        _links:
+          $ref: '#/components/schemas/Links'
+
+    AgentSummary:
+      type: object
+      required: [agentId, externalAgentId, name, status, environment]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        externalAgentId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+        environment:
+          $ref: '#/components/schemas/Environment'
+        agent365:
+          $ref: '#/components/schemas/Agent365Info'
+        features:
+          $ref: '#/components/schemas/AgentFeatures'
+        lastActivityAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        createdAtUtc:
+          type: string
+          format: date-time
+        updatedAtUtc:
+          type: string
+          format: date-time
+
+    AgentListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentSummary'
+        nextCursor:
+          type: string
+          nullable: true
+        totalCount:
+          type: integer
+
+    AgentDetail:
+      type: object
+      required: [agentId, externalAgentId, name, status, environment, createdAtUtc]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        externalAgentId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        ownerObjectId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+        environment:
+          $ref: '#/components/schemas/Environment'
+        agent365:
+          $ref: '#/components/schemas/Agent365Info'
+        features:
+          $ref: '#/components/schemas/AgentFeatures'
+        provisioningStatus:
+          $ref: '#/components/schemas/ProvisioningInfo'
+        lastActivityAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        createdAtUtc:
+          type: string
+          format: date-time
+        createdByObjectId:
+          type: string
+          format: uuid
+        updatedAtUtc:
+          type: string
+          format: date-time
+        updatedByObjectId:
+          type: string
+          format: uuid
+        rowVersion:
+          type: string
+        _links:
+          $ref: '#/components/schemas/Links'
+
+    UpdateFeaturesRequest:
+      type: object
+      properties:
+        observabilityMode:
+          $ref: '#/components/schemas/ObservabilityMode'
+        purviewEnabled:
+          type: boolean
+        purviewMode:
+          $ref: '#/components/schemas/PurviewMode'
+
+    UpdateFeaturesResponse:
+      type: object
+      required: [agentId, features, updatedAtUtc, rowVersion]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        features:
+          $ref: '#/components/schemas/AgentFeatures'
+        updatedAtUtc:
+          type: string
+          format: date-time
+        rowVersion:
+          type: string
+
+    AgentStateChangeResponse:
+      type: object
+      required: [agentId, status, effectiveAtUtc]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+        effectiveAtUtc:
+          type: string
+          format: date-time
+
+    DeleteAgentResponse:
+      type: object
+      required: [agentId, status, operationId, deleteMicrosoftResources]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+        operationId:
+          type: string
+          format: uuid
+        deleteMicrosoftResources:
+          type: boolean
+        _links:
+          $ref: '#/components/schemas/Links'
+
+    AsyncOperationResponse:
+      type: object
+      required: [agentId, operationId]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+        operationId:
+          type: string
+          format: uuid
+        _links:
+          $ref: '#/components/schemas/Links'
+
+    AuditEvent:
+      type: object
+      required: [eventId, agentId, eventType, occurredAtUtc]
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        agentId:
+          type: string
+          format: uuid
+        eventType:
+          type: string
+        performedByObjectId:
+          type: string
+          format: uuid
+        occurredAtUtc:
+          type: string
+          format: date-time
+        details:
+          type: object
+          additionalProperties: true
+
+    AuditEventListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+        nextCursor:
+          type: string
+          nullable: true
+
+    ProvisioningJob:
+      type: object
+      required: [jobId, agentId, type, status, startedAtUtc]
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        agentId:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/OperationType'
+        status:
+          type: string
+          enum: [Pending, Running, Completed, Failed, RequiresManualIntervention]
+        startedAtUtc:
+          type: string
+          format: date-time
+        completedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperationStep'
+        error:
+          $ref: '#/components/schemas/OperationError'
+
+    ProvisioningHistoryResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProvisioningJob'
+        nextCursor:
+          type: string
+          nullable: true
+
+    SystemConfig:
+      type: object
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        provisioningMode:
+          type: string
+          enum: [Automatic, Manual]
+        defaultObservabilityMode:
+          $ref: '#/components/schemas/ObservabilityMode'
+        defaultPurviewEnabled:
+          type: boolean
+        defaultPurviewMode:
+          $ref: '#/components/schemas/PurviewMode'
+        retentionDays:
+          type: object
+          properties:
+            activityReceipts:
+              type: integer
+            auditEvents:
+              type: integer
+            idempotencyRecords:
+              type: integer
+            outboxMessages:
+              type: integer
+        rateLimits:
+          type: object
+          properties:
+            perClientRequestsPerMinute:
+              type: integer
+            perAgentRequestsPerMinute:
+              type: integer
+            globalRequestsPerMinute:
+              type: integer
+        reconciliation:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            intervalHours:
+              type: integer
+            stuckTransitionTimeoutDays:
+              type: integer
+        featureFlags:
+          type: object
+          properties:
+            useGraphAgentRegistration:
+              type: boolean
+            useCliProvisioningFallback:
+              type: boolean
+        rowVersion:
+          type: string
+        updatedAtUtc:
+          type: string
+          format: date-time
+
+    UpdateSystemConfigRequest:
+      type: object
+      properties:
+        provisioningMode:
+          type: string
+          enum: [Automatic, Manual]
+        defaultObservabilityMode:
+          $ref: '#/components/schemas/ObservabilityMode'
+        defaultPurviewEnabled:
+          type: boolean
+        defaultPurviewMode:
+          $ref: '#/components/schemas/PurviewMode'
+        retentionDays:
+          type: object
+          properties:
+            activityReceipts:
+              type: integer
+              minimum: 1
+            auditEvents:
+              type: integer
+              minimum: 30
+            idempotencyRecords:
+              type: integer
+              minimum: 1
+            outboxMessages:
+              type: integer
+              minimum: 1
+        rateLimits:
+          type: object
+          properties:
+            perClientRequestsPerMinute:
+              type: integer
+              minimum: 10
+            perAgentRequestsPerMinute:
+              type: integer
+              minimum: 10
+            globalRequestsPerMinute:
+              type: integer
+              minimum: 100
+        reconciliation:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            intervalHours:
+              type: integer
+              minimum: 1
+            stuckTransitionTimeoutDays:
+              type: integer
+              minimum: 1
+        featureFlags:
+          type: object
+          properties:
+            useGraphAgentRegistration:
+              type: boolean
+            useCliProvisioningFallback:
+              type: boolean
+
+    SubmitActivityRequest:
+      type: object
+      required: [externalAgentId, activityId, activityType, occurredAtUtc, actor]
+      properties:
+        externalAgentId:
+          type: string
+        activityId:
+          type: string
+          minLength: 1
+          maxLength: 256
+        sessionId:
+          type: string
+          maxLength: 256
+        activityType:
+          $ref: '#/components/schemas/ActivityType'
+        occurredAtUtc:
+          type: string
+          format: date-time
+        actor:
+          type: object
+          required: [type]
+          properties:
+            type:
+              $ref: '#/components/schemas/ActorType'
+        tool:
+          type: object
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 256
+            operation:
+              type: string
+              maxLength: 256
+            outcome:
+              $ref: '#/components/schemas/ToolOutcome'
+            durationMs:
+              type: integer
+              minimum: 0
+        attributes:
+          type: object
+          maxProperties: 20
+          additionalProperties:
+            type: string
+            maxLength: 256
+
+    ActivityReceipt:
+      type: object
+      required: [receiptId, activityId, status, receivedAtUtc]
+      properties:
+        receiptId:
+          type: string
+          format: uuid
+        activityId:
+          type: string
+        status:
+          type: string
+          enum: [Accepted, Duplicate]
+        receivedAtUtc:
+          type: string
+          format: date-time
+        correlationId:
+          type: string
+          format: uuid
+
+    BatchActivityRequest:
+      type: object
+      required: [externalAgentId, activities]
+      properties:
+        externalAgentId:
+          type: string
+        activities:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            required: [activityId, activityType, occurredAtUtc, actor]
+            properties:
+              activityId:
+                type: string
+                minLength: 1
+                maxLength: 256
+              sessionId:
+                type: string
+                maxLength: 256
+              activityType:
+                $ref: '#/components/schemas/ActivityType'
+              occurredAtUtc:
+                type: string
+                format: date-time
+              actor:
+                type: object
+                required: [type]
+                properties:
+                  type:
+                    $ref: '#/components/schemas/ActorType'
+              tool:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  operation:
+                    type: string
+                  outcome:
+                    $ref: '#/components/schemas/ToolOutcome'
+                  durationMs:
+                    type: integer
+                    minimum: 0
+              attributes:
+                type: object
+                maxProperties: 20
+                additionalProperties:
+                  type: string
+                  maxLength: 256
+
+    BatchActivityResponse:
+      type: object
+      required: [accepted, rejected, items]
+      properties:
+        accepted:
+          type: integer
+        rejected:
+          type: integer
+        items:
+          type: array
+          items:
+            type: object
+            required: [activityId, status]
+            properties:
+              activityId:
+                type: string
+              status:
+                type: string
+                enum: [Accepted, Duplicate, Rejected]
+              receiptId:
+                type: string
+                format: uuid
+              code:
+                type: string
+              detail:
+                type: string
+        correlationId:
+          type: string
+          format: uuid
+
+    SubmitInteractionRequest:
+      type: object
+      required: [externalAgentId, interactionId, occurredAtUtc, prompt, response]
+      properties:
+        externalAgentId:
+          type: string
+        interactionId:
+          type: string
+          minLength: 1
+          maxLength: 256
+        sessionId:
+          type: string
+          maxLength: 256
+        occurredAtUtc:
+          type: string
+          format: date-time
+        userContext:
+          type: object
+          properties:
+            tenantUserObjectId:
+              type: string
+              format: uuid
+        prompt:
+          type: object
+          required: [contentType, content]
+          properties:
+            contentType:
+              type: string
+              enum: [text/plain, text/markdown]
+            content:
+              type: string
+              maxLength: 32768
+        response:
+          type: object
+          required: [contentType, content]
+          properties:
+            contentType:
+              type: string
+              enum: [text/plain, text/markdown]
+            content:
+              type: string
+              maxLength: 32768
+        model:
+          type: object
+          properties:
+            provider:
+              type: string
+              maxLength: 256
+            name:
+              type: string
+              maxLength: 256
+        metadata:
+          type: object
+          maxProperties: 20
+          additionalProperties:
+            type: string
+            maxLength: 256
+
+    InteractionReceipt:
+      type: object
+      required: [receiptId, interactionId, status]
+      properties:
+        receiptId:
+          type: string
+          format: uuid
+        interactionId:
+          type: string
+        status:
+          type: string
+          enum: [Accepted]
+        purviewProcessing:
+          type: string
+          enum: [Pending, Completed, Skipped, NotApplicable]
+        observabilityProcessing:
+          type: string
+          enum: [Pending, Completed, NotApplicable]
+        correlationId:
+          type: string
+          format: uuid
+
+    EvaluationResult:
+      type: object
+      required: [interactionId, decision, evaluatedAtUtc]
+      properties:
+        interactionId:
+          type: string
+        decision:
+          type: string
+          enum: [Allow, PurviewSkipped]
+        policyActions:
+          type: array
+          items:
+            type: object
+            properties:
+              action:
+                type: string
+        evaluatedAtUtc:
+          type: string
+          format: date-time
+        receiptId:
+          type: string
+          format: uuid
+        purviewProcessing:
+          type: string
+          enum: [Completed, Skipped]
+        observabilityProcessing:
+          type: string
+          enum: [Pending, NotApplicable]
+
+    ReadinessResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [Healthy, Degraded, Unhealthy]
+        checks:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [Healthy, Unhealthy]
+            serviceBus:
+              type: string
+              enum: [Healthy, Unhealthy]
+            keyVault:
+              type: string
+              enum: [Healthy, Unhealthy]
+
+    ProblemDetails:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string
+        detail:
+          type: string
+        instance:
+          type: string
+        traceId:
+          type: string
+        validationErrors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              code:
+                type: string
+              detail:
+                type: string
+        policyActions:
+          type: array
+          items:
+            type: object
+            properties:
+              action:
+                type: string
+
+    Links:
+      type: object
+      additionalProperties:
+        type: string
+
+  responses:
+    ValidationError:
+      description: Validation error
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://gateway.example.com/problems/validation-failed
+            title: One or more validation errors occurred.
+            status: 400
+            code: VALIDATION_FAILED
+            validationErrors:
+              - field: externalAgentId
+                code: REQUIRED
+                detail: externalAgentId is required.
+
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://gateway.example.com/problems/authentication-required
+            title: Authentication is required.
+            status: 401
+            code: AUTHENTICATION_REQUIRED
+
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://gateway.example.com/problems/caller-not-authorized
+            title: The caller does not have the required permissions.
+            status: 403
+            code: CALLER_NOT_AUTHORIZED
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://gateway.example.com/problems/agent-not-found
+            title: The specified agent was not found.
+            status: 404
+            code: AGENT_NOT_FOUND
+
+    ConcurrencyConflict:
+      description: Concurrency conflict (stale ETag)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://gateway.example.com/problems/concurrency-conflict
+            title: The resource has been modified since it was last read.
+            status: 409
+            code: CONCURRENCY_CONFLICT
+
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://gateway.example.com/problems/rate-limit-exceeded
+            title: Rate limit exceeded.
+            status: 429
+            code: RATE_LIMIT_EXCEEDED

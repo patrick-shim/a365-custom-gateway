@@ -1,0 +1,11 @@
+**/.vs
+**/bin
+**/obj
+**/node_modules
+**/.git
+.secrets
+.claude
+docs
+tests
+deploy
+*.md

@@ -1,0 +1,1274 @@
+You are a principal Microsoft cloud architect, senior .NET engineer, API designer, security engineer, and DevOps engineer.
+
+Design and build a production-oriented Microsoft Agent 365 Gateway that enables non-Microsoft and externally developed AI agents to integrate with Microsoft Agent 365 without requiring those external agents to embed the Agent 365 SDK or Agent 365 CLI.
+
+Use only current, publicly available, official Microsoft documentation as the source of truth.
+
+Do not use blogs, community articles, Stack Overflow, undocumented endpoints, reverse-engineered APIs, or invented Microsoft Graph operations.
+
+==================================================
+1. GOAL
+==================================================
+
+Produce an implementation-ready solution for a .NET-based Agent 365 Gateway with:
+
+1. A web-based management UI.
+2. A secure ASP.NET Core REST API.
+3. A persistent external-agent-to-Agent-365-agent registry.
+4. Agent 365 provisioning and lifecycle orchestration.
+5. Activity and observability ingestion APIs for external agents.
+6. Optional Microsoft Purview processing for prompts and responses.
+7. Per-agent feature configuration.
+8. Microsoft Entra ID authentication and authorization.
+9. Azure deployment architecture.
+10. Automated tests, deployment templates, and operational documentation.
+
+The deliverable must be suitable for creating a working repository, not merely a conceptual architecture.
+
+==================================================
+2. CRITICAL DOCUMENTATION RULE
+==================================================
+
+Before designing or generating code:
+
+1. Research the current official Microsoft Learn documentation.
+2. Identify every Microsoft API, SDK, CLI command, NuGet package, permission, role, and supported authentication flow required by the design.
+3. Create a documentation validation matrix containing:
+   - Requirement
+   - Official Microsoft documentation URL
+   - Documented API, SDK, or CLI mechanism
+   - Required authentication mode
+   - Required delegated or application permissions
+   - Required Microsoft Entra or Azure role
+   - Availability or preview status
+   - Limitations
+   - Implementation decision
+4. Cite the official Microsoft source for every Microsoft-specific capability.
+5. Do not fabricate APIs, endpoints, permission names, SDK methods, resource types, or provisioning behavior.
+6. If an operation is supported only through the Agent 365 CLI, use or orchestrate the documented CLI workflow rather than inventing a REST API.
+7. If documented application-only provisioning is unavailable, explicitly state that limitation and implement one of these documented alternatives:
+   - An administrator-mediated delegated workflow
+   - A CLI-backed provisioning worker
+   - A manual approval step
+   - A documented Azure or Microsoft Graph operation
+8. Label every illustrative gateway-owned endpoint as:
+   “Gateway API designed for this solution, not a Microsoft API.”
+9. Label preview Microsoft capabilities clearly.
+10. Do not claim that a feature is complete unless official documentation supports it.
+
+Use these official documentation families as starting points:
+
+- https://learn.microsoft.com/microsoft-agent-365/
+- https://learn.microsoft.com/microsoft-agent-365/developer/
+- https://learn.microsoft.com/microsoft-agent-365/developer/registration
+- https://learn.microsoft.com/microsoft-agent-365/developer/agent-365-cli
+- https://learn.microsoft.com/microsoft-agent-365/developer/reference/cli/
+- https://learn.microsoft.com/purview/developer/
+- https://learn.microsoft.com/entra/identity-platform/
+- https://learn.microsoft.com/aspnet/core/
+- https://learn.microsoft.com/azure/key-vault/
+- https://learn.microsoft.com/azure/azure-monitor/
+- https://learn.microsoft.com/azure/azure-sql/
+- https://learn.microsoft.com/azure/service-bus-messaging/
+
+==================================================
+3. APPLICATION CONTEXT
+==================================================
+
+The gateway connects external AI agents to corresponding Microsoft Agent 365 agents.
+
+Examples of external agents include agents built with custom frameworks or non-Microsoft platforms. The external agents do not include the Agent 365 SDK or CLI.
+
+The gateway provides the Microsoft-facing integration on their behalf.
+
+The intended logical relationship is:
+
+External Agent 1 -> Gateway -> Agent 365 Agent 1
+External Agent 2 -> Gateway -> Agent 365 Agent 2
+External Agent N -> Gateway -> Agent 365 Agent N
+
+Use a one-to-one mapping by default:
+
+externalAgentId <-> agent365AgentId
+
+Each external agent must have its own gateway registration and corresponding Agent 365 identity or instance when supported by official documentation.
+
+The gateway is both:
+
+1. A control plane for registration, provisioning, administration, and policy configuration.
+2. A data plane for receiving activities, prompts, responses, and observability events.
+
+Do not allow one external agent to submit data under another agent’s identity.
+
+==================================================
+4. TECHNOLOGY REQUIREMENTS
+==================================================
+
+Use:
+
+- Current supported .NET LTS release, after validating it against official Microsoft documentation
+- ASP.NET Core Web API
+- C#
+- ASP.NET Core built-in OpenAPI support
+- Blazor Web App with Fluent UI for the management portal, unless an official compatibility issue requires another choice
+- Microsoft Identity Web where appropriate
+- Azure SQL Database with Entity Framework Core
+- Azure Key Vault
+- Azure Service Bus for asynchronous work
+- Azure Monitor
+- Application Insights
+- OpenTelemetry
+- Azure App Service or Azure Container Apps
+
+Explain the selected Azure hosting model and compare it briefly with the alternative.
+
+Use a modular monolith for the first production release unless the requirements demonstrate that independent microservice scaling is necessary.
+
+Maintain clear module boundaries so modules can later be extracted into services.
+
+Suggested solution structure:
+
+src/
+  Gateway.Api/
+  Gateway.AdminUi/
+  Gateway.Application/
+  Gateway.Domain/
+  Gateway.Infrastructure/
+  Gateway.Agent365/
+  Gateway.Purview/
+  Gateway.Observability/
+  Gateway.Provisioning.Worker/
+  Gateway.Contracts/
+
+tests/
+  Gateway.UnitTests/
+  Gateway.IntegrationTests/
+  Gateway.ArchitectureTests/
+  Gateway.SecurityTests/
+  Gateway.EndToEndTests/
+
+deploy/
+  bicep/
+  scripts/
+
+docs/
+  architecture/
+  api/
+  operations/
+  security/
+
+==================================================
+5. MICROSOFT ENTRA APPLICATION MODEL
+==================================================
+
+The gateway must be registered as a Microsoft Entra application.
+
+Design separate trust boundaries where appropriate:
+
+1. Gateway interactive web application registration
+   - Authenticates administrators and operators.
+   - Uses delegated access only where a signed-in administrator is required.
+
+2. Gateway API application registration
+   - Exposes gateway scopes and application roles.
+   - Validates tokens issued to the management UI and agent clients.
+
+3. Gateway workload identity
+   - Used by backend workers and hosted components.
+   - Prefer managed identity or workload identity federation where supported.
+
+4. External-agent client registrations or workload identities
+   - Each external agent must authenticate independently.
+   - Each identity must be bound to only the corresponding externalAgentId.
+   - Do not trust an externalAgentId supplied in a request without comparing it to authenticated identity claims.
+
+The gateway must receive all documented permissions required to provide enabled functionality, but no more.
+
+Do not interpret “all permissions” as unrestricted Microsoft Graph, tenant-wide, or Global Administrator access.
+
+Apply:
+
+- Least privilege
+- Separation of duties
+- Administrative consent only when required
+- Managed identity where supported
+- Certificate credentials over client secrets for production, where managed identity is unavailable
+- Azure Key Vault for credential material
+- Credential rotation
+- Conditional Access considerations
+- Privileged Identity Management considerations
+- No secrets in source code, configuration files, logs, API responses, or database columns
+
+Produce an exact permissions matrix. Never guess permission names.
+
+For each permission, include:
+
+- API resource
+- Exact permission name
+- Delegated or application
+- Admin consent requirement
+- Feature requiring it
+- Official documentation URL
+- Least-privilege justification
+- Whether it is required at runtime or only during provisioning
+
+==================================================
+6. USER ROLES AND AUTHORIZATION
+==================================================
+
+Implement gateway application roles:
+
+Gateway.Administrator
+- Configure the gateway.
+- Register and delete agents.
+- Start provisioning.
+- Rotate or replace credentials.
+- Enable or disable integrations.
+- Assign operators and auditors.
+
+Gateway.Operator
+- View agents.
+- Enable or disable agents.
+- Retry failed operations.
+- View non-sensitive operational status.
+
+Gateway.Auditor
+- Read configuration history, status, and audit events.
+- Cannot modify agents or reveal secrets.
+
+Gateway.SupportReader
+- Read health and diagnostics with sensitive information redacted.
+
+ExternalAgent
+- Submit only the activities, prompts, and responses associated with its authenticated registration.
+- Cannot use management endpoints.
+
+Enforce authorization server-side. UI hiding is not an authorization mechanism.
+
+==================================================
+7. AGENT DOMAIN MODEL
+==================================================
+
+Create an AgentRegistration aggregate with at least:
+
+- id: UUID
+- externalAgentId: string, unique and immutable
+- name: string
+- description: string
+- ownerObjectId: string
+- environment: Development | Test | Production
+- status: Draft | Provisioning | Active | Disabled | Failed | Deleting | Deleted
+- agent365AgentId: nullable string
+- blueprintId: nullable string
+- agent365InstanceId: nullable string
+- externalClientId: nullable string
+- observabilityMode: Disabled | GatewayOnly | Agent365
+- purviewEnabled: bool
+- purviewMode: AuditOnly | Enforce
+- createdAtUtc
+- createdByObjectId
+- updatedAtUtc
+- updatedByObjectId
+- rowVersion
+- lastProvisioningErrorCode
+- lastProvisioningErrorSummary
+
+Do not store raw client secrets.
+
+Add related entities:
+
+- AgentFeatureConfiguration
+- ProvisioningJob
+- AgentCredentialReference
+- ActivityReceipt
+- PurviewDecision
+- AuditEvent
+- OutboxMessage
+- IdempotencyRecord
+
+Use soft deletion for business records unless Microsoft documentation or privacy requirements require physical deletion.
+
+==================================================
+8. MANAGEMENT UI
+==================================================
+
+Build UI pages for:
+
+1. Dashboard
+   - Total agents
+   - Active, disabled, failed, and provisioning counts
+   - Recent provisioning failures
+   - Activity volume
+   - Purview policy outcomes
+   - System health
+
+2. Agent list
+   - Search, filter, sort, paging
+   - Status and environment
+   - Observability status
+   - Purview status
+   - Last activity
+   - Provisioning status
+
+3. Register agent
+   - Name
+   - Description
+   - Unique external agent ID
+   - Owner
+   - Environment
+   - Observability mode
+   - Purview enabled
+   - Purview mode
+
+4. Agent details
+   - Gateway registration
+   - Agent 365 mapping
+   - Blueprint and instance identifiers
+   - Feature configuration
+   - Provisioning history
+   - Recent sanitized activity receipts
+   - Audit history
+
+5. Agent operations
+   - Enable
+   - Disable
+   - Retry provisioning
+   - Reconcile with Agent 365
+   - Delete
+   - Rotate or replace credential where supported
+
+6. System configuration
+   - Tenant configuration
+   - Provisioning mode
+   - Queue configuration
+   - Retention policy
+   - Diagnostic settings
+   - Purview integration readiness
+
+Never display credential values after creation. Return a credential only if absolutely necessary and supported, and then only through a one-time secure retrieval workflow.
+
+==================================================
+9. PROVISIONING WORKFLOW
+==================================================
+
+When an administrator registers an external agent:
+
+1. Validate uniqueness and authorization.
+2. Create a Draft AgentRegistration.
+3. Create a ProvisioningJob.
+4. Write an outbox message in the same database transaction.
+5. Return HTTP 202 Accepted with the agent and operation URLs.
+6. Let the provisioning worker execute the documented Agent 365 provisioning workflow.
+7. Provision or associate the blueprint.
+8. Provision the corresponding Agent 365 agent or instance.
+9. Configure documented permissions.
+10. Configure managerApplications if required by Agent 365 documentation.
+11. Record only safe identifiers in Azure SQL.
+12. Place credential material in Key Vault if credential material must be stored.
+13. Mark the registration Active only after all required steps succeed.
+14. Record an audit event.
+15. Return a stable error code and safe error summary if provisioning fails.
+
+The process must be:
+
+- Asynchronous
+- Idempotent
+- Retryable
+- Auditable
+- Resumable
+- Safe against duplicate agent creation
+
+Define a provisioning state machine.
+
+Include compensation behavior, but do not automatically delete successfully created Microsoft resources if deletion could cause data loss or require separate authorization. Mark such cases as RequiresManualIntervention.
+
+Provide a reconciliation job that detects:
+
+- Missing Agent 365 resources
+- Unexpectedly deleted resources
+- Configuration drift
+- Permission drift where documented APIs permit checking it
+- Gateway registrations stuck in transitional states
+
+==================================================
+10. EXAMPLE GATEWAY API
+==================================================
+
+The endpoints below are gateway-owned design proposals. They are not Microsoft APIs.
+
+Use base path:
+
+/api/v1
+
+Use:
+
+- application/json
+- UTC ISO 8601 timestamps
+- UUID gateway identifiers
+- Problem Details for HTTP APIs
+- Correlation IDs
+- Idempotency-Key for mutating ingestion operations
+- ETag or row-version concurrency for administrative updates
+- Cursor-based pagination for large activity collections
+
+------------------------------
+10.1 Register an agent
+------------------------------
+
+POST /api/v1/agents
+
+Authorization:
+Gateway.Administrator
+
+Request:
+
+{
+  "externalAgentId": "crm-assistant-prod",
+  "name": "CRM Assistant",
+  "description": "Answers customer and sales questions.",
+  "ownerObjectId": "00000000-0000-0000-0000-000000000001",
+  "environment": "Production",
+  "features": {
+    "observabilityMode": "Agent365",
+    "purviewEnabled": true,
+    "purviewMode": "Enforce"
+  }
+}
+
+Successful response:
+
+HTTP/1.1 202 Accepted
+Location: /api/v1/agents/{agentId}
+Operation-Location: /api/v1/operations/{operationId}
+
+{
+  "agentId": "3d62b161-e342-4cc5-bd3e-e98fa91431df",
+  "externalAgentId": "crm-assistant-prod",
+  "status": "Provisioning",
+  "operationId": "31395296-1962-4ed4-963c-d1546dd274b1",
+  "createdAtUtc": "2026-08-23T04:30:00Z"
+}
+
+Possible responses:
+
+- 400 validation failure
+- 401 unauthenticated
+- 403 unauthorized
+- 409 duplicate externalAgentId
+- 422 unsupported feature configuration
+- 429 throttled
+- 503 provisioning service unavailable
+
+------------------------------
+10.2 List agents
+------------------------------
+
+GET /api/v1/agents?status=Active&environment=Production&limit=50&cursor={cursor}
+
+Authorization:
+Gateway.Administrator, Gateway.Operator, Gateway.Auditor, or Gateway.SupportReader
+
+Response:
+
+{
+  "items": [
+    {
+      "agentId": "3d62b161-e342-4cc5-bd3e-e98fa91431df",
+      "externalAgentId": "crm-assistant-prod",
+      "name": "CRM Assistant",
+      "status": "Active",
+      "environment": "Production",
+      "agent365": {
+        "agentId": "documented-agent-identifier",
+        "blueprintId": "documented-blueprint-identifier",
+        "instanceId": "documented-instance-identifier"
+      },
+      "features": {
+        "observabilityMode": "Agent365",
+        "purviewEnabled": true,
+        "purviewMode": "Enforce"
+      },
+      "updatedAtUtc": "2026-08-23T04:35:00Z"
+    }
+  ],
+  "nextCursor": null
+}
+
+------------------------------
+10.3 Get an agent
+------------------------------
+
+GET /api/v1/agents/{agentId}
+
+Return configuration, mapping, status, and safe operational details.
+
+Never include secrets, tokens, full prompt content, or full response content.
+
+------------------------------
+10.4 Update feature configuration
+------------------------------
+
+PATCH /api/v1/agents/{agentId}/features
+
+Authorization:
+Gateway.Administrator
+
+Headers:
+
+If-Match: "{rowVersion}"
+
+Request:
+
+{
+  "observabilityMode": "Agent365",
+  "purviewEnabled": false,
+  "purviewMode": "AuditOnly"
+}
+
+Rules:
+
+- Validate whether a requested mode is supported.
+- Produce an audit event.
+- Apply changes only to future interactions unless documented otherwise.
+- Explain that disabling Purview does not remove existing Purview records.
+- Return 409 or 412 for concurrency conflicts.
+
+------------------------------
+10.5 Enable an agent
+------------------------------
+
+POST /api/v1/agents/{agentId}:enable
+
+Authorization:
+Gateway.Administrator or Gateway.Operator
+
+Headers:
+
+Idempotency-Key: {uuid}
+
+Response:
+
+{
+  "agentId": "3d62b161-e342-4cc5-bd3e-e98fa91431df",
+  "status": "Active",
+  "effectiveAtUtc": "2026-08-23T04:40:00Z"
+}
+
+------------------------------
+10.6 Disable an agent
+------------------------------
+
+POST /api/v1/agents/{agentId}:disable
+
+Authorization:
+Gateway.Administrator or Gateway.Operator
+
+A disabled agent must be rejected by data-plane endpoints with HTTP 403 and a stable error code such as AGENT_DISABLED.
+
+------------------------------
+10.7 Delete an agent
+------------------------------
+
+DELETE /api/v1/agents/{agentId}
+
+Authorization:
+Gateway.Administrator
+
+Headers:
+
+If-Match: "{rowVersion}"
+Idempotency-Key: {uuid}
+
+Query:
+
+?deleteMicrosoftResources=false
+
+Default to preserving Microsoft-side resources unless the administrator explicitly requests deletion and the documented API or CLI supports it.
+
+Return 202 Accepted because deletion is asynchronous.
+
+------------------------------
+10.8 Get operation status
+------------------------------
+
+GET /api/v1/operations/{operationId}
+
+Response:
+
+{
+  "operationId": "31395296-1962-4ed4-963c-d1546dd274b1",
+  "type": "ProvisionAgent",
+  "status": "Running",
+  "currentStep": "CreateAgentInstance",
+  "percentComplete": 60,
+  "startedAtUtc": "2026-08-23T04:30:01Z",
+  "completedAtUtc": null,
+  "error": null
+}
+
+==================================================
+11. DATA-PLANE API
+==================================================
+
+External agents authenticate using their own Microsoft Entra workload identity or client registration.
+
+Derive the permitted agent mapping from authenticated identity claims and server-side configuration.
+
+Do not authorize solely from externalAgentId in the body or URL.
+
+------------------------------
+11.1 Submit a generic activity
+------------------------------
+
+POST /api/v1/agent-activities
+
+Authorization:
+ExternalAgent
+
+Headers:
+
+Authorization: Bearer {token}
+Idempotency-Key: {uuid}
+X-Correlation-ID: {uuid}
+
+Request:
+
+{
+  "externalAgentId": "crm-assistant-prod",
+  "activityId": "ext-activity-45892",
+  "sessionId": "session-12345",
+  "activityType": "ToolInvocation",
+  "occurredAtUtc": "2026-08-23T04:45:00Z",
+  "actor": {
+    "type": "Agent"
+  },
+  "tool": {
+    "name": "CustomerLookup",
+    "operation": "GetCustomerSummary",
+    "outcome": "Succeeded",
+    "durationMs": 218
+  },
+  "attributes": {
+    "sourceFramework": "Custom"
+  }
+}
+
+Response:
+
+HTTP/1.1 202 Accepted
+
+{
+  "receiptId": "6b58517d-c60e-4da8-8914-a70a5e724d16",
+  "activityId": "ext-activity-45892",
+  "status": "Accepted",
+  "receivedAtUtc": "2026-08-23T04:45:01Z",
+  "correlationId": "0dccba49-df57-4274-9332-137799481b89"
+}
+
+Processing:
+
+1. Authenticate the caller.
+2. Resolve the caller-to-agent binding.
+3. Reject identity mismatches.
+4. Check that the agent is Active.
+5. Validate schema and size.
+6. Redact prohibited diagnostic fields.
+7. Persist an idempotent receipt.
+8. Queue the event.
+9. Map the event to the exact documented Agent 365 observability contract.
+10. Export it only through an officially documented mechanism.
+
+If no official Agent 365 mechanism allows a gateway to export an activity for another agent, clearly identify this gap and implement GatewayOnly observability rather than inventing a Microsoft endpoint.
+
+------------------------------
+11.2 Submit an AI interaction
+------------------------------
+
+POST /api/v1/ai-interactions
+
+Authorization:
+ExternalAgent
+
+Headers:
+
+Idempotency-Key: {uuid}
+
+Request:
+
+{
+  "externalAgentId": "crm-assistant-prod",
+  "interactionId": "interaction-88731",
+  "sessionId": "session-12345",
+  "occurredAtUtc": "2026-08-23T04:47:00Z",
+  "userContext": {
+    "tenantUserObjectId": "00000000-0000-0000-0000-000000000045"
+  },
+  "prompt": {
+    "contentType": "text/plain",
+    "content": "Summarize the customer account."
+  },
+  "response": {
+    "contentType": "text/plain",
+    "content": "The account is currently active."
+  },
+  "model": {
+    "provider": "ExternalProvider",
+    "name": "external-model"
+  },
+  "metadata": {
+    "locale": "en-US"
+  }
+}
+
+The caller must not be allowed to impersonate an arbitrary tenant user.
+
+Define the documented identity requirements for Purview evaluation. If the Microsoft API requires a valid delegated user context, do not replace it with an invented application-only flow.
+
+Possible accepted response:
+
+HTTP/1.1 202 Accepted
+
+{
+  "receiptId": "e1225adb-28f9-4a20-b821-749a00863df7",
+  "interactionId": "interaction-88731",
+  "status": "Accepted",
+  "purviewProcessing": "Pending",
+  "observabilityProcessing": "Pending"
+}
+
+For synchronous enforcement mode, if supported and required, define a separate endpoint:
+
+POST /api/v1/ai-interactions:evaluate
+
+Example allow response:
+
+{
+  "interactionId": "interaction-88731",
+  "decision": "Allow",
+  "policyActions": [],
+  "evaluatedAtUtc": "2026-08-23T04:47:01Z"
+}
+
+Example block response:
+
+HTTP/1.1 403 Forbidden
+
+{
+  "type": "https://gateway.example.com/problems/purview-policy-blocked",
+  "title": "Content was blocked by organizational policy.",
+  "status": 403,
+  "code": "PURVIEW_POLICY_BLOCKED",
+  "traceId": "00-example",
+  "policyActions": [
+    {
+      "action": "Block"
+    }
+  ]
+}
+
+Do not expose sensitive policy internals or matched content unless the official documentation explicitly requires it and the caller is authorized.
+
+------------------------------
+11.3 Batch activities
+------------------------------
+
+POST /api/v1/agent-activities:batch
+
+Support bounded batches.
+
+Define:
+
+- Maximum event count
+- Maximum request size
+- Partial success behavior
+- Per-item validation status
+- Idempotency semantics
+- Throttling behavior
+
+Example response:
+
+{
+  "accepted": 2,
+  "rejected": 1,
+  "items": [
+    {
+      "activityId": "event-1",
+      "status": "Accepted"
+    },
+    {
+      "activityId": "event-2",
+      "status": "Duplicate"
+    },
+    {
+      "activityId": "event-3",
+      "status": "Rejected",
+      "code": "INVALID_ACTIVITY_TYPE"
+    }
+  ]
+}
+
+==================================================
+12. PURVIEW PROCESSING
+==================================================
+
+Purview is configured per agent:
+
+purviewEnabled = true or false
+
+When enabled:
+
+1. Determine the applicable Purview protection scope using the officially documented process.
+2. Evaluate prompts, responses, and supported file content using documented Purview APIs.
+3. Enforce documented policy actions.
+4. Send supported interaction records into Purview.
+5. Record only the minimum gateway-side decision metadata.
+6. Avoid duplicating full prompt and response content in gateway logs.
+7. Respect tenant retention and privacy requirements.
+
+Supported modes:
+
+AuditOnly
+- Send or record the interaction using documented Purview capabilities.
+- Do not block the external agent unless required by Microsoft policy semantics.
+
+Enforce
+- Evaluate before release of content when official APIs support inline enforcement.
+- Return Allow, Block, or another exact documented policy action.
+- Do not reduce a richer Microsoft policy result to Allow or Block without explaining the mapping.
+
+When Purview is disabled:
+
+- Do not call Purview APIs for future interactions.
+- Continue minimum security and operational logging.
+- Do not claim that disabling Purview removes historical Purview records.
+- Record the configuration change in the gateway audit log.
+
+Clearly separate:
+
+- Policy evaluation
+- Interaction submission
+- Audit visibility
+- Gateway observability
+- Purview reporting
+
+Do not build an API that attempts to retrieve Purview analytics unless official documentation provides such an API.
+
+==================================================
+13. OBSERVABILITY
+==================================================
+
+Observability is configurable per agent:
+
+Disabled
+- Collect only mandatory security and operational audit events.
+
+GatewayOnly
+- Record metrics and traces in Azure Monitor and Application Insights.
+- Do not claim Agent 365 observability integration.
+
+Agent365
+- Export only through an officially documented Agent 365 SDK, OpenTelemetry, API, or supported mechanism.
+- If the external agent’s architecture makes this unsupported, record the limitation and fall back to GatewayOnly.
+
+Collect safe telemetry:
+
+- Request count
+- Accepted and rejected requests
+- Processing latency
+- Queue latency
+- Provisioning duration
+- Dependency failures
+- Purview decision category
+- Agent status
+- Tool invocation outcome
+- Retry count
+
+Never place these in ordinary logs or trace tags:
+
+- Access tokens
+- Secrets
+- Full prompts
+- Full responses
+- Sensitive attachments
+- Authentication headers
+- Unredacted personal data
+
+Implement W3C trace context and correlation across:
+
+External agent -> Gateway API -> Service Bus -> Worker -> Microsoft dependency
+
+==================================================
+14. ERROR MODEL
+==================================================
+
+Use RFC-style Problem Details.
+
+Example:
+
+{
+  "type": "https://gateway.example.com/problems/agent-disabled",
+  "title": "The requested agent is disabled.",
+  "status": 403,
+  "code": "AGENT_DISABLED",
+  "detail": "The activity cannot be accepted while the agent is disabled.",
+  "traceId": "00-example"
+}
+
+Define stable error codes including:
+
+- VALIDATION_FAILED
+- AUTHENTICATION_REQUIRED
+- CALLER_NOT_AUTHORIZED
+- AGENT_IDENTITY_MISMATCH
+- AGENT_NOT_FOUND
+- AGENT_DISABLED
+- DUPLICATE_EXTERNAL_AGENT_ID
+- IDEMPOTENCY_CONFLICT
+- CONCURRENCY_CONFLICT
+- PROVISIONING_FAILED
+- AGENT365_DEPENDENCY_UNAVAILABLE
+- PURVIEW_POLICY_BLOCKED
+- PURVIEW_DEPENDENCY_UNAVAILABLE
+- RATE_LIMIT_EXCEEDED
+- PAYLOAD_TOO_LARGE
+
+Do not leak Microsoft dependency response bodies to callers.
+
+==================================================
+15. SECURITY AND RESPONSIBLE AI
+==================================================
+
+Create a threat model covering:
+
+- Agent identity spoofing
+- Cross-agent data submission
+- Tenant boundary violations
+- Privilege escalation
+- Credential theft
+- Prompt and response leakage
+- Replay attacks
+- Idempotency abuse
+- Queue poisoning
+- Injection into logs or telemetry
+- Over-permissioned gateway identity
+- Purview bypass through disabled settings
+- Administrator misuse
+- Denial of service
+- Supply-chain risk
+- Unsafe deletion of Microsoft resources
+
+Controls must include:
+
+- Least privilege
+- Strong workload authentication
+- Agent-to-client binding
+- Input validation
+- Payload size limits
+- Rate limiting per client and agent
+- Replay protection
+- Idempotency
+- Encryption in transit and at rest
+- Key Vault
+- Private endpoints where justified
+- Audit trails
+- Separation of duties
+- Data minimization
+- Configurable retention
+- Log redaction
+- Dependency timeouts and circuit breakers
+- Secure software supply chain
+- Dependency scanning
+- Code signing where appropriate
+
+Responsible AI requirements:
+
+- Do not use the gateway to make employment, legal, financial, healthcare, or similarly consequential decisions.
+- Provide transparency when content is blocked or processed by policy without exposing sensitive policy details.
+- Minimize collection of user content.
+- Preserve accountability through immutable administrative audit events.
+- Avoid using prompt or response content for model training.
+- Document data flow, retention, and deletion responsibilities.
+
+==================================================
+16. RELIABILITY AND SCALABILITY
+==================================================
+
+Design for:
+
+- Thousands of registered agents
+- Horizontal API scaling
+- Stateless API instances
+- Asynchronous provisioning
+- At-least-once message delivery
+- Idempotent consumers
+- Outbox pattern
+- Dead-letter queues
+- Exponential retry with jitter
+- Circuit breakers
+- Health and readiness probes
+- Graceful degradation
+
+Define fail-open versus fail-closed behavior.
+
+Default:
+
+- Authentication and authorization failures: fail closed
+- Agent identity mismatch: fail closed
+- Purview Enforce dependency failure: fail closed unless an approved tenant policy explicitly defines another behavior
+- Purview AuditOnly dependency failure: queue for bounded retry, subject to documented limits
+- Observability failure: do not lose the primary accepted operation, but queue or record a safe failure signal
+- Provisioning failure: keep the agent non-active
+
+Explain every decision.
+
+==================================================
+17. DATABASE DESIGN
+==================================================
+
+Generate an Entity Framework Core model and SQL-oriented schema for:
+
+- AgentRegistrations
+- AgentFeatureConfigurations
+- ProvisioningJobs
+- ProvisioningJobSteps
+- AgentCredentialReferences
+- ActivityReceipts
+- PurviewDecisions
+- AuditEvents
+- OutboxMessages
+- IdempotencyRecords
+
+Include:
+
+- Primary keys
+- Foreign keys
+- Unique constraints
+- Status constraints
+- Index strategy
+- Row-version concurrency
+- Retention fields
+- Soft-delete behavior
+- Data classification
+- Fields that must never contain raw secrets or full interaction content
+
+==================================================
+18. IMPLEMENTATION REQUIREMENTS
+==================================================
+
+Generate compile-ready C# for the first vertical slice:
+
+1. Solution and project files.
+2. Domain entities.
+3. EF Core DbContext and configurations.
+4. Agent registration endpoint.
+5. Agent query endpoints.
+6. Enable and disable endpoints.
+7. Activity submission endpoint.
+8. AI interaction endpoint.
+9. Entra authentication configuration.
+10. Role and app-role authorization policies.
+11. External client-to-agent authorization handler.
+12. Provisioning worker abstraction.
+13. Agent 365 adapter interface.
+14. Purview adapter interface.
+15. Microsoft Graph client setup where officially required.
+16. Outbox publisher.
+17. Service Bus consumer.
+18. Problem Details middleware.
+19. OpenAPI configuration.
+20. Unit and integration tests.
+21. Dockerfile if container hosting is selected.
+22. Bicep deployment modules.
+23. GitHub Actions or Azure DevOps pipeline, choosing one and explaining the choice.
+
+Use dependency inversion around Agent 365 and Purview.
+
+Example interfaces:
+
+public interface IAgent365ProvisioningClient
+{
+    Task<Agent365ProvisioningResult> ProvisionAsync(
+        AgentProvisioningRequest request,
+        CancellationToken cancellationToken);
+
+    Task<Agent365ReconciliationResult> ReconcileAsync(
+        Agent365ResourceReference resource,
+        CancellationToken cancellationToken);
+
+    Task DeleteAsync(
+        Agent365ResourceReference resource,
+        CancellationToken cancellationToken);
+}
+
+public interface IPurviewPolicyClient
+{
+    Task<PurviewEvaluationResult> EvaluateInteractionAsync(
+        PurviewInteraction interaction,
+        CancellationToken cancellationToken);
+}
+
+These signatures are gateway abstractions, not representations of Microsoft SDK interfaces. Implement them only with documented Microsoft capabilities.
+
+==================================================
+19. TESTING
+==================================================
+
+Create tests for:
+
+- Duplicate external agent IDs
+- Unauthorized agent registration
+- External client bound to the wrong externalAgentId
+- Disabled agent submission
+- Duplicate Idempotency-Key
+- Same idempotency key with different request body
+- Concurrent feature updates
+- Provisioning retry
+- Provisioning partial failure
+- Queue redelivery
+- Purview allow decision
+- Purview block decision
+- Purview unavailable in AuditOnly mode
+- Purview unavailable in Enforce mode
+- Oversized payload
+- Malformed content
+- Secret and token redaction
+- No prompt content in logs
+- Agent 365 dependency timeout
+- Reconciliation drift
+
+Use emulators or test doubles where official services cannot be used locally.
+
+Do not create mock API contracts that are later presented as real Microsoft contracts.
+
+==================================================
+20. DEPLOYMENT
+==================================================
+
+Create Bicep for:
+
+- Resource group-level deployment
+- App Service or Container Apps
+- Managed identities
+- Azure SQL
+- Service Bus
+- Key Vault
+- Application Insights
+- Log Analytics workspace
+- Azure Monitor alerts
+- Diagnostic settings
+- Private endpoints if selected
+- Role assignments
+- Configuration references
+
+Do not put secrets in Bicep parameter files or deployment outputs.
+
+Provide development, test, and production parameter examples using non-secret placeholders.
+
+Include a separation-of-duties deployment runbook for:
+
+- Azure resource deployment
+- Entra app registration
+- Admin consent
+- Agent 365 setup
+- Purview policy preparation
+- Production validation
+
+==================================================
+21. REQUIRED OUTPUT FORMAT
+==================================================
+
+Return the solution in these phases.
+
+Phase 1: Documentation validation
+- Documentation matrix
+- Supported capabilities
+- Unsupported or unclear capabilities
+- Preview dependencies
+- Exact permissions and roles
+- Assumptions requiring validation
+
+Phase 2: Architecture
+- Executive summary
+- C4 context diagram in Mermaid
+- C4 container diagram in Mermaid
+- Component diagram
+- Trust boundaries
+- Control-plane flow
+- Data-plane flow
+- Purview flow
+- Provisioning state machine
+- Failure-mode table
+- Architecture decision records
+
+Phase 3: API contract
+- Complete endpoint catalog
+- Authentication and authorization rules
+- OpenAPI 3.1 YAML
+- Schemas
+- Examples
+- Error responses
+- Idempotency and concurrency semantics
+- Rate limits
+
+Phase 4: Data design
+- Entity model
+- ER diagram in Mermaid
+- EF Core entities and configurations
+- Migration strategy
+- Retention and classification matrix
+
+Phase 5: Implementation
+- Repository tree
+- Compile-ready code, file by file
+- NuGet package list with justification
+- Local configuration instructions
+- No placeholders for core gateway behavior
+
+Phase 6: Tests
+- Unit tests
+- Integration tests
+- Security tests
+- End-to-end test plan
+
+Phase 7: Deployment and operations
+- Bicep modules
+- CI/CD pipeline
+- Entra configuration runbook
+- Purview preparation runbook
+- Monitoring
+- Alerts
+- Incident response
+- Backup and recovery
+- Credential rotation
+- Upgrade strategy
+
+At the end of every phase, include:
+
+- Completed items
+- Open issues
+- Microsoft documentation citations
+- Unsupported assumptions
+- Decisions needed before the next phase
+
+==================================================
+22. QUALITY GATES
+==================================================
+
+Before presenting the result, verify:
+
+- Every Microsoft API and permission is documented.
+- No invented Agent 365 REST endpoints appear.
+- No invented Purview analytics retrieval appears.
+- Gateway-owned APIs are clearly distinguished from Microsoft APIs.
+- External agents cannot impersonate another registered agent.
+- Raw secrets are never persisted in SQL.
+- Prompt and response content is not logged.
+- Provisioning is asynchronous and idempotent.
+- Enforce-mode policy failures have an explicit failure behavior.
+- The OpenAPI specification matches the generated C# endpoints.
+- The code uses supported .NET and ASP.NET Core versions.
+- The implementation can compile after documented configuration values are supplied.
+- All preview dependencies are labeled.
+- Every unverified capability is represented by an interface, feature flag, or manual workflow rather than fabricated code.
+
+Start with Phase 1. Do not generate the implementation until the documentation validation and architecture decisions have been completed.

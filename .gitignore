@@ -1,0 +1,76 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+## Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+## NuGet
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Visual Studio
+.vs/
+*.rsuser
+*.sln.docstates
+launchSettings.json
+
+## Rider
+.idea/
+*.sln.iml
+
+## User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+[Tt]est[Rr]esult*/
+[Dd]ebugPublic/
+[Rr]eleases/
+
+## Azure
+publish/
+PublishScripts/
+
+## Environment
+.env
+.env.*
+!.env.example
+appsettings.Development.json
+appsettings.Local.json
+.secrets
+
+## Claude Code
+.claude/
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Coverage
+coverage/
+*.coverage
+*.coveragexml
+TestResults/
