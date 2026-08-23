@@ -6,7 +6,7 @@ using Microsoft.Extensions.Options;
 
 namespace Gateway.Provisioning.Worker;
 
-internal sealed class ProvisioningWorkerService : BackgroundService
+internal sealed class ProvisioningWorkerService : BackgroundService, IAsyncDisposable
 {
     private readonly ServiceBusProcessor _processor;
     private readonly IServiceScopeFactory _scopeFactory;
@@ -67,9 +67,9 @@ internal sealed class ProvisioningWorkerService : BackgroundService
         return Task.CompletedTask;
     }
 
-    public override async ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         await _processor.DisposeAsync();
-        await base.DisposeAsync();
+        base.Dispose();
     }
 }

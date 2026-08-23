@@ -1,4 +1,5 @@
-using Gateway.Contracts;
+using Gateway.Contracts.Dtos;
+using Gateway.Contracts.Responses;
 using MediatR;
 
 namespace Gateway.Application.Interactions.Commands;

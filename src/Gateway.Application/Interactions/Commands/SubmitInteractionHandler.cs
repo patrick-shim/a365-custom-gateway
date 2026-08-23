@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Gateway.Application.Exceptions;
 using Gateway.Contracts;
+using Gateway.Contracts.Dtos;
+using Gateway.Contracts.Responses;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
