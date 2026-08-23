@@ -35,4 +35,4 @@ param workerMemory = '0.5Gi'
 param workerMaxReplicas = 3
 
 param zoneRedundant = false
-param keyVaultPurgeProtection = false
+param keyVaultPurgeProtection = true

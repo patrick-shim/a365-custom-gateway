@@ -71,12 +71,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: environmentId
     configuration: {
       activeRevisionsMode: 'Single'
-      registries: [
-        {
-          server: acrLoginServer
-          identity: 'system'
-        }
-      ]
     }
     template: {
       containers: [
@@ -140,7 +134,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
                 namespace: serviceBusNamespace
                 messageCount: '5'
               }
-              identity: 'system'
+              auth: []
             }
           }
         ]

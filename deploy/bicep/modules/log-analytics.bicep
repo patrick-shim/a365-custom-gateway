@@ -56,20 +56,12 @@ resource diagnosticSettings 'Microsoft.Insights/diagnosticSettings@2021-05-01-pr
       {
         category: 'Audit'
         enabled: true
-        retentionPolicy: {
-          days: retentionInDays
-          enabled: true
-        }
       }
     ]
     metrics: [
       {
         category: 'AllMetrics'
         enabled: true
-        retentionPolicy: {
-          days: retentionInDays
-          enabled: true
-        }
       }
     ]
   }

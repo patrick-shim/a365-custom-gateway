@@ -53,7 +53,7 @@ param tags object = {}
 
 // Environment-adjusted thresholds: tighter for prod, relaxed for dev/test
 var sqlConnectionFailedThreshold = environment == 'prod' ? 3 : 5
-var keyVaultAvailabilityThreshold = environment == 'prod' ? 99.9 : 99
+var keyVaultAvailabilityThreshold = environment == 'prod' ? 99 : 95
 var serviceBusQueueDepthThreshold = environment == 'prod' ? 50 : 100
 var apiServerErrorsThreshold = environment == 'prod' ? 5 : 10
 var apiAuthFailuresThreshold = environment == 'prod' ? 20 : 50
@@ -370,7 +370,7 @@ resource apiLatencyAlert 'Microsoft.Insights/scheduledQueryRules@2023-03-15-prev
     criteria: {
       allOf: [
         {
-          query: 'requests | where cloud_RoleName == "${apiContainerAppName}" | summarize p95_duration = percentile(duration, 95) by bin(TimeGenerated, 5m)'
+          query: 'requests | where cloud_RoleName == "${apiContainerAppName}" | summarize p95_duration = percentile(duration, 95) by bin(timestamp, 5m)'
           timeAggregation: 'Average'
           metricMeasureColumn: 'p95_duration'
           operator: 'GreaterThan'

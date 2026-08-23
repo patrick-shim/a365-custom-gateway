@@ -90,36 +90,20 @@ resource blobDiagnosticSettings 'Microsoft.Insights/diagnosticSettings@2021-05-0
       {
         category: 'StorageRead'
         enabled: true
-        retentionPolicy: {
-          days: 30
-          enabled: true
-        }
       }
       {
         category: 'StorageWrite'
         enabled: true
-        retentionPolicy: {
-          days: 30
-          enabled: true
-        }
       }
       {
         category: 'StorageDelete'
         enabled: true
-        retentionPolicy: {
-          days: 30
-          enabled: true
-        }
       }
     ]
     metrics: [
       {
         category: 'Transaction'
         enabled: true
-        retentionPolicy: {
-          days: 30
-          enabled: true
-        }
       }
     ]
   }

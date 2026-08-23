@@ -5,6 +5,11 @@
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
+# ARM64 Windows workaround: NuGet crashes if ProgramFiles(x86) is unset.
+if (-not [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) {
+    [Environment]::SetEnvironmentVariable('ProgramFiles(x86)', 'C:\Program Files (x86)')
+}
+
 function Write-StepHeader {
     param([string]$Message)
     Write-Host ''

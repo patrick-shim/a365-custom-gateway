@@ -295,6 +295,11 @@ module roleAssignments './modules/role-assignments.bicep' = {
 
 module alerts './modules/monitoring-alerts.bicep' = {
   name: 'deploy-monitoring-alerts'
+  dependsOn: [
+    sqlDb
+    serviceBus
+    keyVault
+  ]
   params: {
     appInsightsId: appInsights.outputs.appInsightsId
     logAnalyticsWorkspaceId: logAnalytics.outputs.workspaceId
