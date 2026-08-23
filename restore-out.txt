@@ -1,0 +1,130 @@
+빌드 시작: 2026-08-24 오전 2:12:20
+     1>1 노드의 "C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx" 프로젝트(Restore 대상)입니다.
+     1>ValidateSolutionConfiguration:
+         솔루션 구성 "Debug|Any CPU"을(를) 빌드하고 있습니다.
+       _GetAllRestoreProjectPathItems:
+         복원할 프로젝트를 확인하는 중...
+     1>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx"(1) 프로젝트가 1 노드에서 "C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.AdminUi\Gateway.AdminUi.csproj"(11:5)을(를) 빌드하고 있습니다(_GenerateProjectRestoreGraph 대상).
+    11>AddPrunePackageReferences:
+         Loading prune package data from PrunePackageData folder
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11\data\PackageOverrides.txt
+         Loading prune package data from PrunePackageData folder
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.AspNetCore.App.Ref
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.AspNetCore.App.Ref\10.0.11
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.AspNetCore.App.Ref\10.0.11\data\PackageOverrides.txt
+    11>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.AdminUi\Gateway.AdminUi.csproj" 프로젝트를 빌드했습니다(_GenerateProjectRestoreGraph 대상).
+     1>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx"(1) 프로젝트가 4 노드에서 "C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Api\Gateway.Api.csproj"(10:5)을(를) 빌드하고 있습니다(_GenerateProjectRestoreGraph 대상).
+    10>AddPrunePackageReferences:
+         Loading prune package data from PrunePackageData folder
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11\data\PackageOverrides.txt
+         Loading prune package data from PrunePackageData folder
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.AspNetCore.App.Ref
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.AspNetCore.App.Ref\10.0.11
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.AspNetCore.App.Ref\10.0.11\data\PackageOverrides.txt
+     1>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx"(1) 프로젝트가 7 노드에서 "C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Contracts\Gateway.Contracts.csproj"(6:11)을(를) 빌드하고 있습니다(_GenerateProjectRestoreGraph 대상).
+     6>AddPrunePackageReferences:
+         Loading prune package data from PrunePackageData folder
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11\data\PackageOverrides.txt
+     1>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx"(1) 프로젝트가 2 노드에서 "C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Observability\Gateway.Observability.csproj"(4:7)을(를) 빌드하고 있습니다(_GenerateProjectRestoreGraph 대상).
+     4>AddPrunePackageReferences:
+         Loading prune package data from PrunePackageData folder
+     1>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx"(1) 프로젝트가 5 노드에서 "C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Application\Gateway.Application.csproj"(2:8)을(를) 빌드하고 있습니다(_GenerateProjectRestoreGraph 대상).
+     2>AddPrunePackageReferences:
+         Loading prune package data from PrunePackageData folder
+     4>AddPrunePackageReferences:
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+     1>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx"(1) 프로젝트가 3 노드에서 "C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Infrastructure\Gateway.Infrastructure.csproj"(7:7)을(를) 빌드하고 있습니다(_GenerateProjectRestoreGraph 대상).
+     7>AddPrunePackageReferences:
+         Loading prune package data from PrunePackageData folder
+     4>AddPrunePackageReferences:
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref
+     2>AddPrunePackageReferences:
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+     1>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx"(1) 프로젝트가 6 노드에서 "C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Agent365\Gateway.Agent365.csproj"(5:7)을(를) 빌드하고 있습니다(_GenerateProjectRestoreGraph 대상).
+     5>AddPrunePackageReferences:
+         Loading prune package data from PrunePackageData folder
+     1>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx"(1) 프로젝트가 8 노드에서 "C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Domain\Gateway.Domain.csproj"(3:9)을(를) 빌드하고 있습니다(_GenerateProjectRestoreGraph 대상).
+     3>AddPrunePackageReferences:
+         Loading prune package data from PrunePackageData folder
+     7>AddPrunePackageReferences:
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+     4>AddPrunePackageReferences:
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11
+     2>AddPrunePackageReferences:
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref
+     3>AddPrunePackageReferences:
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+     5>AddPrunePackageReferences:
+         Failed to load prune package data from PrunePackageData folder, loading from targeting packs instead
+     7>AddPrunePackageReferences:
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref
+     4>AddPrunePackageReferences:
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11\data\PackageOverrides.txt
+     5>AddPrunePackageReferences:
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref
+     2>AddPrunePackageReferences:
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11
+     3>AddPrunePackageReferences:
+         Looking for targeting packs in C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref
+     7>AddPrunePackageReferences:
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11
+    10>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Api\Gateway.Api.csproj" 프로젝트를 빌드했습니다(_GenerateProjectRestoreGraph 대상).
+     2>AddPrunePackageReferences:
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11\data\PackageOverrides.txt
+     5>AddPrunePackageReferences:
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11
+     3>AddPrunePackageReferences:
+         Pack directories found: C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11
+     7>AddPrunePackageReferences:
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11\data\PackageOverrides.txt
+     3>AddPrunePackageReferences:
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11\data\PackageOverrides.txt
+     5>AddPrunePackageReferences:
+         Found package overrides file C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.11\data\PackageOverrides.txt
+     6>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Contracts\Gateway.Contracts.csproj" 프로젝트를 빌드했습니다(_GenerateProjectRestoreGraph 대상).
+     4>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Observability\Gateway.Observability.csproj" 프로젝트를 빌드했습니다(_GenerateProjectRestoreGraph 대상).
+     5>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Agent365\Gateway.Agent365.csproj" 프로젝트를 빌드했습니다(_GenerateProjectRestoreGraph 대상).
+     7>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Infrastructure\Gateway.Infrastructure.csproj" 프로젝트를 빌드했습니다(_GenerateProjectRestoreGraph 대상).
+     3>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Domain\Gateway.Domain.csproj" 프로젝트를 빌드했습니다(_GenerateProjectRestoreGraph 대상).
+     2>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\Gateway.Application\Gateway.Application.csproj" 프로젝트를 빌드했습니다(_GenerateProjectRestoreGraph 대상).
+     1>Restore:
+         X.509 인증서 체인 유효성 검사는 코드 서명에 .NET에서 선택한 기본 신뢰 저장소를 사용합니다.
+         X.509 인증서 체인 유효성 검사는 타임스탬프에 .NET에서 선택한 기본 신뢰 저장소를 사용합니다.
+     1>C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error : Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+     1>"C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx" 프로젝트를 빌드했습니다(Restore 대상). - 실패
+
+빌드하지 못했습니다.
+
+       "C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx"(Restore 대상)(1) ->
+       (Restore 대상) -> 
+         C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error : Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+       C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+       C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+       C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+       C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+       C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+       C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+       C:\Program Files\dotnet\sdk\10.0.400\NuGet.targets(198,5): error :   Value cannot be null. (Parameter 'path1') [C:\Users\patrickshim\Documents\Projects\A365\a365-custom-gateway\src\A365Gateway.slnx]
+
+    경고 0개
+    오류 1개
+
+경과 시간: 00:00:01.85
