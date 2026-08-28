@@ -17,12 +17,12 @@ This document describes the implemented model plus longer-lived target tables. I
 not, by itself, the volatile deployment checkpoint. As of **2026-08-25**, the four
 additive N:N prepare scripts have been rehearsed, applied twice, and verified in
 development:
-`deploy/sql/20260824_agent_identity_workflow_v2.sql`,
-`deploy/sql/20260825_agent_ingress_credentials.sql`,
-`deploy/sql/20260825_scoped_idempotency.sql`, and
-`deploy/sql/20260825_ingress_rate_limit_buckets.sql`. The legacy global
+`infrastructure/sql/20260824_agent_identity_workflow_v2.sql`,
+`infrastructure/sql/20260825_agent_ingress_credentials.sql`,
+`infrastructure/sql/20260825_scoped_idempotency.sql`, and
+`infrastructure/sql/20260825_ingress_rate_limit_buckets.sql`. The legacy global
 idempotency index intentionally remains; the post-canary
-`deploy/sql/20260825_scoped_idempotency_finalize.sql` is unapplied because no
+`infrastructure/sql/20260825_scoped_idempotency_finalize.sql` is unapplied because no
 replacement canary has completed successfully. Existing jobs
 default to workflow version `1` and remain legacy/non-resumable. Current local source
 creates workflow version `3`; version `2` remains the deployed/retained generation.
@@ -578,25 +578,25 @@ The repository currently has no EF Core migrations set and does not call
 `Database.MigrateAsync()`. Four pre-cutover additive/idempotent scripts are applied
 in development; one post-cutover finalize script remains pending:
 
-1. `deploy/sql/20260824_agent_identity_workflow_v2.sql` adds five Agent Registration
+1. `infrastructure/sql/20260824_agent_identity_workflow_v2.sql` adds five Agent Registration
    fields plus `ProvisioningJobs.WorkflowVersion`. Existing jobs receive the
    legacy-safe default `1`; no step rows are rewritten.
-2. `deploy/sql/20260825_agent_ingress_credentials.sql` creates
+2. `infrastructure/sql/20260825_agent_ingress_credentials.sql` creates
    `AgentIngressCredentials` with one-way salted verifier material, ownership,
    expiry, revocation, and lookup indexes. It contains no clear Gateway API key.
 
-3. **Prepare:** `deploy/sql/20260825_scoped_idempotency.sql` retains legacy rows with
+3. **Prepare:** `infrastructure/sql/20260825_scoped_idempotency.sql` retains legacy rows with
    nullable scope and retains the old globally unique key-only index while adding the
    checked registration foreign key plus a filtered unique compound index on
    `(AgentRegistrationId, Endpoint, IdempotencyKey)`. New application writes always
    provide registration ID; a matching unexpired legacy key fails closed and its
    cached response is never reused as a scoped result.
-4. `deploy/sql/20260825_ingress_rate_limit_buckets.sql` creates the SQL-backed
+4. `infrastructure/sql/20260825_ingress_rate_limit_buckets.sql` creates the SQL-backed
    global/registration/credential bucket table with a compound primary key and scope/
    count checks. It is applied in development and remains a prerequisite before an
    N:N API revision receives traffic in any other environment.
 5. **Finalize after cutover only:**
-   `deploy/sql/20260825_scoped_idempotency_finalize.sql` drops only the legacy global
+   `infrastructure/sql/20260825_scoped_idempotency_finalize.sql` drops only the legacy global
    unique key index. Run it only after the N:N API is verified and every legacy API
    revision is at zero traffic. It preserves NULL-scope legacy rows until approved
    retention.

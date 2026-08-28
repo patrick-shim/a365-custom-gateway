@@ -25,9 +25,10 @@ bootstrap/config.json
 docs
 tests
 tests/**
-deploy/*
-!deploy/sql/
-!deploy/sql/*.sql
+infrastructure/*
+!infrastructure/sql/
+!infrastructure/sql/*.sql
+operations
 Python
 TestResults
 *.md

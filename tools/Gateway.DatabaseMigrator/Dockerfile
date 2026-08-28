@@ -14,7 +14,7 @@ RUN dotnet publish "Gateway.DatabaseMigrator.csproj" -c Release -o /app/publish 
 FROM base AS final
 WORKDIR /app
 COPY --from=build /app/publish .
-COPY --from=build /src/deploy/sql /app/deploy/sql
+COPY --from=build /src/infrastructure/sql /app/infrastructure/sql
 ENV DOTNET_EnableDiagnostics=0
 USER $APP_UID
 ENTRYPOINT ["dotnet", "Gateway.DatabaseMigrator.dll"]

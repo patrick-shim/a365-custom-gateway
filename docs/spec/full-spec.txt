@@ -248,9 +248,15 @@ tests/
   Gateway.SecurityTests/
   Gateway.EndToEndTests/
 
-deploy/
+infrastructure/
   bicep/
-  scripts/
+  sql/
+
+operations/
+  deployment, preflight, canary, and recovery scripts
+
+bootstrap/
+  clean-subscription orchestration and state
 
 docs/
   architecture/

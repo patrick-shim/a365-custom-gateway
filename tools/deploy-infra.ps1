@@ -6,14 +6,14 @@
 
 .DESCRIPTION
     A wrapper script that ensures the target Azure resource group exists and then
-    delegates to deploy/scripts/deploy.ps1 for the full Bicep infrastructure deployment.
+    delegates to operations/deploy.ps1 for the full Bicep infrastructure deployment.
 
     The script performs the following steps:
       1. Verifies Azure CLI login via Assert-AzLogin.
       2. Sets the active Azure subscription.
       3. Creates the resource group if it does not already exist (idempotent).
       4. Validates that all required environment variables are set.
-      5. Forwards to deploy/scripts/deploy.ps1 with the provided parameters.
+      5. Forwards to operations/deploy.ps1 with the provided parameters.
       6. Captures and displays key deployment outputs (ACR, SQL, API FQDN, Key Vault).
 
     All helpers (Assert-AzLogin, Invoke-AzCommand, Get-DeploymentOutputs, etc.)
@@ -147,7 +147,7 @@ try {
     # Step 5: Forward to deploy.ps1
     # ------------------------------------------------------------------
     Write-StepHeader 'Step 5: Run Infrastructure Deployment'
-    $deployScript = Join-Path $RepoRoot 'deploy' 'scripts' 'deploy.ps1'
+    $deployScript = Join-Path $RepoRoot 'operations' 'deploy.ps1'
 
     if (-not (Test-Path $deployScript)) {
         throw "Deploy script not found: $deployScript"

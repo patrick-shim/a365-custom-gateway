@@ -65,7 +65,7 @@ var scripts = phase switch
     _ => Array.Empty<string>()
 };
 
-var scriptDirectory = Path.Combine(repositoryRoot, "deploy", "sql");
+var scriptDirectory = Path.Combine(repositoryRoot, "infrastructure", "sql");
 var scriptEvidence = scripts.Select(name =>
 {
     var path = Path.Combine(scriptDirectory, name);
@@ -439,11 +439,11 @@ static string ResolveRepositoryRoot(string? explicitRoot)
         string.IsNullOrWhiteSpace(explicitRoot) ? Directory.GetCurrentDirectory() : explicitRoot);
     while (current is not null)
     {
-        if (Directory.Exists(Path.Combine(current.FullName, "deploy", "sql")))
+        if (Directory.Exists(Path.Combine(current.FullName, "infrastructure", "sql")))
             return current.FullName;
         current = current.Parent;
     }
-    throw new DirectoryNotFoundException("Could not resolve the repository root containing deploy/sql.");
+    throw new DirectoryNotFoundException("Could not resolve the repository root containing infrastructure/sql.");
 }
 
 internal sealed record ScriptEvidence(string Name, string Sha256, string Sql);

@@ -284,13 +284,13 @@ az containerapp revision deactivate \
 > an EF Core migrations set, and the deployment workflow does not currently apply
 > database migrations. Development already applied and verified the idempotent SQL
 > sequence containing
-> `deploy/sql/20260824_agent_identity_workflow_v2.sql` and
-> `deploy/sql/20260825_agent_ingress_credentials.sql`, and
-> the prepare script `deploy/sql/20260825_scoped_idempotency.sql`, followed by
-> `deploy/sql/20260825_ingress_rate_limit_buckets.sql`. Do not rerun those scripts
+> `infrastructure/sql/20260824_agent_identity_workflow_v2.sql` and
+> `infrastructure/sql/20260825_agent_ingress_credentials.sql`, and
+> the prepare script `infrastructure/sql/20260825_scoped_idempotency.sql`, followed by
+> `infrastructure/sql/20260825_ingress_rate_limit_buckets.sql`. Do not rerun those scripts
 > merely to refresh evidence. Apply the same reviewed prepare sequence before a new
 > environment receives the N:N runtime. The separate
-> `deploy/sql/20260825_scoped_idempotency_finalize.sql` was designed as a post-canary
+> `infrastructure/sql/20260825_scoped_idempotency_finalize.sql` was designed as a post-canary
 > phase for this development rollout. The continuous workflow-v3 demo has since
 > reached `Active` and passed data-plane/downstream evidence, but finalize remains
 > intentionally unapplied until a separate schema/rollback review authorizes it. The
@@ -491,25 +491,25 @@ sqlcmd `
   -S "tcp:{sqlServerName}.database.windows.net,1433" `
   -d "{databaseName}" `
   -G `
-  -i "deploy/sql/20260824_agent_identity_workflow_v2.sql"
+  -i "infrastructure/sql/20260824_agent_identity_workflow_v2.sql"
 
 sqlcmd `
   -S "tcp:{sqlServerName}.database.windows.net,1433" `
   -d "{databaseName}" `
   -G `
-  -i "deploy/sql/20260825_agent_ingress_credentials.sql"
+  -i "infrastructure/sql/20260825_agent_ingress_credentials.sql"
 
 sqlcmd `
   -S "tcp:{sqlServerName}.database.windows.net,1433" `
   -d "{databaseName}" `
   -G `
-  -i "deploy/sql/20260825_scoped_idempotency.sql"
+  -i "infrastructure/sql/20260825_scoped_idempotency.sql"
 
 sqlcmd `
   -S "tcp:{sqlServerName}.database.windows.net,1433" `
   -d "{databaseName}" `
   -G `
-  -i "deploy/sql/20260825_ingress_rate_limit_buckets.sql"
+  -i "infrastructure/sql/20260825_ingress_rate_limit_buckets.sql"
 ```
 
 Never enable code that expects a schema delta until every corresponding post-change
@@ -544,7 +544,7 @@ sqlcmd `
   -S "tcp:{sqlServerName}.database.windows.net,1433" `
   -d "{databaseName}" `
   -G `
-  -i "deploy/sql/20260825_scoped_idempotency_finalize.sql"
+  -i "infrastructure/sql/20260825_scoped_idempotency_finalize.sql"
 ```
 
 Verify only the old global key-only index was removed; the filtered compound index,

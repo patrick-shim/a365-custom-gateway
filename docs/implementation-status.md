@@ -222,6 +222,15 @@ staging/production remain closed because Microsoft's beta create API is unsuppor
 for production. Purview policy read-back is not a synthetic verdict, so adapter
 activation is a separate explicit acknowledgement in configuration.
 
+The repository layout now separates lifecycle concerns instead of overloading the
+former `deploy/` directory. `bootstrap/` owns day-zero orchestration and resumable
+state, `infrastructure/bicep` and `infrastructure/sql` own declarative assets,
+`operations/` owns reviewed existing-environment deployment/preflight/canary
+scripts, and `tools/` owns shared utilities. The old `deploy/` tree no longer
+exists. Bootstrap modules, workflows, the database migrator, architecture tests,
+runbooks, and paired Claude/Codex deployment instructions all reference the new
+locations. This was a source-only relocation; no Azure or database state changed.
+
 Source validation currently includes PowerShell parsing, all three new Bicep
 templates, a zero-warning/error solution/DatabaseMigrator build, a successful
 non-mutating `Plan`, the bootstrap architecture regression, and the full 1,102-test
@@ -256,8 +265,8 @@ architecture regression test covers the operation-ID binding. Focused architectu
 105/105 and PowerShell parser 19/19 pass after that fix; the complete 1,086/1,086
 test-project gate and zero-warning/error Release build also pass.
 
-The 2026-08-29 repository synchronization verified **52** Markdown files and all
-**43** repository-local Markdown links with no broken targets. All **8** current
+The 2026-08-29 repository synchronization verified **54** Markdown files and all
+**50** repository-local Markdown links with no broken targets. All **8** current
 non-evidence JSON configuration files parse. The **15** Claude/Codex agent role
 names match, and the three shared workstream skills are byte-identical across
 `.claude/skills` and `.agents/skills`. The synchronization also removed the unused

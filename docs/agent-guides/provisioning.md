@@ -363,7 +363,7 @@ retention, and incident reviews pass.
 | API builder | delegated Registry endpoint/OBO under `src/Gateway.Api`, `Gateway.Application`, shared contracts |
 | Admin UI builder | operation required-action UX and typed client |
 | Test writer | provisioning-focused files under `tests/` |
-| Deployer | provisioning-related `deploy/` and assigned runbooks |
+| Deployer | provisioning-related `infrastructure/`, `operations/`, workflows, and assigned runbooks |
 | Documentation validator | Microsoft validation matrix and citations |
 | Security reviewer | read-only identity, permission, redaction, recovery review |
 

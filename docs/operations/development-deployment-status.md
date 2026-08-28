@@ -48,6 +48,17 @@ log bounded safe metadata without dependency bodies or raw exception messages. T
 Admin UI adds accessible focus/skip behavior, clearer navigation and result states,
 an explicit registration step navigator, and actionable admission guidance.
 
+A subsequent source-only relocational refactor removed the ambiguous `deploy/`
+tree: declarative Bicep and SQL now live under `infrastructure/`, while reviewed
+existing-environment deployment, preflight, canary, and recovery scripts live under
+`operations/`. `bootstrap/` remains the sole clean-subscription orchestration entry
+point. All workflows, bootstrap modules, migrator paths, architecture tests,
+runbooks, and Claude/Codex deployment instructions were synchronized. Validation
+remains zero-warning/error with **1,102/1,102** tests, PowerShell **25/25**, Bicep
+templates **22/22**, parameters **5/5**, and `dotnet format` clean. Documentation is
+now **54** Markdown files and **50** repository-local links with zero broken targets.
+No live resource, revision, queue, registration, policy, or SQL state changed.
+
 An authenticated visual browser pass was not available in this local checkpoint:
 the in-app browser had no signed-in tenant session, and the local UI correctly
 refused startup without its required Gateway API URL/scopes. UI behavior is covered

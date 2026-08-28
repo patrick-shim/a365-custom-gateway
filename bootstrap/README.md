@@ -112,8 +112,10 @@ as live proof.
   functions.
 - `infra/` — subscription/foundation and SQL-private-endpoint Bicep.
 
-The bootstrap composes the reviewed templates and scripts under `deploy/` and
-`tools/`; it does not replace the upgrade, incident, or canary runbooks.
+The bootstrap composes declarative assets under [`../infrastructure/`](../infrastructure/README.md),
+operational scripts under [`../operations/`](../operations/README.md), and shared
+utilities under `../tools/`. It does not replace the upgrade, incident, or canary
+runbooks.
 
 ## Official capability references
 

@@ -86,7 +86,7 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2023-11-01' = {
   }
 }
 
-module containerRegistry '../../deploy/bicep/modules/container-registry.bicep' = {
+module containerRegistry '../../infrastructure/bicep/modules/container-registry.bicep' = {
   name: 'bootstrap-container-registry'
   params: {
     registryName: 'acr${replace(suffix, '-', '')}${take(uniqueSuffix, 6)}'
@@ -98,7 +98,7 @@ module containerRegistry '../../deploy/bicep/modules/container-registry.bicep' =
   }
 }
 
-module containerAppsEnvironment '../../deploy/bicep/modules/container-apps-environment.bicep' = {
+module containerAppsEnvironment '../../infrastructure/bicep/modules/container-apps-environment.bicep' = {
   name: 'bootstrap-container-apps-environment'
   params: {
     environmentName: 'cae-${suffix}-vnet'

@@ -95,7 +95,7 @@ function Test-GatewayBootstrapDeployment {
         '-RequireDeployedConfigurationMatch'
     )
     if ($enablePreview) { $preflightArguments += @('-DirectRegistryPreviewEnabled', '-DelegatedRegistryEnabled', '-RequireExecutionReady') }
-    & (Join-Path $root 'deploy/scripts/test-provisioning-prerequisites.ps1') @preflightArguments
+    & (Join-Path $root 'operations/test-provisioning-prerequisites.ps1') @preflightArguments
     if ($LASTEXITCODE -ne 0) { throw 'Read-only provisioning preflight failed.' }
 
     $apiHealth = Wait-HttpsHealth -Url "https://$($Runtime.apiFqdn)/health/checks"

@@ -292,7 +292,7 @@ az containerapp update \
 ```
 
 For the fixed development controller, prefer
-`deploy/scripts/invoke-development-canary.ps1 -Action Deactivate` because it closes
+`operations/invoke-development-canary.ps1 -Action Deactivate` because it closes
 registration and delegated-completion windows before verifying the worker inert.
 `OpenAdmission` has both an API-enforced
 crash deadline and a controller `finally` close: its operator window is 30--300

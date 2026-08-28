@@ -76,10 +76,10 @@ try {
             'bootstrap/infra/subscription.bicep',
             'bootstrap/infra/foundation.bicep',
             'bootstrap/infra/sql-private-endpoint.bicep',
-            'deploy/bicep/main.bicep',
-            'deploy/bicep/admin-ui.bicep',
+            'infrastructure/bicep/main.bicep',
+            'infrastructure/bicep/admin-ui.bicep',
             'tools/configure-workflow-v3-entra.ps1',
-            'deploy/scripts/test-provisioning-prerequisites.ps1'
+            'operations/test-provisioning-prerequisites.ps1'
         )
         foreach ($path in $required) { if (-not (Test-Path (Join-Path $root $path))) { throw "Required file is missing: $path" } }
         if (Get-Command az -ErrorAction SilentlyContinue) {

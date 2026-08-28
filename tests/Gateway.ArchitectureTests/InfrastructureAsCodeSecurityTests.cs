@@ -16,7 +16,7 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void ServiceBus_Should_DisableLocalAuthentication()
     {
-        var source = ReadRepositoryFile("deploy", "bicep", "modules", "service-bus.bicep");
+        var source = ReadRepositoryFile("infrastructure", "bicep", "modules", "service-bus.bicep");
 
         source.Should().Contain("disableLocalAuth: true");
         source.Should().NotContain("disableLocalAuth: false");
@@ -25,7 +25,7 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void Storage_Should_DisableSharedKeyAuthentication()
     {
-        var source = ReadRepositoryFile("deploy", "bicep", "modules", "storage-account.bicep");
+        var source = ReadRepositoryFile("infrastructure", "bicep", "modules", "storage-account.bicep");
 
         source.Should().Contain("allowSharedKeyAccess: false");
         source.Should().NotContain("allowSharedKeyAccess: true");
@@ -35,11 +35,11 @@ public class InfrastructureAsCodeSecurityTests
     public void Storage_Should_UsePrivateBlobNetworkingAndDenyPublicAccess()
     {
         var storage = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "storage-account.bicep");
+            "infrastructure", "bicep", "modules", "storage-account.bicep");
         var privateEndpoint = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "storage-private-endpoint.bicep");
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
-        var deployScript = ReadRepositoryFile("deploy", "scripts", "deploy.ps1");
+            "infrastructure", "bicep", "modules", "storage-private-endpoint.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
+        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
 
         storage.Should().Contain("publicNetworkAccess: 'Disabled'");
         storage.Should().Contain("defaultAction: 'Deny'");
@@ -63,10 +63,10 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void ApiDeployment_Should_PreserveExistingSecretsByDefault()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var apiModule = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "container-app-api.bicep");
-        var deployScript = ReadRepositoryFile("deploy", "scripts", "deploy.ps1");
+            "infrastructure", "bicep", "modules", "container-app-api.bicep");
+        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
 
         main.Should().Contain("param preserveExistingApiSecrets bool = true");
         main.Should().Contain("existingApiContainerApp.listSecrets().value");
@@ -85,9 +85,9 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void ApiDeployment_Should_KeepAtLeastOneReplica()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var development = ReadRepositoryFile(
-            "deploy", "bicep", "parameters", "dev.bicepparam");
+            "infrastructure", "bicep", "parameters", "dev.bicepparam");
 
         main.Should().MatchRegex(@"@minValue\(1\)\s+param apiMinReplicas int = 1");
         development.Should().Contain("param apiMinReplicas = 1");
@@ -96,10 +96,10 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void ProvisioningFailureAlert_Should_TargetHistoricalAndNewWorkers()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var alerts = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "monitoring-alerts.bicep");
-        var deployScript = ReadRepositoryFile("deploy", "scripts", "deploy.ps1");
+            "infrastructure", "bicep", "modules", "monitoring-alerts.bicep");
+        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
 
         main.Should().Contain(
             "historicalWorkerContainerAppName: historicalWorkerContainerAppName");
@@ -117,11 +117,11 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void Agent365Observability_Should_Not_ConfigureSharedWorkerExporterIdentity()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var worker = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "container-app-worker.bicep");
+            "infrastructure", "bicep", "modules", "container-app-worker.bicep");
         var preflight = ReadRepositoryFile(
-            "deploy", "scripts", "test-provisioning-prerequisites.ps1");
+            "operations", "test-provisioning-prerequisites.ps1");
 
         main.Should().NotContain("agent365ObservabilityExporterClientId");
         worker.Should().NotContain("Agent365__ObservabilityExporterClientId");
@@ -133,7 +133,7 @@ public class InfrastructureAsCodeSecurityTests
     public void AgentIdentityWorkflowV2Migration_Should_BeAdditiveAndPreserveLegacyJobs()
     {
         var migration = ReadRepositoryFile(
-            "deploy", "sql", "20260824_agent_identity_workflow_v2.sql");
+            "infrastructure", "sql", "20260824_agent_identity_workflow_v2.sql");
 
         migration.Should().Contain("COL_LENGTH");
         migration.Should().Contain("[BlueprintSelectionMode]");
@@ -152,7 +152,7 @@ public class InfrastructureAsCodeSecurityTests
     public void AgentIngressCredentialMigration_Should_StoreOnlyHashMaterial()
     {
         var migration = ReadRepositoryFile(
-            "deploy", "sql", "20260825_agent_ingress_credentials.sql");
+            "infrastructure", "sql", "20260825_agent_ingress_credentials.sql");
 
         migration.Should().Contain("[AgentIngressCredentials]");
         migration.Should().Contain("[SecretSalt] varbinary(64) NOT NULL");
@@ -167,9 +167,9 @@ public class InfrastructureAsCodeSecurityTests
     public void ScopedIdempotencyMigration_ShouldRetainLegacyRowsAndFilterThemFromUniqueness()
     {
         var prepareMigration = ReadRepositoryFile(
-            "deploy", "sql", "20260825_scoped_idempotency.sql");
+            "infrastructure", "sql", "20260825_scoped_idempotency.sql");
         var finalizeMigration = ReadRepositoryFile(
-            "deploy", "sql", "20260825_scoped_idempotency_finalize.sql");
+            "infrastructure", "sql", "20260825_scoped_idempotency_finalize.sql");
 
         prepareMigration.Should().Contain("[AgentRegistrationId] uniqueidentifier NULL");
         prepareMigration.Should().Contain(
@@ -191,7 +191,7 @@ public class InfrastructureAsCodeSecurityTests
     public void IngressRateLimitMigration_ShouldProvideOneAtomicBucketPerScope()
     {
         var migration = ReadRepositoryFile(
-            "deploy", "sql", "20260825_ingress_rate_limit_buckets.sql");
+            "infrastructure", "sql", "20260825_ingress_rate_limit_buckets.sql");
         var limiter = ReadRepositoryFile(
             "src", "Gateway.Infrastructure", "Services", "SqlIngressRateLimiter.cs");
         var program = ReadRepositoryFile("src", "Gateway.Api", "Program.cs");
@@ -223,12 +223,12 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void ProvisioningWorker_Should_PinItsManagedIdentityBeforeActivation()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var worker = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "container-app-worker.bicep");
-        var deployScript = ReadRepositoryFile("deploy", "scripts", "deploy.ps1");
+            "infrastructure", "bicep", "modules", "container-app-worker.bicep");
+        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
         var preflight = ReadRepositoryFile(
-            "deploy", "scripts", "test-provisioning-prerequisites.ps1");
+            "operations", "test-provisioning-prerequisites.ps1");
 
         main.Should().Contain("agent365ProvisioningManagedIdentityPrincipalId");
         main.Should().Contain("!empty(agent365ProvisioningManagedIdentityPrincipalId)");
@@ -243,9 +243,9 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void DevelopmentProvisioning_ShouldSupportContinuousDevWhileRemainingClosedByDefaultElsewhere()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var devParameters = ReadRepositoryFile(
-            "deploy", "bicep", "parameters", "dev.bicepparam");
+            "infrastructure", "bicep", "parameters", "dev.bicepparam");
 
         main.Should().Contain("param workerProcessingEnabled bool = false");
         main.Should().Contain("param provisioningExecutionEnabled bool = false");
@@ -277,9 +277,9 @@ public class InfrastructureAsCodeSecurityTests
     public void DevelopmentCanaryController_ShouldBeWorkerFirstBoundedAndFailClosed()
     {
         var script = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
         var preflight = ReadRepositoryFile(
-            "deploy", "scripts", "test-provisioning-prerequisites.ps1");
+            "operations", "test-provisioning-prerequisites.ps1");
 
         script.Should().Contain("'Status', 'Arm', 'OpenAdmission', 'OpenDelegatedCompletion', 'Deactivate'");
         script.Should().Contain("$ApiContainerAppName = 'ca-gateway-api-dev'");
@@ -427,7 +427,7 @@ public class InfrastructureAsCodeSecurityTests
     public void DevelopmentCanaryController_ShouldSeparatePrepareProvenanceFromFreshLiveState()
     {
         var script = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
         var timestampValidation = ReadPowerShellFunction(
             script,
             "Assert-EvidenceTimestampValid",
@@ -474,7 +474,7 @@ public class InfrastructureAsCodeSecurityTests
     public void DevelopmentCanaryController_ShouldRequireExactReadOnlyLiveAndRecoveryEvidence()
     {
         var script = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
         var databaseEvidence = ReadPowerShellFunction(
             script,
             "Assert-DatabaseEvidence",
@@ -540,7 +540,7 @@ public class InfrastructureAsCodeSecurityTests
     public void DevelopmentCanaryController_ShouldEnforceDurableApiAdmissionExpiry()
     {
         var script = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
 
         script.Should().Contain(
             "$AdmissionExpirySettingName = 'Provisioning__AdmissionExpiresAtUtc'");
@@ -668,7 +668,7 @@ public class InfrastructureAsCodeSecurityTests
     public void DevelopmentCanaryController_ShouldPreserveAzureJsonDateStringsAcrossPowerShellVersions()
     {
         var script = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
         var elementConverter = ReadPowerShellFunction(
             script,
             "ConvertFrom-JsonElementPreservingStrings",
@@ -711,7 +711,7 @@ public class InfrastructureAsCodeSecurityTests
     public void DevelopmentCanaryController_ShouldStrictlyValidateRetainedFailureEvidence()
     {
         var script = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
         var booleanReader = ReadPowerShellFunction(
             script,
             "Get-RequiredEvidenceBoolean",
@@ -822,7 +822,7 @@ public class InfrastructureAsCodeSecurityTests
     public void DevelopmentCanaryController_ShouldSourcePinNormalizedRegistryAmbiguityEvidence()
     {
         var script = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
         var evidence = ReadRepositoryFile(
             "docs", "operations", "evidence", "canary-registry-failure-20260826.json");
         var digestAssignment = Regex.Match(
@@ -853,7 +853,7 @@ public class InfrastructureAsCodeSecurityTests
     public void DevelopmentCanaryController_ShouldReadEvidenceTimestampsFromRawJson()
     {
         var script = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
         var rawJsonStringReader = ReadPowerShellFunction(
             script, "Get-RequiredRawJsonString", "Get-RequiredEvidenceValue");
         var evidenceCheck = ReadPowerShellFunction(
@@ -908,7 +908,7 @@ public class InfrastructureAsCodeSecurityTests
     public void DevelopmentCanaryController_GraphEvidencePattern_ShouldRejectNonCanonicalRequests()
     {
         var script = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
         var assignment = Regex.Match(
             script,
             @"(?m)^\s*\$canonicalGraphRequestPattern\s*=\s*\r?\n\s*'(?<pattern>[^'\r\n]+)'\s*$",
@@ -944,7 +944,7 @@ public class InfrastructureAsCodeSecurityTests
     public void DevelopmentCanaryController_ShouldNeverConsumeOrDisposeQueueMessages()
     {
         var script = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
         var queueRuntime = ReadPowerShellFunction(
             script, "Get-QueueRuntime", "Assert-QueueBaseline");
 
@@ -975,9 +975,9 @@ public class InfrastructureAsCodeSecurityTests
     public void DevelopmentCanaryController_ShouldPinApiManagerApplicationsOnEveryRevision()
     {
         var script = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
         var preflight = ReadRepositoryFile(
-            "deploy", "scripts", "test-provisioning-prerequisites.ps1");
+            "operations", "test-provisioning-prerequisites.ps1");
 
         var setApiStart = script.IndexOf(
             "function Set-ApiAdmission", StringComparison.Ordinal);
@@ -1017,16 +1017,16 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void WorkflowV3_ShouldUseANewQueueAndPreserveHistoricalIsolation()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var roleAssignments = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "role-assignments.bicep");
+            "infrastructure", "bicep", "modules", "role-assignments.bicep");
         var api = ReadRepositoryFile(
             "src", "Gateway.Infrastructure", "ServiceBus", "ServiceBusOptions.cs");
         var worker = ReadRepositoryFile(
             "src", "Gateway.Provisioning.Worker", "ProvisioningWorkerOptions.cs");
-        var deployScript = ReadRepositoryFile("deploy", "scripts", "deploy.ps1");
+        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
         var preflight = ReadRepositoryFile(
-            "deploy", "scripts", "test-provisioning-prerequisites.ps1");
+            "operations", "test-provisioning-prerequisites.ps1");
 
         main.Should().Contain("param serviceBusQueueName string = 'gateway-provisioning-v3'");
         main.Should().Contain("serviceBusQueueName: serviceBus.outputs.queueName");
@@ -1045,11 +1045,11 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void WorkflowV3_ShouldDefaultLegacyWorkerCredentialVaultAccessOff()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var roles = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "role-assignments.bicep");
+            "infrastructure", "bicep", "modules", "role-assignments.bicep");
         var bootstrap = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "role-assignments-worker-bootstrap.bicep");
+            "infrastructure", "bicep", "modules", "role-assignments-worker-bootstrap.bicep");
 
         main.Should().Contain(
             "param enableLegacyWorkerCredentialKeyVaultSecretsOfficer bool = false");
@@ -1068,13 +1068,13 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void WorkflowV3_ApiActions_ShouldBeIndependentExactBoundWindows()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var api = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "container-app-api.bicep");
+            "infrastructure", "bicep", "modules", "container-app-api.bicep");
         var controller = ReadRepositoryFile(
-            "deploy", "scripts", "invoke-development-canary.ps1");
+            "operations", "invoke-development-canary.ps1");
         var preflight = ReadRepositoryFile(
-            "deploy", "scripts", "test-provisioning-prerequisites.ps1");
+            "operations", "test-provisioning-prerequisites.ps1");
 
         main.Should().Contain("effectiveApiProvisioningAdmissionEnabled");
         main.Should().Contain("effectiveApiDelegatedRegistryActionEnabled");
@@ -1096,9 +1096,9 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void AgentRegistryVerification_ShouldUseApiDelegatedConsentNotWorkerApplicationRoles()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var preflight = ReadRepositoryFile(
-            "deploy", "scripts", "test-provisioning-prerequisites.ps1");
+            "operations", "test-provisioning-prerequisites.ps1");
 
         main.Should().Contain("'AgentRegistration.Read.All'");
         main.Should().Contain("'AgentRegistration.ReadWrite.All'");
@@ -1132,12 +1132,12 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void DelegatedRegistryDeployment_ShouldRequireExactManagedIdentityOboFederation()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var api = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "container-app-api.bicep");
-        var deployScript = ReadRepositoryFile("deploy", "scripts", "deploy.ps1");
+            "infrastructure", "bicep", "modules", "container-app-api.bicep");
+        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
         var preflight = ReadRepositoryFile(
-            "deploy", "scripts", "test-provisioning-prerequisites.ps1");
+            "operations", "test-provisioning-prerequisites.ps1");
 
         main.Should().Contain("param agent365DelegatedRegistryEnabled bool = false");
         main.Should().Contain("effectiveDelegatedRegistryEnabled");
@@ -1206,9 +1206,9 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void BlueprintCatalog_Should_DeclareAndPreflightLeastPrivilegeApiPermission()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var preflight = ReadRepositoryFile(
-            "deploy", "scripts", "test-provisioning-prerequisites.ps1");
+            "operations", "test-provisioning-prerequisites.ps1");
 
         main.Should().Contain("requiredApiGraphApplicationPermissions");
         main.Should().Contain("'AgentIdentityBlueprint.Read.All'");
@@ -1219,11 +1219,11 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void BlueprintCatalog_ShouldReceiveTheSameReviewedManagerApplicationsAsTheWorker()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var api = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "container-app-api.bicep");
+            "infrastructure", "bicep", "modules", "container-app-api.bicep");
         var worker = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "container-app-worker.bicep");
+            "infrastructure", "bicep", "modules", "container-app-worker.bicep");
 
         main.Should().Contain(
             "agent365ManagerApplicationIds: agent365ManagerApplicationIds");
@@ -1241,7 +1241,7 @@ public class InfrastructureAsCodeSecurityTests
     public void ApiProbes_ShouldSeparateProcessLivenessFromDatabaseReadiness()
     {
         var api = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "container-app-api.bicep");
+            "infrastructure", "bicep", "modules", "container-app-api.bicep");
 
         api.Should().Contain("type: 'Liveness'");
         api.Should().Contain("type: 'Readiness'");
@@ -1254,9 +1254,9 @@ public class InfrastructureAsCodeSecurityTests
     [Fact]
     public void PurviewDeployment_ShouldDefaultFailClosedUntilTenantPrerequisitesAreVerified()
     {
-        var main = ReadRepositoryFile("deploy", "bicep", "main.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var api = ReadRepositoryFile(
-            "deploy", "bicep", "modules", "container-app-api.bicep");
+            "infrastructure", "bicep", "modules", "container-app-api.bicep");
 
         main.Should().Contain("param purviewEnabled bool = false");
         api.Should().Contain("param purviewEnabled bool = false");
@@ -1340,7 +1340,8 @@ public class InfrastructureAsCodeSecurityTests
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null)
         {
-            if (Directory.Exists(Path.Combine(directory.FullName, "deploy")) &&
+            if (Directory.Exists(Path.Combine(directory.FullName, "infrastructure")) &&
+                Directory.Exists(Path.Combine(directory.FullName, "operations")) &&
                 Directory.Exists(Path.Combine(directory.FullName, "src")))
             {
                 return directory.FullName;

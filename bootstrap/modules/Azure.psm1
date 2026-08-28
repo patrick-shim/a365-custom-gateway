@@ -200,7 +200,7 @@ function Deploy-GatewayCore {
         sqlSkuName = [string]$Config.sql.skuName
         sqlSkuTier = [string]$Config.sql.skuTier
     }
-    $deployment = Invoke-ArmDeploymentWithSecureParameters -ResourceGroup ([string]$Config.resourceGroupName) -Name $name -TemplateFile (Join-Path $root 'deploy/bicep/main.bicep') -Parameters $parameters
+    $deployment = Invoke-ArmDeploymentWithSecureParameters -ResourceGroup ([string]$Config.resourceGroupName) -Name $name -TemplateFile (Join-Path $root 'infrastructure/bicep/main.bicep') -Parameters $parameters
     $outputs = $deployment.properties.outputs
     return [ordered]@{
         deploymentName = $name
@@ -284,7 +284,7 @@ function Deploy-GatewayAdminUi {
         keyVaultPrivateEndpointSubnetId = [string]$Foundation.privateEndpointSubnetId
         keyVaultPrivateDnsVirtualNetworkId = [string]$Foundation.virtualNetworkId
     }
-    $deployment = Invoke-ArmDeploymentWithSecureParameters -ResourceGroup ([string]$Config.resourceGroupName) -Name "a365gw-bootstrap-admin-$($Config.environment)" -TemplateFile (Join-Path $root 'deploy/bicep/admin-ui.bicep') -Parameters $parameters
+    $deployment = Invoke-ArmDeploymentWithSecureParameters -ResourceGroup ([string]$Config.resourceGroupName) -Name "a365gw-bootstrap-admin-$($Config.environment)" -TemplateFile (Join-Path $root 'infrastructure/bicep/admin-ui.bicep') -Parameters $parameters
     $outputs = $deployment.properties.outputs
     return [ordered]@{
         adminUiFqdn = [string]$outputs.adminUiFqdn.value

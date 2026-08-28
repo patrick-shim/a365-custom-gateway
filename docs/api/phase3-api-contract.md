@@ -1308,7 +1308,7 @@ The EF InMemory provider uses a process-singleton lock/store for tests only; it 
 not a distributed production fallback. A limiter or configuration dependency failure
 returns fail-closed `503 SERVICE_UNAVAILABLE`.
 
-This code and `deploy/sql/20260825_ingress_rate_limit_buckets.sql` are deployed and
+This code and `infrastructure/sql/20260825_ingress_rate_limit_buckets.sql` are deployed and
 verified in development as part of the twice-applied prepare phase. That is not a
 production concurrency claim: prove the SQL path across multiple replicas,
 failover, timeout, cancellation, and crash conditions before production.

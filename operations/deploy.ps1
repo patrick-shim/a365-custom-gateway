@@ -170,8 +170,8 @@ if ([string]::IsNullOrWhiteSpace($HistoricalWorkerContainerAppName)) {
 # ============================================================================
 
 $ScriptDir = $PSScriptRoot
-$RepoRoot = (Resolve-Path (Join-Path $ScriptDir '..\..')).Path
-$BicepDir = Join-Path $RepoRoot 'deploy' 'bicep'
+$RepoRoot = (Resolve-Path (Join-Path $ScriptDir '..')).Path
+$BicepDir = Join-Path $RepoRoot 'infrastructure' 'bicep'
 $TemplateFile = Join-Path $BicepDir 'main.bicep'
 $ParameterFile = Join-Path $BicepDir 'parameters' "$Environment.bicepparam"
 $SetupSqlScript = Join-Path $ScriptDir 'setup-sql-user.ps1'

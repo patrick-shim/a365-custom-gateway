@@ -140,8 +140,10 @@ preserves verified completed rows and never repeats a completed Registry boundar
 | `src/Gateway.Infrastructure` | SQL, locks, idempotency, rate limits, outbox, Service Bus, and Blob storage |
 | `src/Gateway.Provisioning.Worker` | Idempotent workflow stages and data-plane relay |
 | `src/ExternalAgent.Sample` | Minimal external client for bounded ingestion verification |
-| `bootstrap` | Clean-subscription prerequisite, identity, infrastructure, build, deploy, and verify workflow |
-| `deploy` / `tools` | Reviewed update, migration, canary, and incident-support operations |
+| `bootstrap` | Clean-subscription prerequisite, identity, infrastructure, build, deploy, and verify orchestration |
+| `infrastructure` | Declarative shared Bicep templates and ordered, reviewed SQL schema phases |
+| `operations` | Existing-environment deployment, preflight, canary, and recovery scripts |
+| `tools` | Developer utilities and the database migrator used by bootstrap and operations |
 | `tests` | Unit, UI, E2E, security, runtime, integration, and architecture gates |
 
 ## Current checkpoint
