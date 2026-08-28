@@ -1,474 +1,240 @@
-# Credential Rotation Runbook
+# Credential and federation lifecycle runbook
 
-This runbook covers the credential rotation strategy for all components of the A365 Custom Gateway. It documents which credentials require rotation, which are Azure-managed, rotation procedures, and audit trail requirements.
+This runbook covers the credentials and identity relationships that actually exist
+in the A365 Gateway. Read `../../AGENTS.md`, `../../CLAUDE.md`,
+[`../implementation-status.md`](../implementation-status.md), and
+[`../agent-guides/provisioning.md`](../agent-guides/provisioning.md) before acting.
 
-A key design principle of the gateway is that managed identity is used wherever possible, eliminating the need for credential rotation in most runtime scenarios.
+Last reconciled with the working tree and development deployment: **2026-08-28**.
 
----
+## Current boundary
 
-## Prerequisites
+- Workflow v3 does **not** create one ordinary Entra app registration, client secret,
+  or certificate per external agent.
+- Each external registration receives a unique Gateway-issued API key. The clear key
+  is returned exactly once; only its ID, salt, hash, timestamps, and registration
+  ownership are stored. Normal Gateway ingress needs no external managed identity or
+  Entra credential.
+- A reusable blueprint has one deterministic FIC for the Gateway worker managed
+  identity. The worker uses `fmi_path=<child-agent-id>` for outbound Agent 365 tokens.
+  Managed-identity token material is issued by Azure; the Gateway stores only safe
+  object/client/FIC identifiers and never an assertion or token.
+- The child Agent Identity has no client secret, certificate, or FIC of its own.
+- The Gateway API completes Registry through delegated OBO using one exact
+  managed-identity federated credential on the API application; it does not use a
+  client secret or certificate. The FIC has the tenant-v2 issuer, API managed-
+  identity principal/object ID subject, and sole `api://AzureADTokenExchange`
+  audience.
+- `AgentCredentialReference` and the dedicated provisioning vault are compatibility/
+  bootstrap artifacts for workflow v3. The deployed dedicated vault is empty and is
+  not proof of runtime credential readiness.
+- Credential lifecycle uses only `GET`/`POST /api/v1/agents/{agentId}/credentials`
+  and `DELETE /api/v1/agents/{agentId}/credentials/{credentialId}`. Never invent a
+  webhook or `credentials:rotate` route.
 
-| Requirement | Details |
-|---|---|
-| **Entra role** | Application Administrator (for app registration credential rotation) |
-| **Azure role** | Key Vault Secrets Officer and Key Vault Certificates Officer on `{keyVaultName}` |
-| **Azure CLI** | v2.60+ |
-| **PowerShell** | 7.2+ (for Microsoft.Graph PowerShell SDK) |
-| **Resource group** | `{resourceGroup}` |
-| **Key Vault** | `{keyVaultName}` |
+Workflow v3 development continuous mode has two Active registrations covering
+create-new and reuse-existing blueprint paths. Their currently safe active key IDs
+are `b3abe5d0-7181-45aa-beb5-2dddba328f08` and
+`ac74e01b-a7ec-4cb6-93d7-59c0cdfb7fbb`; never recover, expose, or document a clear
+key. Bound Gateway ingress returned HTTP 202, Agent 365 OTLP accepted sanitized
+exports, and blueprint-scoped Purview Enforce produced both benign-audit and
+synthetic-block proof.
 
-### Login
+Final verification proved API revision
+`ca-gateway-api-dev--purviewguard-20260828222324`, worker revision
+`ca-gateway-worker-dev-vnet--rbacrefresh-202608282058`, and v3 queue `0/0/9`.
+Two exact-operation completion windows closed without user action. Three bounded
+workflow-v2 failures and their v2 DLQ messages are retained. The first
+failed GET-only at
+`ResolveBlueprint` without a Microsoft mutation. The second made exactly one FIC
+POST, then failed closed on delayed visibility; later GET-only reconciliation proved
+one matching reusable FIC. Neither created a child Agent ID, Agent 365 role, Registry
+record, or telemetry mapping. The third reused that FIC, created a child, assigned
+OtelWrite, then received Registry HTTP 500 without a durable ID; its outcome is
+unknown and no live child-token or ingress canary has passed.
+The clear keys were not recorded in deployment evidence and must not be recovered or
+reused. Preserve all failed historical registrations/messages, both historical-v1
+messages, the reconciled FIC, child, and role. Never retry or attach an unknown POST
+outcome. Final zero-script evidence is
+`artifacts/deployment-evidence/live-state-20260828-v3-success-final.json`. The next
+credential action is ordinary administrator lifecycle work against the Active
+registration; it does not authorize replaying a historical operation. This does not
+grant production privilege, historical-worker
+cutover, DLQ disposition, destructive credential changes, or SQL finalization before
+successful canary recovery.
 
-```bash
-az login --tenant {tenantId}
-az account set --subscription {subscriptionId}
-```
+## Non-disclosure rule
 
----
+Agents must not generate, receive, print, paste, copy, or pass a plaintext secret or
+password through a command line, shell variable, patch, chat, log, or tracked file.
+Do not rely on clearing shell history after exposure. Any separately authorized
+human-run credential operation must use an approved non-echoing vault-integrated
+procedure and record only safe metadata such as object ID, key ID, expiry, vault
+reference, actor, and correlation/change record.
 
-## Credential Inventory
+`.secrets` is authorized private runtime input only. Deployment tooling may consume
+required values through the existing non-echoing path; humans and agents must never
+render, print, log, document, copy, alter, normalize, or commit its values.
 
-### Credentials That Do NOT Require Rotation
+## Credential inventory
 
-| Component | Credential Type | Reason |
+| Relationship | Current mechanism | Rotation/lifecycle owner |
 |---|---|---|
-| Gateway API --> Azure SQL | Managed identity (system-assigned) | Azure-managed. Token lifecycle handled by the platform. No shared secret. |
-| Gateway API --> Service Bus | Managed identity (system-assigned) | Azure-managed. No connection strings stored or used. |
-| Gateway API --> Key Vault | Managed identity + RBAC | Azure-managed. Key Vault access is via RBAC role assignments, not access policies or secrets. |
-| Gateway API --> Application Insights | Managed identity + connection string | Connection string contains instrumentation key (not a secret -- used for routing only). |
-| Worker --> Azure SQL | Managed identity (system-assigned) | Same as above. |
-| Worker --> Service Bus | Managed identity (system-assigned) | Same as above. |
-| Worker --> Key Vault | Managed identity + RBAC | Same as above. |
-| Worker --> Microsoft Graph | Managed identity | Application permissions granted to the managed identity's service principal. No client secret. |
-| Worker --> Purview APIs | Managed identity | Application permissions granted to the managed identity's service principal. |
-
-### Credentials That DO Require Rotation
-
-| Component | Credential Type | Rotation Frequency | Method |
-|---|---|---|---|
-| External agent app registrations | Client secret or certificate | Certificates: annually. Secrets: 6 months (dev), 12 months (prod). | Key Vault managed rotation or manual (see Section 2) |
-| Admin UI app registration (dev) | Client secret | 6 months | Manual (see Section 3) |
-| GitHub Actions deployment | Workload identity federation | No rotation needed | OIDC -- no shared secret |
-| SQL Server admin password | Password | Annually or on-demand | Emergency procedure only (see Section 4) |
-
----
-
-## 1. Managed Identity -- No Rotation Required
-
-The gateway uses system-assigned managed identity on both Container Apps (API and Worker). Azure manages the credential lifecycle automatically:
-
-- Token issuance, refresh, and revocation are handled by the Azure platform.
-- There are no client secrets, certificates, or connection strings to rotate.
-- If a managed identity is compromised (extremely rare), disable and re-enable the system-assigned identity on the Container App.
-
-### Verify Managed Identity Configuration
-
-```bash
-# Verify system-assigned managed identity is enabled on the API Container App
-az containerapp show \
-  --name {apiContainerAppName} \
-  --resource-group {resourceGroup} \
-  --query "identity.{type:type, principalId:principalId, tenantId:tenantId}" -o table
-
-# Verify system-assigned managed identity is enabled on the Worker Container App
-az containerapp show \
-  --name {workerContainerAppName} \
-  --resource-group {resourceGroup} \
-  --query "identity.{type:type, principalId:principalId, tenantId:tenantId}" -o table
-```
-
-### Emergency: Re-create Managed Identity
-
-In the unlikely event that a managed identity is compromised:
-
-```bash
-# Disable system-assigned identity (revokes all tokens immediately)
-az containerapp identity remove \
-  --name {apiContainerAppName} \
-  --resource-group {resourceGroup} \
-  --system-assigned
-
-# Re-enable system-assigned identity (creates a new identity with a new principal)
-az containerapp identity assign \
-  --name {apiContainerAppName} \
-  --resource-group {resourceGroup} \
-  --system-assigned
-```
-
-> **Warning:** After re-creating the managed identity, you must re-grant all RBAC role assignments and Graph API permissions to the new principal. See the Entra Setup Runbook and Purview Setup Runbook.
-
----
-
-## 2. External Agent Credentials
-
-Each external agent has its own Entra app registration with either a client secret (development) or certificate (production). These are the primary credentials requiring rotation.
-
-### 2.1 Key Vault Managed Rotation (Recommended for Production)
-
-Key Vault can automate certificate rotation using rotation policies:
-
-```bash
-# Set a rotation policy on an external agent certificate
-az keyvault certificate set-attributes \
-  --vault-name {keyVaultName} \
-  --name "ext-agent-{agentName}-cert" \
-  --policy "$(cat <<'EOF'
-{
-  "issuerParameters": {
-    "name": "Self"
-  },
-  "keyProperties": {
-    "exportable": true,
-    "keySize": 2048,
-    "keyType": "RSA",
-    "reuseKey": false
-  },
-  "lifetimeActions": [
-    {
-      "action": { "actionType": "AutoRenew" },
-      "trigger": { "daysBeforeExpiry": 30 }
-    },
-    {
-      "action": { "actionType": "EmailContacts" },
-      "trigger": { "daysBeforeExpiry": 60 }
-    }
-  ],
-  "x509CertificateProperties": {
-    "validityInMonths": 12,
-    "subject": "CN=ext-agent-{agentName}"
-  }
-}
-EOF
-)"
-```
-
-> **Note:** Key Vault auto-renew creates a new certificate version. The gateway must be notified to update the app registration with the new certificate. This is handled by the Event Grid integration below.
-
-### 2.2 Event Grid Integration for Automatic Credential Update
-
-Set up an Event Grid subscription to trigger credential update when Key Vault rotates a certificate:
-
-```bash
-# Create an Event Grid subscription for certificate near-expiry events
-az eventgrid event-subscription create \
-  --name "cert-rotation-notification" \
-  --source-resource-id "/subscriptions/{subscriptionId}/resourceGroups/{resourceGroup}/providers/Microsoft.KeyVault/vaults/{keyVaultName}" \
-  --included-event-types "Microsoft.KeyVault.CertificateNearExpiry" "Microsoft.KeyVault.CertificateNewVersionCreated" \
-  --endpoint-type webhook \
-  --endpoint "https://{gatewayDomain}/api/v1/system/credential-rotation-webhook"
-```
-
-### 2.3 Manual Certificate Rotation (Zero-Downtime)
-
-For manual rotation, use an overlap window where both old and new credentials are valid:
-
-```bash
-# Step 1: Generate a new certificate in Key Vault
-az keyvault certificate create \
-  --vault-name {keyVaultName} \
-  --name "ext-agent-{agentName}-cert-v2" \
-  --policy "$(az keyvault certificate get-default-policy)" \
-  --validity 12
-
-# Step 2: Download the new certificate's public key
-az keyvault certificate download \
-  --vault-name {keyVaultName} \
-  --name "ext-agent-{agentName}-cert-v2" \
-  --file ext-agent-{agentName}-v2.pem \
-  --encoding PEM
-
-# Step 3: Add the new certificate to the app registration (append, do not replace)
-az ad app credential reset \
-  --id {externalAgentClientId} \
-  --cert @ext-agent-{agentName}-v2.pem \
-  --append
-
-# Step 4: Verify both certificates are active on the app registration
-az ad app credential list --id {externalAgentClientId} -o table
-
-# Step 5: Notify the external agent operator to switch to the new certificate
-# (provide the new certificate via a secure channel)
-
-# Step 6: After the agent operator confirms they are using the new certificate,
-# remove the old certificate
-OLD_KEY_ID=$(az ad app credential list --id {externalAgentClientId} \
-  --query "[?endDateTime < '$(date -u -d '+30 days' '+%Y-%m-%dT%H:%M:%SZ')'].keyId" -o tsv)
-
-az ad app credential delete \
-  --id {externalAgentClientId} \
-  --key-id ${OLD_KEY_ID}
-
-# Step 7: Update the gateway's credential reference
-curl -X POST "https://{gatewayDomain}/api/v1/agents/{agentId}/credentials:rotate" \
-  -H "Authorization: Bearer {adminToken}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "credentialType": "Certificate",
-    "keyVaultSecretName": "ext-agent-{agentName}-cert-v2"
-  }'
-```
-
-### 2.4 Manual Client Secret Rotation (Development Only)
-
-```bash
-# Step 1: Create a new secret (overlap -- both old and new are valid)
-NEW_SECRET=$(az ad app credential reset \
-  --id {externalAgentClientId} \
-  --display-name "Rotated $(date +%Y%m%d)" \
-  --years 1 \
-  --append \
-  --query "password" -o tsv)
-
-# Step 2: Store the new secret in Key Vault
-az keyvault secret set \
-  --vault-name {keyVaultName} \
-  --name "ext-agent-{agentName}-secret" \
-  --value "${NEW_SECRET}"
-
-# Step 3: Notify the external agent operator of the new secret
-# (via secure channel -- NOT email, NOT chat logs)
-
-# Step 4: After confirmation, remove the old secret
-OLD_KEY_ID=$(az ad app credential list --id {externalAgentClientId} \
-  --query "sort_by(@, &endDateTime)[0].keyId" -o tsv)
-
-az ad app credential delete \
-  --id {externalAgentClientId} \
-  --key-id ${OLD_KEY_ID}
-```
-
-### 2.5 Notification Workflow Before Expiration
-
-Set up proactive notifications before credentials expire:
-
-```bash
-# List credentials expiring within 30 days for all external agents
-az ad app credential list --id {externalAgentClientId} \
-  --query "[?endDateTime < '$(date -u -d '+30 days' '+%Y-%m-%dT%H:%M:%SZ')'].{keyId:keyId, type:type, endDateTime:endDateTime}" -o table
-```
-
-The gateway should run a scheduled job (via the Worker) that:
-
-1. Queries all `AgentCredentialReference` records from the database.
-2. Checks expiration dates of referenced Key Vault certificates/secrets.
-3. Sends alerts at 60 days, 30 days, and 7 days before expiration.
-4. Logs an `AuditEvent` of type `CredentialExpiringWarning`.
-
-```kusto
-// KQL: Monitor credential expiration warnings
-customEvents
-| where name == "CredentialExpiringWarning"
-| project timestamp,
-  tostring(customDimensions["agentId"]),
-  tostring(customDimensions["credentialType"]),
-  tostring(customDimensions["expirationDate"]),
-  tostring(customDimensions["daysUntilExpiry"])
-| order by timestamp desc
-```
-
----
-
-## 3. Admin UI App Registration (Development Only)
-
-The Admin UI uses OIDC interactive sign-in. In production, managed identity handles the backend-to-API communication. In development, a client secret is used.
-
-### 3.1 Rotate the Admin UI Client Secret
-
-```bash
-# Step 1: Create a new secret
-NEW_UI_SECRET=$(az ad app credential reset \
-  --id {adminUiClientId} \
-  --display-name "Rotated $(date +%Y%m%d)" \
-  --years 1 \
-  --append \
-  --query "password" -o tsv)
-
-# Step 2: Store in Key Vault
-az keyvault secret set \
-  --vault-name {keyVaultName} \
-  --name "adminui-client-secret" \
-  --value "${NEW_UI_SECRET}"
-
-# Step 3: Update the Container App environment variable
-az containerapp update \
-  --name {adminUiContainerAppName} \
-  --resource-group {resourceGroup} \
-  --set-env-vars "AzureAd__ClientSecret=secretref:adminui-client-secret"
-
-# Step 4: Remove the old secret from the app registration
-OLD_KEY_ID=$(az ad app credential list --id {adminUiClientId} \
-  --query "sort_by(@, &endDateTime)[0].keyId" -o tsv)
-
-az ad app credential delete \
-  --id {adminUiClientId} \
-  --key-id ${OLD_KEY_ID}
-```
-
----
-
-## 4. SQL Server Admin Password
-
-The SQL Server admin password is used only during initial deployment and emergency administrative access. At runtime, the gateway uses managed identity exclusively -- there is no runtime dependency on the SQL admin password.
-
-### 4.1 When to Rotate
-
-- After initial setup (rotate from the deployment-generated password).
-- If the password is suspected to be compromised.
-- Annually, per organizational security policy.
-
-### 4.2 Impact Assessment
-
-| Scenario | Impact |
-|---|---|
-| Runtime (gateway API and worker) | **No impact.** Managed identity authentication is unaffected by admin password changes. |
-| CI/CD deployments (EF Core migrations) | **Potential impact** if migrations use SQL auth instead of managed identity. Verify the migration connection string. |
-| Emergency manual database access | Must use the new password for SQL auth connections. |
-
-### 4.3 Rotation Procedure
-
-```bash
-# Step 1: Generate a new password (32+ characters, mixed case, numbers, symbols)
-NEW_SQL_PASSWORD=$(openssl rand -base64 32)
-
-# Step 2: Store the new password in Key Vault
-az keyvault secret set \
-  --vault-name {keyVaultName} \
-  --name "sql-admin-password" \
-  --value "${NEW_SQL_PASSWORD}"
-
-# Step 3: Update the SQL Server admin password
-az sql server update \
-  --name {sqlServerName} \
-  --resource-group {resourceGroup} \
-  --admin-password "${NEW_SQL_PASSWORD}"
-
-# Step 4: Verify connectivity with the new password
-az sql query \
-  --server {sqlServerName} \
-  --name {databaseName} \
-  --resource-group {resourceGroup} \
-  --query "SELECT 1 AS ConnectionTest" \
-  --admin-user {adminUsername} \
-  --admin-password "${NEW_SQL_PASSWORD}"
-
-# Step 5: Clear the password from the shell history
-history -d $(history 1 | awk '{print $1}')
-unset NEW_SQL_PASSWORD
-```
-
----
-
-## 5. Credentials Not Applicable (Managed Identity)
-
-The following components use managed identity exclusively. There are no connection strings, shared access keys, or credentials to rotate.
-
-### 5.1 Service Bus
-
-The gateway accesses Service Bus via managed identity with Azure RBAC roles:
-
-| Container App | RBAC Role | Scope |
-|---|---|---|
-| Gateway API | Azure Service Bus Data Sender | `gateway-provisioning`, `gateway-observability-export`, `gateway-reconciliation` queues |
-| Provisioning Worker | Azure Service Bus Data Receiver | All queues |
-
-```bash
-# Verify role assignments
-az role assignment list \
-  --scope "/subscriptions/{subscriptionId}/resourceGroups/{resourceGroup}/providers/Microsoft.ServiceBus/namespaces/{serviceBusNamespace}" \
-  --query "[].{principalName:principalName, roleDefinitionName:roleDefinitionName}" -o table
-```
-
-> There are no Service Bus connection strings configured anywhere in the gateway. If you find a connection string, this is a configuration error that should be corrected.
-
-### 5.2 Key Vault
-
-The gateway accesses Key Vault via managed identity with RBAC roles:
-
-| Container App | RBAC Role | Purpose |
-|---|---|---|
-| Gateway API | Key Vault Secrets User | Read agent credential references |
-| Provisioning Worker | Key Vault Secrets Officer | Read and write agent credential references |
-| Provisioning Worker | Key Vault Certificates Officer | Create and manage agent certificates |
-
-```bash
-# Verify role assignments
-az role assignment list \
-  --scope "/subscriptions/{subscriptionId}/resourceGroups/{resourceGroup}/providers/Microsoft.KeyVault/vaults/{keyVaultName}" \
-  --query "[].{principalName:principalName, roleDefinitionName:roleDefinitionName}" -o table
-```
-
----
-
-## 6. Rotation Audit Trail
-
-All credential rotation events are recorded in two places:
-
-### 6.1 Key Vault Diagnostic Logs
-
-Key Vault diagnostic settings should be configured to send audit logs to Log Analytics:
-
-```bash
-# Verify diagnostic settings
-az monitor diagnostic-settings list \
-  --resource "/subscriptions/{subscriptionId}/resourceGroups/{resourceGroup}/providers/Microsoft.KeyVault/vaults/{keyVaultName}" \
-  --query "[].{name:name, logs:logs[].{category:category, enabled:enabled}}" -o json
-```
-
-```kusto
-// KQL: Query Key Vault audit logs for rotation events
-AzureDiagnostics
-| where ResourceProvider == "MICROSOFT.KEYVAULT"
-| where OperationName in ("SecretSet", "CertificateCreate", "SecretGet", "CertificateGet")
-| project TimeGenerated, OperationName, ResultType, CallerIPAddress, id_s
-| order by TimeGenerated desc
-| take 50
-```
-
-### 6.2 Gateway Audit Events
-
-The gateway records credential rotation in its `AuditEvents` table:
-
-```kusto
-// KQL: Query gateway audit events for credential changes
-customEvents
-| where name == "AuditEvent"
-| where customDimensions["eventType"] in (
-  "CredentialRotated",
-  "CredentialCreated",
-  "CredentialDeleted",
-  "CredentialExpiringWarning"
-)
-| project timestamp,
-  tostring(customDimensions["eventType"]),
-  tostring(customDimensions["agentId"]),
-  tostring(customDimensions["performedByObjectId"]),
-  tostring(customDimensions["credentialType"])
-| order by timestamp desc
-```
-
----
-
-## Rotation Schedule Summary
-
-| Credential | Rotation Frequency | Owner | Automated? |
-|---|---|---|---|
-| External agent certificates | Annually | Gateway Administrator | Yes (Key Vault rotation policy) |
-| External agent client secrets (dev) | Every 6 months | Gateway Administrator | No (manual) |
-| Admin UI client secret (dev) | Every 6 months | Gateway Administrator | No (manual) |
-| SQL admin password | Annually or on-demand | Infrastructure team | No (emergency only) |
-| GitHub Actions OIDC | Never (no shared secret) | DevOps | N/A |
-| Managed identity tokens | Automatic (Azure-managed) | Azure platform | Yes (platform) |
-| Service Bus connection strings | N/A (managed identity) | N/A | N/A |
-| Key Vault access credentials | N/A (managed identity + RBAC) | N/A | N/A |
-
----
+| Gateway API -> Azure SQL, Service Bus, Key Vault | System-assigned managed identity | Azure rotates tokens; re-establish RBAC/contained-user access if the identity is recreated |
+| Provisioning worker -> Azure SQL, Service Bus, Graph | System-assigned managed identity | Azure rotates tokens; Graph/admin consent and deferred Service Bus roles are separate explicit grants |
+| External agent -> Gateway | Unique per-registration Gateway API key; only salted verifier is stored | Gateway administrator issues a replacement, deploys/verifies it, then revokes the named old key |
+| Gateway worker -> Agent Identity Blueprint | One deterministic worker managed-identity FIC per reusable blueprint | Azure rotates tokens; worker identity recreation requires an explicit FIC and configuration lifecycle operation |
+| Gateway API -> Entra OBO confidential client | One exact managed-identity FIC on the Gateway API application; no client secret | API identity recreation requires reviewed replacement of the FIC subject plus independent delegated-consent/FIC readback before traffic |
+| Blueprint -> child Agent ID token | Agent ID exchange using `fmi_path` | Microsoft identity platform; verify Agent 365 audience, child `appid`/`azp`, and observability role without logging tokens |
+| Admin UI -> Gateway API | Microsoft Identity Web delegated downstream token | Entra token lifecycle; confidential-client material, if configured, is handled only through an approved non-echoing operator procedure |
+| GitHub Actions -> Azure | Workload identity federation | No shared deployment secret; maintain issuer/subject/audience and Azure RBAC |
+| SQL administrative access | Break-glass/operator credential or Entra administrator | Not used by the running Gateway; privileged human procedure only |
+
+## Managed-identity recreation
+
+Recreating a system-assigned identity changes its service-principal object ID and
+invalidates role assignments tied to the old principal. Treat recreation as a
+controlled identity replacement, not a routine rotation.
+
+1. Keep API registration/retry admission false and the affected worker's processing,
+   outbox relay, provisioning, and Registry execution gates off. The deployed API
+   outbox relay is a separate shared publisher and is not described as disabled by
+   this identity-maintenance boundary.
+2. Record the old resource and principal IDs without accessing any token.
+3. Recreate the identity only with explicit authorization for the affected Azure or
+   Entra resource.
+4. Re-establish only the documented Azure RBAC, SQL contained-user, and Graph
+   application roles for the new principal. Tenant admin consent is a separate
+   privileged action and is not implied by this runbook.
+5. Re-run the read-only prerequisite preflight and dependency health checks.
+6. For the provisioning worker, deploy/verify the intended workflow version inert
+   before considering activation.
+7. Reconcile every blueprint FIC by deterministic name and safe identifier. A FIC
+   bound to the previous worker principal cannot authorize the replacement
+   principal. Do not delete or replace one ad hoc: Microsoft-resource deletion is
+   unsupported, and any new trust mutation needs an explicit reviewed operation.
+8. For a Gateway API identity replacement, use the reviewed workflow-v3 Entra helper
+   to plan/apply the exact API-app FIC subject change only after ownership/collision
+   review; then independently read back issuer, new subject, sole audience, requested
+   delegated scopes, and tenant-wide consent. Never add a client-secret fallback.
+9. Record the old/new principal IDs, assignments, preflight evidence, and recovery
+   state in the development deployment checkpoint.
+
+Never disable or replace the historical worker merely because a new identity exists;
+that requires the separate cutover authorization in the shared provisioning guide.
+
+## Per-registration Gateway API-key rotation
+
+These routes are `Gateway.Administrator` control-plane operations. Non-admin UI users
+must neither load nor render credential metadata.
+
+1. `GET /api/v1/agents/{agentId}/credentials` lists only key ID, creation, expiry,
+   and revocation timestamps. It never returns a key, salt, or hash.
+2. `POST /api/v1/agents/{agentId}/credentials` creates a replacement and returns the
+   clear `apiKey` exactly once with `Cache-Control: no-store` and `Pragma: no-cache`.
+   Hand it to the external operator through the approved secure channel; dismissing
+   the UI loses it permanently.
+3. Deploy the replacement to the external agent and prove a request resolves the
+   intended registration and matching `externalAgentId`.
+4. `DELETE /api/v1/agents/{agentId}/credentials/{credentialId}` revokes only that
+   named key. Revocation is idempotent. A key owned by another agent returns
+   `404 AGENT_INGRESS_CREDENTIAL_NOT_FOUND`.
+5. The Gateway returns `409 AGENT_INGRESS_CREDENTIAL_LAST_USABLE` rather than revoke
+   the last unexpired, unrevoked key. Issue, deploy, and verify a replacement first.
+
+Issuance/revocation and their safe `GatewayCredentialIssued` or
+`GatewayCredentialRevoked` audit event commit together. Audit contains only key ID
+and timestamps. Never put a clear key, salt, hash, or token in audit, logs, URLs,
+messages, documentation, or idempotency storage.
+
+## Admin UI confidential-client material
+
+The Admin UI uses interactive Entra sign-in and delegated downstream tokens. A local
+or deployed confidential-client credential may be required by Microsoft Identity Web,
+but it is not an external-agent credential.
+
+- Inspect only the existence/version/reference of the configured value, never its
+  plaintext.
+- A human Application Administrator rotates it using an approved Entra/Key Vault
+  procedure with an overlap window and non-echoing input.
+- Update the local user-secret or Container App Key Vault reference without placing
+  the value in source, parameters, output, or shell history.
+- Verify sign-in, delegated API token acquisition, `/health`, and a read-only API
+  route before retiring the old credential.
+- Record the Entra key ID, expiry, vault secret version/reference, deployed revision,
+  and verification result—not the credential value.
+
+Agents may document or verify the reference wiring but must stop before handling the
+plaintext.
+
+## SQL administrative credential
+
+The running API and worker use Entra/managed identity, not a SQL password. A SQL
+administrator credential is break-glass/operator material only.
+
+- Rotation requires explicit privileged human authorization and a non-echoing secret
+  delivery path.
+- Do not pass the password with `az ... --admin-password`, a command-line argument,
+  environment variable, or shell variable from an agent session.
+- Verify managed-identity database access and the contained users after the human
+  rotation. Application revisions should not need a password update.
+- The additive N:N upgrade must be rehearsed on a disposable copy and applied
+  from a private-DNS-aware runner as described in
+  [`upgrade-strategy.md`](upgrade-strategy.md).
+
+## Service Bus, Key Vault, and workload federation
+
+- Current source isolates workflow v3 on `gateway-provisioning-v3`; retained v2
+  remains on `gateway-provisioning-v2` and historical v1 on
+  `gateway-provisioning`. Verify effective queue-specific RBAC before a trust change
+  and never attach generations to another queue. Do not grant
+  missing Service Bus/shared-processing roles through a rotation task.
+- Service Bus uses managed identity; any connection string in application
+  configuration is a defect to investigate without printing it.
+- The dedicated provisioning vault currently carries a bootstrap Secrets Officer
+  assignment but workflow v3 stores no per-agent secret or certificate there. Do not
+  add Certificates Officer or secret material without a separately supported flow.
+- GitHub deployment uses workload identity federation. Review issuer, subject,
+  audience, repository/environment protection, and Azure RBAC when its trust changes;
+  there is no shared secret to rotate.
+
+## Audit evidence
+
+For an authorized lifecycle operation, retain only:
+
+- change/incident identifier, actor, time, environment, and explicit authorization;
+- old/new resource and principal IDs, FIC/key IDs, expiry, and vault references where
+  applicable;
+- Azure Activity Log, Entra audit, Key Vault diagnostic, and deployment revision
+  references;
+- preflight, health, role-assignment, token-canary, and recovery results with all
+  sensitive values excluded.
+
+Do not claim a generic `CredentialRotated` event. The current development API emits
+the named safe issue/revoke events above; verify the effective revision before using
+those events as incident evidence.
+
+## Completion checklist
+
+- [ ] Correct current/deployed workflow and identity were identified
+- [ ] Execution gates remained fail closed during the change
+- [ ] Exact authorization and least-privilege roles were recorded
+- [ ] No plaintext credential, assertion, or token entered agent-visible input/output
+- [ ] Old/new safe IDs and references were recorded
+- [ ] SQL/RBAC/Graph/Gateway-FIC relationships were independently verified as applicable
+- [ ] Replacement Gateway key was deployed and proved against its bound registration before revocation
+- [ ] Old credential/trust was retired only after verified overlap and operator approval
+- [ ] `docs/implementation-status.md` and the deployment checkpoint were updated
 
 ## Troubleshooting
 
-| Issue | Cause | Resolution |
-|---|---|---|
-| External agent gets `401 Unauthorized` after rotation | Agent is still using the old credential | Verify the agent operator has updated to the new credential |
-| `403 Forbidden` from Key Vault after managed identity re-creation | RBAC role assignments point to old principal ID | Re-assign RBAC roles to the new managed identity principal |
-| Key Vault certificate auto-renewal did not update the app registration | Event Grid webhook not configured or not processing | Check Event Grid delivery status; manually update the app registration |
-| SQL admin password change causes CI/CD failure | Migration step uses SQL auth with the old password | Update the CI/CD secret/variable with the new password |
-| Key Vault audit logs not appearing | Diagnostic settings not configured | Enable Key Vault diagnostic settings with Log Analytics destination |
+| Symptom | Safe response |
+|---|---|
+| External agent receives `401` | Verify the key ID exists and the key is unexpired/unrevoked; issue a replacement because the clear secret cannot be recovered |
+| External agent receives `403 AGENT_IDENTITY_MISMATCH` | The request body names a different registration than the key. Correct the mapping; never introduce a global bypass key |
+| `403` from Azure after a managed identity was recreated | Compare RBAC assignments and SQL contained user to the new principal; do not broaden roles |
+| Worker Graph call returns `403` | Compare the exact eight-role workflow-v3 worker allowlist and consent state; Registry roles do not belong on the worker |
+| API Registry OBO returns `401`/`403` | Verify the signed-in token has `Gateway.Administrator`, valid `oid`, and `access_as_user`; read back both admin-consented delegated Registry scopes and the exact API-managed-identity FIC without printing tokens/assertions |
+| Agent ID token has the wrong audience, `appid`/`azp`, or role | Stop; do not log the token. Verify `fmi_path`, blueprint/child IDs, and only the Agent 365 observability assignment |
+| Admin UI sign-in fails after a human credential rotation | Retain overlap, verify only the configured reference/version and redirect URI, and roll back the reference if necessary |
+| A document or operator suggests a per-agent client secret/certificate | Treat it as the rejected workflow-v1 model and follow the blueprint FIC model above |

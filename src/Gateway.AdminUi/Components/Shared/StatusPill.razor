@@ -1,0 +1,26 @@
+<span class="status-pill @CssClass" aria-label="Status: @Value">
+    <span aria-hidden="true"></span>
+    @Format(Value)
+</span>
+
+@code {
+    [Parameter, EditorRequired] public string Value { get; set; } = string.Empty;
+
+    private string CssClass => Value.ToLowerInvariant() switch
+    {
+        "active" or "healthy" or "ready" or "completed" or "succeeded" => "status-positive",
+        "failed" or "unavailable" or "requiresmanualintervention" => "status-negative",
+        "disabled" or "deleted" or "cancelled" => "status-neutral",
+        "provisioning" or "running" or "pending" or "deleting" or
+            "awaitingadminapproval" or "awaitingadministratoraction" => "status-progress",
+        _ => "status-neutral"
+    };
+
+    private static string Format(string value) => value switch
+    {
+        "RequiresManualIntervention" => "Manual intervention",
+        "AwaitingAdminApproval" => "Awaiting approval",
+        "AwaitingAdministratorAction" => "Administrator action required",
+        _ => value
+    };
+}

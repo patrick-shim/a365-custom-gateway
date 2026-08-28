@@ -16,7 +16,19 @@ internal sealed class IdempotencyRecordConfiguration : IEntityTypeConfiguration<
         builder.Property(e => e.RequestBodyHash).HasMaxLength(64).IsRequired();
         builder.Property(e => e.Endpoint).HasMaxLength(256).IsRequired();
 
-        builder.HasIndex(e => e.IdempotencyKey).IsUnique();
+        builder.HasIndex(e => new
+        {
+            e.AgentRegistrationId,
+            e.Endpoint,
+            e.IdempotencyKey
+        })
+            .IsUnique()
+            .HasFilter("[AgentRegistrationId] IS NOT NULL");
         builder.HasIndex(e => e.ExpiresAtUtc);
+
+        builder.HasOne(e => e.AgentRegistration)
+            .WithMany()
+            .HasForeignKey(e => e.AgentRegistrationId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }

@@ -18,7 +18,11 @@ public record SystemConfigDto(
     int ReconciliationIntervalHours,
     int StuckTransitionTimeoutDays,
     bool UseGraphAgentRegistration,
-    bool UseCliProvisioningFallback);
+    bool UseCliProvisioningFallback,
+    bool? DefaultAgent365ObservabilityEnabled = null,
+    bool? DefaultAzureMonitorExportEnabled = null,
+    bool ProvisioningExecutionEnabled = false,
+    string? AuthorizedRegistrationExternalAgentId = null);
 
 public record UpdateFeaturesResponse(
     Guid AgentId,

@@ -19,6 +19,13 @@ param logAnalyticsSharedKey string
 @description('Enable zone redundancy for the environment.')
 param zoneRedundant bool = false
 
+@description('Resource ID of the delegated infrastructure subnet. A non-VNet Container Apps environment is not supported because SQL and Key Vault use private endpoints.')
+@minLength(1)
+param infrastructureSubnetId string
+
+@description('Create an internal-only Container Apps environment.')
+param internalEnvironment bool = false
+
 @description('Tags to apply to the resource.')
 param tags object = {}
 
@@ -32,6 +39,10 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
   tags: tags
   properties: {
     zoneRedundant: zoneRedundant
+    vnetConfiguration: {
+      infrastructureSubnetId: infrastructureSubnetId
+      internal: internalEnvironment
+    }
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
@@ -54,3 +65,6 @@ output environmentName string = containerAppsEnvironment.name
 
 @description('Default domain of the Container Apps environment.')
 output defaultDomain string = containerAppsEnvironment.properties.defaultDomain
+
+@description('Infrastructure subnet configured for private dependency access.')
+output infrastructureSubnetId string = containerAppsEnvironment.properties.vnetConfiguration.infrastructureSubnetId

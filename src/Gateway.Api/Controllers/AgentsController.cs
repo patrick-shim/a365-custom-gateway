@@ -1,5 +1,6 @@
 using Gateway.Api.Authorization;
 using Gateway.Api.Extensions;
+using Gateway.Api.Options;
 using Gateway.Application.Agents.Commands;
 using Gateway.Application.Agents.Queries;
 using Gateway.Application.Audit.Queries;
@@ -16,10 +17,14 @@ namespace Gateway.Api.Controllers;
 public class AgentsController : ControllerBase
 {
     private readonly ISender _sender;
+    private readonly ProvisioningAdmissionGate _provisioningAdmissionGate;
 
-    public AgentsController(ISender sender)
+    public AgentsController(
+        ISender sender,
+        ProvisioningAdmissionGate provisioningAdmissionGate)
     {
         _sender = sender;
+        _provisioningAdmissionGate = provisioningAdmissionGate;
     }
 
     [HttpPost]
@@ -27,10 +32,15 @@ public class AgentsController : ControllerBase
     [ProducesResponseType(typeof(RegisterAgentResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status422UnprocessableEntity)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status502BadGateway)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> RegisterAgent(
         [FromBody] RegisterAgentRequest request,
         CancellationToken cancellationToken)
     {
+        _provisioningAdmissionGate.EnsureRegistrationOpen(request.ExternalAgentId);
+
         var command = new RegisterAgentCommand(
             request.ExternalAgentId,
             request.Name,
@@ -38,9 +48,13 @@ public class AgentsController : ControllerBase
             request.OwnerObjectId,
             request.Environment,
             request.Features,
-            User.GetObjectId());
+            User.GetObjectId(),
+            request.Blueprint);
 
         var result = await _sender.Send(command, cancellationToken);
+
+        Response.Headers.CacheControl = "no-store";
+        Response.Headers.Pragma = "no-cache";
 
         return AcceptedAtAction(
             nameof(GetAgent),
@@ -84,6 +98,60 @@ public class AgentsController : ControllerBase
         return Ok(result);
     }
 
+    [HttpGet("{agentId:guid}/credentials")]
+    [Authorize(Policy = AuthorizationPolicies.AdministratorOnly)]
+    [ProducesResponseType(typeof(AgentIngressCredentialListResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> ListAgentIngressCredentials(
+        Guid agentId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new ListAgentIngressCredentialsQuery(agentId),
+            cancellationToken);
+
+        return Ok(result);
+    }
+
+    [HttpPost("{agentId:guid}/credentials")]
+    [Authorize(Policy = AuthorizationPolicies.AdministratorOnly)]
+    [ProducesResponseType(typeof(IssueAgentIngressCredentialResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> IssueAgentIngressCredential(
+        Guid agentId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new IssueAgentIngressCredentialCommand(agentId, User.GetObjectId()),
+            cancellationToken);
+
+        Response.Headers.CacheControl = "no-store";
+        Response.Headers.Pragma = "no-cache";
+
+        return StatusCode(StatusCodes.Status201Created, result);
+    }
+
+    [HttpDelete("{agentId:guid}/credentials/{credentialId:guid}")]
+    [Authorize(Policy = AuthorizationPolicies.AdministratorOnly)]
+    [ProducesResponseType(typeof(RevokeAgentIngressCredentialResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> RevokeAgentIngressCredential(
+        Guid agentId,
+        Guid credentialId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new RevokeAgentIngressCredentialCommand(
+                agentId,
+                credentialId,
+                User.GetObjectId()),
+            cancellationToken);
+
+        return Ok(result);
+    }
+
     [HttpPatch("{agentId:guid}/features")]
     [Authorize(Policy = AuthorizationPolicies.AdministratorOnly)]
     [ProducesResponseType(typeof(UpdateFeaturesResponse), StatusCodes.Status200OK)]
@@ -99,7 +167,9 @@ public class AgentsController : ControllerBase
             request.ObservabilityMode,
             request.PurviewEnabled,
             request.PurviewMode,
-            User.GetObjectId());
+            User.GetObjectId(),
+            request.Agent365ObservabilityEnabled,
+            request.AzureMonitorExportEnabled);
 
         var result = await _sender.Send(command, cancellationToken);
 
@@ -156,10 +226,13 @@ public class AgentsController : ControllerBase
     [ProducesResponseType(typeof(AsyncOperationResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> RetryProvisioning(
         Guid agentId,
         CancellationToken cancellationToken)
     {
+        _provisioningAdmissionGate.EnsureRetryOpen(agentId);
+
         var command = new RetryProvisioningCommand(agentId, User.GetObjectId());
         var result = await _sender.Send(command, cancellationToken);
 

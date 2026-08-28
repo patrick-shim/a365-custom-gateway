@@ -6,9 +6,6 @@
 @description('Resource ID of the Application Insights instance.')
 param appInsightsId string
 
-@description('Resource ID of the Log Analytics workspace.')
-param logAnalyticsWorkspaceId string
-
 @description('Name of the alert action group.')
 param actionGroupName string = 'ag-gateway-alerts'
 
@@ -18,8 +15,11 @@ param actionGroupEmail string
 @description('Name of the API Container App.')
 param apiContainerAppName string
 
-@description('Name of the Worker Container App.')
-param workerContainerAppName string
+@description('Name of the historical Worker Container App retained during a blue/green migration.')
+param historicalWorkerContainerAppName string
+
+@description('Name of the newly deployed or current target Worker Container App.')
+param targetWorkerContainerAppName string
 
 @description('Name of the Service Bus namespace.')
 param serviceBusNamespaceName string
@@ -441,7 +441,7 @@ resource provisioningFailedAlert 'Microsoft.Insights/scheduledQueryRules@2023-03
     criteria: {
       allOf: [
         {
-          query: 'traces | where cloud_RoleName == "${workerContainerAppName}" and message contains "provisioning" and message contains "Failed"'
+          query: 'traces | where (cloud_RoleName == "${historicalWorkerContainerAppName}" or cloud_RoleName == "${targetWorkerContainerAppName}") and message contains "provisioning" and message contains "Failed"'
           timeAggregation: 'Count'
           operator: 'GreaterThan'
           threshold: 0

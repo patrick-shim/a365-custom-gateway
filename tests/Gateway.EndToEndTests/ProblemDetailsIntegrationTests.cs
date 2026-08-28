@@ -69,7 +69,8 @@ public class ProblemDetailsIntegrationTests : IDisposable
             Description: null,
             OwnerObjectId: "",
             Environment: "",
-            Features: null);
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
 
         // Act
         var response = await _client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);
@@ -99,7 +100,8 @@ public class ProblemDetailsIntegrationTests : IDisposable
             Description: null,
             OwnerObjectId: "owner-oid-001",
             Environment: "Development",
-            Features: null);
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
 
         // Register first
         await _client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);

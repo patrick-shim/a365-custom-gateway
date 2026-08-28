@@ -6,5 +6,6 @@ public enum JobStatus
     Running,
     Completed,
     Failed,
-    RequiresManualIntervention
+    RequiresManualIntervention,
+    AwaitingAdministratorAction
 }

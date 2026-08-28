@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Gateway.Application.Exceptions;
+using Gateway.Contracts.Messages;
 using Gateway.Contracts.Responses;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
@@ -38,8 +39,6 @@ internal sealed class DeleteAgentHandler : IRequestHandler<DeleteAgentCommand, D
         if (agent.Status is AgentStatus.Deleting or AgentStatus.Deleted)
             throw new InvalidStateTransitionException(agent.Status.ToString(), "Delete");
 
-        agent.IsDeleted = true;
-        agent.DeletedAtUtc = DateTime.UtcNow;
         agent.Status = AgentStatus.Deleting;
         agent.UpdatedAtUtc = DateTime.UtcNow;
         agent.UpdatedByObjectId = request.CallerObjectId;
@@ -62,12 +61,11 @@ internal sealed class DeleteAgentHandler : IRequestHandler<DeleteAgentCommand, D
         {
             Id = Guid.NewGuid(),
             MessageType = "DeleteAgent",
-            Payload = JsonSerializer.Serialize(new
-            {
-                AgentId = agent.Id,
-                JobId = job.Id,
-                request.DeleteMicrosoftResources
-            }),
+            Payload = JsonSerializer.Serialize(new DeleteAgentMessage(
+                agent.Id,
+                job.Id,
+                request.DeleteMicrosoftResources,
+                CorrelationId: null)),
             Status = OutboxMessageStatus.Pending,
             RetryCount = 0,
             CreatedAtUtc = DateTime.UtcNow
@@ -78,7 +76,7 @@ internal sealed class DeleteAgentHandler : IRequestHandler<DeleteAgentCommand, D
         {
             Id = Guid.NewGuid(),
             AgentRegistrationId = agent.Id,
-            EventType = "AgentDeleted",
+            EventType = "AgentDeletionRequested",
             PerformedByObjectId = request.CallerObjectId,
             OccurredAtUtc = DateTime.UtcNow
         };

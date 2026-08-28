@@ -8,12 +8,13 @@ using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
 using Gateway.Domain.ValueObjects;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
 namespace Gateway.SecurityTests;
 
 /// <summary>
-/// Verifies that data-plane handlers enforce agent-to-client identity binding
+/// Verifies that data-plane handlers enforce per-registration credential binding
 /// and reject requests from disabled agents. These are security-critical checks
 /// that must never be bypassed.
 /// </summary>
@@ -70,10 +71,11 @@ public class IdentityBindingTests
     private SubmitInteractionHandler CreateInteractionHandler() =>
         new(_agentRepository, _aiInteractionRepository, _interactionContentStore,
             _purviewPolicyClient, _idempotencyService, _outboxRepository,
-            _auditEventRepository, _unitOfWork);
+            _auditEventRepository, _unitOfWork,
+            NullLogger<SubmitInteractionHandler>.Instance);
 
     private static SubmitActivityCommand CreateActivityCommand(
-        string externalAgentId, string callerClientId) =>
+        string externalAgentId, Guid callerAgentRegistrationId) =>
         new(ExternalAgentId: externalAgentId,
             ActivityId: Guid.NewGuid().ToString(),
             SessionId: null,
@@ -82,11 +84,11 @@ public class IdentityBindingTests
             Actor: new ActorDto("User"),
             Tool: null,
             Attributes: null,
-            CallerClientId: callerClientId,
+            CallerAgentRegistrationId: callerAgentRegistrationId,
             IdempotencyKey: null);
 
     private static SubmitInteractionCommand CreateInteractionCommand(
-        string externalAgentId, string callerClientId) =>
+        string externalAgentId, Guid callerAgentRegistrationId) =>
         new(ExternalAgentId: externalAgentId,
             InteractionId: Guid.NewGuid().ToString(),
             SessionId: null,
@@ -96,7 +98,7 @@ public class IdentityBindingTests
             Response: new ContentDto("text/plain", "test response"),
             Model: null,
             Metadata: null,
-            CallerClientId: callerClientId,
+            CallerAgentRegistrationId: callerAgentRegistrationId,
             IdempotencyKey: null);
 
     // ---------------------------------------------------------------
@@ -104,14 +106,14 @@ public class IdentityBindingTests
     // ---------------------------------------------------------------
 
     [Fact]
-    public async Task SubmitActivity_Should_ThrowAgentIdentityMismatch_When_CallerClientIdDoesNotMatchAgent()
+    public async Task SubmitActivity_Should_ThrowAgentIdentityMismatch_When_CredentialRegistrationDoesNotMatchAgent()
     {
-        var agent = CreateAgent("test-agent-001", externalClientId: "correct-client-id");
-        _agentRepository.GetByExternalAgentIdAsync("test-agent-001", Arg.Any<CancellationToken>())
+        var agent = CreateAgent("credential-agent-001", externalClientId: "correct-client-id");
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
 
         var handler = CreateActivityHandler();
-        var command = CreateActivityCommand("test-agent-001", callerClientId: "wrong-client-id");
+        var command = CreateActivityCommand("test-agent-001", agent.Id);
 
         var act = () => handler.Handle(command, CancellationToken.None);
 
@@ -127,11 +129,11 @@ public class IdentityBindingTests
     public async Task SubmitActivity_Should_ThrowAgentDisabled_When_AgentIsNotActive()
     {
         var agent = CreateAgent("test-agent-002", "client-id-123", AgentStatus.Disabled);
-        _agentRepository.GetByExternalAgentIdAsync("test-agent-002", Arg.Any<CancellationToken>())
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
 
         var handler = CreateActivityHandler();
-        var command = CreateActivityCommand("test-agent-002", callerClientId: "client-id-123");
+        var command = CreateActivityCommand("test-agent-002", agent.Id);
 
         var act = () => handler.Handle(command, CancellationToken.None);
 
@@ -155,11 +157,11 @@ public class IdentityBindingTests
         AgentStatus nonActiveStatus)
     {
         var agent = CreateAgent("test-agent-status", "client-id-789", nonActiveStatus);
-        _agentRepository.GetByExternalAgentIdAsync("test-agent-status", Arg.Any<CancellationToken>())
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
 
         var handler = CreateActivityHandler();
-        var command = CreateActivityCommand("test-agent-status", callerClientId: "client-id-789");
+        var command = CreateActivityCommand("test-agent-status", agent.Id);
 
         var act = () => handler.Handle(command, CancellationToken.None);
 
@@ -172,17 +174,17 @@ public class IdentityBindingTests
     // ---------------------------------------------------------------
 
     [Fact]
-    public async Task SubmitActivity_Should_ThrowNotFoundException_When_AgentDoesNotExist()
+    public async Task SubmitActivity_Should_ThrowIdentityMismatch_When_CallerRegistrationDoesNotExist()
     {
-        _agentRepository.GetByExternalAgentIdAsync("nonexistent-agent", Arg.Any<CancellationToken>())
-            .Returns((AgentRegistration?)null);
-
         var handler = CreateActivityHandler();
-        var command = CreateActivityCommand("nonexistent-agent", callerClientId: "any-client");
+        var command = CreateActivityCommand("nonexistent-agent", Guid.NewGuid());
+        _agentRepository.GetByIdAsync(command.CallerAgentRegistrationId, Arg.Any<CancellationToken>())
+            .Returns((AgentRegistration?)null);
 
         var act = () => handler.Handle(command, CancellationToken.None);
 
-        await act.Should().ThrowAsync<NotFoundException>();
+        var ex = await act.Should().ThrowAsync<DomainException>();
+        ex.Which.ErrorCode.Should().Be(ErrorCodes.AGENT_IDENTITY_MISMATCH);
     }
 
     // ---------------------------------------------------------------
@@ -195,11 +197,11 @@ public class IdentityBindingTests
         // When both identity mismatch AND disabled status apply, the handler
         // must check identity first (fail-closed security principle).
         var agent = CreateAgent("test-agent-order", "correct-client", AgentStatus.Disabled);
-        _agentRepository.GetByExternalAgentIdAsync("test-agent-order", Arg.Any<CancellationToken>())
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
 
         var handler = CreateActivityHandler();
-        var command = CreateActivityCommand("test-agent-order", callerClientId: "wrong-client");
+        var command = CreateActivityCommand("different-target", agent.Id);
 
         var act = () => handler.Handle(command, CancellationToken.None);
 
@@ -213,14 +215,14 @@ public class IdentityBindingTests
     // ---------------------------------------------------------------
 
     [Fact]
-    public async Task SubmitInteraction_Should_ThrowAgentIdentityMismatch_When_CallerClientIdDoesNotMatchAgent()
+    public async Task SubmitInteraction_Should_ThrowAgentIdentityMismatch_When_CredentialRegistrationDoesNotMatchAgent()
     {
-        var agent = CreateAgent("test-agent-003", externalClientId: "correct-client-id");
-        _agentRepository.GetByExternalAgentIdAsync("test-agent-003", Arg.Any<CancellationToken>())
+        var agent = CreateAgent("credential-agent-003", externalClientId: "correct-client-id");
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
 
         var handler = CreateInteractionHandler();
-        var command = CreateInteractionCommand("test-agent-003", callerClientId: "wrong-client-id");
+        var command = CreateInteractionCommand("test-agent-003", agent.Id);
 
         var act = () => handler.Handle(command, CancellationToken.None);
 
@@ -236,11 +238,11 @@ public class IdentityBindingTests
     public async Task SubmitInteraction_Should_ThrowAgentDisabled_When_AgentIsNotActive()
     {
         var agent = CreateAgent("test-agent-004", "client-id-456", AgentStatus.Disabled);
-        _agentRepository.GetByExternalAgentIdAsync("test-agent-004", Arg.Any<CancellationToken>())
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
 
         var handler = CreateInteractionHandler();
-        var command = CreateInteractionCommand("test-agent-004", callerClientId: "client-id-456");
+        var command = CreateInteractionCommand("test-agent-004", agent.Id);
 
         var act = () => handler.Handle(command, CancellationToken.None);
 
@@ -256,11 +258,11 @@ public class IdentityBindingTests
     public async Task SubmitInteraction_Should_CheckIdentityBeforeStatus_When_BothConditionsFail()
     {
         var agent = CreateAgent("test-agent-int-order", "correct-client", AgentStatus.Disabled);
-        _agentRepository.GetByExternalAgentIdAsync("test-agent-int-order", Arg.Any<CancellationToken>())
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
 
         var handler = CreateInteractionHandler();
-        var command = CreateInteractionCommand("test-agent-int-order", callerClientId: "wrong-client");
+        var command = CreateInteractionCommand("different-target", agent.Id);
 
         var act = () => handler.Handle(command, CancellationToken.None);
 
@@ -274,37 +276,35 @@ public class IdentityBindingTests
     // ---------------------------------------------------------------
 
     [Fact]
-    public async Task SubmitInteraction_Should_ThrowNotFoundException_When_AgentDoesNotExist()
+    public async Task SubmitInteraction_Should_ThrowIdentityMismatch_When_CallerRegistrationDoesNotExist()
     {
-        _agentRepository.GetByExternalAgentIdAsync("nonexistent-agent-int", Arg.Any<CancellationToken>())
-            .Returns((AgentRegistration?)null);
-
         var handler = CreateInteractionHandler();
-        var command = CreateInteractionCommand("nonexistent-agent-int", callerClientId: "any-client");
+        var command = CreateInteractionCommand("nonexistent-agent-int", Guid.NewGuid());
+        _agentRepository.GetByIdAsync(command.CallerAgentRegistrationId, Arg.Any<CancellationToken>())
+            .Returns((AgentRegistration?)null);
 
         var act = () => handler.Handle(command, CancellationToken.None);
 
-        await act.Should().ThrowAsync<NotFoundException>();
+        var ex = await act.Should().ThrowAsync<DomainException>();
+        ex.Which.ErrorCode.Should().Be(ErrorCodes.AGENT_IDENTITY_MISMATCH);
     }
 
     // ---------------------------------------------------------------
-    // Both handlers: null ExternalClientId on agent triggers mismatch
+    // Child Agent ID client identifiers are not accepted as ingress binding.
     // ---------------------------------------------------------------
 
     [Fact]
-    public async Task SubmitActivity_Should_ThrowAgentIdentityMismatch_When_AgentHasNullExternalClientId()
+    public async Task SubmitActivity_Should_IgnoreChildAgentClientIdForIngressBinding()
     {
-        var agent = CreateAgent("test-agent-null-client", externalClientId: "placeholder");
-        agent.ExternalClientId = null; // Simulate agent without bound client
-        _agentRepository.GetByExternalAgentIdAsync("test-agent-null-client", Arg.Any<CancellationToken>())
+        var agent = CreateAgent("credential-agent-null-client", externalClientId: "placeholder");
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
 
         var handler = CreateActivityHandler();
-        var command = CreateActivityCommand("test-agent-null-client", callerClientId: "some-client");
+        var command = CreateActivityCommand("test-agent-null-client", agent.Id);
 
         var act = () => handler.Handle(command, CancellationToken.None);
 
-        // null != "some-client" so identity mismatch is expected
         var ex = await act.Should().ThrowAsync<DomainException>();
         ex.Which.ErrorCode.Should().Be(ErrorCodes.AGENT_IDENTITY_MISMATCH);
     }

@@ -6,4 +6,7 @@ public sealed record AgentProvisioningRequest(
     string Name,
     string? Description,
     string OwnerObjectId,
-    string Environment);
+    string Environment,
+    string BlueprintSelectionMode = "UseExisting",
+    string? RequestedBlueprintObjectId = null,
+    string? RequestedBlueprintDisplayName = null);

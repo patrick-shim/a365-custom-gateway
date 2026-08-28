@@ -1,0 +1,26 @@
+{
+  "$schema": "./config.schema.json",
+  "subscriptionId": "00000000-0000-0000-0000-000000000000",
+  "tenantId": "00000000-0000-0000-0000-000000000000",
+  "environment": "dev",
+  "location": "koreacentral",
+  "projectName": "a365gw",
+  "resourceGroupName": "rg-a365gw-dev",
+  "alertEmail": "operator@example.com",
+  "sql": {
+    "skuName": "Basic",
+    "skuTier": "Basic"
+  },
+  "agent365": {
+    "seedBlueprintName": "A365 Gateway Seed dev",
+    "allowDevelopmentRegistryPreview": true
+  },
+  "purview": {
+    "enabled": false,
+    "activateGatewayAdapterAfterPolicyReadback": false,
+    "collectionPolicyName": "A365 Gateway AI collection",
+    "dlpPolicyName": "A365 Gateway inline DLP",
+    "dlpRuleName": "A365 Gateway inline DLP rule",
+    "sensitiveInformationType": ""
+  }
+}

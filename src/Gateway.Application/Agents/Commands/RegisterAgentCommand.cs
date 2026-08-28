@@ -11,4 +11,5 @@ public record RegisterAgentCommand(
     string OwnerObjectId,
     string Environment,
     AgentFeaturesDto? Features,
-    string CallerObjectId) : IRequest<RegisterAgentResponse>;
+    string CallerObjectId,
+    AgentBlueprintSelectionDto? Blueprint = null) : IRequest<RegisterAgentResponse>;

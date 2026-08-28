@@ -14,5 +14,5 @@ public sealed record SubmitInteractionCommand(
     ContentDto Response,
     ModelDto? Model,
     Dictionary<string, string>? Metadata,
-    string CallerClientId,
+    Guid CallerAgentRegistrationId,
     string? IdempotencyKey) : IRequest<InteractionReceiptDto>;

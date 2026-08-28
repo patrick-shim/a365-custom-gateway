@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 
@@ -35,7 +36,47 @@ public class NoSecretsInCodeTests
         var srcDir = GetSrcDirectory();
         return Directory.GetFiles(srcDir, "appsettings*.json", SearchOption.AllDirectories)
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
-                     && !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"));
+                     && !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
+            // Local private overrides are deliberately ignored by Git and may contain
+            // developer-only values. The source-leakage gate must scan every tracked or
+            // otherwise committable appsettings file without treating an ignored local
+            // workstation override as repository content.
+            .Where(f => !IsGitIgnored(f));
+    }
+
+    private static bool IsGitIgnored(string file)
+    {
+        var repositoryRoot = Directory.GetParent(GetSrcDirectory())!.FullName;
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = repositoryRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("check-ignore");
+        startInfo.ArgumentList.Add("--quiet");
+        startInfo.ArgumentList.Add("--");
+        startInfo.ArgumentList.Add(Path.GetRelativePath(repositoryRoot, file));
+
+        try
+        {
+            using var process = Process.Start(startInfo);
+            if (process is null || !process.WaitForExit(5_000))
+            {
+                process?.Kill(entireProcessTree: true);
+                return false;
+            }
+
+            return process.ExitCode == 0;
+        }
+        catch
+        {
+            // If Git is unavailable, fail safely by scanning the file.
+            return false;
+        }
     }
 
     // ---------------------------------------------------------------

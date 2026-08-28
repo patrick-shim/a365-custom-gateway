@@ -13,6 +13,12 @@ internal sealed class ActivityReceiptRepository : IActivityReceiptRepository
         _dbContext = dbContext;
     }
 
+    public Task<ActivityReceipt?> GetByIdAsync(Guid id, CancellationToken ct)
+    {
+        return _dbContext.ActivityReceipts
+            .FirstOrDefaultAsync(receipt => receipt.Id == id, ct);
+    }
+
     public async Task AddAsync(ActivityReceipt receipt, CancellationToken ct)
     {
         await _dbContext.ActivityReceipts.AddAsync(receipt, ct);

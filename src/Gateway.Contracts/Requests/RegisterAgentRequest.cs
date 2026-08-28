@@ -8,4 +8,5 @@ public record RegisterAgentRequest(
     string? Description,
     string OwnerObjectId,
     string Environment,
-    AgentFeaturesDto? Features);
+    AgentFeaturesDto? Features,
+    AgentBlueprintSelectionDto? Blueprint = null);

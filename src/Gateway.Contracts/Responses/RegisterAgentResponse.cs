@@ -9,4 +9,5 @@ public record RegisterAgentResponse(
     string Status,
     Guid OperationId,
     DateTime CreatedAtUtc,
-    LinksDto? Links);
+    LinksDto? Links,
+    AgentGatewayCredentialDto? GatewayCredential = null);

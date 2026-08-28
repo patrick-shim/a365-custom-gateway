@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentAssertions" Version="8.3.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="NSubstitute" Version="5.3.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Gateway.Agent365\Gateway.Agent365.csproj" />
+    <ProjectReference Include="..\..\src\Gateway.Domain\Gateway.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Gateway.Provisioning.Worker\Gateway.Provisioning.Worker.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="**\bin\**\*.cs;**\obj\**\*.cs" />
+  </ItemGroup>
+
+</Project>

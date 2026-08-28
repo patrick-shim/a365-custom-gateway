@@ -1,0 +1,111 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<FluentDialog Class="confirm-dialog"
+              Hidden="@(!Visible)"
+              HiddenChanged="HandleHiddenChanged"
+              Modal="true"
+              TrapFocus="true"
+              PreventScroll="true"
+              AriaLabelledby="confirm-title"
+              AriaDescribedby="confirm-message">
+    <section @ref="panel"
+             class="confirm-panel"
+             role="alertdialog"
+             aria-modal="true"
+             aria-labelledby="confirm-title"
+             aria-describedby="confirm-message"
+             @onkeydown="HandleKeyDown">
+        <span class="confirm-icon @Tone" aria-hidden="true">!</span>
+        <h2 id="confirm-title">@Title</h2>
+        <p id="confirm-message">@Message</p>
+        @if (AdditionalContent is not null)
+        {
+            <div class="confirm-extra">@AdditionalContent</div>
+        }
+        <div class="confirm-actions">
+            <FluentButton Appearance="Appearance.Neutral" OnClick="Cancel" Disabled="Busy">Cancel</FluentButton>
+            <FluentButton Appearance="Appearance.Accent" OnClick="Confirm" Disabled="Busy">@(Busy ? "Working…" : ConfirmLabel)</FluentButton>
+        </div>
+    </section>
+</FluentDialog>
+
+@code {
+    private ElementReference panel;
+    private bool jsInitialized;
+    private bool renderedVisible;
+
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string Title { get; set; } = "Confirm action";
+    [Parameter] public string Message { get; set; } = string.Empty;
+    [Parameter] public string ConfirmLabel { get; set; } = "Confirm";
+    [Parameter] public string Tone { get; set; } = "warning";
+    [Parameter] public RenderFragment? AdditionalContent { get; set; }
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private Task Confirm() => OnConfirm.InvokeAsync();
+    private Task Cancel() => Busy ? Task.CompletedTask : OnCancel.InvokeAsync();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JS.InvokeVoidAsync("A365Gateway.confirmPanel.initialize", panel);
+            jsInitialized = true;
+            renderedVisible = Visible;
+            if (Visible)
+            {
+                await JS.InvokeVoidAsync("A365Gateway.confirmPanel.open", panel);
+            }
+            return;
+        }
+
+        if (!renderedVisible && Visible)
+        {
+            await JS.InvokeVoidAsync("A365Gateway.confirmPanel.open", panel);
+        }
+        else if (renderedVisible && !Visible)
+        {
+            await JS.InvokeVoidAsync("A365Gateway.confirmPanel.restore", panel);
+        }
+
+        renderedVisible = Visible;
+    }
+
+    private Task HandleKeyDown(KeyboardEventArgs args) =>
+        args.Key == "Escape" ? Cancel() : Task.CompletedTask;
+
+    private async Task HandleHiddenChanged(bool hidden)
+    {
+        if (!hidden)
+        {
+            return;
+        }
+
+        if (Busy)
+        {
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        await OnCancel.InvokeAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (!jsInitialized)
+        {
+            return;
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync("A365Gateway.confirmPanel.dispose", panel);
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+    }
+}

@@ -1,0 +1,17 @@
+@inject NavigationManager Navigation
+
+<LoadingState Label="Redirecting to Microsoft Entra ID…" />
+
+@code {
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        var relative = Navigation.ToBaseRelativePath(Navigation.Uri);
+        var returnUrl = string.IsNullOrWhiteSpace(relative) ? "/dashboard" : $"/{relative}";
+        Navigation.NavigateTo($"/authentication/login?returnUrl={Uri.EscapeDataString(returnUrl)}", forceLoad: true);
+    }
+}

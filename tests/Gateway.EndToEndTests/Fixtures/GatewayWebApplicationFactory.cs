@@ -1,4 +1,5 @@
 using Gateway.Domain.Interfaces;
+using Gateway.Domain.Models;
 using Gateway.Infrastructure.Outbox;
 using Gateway.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Authentication;
@@ -6,6 +7,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -20,11 +22,20 @@ public class GatewayWebApplicationFactory : WebApplicationFactory<Program>
 
     public IInteractionContentStore MockContentStore { get; } = Substitute.For<IInteractionContentStore>();
     public IAgent365ProvisioningClient MockProvisioningClient { get; } = Substitute.For<IAgent365ProvisioningClient>();
+    public IAgent365DelegatedRegistryClient MockDelegatedRegistryClient { get; } =
+        Substitute.For<IAgent365DelegatedRegistryClient>();
+    public IAgent365DelegatedTokenProvider MockDelegatedTokenProvider { get; } =
+        Substitute.For<IAgent365DelegatedTokenProvider>();
+    public IProvisioningExecutionLockProvider MockProvisioningExecutionLockProvider { get; } =
+        Substitute.For<IProvisioningExecutionLockProvider>();
+    public IAgentIdentityBlueprintCatalog MockBlueprintCatalog { get; } =
+        Substitute.For<IAgentIdentityBlueprintCatalog>();
     public IPurviewPolicyClient MockPurviewClient { get; } = Substitute.For<IPurviewPolicyClient>();
     public IObservabilityExporter MockObservabilityExporter { get; } = Substitute.For<IObservabilityExporter>();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        MockPurviewClient.IsEnabled.Returns(true);
         builder.UseEnvironment("Testing");
 
         builder.ConfigureAppConfiguration((context, config) =>
@@ -39,6 +50,16 @@ public class GatewayWebApplicationFactory : WebApplicationFactory<Program>
                 ["ServiceBus:QueueName"] = "test-queue",
                 ["OutboxRelay:PollingIntervalSeconds"] = "3600",
                 ["OutboxRelay:BatchSize"] = "10",
+                ["Provisioning:ExecutionEnabled"] = "true",
+                ["Provisioning:RequireExactAdmissionBinding"] = "false",
+                ["Provisioning:AdmissionExpiresAtUtc"] = "2099-01-01T00:00:00.0000000Z",
+                ["Agent365:DelegatedRegistry:Enabled"] = "true",
+                ["Agent365:DelegatedRegistry:RequireExactActionBinding"] = "false",
+                ["Agent365:DelegatedRegistry:ActionExpiresAtUtc"] = "2099-01-01T00:00:00.0000000Z",
+                ["Agent365:DelegatedRegistry:Scopes:0"] =
+                    "https://graph.microsoft.com/AgentRegistration.ReadWrite.All",
+                ["Agent365:DelegatedRegistry:Scopes:1"] =
+                    "https://graph.microsoft.com/AgentRegistration.Read.All",
                 ["Observability:ApplicationInsightsConnectionString"] = "",
             });
         });
@@ -47,6 +68,7 @@ public class GatewayWebApplicationFactory : WebApplicationFactory<Program>
         {
             // Remove the real GatewayDbContext registration
             services.RemoveAll<DbContextOptions<GatewayDbContext>>();
+            services.RemoveAll<IDbContextOptionsConfiguration<GatewayDbContext>>();
             services.RemoveAll<GatewayDbContext>();
 
             // Remove all DbContext options
@@ -61,7 +83,6 @@ public class GatewayWebApplicationFactory : WebApplicationFactory<Program>
             services.AddDbContext<GatewayDbContext>(options =>
             {
                 options.UseInMemoryDatabase(_databaseName);
-                options.EnableServiceProviderCaching(false);
             });
 
             // Remove hosted services from Infrastructure (OutboxRelayService)
@@ -92,6 +113,25 @@ public class GatewayWebApplicationFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<IAgent365ProvisioningClient>();
             services.AddScoped(_ => MockProvisioningClient);
+
+            services.RemoveAll<IAgent365DelegatedRegistryClient>();
+            services.AddScoped(_ => MockDelegatedRegistryClient);
+
+            services.RemoveAll<IAgent365DelegatedTokenProvider>();
+            MockDelegatedTokenProvider.GetTokenAsync(Arg.Any<CancellationToken>())
+                .Returns("opaque-test-value");
+            services.AddScoped(_ => MockDelegatedTokenProvider);
+
+            services.RemoveAll<IProvisioningExecutionLockProvider>();
+            var executionLease = Substitute.For<IProvisioningExecutionLease>();
+            MockProvisioningExecutionLockProvider.AcquireAsync(
+                    Arg.Any<Guid>(),
+                    Arg.Any<CancellationToken>())
+                .Returns(executionLease);
+            services.AddScoped(_ => MockProvisioningExecutionLockProvider);
+
+            services.RemoveAll<IAgentIdentityBlueprintCatalog>();
+            services.AddScoped(_ => MockBlueprintCatalog);
 
             services.RemoveAll<IPurviewPolicyClient>();
             services.AddScoped(_ => MockPurviewClient);
@@ -126,6 +166,16 @@ public class GatewayWebApplicationFactory : WebApplicationFactory<Program>
     public HttpClient CreateAuthenticatedClient()
     {
         TestAuthHandler.Reset();
+        var blueprintObjectId = Guid.Parse(TestRequestData.ValidBlueprint.BlueprintObjectId!);
+        MockBlueprintCatalog.ListAsync(Arg.Any<CancellationToken>())
+            .Returns([
+                new AgentIdentityBlueprintCatalogItem(
+                    blueprintObjectId,
+                    blueprintObjectId,
+                    "Reusable test blueprint",
+                    IsAgent365Compatible: true,
+                    Agent365CompatibilityIssue: null)
+            ]);
         return CreateClient();
     }
 }

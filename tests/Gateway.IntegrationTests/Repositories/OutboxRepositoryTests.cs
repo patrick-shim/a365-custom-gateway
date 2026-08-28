@@ -122,107 +122,123 @@ public class OutboxRepositoryTests
     }
 
     [Fact]
-    public async Task MarkPublishedAsync_Should_UpdateStatusToPublished_When_MessageExists()
+    public async Task ClaimPendingAsync_Should_ClaimOnlyDueAndExpiredRows()
     {
-        // Arrange
         await using var context = TestDbContextFactory.Create();
         var repository = new OutboxRepository(context);
-        var message = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Pending);
+        var utcNow = new DateTime(2026, 8, 24, 12, 0, 0, DateTimeKind.Utc);
+        var claimExpiresAtUtc = utcNow.AddMinutes(2);
 
+        var due = TestEntityFactory.CreateOutboxMessage();
+        due.NextRetryAtUtc = utcNow;
+        var future = TestEntityFactory.CreateOutboxMessage();
+        future.NextRetryAtUtc = utcNow.AddMinutes(1);
+        var expiredClaim = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Processing);
+        expiredClaim.NextRetryAtUtc = utcNow.AddTicks(-1);
+        var activeClaim = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Processing);
+        activeClaim.NextRetryAtUtc = utcNow.AddMinutes(1);
+
+        await context.OutboxMessages.AddRangeAsync(due, future, expiredClaim, activeClaim);
+        await context.SaveChangesAsync();
+
+        var claimed = await repository.ClaimPendingAsync(
+            10,
+            utcNow,
+            claimExpiresAtUtc,
+            CancellationToken.None);
+
+        claimed.Select(message => message.Id)
+            .Should().BeEquivalentTo([due.Id, expiredClaim.Id]);
+        claimed.Should().OnlyContain(message =>
+            message.Status == OutboxMessageStatus.Processing &&
+            message.NextRetryAtUtc == claimExpiresAtUtc);
+    }
+
+    [Fact]
+    public async Task MarkPublishedAsync_Should_UpdateOnlyCurrentClaim()
+    {
+        await using var context = TestDbContextFactory.Create();
+        var repository = new OutboxRepository(context);
+        var utcNow = new DateTime(2026, 8, 24, 12, 0, 0, DateTimeKind.Utc);
+        var claimExpiresAtUtc = utcNow.AddMinutes(2);
+        var message = TestEntityFactory.CreateOutboxMessage();
         await repository.AddAsync(message, CancellationToken.None);
         await context.SaveChangesAsync();
+        await repository.ClaimPendingAsync(1, utcNow, claimExpiresAtUtc, CancellationToken.None);
 
-        // Act
-        await repository.MarkPublishedAsync(message.Id, CancellationToken.None);
-        await context.SaveChangesAsync();
+        var staleResult = await repository.MarkPublishedAsync(
+            message.Id,
+            claimExpiresAtUtc.AddTicks(1),
+            utcNow,
+            CancellationToken.None);
+        var currentResult = await repository.MarkPublishedAsync(
+            message.Id,
+            claimExpiresAtUtc,
+            utcNow,
+            CancellationToken.None);
 
-        // Assert
-        var updated = await context.OutboxMessages.FindAsync(message.Id);
-        updated.Should().NotBeNull();
-        updated!.Status.Should().Be(OutboxMessageStatus.Published);
-        updated.PublishedAtUtc.Should().NotBeNull();
+        staleResult.Should().BeFalse();
+        currentResult.Should().BeTrue();
+        message.Status.Should().Be(OutboxMessageStatus.Published);
+        message.PublishedAtUtc.Should().Be(utcNow);
+        message.NextRetryAtUtc.Should().BeNull();
     }
 
     [Fact]
-    public async Task MarkPublishedAsync_Should_NotThrow_When_MessageDoesNotExist()
+    public async Task MarkFailedAsync_Should_ReturnMessageToPending_WithRetryMetadata()
     {
-        // Arrange
         await using var context = TestDbContextFactory.Create();
         var repository = new OutboxRepository(context);
-
-        // Act
-        var act = async () => await repository.MarkPublishedAsync(Guid.NewGuid(), CancellationToken.None);
-
-        // Assert
-        await act.Should().NotThrowAsync();
-    }
-
-    [Fact]
-    public async Task MarkFailedAsync_Should_UpdateStatusToFailed_When_MessageExists()
-    {
-        // Arrange
-        await using var context = TestDbContextFactory.Create();
-        var repository = new OutboxRepository(context);
-        var message = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Pending);
-
+        var utcNow = new DateTime(2026, 8, 24, 12, 0, 0, DateTimeKind.Utc);
+        var claimExpiresAtUtc = utcNow.AddMinutes(2);
+        var retryAtUtc = utcNow.AddSeconds(5);
+        var message = TestEntityFactory.CreateOutboxMessage();
         await repository.AddAsync(message, CancellationToken.None);
         await context.SaveChangesAsync();
+        await repository.ClaimPendingAsync(1, utcNow, claimExpiresAtUtc, CancellationToken.None);
 
-        // Act
-        await repository.MarkFailedAsync(message.Id, CancellationToken.None);
-        await context.SaveChangesAsync();
+        var updated = await repository.MarkFailedAsync(
+            message.Id,
+            claimExpiresAtUtc,
+            retryAtUtc,
+            terminal: false,
+            CancellationToken.None);
 
-        // Assert
-        var updated = await context.OutboxMessages.FindAsync(message.Id);
-        updated.Should().NotBeNull();
-        updated!.Status.Should().Be(OutboxMessageStatus.Failed);
-        updated.RetryCount.Should().Be(1);
+        updated.Should().BeTrue();
+        message.Status.Should().Be(OutboxMessageStatus.Pending);
+        message.RetryCount.Should().Be(1);
+        message.NextRetryAtUtc.Should().Be(retryAtUtc);
     }
 
     [Fact]
-    public async Task MarkFailedAsync_Should_IncrementRetryCount_When_CalledMultipleTimes()
+    public async Task MarkFailedAsync_Should_MarkTerminalFailure_AndRejectStaleOwner()
     {
-        // Arrange
         await using var context = TestDbContextFactory.Create();
         var repository = new OutboxRepository(context);
-        var message = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Pending);
-
+        var utcNow = new DateTime(2026, 8, 24, 12, 0, 0, DateTimeKind.Utc);
+        var claimExpiresAtUtc = utcNow.AddMinutes(2);
+        var message = TestEntityFactory.CreateOutboxMessage();
         await repository.AddAsync(message, CancellationToken.None);
         await context.SaveChangesAsync();
+        await repository.ClaimPendingAsync(1, utcNow, claimExpiresAtUtc, CancellationToken.None);
 
-        // Act
-        await repository.MarkFailedAsync(message.Id, CancellationToken.None);
-        await context.SaveChangesAsync();
-        await repository.MarkFailedAsync(message.Id, CancellationToken.None);
-        await context.SaveChangesAsync();
-        await repository.MarkFailedAsync(message.Id, CancellationToken.None);
-        await context.SaveChangesAsync();
+        var staleResult = await repository.MarkFailedAsync(
+            message.Id,
+            claimExpiresAtUtc.AddTicks(1),
+            null,
+            terminal: true,
+            CancellationToken.None);
+        var currentResult = await repository.MarkFailedAsync(
+            message.Id,
+            claimExpiresAtUtc,
+            null,
+            terminal: true,
+            CancellationToken.None);
 
-        // Assert
-        var updated = await context.OutboxMessages.FindAsync(message.Id);
-        updated.Should().NotBeNull();
-        updated!.RetryCount.Should().Be(3);
-    }
-
-    [Fact]
-    public async Task GetPendingAsync_Should_NotReturnPublishedMessages_When_PublishedMessagesExist()
-    {
-        // Arrange
-        await using var context = TestDbContextFactory.Create();
-        var repository = new OutboxRepository(context);
-
-        var pending = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Pending);
-        await repository.AddAsync(pending, CancellationToken.None);
-        await context.SaveChangesAsync();
-
-        // Mark as published
-        await repository.MarkPublishedAsync(pending.Id, CancellationToken.None);
-        await context.SaveChangesAsync();
-
-        // Act
-        var results = await repository.GetPendingAsync(10, CancellationToken.None);
-
-        // Assert
-        results.Should().BeEmpty();
+        staleResult.Should().BeFalse();
+        currentResult.Should().BeTrue();
+        message.Status.Should().Be(OutboxMessageStatus.Failed);
+        message.RetryCount.Should().Be(1);
+        message.NextRetryAtUtc.Should().BeNull();
     }
 }

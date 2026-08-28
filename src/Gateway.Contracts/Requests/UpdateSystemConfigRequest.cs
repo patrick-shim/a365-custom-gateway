@@ -16,4 +16,6 @@ public record UpdateSystemConfigRequest(
     int? ReconciliationIntervalHours,
     int? StuckTransitionTimeoutDays,
     bool? UseGraphAgentRegistration,
-    bool? UseCliProvisioningFallback);
+    bool? UseCliProvisioningFallback,
+    bool? DefaultAgent365ObservabilityEnabled = null,
+    bool? DefaultAzureMonitorExportEnabled = null);

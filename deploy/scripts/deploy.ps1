@@ -29,6 +29,46 @@
     Full ACR image path for the Provisioning Worker container (e.g., myacr.azurecr.io/gateway-worker:abc1234).
     When omitted, the Bicep parameter file default is used.
 
+.PARAMETER ContainerAppsEnvironmentName
+    Approved existing VNet-integrated Container Apps environment shared by the API,
+    worker, and Admin UI.
+
+.PARAMETER HistoricalWorkerContainerAppName
+    Existing worker retained during a blue/green migration. Provisioning-failure
+    alerts continue to cover this app as well as WorkerContainerAppName.
+
+.PARAMETER ServiceBusQueueName
+    Queue used exclusively by the current N:N API and worker. Keep the historical
+    worker on its legacy queue during the blue/green cutover.
+
+.PARAMETER ApiContainerAppIsNew
+    Explicit first-deployment acknowledgement for the API Container App. Omit for
+    updates so the ARM deployment securely carries existing application secrets
+    forward without printing them.
+
+.PARAMETER WorkerProcessingEnabled
+    Enables Service Bus processing on the current workflow worker. Defaults false
+    for inert-first deployment; the bounded canary controller owns activation.
+
+.PARAMETER EnableLegacyWorkerCredentialKeyVaultSecretsOfficer
+    Explicitly retains the legacy worker Key Vault Secrets Officer role. Workflow
+    v3 does not require it and the default is off.
+
+.PARAMETER ProvisioningManagedIdentityPrincipalId
+    Optional object/principal ID of the existing target worker managed identity.
+    When omitted, the script resolves it read-only from the target Container App.
+
+.PARAMETER EnableProvisioningExecution
+    Enables Microsoft-side provisioning. Development only and blocked unless every
+    read-only identity, permission, provider, network, and managerApplications gate
+    passes. Omit for the safe default.
+
+.PARAMETER EnableDelegatedRegistry
+    Stages the development-only Gateway API OBO Registry completion capability.
+    This must be combined with provisioning execution and the reviewed preview
+    provider gates. API admission remains closed unless a separate bounded
+    controller action supplies an expiry.
+
 .PARAMETER SkipInfra
     Skip the Bicep infrastructure deployment step.
 
@@ -63,12 +103,67 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$WorkerImage,
 
+    [Parameter(Mandatory = $false)]
+    [string]$ContainerAppsEnvironmentName,
+
+    [Parameter(Mandatory = $false)]
+    [string]$WorkerContainerAppName,
+
+    [Parameter(Mandatory = $false)]
+    [string]$HistoricalWorkerContainerAppName,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ServiceBusQueueName = 'gateway-provisioning-v3',
+
+    [switch]$ApiContainerAppIsNew,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$WorkerProcessingEnabled = $false,
+
+    [switch]$EnableLegacyWorkerCredentialKeyVaultSecretsOfficer,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ProvisioningManagedIdentityPrincipalId,
+
+    [Parameter(Mandatory = $false)]
+    [string]$GatewayApiApplicationClientId = $env:ENTRA_CLIENT_ID,
+
+    [Parameter(Mandatory = $false)]
+    [string[]]$Agent365ManagerApplicationIds = @(),
+
+    [Parameter(Mandatory = $false)]
+    [ValidateNotNullOrEmpty()]
+    [string]$GatewayApiFederatedCredentialName = 'a365gw-api-obo-dev',
+
+    [switch]$EnableProvisioningExecution,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Disabled', 'DirectRegistryPreview')]
+    [string]$RegistryProvider = 'Disabled',
+
+    [switch]$EnableDirectRegistryPreview,
+
+    [switch]$EnableDelegatedRegistry,
+
+    [switch]$ManagerApplicationsPreflightConfirmed,
+
     [switch]$SkipInfra,
 
     [switch]$SkipSqlSetup
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($ContainerAppsEnvironmentName)) {
+    $ContainerAppsEnvironmentName = "cae-a365gw-$Environment-vnet"
+}
+if ([string]::IsNullOrWhiteSpace($WorkerContainerAppName)) {
+    $WorkerContainerAppName = "ca-gateway-worker-$Environment"
+}
+if ([string]::IsNullOrWhiteSpace($HistoricalWorkerContainerAppName)) {
+    $HistoricalWorkerContainerAppName = "ca-gateway-worker-$Environment"
+}
 
 # ============================================================================
 # Constants
@@ -80,6 +175,7 @@ $BicepDir = Join-Path $RepoRoot 'deploy' 'bicep'
 $TemplateFile = Join-Path $BicepDir 'main.bicep'
 $ParameterFile = Join-Path $BicepDir 'parameters' "$Environment.bicepparam"
 $SetupSqlScript = Join-Path $ScriptDir 'setup-sql-user.ps1'
+$ProvisioningPreflightScript = Join-Path $ScriptDir 'test-provisioning-prerequisites.ps1'
 $DeploymentName = "a365gw-$Environment-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 
 $RequiredProviders = @(
@@ -90,6 +186,7 @@ $RequiredProviders = @(
     'Microsoft.KeyVault',
     'Microsoft.OperationalInsights',
     'Microsoft.Insights',
+    'Microsoft.Network',
     'Microsoft.Storage'
 )
 
@@ -134,12 +231,84 @@ function Invoke-AzCommand {
         [string]$ErrorMessage = 'Azure CLI command failed.'
     )
 
-    $output = & az @Arguments 2>&1
+    # The Windows Azure CLI launcher is a .cmd wrapper. Invoking the bundled
+    # Python module directly preserves JSON, URLs, and Bicep inline parameters
+    # as single arguments instead of letting cmd.exe reinterpret metacharacters.
+    $azCommand = Get-Command az -ErrorAction Stop
+    $azPython = if ($IsWindows -and $azCommand.Source.EndsWith(
+            '.cmd',
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        Join-Path (Split-Path $azCommand.Source -Parent) '..\python.exe'
+    }
+    else {
+        $null
+    }
+
+    $output = if ($null -ne $azPython -and (Test-Path -LiteralPath $azPython)) {
+        & $azPython -IBm azure.cli @Arguments 2>&1
+    }
+    else {
+        & az @Arguments 2>&1
+    }
     if ($LASTEXITCODE -ne 0) {
         $errorDetail = ($output | Out-String).Trim()
         throw "$ErrorMessage`nExit code: $LASTEXITCODE`nOutput: $errorDetail"
     }
     return $output
+}
+
+function Resolve-ProvisioningManagedIdentityPrincipalId {
+    $configuredPrincipalId = [guid]::Empty
+    if (-not [string]::IsNullOrWhiteSpace($ProvisioningManagedIdentityPrincipalId) -and
+        (-not [guid]::TryParse(
+            $ProvisioningManagedIdentityPrincipalId,
+            [ref]$configuredPrincipalId) -or
+         $configuredPrincipalId -eq [guid]::Empty)) {
+        throw 'ProvisioningManagedIdentityPrincipalId must be a valid non-empty GUID.'
+    }
+
+    $resolvedValue = & az containerapp show `
+        --name $WorkerContainerAppName `
+        --resource-group $ResourceGroup `
+        --query identity.principalId `
+        --output tsv 2>$null
+    $lookupSucceeded = $LASTEXITCODE -eq 0
+    $resolvedText = if ($lookupSucceeded) {
+        ($resolvedValue | Out-String).Trim()
+    }
+    else {
+        ''
+    }
+
+    $resolvedPrincipalId = [guid]::Empty
+    if (-not [string]::IsNullOrWhiteSpace($resolvedText) -and
+        (-not [guid]::TryParse($resolvedText, [ref]$resolvedPrincipalId) -or
+         $resolvedPrincipalId -eq [guid]::Empty)) {
+        throw 'The target worker returned an invalid managed-identity principal ID.'
+    }
+
+    if ($configuredPrincipalId -ne [guid]::Empty -and
+        $resolvedPrincipalId -ne [guid]::Empty -and
+        $configuredPrincipalId -ne $resolvedPrincipalId) {
+        throw 'The supplied provisioning managed-identity principal ID does not match the target worker.'
+    }
+
+    $effectivePrincipalId = if ($configuredPrincipalId -ne [guid]::Empty) {
+        $configuredPrincipalId
+    }
+    else {
+        $resolvedPrincipalId
+    }
+
+    if ($EnableProvisioningExecution -and $effectivePrincipalId -eq [guid]::Empty) {
+        throw 'Provisioning cannot be enabled until the target worker managed identity exists and its principal ID is pinned.'
+    }
+
+    if ($effectivePrincipalId -eq [guid]::Empty) {
+        return ''
+    }
+
+    return $effectivePrincipalId.ToString('D')
 }
 
 # ============================================================================
@@ -148,6 +317,19 @@ function Invoke-AzCommand {
 
 function Invoke-PreflightChecks {
     Write-StepHeader 'Step 1: Pre-flight Checks'
+
+    if ($EnableProvisioningExecution) {
+        if ($Environment -ne 'dev' -or
+            $RegistryProvider -ne 'DirectRegistryPreview' -or
+            -not $EnableDirectRegistryPreview -or
+            -not $EnableDelegatedRegistry -or
+            -not $ManagerApplicationsPreflightConfirmed) {
+            throw 'Provisioning execution requires development, DirectRegistryPreview, both preview gates, delegated Registry, and managerApplications preflight confirmation.'
+        }
+    }
+    elseif ($EnableDelegatedRegistry) {
+        throw 'The delegated Registry gate cannot be staged without provisioning execution; deploy inert with both gates off.'
+    }
 
     # Verify Azure CLI is installed
     Write-Info 'Checking Azure CLI installation...'
@@ -205,7 +387,19 @@ function Invoke-PreflightChecks {
         Write-Success 'SQL setup script found.'
     }
 
-    # Register required resource providers
+    Write-Info 'Verifying read-only provisioning preflight script...'
+    if (-not (Test-Path $ProvisioningPreflightScript)) {
+        throw "Provisioning preflight script not found: $ProvisioningPreflightScript"
+    }
+    Write-Success 'Provisioning preflight script found.'
+
+}
+
+function Initialize-ResourceProviders {
+    Write-StepHeader 'Azure Resource Provider Readiness'
+
+    # This is intentionally deferred until after the read-only topology and
+    # identity preflight. Provider registration changes subscription state.
     Write-Info 'Registering required Azure resource providers...'
     foreach ($provider in $RequiredProviders) {
         Write-Info "  Registering $provider..."
@@ -219,6 +413,37 @@ function Invoke-PreflightChecks {
         }
     }
     Write-Success 'Resource provider registration complete.'
+}
+
+function Invoke-ProvisioningPreflight {
+    param(
+        [switch]$AllowMissingWorkloads,
+        [switch]$RequireDeployedConfigurationMatch,
+        [switch]$ExpectApiAdmissionClosed
+    )
+
+    Write-StepHeader 'Read-only Provisioning Preflight'
+
+    & $ProvisioningPreflightScript `
+        -Environment $Environment `
+        -ResourceGroup $ResourceGroup `
+        -ContainerAppsEnvironmentName $ContainerAppsEnvironmentName `
+        -WorkerContainerAppName $WorkerContainerAppName `
+        -ExpectedServiceBusQueueName $ServiceBusQueueName `
+        -WorkerProcessingEnabled:$WorkerProcessingEnabled `
+        -ExpectLegacyWorkerCredentialKeyVaultRole:$EnableLegacyWorkerCredentialKeyVaultSecretsOfficer.IsPresent `
+        -ExpectedGatewayApiApplicationClientId $GatewayApiApplicationClientId `
+        -ExpectedCredentialKeyVaultUri "https://kv-a365gw-$Environment-prov.vault.azure.net/" `
+        -ExpectedManagerApplicationIds $Agent365ManagerApplicationIds `
+        -ExpectedGatewayApiFederatedCredentialName $GatewayApiFederatedCredentialName `
+        -RegistryProvider $RegistryProvider `
+        -DirectRegistryPreviewEnabled:$EnableDirectRegistryPreview.IsPresent `
+        -DelegatedRegistryEnabled:$EnableDelegatedRegistry.IsPresent `
+        -RequireExecutionReady:$EnableProvisioningExecution.IsPresent `
+        -ManagerApplicationsPreflightConfirmed:$ManagerApplicationsPreflightConfirmed.IsPresent `
+        -AllowMissingWorkloads:$AllowMissingWorkloads.IsPresent `
+        -RequireDeployedConfigurationMatch:$RequireDeployedConfigurationMatch.IsPresent `
+        -ExpectApiAdmissionClosed:$ExpectApiAdmissionClosed.IsPresent
 }
 
 # ============================================================================
@@ -239,9 +464,7 @@ function Invoke-InfraDeployment {
         '--resource-group', $ResourceGroup,
         '--name', $DeploymentName,
         '--template-file', $TemplateFile,
-        '--parameters', $ParameterFile,
-        '--output', 'json',
-        '--no-prompt', 'true'
+        '--parameters', $ParameterFile
     )
 
     # Add image overrides if provided
@@ -254,9 +477,33 @@ function Invoke-InfraDeployment {
         $overrides += "workerContainerImage=$WorkerImage"
         Write-Info "Worker image override: $WorkerImage"
     }
+    $overrides += "containerAppsEnvironmentName=$ContainerAppsEnvironmentName"
+    $overrides += "workerContainerAppName=$WorkerContainerAppName"
+    $overrides += "historicalWorkerContainerAppName=$HistoricalWorkerContainerAppName"
+    $overrides += "serviceBusQueueName=$ServiceBusQueueName"
+    $overrides += "preserveExistingApiSecrets=$((-not $ApiContainerAppIsNew.IsPresent).ToString().ToLowerInvariant())"
+    $overrides += "workerProcessingEnabled=$($WorkerProcessingEnabled.ToString().ToLowerInvariant())"
+    $overrides += "enableLegacyWorkerCredentialKeyVaultSecretsOfficer=$($EnableLegacyWorkerCredentialKeyVaultSecretsOfficer.IsPresent.ToString().ToLowerInvariant())"
+    $overrides += "agent365ProvisioningManagedIdentityPrincipalId=$ResolvedProvisioningManagedIdentityPrincipalId"
+    if (-not [string]::IsNullOrWhiteSpace($GatewayApiApplicationClientId)) {
+        $overrides += "entraIdClientId=$GatewayApiApplicationClientId"
+        $overrides += "entraIdAudience=$GatewayApiApplicationClientId"
+    }
+    $overrides += "provisioningExecutionEnabled=$($EnableProvisioningExecution.IsPresent.ToString().ToLowerInvariant())"
+    $overrides += "agent365RegistryProvider=$RegistryProvider"
+    $overrides += "agent365DirectRegistryPreviewEnabled=$($EnableDirectRegistryPreview.IsPresent.ToString().ToLowerInvariant())"
+    $overrides += "agent365DelegatedRegistryEnabled=$($EnableDelegatedRegistry.IsPresent.ToString().ToLowerInvariant())"
+    $overrides += "agent365ManagerApplicationsPreflightConfirmed=$($ManagerApplicationsPreflightConfirmed.IsPresent.ToString().ToLowerInvariant())"
+    $managerApplicationIdsJson = ConvertTo-Json -InputObject @($Agent365ManagerApplicationIds) -Compress
+    $overrides += "agent365ManagerApplicationIds=$managerApplicationIdsJson"
     foreach ($override in $overrides) {
         $deployArgs += $override
     }
+    $deployArgs += @(
+        '--output', 'json',
+        '--no-prompt', 'true',
+        '--only-show-errors'
+    )
 
     Write-Info "Deployment name: $DeploymentName"
     Write-Info 'Running Bicep deployment (this may take several minutes)...'
@@ -297,7 +544,7 @@ function Invoke-SqlUserSetup {
     # These come from deployment outputs or conventional naming.
     $sqlFqdn = $null
     $apiIdentityName = "ca-gateway-api-$Environment"
-    $workerIdentityName = "ca-gateway-worker-$Environment"
+    $workerIdentityName = $WorkerContainerAppName
 
     if ($DeploymentOutputs -and $DeploymentOutputs.sqlServerFqdn) {
         $sqlFqdn = $DeploymentOutputs.sqlServerFqdn.value
@@ -397,7 +644,8 @@ function Invoke-HealthCheck {
             }
         }
         catch {
-            Write-Warning "Health check failed: $($_.Exception.Message). Retrying..."
+            $failureType = $_.Exception.GetType().Name
+            Write-Warning "Health check attempt failed ($failureType). Retrying..."
         }
 
         if ($i -lt $HealthCheckMaxRetries) {
@@ -427,11 +675,23 @@ function Write-DeploymentSummary {
     Write-Host "  Resource Group:   $ResourceGroup" -ForegroundColor White
     Write-Host "  Subscription:     $SubscriptionId" -ForegroundColor White
     Write-Host "  Deployment:       $DeploymentName" -ForegroundColor White
+    Write-Host "  Container Apps:    $ContainerAppsEnvironmentName" -ForegroundColor White
+    Write-Host "  Historical worker: $HistoricalWorkerContainerAppName" -ForegroundColor White
+    Write-Host "  Target worker:     $WorkerContainerAppName" -ForegroundColor White
+    Write-Host "  Preserve API secrets: $(-not $ApiContainerAppIsNew.IsPresent)" -ForegroundColor White
+    Write-Host "  Shared processing: $WorkerProcessingEnabled" -ForegroundColor White
+    Write-Host "  Legacy worker credential-vault role: $($EnableLegacyWorkerCredentialKeyVaultSecretsOfficer.IsPresent)" -ForegroundColor White
+    Write-Host "  Worker identity pinned: $(-not [string]::IsNullOrWhiteSpace($ResolvedProvisioningManagedIdentityPrincipalId))" -ForegroundColor White
+    Write-Host "  Provisioning:      $($EnableProvisioningExecution.IsPresent)" -ForegroundColor White
+    Write-Host "  Registry provider: $RegistryProvider" -ForegroundColor White
+    Write-Host "  Delegated Registry: $($EnableDelegatedRegistry.IsPresent)" -ForegroundColor White
     Write-Host ''
 
     if ($DeploymentOutputs) {
         Write-Host '  Deployment Outputs:' -ForegroundColor White
-        $DeploymentOutputs.PSObject.Properties | ForEach-Object {
+        $DeploymentOutputs.PSObject.Properties | Where-Object {
+            $_.Name -notmatch '(?i)principalId|tenantId|clientId'
+        } | ForEach-Object {
             $outputName = $_.Name
             $outputValue = $_.Value.value
             Write-Host "    $($outputName): $outputValue" -ForegroundColor Gray
@@ -460,8 +720,27 @@ try {
     # Step 1: Pre-flight
     Invoke-PreflightChecks
 
+    # This preflight is read-only. It stops a deployment that targets the known
+    # non-VNet worker or attempts to enable provisioning without tenant readiness.
+    Invoke-ProvisioningPreflight `
+        -AllowMissingWorkloads:(-not $SkipInfra) `
+        -ExpectApiAdmissionClosed:$EnableProvisioningExecution.IsPresent
+
+    # Resolve the existing system-assigned identity without printing it. A new
+    # worker must be bootstrapped inert before a later activation deployment.
+    $ResolvedProvisioningManagedIdentityPrincipalId =
+        Resolve-ProvisioningManagedIdentityPrincipalId
+
+    # Subscription mutation begins only after the read-only preflight passes.
+    Initialize-ResourceProviders
+
     # Step 2: Infrastructure
     $outputs = Invoke-InfraDeployment
+
+    # Recheck the deployed topology and permissions. No role is granted here.
+    Invoke-ProvisioningPreflight `
+        -RequireDeployedConfigurationMatch `
+        -ExpectApiAdmissionClosed:$EnableProvisioningExecution.IsPresent
 
     # Step 3: SQL Users
     Invoke-SqlUserSetup -DeploymentOutputs $outputs

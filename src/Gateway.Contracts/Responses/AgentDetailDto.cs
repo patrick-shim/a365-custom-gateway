@@ -19,4 +19,5 @@ public record AgentDetailDto(
     string CreatedByObjectId,
     string UpdatedByObjectId,
     byte[] RowVersion,
-    LinksDto? Links);
+    LinksDto? Links,
+    ProvisioningRetryEligibilityDto? RetryProvisioning = null);

@@ -2,11 +2,12 @@
 
 <#
 .SYNOPSIS
-    Bootstrap the entire A365 Custom Gateway Azure environment from scratch.
+    Legacy partial environment helper. Use bootstrap/bootstrap.ps1 for a clean subscription.
 
 .DESCRIPTION
-    Single entry point that provisions all Azure backing services and deploys the
-    gateway applications. Calls sub-scripts in dependency order:
+    This predates workflow v3 and does not provision the complete current system.
+    The supported resumable first-deployment tool is ../bootstrap/bootstrap.ps1.
+    This legacy helper calls older sub-scripts in dependency order:
 
     1. Entra ID app registration (setup-entra.ps1)
     2. Azure infrastructure via Bicep (deploy-infra.ps1)
@@ -15,8 +16,9 @@
     5. Local development config generation (generate-local-config.ps1)
 
     Each step can be skipped individually. The script auto-discovers the caller's
-    identity, generates a SQL admin password, and wires all environment variables
-    required by the Bicep parameter files.
+    identity and wires the environment variables required by the Bicep parameter
+    files. Azure SQL uses Entra-only administration; no SQL login password is
+    generated.
 
 .PARAMETER Environment
     Target environment. Must be one of: dev, staging, prod.
@@ -85,6 +87,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_common.ps1')
+Write-Warn 'This is the legacy partial bootstrap. Use bootstrap/bootstrap.ps1 for a complete clean-subscription deployment.'
 
 try {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -123,13 +126,6 @@ try {
     $EntraAdminObjectId = Get-CurrentUserObjectId
     $EntraAdminLogin = Get-CurrentUserUpn
     Write-Success "User: $EntraAdminLogin (objectId: $EntraAdminObjectId)"
-
-    # ========================================================================
-    # Generate SQL admin password
-    # ========================================================================
-
-    $SqlAdminPassword = New-SecurePassword
-    Write-Success 'Generated SQL admin password.'
 
     # ========================================================================
     # Step 1: Entra ID
@@ -178,14 +174,13 @@ try {
 
     $env:ENTRA_CLIENT_ID = $EntraClientId
     $env:ENTRA_AUDIENCE = $EntraAudience
-    $env:SQL_ADMIN_PASSWORD = $SqlAdminPassword
     $env:ENTRA_ADMIN_OBJECT_ID = $EntraAdminObjectId
     $env:ENTRA_ADMIN_LOGIN = $EntraAdminLogin
     $env:ALERT_EMAIL = $AlertEmail
     $env:API_IMAGE = 'mcr.microsoft.com/dotnet/aspnet:10.0'
     $env:WORKER_IMAGE = 'mcr.microsoft.com/dotnet/runtime:10.0'
 
-    Write-Success 'All 8 environment variables set for Bicep deployment.'
+    Write-Success 'All required environment variables set for Bicep deployment.'
 
     # ========================================================================
     # Step 2: Infrastructure

@@ -25,7 +25,7 @@ internal sealed class SystemConfigurationConfiguration : IEntityTypeConfiguratio
         {
             Id = SingletonId,
             ProvisioningMode = "Automatic",
-            DefaultObservabilityMode = "GatewayOnly",
+            DefaultObservabilityMode = "Agent365",
             DefaultPurviewEnabled = false,
             RetentionDaysActivityReceipts = 90,
             RetentionDaysAuditEvents = 365,

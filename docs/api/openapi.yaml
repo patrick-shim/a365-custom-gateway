@@ -1,4 +1,4 @@
-openapi: 3.1.0
+openapi: 3.0.3
 info:
   title: A365 Custom Gateway API
   description: |
@@ -6,8 +6,28 @@ info:
 
     Bridges external AI agents to Microsoft Agent 365 without requiring those agents
     to embed the Agent 365 SDK or CLI. Provides both a control plane (registration,
-    provisioning, administration) and a data plane (activity ingestion, AI interaction
-    evaluation, observability export).
+    provisioning, administration) and a registration-bound data plane (activity
+    ingestion, AI interaction evaluation, observability export). One Gateway brokers
+    N external registrations to N mapped child Agent IDs; reusable blueprints may be
+    shared, but credentials and routing remain per registration.
+
+    Registration-bound ingress is rate limited after Gateway-key authorization.
+    The SQL Server path uses database-UTC fixed-minute buckets and serializable locks
+    across global, registration, and credential scopes. The limiter and its database
+    schema are deployed in development; real multi-replica load/security proof remains
+    required. The process-local InMemory fallback is for tests only.
+
+    Scoped idempotency canonical-hashes the typed request and takes an exclusive,
+    transaction-owned SQL application lock for registration + endpoint + key before
+    replay lookup or side effects, holding it through persistence and commit. This is
+    deployed in development; real SQL Server multi-replica/staging stress remains a
+    production-readiness gate.
+
+    For Entra child Agent Identity telemetry, the Gateway emits the child client ID
+    as gen_ai.agent.id and the selected blueprint client ID as
+    microsoft.a365.agent.blueprint.id. It omits gen_ai.agent.type and
+    microsoft.a365.agent.platform.id. Agent 365 OTLP HTTP 200 proves endpoint
+    acceptance only, not downstream CloudAppEvents landing.
   version: 1.0.0
   contact:
     name: Gateway Admin
@@ -19,7 +39,7 @@ servers:
     description: Gateway API
     variables:
       host:
-        default: localhost:5001
+        default: localhost:7089
 
 security:
   - entraBearer: []
@@ -27,6 +47,8 @@ security:
 tags:
   - name: Agents
     description: Agent registration and management (control plane)
+  - name: Blueprints
+    description: Typed reusable Agent ID blueprint inventory (control plane)
   - name: Operations
     description: Async operation status tracking
   - name: Audit
@@ -37,6 +59,8 @@ tags:
     description: Activity ingestion (data plane)
   - name: Interactions
     description: AI interaction submission and evaluation (data plane)
+  - name: Agent Runtime
+    description: Protected per-registration Gateway credential readiness probe
 
 paths:
   /agents:
@@ -46,6 +70,33 @@ paths:
       description: |
         Creates a new agent registration and starts async provisioning.
         Returns 202 Accepted with agent and operation URLs.
+
+        This endpoint fails closed before persistence unless the deployment-level
+        execution setting is enabled and its server-side AdmissionExpiresAtUtc is a
+        parseable future UTC instant. Clients can read the resulting effective gate
+        from provisioningExecutionEnabled in the GET /system/config response. With
+        exact admission binding enabled, the request must also match the configured
+        AuthorizedExternalAgentId; authenticated system config exposes that public
+        value as authorizedRegistrationExternalAgentId for the Admin UI.
+
+        Current local workflow-v3 source selects or creates a reusable typed Agent ID
+        blueprint. It does not accept an external-runtime managed-identity object ID.
+        Development creation remains intentionally closed outside a bounded admission
+        window. Ordinary Entra apps cannot be substituted as blueprints.
+
+        The response contains a unique per-registration Gateway API key exactly
+        once. Store it immediately in the external agent's secret manager. The
+        Gateway persists only a salted hash and cannot retrieve the clear key later.
+        If a successful one-time response is lost, do not retry registration to
+        recover the secret and do not search idempotency storage. Read safe metadata,
+        issue a replacement through the administrator credential endpoint, and
+        deploy/verify it before revoking any usable key.
+
+        Internally, Blueprint and Blueprint Principal reads retain their typed
+        Microsoft Graph casts. Agent Identity verification uses the typed
+        /servicePrincipals/{id}/microsoft.graph.agentIdentity GET with sponsor
+        expansion. These are Microsoft implementation dependencies, not Gateway
+        API paths.
 
         Gateway API designed for this solution, not a Microsoft API.
       tags: [Agents]
@@ -64,9 +115,13 @@ paths:
               ownerObjectId: 00000000-0000-0000-0000-000000000001
               environment: Production
               features:
-                observabilityMode: Agent365
+                agent365ObservabilityEnabled: true
+                azureMonitorExportEnabled: false
                 purviewEnabled: true
                 purviewMode: Enforce
+              blueprint:
+                mode: UseExisting
+                blueprintObjectId: 11111111-1111-1111-1111-111111111111
       responses:
         '202':
           description: Agent registration accepted, provisioning started
@@ -79,6 +134,14 @@ paths:
               schema:
                 type: string
               description: URL of the provisioning operation
+            Cache-Control:
+              schema:
+                type: string
+              description: Always `no-store` because the body contains a one-time key.
+            Pragma:
+              schema:
+                type: string
+              description: Always `no-cache` because the body contains a one-time key.
           content:
             application/json:
               schema:
@@ -99,15 +162,15 @@ paths:
                 type: https://gateway.example.com/problems/duplicate-external-agent-id
                 title: An agent with this externalAgentId already exists.
                 status: 409
-                code: DUPLICATE_EXTERNAL_AGENT_ID
+                errorCode: DUPLICATE_EXTERNAL_AGENT_ID
         '422':
-          description: Unsupported feature configuration
+          description: Unsupported feature configuration or incompatible existing blueprint
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-        '429':
-          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ProvisioningDisabled'
 
     get:
       operationId: listAgents
@@ -144,6 +207,37 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /agent-identity-blueprints:
+    get:
+      operationId: listAgentIdentityBlueprints
+      summary: List reusable typed Agent ID blueprints
+      description: |
+        Gateway-owned control-plane catalog used by the registration dropdown.
+        Reads the typed Microsoft Graph blueprint collection with validated paging
+        and fails closed on dependency or identity errors. Every typed blueprint is
+        returned with Agent 365 compatibility metadata derived from the deployment's
+        configured manager applications. Incompatible entries remain inventory-visible
+        but cannot be registered. It never converts an ordinary application into a
+        blueprint and never returns partial inventory as a successful empty result.
+      tags: [Blueprints]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      responses:
+        '200':
+          description: Typed reusable blueprint inventory
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentIdentityBlueprintListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /agents/{agentId}:
     parameters:
       - $ref: '#/components/parameters/AgentId'
@@ -176,8 +270,11 @@ paths:
       operationId: deleteAgent
       summary: Delete an agent (async)
       description: |
-        Starts async deletion. Default preserves Microsoft-side resources
-        unless deleteMicrosoftResources=true.
+        Starts async deletion. With deleteMicrosoftResources=false, the current
+        worker deletes the Gateway registration state while preserving Microsoft
+        resources. With deleteMicrosoftResources=true, Microsoft-side deletion is
+        currently unsupported and the operation fails closed in
+        RequiresManualIntervention; it never claims external resources were deleted.
       tags: [Agents]
       security:
         - entraBearer: [Gateway.Administrator]
@@ -208,8 +305,6 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/ConcurrencyConflict'
-        '429':
-          $ref: '#/components/responses/RateLimited'
 
   /agents/{agentId}/features:
     parameters:
@@ -256,6 +351,122 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+
+  /agents/{agentId}/credentials:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+
+    get:
+      operationId: listAgentIngressCredentials
+      summary: List safe Gateway credential metadata
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      responses:
+        '200':
+          description: Credential metadata only; never clear keys, hashes, or salts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentIngressCredentialListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    post:
+      operationId: issueAgentIngressCredential
+      summary: Issue a replacement Gateway credential
+      description: |
+        Returns the clear API key exactly once. The response is marked
+        Cache-Control: no-store and Pragma: no-cache. Deploy and verify the new key
+        before revoking the old one. A lost successful response cannot be replayed;
+        list safe metadata and issue another replacement.
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      responses:
+        '201':
+          description: Replacement Gateway credential issued
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Always `no-store`.
+            Pragma:
+              schema:
+                type: string
+              description: Always `no-cache`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueAgentIngressCredentialResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+
+  /agents/{agentId}/credentials/{credentialId}:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+      - name: credentialId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    delete:
+      operationId: revokeAgentIngressCredential
+      summary: Revoke a named Gateway credential
+      description: |
+        Idempotent when the owned credential is already revoked. Returns 404 when
+        the credential is not owned by the route agent and 409 when revocation would
+        remove the last unexpired, unrevoked credential.
+      tags: [Agents]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      responses:
+        '200':
+          description: Credential revoked or already revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokeAgentIngressCredentialResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Agent not found, or the named credential is not owned by this agent
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://gateway.example.com/problems/agent-ingress-credential-not-found
+                title: Agent ingress credential not found.
+                status: 404
+                errorCode: AGENT_INGRESS_CREDENTIAL_NOT_FOUND
+                correlationId: 3f2504e0-4f89-41d3-9a0c-0305e82c3301
+        '409':
+          description: Revocation would remove the last usable credential
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: https://gateway.example.com/problems/agent-ingress-credential-last-usable
+                title: The last usable Gateway credential cannot be revoked.
+                status: 409
+                errorCode: AGENT_INGRESS_CREDENTIAL_LAST_USABLE
+                correlationId: 3f2504e0-4f89-41d3-9a0c-0305e82c3301
 
   /agents/{agentId}:enable:
     parameters:
@@ -328,7 +539,14 @@ paths:
     post:
       operationId: retryProvisioning
       summary: Retry failed provisioning
-      description: Agent must be in Failed status.
+      description: |
+        Failed status is necessary but not sufficient. The latest server-computed
+        retryProvisioning decision must have supported=true, and the endpoint
+        re-evaluates that decision before persistence. Legacy workflows, manual-
+        intervention outcomes, active operations, and ambiguous or in-flight beta
+        Registry creates fail closed and must not be replayed. The request also
+        fails before persistence when deployment-level provisioning execution is
+        disabled.
       tags: [Agents]
       security:
         - entraBearer: [Gateway.Administrator]
@@ -352,41 +570,16 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Agent is not in Failed status
+          description: |
+            Retry is not currently safe: the agent is not Failed or the server-
+            computed retry eligibility is unsupported, including legacy, manual-
+            intervention, active-operation, and ambiguous/in-flight Registry cases.
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
-
-  /agents/{agentId}:reconcile:
-    parameters:
-      - $ref: '#/components/parameters/AgentId'
-
-    post:
-      operationId: reconcileAgent
-      summary: Trigger on-demand reconciliation
-      tags: [Agents]
-      security:
-        - entraBearer: [Gateway.Administrator]
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-      responses:
-        '202':
-          description: Reconciliation started
-          headers:
-            Operation-Location:
-              schema:
-                type: string
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AsyncOperationResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ProvisioningDisabled'
 
   /operations/{operationId}:
     parameters:
@@ -416,6 +609,61 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /operations/{operationId}:complete-agent365-registration:
+    parameters:
+      - name: operationId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    post:
+      operationId: completeAgent365Registration
+      summary: Complete the Agent 365 Registry stage as the signed-in administrator
+      description: |
+        Workflow-v3 administrator action. The Gateway API validates the caller's
+        user-bound access_as_user token and Gateway.Administrator role, acquires a
+        Microsoft Graph token through OBO, and performs at most one preview Registry
+        create. A creator-bound planned Registry ID is persisted first and included
+        in the CLI-compatible payload with the reviewed preview-provider
+        managedByAppId. The safe Registry ID returned with HTTP 201 is persisted as
+        the accepted create boundary, with the planned ID used only when a successful
+        response omits it; immediate exact GET is not required from the preview
+        collection. An unknown post-create outcome permits exact planned-ID GET-only
+        reconciliation and never repeats the POST. Historical v1/v2
+        operations are rejected before token acquisition or Microsoft mutation.
+        Registration admission must already be closed; this independent action gate
+        must be enabled, unexpired, and exact-bound to this operation ID.
+      tags: [Operations]
+      security:
+        - entraBearer: [Gateway.Administrator, access_as_user]
+      responses:
+        '200':
+          description: Registry create accepted and final worker verification queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompleteAgent365RegistrationResponse'
+        '401':
+          description: Sign-in, consent, or Conditional Access challenge required
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Legacy/invalid state or an ambiguous Registry boundary
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          $ref: '#/components/responses/ProvisioningDisabled'
 
   /agents/{agentId}/audit-events:
     parameters:
@@ -565,18 +813,57 @@ paths:
               schema:
                 $ref: '#/components/schemas/ReadinessResponse'
 
+  /agent-runtime/readiness:
+    get:
+      operationId: agentRuntimeReadiness
+      summary: Verify a registration-bound Gateway API key
+      description: |
+        Gateway-owned, non-mutating readiness probe. Returns 204 only when the
+        presented per-registration Gateway API key is valid, unexpired, unrevoked,
+        and resolves to a non-deleted registration. This proves ingress credential
+        validation only; it does not prove Agent 365 provisioning or system health.
+        Registration status is intentionally not an `Active` gate here; ingestion
+        endpoints enforce operational status separately.
+      tags: [Agent Runtime]
+      security:
+        - gatewayAgentApiKey: []
+      responses:
+        '204':
+          description: Gateway agent credential is valid
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /agent-activities:
     post:
       operationId: submitActivity
       summary: Submit a single agent activity
       description: |
-        Data-plane endpoint. Requires ExternalAgent role.
-        Agent-to-client identity binding enforced server-side.
+        Data-plane endpoint. Requires the unique Gateway API key issued for the
+        registration. The key resolves the server-side registration and the body
+        externalAgentId is cross-checked; the body identifier is never authentication.
+
+        When Agent 365 observability is enabled for the registered agent,
+        actor.type must be User and actor.tenantUserObjectId must be a non-empty
+        Microsoft Entra object ID. An unsupported actor type or a missing/invalid
+        object ID fails validation with HTTP 400 before the activity is persisted
+        or queued. Agent and System actors remain supported when Agent 365 is not
+        a destination (Disabled or GatewayOnly).
+
+        Agent-to-agent attribution is not represented by this request contract.
+        It needs dedicated caller-agent identity fields before it can be exported
+        safely to Agent 365; callers must not label an agent as a human User.
 
         Gateway API designed for this solution, not a Microsoft API.
       tags: [Activities]
       security:
-        - entraBearer: [ExternalAgent]
+        - gatewayAgentApiKey: []
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
         - name: X-Correlation-ID
@@ -598,7 +885,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/ActivityReceipt'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: |
+            Request validation failed. When Agent 365 observability is enabled,
+            this includes actor.type values other than User and a missing, empty,
+            or invalid actor.tenantUserObjectId.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -621,6 +915,8 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /agent-activities:batch:
     post:
@@ -629,9 +925,21 @@ paths:
       description: |
         Max 100 events per batch, max 1 MB request body.
         Supports partial success — each item gets its own status.
+        Idempotency is scoped to the caller registration, this batch endpoint, and
+        the key; the canonical hash covers every submitted item in order.
+
+        When Agent 365 observability is enabled, each item must set actor.type to
+        User and supply a non-empty, valid Microsoft Entra object ID in
+        actor.tenantUserObjectId. An item with another actor type or a missing,
+        empty, or malformed object ID is returned as Rejected with code
+        VALIDATION_FAILED while valid siblings continue to be accepted. Agent and
+        System actors remain supported when Agent 365 is not a destination.
+
+        Agent-to-agent attribution needs dedicated caller-agent identity fields
+        that are not yet represented by this request contract.
       tags: [Activities]
       security:
-        - entraBearer: [ExternalAgent]
+        - gatewayAgentApiKey: []
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
@@ -663,6 +971,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Same scoped Idempotency-Key with a different canonical batch payload
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '413':
           description: Payload too large
           content:
@@ -671,17 +985,32 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /ai-interactions:
     post:
       operationId: submitInteraction
-      summary: Submit an AI interaction (async processing)
+      summary: Submit a completed AI interaction
       description: |
-        Accepts the interaction for async Purview audit and observability processing.
-        Does not evaluate Purview policies inline — use /ai-interactions:evaluate for that.
+        Accepts a completed prompt/response pair. When Purview AuditOnly is enabled,
+        the Gateway synchronously submits metadata-only content activities before
+        persistence. When Purview Enforce is enabled, policy is computed for the
+        selected reusable blueprint application and each activity follows its
+        returned mode: evaluateInline waits for a decision; evaluateOffline requires
+        successful submission without a synchronous verdict. A policy block is
+        represented by a 202 receipt with status Failed and Purview status Blocked;
+        accepted mixed/offline processing returns AuditLogged. This endpoint is not
+        a pre-model gate because model execution has already occurred in the external
+        runtime.
+
+        When Agent 365 observability or Purview is enabled for the registered agent,
+        userContext.tenantUserObjectId must be a non-empty Microsoft Entra object
+        ID. A missing or invalid value fails validation with HTTP 400 before the
+        interaction is persisted or queued.
       tags: [Interactions]
       security:
-        - entraBearer: [ExternalAgent]
+        - gatewayAgentApiKey: []
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
@@ -698,7 +1027,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/InteractionReceipt'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: |
+            Request validation failed. This includes a missing, empty, or invalid
+            userContext.tenantUserObjectId when Agent 365 observability is enabled.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -715,95 +1050,35 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '429':
           $ref: '#/components/responses/RateLimited'
-
-  /ai-interactions:evaluate:
-    post:
-      operationId: evaluateInteraction
-      summary: Evaluate AI interaction inline (Purview enforce)
-      description: |
-        Evaluates prompts/responses against Purview DLP policies synchronously.
-        Returns Allow or 403 Block based on policy evaluation.
-        Requires userContext.tenantUserObjectId for Purview evaluation.
-      tags: [Interactions]
-      security:
-        - entraBearer: [ExternalAgent]
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKeyRequired'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SubmitInteractionRequest'
-      responses:
-        '200':
-          description: Content allowed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EvaluationResult'
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          description: Identity mismatch, agent disabled, or content blocked by Purview
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-              examples:
-                identityMismatch:
-                  summary: Identity mismatch
-                  value:
-                    type: https://gateway.example.com/problems/agent-identity-mismatch
-                    title: The authenticated identity does not match the specified agent.
-                    status: 403
-                    code: AGENT_IDENTITY_MISMATCH
-                policyBlocked:
-                  summary: Purview policy blocked
-                  value:
-                    type: https://gateway.example.com/problems/purview-policy-blocked
-                    title: Content was blocked by organizational policy.
-                    status: 403
-                    code: PURVIEW_POLICY_BLOCKED
-                    policyActions:
-                      - action: Block
-        '409':
-          description: Idempotency conflict
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-        '429':
-          $ref: '#/components/responses/RateLimited'
         '503':
-          description: Purview dependency unavailable (Enforce mode)
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/ProblemDetails'
-              example:
-                type: https://gateway.example.com/problems/purview-dependency-unavailable
-                title: Purview service is temporarily unavailable.
-                status: 503
-                code: PURVIEW_DEPENDENCY_UNAVAILABLE
+          $ref: '#/components/responses/ServiceUnavailable'
 
 components:
   securitySchemes:
     entraBearer:
       type: oauth2
-      description: Microsoft Entra ID OAuth 2.0
+      description: |
+        Microsoft Entra ID OAuth 2.0 for Gateway control-plane users. Data-plane
+        callers use gatewayAgentApiKey instead.
       flows:
         authorizationCode:
           authorizationUrl: https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/authorize
           tokenUrl: https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token
           scopes:
             Gateway.Administrator: Full control-plane access
-            Gateway.Operator: Enable/disable agents, retry operations
+            Gateway.Operator: Enable/disable agents and view provisioning status
             Gateway.Auditor: Read-only audit access
             Gateway.SupportReader: Health/diagnostics with redaction
-            ExternalAgent: Data-plane access (app role)
+    gatewayAgentApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: A365 Gateway agent API key
+      description: |
+        Unique per-registration credential returned once by POST /agents (or a
+        rotation operation). Send `Authorization: Bearer <gatewayCredential.apiKey>`.
+        The clear key must never be placed in a URL, request body, log, or persistent
+        browser storage. The Gateway stores only a salted hash and binds a valid key
+        to exactly one registration.
 
   parameters:
     AgentId:
@@ -841,6 +1116,11 @@ components:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
+      description: |
+        Scoped by authenticated AgentRegistrationId and normalized endpoint. Reuse
+        with the same endpoint-specific canonical request returns the cached safe
+        response; different content returns 409 IDEMPOTENCY_CONFLICT. Never contains
+        or caches a Gateway API key.
       schema:
         type: string
         format: uuid
@@ -849,6 +1129,11 @@ components:
       name: Idempotency-Key
       in: header
       required: true
+      description: |
+        Scoped by authenticated AgentRegistrationId and normalized endpoint. The
+        same value may be used independently by another registration or endpoint.
+        Batch canonicalization preserves item order. Secret issuance responses are
+        excluded from idempotency storage.
       schema:
         type: string
         format: uuid
@@ -864,7 +1149,15 @@ components:
 
     ObservabilityMode:
       type: string
-      enum: [Disabled, GatewayOnly, Agent365]
+      deprecated: true
+      description: |
+        Backward-compatible encoding of the two independent agent telemetry
+        destinations. New clients should use agent365ObservabilityEnabled and
+        azureMonitorExportEnabled instead.
+
+        Disabled = neither destination; GatewayOnly = Azure Monitor only;
+        Agent365 = Agent 365 only; Agent365AzureMonitor = both destinations.
+      enum: [Disabled, GatewayOnly, Agent365, Agent365AzureMonitor]
 
     PurviewMode:
       type: string
@@ -876,6 +1169,11 @@ components:
 
     ActorType:
       type: string
+      description: |
+        User is required when Agent 365 observability is a destination. Agent and
+        System are supported only when Agent 365 export is disabled. Agent-to-agent
+        export needs caller-agent identity fields that this contract does not yet
+        expose.
       enum: [Agent, User, System]
 
     ToolOutcome:
@@ -888,7 +1186,30 @@ components:
 
     OperationStatus:
       type: object
-      required: [operationId, type, status, startedAtUtc]
+      description: |
+        Persisted Gateway operation state. Workflow version 3 is current only when
+        the exact seven-stage sequence is present. Every other version/shape is
+        legacy and non-resumable.
+
+        After AssignAgent365Access, the worker pauses at 71% with
+        requiredAction=CompleteAgent365Registration. The signed-in administrator
+        completes Registry creation through the Gateway API, after which the worker
+        performs final connection verification.
+
+        VerifyAgent365Connection includes child-Agent-ID token validation for Agent
+        365 observability through the Gateway-worker FIC. Gateway-key readiness is a
+        separate data-plane canary.
+      required:
+        - operationId
+        - type
+        - status
+        - percentComplete
+        - agentId
+        - startedAtUtc
+        - workflowVersion
+        - legacy
+        - replaySupported
+        - pollingRecommended
       properties:
         operationId:
           type: string
@@ -897,7 +1218,7 @@ components:
           $ref: '#/components/schemas/OperationType'
         status:
           type: string
-          enum: [Pending, Running, Completed, Failed, RequiresManualIntervention]
+          enum: [Pending, Running, AwaitingAdministratorAction, Completed, Failed, RequiresManualIntervention]
         currentStep:
           type: string
         percentComplete:
@@ -920,6 +1241,44 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/OperationStep'
+        workflowVersion:
+          type: integer
+          description: Exact persisted workflow contract version; current is 3.
+          example: 3
+        legacy:
+          type: boolean
+          description: True when version and ordered steps do not exactly match workflow v3.
+        replaySupported:
+          type: boolean
+          description: |
+            False for legacy jobs, manual-intervention outcomes, ambiguous Registry
+            mutations, and an in-flight Registry create whose outcome is not yet
+            durably known. This flag never authorizes DLQ replay.
+        pollingRecommended:
+          type: boolean
+          description: True only for a nonterminal exact-current workflow that is not awaiting administrator action.
+        requiredAction:
+          type: string
+          nullable: true
+          enum: [CompleteAgent365Registration]
+          description: Explicit user action required before the workflow can continue.
+
+    CompleteAgent365RegistrationResponse:
+      type: object
+      required: [operationId, agentId, agent365RegistrationId, status]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        agentId:
+          type: string
+          format: uuid
+        agent365RegistrationId:
+          type: string
+          description: Durable Agent 365 Registry identifier returned or confirmed by the delegated create boundary.
+        status:
+          type: string
+          enum: [VerificationQueued]
 
     OperationError:
       type: object
@@ -946,9 +1305,32 @@ components:
 
     AgentFeatures:
       type: object
+      description: |
+        Per-agent feature settings. Agent 365 observability and the optional Azure
+        Monitor mirror are independent. Gateway/platform diagnostics are not
+        controlled by these fields, and Microsoft Purview is configured separately.
+
+        If observabilityMode is supplied together with either destination boolean,
+        the supplied values must describe the same combination.
       properties:
         observabilityMode:
-          $ref: '#/components/schemas/ObservabilityMode'
+          deprecated: true
+          description: Deprecated compatibility field for older clients.
+          allOf:
+            - $ref: '#/components/schemas/ObservabilityMode'
+        agent365ObservabilityEnabled:
+          type: boolean
+          default: true
+          description: |
+            Sends sanitized agent metrics and traces to Agent 365 observability.
+            New registrations use the configured system default, initially true.
+        azureMonitorExportEnabled:
+          type: boolean
+          default: false
+          description: |
+            Optionally mirrors sanitized agent metrics and traces to Azure Monitor /
+            Application Insights. New registrations use the configured system
+            default, initially false.
         purviewEnabled:
           type: boolean
         purviewMode:
@@ -960,12 +1342,29 @@ components:
         agentId:
           type: string
           nullable: true
+          description: Child Agent Identity application/client ID used as fmi_path; currently the same GUID as agentIdentityObjectId.
         blueprintId:
           type: string
           nullable: true
+          description: |
+            Typed Agent Identity Blueprint application/client ID (`appId`); its
+            value may equal blueprintObjectId.
         instanceId:
           type: string
           nullable: true
+          description: Agent 365 Registry record ID when direct Registry is enabled.
+        agentIdentityObjectId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Microsoft Entra object ID of the child Agent Identity; currently the same GUID as agentId.
+        blueprintObjectId:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Microsoft Entra Graph `id` of the typed Agent Identity Blueprint; its
+            value may equal blueprintId.
 
     ProvisioningInfo:
       type: object
@@ -978,9 +1377,178 @@ components:
           type: string
           nullable: true
 
+    ProvisioningRetryEligibility:
+      type: object
+      required: [supported, reason]
+      description: |
+        Server-computed retry-safety decision. Clients must fail closed when this
+        object is absent or supported is false; status alone is not sufficient.
+      properties:
+        supported:
+          type: boolean
+        reason:
+          type: string
+          description: Safe operator-facing explanation that contains no raw dependency error.
+
+    AgentBlueprintSelection:
+      type: object
+      description: |
+        Selects or creates a reusable typed Agent ID blueprint. Gateway federation
+        is trusted worker configuration and never comes from this client contract.
+        Ordinary Entra apps, including the Gateway API app, are not valid blueprints.
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [UseExisting, CreateNew]
+        blueprintObjectId:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Typed blueprint Graph `id` from the Gateway catalog. Required only for
+            UseExisting. Its value may equal that item's `appId`; it is not an
+            ordinary application object ID supplied outside the typed catalog.
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 256
+          nullable: true
+          description: Stable reusable-blueprint name. Required only for CreateNew.
+      oneOf:
+        - title: Use an existing typed blueprint
+          properties:
+            mode:
+              type: string
+              enum: [UseExisting]
+          required: [blueprintObjectId]
+        - title: Create a reusable blueprint
+          properties:
+            mode:
+              type: string
+              enum: [CreateNew]
+          required: [displayName]
+
+    AgentIdentityBlueprintSummary:
+      type: object
+      required: [blueprintObjectId, blueprintClientId, displayName, isAgent365Compatible]
+      properties:
+        blueprintObjectId:
+          type: string
+          format: uuid
+          description: |
+            Typed blueprint application object ID (`id`); its value may equal
+            blueprintClientId.
+        blueprintClientId:
+          type: string
+          format: uuid
+          description: |
+            Typed blueprint application/client ID (`appId`); its value may equal
+            blueprintObjectId.
+        displayName:
+          type: string
+        isAgent365Compatible:
+          type: boolean
+          description: |
+            True only when the blueprint contains every Agent 365 manager application
+            required by this Gateway deployment. Registration revalidates this server-side.
+        agent365CompatibilityIssue:
+          type: string
+          nullable: true
+          enum:
+            - ManagerApplicationsNotConfigured
+            - MissingRequiredManagerApplications
+          description: |
+            Safe reason when isAgent365Compatible is false. No manager application ID
+            is exposed by this catalog contract.
+
+    AgentIdentityBlueprintListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentIdentityBlueprintSummary'
+
+    AgentGatewayCredential:
+      type: object
+      description: |
+        One-time clear Gateway ingress credential. It is returned only when issued
+        or rotated; subsequent agent detail/list responses never include apiKey.
+      required: [keyId, apiKey, expiresAtUtc]
+      properties:
+        keyId:
+          type: string
+          format: uuid
+        apiKey:
+          type: string
+          description: Clear per-registration key; save immediately and never log it.
+        expiresAtUtc:
+          type: string
+          format: date-time
+
+    AgentIngressCredentialMetadata:
+      type: object
+      description: Safe administrative metadata; no key, hash, or salt.
+      required: [keyId, createdAtUtc, expiresAtUtc]
+      properties:
+        keyId:
+          type: string
+          format: uuid
+        createdAtUtc:
+          type: string
+          format: date-time
+        expiresAtUtc:
+          type: string
+          format: date-time
+        revokedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+
+    AgentIngressCredentialListResponse:
+      type: object
+      required: [agentId, items]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentIngressCredentialMetadata'
+
+    IssueAgentIngressCredentialResponse:
+      type: object
+      required: [agentId, externalAgentId, gatewayCredential]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        externalAgentId:
+          type: string
+        gatewayCredential:
+          $ref: '#/components/schemas/AgentGatewayCredential'
+
+    RevokeAgentIngressCredentialResponse:
+      type: object
+      required: [agentId, credential, alreadyRevoked]
+      properties:
+        agentId:
+          type: string
+          format: uuid
+        credential:
+          $ref: '#/components/schemas/AgentIngressCredentialMetadata'
+        alreadyRevoked:
+          type: boolean
+
     RegisterAgentRequest:
       type: object
-      required: [externalAgentId, name, ownerObjectId, environment]
+      description: |
+        Current local workflow-v3 registration contract. Development creation remains
+        fail-closed outside an exact-bound, expiring admission window.
+      required: [externalAgentId, name, ownerObjectId, environment, blueprint]
       properties:
         externalAgentId:
           type: string
@@ -1001,10 +1569,12 @@ components:
           $ref: '#/components/schemas/Environment'
         features:
           $ref: '#/components/schemas/AgentFeatures'
+        blueprint:
+          $ref: '#/components/schemas/AgentBlueprintSelection'
 
     RegisterAgentResponse:
       type: object
-      required: [agentId, externalAgentId, status, operationId, createdAtUtc]
+      required: [agentId, externalAgentId, name, status, operationId, createdAtUtc, gatewayCredential]
       properties:
         agentId:
           type: string
@@ -1021,6 +1591,8 @@ components:
         createdAtUtc:
           type: string
           format: date-time
+        gatewayCredential:
+          $ref: '#/components/schemas/AgentGatewayCredential'
         _links:
           $ref: '#/components/schemas/Links'
 
@@ -1096,6 +1668,8 @@ components:
           $ref: '#/components/schemas/AgentFeatures'
         provisioningStatus:
           $ref: '#/components/schemas/ProvisioningInfo'
+        retryProvisioning:
+          $ref: '#/components/schemas/ProvisioningRetryEligibility'
         lastActivityAtUtc:
           type: string
           format: date-time
@@ -1119,9 +1693,22 @@ components:
 
     UpdateFeaturesRequest:
       type: object
+      description: |
+        Partial update. The two canonical observability destination fields can be
+        changed independently. If the deprecated observabilityMode field is also
+        supplied, all supplied destination values must agree.
       properties:
         observabilityMode:
-          $ref: '#/components/schemas/ObservabilityMode'
+          deprecated: true
+          description: Deprecated compatibility field for older clients.
+          allOf:
+            - $ref: '#/components/schemas/ObservabilityMode'
+        agent365ObservabilityEnabled:
+          type: boolean
+          description: Enables or disables export to Agent 365 observability.
+        azureMonitorExportEnabled:
+          type: boolean
+          description: Enables or disables the optional Azure Monitor mirror.
         purviewEnabled:
           type: boolean
         purviewMode:
@@ -1129,7 +1716,7 @@ components:
 
     UpdateFeaturesResponse:
       type: object
-      required: [agentId, features, updatedAtUtc, rowVersion]
+      required: [agentId, features, updatedAtUtc]
       properties:
         agentId:
           type: string
@@ -1139,8 +1726,6 @@ components:
         updatedAtUtc:
           type: string
           format: date-time
-        rowVersion:
-          type: string
 
     AgentStateChangeResponse:
       type: object
@@ -1223,6 +1808,12 @@ components:
 
     ProvisioningJob:
       type: object
+      description: |
+        Historical job projection. It doesn't expose workflowVersion/legacy;
+        clients must fetch OperationStatus before considering any replay. Exact
+        workflow version 2 plus the seven current stages is necessary but not
+        sufficient; replaySupported can also be false for manual intervention,
+        ambiguous Registry results, or an in-flight Registry create.
       required: [jobId, agentId, type, status, startedAtUtc]
       properties:
         jobId:
@@ -1264,118 +1855,144 @@ components:
 
     SystemConfig:
       type: object
+      description: Current singleton system configuration in the flat API DTO shape.
       properties:
-        tenantId:
-          type: string
-          format: uuid
         provisioningMode:
           type: string
           enum: [Automatic, Manual]
         defaultObservabilityMode:
-          $ref: '#/components/schemas/ObservabilityMode'
+          deprecated: true
+          description: Deprecated compatibility encoding of the two canonical defaults.
+          allOf:
+            - $ref: '#/components/schemas/ObservabilityMode'
+        defaultAgent365ObservabilityEnabled:
+          type: boolean
+          default: true
+          description: Default Agent 365 export setting for new agent registrations.
+        defaultAzureMonitorExportEnabled:
+          type: boolean
+          default: false
+          description: Default optional Azure Monitor mirror setting for new agent registrations.
         defaultPurviewEnabled:
           type: boolean
         defaultPurviewMode:
           $ref: '#/components/schemas/PurviewMode'
-        retentionDays:
-          type: object
-          properties:
-            activityReceipts:
-              type: integer
-            auditEvents:
-              type: integer
-            idempotencyRecords:
-              type: integer
-            outboxMessages:
-              type: integer
-        rateLimits:
-          type: object
-          properties:
-            perClientRequestsPerMinute:
-              type: integer
-            perAgentRequestsPerMinute:
-              type: integer
-            globalRequestsPerMinute:
-              type: integer
-        reconciliation:
-          type: object
-          properties:
-            enabled:
-              type: boolean
-            intervalHours:
-              type: integer
-            stuckTransitionTimeoutDays:
-              type: integer
-        featureFlags:
-          type: object
-          properties:
-            useGraphAgentRegistration:
-              type: boolean
-            useCliProvisioningFallback:
-              type: boolean
-        rowVersion:
+        retentionDaysActivityReceipts:
+          type: integer
+        retentionDaysAuditEvents:
+          type: integer
+        retentionDaysIdempotencyRecords:
+          type: integer
+        retentionDaysOutboxMessages:
+          type: integer
+        rateLimitPerClient:
+          type: integer
+          description: Maximum requests per Gateway credential in each database-UTC fixed minute.
+        rateLimitPerAgent:
+          type: integer
+          description: Maximum requests per authenticated registration in each database-UTC fixed minute.
+        rateLimitGlobal:
+          type: integer
+          description: Maximum registration-bound requests Gateway-wide in each database-UTC fixed minute.
+        reconciliationEnabled:
+          type: boolean
+          deprecated: true
+          description: Persisted compatibility value; the current Gateway has no verified reconciliation scheduler or Microsoft adapter.
+        reconciliationIntervalHours:
+          type: integer
+          deprecated: true
+          description: Persisted compatibility value with no current background execution effect.
+        stuckTransitionTimeoutDays:
+          type: integer
+        useGraphAgentRegistration:
+          type: boolean
+          deprecated: true
+          description: Persisted compatibility field; it does not select the current deployment provider or enable provisioning execution.
+        useCliProvisioningFallback:
+          type: boolean
+          deprecated: true
+          description: Persisted compatibility field; the current worker has no unattended CLI fallback.
+        provisioningExecutionEnabled:
+          type: boolean
+          readOnly: true
+          description: |
+            Effective deployment capability gate for new registration and
+            provisioning retry. True requires both the boolean execution setting and
+            a parseable future server-side AdmissionExpiresAtUtc; current exact-bound
+            mode also requires a configured authorized external ID. False means those
+            requests return PROVISIONING_DISABLED before creating an agent, job, or
+            outbox message. This value is supplied by deployment configuration and
+            cannot be changed through PATCH.
+        authorizedRegistrationExternalAgentId:
           type: string
-        updatedAtUtc:
-          type: string
-          format: date-time
+          nullable: true
+          readOnly: true
+          description: |
+            Server-authorized generated external ID while an exact-bound registration
+            window is effectively open. Authenticated Admin UI clients use this value
+            verbatim. It is admission/routing metadata, not a Gateway key, Microsoft
+            credential, or authority for delegated completion.
 
     UpdateSystemConfigRequest:
       type: object
+      description: |
+        Partial system configuration update. The canonical observability defaults
+        can be changed independently. If deprecated defaultObservabilityMode is also
+        supplied, all supplied destination values must agree.
       properties:
         provisioningMode:
           type: string
           enum: [Automatic, Manual]
         defaultObservabilityMode:
-          $ref: '#/components/schemas/ObservabilityMode'
+          deprecated: true
+          description: Deprecated compatibility encoding of the two canonical defaults.
+          allOf:
+            - $ref: '#/components/schemas/ObservabilityMode'
+        defaultAgent365ObservabilityEnabled:
+          type: boolean
+          description: Default Agent 365 export setting for new agent registrations.
+        defaultAzureMonitorExportEnabled:
+          type: boolean
+          description: Default optional Azure Monitor mirror setting for new agent registrations.
         defaultPurviewEnabled:
           type: boolean
         defaultPurviewMode:
           $ref: '#/components/schemas/PurviewMode'
-        retentionDays:
-          type: object
-          properties:
-            activityReceipts:
-              type: integer
-              minimum: 1
-            auditEvents:
-              type: integer
-              minimum: 30
-            idempotencyRecords:
-              type: integer
-              minimum: 1
-            outboxMessages:
-              type: integer
-              minimum: 1
-        rateLimits:
-          type: object
-          properties:
-            perClientRequestsPerMinute:
-              type: integer
-              minimum: 10
-            perAgentRequestsPerMinute:
-              type: integer
-              minimum: 10
-            globalRequestsPerMinute:
-              type: integer
-              minimum: 100
-        reconciliation:
-          type: object
-          properties:
-            enabled:
-              type: boolean
-            intervalHours:
-              type: integer
-              minimum: 1
-            stuckTransitionTimeoutDays:
-              type: integer
-              minimum: 1
-        featureFlags:
-          type: object
-          properties:
-            useGraphAgentRegistration:
-              type: boolean
-            useCliProvisioningFallback:
-              type: boolean
+        retentionDaysActivityReceipts:
+          type: integer
+        retentionDaysAuditEvents:
+          type: integer
+        retentionDaysIdempotencyRecords:
+          type: integer
+        retentionDaysOutboxMessages:
+          type: integer
+        rateLimitPerClient:
+          type: integer
+          description: Maximum requests per Gateway credential in each database-UTC fixed minute.
+        rateLimitPerAgent:
+          type: integer
+          description: Maximum requests per authenticated registration in each database-UTC fixed minute.
+        rateLimitGlobal:
+          type: integer
+          description: Maximum registration-bound requests Gateway-wide in each database-UTC fixed minute.
+        reconciliationEnabled:
+          type: boolean
+          deprecated: true
+          description: Compatibility-only setting; changing it does not start reconciliation in the current Gateway.
+        reconciliationIntervalHours:
+          type: integer
+          deprecated: true
+          description: Compatibility-only setting with no current scheduler effect.
+        stuckTransitionTimeoutDays:
+          type: integer
+        useGraphAgentRegistration:
+          type: boolean
+          deprecated: true
+          description: Compatibility-only setting with no control over the current deployment provider or execution gate.
+        useCliProvisioningFallback:
+          type: boolean
+          deprecated: true
+          description: Compatibility-only setting; the current worker does not use an unattended CLI fallback.
 
     SubmitActivityRequest:
       type: object
@@ -1397,10 +2014,21 @@ components:
           format: date-time
         actor:
           type: object
+          description: |
+            When Agent 365 observability is enabled, type must be User and a valid
+            tenantUserObjectId is required. Agent and System remain available for
+            Disabled and GatewayOnly destination modes.
           required: [type]
           properties:
             type:
               $ref: '#/components/schemas/ActorType'
+            tenantUserObjectId:
+              type: string
+              format: uuid
+              description: |
+                Microsoft Entra tenant user object ID attributed to the activity.
+                Required with actor.type User when Agent 365 observability is
+                enabled; otherwise optional.
         tool:
           type: object
           properties:
@@ -1470,10 +2098,21 @@ components:
                 format: date-time
               actor:
                 type: object
+                description: |
+                  When Agent 365 observability is enabled, type must be User and a
+                  valid tenantUserObjectId is required. Agent and System remain
+                  available for Disabled and GatewayOnly destination modes.
                 required: [type]
                 properties:
                   type:
                     $ref: '#/components/schemas/ActorType'
+                  tenantUserObjectId:
+                    type: string
+                    format: uuid
+                    description: |
+                      Microsoft Entra tenant user object ID attributed to this
+                      activity. Required with actor.type User when Agent 365
+                      observability is enabled; otherwise optional.
               tool:
                 type: object
                 properties:
@@ -1541,10 +2180,17 @@ components:
           format: date-time
         userContext:
           type: object
+          description: |
+            End-user context for Purview and Agent 365 attribution. It is optional
+            only when the requested processing does not require Purview and Agent
+            365 observability is disabled for the registered agent.
           properties:
             tenantUserObjectId:
               type: string
               format: uuid
+              description: |
+                Non-empty Microsoft Entra tenant user object ID. Required whenever
+                Agent 365 observability is enabled and for Purview evaluation.
         prompt:
           type: object
           required: [contentType, content]
@@ -1592,45 +2238,16 @@ components:
           type: string
         status:
           type: string
-          enum: [Accepted]
+          enum: [Accepted, Failed]
         purviewProcessing:
           type: string
-          enum: [Pending, Completed, Skipped, NotApplicable]
+          enum: [Allowed, Blocked, AuditLogged, PurviewDisabled]
         observabilityProcessing:
           type: string
-          enum: [Pending, Completed, NotApplicable]
+          enum: [Pending, Queued]
         correlationId:
           type: string
           format: uuid
-
-    EvaluationResult:
-      type: object
-      required: [interactionId, decision, evaluatedAtUtc]
-      properties:
-        interactionId:
-          type: string
-        decision:
-          type: string
-          enum: [Allow, PurviewSkipped]
-        policyActions:
-          type: array
-          items:
-            type: object
-            properties:
-              action:
-                type: string
-        evaluatedAtUtc:
-          type: string
-          format: date-time
-        receiptId:
-          type: string
-          format: uuid
-        purviewProcessing:
-          type: string
-          enum: [Completed, Skipped]
-        observabilityProcessing:
-          type: string
-          enum: [Pending, NotApplicable]
 
     ReadinessResponse:
       type: object
@@ -1654,7 +2271,7 @@ components:
 
     ProblemDetails:
       type: object
-      required: [type, title, status, code]
+      required: [type, title, status]
       properties:
         type:
           type: string
@@ -1663,25 +2280,20 @@ components:
           type: string
         status:
           type: integer
-        code:
+        errorCode:
           type: string
         detail:
           type: string
         instance:
           type: string
-        traceId:
+        correlationId:
           type: string
-        validationErrors:
-          type: array
-          items:
-            type: object
-            properties:
-              field:
-                type: string
-              code:
-                type: string
-              detail:
-                type: string
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
         policyActions:
           type: array
           items:
@@ -1706,11 +2318,10 @@ components:
             type: https://gateway.example.com/problems/validation-failed
             title: One or more validation errors occurred.
             status: 400
-            code: VALIDATION_FAILED
-            validationErrors:
-              - field: externalAgentId
-                code: REQUIRED
-                detail: externalAgentId is required.
+            errorCode: VALIDATION_FAILED
+            errors:
+              ExternalAgentId:
+                - ExternalAgentId is required.
 
     Unauthorized:
       description: Authentication required
@@ -1722,7 +2333,7 @@ components:
             type: https://gateway.example.com/problems/authentication-required
             title: Authentication is required.
             status: 401
-            code: AUTHENTICATION_REQUIRED
+            errorCode: AUTHENTICATION_REQUIRED
 
     Forbidden:
       description: Insufficient permissions
@@ -1734,7 +2345,7 @@ components:
             type: https://gateway.example.com/problems/caller-not-authorized
             title: The caller does not have the required permissions.
             status: 403
-            code: CALLER_NOT_AUTHORIZED
+            errorCode: CALLER_NOT_AUTHORIZED
 
     NotFound:
       description: Resource not found
@@ -1746,7 +2357,7 @@ components:
             type: https://gateway.example.com/problems/agent-not-found
             title: The specified agent was not found.
             status: 404
-            code: AGENT_NOT_FOUND
+            errorCode: AGENT_NOT_FOUND
 
     ConcurrencyConflict:
       description: Concurrency conflict (stale ETag)
@@ -1758,23 +2369,47 @@ components:
             type: https://gateway.example.com/problems/concurrency-conflict
             title: The resource has been modified since it was last read.
             status: 409
-            code: CONCURRENCY_CONFLICT
+            errorCode: CONCURRENCY_CONFLICT
+
+    BadGateway:
+      description: A required upstream dependency rejected or returned an invalid response
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    ServiceUnavailable:
+      description: A required upstream dependency or credential is unavailable
+      content:
+        application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
     RateLimited:
-      description: Rate limit exceeded
+      description: A credential, registration, or Gateway-wide fixed-minute ingress limit was reached
       headers:
         Retry-After:
           schema:
             type: integer
+            minimum: 1
+          description: Seconds until the current database-UTC minute window resets.
         X-RateLimit-Limit:
           schema:
             type: integer
+          description: Limit for the effective/rejected scope.
         X-RateLimit-Remaining:
           schema:
             type: integer
+          description: Remaining requests in the effective scope; zero on rejection.
         X-RateLimit-Reset:
           schema:
             type: integer
+            format: int64
+          description: Unix timestamp for the fixed-minute reset.
+        X-RateLimit-Scope:
+          schema:
+            type: string
+            enum: [credential, registration, global]
       content:
         application/problem+json:
           schema:
@@ -1783,4 +2418,19 @@ components:
             type: https://gateway.example.com/problems/rate-limit-exceeded
             title: Rate limit exceeded.
             status: 429
-            code: RATE_LIMIT_EXCEEDED
+            errorCode: RATE_LIMIT_EXCEEDED
+            detail: The Gateway request limit was reached. Retry after the current window resets.
+            correlationId: 3f2504e0-4f89-41d3-9a0c-0305e82c3301
+
+    ProvisioningDisabled:
+      description: Provisioning execution is disabled or its bounded admission deadline is absent, invalid, or expired
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: https://gateway.example.com/problems/provisioning-disabled
+            title: Provisioning is unavailable.
+            status: 503
+            errorCode: PROVISIONING_DISABLED
+            detail: Complete preflight and open an unexpired bounded admission window before registering or retrying an agent.

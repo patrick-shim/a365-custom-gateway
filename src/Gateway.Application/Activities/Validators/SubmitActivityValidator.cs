@@ -29,6 +29,11 @@ public class SubmitActivityValidator : AbstractValidator<SubmitActivityCommand>
             .WithMessage("Actor.Type must be a valid value.")
             .When(x => x.Actor is not null);
 
+        RuleFor(x => x.Actor.TenantUserObjectId)
+            .Must(BeValidObjectId)
+            .WithMessage("Actor.TenantUserObjectId must be a valid GUID.")
+            .When(x => x.Actor?.TenantUserObjectId is not null);
+
         RuleFor(x => x.OccurredAtUtc)
             .Must(NotBeInFuture)
             .WithMessage("OccurredAtUtc must not be in the future.");
@@ -49,6 +54,9 @@ public class SubmitActivityValidator : AbstractValidator<SubmitActivityCommand>
 
     private static bool BeValidActorType(string type) =>
         Enum.TryParse<ActorType>(type, out _);
+
+    private static bool BeValidObjectId(string? objectId) =>
+        Guid.TryParse(objectId, out var parsed) && parsed != Guid.Empty;
 
     private static bool BeValidToolOutcome(string outcome) =>
         Enum.TryParse<ToolOutcome>(outcome, out _);

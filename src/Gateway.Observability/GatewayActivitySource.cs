@@ -4,7 +4,7 @@ namespace Gateway.Observability;
 
 public static class GatewayActivitySource
 {
-    public const string Name = "Gateway.Api";
+    public const string Name = "A365.CustomGateway";
 
     public static readonly ActivitySource Instance = new(Name);
 
@@ -21,5 +21,6 @@ public static class GatewayActivitySource
         public const string ExportObservability = "ExportObservability";
         public const string ProcessOutbox = "ProcessOutbox";
         public const string PublishToServiceBus = "PublishToServiceBus";
+        public const string MirrorSanitizedTelemetry = "MirrorSanitizedTelemetry";
     }
 }

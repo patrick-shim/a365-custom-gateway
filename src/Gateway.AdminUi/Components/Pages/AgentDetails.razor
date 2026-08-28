@@ -1,0 +1,1218 @@
+@page "/agents/{AgentId:guid}"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "AllControlPlane")]
+@implements IAsyncDisposable
+@inject IGatewayApiClient Api
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject NavigationManager Navigation
+
+<PageTitle>@(agentResource?.Value.Name is { Length: > 0 } name ? $"{name} · A365 Gateway" : "Agent details · A365 Gateway")</PageTitle>
+
+<PageHeader Eyebrow="Agent registry"
+            Title="@(agentResource?.Value.Name ?? "Agent details")"
+            Description="Verified registration, feature, provisioning, and audit information from the Gateway API.">
+    <Actions>
+        <FluentAnchor Appearance="Appearance.Stealth" Href="/agents">Back to agents</FluentAnchor>
+        <FluentButton Appearance="Appearance.Neutral"
+                      OnClick="LoadAsync"
+                      Disabled="@(loading || actionBusy || featureSaving)">
+            Refresh
+        </FluentButton>
+    </Actions>
+</PageHeader>
+
+@if (loading && agentResource is null)
+{
+    <section class="card">
+        <LoadingState Label="Loading agent details…" />
+    </section>
+}
+else if (loadError is not null && agentResource is null)
+{
+    <section class="card">
+        <div class="card-body">
+            <ErrorState Message="@loadError.Message"
+                        CorrelationId="@loadError.CorrelationId"
+                        OnRetry="LoadAsync" />
+        </div>
+    </section>
+}
+else if (agentResource is not null)
+{
+    var agent = agentResource.Value;
+
+    @if (!string.IsNullOrWhiteSpace(announcement))
+    {
+        <div class="subtle-note" role="status" aria-live="polite">@announcement</div>
+    }
+
+    @if (actionError is not null)
+    {
+        <div style="margin-top: 1rem">
+            <ErrorState Title="The agent action was not completed"
+                        Message="@actionError.Message"
+                        CorrelationId="@actionError.CorrelationId" />
+        </div>
+    }
+
+    <div class="content-grid">
+        <div class="stack">
+            <section class="card" aria-labelledby="overview-heading">
+                <div class="card-header">
+                    <h2 id="overview-heading">Registration overview</h2>
+                    <StatusPill Value="@agent.Status" />
+                </div>
+                <div class="detail-grid">
+                    <div class="detail-item">
+                        <span class="detail-label">External agent ID</span>
+                        <span class="detail-value"><code>@agent.ExternalAgentId</code></span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Environment</span>
+                        <span class="detail-value">@agent.Environment</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Owner object ID</span>
+                        <span class="detail-value"><code>@agent.OwnerObjectId</code></span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Gateway agent ID</span>
+                        <span class="detail-value"><code>@agent.AgentId</code></span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Created</span>
+                        <span class="detail-value">
+                            <time datetime="@ToUtcIso(agent.CreatedAtUtc)" title="UTC: @FormatUtc(agent.CreatedAtUtc)">@FormatLocal(agent.CreatedAtUtc)</time>
+                        </span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Last updated</span>
+                        <span class="detail-value">
+                            <time datetime="@ToUtcIso(agent.UpdatedAtUtc)" title="UTC: @FormatUtc(agent.UpdatedAtUtc)">@FormatLocal(agent.UpdatedAtUtc)</time>
+                        </span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Last activity</span>
+                        <span class="detail-value">
+                            @if (agent.LastActivityAtUtc is { } lastActivity)
+                            {
+                                <time datetime="@ToUtcIso(lastActivity)" title="UTC: @FormatUtc(lastActivity)">@FormatLocal(lastActivity)</time>
+                            }
+                            else
+                            {
+                                <span>Not reported</span>
+                            }
+                        </span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Description</span>
+                        <span class="detail-value">@(string.IsNullOrWhiteSpace(agent.Description) ? "No description" : agent.Description)</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card" aria-labelledby="agent365-heading">
+                <div class="card-header">
+                    <h2 id="agent365-heading">Agent identity and Agent 365 mapping</h2>
+                </div>
+                @if (agent.Agent365 is null ||
+                    (string.IsNullOrWhiteSpace(agent.Agent365.AgentId) &&
+                     string.IsNullOrWhiteSpace(agent.Agent365.BlueprintId) &&
+                     string.IsNullOrWhiteSpace(agent.Agent365.InstanceId) &&
+                     string.IsNullOrWhiteSpace(agent.Agent365.AgentIdentityObjectId) &&
+                     string.IsNullOrWhiteSpace(agent.Agent365.BlueprintObjectId)))
+                {
+                    <div class="card-body">
+                        <div class="subtle-note">No Microsoft Agent 365 mapping has been reported for this registration.</div>
+                    </div>
+                }
+                else
+                {
+                    <div class="subtle-note">Graph blueprint <code>id</code> and <code>appId</code> may contain the same GUID. These labels preserve the stored Graph fields; neither is the Gateway registration ID or external agent ID.</div>
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">Agent Identity client ID</span>
+                            <span class="detail-value"><code>@ValueOrUnavailable(agent.Agent365.AgentId)</code></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Agent Identity object ID</span>
+                            <span class="detail-value"><code>@ValueOrUnavailable(agent.Agent365.AgentIdentityObjectId)</code></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Blueprint client ID (Graph appId)</span>
+                            <span class="detail-value"><code>@ValueOrUnavailable(agent.Agent365.BlueprintId)</code></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Blueprint object ID (Graph id)</span>
+                            <span class="detail-value"><code>@ValueOrUnavailable(agent.Agent365.BlueprintObjectId)</code></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Agent 365 Registry record ID (preview)</span>
+                            <span class="detail-value"><code>@ValueOrUnavailable(agent.Agent365.InstanceId)</code></span>
+                        </div>
+                    </div>
+                }
+            </section>
+
+            <section class="card" aria-labelledby="gateway-connection-heading">
+                <div class="card-header">
+                    <div>
+                        <h2 id="gateway-connection-heading">Gateway connection</h2>
+                        <span class="section-caption">Authenticated ingestion endpoints for the external agent runtime</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <p>The external runtime authenticates with a per-registration Gateway API key. The Gateway binds that credential to this registration, cross-checks the payload external agent ID, and routes sanitized telemetry to this registration's child Agent ID.</p>
+                    @if (!string.Equals(agent.Status, "Active", StringComparison.OrdinalIgnoreCase))
+                    {
+                        <div class="subtle-note">The Gateway credential can be prepared now, but ingestion remains unavailable until this registration reaches Active.</div>
+                    }
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">Authentication</span>
+                            <span class="detail-value">Bearer Gateway credential</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Payload external agent ID</span>
+                            <span class="detail-value"><code>@agent.ExternalAgentId</code></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Activity POST</span>
+                            <span class="detail-value"><code>/api/v1/agent-activities</code></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Interaction POST</span>
+                            <span class="detail-value"><code>/api/v1/ai-interactions</code></span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            @if (isAdministrator)
+            {
+                <section class="card" aria-labelledby="gateway-credentials-heading">
+                    <div class="card-header">
+                        <div>
+                            <h2 id="gateway-credentials-heading">Gateway credentials</h2>
+                            <span class="section-caption">Overlap-safe credentials for this external agent registration</span>
+                        </div>
+                        <FluentButton Appearance="Appearance.Neutral"
+                                      OnClick="@(() => OpenConfirmation(ConfirmationAction.IssueCredential))"
+                                      Disabled="@(!CanIssueCredential(agent.Status) || credentialsLoading || actionBusy)">
+                            Issue additional credential
+                        </FluentButton>
+                    </div>
+                    <div class="card-body">
+                        <p>Issue and deploy a new key first, verify the external runtime uses it, and only then revoke the old key. Raw keys cannot be retrieved after their one-time response.</p>
+
+                        @if (issuedGatewayCredential is { } issuedCredential)
+                        {
+                            <div class="validation-summary-errors" role="alert" aria-live="assertive">
+                                <strong>Save this new Gateway API key now. It cannot be retrieved again.</strong>
+                            </div>
+                            <div class="form-grid" style="margin-top: 1rem">
+                                <div class="form-field full">
+                                    <label for="issued-gateway-api-key">Gateway API key</label>
+                                    <input id="issued-gateway-api-key"
+                                           class="form-control"
+                                           value="@issuedCredential.ApiKey"
+                                           readonly
+                                           aria-readonly="true"
+                                           autocomplete="off"
+                                           spellcheck="false" />
+                                </div>
+                                <div class="form-field full">
+                                    <label for="issued-gateway-authorization-header">Authorization header</label>
+                                    <input id="issued-gateway-authorization-header"
+                                           class="form-control"
+                                           value="@FormatAuthorizationHeader(issuedCredential.ApiKey)"
+                                           readonly
+                                           aria-readonly="true"
+                                           autocomplete="off"
+                                           spellcheck="false" />
+                                    <span class="field-help">Store the key in the external runtime's secret manager. Never put it in a URL, request body, log, or audit record.</span>
+                                </div>
+                            </div>
+                            <div class="form-actions">
+                                <FluentButton Appearance="Appearance.Accent" OnClick="DismissIssuedCredential">I saved this key</FluentButton>
+                            </div>
+                        }
+
+                        @if (credentialsLoading && ingressCredentials is null)
+                        {
+                            <LoadingState Label="Loading Gateway credentials…" />
+                        }
+                        else if (credentialError is not null)
+                        {
+                            <ErrorState Message="@credentialError.Message"
+                                        CorrelationId="@credentialError.CorrelationId"
+                                        OnRetry="LoadCredentialsAsync" />
+                        }
+                        else if (ingressCredentials?.Items.Count is 0)
+                        {
+                            <EmptyState Icon="◇" Title="No Gateway credentials" Description="Issue a credential before connecting the external runtime." />
+                        }
+                        else if (ingressCredentials is not null)
+                        {
+                            <div class="table-scroll" style="margin-top: 1rem">
+                                <table class="data-table">
+                                    <thead><tr><th>Key ID</th><th>Status</th><th>Created</th><th>Expires</th><th><span class="sr-only">Actions</span></th></tr></thead>
+                                    <tbody>
+                                        @foreach (var credential in ingressCredentials.Items)
+                                        {
+                                            <tr>
+                                                <td><code>@credential.KeyId</code></td>
+                                                <td><StatusPill Value="@CredentialStatus(credential)" /></td>
+                                                <td><time datetime="@ToUtcIso(credential.CreatedAtUtc)" title="UTC: @FormatUtc(credential.CreatedAtUtc)">@FormatLocal(credential.CreatedAtUtc)</time></td>
+                                                <td><time datetime="@ToUtcIso(credential.ExpiresAtUtc)" title="UTC: @FormatUtc(credential.ExpiresAtUtc)">@FormatLocal(credential.ExpiresAtUtc)</time></td>
+                                                <td>
+                                                    @if (credential.RevokedAtUtc is null)
+                                                    {
+                                                        <FluentButton Appearance="Appearance.Stealth"
+                                                                      OnClick="@(() => OpenCredentialRevocation(credential.KeyId))"
+                                                                      Disabled="@(!CanRevokeCredential(credential, ingressCredentials.Items) || actionBusy)">
+                                                            Revoke
+                                                        </FluentButton>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="field-help">Revoked @FormatLocal(credential.RevokedAtUtc.Value)</span>
+                                                    }
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    </div>
+                </section>
+            }
+
+            <section class="card" aria-labelledby="features-heading">
+                <div class="card-header">
+                    <div>
+                        <h2 id="features-heading">Features</h2>
+                        <span class="section-caption">Activity telemetry destinations and Purview policy settings</span>
+                    </div>
+                </div>
+
+                @if (featureError is not null)
+                {
+                    <div class="card-body">
+                        <ErrorState Title="The feature settings were not saved"
+                                    Message="@featureError.Message"
+                                    CorrelationId="@featureError.CorrelationId" />
+                    </div>
+                }
+
+                @if (isAdministrator)
+                {
+                    <div class="form-section">
+                        <div class="feature-stack">
+                            <fieldset class="feature-group" aria-describedby="agent-activity-observability-help">
+                                <legend>Activity observability</legend>
+                                <p id="agent-activity-observability-help">Choose each destination independently. Gateway platform health, security, and operational diagnostics remain separate from sanitized agent activity telemetry.</p>
+                                <div class="form-grid">
+                                    <div class="form-field checkbox-field">
+                                        <label class="checkbox-label" for="feature-agent365-observability-enabled">
+                                            <input id="feature-agent365-observability-enabled"
+                                                   type="checkbox"
+                                                   @bind="featureAgent365ObservabilityEnabled"
+                                                   disabled="@(!CanEditFeatures(agent.Status) || featureSaving)" />
+                                            <span><strong>Agent 365 observability</strong><small>Send supported sanitized activity telemetry to Microsoft Agent 365.</small></span>
+                                        </label>
+                                    </div>
+                                    <div class="form-field checkbox-field">
+                                        <label class="checkbox-label" for="feature-azure-monitor-export-enabled">
+                                            <input id="feature-azure-monitor-export-enabled"
+                                                   type="checkbox"
+                                                   @bind="featureAzureMonitorExportEnabled"
+                                                   disabled="@(!CanEditFeatures(agent.Status) || featureSaving)" />
+                                            <span><strong>Also mirror sanitized activity telemetry to Azure Monitor</strong><small>Export a separate sanitized copy of activity metrics and traces to the configured Azure Monitor destination.</small></span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </fieldset>
+
+                            <fieldset class="feature-group" aria-describedby="agent-purview-help">
+                                <legend>Microsoft Purview</legend>
+                                <p id="agent-purview-help">Purview policy evaluation is independent of both observability destinations.</p>
+                                <div class="form-grid">
+                                    <div class="form-field checkbox-field">
+                                        <label class="checkbox-label" for="feature-purview-enabled">
+                                            <input id="feature-purview-enabled"
+                                                   type="checkbox"
+                                                   @bind="featurePurviewEnabled"
+                                                   disabled="@(!CanEditFeatures(agent.Status) || featureSaving)" />
+                                            <span><strong>Enable Microsoft Purview</strong><small>Apply the selected audit or enforcement mode.</small></span>
+                                        </label>
+                                    </div>
+                                    <div class="form-field">
+                                        <FluentSelect TOption="string"
+                                                      Label="Purview mode"
+                                                      @bind-Value="featurePurviewMode"
+                                                      Disabled="@(!featurePurviewEnabled || !CanEditFeatures(agent.Status) || featureSaving)">
+                                            @foreach (var option in PurviewModes)
+                                            {
+                                                <FluentOption TOption="string" Value="@option">@FormatPascalCase(option)</FluentOption>
+                                            }
+                                        </FluentSelect>
+                                        <span class="field-help">Audit only evaluates and records policy outcomes without blocking. Enforce blocks disallowed interactions.</span>
+                                    </div>
+                                </div>
+                            </fieldset>
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        @if (!CanEditFeatures(agent.Status))
+                        {
+                            <span class="field-help">Features can be changed only while the agent is Active or Disabled.</span>
+                        }
+                        <FluentButton Appearance="Appearance.Accent"
+                                      OnClick="SaveFeaturesAsync"
+                                      Disabled="@(!CanEditFeatures(agent.Status) || featureSaving || actionBusy)">
+                            @(featureSaving ? "Saving…" : "Save features")
+                        </FluentButton>
+                    </div>
+                }
+                else
+                {
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">Agent 365 observability</span>
+                            <span class="detail-value">@FormatEnabled(ResolveAgent365Observability(agent.Features))</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Azure Monitor activity mirror</span>
+                            <span class="detail-value">@FormatEnabled(ResolveAzureMonitorExport(agent.Features))</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Purview evaluation</span>
+                            <span class="detail-value">@(agent.Features?.PurviewEnabled == true ? "Enabled" : "Disabled")</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Purview mode</span>
+                            <span class="detail-value">@(agent.Features?.PurviewEnabled == true ? FormatPascalCase(agent.Features.PurviewMode ?? "Not configured") : "Not applicable")</span>
+                        </div>
+                    </div>
+                }
+            </section>
+        </div>
+
+        <aside class="stack" aria-label="Agent status and actions">
+            <section class="card" aria-labelledby="provisioning-summary-heading">
+                <div class="card-header">
+                    <h2 id="provisioning-summary-heading">Current provisioning</h2>
+                </div>
+                <div class="card-body">
+                    @if (agent.Provisioning is null)
+                    {
+                        <div class="subtle-note">No current provisioning status was returned.</div>
+                    }
+                    else
+                    {
+                        <div class="health-list">
+                            <div class="health-row"><span>Current step</span><strong>@ValueOrUnavailable(agent.Provisioning.CurrentStep)</strong></div>
+                            <div>
+                                <label class="detail-label" for="agent-progress">Progress: @ClampPercent(agent.Provisioning.PercentComplete)%</label>
+                                <progress id="agent-progress" max="100" value="@ClampPercent(agent.Provisioning.PercentComplete)" style="width: 100%">@ClampPercent(agent.Provisioning.PercentComplete)%</progress>
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(agent.Provisioning.LastError))
+                            {
+                                <div class="error-panel" role="alert">
+                                    <span class="error-symbol" aria-hidden="true">!</span>
+                                    <div><strong>Provisioning error reported</strong><p>The worker reported an error. Review the provisioning history and secured worker logs for diagnostic details.</p></div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </section>
+
+            <section class="card" aria-labelledby="actions-heading">
+                <div class="card-header">
+                    <h2 id="actions-heading">Lifecycle actions</h2>
+                </div>
+                <div class="card-body">
+                    @if (!canOperate && !isAdministrator)
+                    {
+                        <div class="subtle-note">Your role has read-only access to this agent.</div>
+                    }
+                    else
+                    {
+                        <div class="action-grid">
+                            @if (canOperate)
+                            {
+                                <div class="action-tile">
+                                    <strong>Enable</strong>
+                                    <p>Allow this disabled agent to submit gateway activity again.</p>
+                                    <FluentButton Appearance="Appearance.Neutral"
+                                                  OnClick="@(() => OpenConfirmation(ConfirmationAction.Enable))"
+                                                  Disabled="@(!CanEnable(agent.Status) || actionBusy)">Enable agent</FluentButton>
+                                </div>
+                                <div class="action-tile">
+                                    <strong>Disable</strong>
+                                    <p>Stop new data-plane submissions while preserving the registration.</p>
+                                    <FluentButton Appearance="Appearance.Neutral"
+                                                  OnClick="@(() => OpenConfirmation(ConfirmationAction.Disable))"
+                                                  Disabled="@(!CanDisable(agent.Status) || actionBusy)">Disable agent</FluentButton>
+                                </div>
+                            }
+                            @if (isAdministrator)
+                            {
+                                @if (CanRetry(agent))
+                                {
+                                    <div class="action-tile">
+                                        <strong>Retry provisioning</strong>
+                                        <p>@RetryProvisioningReason(agent)</p>
+                                        <FluentButton Appearance="Appearance.Neutral"
+                                                      OnClick="@(() => OpenConfirmation(ConfirmationAction.Retry))"
+                                                      Disabled="@actionBusy">Retry provisioning</FluentButton>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="action-tile">
+                                        <strong>Provisioning retry unavailable</strong>
+                                        <p>@RetryProvisioningReason(agent)</p>
+                                    </div>
+                                }
+                                <div class="action-tile">
+                                    <strong>Delete</strong>
+                                    <p>Begin asynchronous deletion. Linked Microsoft resources are preserved by default.</p>
+                                    <FluentButton Appearance="Appearance.Neutral"
+                                                  OnClick="@(() => OpenConfirmation(ConfirmationAction.Delete))"
+                                                  Disabled="@(!CanDelete(agent.Status) || actionBusy)">Delete agent</FluentButton>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </section>
+        </aside>
+    </div>
+
+    @if (canViewProvisioning)
+    {
+        <section class="card" style="margin-top: 1rem" aria-labelledby="history-heading">
+            <div class="card-header">
+                <div>
+                    <h2 id="history-heading">Provisioning history</h2>
+                    <span class="section-caption">Operations for this agent only</span>
+                </div>
+                <FluentButton Appearance="Appearance.Stealth" OnClick="LoadProvisioningAsync" Disabled="@provisioningLoading">Refresh</FluentButton>
+            </div>
+            @if (provisioningLoading && provisioningHistory is null)
+            {
+                <LoadingState Label="Loading provisioning history…" />
+            }
+            else if (provisioningError is not null)
+            {
+                <div class="card-body">
+                    <ErrorState Message="@provisioningError.Message"
+                                CorrelationId="@provisioningError.CorrelationId"
+                                OnRetry="LoadProvisioningAsync" />
+                </div>
+            }
+            else if (provisioningHistory?.Jobs.Count is 0)
+            {
+                <EmptyState Icon="◇" Title="No provisioning operations" Description="This agent has no provisioning history yet." />
+            }
+            else if (provisioningHistory is not null)
+            {
+                <div class="card-body">
+                    <div class="timeline">
+                        @foreach (var job in provisioningHistory.Jobs)
+                        {
+                            <article class="timeline-item">
+                                <span class="timeline-dot" aria-hidden="true"></span>
+                                <div class="timeline-title">
+                                    <a href="/operations/@job.OperationId" class="row-link">@FormatPascalCase(job.Type)</a>
+                                    <StatusPill Value="@job.Status" />
+                                </div>
+                                <div class="timeline-meta">
+                                    Started <time datetime="@ToUtcIso(job.StartedAtUtc)" title="UTC: @FormatUtc(job.StartedAtUtc)">@FormatLocal(job.StartedAtUtc)</time>
+                                    · @ClampPercent(job.PercentComplete)% complete
+                                </div>
+                                @if (job.CompletedAtUtc is { } completedAt)
+                                {
+                                    <div class="timeline-meta">Completed <time datetime="@ToUtcIso(completedAt)" title="UTC: @FormatUtc(completedAt)">@FormatLocal(completedAt)</time></div>
+                                }
+                                @if (job.Error is not null)
+                                {
+                                    <div class="timeline-meta">Provisioning error@(string.IsNullOrWhiteSpace(job.Error.Code) ? string.Empty : $" ({job.Error.Code})"). Diagnostic details are available only in secured worker logs.</div>
+                                }
+                                @if (job.Steps is { Count: > 0 })
+                                {
+                                    <details>
+                                        <summary>View @job.Steps.Count operation steps</summary>
+                                        <div class="table-scroll">
+                                            <table class="data-table">
+                                                <thead><tr><th>Step</th><th>Status</th><th>Completed</th></tr></thead>
+                                                <tbody>
+                                                    @foreach (var step in job.Steps)
+                                                    {
+                                                        <tr>
+                                                            <td class="primary-cell">@FormatPascalCase(step.Step)</td>
+                                                            <td><StatusPill Value="@step.Status" /></td>
+                                                            <td>@(step.CompletedAtUtc is { } stepCompleted ? FormatLocal(stepCompleted) : "—")</td>
+                                                        </tr>
+                                                    }
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </details>
+                                }
+                            </article>
+                        }
+                    </div>
+                </div>
+            }
+        </section>
+    }
+
+    @if (canViewAudit)
+    {
+        <section class="card" style="margin-top: 1rem" aria-labelledby="audit-heading">
+            <div class="card-header">
+                <div>
+                    <h2 id="audit-heading">Audit events</h2>
+                    <span class="section-caption">Administrative events for this agent</span>
+                </div>
+                <FluentButton Appearance="Appearance.Stealth" OnClick="LoadAuditAsync" Disabled="@auditLoading">Refresh</FluentButton>
+            </div>
+            @if (auditLoading && auditEvents is null)
+            {
+                <LoadingState Label="Loading audit events…" />
+            }
+            else if (auditError is not null)
+            {
+                <div class="card-body">
+                    <ErrorState Message="@auditError.Message"
+                                CorrelationId="@auditError.CorrelationId"
+                                OnRetry="LoadAuditAsync" />
+                </div>
+            }
+            else if (auditEvents?.Items.Count is 0)
+            {
+                <EmptyState Icon="◎" Title="No audit events" Description="No administrative events have been recorded for this agent." />
+            }
+            else if (auditEvents is not null)
+            {
+                <div class="table-scroll">
+                    <table class="data-table">
+                        <thead><tr><th>Event</th><th>Actor</th><th>Occurred</th><th>Event ID</th></tr></thead>
+                        <tbody>
+                            @foreach (var auditEvent in auditEvents.Items)
+                            {
+                                <tr>
+                                    <td class="primary-cell">@FormatPascalCase(auditEvent.EventType)</td>
+                                    <td>@(string.IsNullOrWhiteSpace(auditEvent.PerformedByObjectId) ? "System" : auditEvent.PerformedByObjectId)</td>
+                                    <td><time datetime="@ToUtcIso(auditEvent.OccurredAtUtc)" title="UTC: @FormatUtc(auditEvent.OccurredAtUtc)">@FormatLocal(auditEvent.OccurredAtUtc)</time></td>
+                                    <td><code>@auditEvent.EventId</code></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                @if (!string.IsNullOrWhiteSpace(auditEvents.NextCursor))
+                {
+                    <div class="card-footer">
+                        <div class="subtle-note">Showing the newest @auditEvents.Items.Count events. Additional events exist, but cursor paging is not exposed in this view.</div>
+                    </div>
+                }
+            }
+        </section>
+    }
+
+    <ConfirmPanel Visible="@(confirmationAction != ConfirmationAction.None)"
+                  Busy="@actionBusy"
+                  Title="@ConfirmationTitle"
+                  Message="@ConfirmationMessage"
+                  ConfirmLabel="@ConfirmationLabel"
+                  Tone="@ConfirmationTone"
+                  OnConfirm="ExecuteConfirmedActionAsync"
+                  OnCancel="CloseConfirmation">
+        <AdditionalContent>
+            @if (confirmationAction == ConfirmationAction.Delete)
+            {
+                <p class="field-help">This action removes the Gateway registration only. Linked Microsoft resources are preserved because automatic Microsoft-resource deletion is not implemented.</p>
+            }
+            else if (confirmationAction == ConfirmationAction.IssueCredential)
+            {
+                <p class="field-help">Existing credentials remain usable. The new raw key is returned once and must be saved before leaving this page.</p>
+            }
+            else if (confirmationAction == ConfirmationAction.RevokeCredential)
+            {
+                <p class="field-help">Only key <code>@pendingCredentialId</code> will be revoked. The raw key can never be retrieved.</p>
+            }
+        </AdditionalContent>
+    </ConfirmPanel>
+}
+
+@code {
+    private static readonly string[] PurviewModes = ["AuditOnly", "Enforce"];
+
+    private readonly CancellationTokenSource disposeCts = new();
+    private GatewayApiResource<AgentDetailDto>? agentResource;
+    private AgentIngressCredentialListResponse? ingressCredentials;
+    private AgentGatewayCredentialDto? issuedGatewayCredential;
+    private ProvisioningHistoryResponse? provisioningHistory;
+    private AuditEventListResponse? auditEvents;
+    private UiErrorInfo? loadError;
+    private UiErrorInfo? provisioningError;
+    private UiErrorInfo? auditError;
+    private UiErrorInfo? credentialError;
+    private UiErrorInfo? featureError;
+    private UiErrorInfo? actionError;
+    private Guid loadedAgentId;
+    private string? featurePurviewMode;
+    private string? announcement;
+    private bool featureAgent365ObservabilityEnabled;
+    private bool featureAzureMonitorExportEnabled;
+    private bool featurePurviewEnabled;
+    private bool isAdministrator;
+    private bool canOperate;
+    private bool canViewProvisioning;
+    private bool canViewAudit;
+    private bool loading;
+    private bool provisioningLoading;
+    private bool auditLoading;
+    private bool credentialsLoading;
+    private bool featureSaving;
+    private bool actionBusy;
+    private Guid? pendingCredentialId;
+    private ConfirmationAction confirmationAction;
+
+    [Parameter]
+    public Guid AgentId { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (loadedAgentId == AgentId && agentResource is not null)
+        {
+            return;
+        }
+
+        loadedAgentId = AgentId;
+        agentResource = null;
+        provisioningHistory = null;
+        auditEvents = null;
+        ingressCredentials = null;
+        issuedGatewayCredential = null;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        loadError = null;
+        provisioningError = null;
+        auditError = null;
+        credentialError = null;
+
+        try
+        {
+            var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            SetRoleCapabilities(authenticationState.User);
+
+            agentResource = await Api.GetAgentAsync(AgentId, disposeCts.Token);
+            CopyFeatureValues(agentResource.Value.Features);
+
+            var relatedLoads = new List<Task>(3);
+            if (canViewProvisioning)
+            {
+                relatedLoads.Add(LoadProvisioningAsync());
+            }
+
+            if (canViewAudit)
+            {
+                relatedLoads.Add(LoadAuditAsync());
+            }
+
+            if (isAdministrator)
+            {
+                relatedLoads.Add(LoadCredentialsAsync());
+            }
+
+            if (relatedLoads.Count > 0)
+            {
+                await Task.WhenAll(relatedLoads);
+            }
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            loadError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task LoadProvisioningAsync()
+    {
+        if (!canViewProvisioning || provisioningLoading)
+        {
+            return;
+        }
+
+        provisioningLoading = true;
+        provisioningError = null;
+        try
+        {
+            provisioningHistory = await Api.GetProvisioningHistoryAsync(AgentId, disposeCts.Token);
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            provisioningError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            provisioningLoading = false;
+        }
+    }
+
+    private async Task LoadAuditAsync()
+    {
+        if (!canViewAudit || auditLoading)
+        {
+            return;
+        }
+
+        auditLoading = true;
+        auditError = null;
+        try
+        {
+            auditEvents = await Api.GetAgentAuditEventsAsync(
+                AgentId,
+                new AuditEventQuery(Limit: 100),
+                disposeCts.Token);
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            auditError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            auditLoading = false;
+        }
+    }
+
+    private async Task LoadCredentialsAsync()
+    {
+        if (!isAdministrator || credentialsLoading)
+        {
+            return;
+        }
+
+        credentialsLoading = true;
+        credentialError = null;
+        try
+        {
+            ingressCredentials = await Api.GetAgentIngressCredentialsAsync(
+                AgentId,
+                disposeCts.Token);
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            credentialError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            credentialsLoading = false;
+        }
+    }
+
+    private async Task SaveFeaturesAsync()
+    {
+        if (!isAdministrator || agentResource is null || featureSaving ||
+            !CanEditFeatures(agentResource.Value.Status))
+        {
+            return;
+        }
+
+        featureSaving = true;
+        featureError = null;
+        actionError = null;
+        announcement = null;
+
+        try
+        {
+            var request = new UpdateFeaturesRequest(
+                ToLegacyObservabilityMode(featureAgent365ObservabilityEnabled, featureAzureMonitorExportEnabled),
+                featurePurviewEnabled,
+                featurePurviewMode,
+                featureAgent365ObservabilityEnabled,
+                featureAzureMonitorExportEnabled);
+
+            await Api.UpdateAgentFeaturesAsync(
+                AgentId,
+                request,
+                agentResource.ETag,
+                disposeCts.Token);
+
+            await ReloadAgentAsync();
+            announcement = "Feature settings saved.";
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            featureError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            featureSaving = false;
+        }
+    }
+
+    private void OpenConfirmation(ConfirmationAction action)
+    {
+        actionError = null;
+        announcement = null;
+        pendingCredentialId = null;
+        confirmationAction = action;
+    }
+
+    private void OpenCredentialRevocation(Guid credentialId)
+    {
+        actionError = null;
+        announcement = null;
+        pendingCredentialId = credentialId;
+        confirmationAction = ConfirmationAction.RevokeCredential;
+    }
+
+    private Task CloseConfirmation()
+    {
+        confirmationAction = ConfirmationAction.None;
+        pendingCredentialId = null;
+        return Task.CompletedTask;
+    }
+
+    private async Task ExecuteConfirmedActionAsync()
+    {
+        if (agentResource is null || actionBusy || confirmationAction == ConfirmationAction.None)
+        {
+            return;
+        }
+
+        var requestedAction = confirmationAction;
+        actionBusy = true;
+        actionError = null;
+        announcement = null;
+
+        try
+        {
+            switch (requestedAction)
+            {
+                case ConfirmationAction.Enable when canOperate && CanEnable(agentResource.Value.Status):
+                {
+                    var result = await Api.EnableAgentAsync(AgentId, Guid.NewGuid(), disposeCts.Token);
+                    confirmationAction = ConfirmationAction.None;
+                    await ReloadAgentAsync();
+                    announcement = $"Agent enabled. Current status: {FormatPascalCase(result.Status)}.";
+                    break;
+                }
+                case ConfirmationAction.Disable when canOperate && CanDisable(agentResource.Value.Status):
+                {
+                    var result = await Api.DisableAgentAsync(AgentId, Guid.NewGuid(), disposeCts.Token);
+                    confirmationAction = ConfirmationAction.None;
+                    await ReloadAgentAsync();
+                    announcement = $"Agent disabled. Current status: {FormatPascalCase(result.Status)}.";
+                    break;
+                }
+                case ConfirmationAction.Retry when isAdministrator && CanRetry(agentResource.Value):
+                {
+                    var result = await Api.RetryProvisioningAsync(AgentId, Guid.NewGuid(), disposeCts.Token);
+                    confirmationAction = ConfirmationAction.None;
+                    Navigation.NavigateTo($"/operations/{result.OperationId:D}");
+                    break;
+                }
+                case ConfirmationAction.Delete when isAdministrator && CanDelete(agentResource.Value.Status):
+                {
+                    var result = await Api.DeleteAgentAsync(
+                        AgentId,
+                        deleteMicrosoftResources: false,
+                        agentResource.ETag,
+                        Guid.NewGuid(),
+                        disposeCts.Token);
+                    confirmationAction = ConfirmationAction.None;
+                    Navigation.NavigateTo($"/operations/{result.OperationId:D}");
+                    break;
+                }
+                case ConfirmationAction.IssueCredential when isAdministrator &&
+                    CanIssueCredential(agentResource.Value.Status):
+                {
+                    var result = await Api.IssueAgentIngressCredentialAsync(
+                        AgentId,
+                        disposeCts.Token);
+                    issuedGatewayCredential = result.GatewayCredential;
+                    confirmationAction = ConfirmationAction.None;
+                    await LoadCredentialsAsync();
+                    if (canViewAudit)
+                    {
+                        await LoadAuditAsync();
+                    }
+                    announcement = "An additional Gateway credential was issued. Save the one-time key before continuing.";
+                    break;
+                }
+                case ConfirmationAction.RevokeCredential when isAdministrator &&
+                    pendingCredentialId is { } credentialId:
+                {
+                    var result = await Api.RevokeAgentIngressCredentialAsync(
+                        AgentId,
+                        credentialId,
+                        Guid.NewGuid(),
+                        disposeCts.Token);
+                    confirmationAction = ConfirmationAction.None;
+                    pendingCredentialId = null;
+                    await LoadCredentialsAsync();
+                    if (canViewAudit)
+                    {
+                        await LoadAuditAsync();
+                    }
+                    announcement = result.AlreadyRevoked
+                        ? "That Gateway credential was already revoked."
+                        : "Gateway credential revoked.";
+                    break;
+                }
+                default:
+                    confirmationAction = ConfirmationAction.None;
+                    actionError = new UiErrorInfo("That action is not available for the agent's current state or your role.");
+                    break;
+            }
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            confirmationAction = ConfirmationAction.None;
+            pendingCredentialId = null;
+            actionError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            actionBusy = false;
+        }
+    }
+
+    private async Task ReloadAgentAsync()
+    {
+        agentResource = await Api.GetAgentAsync(AgentId, disposeCts.Token);
+        CopyFeatureValues(agentResource.Value.Features);
+
+        if (canViewProvisioning)
+        {
+            await LoadProvisioningAsync();
+        }
+
+        if (canViewAudit)
+        {
+            await LoadAuditAsync();
+        }
+
+        if (isAdministrator)
+        {
+            await LoadCredentialsAsync();
+        }
+    }
+
+    private void SetRoleCapabilities(ClaimsPrincipal user)
+    {
+        isAdministrator = user.IsInRole("Gateway.Administrator");
+        var isOperator = user.IsInRole("Gateway.Operator");
+        var isAuditor = user.IsInRole("Gateway.Auditor");
+        canOperate = isAdministrator || isOperator;
+        canViewProvisioning = canOperate;
+        canViewAudit = isAdministrator || isAuditor;
+    }
+
+    private void CopyFeatureValues(AgentFeaturesDto? features)
+    {
+        featureAgent365ObservabilityEnabled = ResolveAgent365Observability(features);
+        featureAzureMonitorExportEnabled = ResolveAzureMonitorExport(features);
+        featurePurviewEnabled = features?.PurviewEnabled ?? false;
+        featurePurviewMode = features?.PurviewMode ?? "AuditOnly";
+    }
+
+    private static bool ResolveAgent365Observability(AgentFeaturesDto? features) =>
+        features?.Agent365ObservabilityEnabled
+        ?? (features?.ObservabilityMode switch
+        {
+            "Disabled" or "GatewayOnly" => false,
+            "Agent365" or "Agent365AzureMonitor" => true,
+            _ => true
+        });
+
+    private static bool ResolveAzureMonitorExport(AgentFeaturesDto? features) =>
+        features?.AzureMonitorExportEnabled
+        ?? (features?.ObservabilityMode switch
+        {
+            "GatewayOnly" or "Agent365AzureMonitor" => true,
+            _ => false
+        });
+
+    private static string ToLegacyObservabilityMode(bool agent365Enabled, bool azureMonitorEnabled) =>
+        (agent365Enabled, azureMonitorEnabled) switch
+        {
+            (true, true) => "Agent365AzureMonitor",
+            (true, false) => "Agent365",
+            (false, true) => "GatewayOnly",
+            _ => "Disabled"
+        };
+
+    private static string FormatEnabled(bool enabled) => enabled ? "Enabled" : "Disabled";
+
+    private string ConfirmationTitle => confirmationAction switch
+    {
+        ConfirmationAction.Enable => "Enable this agent?",
+        ConfirmationAction.Disable => "Disable this agent?",
+        ConfirmationAction.Retry => "Retry provisioning?",
+        ConfirmationAction.Delete => "Delete this agent?",
+        ConfirmationAction.IssueCredential => "Issue an additional Gateway credential?",
+        ConfirmationAction.RevokeCredential => "Revoke this Gateway credential?",
+        _ => "Confirm action"
+    };
+
+    private string ConfirmationMessage => confirmationAction switch
+    {
+        ConfirmationAction.Enable => "The agent will be allowed to submit new data-plane requests.",
+        ConfirmationAction.Disable => "New data-plane requests will be rejected until the agent is enabled again.",
+        ConfirmationAction.Retry => "A new asynchronous provisioning operation will be created from the confirmed retry-safe failure. The existing history is preserved.",
+        ConfirmationAction.Delete => "Deletion runs asynchronously and preserves all linked Microsoft resources.",
+        ConfirmationAction.IssueCredential => "The current credential remains valid while you deploy and verify the new key.",
+        ConfirmationAction.RevokeCredential => "Requests using the selected key will be rejected immediately after revocation.",
+        _ => string.Empty
+    };
+
+    private string ConfirmationLabel => confirmationAction switch
+    {
+        ConfirmationAction.Enable => "Enable",
+        ConfirmationAction.Disable => "Disable",
+        ConfirmationAction.Retry => "Start retry",
+        ConfirmationAction.Delete => "Delete agent",
+        ConfirmationAction.IssueCredential => "Issue credential",
+        ConfirmationAction.RevokeCredential => "Revoke credential",
+        _ => "Confirm"
+    };
+
+    private string ConfirmationTone => confirmationAction is ConfirmationAction.Delete or ConfirmationAction.RevokeCredential
+        ? "danger"
+        : "warning";
+
+    private static bool CanEnable(string status) =>
+        status.Equals("Disabled", StringComparison.OrdinalIgnoreCase);
+
+    private static bool CanDisable(string status) =>
+        status.Equals("Active", StringComparison.OrdinalIgnoreCase);
+
+    private static bool CanRetry(AgentDetailDto agent) =>
+        agent.RetryProvisioning?.Supported == true;
+
+    private static string RetryProvisioningReason(AgentDetailDto agent) =>
+        string.IsNullOrWhiteSpace(agent.RetryProvisioning?.Reason)
+            ? "The Gateway did not return a retry-safety decision. Retry remains unavailable."
+            : agent.RetryProvisioning.Reason;
+
+    private static bool CanDelete(string status) =>
+        !status.Equals("Deleting", StringComparison.OrdinalIgnoreCase) &&
+        !status.Equals("Deleted", StringComparison.OrdinalIgnoreCase);
+
+    private static bool CanIssueCredential(string status) =>
+        !status.Equals("Deleting", StringComparison.OrdinalIgnoreCase) &&
+        !status.Equals("Deleted", StringComparison.OrdinalIgnoreCase);
+
+    private static bool CanRevokeCredential(
+        AgentIngressCredentialMetadataDto credential,
+        IReadOnlyList<AgentIngressCredentialMetadataDto> credentials) =>
+        credential.RevokedAtUtc is null &&
+        (!IsUsableCredential(credential) || credentials.Count(IsUsableCredential) > 1);
+
+    private static bool IsUsableCredential(AgentIngressCredentialMetadataDto credential) =>
+        credential.RevokedAtUtc is null && AsUtc(credential.ExpiresAtUtc) > DateTime.UtcNow;
+
+    private static string CredentialStatus(AgentIngressCredentialMetadataDto credential)
+    {
+        if (credential.RevokedAtUtc is not null)
+        {
+            return "Revoked";
+        }
+
+        return AsUtc(credential.ExpiresAtUtc) <= DateTime.UtcNow ? "Expired" : "Active";
+    }
+
+    private void DismissIssuedCredential()
+    {
+        issuedGatewayCredential = null;
+        announcement = "The one-time credential has been removed from this page.";
+    }
+
+    private static string FormatAuthorizationHeader(string apiKey) => $"Bearer {apiKey}";
+
+    private static bool CanEditFeatures(string status) =>
+        status.Equals("Active", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("Disabled", StringComparison.OrdinalIgnoreCase);
+
+    private static int ClampPercent(int value) => Math.Clamp(value, 0, 100);
+
+    private static string ValueOrUnavailable(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "Not available" : value;
+
+    private static string FormatPascalCase(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "Not configured";
+        }
+
+        return System.Text.RegularExpressions.Regex.Replace(value, "(?<!^)([A-Z])", " $1");
+    }
+
+    private static DateTime AsUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+    };
+
+    private static string ToUtcIso(DateTime value) => AsUtc(value).ToString("O");
+
+    private static string FormatUtc(DateTime value) => AsUtc(value).ToString("MMM d, yyyy HH:mm:ss 'UTC'");
+
+    private static string FormatLocal(DateTime value) => AsUtc(value).ToLocalTime().ToString("MMM d, yyyy HH:mm:ss 'local'");
+
+    public ValueTask DisposeAsync()
+    {
+        issuedGatewayCredential = null;
+        disposeCts.Cancel();
+        disposeCts.Dispose();
+        return ValueTask.CompletedTask;
+    }
+
+    private enum ConfirmationAction
+    {
+        None,
+        Enable,
+        Disable,
+        Retry,
+        Delete,
+        IssueCredential,
+        RevokeCredential
+    }
+}

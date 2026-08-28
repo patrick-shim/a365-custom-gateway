@@ -1,9 +1,12 @@
 using System.Text.Json;
+using Gateway.Application.Agents;
 using Gateway.Application.Exceptions;
+using Gateway.Contracts.Messages;
 using Gateway.Contracts.Responses;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
+using Gateway.Domain.Models;
 using MediatR;
 
 namespace Gateway.Application.Agents.Commands;
@@ -35,49 +38,93 @@ internal sealed class RetryProvisioningHandler : IRequestHandler<RetryProvisioni
         var agent = await _agentRepository.GetByIdAsync(request.AgentId, cancellationToken)
             ?? throw new NotFoundException("AgentRegistration", request.AgentId);
 
-        if (agent.Status is not AgentStatus.Failed and not AgentStatus.RequiresManualIntervention)
+        var priorJobs = agent.Status is AgentStatus.Failed or AgentStatus.RequiresManualIntervention
+            ? await _provisioningJobRepository.GetByAgentIdAsync(agent.Id, cancellationToken)
+            : [];
+        var retryDecision = ProvisioningRetryPolicy.Evaluate(agent.Status, priorJobs);
+        if (!retryDecision.Supported)
         {
-            throw new InvalidStateTransitionException(agent.Status.ToString(), "RetryProvisioning");
+            throw new InvalidStateTransitionException(
+                agent.Status.ToString(),
+                retryDecision.RejectedAction ?? "RetryProvisioning");
         }
+
+        var sourceJob = retryDecision.SourceJob
+            ?? throw new ConflictException(
+                "The retry source could not be resolved safely.",
+                Gateway.Contracts.ErrorCodes.PROVISIONING_STATE_INVALID);
+        var resumeStepIndex = retryDecision.ResumeStepIndex;
+        if (resumeStepIndex < 0 || resumeStepIndex >= ProvisioningWorkflow.CurrentSteps.Count)
+        {
+            throw new ConflictException(
+                "The retry source has no safe incomplete stage.",
+                Gateway.Contracts.ErrorCodes.PROVISIONING_STATE_INVALID);
+        }
+
+        var now = DateTime.UtcNow;
+        agent.Status = resumeStepIndex == 5
+            ? AgentStatus.AwaitingAdminApproval
+            : AgentStatus.Provisioning;
+        agent.LastProvisioningErrorCode = null;
+        agent.LastProvisioningErrorSummary = null;
+        agent.UpdatedAtUtc = now;
+        agent.UpdatedByObjectId = request.CallerObjectId;
 
         var job = new ProvisioningJob
         {
             Id = Guid.NewGuid(),
             AgentRegistrationId = agent.Id,
             Type = OperationType.RetryProvisioning,
-            Status = JobStatus.Pending,
-            PercentComplete = 0,
-            StartedAtUtc = DateTime.UtcNow,
-            CreatedAtUtc = DateTime.UtcNow
+            Status = resumeStepIndex == 5
+                ? JobStatus.AwaitingAdministratorAction
+                : JobStatus.Pending,
+            PercentComplete = (resumeStepIndex * 100) / ProvisioningWorkflow.CurrentSteps.Count,
+            WorkflowVersion = ProvisioningWorkflow.CurrentVersion,
+            StartedAtUtc = now,
+            CreatedAtUtc = now
         };
 
-        var stepTypes = Enum.GetValues<ProvisioningStepType>();
+        var stepTypes = ProvisioningWorkflow.CurrentSteps;
+        var sourceSteps = sourceJob.Steps
+            .OrderBy(step => step.OrderIndex)
+            .ToArray();
         var steps = new List<ProvisioningJobStep>();
-        for (var i = 0; i < stepTypes.Length; i++)
+        for (var i = 0; i < stepTypes.Count; i++)
         {
+            var completedSource = i < resumeStepIndex ? sourceSteps[i] : null;
             steps.Add(new ProvisioningJobStep
             {
                 Id = Guid.NewGuid(),
                 ProvisioningJobId = job.Id,
                 StepType = stepTypes[i],
-                Status = StepStatus.Pending,
-                OrderIndex = i
+                Status = completedSource is null ? StepStatus.Pending : StepStatus.Completed,
+                OrderIndex = i,
+                ResultData = completedSource?.ResultData,
+                StartedAtUtc = completedSource?.StartedAtUtc,
+                CompletedAtUtc = completedSource?.CompletedAtUtc
             });
         }
         job.Steps = steps;
 
         await _provisioningJobRepository.AddAsync(job, cancellationToken);
 
-        var outboxMessage = new OutboxMessage
+        if (resumeStepIndex != 5)
         {
-            Id = Guid.NewGuid(),
-            MessageType = "RetryProvisioning",
-            Payload = JsonSerializer.Serialize(new { AgentId = agent.Id, JobId = job.Id }),
-            Status = OutboxMessageStatus.Pending,
-            RetryCount = 0,
-            CreatedAtUtc = DateTime.UtcNow
-        };
-        await _outboxRepository.AddAsync(outboxMessage, cancellationToken);
+            var outboxMessage = new OutboxMessage
+            {
+                Id = Guid.NewGuid(),
+                MessageType = "RetryProvisioning",
+                Payload = JsonSerializer.Serialize(new ProvisionAgentMessage(
+                    agent.Id,
+                    job.Id,
+                    ExpectedStepIndex: resumeStepIndex,
+                    CorrelationId: null)),
+                Status = OutboxMessageStatus.Pending,
+                RetryCount = 0,
+                CreatedAtUtc = now
+            };
+            await _outboxRepository.AddAsync(outboxMessage, cancellationToken);
+        }
 
         var auditEvent = new AuditEvent
         {
@@ -85,7 +132,13 @@ internal sealed class RetryProvisioningHandler : IRequestHandler<RetryProvisioni
             AgentRegistrationId = agent.Id,
             EventType = "ProvisioningRetried",
             PerformedByObjectId = request.CallerObjectId,
-            OccurredAtUtc = DateTime.UtcNow
+            Details = JsonSerializer.Serialize(new
+            {
+                sourceOperationId = sourceJob.Id,
+                resumeStepIndex,
+                resumeStep = stepTypes[resumeStepIndex].ToString()
+            }),
+            OccurredAtUtc = now
         };
         await _auditEventRepository.AddAsync(auditEvent, cancellationToken);
 

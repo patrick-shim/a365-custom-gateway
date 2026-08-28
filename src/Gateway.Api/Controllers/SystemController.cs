@@ -1,5 +1,6 @@
 using Gateway.Api.Authorization;
 using Gateway.Api.Extensions;
+using Gateway.Api.Options;
 using Gateway.Application.Configuration.Commands;
 using Gateway.Application.Configuration.Queries;
 using Gateway.Contracts.Requests;
@@ -15,10 +16,14 @@ namespace Gateway.Api.Controllers;
 public class SystemController : ControllerBase
 {
     private readonly ISender _sender;
+    private readonly ProvisioningAdmissionGate _provisioningAdmissionGate;
 
-    public SystemController(ISender sender)
+    public SystemController(
+        ISender sender,
+        ProvisioningAdmissionGate provisioningAdmissionGate)
     {
         _sender = sender;
+        _provisioningAdmissionGate = provisioningAdmissionGate;
     }
 
     [HttpGet("config")]
@@ -29,7 +34,7 @@ public class SystemController : ControllerBase
         var query = new GetSystemConfigQuery();
         var result = await _sender.Send(query, cancellationToken);
 
-        return Ok(result);
+        return Ok(WithDeploymentCapabilities(result));
     }
 
     [HttpPatch("config")]
@@ -57,10 +62,20 @@ public class SystemController : ControllerBase
             request.StuckTransitionTimeoutDays,
             request.UseGraphAgentRegistration,
             request.UseCliProvisioningFallback,
-            User.GetObjectId());
+            User.GetObjectId(),
+            request.DefaultAgent365ObservabilityEnabled,
+            request.DefaultAzureMonitorExportEnabled);
 
         var result = await _sender.Send(command, cancellationToken);
 
-        return Ok(result);
+        return Ok(WithDeploymentCapabilities(result));
     }
+
+    private SystemConfigDto WithDeploymentCapabilities(SystemConfigDto config) =>
+        config with
+        {
+            ProvisioningExecutionEnabled = _provisioningAdmissionGate.IsRegistrationOpen,
+            AuthorizedRegistrationExternalAgentId =
+                _provisioningAdmissionGate.AuthorizedRegistrationExternalAgentId
+        };
 }

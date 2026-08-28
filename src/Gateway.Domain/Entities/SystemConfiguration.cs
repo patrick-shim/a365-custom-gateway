@@ -1,10 +1,12 @@
+using Gateway.Domain.Enums;
+
 namespace Gateway.Domain.Entities;
 
 public class SystemConfiguration
 {
     public Guid Id { get; set; }
     public string ProvisioningMode { get; set; } = string.Empty;
-    public string DefaultObservabilityMode { get; set; } = string.Empty;
+    public string DefaultObservabilityMode { get; set; } = nameof(ObservabilityMode.Agent365);
     public bool DefaultPurviewEnabled { get; set; }
     public string? DefaultPurviewMode { get; set; }
     public int RetentionDaysActivityReceipts { get; set; }

@@ -12,11 +12,20 @@ param workerPrincipalId string
 @description('Name of the Azure Key Vault.')
 param keyVaultName string
 
+@description('Name of the dedicated Key Vault that stores generated provisioning credentials.')
+param workerCredentialKeyVaultName string
+
+@description('Legacy-only switch granting the worker Key Vault Secrets Officer on the provisioning credential vault. Workflow v3 does not require it.')
+param enableWorkerCredentialKeyVaultSecretsOfficer bool = false
+
 @description('Name of the Azure Storage Account.')
 param storageAccountName string
 
 @description('Name of the Azure Service Bus namespace.')
 param serviceBusNamespaceName string
+
+@description('Name of the isolated provisioning queue. Data-plane roles are scoped to this queue, not the namespace.')
+param serviceBusQueueName string
 
 @description('Name of the Azure Container Registry.')
 param containerRegistryName string
@@ -41,12 +50,21 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
 }
 
+resource workerCredentialKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: workerCredentialKeyVaultName
+}
+
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
 }
 
 resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' existing = {
   name: serviceBusNamespaceName
+}
+
+resource serviceBusQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' existing = {
+  parent: serviceBusNamespace
+  name: serviceBusQueueName
 }
 
 resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' existing = {
@@ -81,8 +99,8 @@ resource apiStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022
 
 // API -> Service Bus: Azure Service Bus Data Sender
 resource apiServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(subscription().id, apiPrincipalId, serviceBusNamespace.id, serviceBusDataSenderRoleId)
-  scope: serviceBusNamespace
+  name: guid(subscription().id, apiPrincipalId, serviceBusQueue.id, serviceBusDataSenderRoleId)
+  scope: serviceBusQueue
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', serviceBusDataSenderRoleId)
     principalId: apiPrincipalId
@@ -105,10 +123,10 @@ resource apiAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 // Worker Role Assignments
 // ============================================================================
 
-// Worker -> Key Vault: Key Vault Secrets Officer
-resource workerKeyVaultSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(subscription().id, workerPrincipalId, keyVault.id, keyVaultSecretsOfficerRoleId)
-  scope: keyVault
+// Legacy-only worker credential-vault access. Workflow v3 defaults this off.
+resource workerKeyVaultSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableWorkerCredentialKeyVaultSecretsOfficer) {
+  name: guid(subscription().id, workerPrincipalId, workerCredentialKeyVault.id, keyVaultSecretsOfficerRoleId)
+  scope: workerCredentialKeyVault
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsOfficerRoleId)
     principalId: workerPrincipalId
@@ -129,8 +147,8 @@ resource workerStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2
 
 // Worker -> Service Bus: Azure Service Bus Data Receiver
 resource workerServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(subscription().id, workerPrincipalId, serviceBusNamespace.id, serviceBusDataReceiverRoleId)
-  scope: serviceBusNamespace
+  name: guid(subscription().id, workerPrincipalId, serviceBusQueue.id, serviceBusDataReceiverRoleId)
+  scope: serviceBusQueue
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', serviceBusDataReceiverRoleId)
     principalId: workerPrincipalId
@@ -138,10 +156,12 @@ resource workerServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2
   }
 }
 
-// Worker -> Service Bus: Azure Service Bus Data Sender
+// Worker -> Service Bus: Azure Service Bus Data Sender. The workflow-v3 worker
+// persists continuation messages to the SQL outbox and its relay publishes them
+// back to the same isolated queue.
 resource workerServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(subscription().id, workerPrincipalId, serviceBusNamespace.id, serviceBusDataSenderRoleId)
-  scope: serviceBusNamespace
+  name: guid(subscription().id, workerPrincipalId, serviceBusQueue.id, serviceBusDataSenderRoleId)
+  scope: serviceBusQueue
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', serviceBusDataSenderRoleId)
     principalId: workerPrincipalId

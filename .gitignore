@@ -37,6 +37,7 @@ artifacts/
 *.rsuser
 *.sln.docstates
 launchSettings.json
+!src/Gateway.AdminUi/Properties/launchSettings.json
 
 ## Rider
 .idea/
@@ -63,8 +64,21 @@ appsettings.Development.json
 appsettings.Local.json
 .secrets
 
-## Claude Code
-.claude/
+## Agent tooling
+# Keep shared Claude agents and skills in source control; keep machine-local settings private.
+.claude/*
+!.claude/agents/
+!.claude/agents/**
+!.claude/skills/
+!.claude/skills/**
+.claude/settings.json
+.claude/settings.local.json
+.secret
+.secret.*
+
+## Bootstrap runtime state (safe identifiers still remain machine-local)
+.bootstrap/
+bootstrap/config.json
 
 ## OS
 .DS_Store
@@ -75,3 +89,7 @@ coverage/
 *.coverage
 *.coveragexml
 TestResults/
+
+## Python caches
+__pycache__/
+*.py[cod]

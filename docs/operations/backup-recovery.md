@@ -2,6 +2,50 @@
 
 This runbook covers backup configuration, recovery procedures, and disaster recovery planning for all stateful components of the A365 Custom Gateway: Azure SQL Database, Azure Key Vault, Azure Service Bus, and Azure Blob Storage.
 
+> **Current implementation boundary (2026-08-28):** the repository has no EF Core
+> migration set. Current source isolates workflow v3 on
+> `gateway-provisioning-v3`; retained workflow v2 stays on
+> `gateway-provisioning-v2`, and historical v1 stays on `gateway-provisioning`.
+> Development continuous mode has Active create-new and reuse-existing blueprint
+> registrations. Both are Available in Microsoft 365 Admin Center; Gateway ingress
+> returned HTTP 202, Agent 365 OTLP accepted sanitized exports, and blueprint-scoped
+> Purview Enforce proved benign audit plus synthetic prompt blocking.
+> Historical ambiguous operations remain non-replayable. Verify effective queue names
+> before recovery and never attach one generation's receiver to another queue.
+> The additive SQL prepare/finalize path is documented in
+> [`upgrade-strategy.md`](upgrade-strategy.md). Azure CLI supports queue management
+> but not the message-level peek/receive/send commands previously shown here. Use a
+> reviewed Azure Service Bus SDK tool or Service Bus Explorer for message bodies, and
+> only with explicit incident authorization. The two historical-v1 DLQ messages and
+> the three reviewed failed-canary messages on `gateway-provisioning-v2` must not be
+> inspected beyond approved metadata, replayed, settled, or purged as part of routine
+> recovery testing. The canary controller's reviewed-evidence/count exception is
+> verification only, not message-disposition authority.
+> Resource/SKU/retention/geo-recovery sections below are procedures and target
+> controls, not proof that each feature is deployed. Verify actual development state
+> from [`development-deployment-status.md`](development-deployment-status.md) and use
+> read-only discovery before any restore or failover.
+
+> The verified development state is API revision
+> `ca-gateway-api-dev--purviewguard-20260828222324`, worker revision
+> `ca-gateway-worker-dev-vnet--rbacrefresh-202608282058`, v3 queue `0/0/9`,
+> retained v2 `0/0/3`, and historical v1 `0/0/2`. The typed catalog is 12 total / 7
+> compatible / 5 incompatible. The current canary is Active, and
+> recovery work does not authorize opening admission or processing. Exact digests
+> and chronology remain in
+> [`development-deployment-status.md`](development-deployment-status.md).
+>
+> The current development database has the four prepare deltas applied and verified;
+> scoped-idempotency finalization remains unapplied. The retained, distinct recovery
+> baseline and immutable prepare provenance remain valid absent a real age, integrity,
+> recovery, or schema reason to replace them. Evidence
+> `live-state-20260828-v3-success-final.json` predates the two continuous canaries. It
+> remains earlier recovery evidence, not current SQL job/outbox evidence. No
+> historical operation may be replayed as part of recovery.
+> Development SQL public network access is policy-enforced `Disabled`; do not weaken
+> that policy or widen the canary controller's evidence-age limit to bypass this
+> recovery gate.
+
 ---
 
 ## Prerequisites
@@ -10,7 +54,7 @@ This runbook covers backup configuration, recovery procedures, and disaster reco
 |---|---|
 | **Azure role** | Contributor on the resource group (for restore operations), Key Vault Administrator (for secret recovery), SQL Server Contributor (for database restore) |
 | **Azure CLI** | v2.60+ |
-| **EF Core tools** | `dotnet-ef` tool installed (for post-restore migration checks) |
+| **SQL tooling** | `sqlcmd` or an equivalent private-DNS-aware SQL client for read-only schema verification |
 | **Resource group** | `{resourceGroup}` |
 | **Subscription** | `{subscriptionId}` |
 
@@ -99,7 +143,7 @@ RESTORE_POINT="2026-08-23T10:30:00Z"
 # Step 2: Restore to a new database (do NOT overwrite the existing database)
 az sql db restore \
   --server {sqlServerName} \
-  --name {databaseName}-restored \
+  --name {databaseName} \
   --resource-group {resourceGroup} \
   --dest-name {databaseName}-restored-$(date +%Y%m%d%H%M) \
   --time ${RESTORE_POINT}
@@ -115,13 +159,16 @@ az sql db restore \
 
 #### Step 3: Validate the Restored Database
 
-```bash
-# Connect to the restored database and verify data
-az sql query \
-  --server {sqlServerName} \
-  --name {databaseName}-restored-20260823 \
-  --resource-group {resourceGroup} \
-  --query "SELECT COUNT(*) AS AgentCount FROM AgentRegistrations WHERE IsDeleted = 0"
+Run this from the approved private-DNS-aware runner. `az sql query` is not a
+supported Azure CLI command used by this repository; use the same non-echoing Entra
+`sqlcmd` path as the schema-upgrade procedure.
+
+```powershell
+sqlcmd `
+  -S "tcp:{sqlServerName}.database.windows.net,1433" `
+  -d "{databaseName}-restored-20260823" `
+  -G `
+  -Q "SET NOCOUNT ON; SELECT COUNT_BIG(*) AS AgentCount FROM dbo.AgentRegistrations WHERE IsDeleted = 0;"
 ```
 
 ### 1.6 Post-Restore Steps
@@ -140,24 +187,34 @@ az sql db show \
   --query "status" -o tsv
 ```
 
-2. **Check EF Core migration state:**
+2. **Check the implemented schema level:**
 
 ```bash
-# List applied migrations on the restored database
-"C:\Program Files\dotnet\dotnet.exe" ef migrations list \
-  --project src/Gateway.Infrastructure \
-  --startup-project src/Gateway.Api \
-  --connection "Server={sqlServerName}.database.windows.net;Database={databaseName}-restored-20260823;Authentication=Active Directory Default;"
+# Run from a private-DNS-aware host. This is a read-only schema check.
+sqlcmd -S "tcp:{sqlServerName}.database.windows.net,1433" \
+  -d "{databaseName}-restored-20260823" -G \
+  -Q "SELECT COL_LENGTH('dbo.AgentRegistrations','BlueprintSelectionMode') AS BlueprintSelectionMode, COL_LENGTH('dbo.ProvisioningJobs','WorkflowVersion') AS WorkflowVersion, OBJECT_ID('dbo.AgentIngressCredentials','U') AS AgentIngressCredentials, COL_LENGTH('dbo.IdempotencyRecords','AgentRegistrationId') AS IdempotencyAgentRegistrationId, OBJECT_ID('dbo.IngressRateLimitBuckets','U') AS IngressRateLimitBuckets;"
 ```
 
-3. **Apply any pending migrations** (if the restore point predates the latest migration):
+Also inventory the indexes on `dbo.IdempotencyRecords`. A prepared database retains
+both the old globally unique key-only index and the filtered scoped compound index;
+a finalized database retains only the scoped index plus legacy NULL-scope rows. That
+phase determines API rollback compatibility. Never route a legacy NULL-scope-writing
+API revision to a finalized database without an explicitly reviewed compatibility
+recovery.
 
-```bash
-"C:\Program Files\dotnet\dotnet.exe" ef database update \
-  --project src/Gateway.Infrastructure \
-  --startup-project src/Gateway.Api \
-  --connection "Server={sqlServerName}.database.windows.net;Database={databaseName}-restored-20260823;Authentication=Active Directory Default;"
-```
+The restored database contains only salted Gateway-key verifier material, never the
+clear keys. A key issued after the restore point will not validate against the older
+copy. Do not attempt to recover or reconstruct it from SQL: after controlled cutover,
+issue a replacement through the administrator credential endpoint, deploy/verify it,
+then revoke stale metadata when safe. One-time registration/rotation responses must
+not be recovered from idempotency rows because they are deliberately never cached
+there.
+
+3. **Apply a reviewed additive upgrade only when required.** Follow
+   [`upgrade-strategy.md`](upgrade-strategy.md). Rehearse the exact script and recovery
+   plan on a disposable copy before applying it to a restored environment. Do not run
+   `dotnet ef database update`; no EF migration set is present.
 
 4. **Swap databases** (if the restored database should become the primary):
 
@@ -324,87 +381,54 @@ Azure Service Bus does not provide traditional backup/restore. Recovery focuses 
 
 ### 3.1 Dead-Letter Queue Monitoring
 
-The gateway uses the following Service Bus queues:
+The current design has separate generation queues:
 
 | Queue Name | Purpose | DLQ Threshold (Alert) |
 |---|---|---|
-| `gateway-provisioning` | Provisioning job messages | 5 messages |
-| `gateway-observability-export` | Agent 365 telemetry export | 50 messages |
-| `gateway-reconciliation` | Reconciliation job triggers | 3 messages |
+| `gateway-provisioning-v3` | Current-source workflow-v3 provisioning; API is sole publisher and v3 worker sole receiver | 5 messages |
+| `gateway-provisioning-v2` | Retained workflow-v2 queue; preserve its three failed-canary DLQ messages | 5 messages |
+| `gateway-provisioning` | Historical workflow-v1 queue; preserve its two existing DLQ messages | 5 messages |
 
 ```bash
-# Check DLQ depth for all queues
-for QUEUE in gateway-provisioning gateway-observability-export gateway-reconciliation; do
-  DLQ_COUNT=$(az servicebus queue show \
-    --namespace-name {serviceBusNamespace} \
-    --resource-group {resourceGroup} \
-    --name ${QUEUE} \
-    --query "countDetails.deadLetterMessageCount" -o tsv)
-  echo "${QUEUE}: ${DLQ_COUNT} dead-lettered messages"
-done
+# Read queue runtime metadata; this does not inspect message bodies.
+az servicebus queue show \
+  --namespace-name {serviceBusNamespace} \
+  --resource-group {resourceGroup} \
+  --name gateway-provisioning-v3 \
+  --query "countDetails.{active:activeMessageCount,scheduled:scheduledMessageCount,deadLetter:deadLetterMessageCount}" -o json
 ```
+
+Run the same read-only query for all three generation-isolated queues. The v2 queue
+currently has three reviewed failed-canary DLQ messages and the historical queue has
+two older messages. The v3 queue is currently `0/0/9`; its DLQ entries are retained
+evidence, while current successful registrations are Active. Keep
+the queue isolated. Do not inspect payloads or settle any retained message as routine
+verification.
 
 ### 3.2 DLQ Message Inspection
 
-```bash
-# Peek at dead-lettered messages (non-destructive)
-az servicebus queue message peek \
-  --namespace-name {serviceBusNamespace} \
-  --resource-group {resourceGroup} \
-  --queue-name gateway-provisioning \
-  --max-count 10 \
-  --dead-letter
-```
+Azure CLI has no supported message-level command for this operation. Use the Azure
+portal's Service Bus Explorer or a small, reviewed `Azure.Messaging.ServiceBus` tool
+with **peek** semantics. Record who authorized the inspection, the queue/subqueue,
+message identifiers, and correlation result without copying payloads into a runbook
+or chat. For the current development incident, inspection is still blocked.
 
 ### 3.3 DLQ Message Resubmission
 
-To replay dead-lettered messages after fixing the root cause:
-
-```bash
-# Receive (destructive) from the DLQ and re-send to the main queue
-# This requires a custom script or the Service Bus Explorer tool
-
-# Option 1: Use Azure Service Bus Explorer (GUI tool)
-# Download from: https://github.com/paolosalvatori/ServiceBusExplorer
-
-# Option 2: Use az servicebus CLI to receive and resend
-# Receive a message from the DLQ
-az servicebus queue message receive \
-  --namespace-name {serviceBusNamespace} \
-  --resource-group {resourceGroup} \
-  --queue-name gateway-provisioning \
-  --dead-letter
-
-# Re-send the message to the main queue
-az servicebus queue message send \
-  --namespace-name {serviceBusNamespace} \
-  --resource-group {resourceGroup} \
-  --queue-name gateway-provisioning \
-  --body "{messageBody}"
-```
+Replay is a destructive state change, not a routine restore step. After the root
+cause is fixed, independently correlate the message to a current, replay-safe
+operation; review the workflow version and side-effect boundary; obtain explicit
+operator approval; then use a reviewed SDK tool or Service Bus Explorer to resubmit
+with the intended identifiers. Never replay a legacy job into another workflow
+generation, and do not use any of the five retained development DLQ messages for the
+workflow-v3 canary.
 
 ### 3.4 DLQ Purge (Discard Messages)
 
-If dead-lettered messages are no longer relevant (e.g., the associated provisioning job has been manually resolved):
-
-```bash
-# Receive and discard all DLQ messages (destructive)
-while true; do
-  RESULT=$(az servicebus queue message receive \
-    --namespace-name {serviceBusNamespace} \
-    --resource-group {resourceGroup} \
-    --queue-name gateway-provisioning \
-    --dead-letter \
-    --max-wait-time 5 2>/dev/null)
-  if [ -z "$RESULT" ] || [ "$RESULT" = "null" ]; then
-    echo "DLQ is empty."
-    break
-  fi
-  echo "Discarded message."
-done
-```
-
-> **Warning:** This permanently discards messages. Ensure the root cause has been resolved and the messages are no longer needed.
+Purge permanently destroys evidence and recovery options. There is no repository
+script or Azure CLI message command approved for it. Require explicit message-by-
+message disposition, incident-owner approval, and an audited SDK/portal operation.
+Bulk purge is not authorized for the current development queue.
 
 ---
 
@@ -569,10 +593,12 @@ az sql failover-group set-primary \
    - Recover it using the soft-delete recovery procedure.
    - Verify the recovered secret matches the original.
 
-3. **Service Bus DLQ Replay Test:**
-   - Intentionally dead-letter a test message.
-   - Replay it using the DLQ resubmission procedure.
-   - Verify the message is processed successfully.
+3. **Service Bus recovery test:**
+   - Use an emulator or a separately isolated test namespace/queue, never the current
+     development DLQ.
+   - Exercise peek, explicit disposition approval, idempotent replay, and audit
+     evidence with synthetic data.
+   - Do not create/replay a live message without separate authorization.
 
 ---
 
@@ -589,4 +615,4 @@ az sql failover-group set-primary \
 - [ ] Service Bus DLQ monitoring alerts configured
 - [ ] DR test completed within the last quarter
 - [ ] Post-restore managed identity access verified
-- [ ] Post-restore EF Core migration state verified
+- [ ] Post-restore implemented schema level and additive N:N workflow schema verified

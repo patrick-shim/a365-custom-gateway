@@ -18,7 +18,7 @@ param location string
 param sku string = 'Basic'
 
 @description('Name of the provisioning queue.')
-param queueName string = 'gateway-provisioning'
+param queueName string = 'gateway-provisioning-v3'
 
 @description('Maximum number of delivery attempts before dead-lettering.')
 @minValue(1)
@@ -69,7 +69,7 @@ resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview
   }
   properties: {
     minimumTlsVersion: '1.2'
-    disableLocalAuth: false
+    disableLocalAuth: true
   }
 }
 

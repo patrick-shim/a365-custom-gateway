@@ -1,0 +1,17 @@
+<div class="form-field">
+    <label for="@Id">@Label</label>
+    <InputNumber id="@Id" class="form-control" Value="Value" ValueChanged="ValueChanged" ValueExpression="ValueExpression" disabled="@Disabled" />
+    @if (ValueExpression is not null)
+    {
+        <ValidationMessage For="ValueExpression" />
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Id { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string Label { get; set; } = string.Empty;
+    [Parameter] public int Value { get; set; }
+    [Parameter] public EventCallback<int> ValueChanged { get; set; }
+    [Parameter] public Expression<Func<int>>? ValueExpression { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+}

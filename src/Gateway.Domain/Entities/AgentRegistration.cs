@@ -16,6 +16,11 @@ public class AgentRegistration
     public string? BlueprintId { get; set; }
     public string? Agent365InstanceId { get; set; }
     public string? ExternalClientId { get; set; }
+    public string? AgentIdentityObjectId { get; set; }
+    public string? BlueprintObjectId { get; set; }
+    public string BlueprintSelectionMode { get; set; } = "Legacy";
+    public string? RequestedBlueprintObjectId { get; set; }
+    public string? RequestedBlueprintDisplayName { get; set; }
     public string? LastProvisioningErrorCode { get; set; }
     public string? LastProvisioningErrorSummary { get; set; }
     public bool IsDeleted { get; set; }

@@ -4,6 +4,7 @@ using Gateway.Api.Authorization;
 using Gateway.Api.Controllers;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Identity.Web;
 
 namespace Gateway.SecurityTests;
 
@@ -97,6 +98,15 @@ public class ControllerAuthorizationTests
         AssertActionPolicy(typeof(AgentsController), methodName, expectedPolicy);
     }
 
+    [Fact]
+    public void AgentIdentityBlueprintsController_List_Should_RequireAdministratorOnlyPolicy()
+    {
+        AssertActionPolicy(
+            typeof(AgentIdentityBlueprintsController),
+            nameof(AgentIdentityBlueprintsController.ListAgentIdentityBlueprints),
+            AuthorizationPolicies.AdministratorOnly);
+    }
+
     // ---------------------------------------------------------------
     // Data-plane controllers: action-to-policy mapping
     // ---------------------------------------------------------------
@@ -144,6 +154,27 @@ public class ControllerAuthorizationTests
             typeof(OperationsController),
             nameof(OperationsController.GetOperationStatus),
             AuthorizationPolicies.AdministratorOrOperator);
+    }
+
+    [Fact]
+    public void CompleteAgent365Registration_ShouldRequireDelegatedAdministratorRegistryPolicy()
+    {
+        AssertActionPolicy(
+            typeof(OperationsController),
+            nameof(OperationsController.CompleteAgent365Registration),
+            AuthorizationPolicies.DelegatedAdministratorRegistry);
+    }
+
+    [Fact]
+    public void CompleteAgent365Registration_ShouldNotUseWebAppAuthorizeForScopesRedirectFilter()
+    {
+        var method = typeof(OperationsController).GetMethod(
+            nameof(OperationsController.CompleteAgent365Registration));
+
+        method.Should().NotBeNull();
+        method!.GetCustomAttributes<AuthorizeForScopesAttribute>()
+            .Should().BeEmpty(
+                "web APIs must return an OBO challenge response instead of invoking a web-app redirect filter");
     }
 
     // ---------------------------------------------------------------

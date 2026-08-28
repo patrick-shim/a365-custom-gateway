@@ -7,6 +7,7 @@ namespace Gateway.UnitTests.Validators;
 
 public class RegisterAgentValidatorTests
 {
+    private const string BlueprintObjectId = "0e6f36da-a880-4612-99af-9f923f7105de";
     private readonly RegisterAgentValidator _validator = new();
 
     private static RegisterAgentCommand CreateValidCommand() =>
@@ -17,7 +18,105 @@ public class RegisterAgentValidatorTests
             OwnerObjectId: "owner-oid-001",
             Environment: "Development",
             Features: null,
-            CallerObjectId: "caller-oid-001");
+            CallerObjectId: "caller-oid-001",
+            Blueprint: new AgentBlueprintSelectionDto(
+                "UseExisting",
+                BlueprintObjectId,
+                null));
+
+    [Fact]
+    public void Validate_Should_Pass_When_UsingExistingBlueprint()
+    {
+        var result = _validator.Validate(CreateValidCommand());
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_Should_Pass_When_CreatingNewBlueprint()
+    {
+        var command = CreateValidCommand() with
+        {
+            Blueprint = new AgentBlueprintSelectionDto(
+                "CreateNew",
+                null,
+                "Shared development blueprint")
+        };
+
+        var result = _validator.Validate(command);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_Should_Fail_When_UseExistingDoesNotIdentifyBlueprint()
+    {
+        var command = CreateValidCommand() with
+        {
+            Blueprint = new AgentBlueprintSelectionDto(
+                "UseExisting",
+                null,
+                null)
+        };
+
+        var result = _validator.Validate(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error =>
+            error.PropertyName == "Blueprint.BlueprintObjectId");
+    }
+
+    [Fact]
+    public void Validate_Should_Fail_When_UseExistingAlsoRequestsNewDisplayName()
+    {
+        var command = CreateValidCommand() with
+        {
+            Blueprint = new AgentBlueprintSelectionDto(
+                "UseExisting",
+                BlueprintObjectId,
+                "Unexpected name")
+        };
+
+        var result = _validator.Validate(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "Blueprint.DisplayName");
+    }
+
+    [Fact]
+    public void Validate_Should_Fail_When_CreateNewAlsoIdentifiesExistingBlueprint()
+    {
+        var command = CreateValidCommand() with
+        {
+            Blueprint = new AgentBlueprintSelectionDto(
+                "CreateNew",
+                BlueprintObjectId,
+                "New blueprint")
+        };
+
+        var result = _validator.Validate(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error =>
+            error.PropertyName == "Blueprint.BlueprintObjectId");
+    }
+
+    [Fact]
+    public void Validate_Should_Fail_When_CreateNewDoesNotProvideDisplayName()
+    {
+        var command = CreateValidCommand() with
+        {
+            Blueprint = new AgentBlueprintSelectionDto(
+                "CreateNew",
+                null,
+                null)
+        };
+
+        var result = _validator.Validate(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "Blueprint.DisplayName");
+    }
 
     [Fact]
     public void Validate_Should_Pass_When_CommandIsValid()
@@ -50,6 +149,57 @@ public class RegisterAgentValidatorTests
         var result = _validator.Validate(command);
 
         result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_Should_Pass_When_NewObservabilityDestinationsAreProvided()
+    {
+        var command = CreateValidCommand() with
+        {
+            Features = new AgentFeaturesDto(
+                ObservabilityMode: null,
+                PurviewEnabled: false,
+                PurviewMode: null,
+                Agent365ObservabilityEnabled: true,
+                AzureMonitorExportEnabled: true)
+        };
+
+        var result = _validator.Validate(command);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_Should_Fail_When_LegacyAndNewObservabilitySettingsConflict()
+    {
+        var command = CreateValidCommand() with
+        {
+            Features = new AgentFeaturesDto(
+                ObservabilityMode: "GatewayOnly",
+                PurviewEnabled: false,
+                PurviewMode: null,
+                Agent365ObservabilityEnabled: true,
+                AzureMonitorExportEnabled: true)
+        };
+
+        var result = _validator.Validate(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "Features");
+    }
+
+    [Fact]
+    public void Validate_Should_Fail_When_LegacyObservabilityModeIsInvalid()
+    {
+        var command = CreateValidCommand() with
+        {
+            Features = new AgentFeaturesDto("InvalidMode", false, null)
+        };
+
+        var result = _validator.Validate(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "Features.ObservabilityMode");
     }
 
     [Fact]

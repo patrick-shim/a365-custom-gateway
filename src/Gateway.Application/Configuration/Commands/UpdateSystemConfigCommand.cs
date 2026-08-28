@@ -20,4 +20,6 @@ public record UpdateSystemConfigCommand(
     int? StuckTransitionTimeoutDays,
     bool? UseGraphAgentRegistration,
     bool? UseCliProvisioningFallback,
-    string CallerObjectId) : IRequest<SystemConfigDto>;
+    string CallerObjectId,
+    bool? DefaultAgent365ObservabilityEnabled = null,
+    bool? DefaultAzureMonitorExportEnabled = null) : IRequest<SystemConfigDto>;

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Gateway.Application.Common;
 using Gateway.Application.Exceptions;
 using Gateway.Contracts;
 using Gateway.Contracts.Dtos;
@@ -37,84 +38,155 @@ internal sealed class SubmitActivityHandler : IRequestHandler<SubmitActivityComm
 
     public async Task<ActivityReceiptDto> Handle(SubmitActivityCommand request, CancellationToken ct)
     {
-        var agent = await _agentRepository.GetByExternalAgentIdAsync(request.ExternalAgentId, ct)
-            ?? throw new NotFoundException("AgentRegistration", request.ExternalAgentId);
+        var agent = await _agentRepository.GetByIdAsync(request.CallerAgentRegistrationId, ct)
+            ?? throw new DomainException(
+                "Caller identity does not match the registered agent.",
+                ErrorCodes.AGENT_IDENTITY_MISMATCH);
 
-        if (agent.ExternalClientId != request.CallerClientId)
+        if (!string.Equals(
+                agent.ExternalAgentId.Value,
+                request.ExternalAgentId,
+                StringComparison.Ordinal))
             throw new DomainException("Caller identity does not match the registered agent.", ErrorCodes.AGENT_IDENTITY_MISMATCH);
 
         if (agent.Status != AgentStatus.Active)
             throw new DomainException("Agent is not active.", ErrorCodes.AGENT_DISABLED);
 
-        if (request.IdempotencyKey is not null)
+        if (request.Actor is null)
         {
-            var existing = await _idempotencyService.GetAsync(request.IdempotencyKey, ct);
-            if (existing is not null)
-                return JsonSerializer.Deserialize<ActivityReceiptDto>(existing.ResponseBody)!;
+            throw new ValidationException(new Dictionary<string, string[]>
+            {
+                ["Actor"] = ["Actor is required."]
+            });
         }
 
-        var correlationId = Guid.NewGuid().ToString();
+        var actor = request.Actor;
 
-        var receipt = new ActivityReceipt
-        {
-            Id = Guid.NewGuid(),
-            AgentRegistrationId = agent.Id,
-            ExternalActivityId = request.ActivityId,
-            SessionId = request.SessionId,
-            ActivityType = Enum.Parse<ActivityType>(request.ActivityType),
-            ActorType = Enum.Parse<ActorType>(request.Actor.Type),
-            ProcessingStatus = ProcessingStatus.Accepted,
-            CorrelationId = correlationId,
-            OccurredAtUtc = request.OccurredAtUtc,
-            ReceivedAtUtc = DateTime.UtcNow
-        };
+        Agent365ActorRequirement.EnsureSupported(
+            agent.FeatureConfiguration.ObservabilityMode,
+            actor.Type,
+            "Actor.Type");
 
-        await _activityReceiptRepository.AddAsync(receipt, ct);
+        Agent365UserContextRequirement.EnsureSatisfied(
+            agent.FeatureConfiguration.ObservabilityMode,
+            actor.TenantUserObjectId,
+            "Actor.TenantUserObjectId");
 
-        var outboxMessage = new OutboxMessage
-        {
-            Id = Guid.NewGuid(),
-            MessageType = "ProcessActivity",
-            Payload = JsonSerializer.Serialize(new { AgentId = agent.Id, ReceiptId = receipt.Id, CorrelationId = correlationId }),
-            Status = OutboxMessageStatus.Pending,
-            RetryCount = 0,
-            CreatedAtUtc = DateTime.UtcNow
-        };
+        var observabilityDestinations =
+            agent.FeatureConfiguration.ObservabilityMode.ToDestinations();
 
-        await _outboxRepository.AddAsync(outboxMessage, ct);
-
-        var auditEvent = new AuditEvent
-        {
-            Id = Guid.NewGuid(),
-            AgentRegistrationId = agent.Id,
-            EventType = "ActivitySubmitted",
-            CorrelationId = correlationId,
-            OccurredAtUtc = DateTime.UtcNow
-        };
-
-        await _auditEventRepository.AddAsync(auditEvent, ct);
-
-        var response = new ActivityReceiptDto(receipt.Id, request.ActivityId, receipt.ProcessingStatus.ToString(), receipt.ReceivedAtUtc, correlationId);
-
+        string? requestBodyHash = null;
+        IIdempotencyScopeLease? idempotencyScope = null;
         if (request.IdempotencyKey is not null)
         {
-            var idempotencyRecord = new IdempotencyRecord
+            requestBodyHash = IdempotencyRequestHasher.Compute(request);
+            idempotencyScope = await _idempotencyService.AcquireScopeAsync(
+                agent.Id,
+                IdempotencyRequestHasher.ActivityEndpoint,
+                request.IdempotencyKey,
+                ct);
+        }
+
+        await using (idempotencyScope)
+        {
+            if (request.IdempotencyKey is not null)
+            {
+                var existing = await _idempotencyService.GetAsync(
+                    agent.Id,
+                    IdempotencyRequestHasher.ActivityEndpoint,
+                    request.IdempotencyKey,
+                    DateTime.UtcNow,
+                    ct);
+                if (existing is not null)
+                {
+                    if (!string.Equals(
+                            existing.RequestBodyHash,
+                            requestBodyHash,
+                            StringComparison.Ordinal))
+                    {
+                        throw new ConflictException(
+                            "The Idempotency-Key was already used for a different activity payload in this agent registration.",
+                            ErrorCodes.IDEMPOTENCY_CONFLICT);
+                    }
+
+                    return JsonSerializer.Deserialize<ActivityReceiptDto>(existing.ResponseBody)!;
+                }
+            }
+
+            var correlationId = Guid.NewGuid().ToString();
+
+            var receipt = new ActivityReceipt
             {
                 Id = Guid.NewGuid(),
-                IdempotencyKey = request.IdempotencyKey,
-                RequestBodyHash = string.Empty,
-                Endpoint = "SubmitActivity",
-                ResponseStatusCode = 202,
-                ResponseBody = JsonSerializer.Serialize(response),
-                CreatedAtUtc = DateTime.UtcNow,
-                ExpiresAtUtc = DateTime.UtcNow.AddHours(24)
+                AgentRegistrationId = agent.Id,
+                ExternalActivityId = request.ActivityId,
+                SessionId = request.SessionId,
+                ActivityType = Enum.Parse<ActivityType>(request.ActivityType),
+                ActorType = Enum.Parse<ActorType>(actor.Type),
+                ProcessingStatus = ProcessingStatus.Accepted,
+                CorrelationId = correlationId,
+                OccurredAtUtc = request.OccurredAtUtc,
+                ReceivedAtUtc = DateTime.UtcNow
             };
 
-            await _idempotencyService.SaveAsync(idempotencyRecord, ct);
+            await _activityReceiptRepository.AddAsync(receipt, ct);
+
+            var outboxMessage = new OutboxMessage
+            {
+                Id = Guid.NewGuid(),
+                MessageType = "ProcessActivity",
+                Payload = JsonSerializer.Serialize(new
+                {
+                    AgentId = agent.Id,
+                    ReceiptId = receipt.Id,
+                    CorrelationId = correlationId,
+                    ActorTenantUserObjectId = actor.TenantUserObjectId,
+                    observabilityDestinations.Agent365ObservabilityEnabled,
+                    observabilityDestinations.AzureMonitorExportEnabled
+                }),
+                Status = OutboxMessageStatus.Pending,
+                RetryCount = 0,
+                CreatedAtUtc = DateTime.UtcNow
+            };
+
+            await _outboxRepository.AddAsync(outboxMessage, ct);
+
+            var auditEvent = new AuditEvent
+            {
+                Id = Guid.NewGuid(),
+                AgentRegistrationId = agent.Id,
+                EventType = "ActivitySubmitted",
+                CorrelationId = correlationId,
+                OccurredAtUtc = DateTime.UtcNow
+            };
+
+            await _auditEventRepository.AddAsync(auditEvent, ct);
+
+            var response = new ActivityReceiptDto(receipt.Id, request.ActivityId, receipt.ProcessingStatus.ToString(), receipt.ReceivedAtUtc, correlationId);
+
+            if (request.IdempotencyKey is not null)
+            {
+                var idempotencyRecord = new IdempotencyRecord
+                {
+                    Id = Guid.NewGuid(),
+                    AgentRegistrationId = agent.Id,
+                    IdempotencyKey = request.IdempotencyKey,
+                    RequestBodyHash = requestBodyHash!,
+                    Endpoint = IdempotencyRequestHasher.ActivityEndpoint,
+                    ResponseStatusCode = 202,
+                    ResponseBody = JsonSerializer.Serialize(response),
+                    CreatedAtUtc = DateTime.UtcNow,
+                    ExpiresAtUtc = default
+                };
+
+                await _idempotencyService.SaveAsync(idempotencyRecord, ct);
+            }
+
+            await _unitOfWork.SaveChangesAsync(ct);
+            if (idempotencyScope is not null)
+                await idempotencyScope.CompleteAsync(ct);
+
+            return response;
         }
-
-        await _unitOfWork.SaveChangesAsync(ct);
-
-        return response;
     }
 }

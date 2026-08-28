@@ -1,5 +1,6 @@
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Responses;
+using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
 using Gateway.Domain.Models;
 using MediatR;
@@ -29,21 +30,33 @@ internal sealed class ListAgentsHandler : IRequestHandler<ListAgentsQuery, Agent
         var (agents, totalCount) = await _agentRepository.ListAsync(filter, cancellationToken);
 
         var items = agents
-            .Select(agent => new AgentSummaryDto(
-                agent.Id,
-                agent.ExternalAgentId.Value,
-                agent.Name,
-                agent.Description,
-                agent.Status.ToString(),
-                agent.Environment.ToString(),
-                new Agent365InfoDto(agent.Agent365AgentId, agent.BlueprintId, agent.Agent365InstanceId),
-                new AgentFeaturesDto(
-                    agent.FeatureConfiguration.ObservabilityMode.ToString(),
-                    agent.FeatureConfiguration.PurviewEnabled,
-                    agent.FeatureConfiguration.PurviewMode?.ToString()),
-                null,
-                agent.CreatedAtUtc,
-                agent.UpdatedAtUtc))
+            .Select(agent =>
+            {
+                var destinations = agent.FeatureConfiguration.ObservabilityMode.ToDestinations();
+
+                return new AgentSummaryDto(
+                    agent.Id,
+                    agent.ExternalAgentId.Value,
+                    agent.Name,
+                    agent.Description,
+                    agent.Status.ToString(),
+                    agent.Environment.ToString(),
+                    new Agent365InfoDto(
+                        agent.Agent365AgentId,
+                        agent.BlueprintId,
+                        agent.Agent365InstanceId,
+                        agent.AgentIdentityObjectId,
+                        agent.BlueprintObjectId),
+                    new AgentFeaturesDto(
+                        agent.FeatureConfiguration.ObservabilityMode.ToString(),
+                        agent.FeatureConfiguration.PurviewEnabled,
+                        agent.FeatureConfiguration.PurviewMode?.ToString(),
+                        destinations.Agent365ObservabilityEnabled,
+                        destinations.AzureMonitorExportEnabled),
+                    null,
+                    agent.CreatedAtUtc,
+                    agent.UpdatedAtUtc);
+            })
             .ToList();
 
         var nextCursor = items.Count == limit

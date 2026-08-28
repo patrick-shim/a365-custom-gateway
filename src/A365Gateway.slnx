@@ -9,4 +9,6 @@
   <Project Path="Gateway.Api/Gateway.Api.csproj" />
   <Project Path="Gateway.AdminUi/Gateway.AdminUi.csproj" />
   <Project Path="Gateway.Provisioning.Worker/Gateway.Provisioning.Worker.csproj" />
+  <Project Path="ExternalAgent.Sample/ExternalAgent.Sample.csproj" />
+  <Project Path="../tools/Gateway.DatabaseMigrator/Gateway.DatabaseMigrator.csproj" />
 </Solution>

@@ -1,7 +1,119 @@
-﻿@page "/"
+@page "/"
+@page "/dashboard"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "AllControlPlane")]
+@implements IAsyncDisposable
+@inject IGatewayApiClient Api
 
-<PageTitle>Home</PageTitle>
+<PageTitle>Overview · A365 Gateway</PageTitle>
 
-<h1>Hello, world!</h1>
+<PageHeader Eyebrow="Control center" Title="Gateway overview" Description="A live view of registered agents and the health of the gateway control plane.">
+    <Actions>
+        <span class="last-updated">Updated @FormatTime(lastUpdatedUtc)</span>
+        <FluentButton Appearance="Appearance.Neutral" OnClick="LoadAsync" Disabled="loading">Refresh</FluentButton>
+        <AuthorizeView Roles="Gateway.Administrator">
+            <FluentAnchor Appearance="Appearance.Accent" Href="/agents/register">Register agent</FluentAnchor>
+        </AuthorizeView>
+    </Actions>
+</PageHeader>
 
-Welcome to your new app.
+@if (loading && agents is null)
+{
+    <LoadingState Label="Loading gateway overview…" Detail="Checking the API and registered agent fleet." />
+}
+else if (error is not null)
+{
+    <ErrorState Message="@error.Message" CorrelationId="@error.CorrelationId" OnRetry="LoadAsync" />
+}
+else
+{
+    <section class="metric-grid" aria-label="Agent status summary">
+        <article class="metric-card card" style="--metric-color: var(--brand-soft)"><span class="metric-label">Registered agents</span><strong class="metric-value">@Total</strong><span class="metric-hint">@(hasAdditionalAgents ? "First 100 shown by the API" : "Visible in this environment")</span></article>
+        <article class="metric-card card" style="--metric-color: var(--success-soft)"><span class="metric-label">Active</span><strong class="metric-value">@Count("Active")</strong><span class="metric-hint">Accepting data-plane traffic</span></article>
+        <article class="metric-card card" style="--metric-color: var(--warning-soft)"><span class="metric-label">In progress</span><strong class="metric-value">@InProgress</strong><span class="metric-hint">Provisioning or awaiting action</span></article>
+        <article class="metric-card card" style="--metric-color: #eef0f5"><span class="metric-label">Disabled</span><strong class="metric-value">@Count("Disabled")</strong><span class="metric-hint">Data-plane access blocked</span></article>
+        <article class="metric-card card" style="--metric-color: var(--danger-soft)"><span class="metric-label">Needs attention</span><strong class="metric-value">@NeedsAttention</strong><span class="metric-hint">Failed or manual intervention</span></article>
+    </section>
+
+    <section class="content-grid">
+        <article class="card">
+            <div class="card-header"><div><h2>Agents needing attention</h2><span class="section-caption">Failure and approval states</span></div><a href="/agents" class="text-link">View all agents</a></div>
+            @if (AttentionAgents.Count == 0)
+            {
+                <EmptyState Icon="✓" Title="No agents need attention" Description="There are no failed, manual-intervention, or approval-waiting agents in the current result set." />
+            }
+            else
+            {
+                <div class="table-scroll"><table class="data-table">
+                    <thead><tr><th>Agent</th><th>Status</th><th>Environment</th><th>Updated</th></tr></thead>
+                    <tbody>@foreach (var agent in AttentionAgents.Take(8))
+                    {
+                        <tr><td><a class="row-link primary-cell" href="/agents/@agent.AgentId">@agent.Name</a><span class="secondary-cell">@agent.ExternalAgentId</span></td><td><StatusPill Value="@agent.Status" /></td><td>@agent.Environment</td><td>@FormatRelative(agent.UpdatedAtUtc)</td></tr>
+                    }</tbody>
+                </table></div>
+            }
+        </article>
+
+        <aside class="stack">
+            <article class="card">
+                <div class="card-header"><h2>Service health</h2></div>
+                <div class="card-body health-list">
+                    <div class="health-row"><span>Gateway API</span><StatusPill Value="@(health?.Status ?? "Unavailable")" /></div>
+                    <div class="health-row"><span>Database readiness</span><StatusPill Value="@(readiness?.Status ?? "Unavailable")" /></div>
+                    <div class="health-row"><span>Identity session</span><StatusPill Value="Healthy" /></div>
+                </div>
+            </article>
+            <article class="card"><div class="card-header"><h2>Data visibility</h2></div><div class="card-body"><div class="subtle-note">Activity volume and Purview outcome aggregates are not exposed by the current control-plane API. This dashboard reports only verified agent and health data.</div></div></article>
+        </aside>
+    </section>
+}
+
+@code {
+    private readonly CancellationTokenSource disposeCts = new();
+    private List<AgentSummaryDto>? agents;
+    private GatewayHealthStatus? health;
+    private GatewayHealthStatus? readiness;
+    private UiErrorInfo? error;
+    private bool loading;
+    private DateTime? lastUpdatedUtc;
+    private bool hasAdditionalAgents;
+
+    private int Total => agents?.Count ?? 0;
+    private int InProgress => agents?.Count(a => a.Status is "Provisioning" or "AwaitingAdminApproval" or "Deleting" or "Draft") ?? 0;
+    private int NeedsAttention => agents?.Count(a => a.Status is "Failed" or "RequiresManualIntervention") ?? 0;
+    private List<AgentSummaryDto> AttentionAgents => agents?.Where(a => a.Status is "Failed" or "RequiresManualIntervention" or "AwaitingAdminApproval").OrderByDescending(a => a.UpdatedAtUtc).ToList() ?? [];
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private int Count(string status) => agents?.Count(a => a.Status == status) ?? 0;
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        error = null;
+        try
+        {
+            var agentsTask = Api.GetAgentsAsync(new AgentListQuery(Limit: 100), disposeCts.Token);
+            var healthTask = Api.GetHealthAsync(disposeCts.Token);
+            var readinessTask = Api.GetReadinessAsync(disposeCts.Token);
+            await Task.WhenAll(agentsTask, healthTask, readinessTask);
+            var agentResult = await agentsTask;
+            agents = agentResult.Items;
+            hasAdditionalAgents = !string.IsNullOrWhiteSpace(agentResult.NextCursor);
+            health = await healthTask;
+            readiness = await readinessTask;
+            lastUpdatedUtc = DateTime.UtcNow;
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested) { }
+        catch (Exception ex) { error = UiErrorInfo.FromException(ex); }
+        finally { loading = false; }
+    }
+
+    private static string FormatTime(DateTime? value) => value is null ? "not yet" : value.Value.ToLocalTime().ToString("HH:mm");
+    private static string FormatRelative(DateTime value)
+    {
+        var elapsed = DateTime.UtcNow - value.ToUniversalTime();
+        return elapsed.TotalMinutes < 1 ? "Just now" : elapsed.TotalHours < 1 ? $"{(int)elapsed.TotalMinutes}m ago" : elapsed.TotalDays < 1 ? $"{(int)elapsed.TotalHours}h ago" : value.ToLocalTime().ToString("MMM d");
+    }
+
+    public ValueTask DisposeAsync() { disposeCts.Cancel(); disposeCts.Dispose(); return ValueTask.CompletedTask; }
+}

@@ -2,213 +2,265 @@
 
 <#
 .SYNOPSIS
-    Applies Entity Framework Core migrations to the A365 Gateway database.
+    Initializes an empty Gateway database or applies the reviewed SQL upgrade phases.
 
 .DESCRIPTION
-    Installs EF Core tooling if needed, creates an initial migration when none
-    exist, adds a temporary Azure SQL firewall rule for the caller's public IP,
-    applies the migration, then cleans up.
-
-    Authentication uses Active Directory Default, which picks up the caller's
-    current az login session (or managed identity in hosted environments).
-
-.PARAMETER SqlServerFqdn
-    Fully qualified domain name of the Azure SQL logical server.
-    Example: sql-a365gw-dev.database.windows.net
-
-.PARAMETER DatabaseName
-    Name of the target database. Defaults to GatewayDb.
-
-.PARAMETER ResourceGroup
-    Azure resource group that contains the SQL server. Defaults to rg-agent-gateway.
-
-.EXAMPLE
-    ./apply-migrations.ps1 -SqlServerFqdn sql-a365gw-dev.database.windows.net
-
-.EXAMPLE
-    ./apply-migrations.ps1 -SqlServerFqdn sql-a365gw-dev.database.windows.net -DatabaseName GatewayDb-Staging -ResourceGroup rg-agent-gateway-staging
+    Uses the current Azure CLI identity through AzureCliCredential. Initialize may
+    create the current EF schema only when the database has zero user tables; all
+    nonempty databases must pass read-back verification or fail. Other phases apply
+    only checked-in SQL. The script never reads a SQL password, generates EF
+    migrations, or modifies a project file. A live GatewayDb target requires the
+    explicit AllowLiveDatabase switch. Public SQL access can be opened for the
+    caller's current IP only for this command and is restored in finally.
 #>
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
+    [ValidatePattern('^[A-Za-z0-9-]+\.database\.windows\.net$')]
     [string]$SqlServerFqdn,
 
-    [string]$DatabaseName = 'GatewayDb',
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[A-Za-z0-9._-]+$')]
+    [string]$DatabaseName,
 
-    [string]$ResourceGroup = 'rg-agent-gateway'
+    [string]$ResourceGroup = 'rg-agent-gateway',
+
+    [ValidateSet('Initialize', 'Baseline', 'Prepare', 'Finalize', 'Verify')]
+    [string]$Phase = 'Prepare',
+
+    [ValidateRange(1, 2)]
+    [int]$Repeat = 1,
+
+    [switch]$AllowLiveDatabase,
+
+    [switch]$TemporarilyEnablePublicNetwork,
+
+    [string]$EvidenceDirectory,
+
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')]
+    [string]$ApiPrincipalName,
+
+    [guid]$ApiPrincipalClientId,
+
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')]
+    [string]$WorkerPrincipalName,
+
+    [guid]$WorkerPrincipalClientId
 )
 
 $ErrorActionPreference = 'Stop'
-
 . (Join-Path $PSScriptRoot '_common.ps1')
 
-$removeDesignPkg = $false
-$SqlServerName = ($SqlServerFqdn -split '\.')[0]
+$publicNetworkPropagationMaximumAttempts = 36
+$publicNetworkPropagationPollIntervalSeconds = 5
+
+function Wait-SqlPublicNetworkAccessState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ResourceGroupName,
+
+        [Parameter(Mandatory)]
+        [string]$ServerName,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('Enabled', 'Disabled')]
+        [string]$ExpectedState,
+
+        [Parameter(Mandatory)]
+        [ValidateRange(1, 120)]
+        [int]$MaximumAttempts,
+
+        [Parameter(Mandatory)]
+        [ValidateRange(1, 30)]
+        [int]$PollIntervalSeconds
+    )
+
+    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
+        $currentState = (& az sql server show `
+            --resource-group $ResourceGroupName `
+            --name $ServerName `
+            --query publicNetworkAccess `
+            --output tsv 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and $currentState -eq $ExpectedState) {
+            return $true
+        }
+
+        if ($attempt -lt $MaximumAttempts) {
+            Start-Sleep -Seconds $PollIntervalSeconds
+        }
+    }
+
+    return $false
+}
+
+if ($DatabaseName.Equals('master', [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw 'The migration runner refuses to target master.'
+}
+if ($DatabaseName.Equals('GatewayDb', [System.StringComparison]::OrdinalIgnoreCase) -and
+    -not $AllowLiveDatabase) {
+    throw 'Targeting GatewayDb requires -AllowLiveDatabase after a verified recovery copy exists.'
+}
+
+$principalArgumentsProvided = @(
+    -not [string]::IsNullOrWhiteSpace($ApiPrincipalName),
+    $ApiPrincipalClientId -ne [guid]::Empty,
+    -not [string]::IsNullOrWhiteSpace($WorkerPrincipalName),
+    $WorkerPrincipalClientId -ne [guid]::Empty
+)
+if (($principalArgumentsProvided | Where-Object { $_ }).Count -notin @(0, 4)) {
+    throw 'API and worker principal names/client IDs must be supplied together.'
+}
+
+Assert-Command 'az' 'https://aka.ms/installazurecli'
+Assert-Command 'dotnet' 'https://dot.net'
+$null = Assert-AzLogin
+
+$sqlServerName = ($SqlServerFqdn -split '\.')[0]
+$null = Invoke-AzCommand -Arguments @(
+    'sql', 'db', 'show',
+    '--resource-group', $ResourceGroup,
+    '--server', $sqlServerName,
+    '--name', $DatabaseName,
+    '--output', 'none'
+) -ErrorMessage "Azure SQL database '$DatabaseName' was not found."
+
+$server = (Invoke-AzCommand -Arguments @(
+    'sql', 'server', 'show',
+    '--resource-group', $ResourceGroup,
+    '--name', $sqlServerName,
+    '--output', 'json'
+) -ErrorMessage "Azure SQL logical server '$sqlServerName' was not found." | Out-String) |
+    ConvertFrom-Json
+
+$originalPublicNetworkAccess = [string]$server.publicNetworkAccess
+$firewallRuleName = "temp-a365gw-migration-$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss'))"
+$firewallCreated = $false
+$publicNetworkRestoreRequired = $false
+
+if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
+    $EvidenceDirectory = Join-Path $RepoRoot 'artifacts' 'migration-evidence'
+}
+$evidencePath = Join-Path $EvidenceDirectory (
+    "{0}-{1}-{2}.json" -f $DatabaseName, $Phase.ToLowerInvariant(),
+    (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))
 
 try {
-    # ------------------------------------------------------------------ #
-    # 1. Prerequisites
-    # ------------------------------------------------------------------ #
-    Write-StepHeader 'Checking prerequisites'
-
-    Assert-Command 'dotnet' 'https://dot.net'
-    Write-Success 'dotnet CLI is available.'
-
-    Assert-Command 'az' 'https://aka.ms/installazurecli'
-    Assert-AzLogin
-
-    # ------------------------------------------------------------------ #
-    # 2. EF Core tooling
-    # ------------------------------------------------------------------ #
-    Write-StepHeader 'Ensuring dotnet-ef tool is installed'
-
-    $efCheck = & dotnet ef --version 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Info 'dotnet-ef not found. Installing globally...'
-        & dotnet tool install --global dotnet-ef
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Failed to install dotnet-ef global tool.'
+    if ($originalPublicNetworkAccess -eq 'Disabled') {
+        if (-not $TemporarilyEnablePublicNetwork) {
+            throw 'Azure SQL public network access is disabled. Run inside the VNet or explicitly use -TemporarilyEnablePublicNetwork.'
         }
-        Write-Success 'dotnet-ef installed.'
-    }
-    else {
-        Write-Success "dotnet-ef is installed (version: $($efCheck | Out-String)".Trim() + ').'
-    }
 
-    # ------------------------------------------------------------------ #
-    # 3. Project paths
-    # ------------------------------------------------------------------ #
-    $InfraProject  = Join-Path $RepoRoot 'src' 'Gateway.Infrastructure'
-    $StartupProject = Join-Path $RepoRoot 'src' 'Gateway.Api'
-    $ApiCsproj     = Join-Path $StartupProject 'Gateway.Api.csproj'
-    $MigrationsDir = Join-Path $InfraProject 'Migrations'
+        Write-Info 'Temporarily enabling Azure SQL public network access for the bounded migration session.'
+        # Set this before the mutation so an interrupted or ambiguous CLI outcome
+        # still forces the fail-closed restore path.
+        $publicNetworkRestoreRequired = $true
+        $null = Invoke-AzCommand -Arguments @(
+            'sql', 'server', 'update',
+            '--resource-group', $ResourceGroup,
+            '--name', $sqlServerName,
+            '--enable-public-network', 'true',
+            '--output', 'none'
+        ) -ErrorMessage 'Could not temporarily enable Azure SQL public network access.'
 
-    Write-Info "Infrastructure project: $InfraProject"
-    Write-Info "Startup project:        $StartupProject"
-
-    # ------------------------------------------------------------------ #
-    # 4. Ensure Microsoft.EntityFrameworkCore.Design is referenced
-    # ------------------------------------------------------------------ #
-    Write-StepHeader 'Checking for EntityFrameworkCore.Design package'
-
-    $hasDesignPkg = Select-String -Path $ApiCsproj -Pattern 'EntityFrameworkCore.Design' -Quiet
-    if (-not $hasDesignPkg) {
-        Write-Info 'Adding Microsoft.EntityFrameworkCore.Design package...'
-        & dotnet add $ApiCsproj package Microsoft.EntityFrameworkCore.Design --version 10.0.0
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Failed to add Microsoft.EntityFrameworkCore.Design package.'
+        $publicEndpointReady = Wait-SqlPublicNetworkAccessState `
+            -ResourceGroupName $ResourceGroup `
+            -ServerName $sqlServerName `
+            -ExpectedState 'Enabled' `
+            -MaximumAttempts $publicNetworkPropagationMaximumAttempts `
+            -PollIntervalSeconds $publicNetworkPropagationPollIntervalSeconds
+        if (-not $publicEndpointReady) {
+            throw 'Azure SQL did not report its public endpoint enabled within the bounded wait.'
         }
-        $removeDesignPkg = $true
-        Write-Success 'Design package added (will be removed after migration).'
-    }
-    else {
-        Write-Success 'EntityFrameworkCore.Design is already referenced.'
     }
 
-    # ------------------------------------------------------------------ #
-    # 5. Create initial migration if none exist
-    # ------------------------------------------------------------------ #
-    Write-StepHeader 'Checking for existing migrations'
-
-    $hasMigrations = (Test-Path $MigrationsDir) -and
-                     ((Get-ChildItem -Path $MigrationsDir -Filter '*.cs' -ErrorAction SilentlyContinue).Count -gt 0)
-
-    if (-not $hasMigrations) {
-        Write-Info 'No migrations found. Creating InitialCreate migration...'
-        & dotnet ef migrations add InitialCreate `
-            --project $InfraProject `
-            --startup-project $StartupProject `
-            --output-dir Migrations
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Failed to create InitialCreate migration.'
-        }
-        Write-Success 'InitialCreate migration created.'
-    }
-    else {
-        $count = (Get-ChildItem -Path $MigrationsDir -Filter '*.cs').Count
-        Write-Success "Found $count migration file(s) in $MigrationsDir."
+    $callerIp = Get-MyPublicIp
+    $parsedCallerIp = $null
+    if (-not [System.Net.IPAddress]::TryParse($callerIp, [ref]$parsedCallerIp)) {
+        throw 'The caller public IP could not be validated.'
     }
 
-    # ------------------------------------------------------------------ #
-    # 6. Temporary firewall rule
-    # ------------------------------------------------------------------ #
-    Write-StepHeader 'Adding temporary SQL firewall rule'
-
-    $MyIp = Get-MyPublicIp
-    Write-Info "Public IP: $MyIp"
-
-    Invoke-AzCommand -Arguments @(
+    $null = Invoke-AzCommand -Arguments @(
         'sql', 'server', 'firewall-rule', 'create',
         '--resource-group', $ResourceGroup,
-        '--server', $SqlServerName,
-        '--name', 'temp-bootstrap',
-        '--start-ip-address', $MyIp,
-        '--end-ip-address', $MyIp
-    ) -ErrorMessage 'Failed to create temporary firewall rule.'
+        '--server', $sqlServerName,
+        '--name', $firewallRuleName,
+        '--start-ip-address', $callerIp,
+        '--end-ip-address', $callerIp,
+        '--output', 'none'
+    ) -ErrorMessage 'Could not create the temporary caller-only Azure SQL firewall rule.'
+    $firewallCreated = $true
 
-    Write-Success "Firewall rule 'temp-bootstrap' created for $MyIp."
-
-    # ------------------------------------------------------------------ #
-    # 7. Apply migrations
-    # ------------------------------------------------------------------ #
-    Write-StepHeader 'Applying EF Core migrations'
-
-    $ConnStr = "Server=tcp:$SqlServerFqdn,1433;Database=$DatabaseName;Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
-
-    Write-Info "Target: $SqlServerFqdn / $DatabaseName"
-
-    & dotnet ef database update `
-        --project $InfraProject `
-        --startup-project $StartupProject `
-        --connection $ConnStr
+    $migratorProject = Join-Path $RepoRoot 'tools' 'Gateway.DatabaseMigrator' 'Gateway.DatabaseMigrator.csproj'
+    & dotnet run --project $migratorProject --configuration Release -- `
+        --server $SqlServerFqdn `
+        --database $DatabaseName `
+        --phase $Phase.ToLowerInvariant() `
+        --repeat $Repeat `
+        --repository-root $RepoRoot `
+        --evidence $evidencePath
     if ($LASTEXITCODE -ne 0) {
-        throw 'EF Core database update failed.'
+        throw "The database migration runner failed with exit code $LASTEXITCODE."
     }
 
-    Write-Success 'Migrations applied successfully.'
-    exit 0
-}
-catch {
-    Write-Failure $_.Exception.Message
-    exit 1
-}
-finally {
-    # ------------------------------------------------------------------ #
-    # Cleanup
-    # ------------------------------------------------------------------ #
-    Write-StepHeader 'Cleanup'
-
-    # Remove temporary firewall rule
-    try {
-        Write-Info "Removing firewall rule 'temp-bootstrap'..."
-        Invoke-AzCommand -Arguments @(
-            'sql', 'server', 'firewall-rule', 'delete',
-            '--resource-group', $ResourceGroup,
-            '--server', $SqlServerName,
-            '--name', 'temp-bootstrap',
-            '--yes'
-        ) -ErrorMessage 'Failed to remove temporary firewall rule.'
-        Write-Success 'Firewall rule removed.'
-    }
-    catch {
-        Write-Warn "Could not remove firewall rule 'temp-bootstrap': $($_.Exception.Message)"
-    }
-
-    # Remove Design package if we added it
-    if ($removeDesignPkg) {
-        try {
-            Write-Info 'Removing Microsoft.EntityFrameworkCore.Design package...'
-            & dotnet remove $ApiCsproj package Microsoft.EntityFrameworkCore.Design
+    if (($principalArgumentsProvided | Where-Object { $_ }).Count -eq 4) {
+        foreach ($principal in @(
+            @{ Name = $ApiPrincipalName; ClientId = $ApiPrincipalClientId },
+            @{ Name = $WorkerPrincipalName; ClientId = $WorkerPrincipalClientId }
+        )) {
+            $principalEvidencePath = Join-Path $EvidenceDirectory (
+                "{0}-principal-{1}-{2}.json" -f $DatabaseName, $principal.Name,
+                (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))
+            & dotnet run --project $migratorProject --configuration Release -- `
+                --server $SqlServerFqdn `
+                --database $DatabaseName `
+                --phase principal `
+                --repeat 1 `
+                --principal-name $principal.Name `
+                --principal-client-id $principal.ClientId.ToString('D') `
+                --repository-root $RepoRoot `
+                --evidence $principalEvidencePath
             if ($LASTEXITCODE -ne 0) {
-                Write-Warn 'dotnet remove for Design package returned non-zero exit code.'
-            }
-            else {
-                Write-Success 'Design package removed.'
+                throw "Database principal setup failed for '$($principal.Name)'."
             }
         }
-        catch {
-            Write-Warn "Could not remove Design package: $($_.Exception.Message)"
+    }
+
+    Write-Success "Database phase '$Phase' verified for '$DatabaseName'."
+    Write-Info "Non-secret evidence: $evidencePath"
+}
+finally {
+    if ($firewallCreated) {
+        & az sql server firewall-rule delete `
+            --resource-group $ResourceGroup `
+            --server $sqlServerName `
+            --name $firewallRuleName `
+            --yes `
+            --output none 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "Temporary firewall rule '$firewallRuleName' could not be removed automatically."
+        }
+    }
+
+    if ($publicNetworkRestoreRequired) {
+        & az sql server update `
+            --resource-group $ResourceGroup `
+            --name $sqlServerName `
+            --enable-public-network false `
+            --output none 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn 'Azure SQL public network access could not be restored to Disabled automatically.'
+        }
+
+        $publicNetworkRestored = Wait-SqlPublicNetworkAccessState `
+            -ResourceGroupName $ResourceGroup `
+            -ServerName $sqlServerName `
+            -ExpectedState 'Disabled' `
+            -MaximumAttempts $publicNetworkPropagationMaximumAttempts `
+            -PollIntervalSeconds $publicNetworkPropagationPollIntervalSeconds
+        if (-not $publicNetworkRestored) {
+            throw 'Azure SQL public network access was not verified as Disabled after the bounded cleanup wait.'
         }
     }
 }

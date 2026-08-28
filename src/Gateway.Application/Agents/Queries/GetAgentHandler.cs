@@ -1,3 +1,4 @@
+using Gateway.Application.Agents;
 using Gateway.Application.Exceptions;
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Responses;
@@ -10,10 +11,14 @@ namespace Gateway.Application.Agents.Queries;
 internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDetailDto>
 {
     private readonly IAgentRepository _agentRepository;
+    private readonly IProvisioningJobRepository _provisioningJobRepository;
 
-    public GetAgentHandler(IAgentRepository agentRepository)
+    public GetAgentHandler(
+        IAgentRepository agentRepository,
+        IProvisioningJobRepository provisioningJobRepository)
     {
         _agentRepository = agentRepository;
+        _provisioningJobRepository = provisioningJobRepository;
     }
 
     public async Task<AgentDetailDto> Handle(GetAgentQuery request, CancellationToken cancellationToken)
@@ -21,9 +26,11 @@ internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDeta
         var agent = await _agentRepository.GetByIdAsync(request.AgentId, cancellationToken)
             ?? throw new NotFoundException("AgentRegistration", request.AgentId);
 
-        var latestJob = agent.ProvisioningJobs
+        var priorJobs = await _provisioningJobRepository.GetByAgentIdAsync(agent.Id, cancellationToken);
+        var latestJob = priorJobs
             .OrderByDescending(j => j.CreatedAtUtc)
             .FirstOrDefault();
+        var retryDecision = ProvisioningRetryPolicy.Evaluate(agent.Status, priorJobs);
 
         ProvisioningStatusDto? provisioning = null;
 
@@ -38,6 +45,8 @@ internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDeta
                 latestJob.ErrorSummary);
         }
 
+        var observabilityDestinations = agent.FeatureConfiguration.ObservabilityMode.ToDestinations();
+
         return new AgentDetailDto(
             agent.Id,
             agent.ExternalAgentId.Value,
@@ -45,11 +54,18 @@ internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDeta
             agent.Description,
             agent.Status.ToString(),
             agent.Environment.ToString(),
-            new Agent365InfoDto(agent.Agent365AgentId, agent.BlueprintId, agent.Agent365InstanceId),
+            new Agent365InfoDto(
+                agent.Agent365AgentId,
+                agent.BlueprintId,
+                agent.Agent365InstanceId,
+                agent.AgentIdentityObjectId,
+                agent.BlueprintObjectId),
             new AgentFeaturesDto(
                 agent.FeatureConfiguration.ObservabilityMode.ToString(),
                 agent.FeatureConfiguration.PurviewEnabled,
-                agent.FeatureConfiguration.PurviewMode?.ToString()),
+                agent.FeatureConfiguration.PurviewMode?.ToString(),
+                observabilityDestinations.Agent365ObservabilityEnabled,
+                observabilityDestinations.AzureMonitorExportEnabled),
             null,
             agent.CreatedAtUtc,
             agent.UpdatedAtUtc,
@@ -58,6 +74,9 @@ internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDeta
             agent.CreatedByObjectId,
             agent.UpdatedByObjectId,
             agent.RowVersion,
-            null);
+            null,
+            new ProvisioningRetryEligibilityDto(
+                retryDecision.Supported,
+                retryDecision.SafeReason));
     }
 }

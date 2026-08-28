@@ -54,10 +54,11 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     supportsHttpsTrafficOnly: true
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
-    allowSharedKeyAccess: true
+    allowSharedKeyAccess: false
+    publicNetworkAccess: 'Disabled'
     networkAcls: {
-      defaultAction: 'Allow'
-      bypass: 'AzureServices'
+      defaultAction: 'Deny'
+      bypass: 'None'
     }
   }
 }
@@ -121,3 +122,6 @@ output storageAccountName string = storageAccount.name
 
 @description('Primary blob endpoint URL.')
 output blobEndpoint string = storageAccount.properties.primaryEndpoints.blob
+
+@description('Public network access state for the Storage Account.')
+output publicNetworkAccess string = storageAccount.properties.publicNetworkAccess

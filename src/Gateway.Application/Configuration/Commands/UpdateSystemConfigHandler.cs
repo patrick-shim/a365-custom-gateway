@@ -1,6 +1,7 @@
 using Gateway.Application.Exceptions;
 using Gateway.Contracts.Responses;
 using Gateway.Domain.Entities;
+using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
 using MediatR;
 
@@ -10,15 +11,18 @@ internal sealed class UpdateSystemConfigHandler : IRequestHandler<UpdateSystemCo
 {
     private readonly ISystemConfigurationRepository _configRepository;
     private readonly IAuditEventRepository _auditEventRepository;
+    private readonly IPurviewPolicyClient _purviewPolicyClient;
     private readonly IUnitOfWork _unitOfWork;
 
     public UpdateSystemConfigHandler(
         ISystemConfigurationRepository configRepository,
         IAuditEventRepository auditEventRepository,
+        IPurviewPolicyClient purviewPolicyClient,
         IUnitOfWork unitOfWork)
     {
         _configRepository = configRepository;
         _auditEventRepository = auditEventRepository;
+        _purviewPolicyClient = purviewPolicyClient;
         _unitOfWork = unitOfWork;
     }
 
@@ -29,12 +33,50 @@ internal sealed class UpdateSystemConfigHandler : IRequestHandler<UpdateSystemCo
 
         if (request.ProvisioningMode is not null)
             config.ProvisioningMode = request.ProvisioningMode;
-        if (request.DefaultObservabilityMode is not null)
-            config.DefaultObservabilityMode = request.DefaultObservabilityMode;
-        if (request.DefaultPurviewEnabled is not null)
-            config.DefaultPurviewEnabled = request.DefaultPurviewEnabled.Value;
-        if (request.DefaultPurviewMode is not null)
-            config.DefaultPurviewMode = request.DefaultPurviewMode;
+        if (request.DefaultObservabilityMode is not null ||
+            request.DefaultAgent365ObservabilityEnabled is not null ||
+            request.DefaultAzureMonitorExportEnabled is not null)
+        {
+            if (!Enum.TryParse<ObservabilityMode>(
+                    config.DefaultObservabilityMode,
+                    ignoreCase: false,
+                    out var currentMode) ||
+                !Enum.IsDefined(currentMode))
+            {
+                throw new InvalidOperationException("The stored default observability mode is invalid.");
+            }
+
+            if (!ObservabilityModeExtensions.TryResolve(
+                    request.DefaultObservabilityMode,
+                    request.DefaultAgent365ObservabilityEnabled,
+                    request.DefaultAzureMonitorExportEnabled,
+                    currentMode,
+                    out var resolvedMode))
+            {
+                throw new ValidationException(new Dictionary<string, string[]>
+                {
+                    ["DefaultObservabilityMode"] =
+                    ["Legacy and destination-specific observability settings must describe the same destinations."]
+                });
+            }
+
+            config.DefaultObservabilityMode = resolvedMode.ToString();
+        }
+        var defaultPurviewEnabled = request.DefaultPurviewEnabled
+            ?? config.DefaultPurviewEnabled;
+        var defaultPurviewMode = request.DefaultPurviewMode
+            ?? config.DefaultPurviewMode;
+        if (defaultPurviewEnabled && !_purviewPolicyClient.IsEnabled)
+        {
+            throw new DomainException(
+                "Purview cannot be enabled because it is not configured for this Gateway deployment.",
+                Gateway.Contracts.ErrorCodes.UNSUPPORTED_FEATURE_CONFIGURATION);
+        }
+
+        config.DefaultPurviewEnabled = defaultPurviewEnabled;
+        config.DefaultPurviewMode = defaultPurviewEnabled
+            ? defaultPurviewMode ?? _purviewPolicyClient.DefaultMode.ToString()
+            : defaultPurviewMode;
         if (request.RetentionDaysActivityReceipts is not null)
             config.RetentionDaysActivityReceipts = request.RetentionDaysActivityReceipts.Value;
         if (request.RetentionDaysAuditEvents is not null)
@@ -73,22 +115,6 @@ internal sealed class UpdateSystemConfigHandler : IRequestHandler<UpdateSystemCo
         await _auditEventRepository.AddAsync(auditEvent, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return new SystemConfigDto(
-            config.ProvisioningMode,
-            config.DefaultObservabilityMode,
-            config.DefaultPurviewEnabled,
-            config.DefaultPurviewMode,
-            config.RetentionDaysActivityReceipts,
-            config.RetentionDaysAuditEvents,
-            config.RetentionDaysIdempotencyRecords,
-            config.RetentionDaysOutboxMessages,
-            config.RateLimitPerClient,
-            config.RateLimitPerAgent,
-            config.RateLimitGlobal,
-            config.ReconciliationEnabled,
-            config.ReconciliationIntervalHours,
-            config.StuckTransitionTimeoutDays,
-            config.UseGraphAgentRegistration,
-            config.UseCliProvisioningFallback);
+        return SystemConfigMapper.ToDto(config);
     }
 }

@@ -1,30 +1,36 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
-    <div class="container-fluid">
-        <a class="navbar-brand" href="">Gateway.AdminUi</a>
+<div class="brand-block">
+    <a class="brand" href="/" aria-label="A365 Gateway home">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span><strong>A365 Gateway</strong><small>Control center</small></span>
+    </a>
+    <label class="nav-toggle" aria-label="Toggle navigation">
+        <input type="checkbox" />
+        <span>Navigation</span>
+    </label>
+</div>
+
+<nav class="nav-list" aria-label="Gateway sections">
+    <span class="nav-eyebrow">Workspace</span>
+    <NavLink class="nav-link" href="dashboard" Match="NavLinkMatch.All">
+        <span class="nav-icon" aria-hidden="true">⌂</span><span>Overview</span>
+    </NavLink>
+    <NavLink class="nav-link" href="agents">
+        <span class="nav-icon" aria-hidden="true">◎</span><span>Agents</span>
+    </NavLink>
+
+    <AuthorizeView Roles="Gateway.Administrator">
+        <Authorized>
+            <span class="nav-eyebrow nav-section">Administration</span>
+            <NavLink class="nav-link" href="settings">
+                <span class="nav-icon" aria-hidden="true">⚙</span><span>System settings</span>
+            </NavLink>
+        </Authorized>
+    </AuthorizeView>
+</nav>
+
+<div class="sidebar-footer">
+    <div class="security-note">
+        <span class="security-icon" aria-hidden="true">✓</span>
+        <span><strong>Identity protected</strong><small>Microsoft Entra ID</small></span>
     </div>
 </div>
-
-<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
-
-<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
-    <nav class="nav flex-column">
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
-            </NavLink>
-        </div>
-
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="counter">
-                <span class="bi bi-plus-square-fill-nav-menu" aria-hidden="true"></span> Counter
-            </NavLink>
-        </div>
-
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="weather">
-                <span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> Weather
-            </NavLink>
-        </div>
-    </nav>
-</div>
-

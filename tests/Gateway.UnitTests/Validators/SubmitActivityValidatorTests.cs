@@ -19,7 +19,7 @@ public class SubmitActivityValidatorTests
             Actor: new ActorDto("Agent"),
             Tool: null,
             Attributes: null,
-            CallerClientId: "client-001",
+            CallerAgentRegistrationId: Guid.NewGuid(),
             IdempotencyKey: null);
 
     [Fact]
@@ -137,6 +137,33 @@ public class SubmitActivityValidatorTests
         var result = _validator.Validate(command);
 
         result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_Should_Pass_When_TenantUserObjectIdIsAValidGuid()
+    {
+        var command = CreateValidCommand() with
+        {
+            Actor = new ActorDto("User", Guid.NewGuid().ToString())
+        };
+
+        var result = _validator.Validate(command);
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_Should_Fail_When_TenantUserObjectIdIsNotAGuid()
+    {
+        var command = CreateValidCommand() with
+        {
+            Actor = new ActorDto("User", "not-a-guid")
+        };
+
+        var result = _validator.Validate(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(e => e.PropertyName == "Actor.TenantUserObjectId");
     }
 
     [Fact]

@@ -27,6 +27,14 @@ internal sealed class AgentRegistrationConfiguration : IEntityTypeConfiguration<
         builder.Property(e => e.BlueprintId).HasMaxLength(256);
         builder.Property(e => e.Agent365InstanceId).HasMaxLength(256);
         builder.Property(e => e.ExternalClientId).HasMaxLength(256);
+        builder.Property(e => e.AgentIdentityObjectId).HasMaxLength(64);
+        builder.Property(e => e.BlueprintObjectId).HasMaxLength(64);
+        builder.Property(e => e.BlueprintSelectionMode)
+            .HasMaxLength(32)
+            .HasDefaultValue("Legacy")
+            .IsRequired();
+        builder.Property(e => e.RequestedBlueprintObjectId).HasMaxLength(64);
+        builder.Property(e => e.RequestedBlueprintDisplayName).HasMaxLength(256);
         builder.Property(e => e.LastProvisioningErrorCode).HasMaxLength(64);
         builder.Property(e => e.LastProvisioningErrorSummary).HasMaxLength(2000);
         builder.Property(e => e.IsDeleted).HasDefaultValue(false);

@@ -1,4 +1,3 @@
-using Azure.Messaging.ServiceBus;
 using Gateway.Agent365;
 using Gateway.Application;
 using Gateway.Infrastructure;
@@ -16,13 +15,6 @@ builder.Services.AddGatewayObservability(builder.Configuration);
 
 builder.Services.Configure<ProvisioningWorkerOptions>(
     builder.Configuration.GetSection("ProvisioningWorker"));
-
-builder.Services.AddSingleton(sp =>
-{
-    var config = builder.Configuration;
-    return new ServiceBusClient(config.GetConnectionString("ServiceBus")
-        ?? config["ServiceBus:ConnectionString"]!);
-});
 
 builder.Services.AddScoped<ProvisioningMessageHandler>();
 builder.Services.AddHostedService<ProvisioningWorkerService>();

@@ -1,6 +1,8 @@
+using System.Text.Json;
 using FluentAssertions;
 using Gateway.Application.Agents.Commands;
 using Gateway.Application.Exceptions;
+using Gateway.Contracts.Messages;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
@@ -68,7 +70,7 @@ public class DeleteAgentHandlerTests
     }
 
     [Fact]
-    public async Task Handle_Should_SetAgentToDeletingAndIsDeleted_When_Deleted()
+    public async Task Handle_Should_KeepAgentUndeletedWhileDeletionIsPending()
     {
         var agent = CreateAgent(AgentStatus.Active);
         var command = new DeleteAgentCommand(agent.Id, false, "caller-oid-001");
@@ -79,8 +81,8 @@ public class DeleteAgentHandlerTests
         await _handler.Handle(command, CancellationToken.None);
 
         agent.Status.Should().Be(AgentStatus.Deleting);
-        agent.IsDeleted.Should().BeTrue();
-        agent.DeletedAtUtc.Should().NotBeNull();
+        agent.IsDeleted.Should().BeFalse();
+        agent.DeletedAtUtc.Should().BeNull();
     }
 
     [Fact]
@@ -120,7 +122,38 @@ public class DeleteAgentHandlerTests
     }
 
     [Fact]
-    public async Task Handle_Should_CreateAuditEvent_When_Deleted()
+    public async Task Handle_Should_WriteSharedDeleteAgentMessage_When_DeletionIsRequested()
+    {
+        ProvisioningJob? createdJob = null;
+        OutboxMessage? createdMessage = null;
+        var agent = CreateAgent(AgentStatus.Active);
+        var command = new DeleteAgentCommand(agent.Id, true, "caller-oid-001");
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
+            .Returns(agent);
+        _provisioningJobRepository.AddAsync(
+                Arg.Do<ProvisioningJob>(job => createdJob = job),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+        _outboxRepository.AddAsync(
+                Arg.Do<OutboxMessage>(message => createdMessage = message),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+
+        await _handler.Handle(command, CancellationToken.None);
+
+        createdJob.Should().NotBeNull();
+        createdMessage.Should().NotBeNull();
+        createdMessage!.MessageType.Should().Be("DeleteAgent");
+
+        var payload = JsonSerializer.Deserialize<DeleteAgentMessage>(createdMessage.Payload);
+        payload.Should().NotBeNull();
+        payload!.AgentRegistrationId.Should().Be(agent.Id);
+        payload.JobId.Should().Be(createdJob!.Id);
+        payload.DeleteMicrosoftResources.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Handle_Should_CreateAuditEvent_When_DeletionIsRequested()
     {
         var agent = CreateAgent(AgentStatus.Active);
         var command = new DeleteAgentCommand(agent.Id, true, "caller-oid-001");
@@ -132,7 +165,7 @@ public class DeleteAgentHandlerTests
 
         await _auditEventRepository.Received(1).AddAsync(
             Arg.Is<AuditEvent>(e =>
-                e.EventType == "AgentDeleted" &&
+                e.EventType == "AgentDeletionRequested" &&
                 e.PerformedByObjectId == "caller-oid-001"),
             Arg.Any<CancellationToken>());
     }

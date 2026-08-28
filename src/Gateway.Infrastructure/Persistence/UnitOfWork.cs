@@ -1,4 +1,7 @@
+using Gateway.Application.Exceptions;
+using Gateway.Contracts;
 using Gateway.Domain.Interfaces;
+using Microsoft.EntityFrameworkCore;
 
 namespace Gateway.Infrastructure.Persistence;
 
@@ -13,6 +16,16 @@ internal sealed class UnitOfWork : IUnitOfWork
 
     public async Task<int> SaveChangesAsync(CancellationToken ct)
     {
-        return await _dbContext.SaveChangesAsync(ct);
+        try
+        {
+            return await _dbContext.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException exception)
+        {
+            throw new ConflictException(
+                "The resource changed while this request was being processed. Refresh it and try again.",
+                ErrorCodes.CONCURRENCY_CONFLICT,
+                exception);
+        }
     }
 }

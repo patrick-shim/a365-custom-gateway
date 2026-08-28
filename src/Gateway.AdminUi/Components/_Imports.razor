@@ -1,11 +1,22 @@
 ﻿@using System.Net.Http
 @using System.Net.Http.Json
+@using System.Security.Claims
+@using System.Linq.Expressions
 @using Microsoft.AspNetCore.Components.Forms
 @using Microsoft.AspNetCore.Components.Routing
 @using Microsoft.AspNetCore.Components.Web
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.FluentUI.AspNetCore.Components
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
 @using Microsoft.AspNetCore.Components.Web.Virtualization
 @using Microsoft.JSInterop
 @using Gateway.AdminUi
 @using Gateway.AdminUi.Components
 @using Gateway.AdminUi.Components.Layout
+@using Gateway.AdminUi.Components.Shared
+@using Gateway.AdminUi.Services
+@using Gateway.AdminUi.Models
+@using Gateway.Contracts.Dtos
+@using Gateway.Contracts.Requests
+@using Gateway.Contracts.Responses

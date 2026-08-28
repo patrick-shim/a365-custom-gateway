@@ -7,6 +7,7 @@ using Gateway.Infrastructure.Outbox;
 using Gateway.Infrastructure.Persistence;
 using Gateway.Infrastructure.Persistence.Repositories;
 using Gateway.Infrastructure.ServiceBus;
+using Gateway.Infrastructure.Security;
 using Gateway.Infrastructure.Services;
 using Gateway.Infrastructure.Storage;
 using Microsoft.EntityFrameworkCore;
@@ -32,8 +33,19 @@ public static class DependencyInjection
         services.AddScoped<IAuditEventRepository, AuditEventRepository>();
         services.AddScoped<IOutboxRepository, OutboxRepository>();
         services.AddScoped<IIdempotencyService, IdempotencyService>();
+        services.AddScoped<IProvisioningExecutionLockProvider, ProvisioningExecutionLockProvider>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
+        services.AddSingleton<IngressRateLimitProcessStore>();
+        services.AddScoped<IIngressRateLimiter, SqlIngressRateLimiter>();
         services.AddScoped<ISystemConfigurationRepository, SystemConfigurationRepository>();
+        services
+            .AddOptions<AgentIngressCredentialOptions>()
+            .Bind(configuration.GetSection(AgentIngressCredentialOptions.SectionName))
+            .Validate(
+                options => options.LifetimeDays is >= 1 and <= 3650,
+                "AgentIngressCredentials:LifetimeDays must be between 1 and 3650.")
+            .ValidateOnStart();
+        services.AddScoped<IAgentIngressCredentialService, AgentIngressCredentialService>();
 
         services.Configure<BlobStorageOptions>(
             configuration.GetSection("BlobStorage"));
@@ -56,7 +68,19 @@ public static class DependencyInjection
         services.AddSingleton(sp =>
         {
             var options = sp.GetRequiredService<IOptions<ServiceBusOptions>>().Value;
-            return new ServiceBusClient(options.ConnectionString);
+            if (!string.IsNullOrWhiteSpace(options.ConnectionString))
+                return new ServiceBusClient(options.ConnectionString);
+
+            if (!string.IsNullOrWhiteSpace(options.FullyQualifiedNamespace))
+            {
+                return new ServiceBusClient(
+                    options.FullyQualifiedNamespace,
+                    new DefaultAzureCredential());
+            }
+
+            throw new InvalidOperationException(
+                "Configure ServiceBus:ConnectionString for local development or " +
+                "ServiceBus:FullyQualifiedNamespace for managed identity.");
         });
 
         services.AddSingleton(sp =>

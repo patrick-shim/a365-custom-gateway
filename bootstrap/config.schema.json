@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://a365gateway.local/bootstrap/config.schema.json",
+  "title": "A365 Custom Gateway bootstrap configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "subscriptionId",
+    "tenantId",
+    "environment",
+    "location",
+    "projectName",
+    "resourceGroupName",
+    "alertEmail",
+    "sql",
+    "agent365",
+    "purview"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "subscriptionId": { "type": "string", "format": "uuid" },
+    "tenantId": { "type": "string", "format": "uuid" },
+    "environment": { "enum": ["dev", "staging", "prod"] },
+    "location": { "type": "string", "minLength": 1 },
+    "projectName": { "type": "string", "pattern": "^[a-z][a-z0-9]{1,7}$" },
+    "resourceGroupName": { "type": "string", "minLength": 1, "maxLength": 90 },
+    "alertEmail": { "type": "string", "format": "email" },
+    "sql": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["skuName", "skuTier"],
+      "properties": {
+        "skuName": { "enum": ["Basic", "S0", "S1", "S2", "S3", "P1", "P2", "GP_S_Gen5_1", "GP_S_Gen5_2"] },
+        "skuTier": { "enum": ["Basic", "Standard", "Premium", "GeneralPurpose"] }
+      }
+    },
+    "agent365": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seedBlueprintName", "allowDevelopmentRegistryPreview"],
+      "properties": {
+        "seedBlueprintName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "allowDevelopmentRegistryPreview": { "type": "boolean" }
+      }
+    },
+    "purview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "activateGatewayAdapterAfterPolicyReadback",
+        "collectionPolicyName",
+        "dlpPolicyName",
+        "dlpRuleName",
+        "sensitiveInformationType"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "activateGatewayAdapterAfterPolicyReadback": { "type": "boolean" },
+        "collectionPolicyName": { "type": "string", "minLength": 1 },
+        "dlpPolicyName": { "type": "string", "minLength": 1 },
+        "dlpRuleName": { "type": "string", "minLength": 1 },
+        "sensitiveInformationType": { "type": "string" }
+      }
+    }
+  }
+}

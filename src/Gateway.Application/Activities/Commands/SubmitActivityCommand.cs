@@ -13,5 +13,5 @@ public sealed record SubmitActivityCommand(
     ActorDto Actor,
     ToolDto? Tool,
     Dictionary<string, string>? Attributes,
-    string CallerClientId,
+    Guid CallerAgentRegistrationId,
     string? IdempotencyKey) : IRequest<ActivityReceiptDto>;

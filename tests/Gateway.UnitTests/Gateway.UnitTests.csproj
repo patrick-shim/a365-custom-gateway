@@ -30,6 +30,7 @@
     <ProjectReference Include="..\..\src\Gateway.Contracts\Gateway.Contracts.csproj" />
     <ProjectReference Include="..\..\src\Gateway.Domain\Gateway.Domain.csproj" />
     <ProjectReference Include="..\..\src\Gateway.Observability\Gateway.Observability.csproj" />
+    <ProjectReference Include="..\..\src\Gateway.Purview\Gateway.Purview.csproj" />
   </ItemGroup>
 
 </Project>

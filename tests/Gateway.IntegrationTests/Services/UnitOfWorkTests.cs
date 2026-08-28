@@ -1,8 +1,12 @@
 using FluentAssertions;
+using Gateway.Application.Exceptions;
+using Gateway.Contracts;
+using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Infrastructure.Persistence;
 using Gateway.Infrastructure.Persistence.Repositories;
 using Gateway.IntegrationTests.Fixtures;
+using Microsoft.EntityFrameworkCore;
 
 namespace Gateway.IntegrationTests.Services;
 
@@ -142,4 +146,40 @@ public class UnitOfWorkTests
         events.Should().HaveCount(1);
         events[0].EventType.Should().Be("AgentRegistered");
     }
+
+    [Fact]
+    public async Task SaveChangesAsync_Should_TranslateOptimisticConcurrencyFailureToSafeConflict()
+    {
+        await using var context = new ConcurrencyFailureDbContext();
+        var unitOfWork = new UnitOfWork(context);
+
+        var action = () => unitOfWork.SaveChangesAsync(CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<ConflictException>();
+        exception.Which.ErrorCode.Should().Be(ErrorCodes.CONCURRENCY_CONFLICT);
+        exception.Which.Message.Should().NotContain(nameof(DbUpdateConcurrencyException));
+        exception.Which.InnerException.Should().BeOfType<DbUpdateConcurrencyException>();
+    }
+
+    [Fact]
+    public async Task AgentRegistrationRowVersion_Should_RemainTheRetrySerializationBoundary()
+    {
+        await using var context = TestDbContextFactory.Create();
+
+        var rowVersion = context.Model
+            .FindEntityType(typeof(AgentRegistration))!
+            .FindProperty(nameof(AgentRegistration.RowVersion));
+
+        rowVersion.Should().NotBeNull();
+        rowVersion!.IsConcurrencyToken.Should().BeTrue();
+        rowVersion.ValueGenerated.Should().Be(Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAddOrUpdate);
+    }
+
+    private sealed class ConcurrencyFailureDbContext()
+        : GatewayDbContext(new DbContextOptionsBuilder<GatewayDbContext>().Options)
+    {
+        public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default) =>
+            Task.FromException<int>(new DbUpdateConcurrencyException("raw provider failure"));
+    }
+
 }

@@ -1,98 +1,126 @@
-.page {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-}
-
-main {
-    flex: 1;
+.app-shell {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 17rem minmax(0, 1fr);
+    background: var(--surface-canvas);
 }
 
 .sidebar {
-    background-image: linear-gradient(180deg, rgb(5, 39, 103) 0%, #3a0647 70%);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    background: var(--surface-sidebar);
+    border-right: 1px solid rgba(255, 255, 255, .08);
 }
 
-.top-row {
-    background-color: #f7f7f7;
-    border-bottom: 1px solid #d6d5d5;
-    justify-content: flex-end;
-    height: 3.5rem;
+.main-column { min-width: 0; }
+
+.skip-link {
+    position: fixed;
+    top: .65rem;
+    left: .65rem;
+    z-index: 2000;
+    padding: .65rem .85rem;
+    border-radius: .5rem;
+    background: #fff;
+    color: var(--brand-strong);
+    box-shadow: var(--shadow-card);
+    transform: translateY(-180%);
+    transition: transform .12s ease;
+}
+
+.skip-link:focus { transform: translateY(0); }
+
+.topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    min-height: 4.5rem;
+    padding: .75rem clamp(1rem, 3vw, 2.5rem);
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    background: color-mix(in srgb, var(--surface-canvas) 88%, transparent);
+    border-bottom: 1px solid var(--border-subtle);
+    backdrop-filter: blur(16px);
 }
 
-    .top-row ::deep a, .top-row ::deep .btn-link {
-        white-space: nowrap;
-        margin-left: 1.5rem;
-        text-decoration: none;
-    }
-
-    .top-row ::deep a:hover, .top-row ::deep .btn-link:hover {
-        text-decoration: underline;
-    }
-
-    .top-row ::deep a:first-child {
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-@media (max-width: 640.98px) {
-    .top-row {
-        justify-content: space-between;
-    }
-
-    .top-row ::deep a, .top-row ::deep .btn-link {
-        margin-left: 0;
-    }
+.topbar-context {
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    color: var(--text-secondary);
+    font-size: .84rem;
+    font-weight: 650;
+    letter-spacing: .02em;
 }
 
-@media (min-width: 641px) {
-    .page {
-        flex-direction: row;
-    }
-
-    .sidebar {
-        width: 250px;
-        height: 100vh;
-        position: sticky;
-        top: 0;
-    }
-
-    .top-row {
-        position: sticky;
-        top: 0;
-        z-index: 1;
-    }
-
-    .top-row.auth ::deep a:first-child {
-        flex: 1;
-        text-align: right;
-        width: 0;
-    }
-
-    .top-row, article {
-        padding-left: 2rem !important;
-        padding-right: 1.5rem !important;
-    }
+.environment-dot {
+    width: .55rem;
+    height: .55rem;
+    border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 0 .22rem color-mix(in srgb, var(--success) 18%, transparent);
 }
+
+.account-menu { display: flex; align-items: center; gap: .7rem; }
+
+.account-avatar {
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--brand-soft);
+    color: var(--brand-strong);
+    font-size: .74rem;
+    font-weight: 750;
+}
+
+.account-copy { display: grid; line-height: 1.15; }
+.account-copy strong { font-size: .85rem; }
+.account-copy small { margin-top: .2rem; color: var(--text-muted); font-size: .72rem; }
+
+.sign-out-link {
+    margin-left: .4rem;
+    color: var(--text-secondary);
+    font-size: .8rem;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.sign-out-link:hover { color: var(--brand-strong); }
+
+.content {
+    width: min(100%, 98rem);
+    margin: 0 auto;
+    padding: 2.25rem clamp(1rem, 3vw, 2.5rem) 4rem;
+}
+
+.content:focus { outline: none; }
 
 #blazor-error-ui {
     color-scheme: light only;
-    background: lightyellow;
+    background: #fff4ce;
+    border-top: 1px solid #f1c21b;
     bottom: 0;
-    box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 -4px 18px rgba(0, 0, 0, .12);
     box-sizing: border-box;
     display: none;
     left: 0;
-    padding: 0.6rem 1.25rem 0.7rem 1.25rem;
+    padding: .85rem 3rem .85rem 1.25rem;
     position: fixed;
     width: 100%;
     z-index: 1000;
 }
 
-    #blazor-error-ui .dismiss {
-        cursor: pointer;
-        position: absolute;
-        right: 0.75rem;
-        top: 0.5rem;
-    }
+#blazor-error-ui .dismiss { cursor: pointer; position: absolute; right: 1rem; }
+
+@media (max-width: 850px) {
+    .app-shell { display: block; }
+    .sidebar { position: relative; height: auto; overflow: visible; }
+    .topbar { min-height: 4rem; }
+    .account-copy, .topbar-context span:last-child { display: none; }
+}

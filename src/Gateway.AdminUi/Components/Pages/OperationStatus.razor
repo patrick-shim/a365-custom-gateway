@@ -1,0 +1,720 @@
+@page "/operations/{OperationId:guid}"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "AdministratorOrOperator")]
+@implements IAsyncDisposable
+@inject IGatewayApiClient Api
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Operation status · A365 Gateway</PageTitle>
+
+<PageHeader Eyebrow="Provisioning operation"
+            Title="@(operation is null ? "Operation status" : FormatPascalCase(operation.Type))"
+            Description="@OperationDescription">
+    <Actions>
+        @if (operation is not null)
+        {
+            <FluentAnchor Appearance="Appearance.Stealth" Href="@($"/agents/{operation.AgentId:D}")">Back to agent</FluentAnchor>
+        }
+        else
+        {
+            <FluentAnchor Appearance="Appearance.Stealth" Href="/agents">Back to agents</FluentAnchor>
+        }
+
+        @if (polling)
+        {
+            <FluentButton Appearance="Appearance.Stealth" OnClick="StopPollingAsync">Stop automatic updates</FluentButton>
+        }
+        else
+        {
+            <FluentButton Appearance="Appearance.Accent" OnClick="RestartPollingAsync" Disabled="@loading">@PollingActionLabel</FluentButton>
+        }
+    </Actions>
+</PageHeader>
+
+@if (!string.IsNullOrWhiteSpace(pollingNotice))
+{
+    <div class="subtle-note" role="status" aria-live="polite" style="margin-bottom: 1rem">
+        @pollingNotice
+    </div>
+}
+
+@if (loading && operation is null)
+{
+    <section class="card">
+        <LoadingState Label="Loading operation status…" Detail="The page will update automatically while the operation is in progress." />
+    </section>
+}
+else
+{
+    @if (error is not null)
+    {
+        <section class="card" style="margin-bottom: 1rem">
+            <div class="card-body">
+                <ErrorState Title="Operation status is unavailable"
+                            Message="@error.Message"
+                            CorrelationId="@error.CorrelationId"
+                            OnRetry="RestartPollingAsync" />
+            </div>
+        </section>
+    }
+
+    @if (operation is not null)
+    {
+        @if (operation.Legacy)
+        {
+            <div class="subtle-note" role="note" style="margin-bottom: 1rem">
+                <strong>Historical legacy workflow.</strong>
+                This page shows persisted Gateway state from workflow version @operation.WorkflowVersion. It is not resumable or replayable, automatic polling remains off, and these recorded steps do not independently prove that Microsoft resources exist.
+            </div>
+        }
+        else if (!operation.ReplaySupported && !RequiresAgent365Registration(operation))
+        {
+            <div class="subtle-note" role="note" style="margin-bottom: 1rem">
+                <strong>This operation is not replayable.</strong>
+                Do not retry or replay it; reconcile the secured worker logs and Microsoft resource state before taking any recovery action. The Gateway will not risk creating a duplicate resource.
+            </div>
+        }
+
+        @if (RequiresAgent365Registration(operation))
+        {
+            <section class="card registry-action-card" aria-labelledby="agent365-registration-heading">
+                <div class="card-header">
+                    <div>
+                        <h2 id="agent365-registration-heading">Administrator action required</h2>
+                        <span class="section-caption">Complete the pending Agent 365 preview Registry step</span>
+                    </div>
+                    <StatusPill Value="Waiting for administrator" />
+                </div>
+                <div class="card-body registry-action-body">
+                    <p>
+                        A Gateway Administrator must use their signed-in administrator session to complete this agent's Agent 365 registration. The Gateway keeps the external agent, reusable blueprint, and child Agent ID mapping unchanged.
+                    </p>
+                    <div class="subtle-note" role="note">
+                        No JSON upload is required. This portal never asks for, receives, or displays a Microsoft Graph access token.
+                    </div>
+
+                    <AuthorizeView Roles="Gateway.Administrator">
+                        <Authorized>
+                            @if (registrationActionError is not null)
+                            {
+                                <ErrorState Title="Agent 365 registration was not completed"
+                                            Message="@registrationActionError.Message"
+                                            CorrelationId="@registrationActionError.CorrelationId" />
+                                @if (registrationActionError.RequiresUserInteraction)
+                                {
+                                    <div class="subtle-note" role="alert">
+                                        <strong>@(registrationActionError.HasClaimsChallenge ? "Conditional Access interaction required." : "Administrator consent required.")</strong>
+                                        Sign in again and complete the Microsoft Entra prompt. If no prompt appears, ask your Entra administrator to verify tenant-wide delegated Microsoft Graph consent and the applicable Conditional Access policy before trying again.
+                                        @if (registrationActionError.RequiredScopes is { Count: > 0 } requiredScopes)
+                                        {
+                                            <span class="field-help">
+                                                Required delegated scopes:
+                                                @foreach (var scope in requiredScopes)
+                                                {
+                                                    <code>@scope</code>
+                                                }
+                                            </span>
+                                        }
+                                    </div>
+                                }
+                                else
+                                {
+                                    <p class="field-help" role="note">
+                                        If this is an administrator-consent or Conditional Access failure, sign in again and complete any administrator prompt. If no prompt appears, ask your Entra administrator to verify delegated Microsoft Graph <code>AgentRegistration.ReadWrite.All</code> and <code>AgentRegistration.Read.All</code> consent and the applicable Conditional Access policy before trying again.
+                                    </p>
+                                }
+                            }
+
+                            <div class="registry-action-controls" aria-live="polite">
+                                <FluentButton Appearance="Appearance.Accent"
+                                              Disabled="@(completingAgent365Registration || agent365RegistrationAccepted)"
+                                              OnClick="OpenAgent365RegistrationConfirmation">
+                                    @(completingAgent365Registration
+                                        ? "Completing registration…"
+                                        : agent365RegistrationAccepted
+                                            ? "Registration submitted"
+                                            : "Complete Agent 365 registration")
+                                </FluentButton>
+                                @if (completingAgent365Registration)
+                                {
+                                    <span class="field-help" role="status">The Gateway is completing and verifying the Registry step. Do not close or resubmit this action.</span>
+                                }
+                                else if (agent365RegistrationAccepted)
+                                {
+                                    <span class="field-help" role="status">The Gateway accepted this action. Automatic status checks are following the remaining operation steps.</span>
+                                }
+                            </div>
+
+                            <ConfirmPanel Visible="@confirmAgent365Registration"
+                                          Busy="@completingAgent365Registration"
+                                          Title="Complete Agent 365 registration?"
+                                          Message="The Gateway will use your signed-in administrator identity to complete and verify the pending Agent 365 Registry step."
+                                          ConfirmLabel="Complete registration"
+                                          OnConfirm="CompleteAgent365RegistrationAsync"
+                                          OnCancel="CancelAgent365RegistrationConfirmation">
+                                <AdditionalContent>
+                                    <div class="subtle-note">
+                                        You will not upload a JSON file or paste a token. Microsoft Graph access remains inside the trusted Gateway flow.
+                                    </div>
+                                </AdditionalContent>
+                            </ConfirmPanel>
+                        </Authorized>
+                        <NotAuthorized>
+                            <div class="subtle-note" role="note">
+                                Sign in with the Gateway Administrator role, or ask a Gateway Administrator to open this operation and complete the registration.
+                            </div>
+                        </NotAuthorized>
+                    </AuthorizeView>
+                </div>
+            </section>
+        }
+
+        <div class="content-grid">
+            <div class="stack">
+                <section class="card" aria-labelledby="operation-overview-heading">
+                    <div class="card-header">
+                        <div>
+                            <h2 id="operation-overview-heading">Operation overview</h2>
+                            <span class="section-caption">Last checked @FormatLocal(lastCheckedUtc)</span>
+                        </div>
+                        <StatusPill Value="@operation.Status" />
+                    </div>
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <span class="detail-label">Operation ID</span>
+                            <span class="detail-value"><code>@operation.OperationId</code></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Agent ID</span>
+                            <span class="detail-value"><a href="/agents/@operation.AgentId"><code>@operation.AgentId</code></a></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Operation type</span>
+                            <span class="detail-value">@FormatPascalCase(operation.Type)</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Current step</span>
+                            <span class="detail-value">@ValueOrUnavailable(operation.CurrentStep, operation.Legacy)</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Started</span>
+                            <span class="detail-value">
+                                <time datetime="@ToUtcIso(operation.StartedAtUtc)" title="UTC: @FormatUtc(operation.StartedAtUtc)">@FormatLocal(operation.StartedAtUtc)</time>
+                            </span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Completed</span>
+                            <span class="detail-value">
+                                @if (operation.CompletedAtUtc is { } completedAt)
+                                {
+                                    <time datetime="@ToUtcIso(completedAt)" title="UTC: @FormatUtc(completedAt)">@FormatLocal(completedAt)</time>
+                                }
+                                else
+                                {
+                                    <span>Not completed</span>
+                                }
+                            </span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <label class="detail-label" for="operation-progress">Progress: @ClampPercent(operation.PercentComplete)%</label>
+                        <progress id="operation-progress"
+                                  max="100"
+                                  value="@ClampPercent(operation.PercentComplete)"
+                                  style="width: 100%">
+                            @ClampPercent(operation.PercentComplete)%
+                        </progress>
+                        <p class="field-help" aria-live="polite">
+                            @if (polling)
+                            {
+                                <span>Automatic updates are active.</span>
+                            }
+                            else if (IsTerminal(operation.Status))
+                            {
+                                <span>This operation reached a terminal state; automatic updates have stopped.</span>
+                            }
+                            else if (operation.Legacy)
+                            {
+                                <span>This historical legacy operation is not polled automatically.</span>
+                            }
+                            else if (!operation.PollingRecommended)
+                            {
+                                <span>The Gateway does not recommend automatic polling for this operation. Check status manually when needed.</span>
+                            }
+                            else
+                            {
+                                <span>Automatic updates are not active. Resume them to follow this operation.</span>
+                            }
+                        </p>
+                    </div>
+                </section>
+
+                <section class="card" aria-labelledby="steps-heading">
+                    <div class="card-header">
+                        <div>
+                            <h2 id="steps-heading">@(operation.Legacy ? "Historical recorded steps" : "Provisioning phases")</h2>
+                            <span class="section-caption">@(operation.Legacy ? "Raw step names persisted by the historical Gateway workflow" : "Product phases with verified substeps reported by the provisioning worker")</span>
+                        </div>
+                    </div>
+                    @if (operation.Steps is not { Count: > 0 })
+                    {
+                        <EmptyState Icon="◇" Title="No steps reported" Description="The operation has not reported individual steps yet." />
+                    }
+                    else
+                    {
+                        <div class="card-body">
+                            @if (operation.Legacy)
+                            {
+                                <ol class="timeline" aria-label="Historical recorded steps">
+                                    @foreach (var step in operation.Steps)
+                                    {
+                                        <li class="timeline-item">
+                                            <span class="timeline-dot" aria-hidden="true"></span>
+                                            <div class="timeline-title"><code>@step.Step</code> <StatusPill Value="@step.Status" /></div>
+                                            <div class="timeline-meta">
+                                                @if (step.CompletedAtUtc is { } legacyStepCompletedAt)
+                                                {
+                                                    <span>Recorded complete <time datetime="@ToUtcIso(legacyStepCompletedAt)" title="UTC: @FormatUtc(legacyStepCompletedAt)">@FormatLocal(legacyStepCompletedAt)</time></span>
+                                                }
+                                                else
+                                                {
+                                                    <span>No completion time was recorded</span>
+                                                }
+                                            </div>
+                                        </li>
+                                    }
+                                </ol>
+                            }
+                            else
+                            {
+                                @foreach (var phase in BuildCurrentPhases(operation.Steps))
+                                {
+                                    <section aria-label="@phase.Title" style="margin-bottom: 1.25rem">
+                                        <h3 style="margin-bottom: .25rem">@phase.Title</h3>
+                                        <p class="section-caption" style="margin-bottom: .75rem">@phase.Description</p>
+                                        <ol class="timeline" aria-label="@($"{phase.Title} steps")">
+                                            @foreach (var step in phase.Steps)
+                                            {
+                                                <li class="timeline-item">
+                                                    <span class="timeline-dot" aria-hidden="true"></span>
+                                                    <div class="timeline-title">@FormatCurrentStep(step.Step) <StatusPill Value="@step.Status" /></div>
+                                                    <div class="timeline-meta">
+                                                        @if (step.CompletedAtUtc is { } stepCompletedAt)
+                                                        {
+                                                            <span>Completed <time datetime="@ToUtcIso(stepCompletedAt)" title="UTC: @FormatUtc(stepCompletedAt)">@FormatLocal(stepCompletedAt)</time></span>
+                                                        }
+                                                        else
+                                                        {
+                                                            <span>No completion time reported</span>
+                                                        }
+                                                    </div>
+                                                </li>
+                                            }
+                                        </ol>
+                                    </section>
+                                }
+                            }
+                        </div>
+                    }
+                </section>
+            </div>
+
+            <aside class="stack" aria-label="Operation state">
+                <section class="card" aria-labelledby="state-heading">
+                    <div class="card-header">
+                        <h2 id="state-heading">Current state</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="health-list">
+                            <div class="health-row"><span>Status</span><StatusPill Value="@operation.Status" /></div>
+                            <div class="health-row"><span>Progress</span><strong>@ClampPercent(operation.PercentComplete)%</strong></div>
+                            <div class="health-row"><span>Workflow</span><strong>@(operation.Legacy ? $"Historical v{operation.WorkflowVersion}" : $"Current v{operation.WorkflowVersion}")</strong></div>
+                            <div class="health-row"><span>Automatic updates</span><strong>@(polling ? "Active" : "Stopped")</strong></div>
+                            <div class="health-row"><span>Polling limit</span><strong>5 minutes</strong></div>
+                        </div>
+                    </div>
+                </section>
+
+                @if (operation.Error is not null)
+                {
+                    <section class="card" aria-labelledby="operation-error-heading">
+                        <div class="card-header"><h2 id="operation-error-heading">Operation error</h2></div>
+                        <div class="card-body">
+                            <div class="error-panel" role="alert">
+                                <span class="error-symbol" aria-hidden="true">!</span>
+                                <div>
+                                    <strong>@(string.IsNullOrWhiteSpace(operation.Error.Code) ? "Provisioning error" : operation.Error.Code)</strong>
+                                    <p>The operation reported an error. Review secured worker logs for diagnostic details; raw exception text is intentionally not displayed.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                }
+            </aside>
+        </div>
+    }
+}
+
+@code {
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan PollLimit = TimeSpan.FromMinutes(5);
+
+    private readonly CancellationTokenSource disposeCts = new();
+    private CancellationTokenSource? pollCts;
+    private Task? pollTask;
+    private OperationStatusDto? operation;
+    private UiErrorInfo? error;
+    private UiErrorInfo? registrationActionError;
+    private string? pollingNotice;
+    private Guid loadedOperationId;
+    private DateTime lastCheckedUtc;
+    private bool loading;
+    private bool polling;
+    private bool completingAgent365Registration;
+    private bool confirmAgent365Registration;
+    private bool agent365RegistrationAccepted;
+    private bool automaticAgent365RegistrationAttempted;
+    private bool signedInAdministrator;
+    private bool disposed;
+
+    private string OperationDescription => operation?.Legacy == true
+        ? "Historical persisted Gateway workflow state. Automatic polling and replay remain disabled for this legacy operation."
+        : "Live status for a known asynchronous Gateway operation. Automatic updates stop at a terminal state or after five minutes.";
+
+    [Parameter]
+    public Guid OperationId { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (loadedOperationId == OperationId && (operation is not null || pollTask is not null))
+        {
+            return;
+        }
+
+        loadedOperationId = OperationId;
+        operation = null;
+        error = null;
+        registrationActionError = null;
+        confirmAgent365Registration = false;
+        agent365RegistrationAccepted = false;
+        automaticAgent365RegistrationAttempted = false;
+        signedInAdministrator = (await AuthenticationStateProvider.GetAuthenticationStateAsync())
+            .User.IsInRole("Gateway.Administrator");
+        await RestartPollingAsync();
+    }
+
+    private static bool RequiresAgent365Registration(OperationStatusDto value) =>
+        string.Equals(
+            value.RequiredAction,
+            "CompleteAgent365Registration",
+            StringComparison.Ordinal);
+
+    private void OpenAgent365RegistrationConfirmation()
+    {
+        if (completingAgent365Registration || agent365RegistrationAccepted)
+        {
+            return;
+        }
+
+        registrationActionError = null;
+        confirmAgent365Registration = true;
+    }
+
+    private void CancelAgent365RegistrationConfirmation()
+    {
+        if (!completingAgent365Registration)
+        {
+            confirmAgent365Registration = false;
+        }
+    }
+
+    private async Task CompleteAgent365RegistrationAsync()
+    {
+        if (completingAgent365Registration ||
+            agent365RegistrationAccepted ||
+            operation is null ||
+            !RequiresAgent365Registration(operation))
+        {
+            return;
+        }
+
+        completingAgent365Registration = true;
+        registrationActionError = null;
+
+        try
+        {
+            await Api.CompleteAgent365RegistrationAsync(OperationId, disposeCts.Token);
+            agent365RegistrationAccepted = true;
+            confirmAgent365Registration = false;
+            await RestartPollingAsync();
+            pollingNotice = "Agent 365 registration was submitted and verified by the Gateway. Automatic updates resumed for the remaining operation steps.";
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            confirmAgent365Registration = false;
+            registrationActionError = UiErrorInfo.FromException(exception);
+            pollingNotice = "The administrator action did not complete. Review the safe details below; no automatic retry was attempted.";
+        }
+        finally
+        {
+            completingAgent365Registration = false;
+        }
+    }
+
+    private async Task RestartPollingAsync()
+    {
+        await CancelCurrentPollAsync();
+
+        if (disposed)
+        {
+            return;
+        }
+
+        error = null;
+        pollingNotice = null;
+        loading = operation is null;
+        polling = true;
+
+        pollCts = CancellationTokenSource.CreateLinkedTokenSource(disposeCts.Token);
+        pollTask = PollAsync(pollCts.Token);
+    }
+
+    private async Task StopPollingAsync()
+    {
+        pollingNotice = "Automatic updates stopped. The displayed status may become stale; resume updates or refresh when needed.";
+        await CancelCurrentPollAsync();
+        polling = false;
+    }
+
+    private async Task PollAsync(CancellationToken cancellationToken)
+    {
+        using var boundedPollingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        boundedPollingCts.CancelAfter(PollLimit);
+        var boundedToken = boundedPollingCts.Token;
+
+        try
+        {
+            while (!boundedToken.IsCancellationRequested)
+            {
+                try
+                {
+                    operation = await Api.GetOperationStatusAsync(OperationId, boundedToken);
+                    lastCheckedUtc = DateTime.UtcNow;
+                    error = null;
+                    loading = false;
+
+                    if (signedInAdministrator &&
+                        operation.Agent365RegistrationCompletionAvailable &&
+                        RequiresAgent365Registration(operation) &&
+                        !automaticAgent365RegistrationAttempted)
+                    {
+                        automaticAgent365RegistrationAttempted = true;
+                        completingAgent365Registration = true;
+                        registrationActionError = null;
+
+                        try
+                        {
+                            await Api.CompleteAgent365RegistrationAsync(
+                                OperationId,
+                                boundedToken);
+                            agent365RegistrationAccepted = true;
+                            pollingNotice = "Agent 365 registration was completed automatically with your signed-in administrator session. Verification is continuing.";
+                            continue;
+                        }
+                        catch (Exception exception) when (exception is not OperationCanceledException)
+                        {
+                            registrationActionError = UiErrorInfo.FromException(exception);
+                            pollingNotice = "Automatic Agent 365 registration did not complete. Review the safe details below; no automatic retry was attempted.";
+                            return;
+                        }
+                        finally
+                        {
+                            completingAgent365Registration = false;
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (boundedToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    error = UiErrorInfo.FromException(exception);
+                    loading = false;
+                    pollingNotice = "Automatic updates stopped after a request error. Review the safe error details, then try again.";
+                    return;
+                }
+
+                await NotifyStateChangedAsync();
+
+                if (operation is not null && IsTerminal(operation.Status))
+                {
+                    pollingNotice = $"Automatic updates stopped because the operation reached {FormatPascalCase(operation.Status)}.";
+                    return;
+                }
+
+                if (operation?.Legacy == true)
+                {
+                    pollingNotice = "Automatic updates remain off because this is a historical legacy workflow. Use Check status for a one-time refresh.";
+                    return;
+                }
+
+                if (operation is not null && !operation.PollingRecommended)
+                {
+                    pollingNotice = "Automatic updates stopped because the Gateway does not recommend polling this operation. Use Check status for a one-time refresh.";
+                    return;
+                }
+
+                await Task.Delay(PollInterval, boundedToken);
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && boundedPollingCts.IsCancellationRequested)
+        {
+            pollingNotice = "Automatic updates paused after the five-minute polling limit. The operation may still be running; resume updates to continue.";
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            polling = false;
+            loading = false;
+            await NotifyStateChangedAsync();
+        }
+    }
+
+    private async Task CancelCurrentPollAsync()
+    {
+        var cancellation = pollCts;
+        var task = pollTask;
+        pollCts = null;
+        pollTask = null;
+
+        if (cancellation is null)
+        {
+            return;
+        }
+
+        cancellation.Cancel();
+
+        if (task is not null)
+        {
+            try
+            {
+                await task;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        cancellation.Dispose();
+    }
+
+    private Task NotifyStateChangedAsync() =>
+        disposed ? Task.CompletedTask : InvokeAsync(StateHasChanged);
+
+    private string PollingActionLabel => operation switch
+    {
+        null => "Try again",
+        { Legacy: true } => "Check status",
+        { PollingRecommended: false } => "Check status",
+        { Status: var status } when IsTerminal(status) => "Check status",
+        _ => "Resume updates"
+    };
+
+    private static bool IsTerminal(string status) => status.Equals("Completed", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("Succeeded", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("Failed", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("Cancelled", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("Canceled", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("RequiresManualIntervention", StringComparison.OrdinalIgnoreCase);
+
+    private static int ClampPercent(int value) => Math.Clamp(value, 0, 100);
+
+    private static string ValueOrUnavailable(string? value, bool legacy) =>
+        string.IsNullOrWhiteSpace(value)
+            ? "Not reported"
+            : legacy
+                ? value
+                : FormatCurrentStep(value);
+
+    private static IReadOnlyList<OperationPhase> BuildCurrentPhases(IReadOnlyList<OperationStepDto> steps)
+    {
+        var blueprint = new OperationPhase(
+            "1. Blueprint",
+            "Resolve or create the reusable Agent Identity blueprint, ensure its principal, and configure Gateway managed-identity federation.");
+        var agentIdentity = new OperationPhase(
+            "2. Agent ID",
+            "Create and verify a distinct Microsoft Entra Agent ID under the reusable blueprint.");
+        var agent365Connection = new OperationPhase(
+            "3. Agent 365 connection",
+            "Assign Agent 365 observability access, register through the configured preview provider, and verify the Agent 365 connection.");
+
+        foreach (var step in steps)
+        {
+            var phase = step.Step switch
+            {
+                "ResolveBlueprint" or "EnsureBlueprintPrincipal" or "ConfigureGatewayFederation" => blueprint,
+                "CreateAgentIdentity" => agentIdentity,
+                _ => agent365Connection
+            };
+            phase.Steps.Add(step);
+        }
+
+        return [blueprint, agentIdentity, agent365Connection];
+    }
+
+    private static string FormatCurrentStep(string value) => value switch
+    {
+        "ResolveBlueprint" => "Resolve or create reusable blueprint",
+        "EnsureBlueprintPrincipal" => "Ensure blueprint principal",
+        "ConfigureGatewayFederation" => "Configure Gateway federation",
+        "CreateAgentIdentity" => "Create Agent ID",
+        "AssignAgent365Access" => "Assign Agent 365 observability access",
+        "RegisterAgent" => "Register Agent 365 record (preview)",
+        "VerifyAgent365Connection" => "Verify Agent 365 connection",
+        _ => FormatPascalCase(value)
+    };
+
+    private static string FormatPascalCase(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "Not reported";
+        }
+
+        return System.Text.RegularExpressions.Regex.Replace(value, "(?<!^)([A-Z])", " $1");
+    }
+
+    private static DateTime AsUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+    };
+
+    private static string ToUtcIso(DateTime value) => AsUtc(value).ToString("O");
+
+    private static string FormatUtc(DateTime value) => AsUtc(value).ToString("MMM d, yyyy HH:mm:ss 'UTC'");
+
+    private static string FormatLocal(DateTime value) => AsUtc(value).ToLocalTime().ToString("MMM d, yyyy HH:mm:ss 'local'");
+
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true;
+        disposeCts.Cancel();
+        await CancelCurrentPollAsync();
+        disposeCts.Dispose();
+    }
+
+    private sealed class OperationPhase(string title, string description)
+    {
+        public string Title { get; } = title;
+        public string Description { get; } = description;
+        public List<OperationStepDto> Steps { get; } = [];
+    }
+}

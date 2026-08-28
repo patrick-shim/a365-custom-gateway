@@ -16,6 +16,22 @@ public static class HttpClientExtensions
     }
 
     /// <summary>
+    /// Sets the interactive delegated administrator claims required by the
+    /// Agent 365 Registry completion boundary.
+    /// </summary>
+    public static void SetDelegatedAdministrator(string? objectId = null)
+    {
+        TestAuthHandler.DefaultRole = null;
+        TestAuthHandler.Claims = new List<Claim>
+        {
+            new(ClaimTypes.Role, "Gateway.Administrator"),
+            new("oid", objectId ?? TestAuthHandler.DefaultObjectId),
+            new("scp", "access_as_user")
+        };
+        TestAuthHandler.ShouldAuthenticate = true;
+    }
+
+    /// <summary>
     /// Sets the test auth handler to authenticate as an ExternalAgent with the specified client ID.
     /// </summary>
     public static void SetExternalAgent(string clientId)

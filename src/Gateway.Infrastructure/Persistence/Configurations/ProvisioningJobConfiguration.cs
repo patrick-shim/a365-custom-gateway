@@ -14,6 +14,7 @@ internal sealed class ProvisioningJobConfiguration : IEntityTypeConfiguration<Pr
 
         builder.Property(e => e.Type).HasConversion<string>().HasMaxLength(30);
         builder.Property(e => e.Status).HasConversion<string>().HasMaxLength(40);
+        builder.Property(e => e.WorkflowVersion).HasDefaultValue(1);
 
         builder.HasIndex(e => new { e.AgentRegistrationId, e.CreatedAtUtc })
             .IsDescending(false, true);

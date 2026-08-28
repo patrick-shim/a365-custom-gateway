@@ -43,7 +43,8 @@ public class AgentLifecycleTests : IDisposable
             Description: "An agent for lifecycle testing",
             OwnerObjectId: "owner-oid-001",
             Environment: "Development",
-            Features: null);
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
 
         // Act
         var response = await _client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);
@@ -59,6 +60,12 @@ public class AgentLifecycleTests : IDisposable
         body.Name.Should().Be("Lifecycle Test Agent");
         body.Status.Should().Be("Draft");
         body.CreatedAtUtc.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(10));
+        body.GatewayCredential.Should().NotBeNull();
+        body.GatewayCredential!.KeyId.Should().NotBeEmpty();
+        body.GatewayCredential.ApiKey.Should().StartWith("a365gw_v1_");
+        body.GatewayCredential.ExpiresAtUtc.Should().BeAfter(DateTime.UtcNow);
+        response.Headers.CacheControl.Should().NotBeNull();
+        response.Headers.CacheControl!.NoStore.Should().BeTrue();
     }
 
     [Fact]
@@ -73,7 +80,8 @@ public class AgentLifecycleTests : IDisposable
             Description: null,
             OwnerObjectId: "owner-oid-001",
             Environment: "Development",
-            Features: null);
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
 
         // Register the first time
         var firstResponse = await _client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);
@@ -86,7 +94,8 @@ public class AgentLifecycleTests : IDisposable
             Description: null,
             OwnerObjectId: "owner-oid-002",
             Environment: "Production",
-            Features: null);
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
 
         var response = await _client.PostAsJsonAsync("/api/v1/agents", duplicateRequest, JsonOptions);
 
@@ -111,7 +120,8 @@ public class AgentLifecycleTests : IDisposable
             Description: "Agent for GET testing",
             OwnerObjectId: "owner-oid-001",
             Environment: "Production",
-            Features: null);
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
 
         var registerResponse = await _client.PostAsJsonAsync("/api/v1/agents", registerRequest, JsonOptions);
         var registered = await registerResponse.Content.ReadFromJsonAsync<RegisterAgentResponse>(JsonOptions);
@@ -167,7 +177,8 @@ public class AgentLifecycleTests : IDisposable
                 Description: null,
                 OwnerObjectId: "owner-oid-001",
                 Environment: "Development",
-                Features: null);
+                Features: null,
+                Blueprint: TestRequestData.ValidBlueprint);
 
             await _client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);
         }
@@ -200,7 +211,8 @@ public class AgentLifecycleTests : IDisposable
             Features: new Gateway.Contracts.Dtos.AgentFeaturesDto(
                 ObservabilityMode: "Agent365",
                 PurviewEnabled: true,
-                PurviewMode: "AuditOnly"));
+                PurviewMode: "AuditOnly"),
+            Blueprint: TestRequestData.ValidBlueprint);
 
         // Act
         var response = await _client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);

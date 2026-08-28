@@ -84,16 +84,6 @@ function Get-CurrentUserUpn {
             -ErrorMessage 'Failed to get current user UPN.' | Out-String).Trim()
 }
 
-function New-SecurePassword {
-    param([int]$Length = 20)
-    $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*'
-    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    $bytes = [byte[]]::new($Length)
-    $rng.GetBytes($bytes)
-    $password = -join ($bytes | ForEach-Object { $chars[$_ % $chars.Length] })
-    return "${password}Aa1!"
-}
-
 function Get-DeploymentOutputs {
     param(
         [string]$ResourceGroup

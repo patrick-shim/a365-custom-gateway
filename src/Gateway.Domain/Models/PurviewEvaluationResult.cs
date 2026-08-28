@@ -6,4 +6,4 @@ public sealed record PurviewEvaluationResult(
     bool IsAllowed,
     PurviewDecisionType Decision,
     string? PolicyAction,
-    string? ProtectionScopeId);
+    string? ProtectionScopeState);

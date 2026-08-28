@@ -3,7 +3,6 @@ using FluentAssertions;
 using Gateway.Api.Middleware;
 using Gateway.Contracts;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using ValidationException = Gateway.Application.Exceptions.ValidationException;
@@ -13,14 +12,10 @@ namespace Gateway.UnitTests.Middleware;
 public class ProblemDetailsMiddlewareTests
 {
     private static ProblemDetailsMiddleware CreateMiddleware(
-        RequestDelegate next,
-        string environmentName = "Production")
+        RequestDelegate next)
     {
         var logger = Substitute.For<ILogger<ProblemDetailsMiddleware>>();
-        var environment = Substitute.For<IHostEnvironment>();
-        environment.EnvironmentName.Returns(environmentName);
-
-        return new ProblemDetailsMiddleware(next, logger, environment);
+        return new ProblemDetailsMiddleware(next, logger);
     }
 
     private static DefaultHttpContext CreateHttpContext(string path = "/api/v1/agents", string? correlationId = null)
@@ -173,7 +168,7 @@ public class ProblemDetailsMiddlewareTests
     public async Task InvokeAsync_Should_Return500_When_UnhandledExceptionThrown()
     {
         RequestDelegate next = _ => throw new InvalidOperationException("Something broke");
-        var middleware = CreateMiddleware(next, "Production");
+        var middleware = CreateMiddleware(next);
         var context = CreateHttpContext();
 
         await middleware.InvokeAsync(context);
@@ -183,15 +178,16 @@ public class ProblemDetailsMiddlewareTests
         var body = await ReadResponseBodyAsync(context);
         body.RootElement.GetProperty("status").GetInt32().Should().Be(500);
         body.RootElement.GetProperty("title").GetString().Should().Be("Internal Server Error");
-        body.RootElement.TryGetProperty("detail", out _).Should().BeFalse(
-            "detail should not be present in non-Development to avoid leaking internals");
+        body.RootElement.GetProperty("detail").GetString().Should().Be(
+            "The Gateway could not complete the request. Use the correlation ID when investigating the failure.");
+        body.RootElement.GetProperty("detail").GetString().Should().NotContain("Something broke");
     }
 
     [Fact]
-    public async Task InvokeAsync_Should_IncludeDetailInDevelopment_When_UnhandledExceptionThrown()
+    public async Task InvokeAsync_Should_NotExposeExceptionDetail_InAnyEnvironment()
     {
         RequestDelegate next = _ => throw new InvalidOperationException("Something broke");
-        var middleware = CreateMiddleware(next, "Development");
+        var middleware = CreateMiddleware(next);
         var context = CreateHttpContext();
 
         await middleware.InvokeAsync(context);
@@ -199,8 +195,22 @@ public class ProblemDetailsMiddlewareTests
         context.Response.StatusCode.Should().Be(StatusCodes.Status500InternalServerError);
 
         var body = await ReadResponseBodyAsync(context);
-        body.RootElement.TryGetProperty("detail", out var detail).Should().BeTrue();
-        detail.GetString().Should().Be("Something broke");
+        body.RootElement.GetProperty("detail").GetString().Should().NotContain("Something broke");
+    }
+
+    [Fact]
+    public async Task InvokeAsync_Should_RethrowCallerCancellation()
+    {
+        RequestDelegate next = _ => throw new OperationCanceledException();
+        var middleware = CreateMiddleware(next);
+        var context = CreateHttpContext();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        context.RequestAborted = cancellation.Token;
+
+        var action = () => middleware.InvokeAsync(context);
+
+        await action.Should().ThrowAsync<OperationCanceledException>();
     }
 
     [Fact]
@@ -255,6 +265,7 @@ public class ProblemDetailsMiddlewareTests
         // WriteAsJsonAsync may override to "application/json; charset=utf-8".
         // Either way, the response content type should contain "json".
         context.Response.ContentType.Should().Contain("json");
+        context.Response.Headers.CacheControl.ToString().Should().Be("no-store");
     }
 
     [Fact]

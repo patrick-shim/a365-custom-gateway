@@ -1,0 +1,15 @@
+<div class="state-panel" role="status" aria-live="polite">
+    <FluentProgressRing />
+    <div>
+        <strong>@Label</strong>
+        @if (!string.IsNullOrWhiteSpace(Detail))
+        {
+            <p>@Detail</p>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Label { get; set; } = "Loading…";
+    [Parameter] public string? Detail { get; set; }
+}

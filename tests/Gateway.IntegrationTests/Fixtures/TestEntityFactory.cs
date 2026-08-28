@@ -116,14 +116,17 @@ internal static class TestEntityFactory
     public static IdempotencyRecord CreateIdempotencyRecord(
         string? key = null,
         int responseStatusCode = 200,
-        DateTime? expiresAtUtc = null)
+        DateTime? expiresAtUtc = null,
+        Guid? agentRegistrationId = null,
+        string endpoint = "/api/v1/agent-activities")
     {
         return new IdempotencyRecord
         {
             Id = Guid.NewGuid(),
+            AgentRegistrationId = agentRegistrationId ?? Guid.NewGuid(),
             IdempotencyKey = key ?? Guid.NewGuid().ToString(),
             RequestBodyHash = Guid.NewGuid().ToString("N"),
-            Endpoint = "/api/v1/agents/test-agent/activities",
+            Endpoint = endpoint,
             ResponseStatusCode = responseStatusCode,
             ResponseBody = """{"status":"ok"}""",
             CreatedAtUtc = DateTime.UtcNow,

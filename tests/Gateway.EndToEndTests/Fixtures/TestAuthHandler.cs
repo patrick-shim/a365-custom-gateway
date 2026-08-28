@@ -9,7 +9,7 @@ namespace Gateway.EndToEndTests.Fixtures;
 public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 {
     public const string SchemeName = "TestScheme";
-    public const string DefaultObjectId = "test-oid-001";
+    public const string DefaultObjectId = "c02f1b80-46b2-46b6-8b25-54bda4101e56";
     public const string DefaultClientId = "test-client-001";
 
     public static IList<Claim> Claims { get; set; } = new List<Claim>();

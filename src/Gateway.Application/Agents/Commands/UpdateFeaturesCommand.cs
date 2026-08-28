@@ -8,4 +8,6 @@ public record UpdateFeaturesCommand(
     string? ObservabilityMode,
     bool? PurviewEnabled,
     string? PurviewMode,
-    string CallerObjectId) : IRequest<UpdateFeaturesResponse>;
+    string CallerObjectId,
+    bool? Agent365ObservabilityEnabled = null,
+    bool? AzureMonitorExportEnabled = null) : IRequest<UpdateFeaturesResponse>;

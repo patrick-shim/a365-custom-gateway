@@ -11,15 +11,18 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
 {
     private readonly IAgentRepository _agentRepository;
     private readonly IAuditEventRepository _auditEventRepository;
+    private readonly IPurviewPolicyClient _purviewPolicyClient;
     private readonly IUnitOfWork _unitOfWork;
 
     public UpdateFeaturesHandler(
         IAgentRepository agentRepository,
         IAuditEventRepository auditEventRepository,
+        IPurviewPolicyClient purviewPolicyClient,
         IUnitOfWork unitOfWork)
     {
         _agentRepository = agentRepository;
         _auditEventRepository = auditEventRepository;
+        _purviewPolicyClient = purviewPolicyClient;
         _unitOfWork = unitOfWork;
     }
 
@@ -33,14 +36,43 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
             throw new InvalidStateTransitionException(agent.Status.ToString(), "UpdateFeatures");
         }
 
-        if (request.ObservabilityMode is not null)
-            agent.FeatureConfiguration.ObservabilityMode = Enum.Parse<ObservabilityMode>(request.ObservabilityMode);
+        if (request.ObservabilityMode is not null ||
+            request.Agent365ObservabilityEnabled is not null ||
+            request.AzureMonitorExportEnabled is not null)
+        {
+            if (!ObservabilityModeExtensions.TryResolve(
+                    request.ObservabilityMode,
+                    request.Agent365ObservabilityEnabled,
+                    request.AzureMonitorExportEnabled,
+                    agent.FeatureConfiguration.ObservabilityMode,
+                    out var observabilityMode))
+            {
+                throw new ValidationException(new Dictionary<string, string[]>
+                {
+                    ["ObservabilityMode"] =
+                    ["Legacy and destination-specific observability settings must describe the same destinations."]
+                });
+            }
 
-        if (request.PurviewEnabled is not null)
-            agent.FeatureConfiguration.PurviewEnabled = request.PurviewEnabled.Value;
+            agent.FeatureConfiguration.ObservabilityMode = observabilityMode;
+        }
 
-        if (request.PurviewMode is not null)
-            agent.FeatureConfiguration.PurviewMode = Enum.Parse<PurviewMode>(request.PurviewMode);
+        var purviewEnabled = request.PurviewEnabled
+            ?? agent.FeatureConfiguration.PurviewEnabled;
+        var purviewMode = request.PurviewMode is null
+            ? agent.FeatureConfiguration.PurviewMode
+            : Enum.Parse<PurviewMode>(request.PurviewMode);
+        if (purviewEnabled && !_purviewPolicyClient.IsEnabled)
+        {
+            throw new DomainException(
+                "Purview cannot be enabled because it is not configured for this Gateway deployment.",
+                Gateway.Contracts.ErrorCodes.UNSUPPORTED_FEATURE_CONFIGURATION);
+        }
+
+        agent.FeatureConfiguration.PurviewEnabled = purviewEnabled;
+        agent.FeatureConfiguration.PurviewMode = purviewEnabled
+            ? purviewMode ?? _purviewPolicyClient.DefaultMode
+            : purviewMode;
 
         agent.FeatureConfiguration.UpdatedAtUtc = DateTime.UtcNow;
         agent.UpdatedAtUtc = DateTime.UtcNow;
@@ -58,12 +90,16 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
+        var destinations = agent.FeatureConfiguration.ObservabilityMode.ToDestinations();
+
         return new UpdateFeaturesResponse(
             agent.Id,
             new AgentFeaturesDto(
                 agent.FeatureConfiguration.ObservabilityMode.ToString(),
                 agent.FeatureConfiguration.PurviewEnabled,
-                agent.FeatureConfiguration.PurviewMode?.ToString()),
+                agent.FeatureConfiguration.PurviewMode?.ToString(),
+                destinations.Agent365ObservabilityEnabled,
+                destinations.AzureMonitorExportEnabled),
             agent.FeatureConfiguration.UpdatedAtUtc);
     }
 }

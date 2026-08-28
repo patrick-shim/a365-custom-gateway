@@ -1,3 +1,104 @@
+CURRENT IMPLEMENTATION NOTE (2026-08-28)
+========================================
+
+This file preserves the original product brief and is below implemented code, tests,
+official current Microsoft documentation, and the shared implementation/guides in the
+repository authority order. The current N:N Gateway intentionally refines the brief's
+generic Entra data-plane wording:
+
+- one Gateway brokers N external registrations;
+- each registration binds its externalAgentId and unique Gateway-issued API key to
+  one stored registration and one child Entra Agent ID under a selected reusable
+  typed blueprint;
+- the external client needs no Entra credential or managed-identity object ID for
+  normal Gateway ingress; only a salted key hash is stored and the clear key is
+  returned once;
+- a lost one-time key response is replaced through the administrator credential
+  lifecycle; it is never recovered from SQL/logs/idempotency or by repeating
+  registration;
+- one deterministic Gateway-worker FIC per reusable blueprint plus
+  fmi_path=<child-agent-id> supplies outbound Agent 365 identity;
+- the child receives only Agent365.Observability.OtelWrite, not the legacy Gateway
+  ExternalAgent role;
+- Agent 365 observability is the default, sanitized Azure Monitor export is optional,
+  and Purview remains per agent;
+- Entra child telemetry uses the child client ID as gen_ai.agent.id and the
+  blueprint client ID as microsoft.a365.agent.blueprint.id; it omits
+  gen_ai.agent.type and microsoft.a365.agent.platform.id;
+- an Agent 365 OTLP HTTP 200 is endpoint acceptance, not proof that the event later
+  landed in Defender CloudAppEvents.
+
+Scoped data-plane replay/conflict behavior is implemented by registration + endpoint
++ key with a canonical request hash and a SQL transaction-owned application lock held
+through side effects and commit. Registration-bound fixed-minute rate limiting is
+also implemented for credential, registration, and global scopes. Both SQL-backed
+protections and their prepare scripts are deployed and verified in development, as
+is the worker's session-owned per-job SQL application lock, but none has a real
+multi-replica/failover production proof. The legacy global idempotency index remains
+until a successful bounded canary.
+
+Workflow v3 is deployed in development with explicit continuous registration,
+automatic signed-in Administrator Registry completion, worker provisioning, and
+data-plane relay. Staging and production retain exact-bound admission. The complete
+release gate passes a zero-warning/error Release build and 1,102/1,102 tests (unit
+397, Admin UI 150, end-to-end 103, security 111, runtime 143, integration 92,
+architecture 106). PowerShell parsing passes 25/25; format, Bicep 22/22 templates and
+5/5 parameters, OpenAPI YAML parsing, and diff checks also pass.
+
+Both create-new and reuse-existing blueprint paths are Active and Available in
+Microsoft 365 Admin Center. Bound Gateway activity/interaction requests returned
+HTTP 202 and Agent 365 OTLP accepted sanitized exports. A reusable-blueprint Purview
+policy live-proved benign audit and synthetic sensitive-prompt blocking. The v3
+queue is 0/0/9; retained v2 is 0/0/3 and historical v1 is 0/0/2. The final API
+revision is ca-gateway-api-dev--purviewguard-20260828222324 with digest
+sha256:5275b3adcdb3e17f39e7b7466fc989bfeae04904f64f85226931be19c6e939b7.
+The older SQL artifact predates the two continuous canaries and is not current
+job/outbox evidence. The four additive SQL prepare scripts are deployed;
+post-canary finalization is unapplied.
+
+Three canary failures are retained with v2 queue state 0 active, 0 scheduled, and 3
+DLQ. The first failed closed at Resolve Blueprint for an incompatible resource
+after one GET and no mutation. The second selected a compatible blueprint, made one
+successful FIC POST, then failed closed on a stale immediate list; later read-only
+reconciliation proved exactly one correct reusable FIC. Neither created a child Agent
+ID, Agent 365 role assignment, Registry record, or telemetry mapping. The third
+GET-reused that FIC, created and verified one child Agent ID, assigned and verified
+OtelWrite, then received HTTP 500 from its one Registry POST without a durable ID.
+Portal exact display/child searches after explicit Refresh returned 0 of 341, which
+is not API proof that no backend create occurred. Preserve all three failed Gateway
+records/messages, the FIC, child, and role; never retry, replay, peek, receive,
+settle, purge, delete, or attach to workflow v3.
+
+Workflow v3 runs five worker stages to 71%, completes Registry through a signed-in
+Gateway Administrator API OBO action to 85%, then returns final verification to the
+worker. The API uses exactly two admin-consented delegated Registry scopes and a
+managed-identity signed assertion/FIC; the v3 worker has eight non-Registry Graph app
+roles. Create persists a creator-bound planned Registry ID, emits at most one
+CLI-compatible POST containing that `id` and the reviewed preview-provider
+`managedByAppId`, and persists the safe returned ID immediately, using the planned
+ID only when a successful response omits one. HTTP 201 with that durable ID is the
+accepted create boundary; immediate exact GET is not required from the preview
+collection. An unknown outcome permits exact planned-ID GET only and never a second
+POST.
+
+Staging and production use separate exact-bound expiring windows: authorize one
+generated external ID, close registration, then authorize only the resulting
+operation ID. Authenticated system config may expose the authorized external ID to
+the UI; it is admission metadata, not a credential. Development explicitly enables
+continuous admission and automatic signed-in Administrator completion without
+bypassing identity, OBO, locking, or one-POST controls. Independently evidenced
+create-new and reuse-existing registrations completed all seven stages plus bound
+Gateway-key routing and controlled ingestion. OTLP HTTP 200 proves endpoint
+acceptance; Microsoft 365 Admin Center shows the proven rows Available. Blueprint-
+scoped Purview Enforce is live: benign content is audited, synthetic sensitive
+`uploadText` is blocked, and `downloadText` is offline. Preserve every historical
+unknown POST outcome independently and never replay it; SQL finalization stays
+unapplied.
+
+Treat later references in this original brief to child-Agent Gateway bearer tokens,
+global client identity, or an ExternalAgent role as superseded for workflow v3. See
+docs/implementation-status.md and docs/agent-guides/provisioning.md before acting.
+
 You are a principal Microsoft cloud architect, senior .NET engineer, API designer, security engineer, and DevOps engineer.
 
 Design and build a production-oriented Microsoft Agent 365 Gateway that enables non-Microsoft and externally developed AI agents to integrate with Microsoft Agent 365 without requiring those external agents to embed the Agent 365 SDK or Agent 365 CLI.
@@ -722,7 +823,7 @@ Request:
 
 The caller must not be allowed to impersonate an arbitrary tenant user.
 
-Define the documented identity requirements for Purview evaluation. If the Microsoft API requires a valid delegated user context, do not replace it with an invented application-only flow.
+Define the documented identity requirements for Purview evaluation. The implemented `/users/{id}` Graph v1.0 routes use the Gateway API managed identity's application permissions together with a real Entra user object ID in the request path; `/me` is delegated-only. Do not invent an anonymous user or substitute the signed-in administrator.
 
 Possible accepted response:
 
@@ -732,39 +833,17 @@ HTTP/1.1 202 Accepted
   "receiptId": "e1225adb-28f9-4a20-b821-749a00863df7",
   "interactionId": "interaction-88731",
   "status": "Accepted",
-  "purviewProcessing": "Pending",
-  "observabilityProcessing": "Pending"
+  "purviewProcessing": "PurviewDisabled",
+  "observabilityProcessing": "Queued"
 }
 
-For synchronous enforcement mode, if supported and required, define a separate endpoint:
-
-POST /api/v1/ai-interactions:evaluate
-
-Example allow response:
-
-{
-  "interactionId": "interaction-88731",
-  "decision": "Allow",
-  "policyActions": [],
-  "evaluatedAtUtc": "2026-08-23T04:47:01Z"
-}
-
-Example block response:
-
-HTTP/1.1 403 Forbidden
-
-{
-  "type": "https://gateway.example.com/problems/purview-policy-blocked",
-  "title": "Content was blocked by organizational policy.",
-  "status": 403,
-  "code": "PURVIEW_POLICY_BLOCKED",
-  "traceId": "00-example",
-  "policyActions": [
-    {
-      "action": "Block"
-    }
-  ]
-}
+Current implemented boundary: `/api/v1/ai-interactions` receives a completed pair.
+AuditOnly synchronously records metadata-only content activities. Enforce
+synchronously evaluates both pieces before Gateway persistence/export and represents
+an exact `restrictAccess:block` as an HTTP 202 receipt with `status=Failed` and
+`purviewProcessing=Blocked`. A true pre-model gate needs a future phase-specific
+endpoint and an external runtime that invokes it before model execution;
+`/api/v1/ai-interactions:evaluate` is not implemented.
 
 Do not expose sensitive policy internals or matched content unless the official documentation explicitly requires it and the caller is authorized.
 
@@ -1015,7 +1094,7 @@ Default:
 - Authentication and authorization failures: fail closed
 - Agent identity mismatch: fail closed
 - Purview Enforce dependency failure: fail closed unless an approved tenant policy explicitly defines another behavior
-- Purview AuditOnly dependency failure: queue for bounded retry, subject to documented limits
+- Purview AuditOnly dependency failure: fail closed before content persistence; no audit retry queue is implemented
 - Observability failure: do not lose the primary accepted operation, but queue or record a safe failure signal
 - Provisioning failure: keep the agent non-active
 

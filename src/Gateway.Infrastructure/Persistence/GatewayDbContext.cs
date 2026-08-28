@@ -12,6 +12,7 @@ public class GatewayDbContext : DbContext
     public DbSet<ProvisioningJob> ProvisioningJobs => Set<ProvisioningJob>();
     public DbSet<ProvisioningJobStep> ProvisioningJobSteps => Set<ProvisioningJobStep>();
     public DbSet<AgentCredentialReference> AgentCredentialReferences => Set<AgentCredentialReference>();
+    public DbSet<AgentIngressCredential> AgentIngressCredentials => Set<AgentIngressCredential>();
     public DbSet<ActivityReceipt> ActivityReceipts => Set<ActivityReceipt>();
     public DbSet<AiInteractionRecord> AiInteractionRecords => Set<AiInteractionRecord>();
     public DbSet<PurviewDecision> PurviewDecisions => Set<PurviewDecision>();

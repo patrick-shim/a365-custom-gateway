@@ -16,14 +16,24 @@ internal sealed class ServiceBusPublisher : IServiceBusPublisher
 
     public async Task PublishAsync(string messageType, string payload, Guid correlationId, CancellationToken ct)
     {
-        var message = new ServiceBusMessage(payload)
-        {
-            Subject = messageType,
-            CorrelationId = correlationId.ToString(),
-            ContentType = "application/json"
-        };
+        var message = CreateMessage(messageType, payload, correlationId);
 
         await _sender.SendMessageAsync(message, ct);
         _logger.LogDebug("Published outbox message {CorrelationId} with type {MessageType}", correlationId, messageType);
+    }
+
+    internal static ServiceBusMessage CreateMessage(
+        string messageType,
+        string payload,
+        Guid outboxMessageId)
+    {
+        var stableId = outboxMessageId.ToString("D");
+        return new ServiceBusMessage(payload)
+        {
+            Subject = messageType,
+            MessageId = stableId,
+            CorrelationId = stableId,
+            ContentType = "application/json"
+        };
     }
 }

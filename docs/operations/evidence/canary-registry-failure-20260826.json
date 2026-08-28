@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-08-26T07:40:06.6871071Z",
+  "environment": "dev",
+  "canary": {
+    "agentRegistrationId": "b23cb073-912e-4efa-8a01-88a46b2af5fb",
+    "externalAgentId": "agent-f3e843a9784f4700a6cb860c80286d67",
+    "operationId": "8ece1c62-df73-4185-8f73-7b27db080414",
+    "serviceBusMessageId": "e45814eb-276e-4c06-94c0-437c95bba083",
+    "selectedBlueprintObjectId": "76d144d9-7b6c-4448-b43f-76c1ae12cde5",
+    "selectedBlueprintClientId": "76d144d9-7b6c-4448-b43f-76c1ae12cde5",
+    "selectedBlueprintDisplayName": "simple-echo-agent Blueprint"
+  },
+  "outcome": {
+    "agentStatus": "RequiresManualIntervention",
+    "operationStatus": "RequiresManualIntervention",
+    "failedStep": "RegisterAgent",
+    "errorCode": "PROVISIONING_AMBIGUOUS_RESULT",
+    "progressPercent": 71,
+    "microsoftResourcesCreated": true,
+    "createdAgentIdentityObjectId": "8e4859bd-477c-4133-adb1-9030ec13bf5c",
+    "createdAgentIdentityClientId": "8e4859bd-477c-4133-adb1-9030ec13bf5c",
+    "agent365ObservabilityRoleAssigned": true,
+    "agent365RegistrationOutcome": "Unknown",
+    "agent365RegistrationIdAvailable": false,
+    "gatewayCredentialRevoked": false
+  },
+  "rootCause": {
+    "summary": "The one Microsoft Graph beta Agent Registration create call returned HTTP 500 without a durable Registry ID. The endpoint and request properties still match current official Microsoft documentation, but Microsoft documents no list or sourceAgentId lookup that can safely reconcile an unknown create outcome.",
+    "category": "MicrosoftGraphAgentRegistrationServerError",
+    "workerRevision": "ca-gateway-worker-dev-vnet--canary-20260826161632",
+    "workerImageDigest": "sha256:c6e61076938c051305446b33688660f7b4b85d5dd466691e7d4800dce884a857",
+    "officialCreateReference": "https://learn.microsoft.com/microsoft-365/copilot/extensibility/api/admin-settings/agent-registration/agentregistration-create",
+    "officialResourceReference": "https://learn.microsoft.com/microsoft-365/copilot/extensibility/api/admin-settings/agent-registration/resources/agentregistration"
+  },
+  "evidence": {
+    "completedStages": [
+      "ResolveBlueprint",
+      "EnsureBlueprintPrincipal",
+      "ConfigureGatewayFederation",
+      "CreateAgentIdentity",
+      "AssignAgent365Access"
+    ],
+    "pendingStages": [
+      "VerifyAgent365Connection"
+    ],
+    "federatedIdentityCredentialPostCount": 0,
+    "existingFederatedIdentityCredentialReusedByGet": true,
+    "agentIdentityCreatePostCount": 1,
+    "agentIdentityCreateHttpStatus": 201,
+    "agentIdentityReadBackVerified": true,
+    "agent365RoleAssignmentPostCount": 1,
+    "agent365RoleAssignmentHttpStatus": 201,
+    "agent365RoleAssignmentReadBackVerified": true,
+    "agentRegistrationPostCount": 1,
+    "agentRegistrationPostHttpStatus": 500,
+    "agentRegistrationKnownIdGetCount": 0,
+    "workerLogFailureAction": "Dead-lettered the single workflow-v2 message with the persisted error code after the unknown Registry create outcome.",
+    "terminalMessageState": "DeadLettered",
+    "workflowV2QueueAfterFailClosed": {
+      "queueName": "gateway-provisioning-v2",
+      "active": 0,
+      "scheduled": 0,
+      "deadLetter": 3
+    },
+    "historicalQueueAfterFailClosed": {
+      "queueName": "gateway-provisioning",
+      "active": 0,
+      "scheduled": 0,
+      "deadLetter": 2
+    },
+    "failClosedApiRevision": "ca-gateway-api-dev--failclosed-20260826162921",
+    "inertWorkerRevision": "ca-gateway-worker-dev-vnet--inert-20260826162921",
+    "apiAdmissionClosed": true,
+    "workerProcessingEnabled": false,
+    "workerProvisioningExecutionEnabled": false,
+    "workerDirectRegistryPreviewEnabled": false,
+    "historicalQueueOrDeadLetterTouched": false,
+    "oneTimeGatewayApiKeyIncluded": false
+  },
+  "recoveryDecision": {
+    "registrationReplayAllowed": false,
+    "newRegistrationAllowedBeforeReconciliation": false,
+    "deadLetterDisposition": "Retain the identified workflow-v2 message without receiving, peeking, settling, replaying, or purging it.",
+    "requiredNextAction": "Reconcile the exact canary in the tenant Agent 365 inventory or with Microsoft support. If and only if a durable Registry ID is found and all properties match, implement and review a known-ID attachment path before completing stage 7. Do not issue another Registry create call for this registration."
+  }
+}

@@ -5,14 +5,19 @@ namespace Gateway.Observability;
 
 public sealed class RedactionProcessor : BaseProcessor<Activity>
 {
-    private static readonly HashSet<string> SensitiveAttributes = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly string[] SensitiveAttributeFragments =
     {
         "access_token",
         "authorization",
         "secret",
         "password",
-        "prompt.content",
-        "response.content"
+        "api_key",
+        "apikey",
+        "prompt",
+        "response.content",
+        "content_blob",
+        "contentblob",
+        "content.uri"
     };
 
     private const string RedactedValue = "[REDACTED]";
@@ -21,7 +26,8 @@ public sealed class RedactionProcessor : BaseProcessor<Activity>
     {
         foreach (var tag in data.TagObjects)
         {
-            if (SensitiveAttributes.Contains(tag.Key))
+            if (SensitiveAttributeFragments.Any(fragment =>
+                tag.Key.Contains(fragment, StringComparison.OrdinalIgnoreCase)))
             {
                 data.SetTag(tag.Key, RedactedValue);
             }

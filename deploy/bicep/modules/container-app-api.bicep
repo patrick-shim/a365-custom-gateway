@@ -45,7 +45,34 @@ param sqlDatabaseName string
 param serviceBusNamespace string
 
 @description('Name of the Service Bus queue for provisioning messages.')
-param serviceBusQueueName string = 'gateway-provisioning'
+param serviceBusQueueName string = 'gateway-provisioning-v3'
+
+@description('Expose whether new provisioning registrations may be accepted. Must match the worker execution gate.')
+param provisioningExecutionEnabled bool = false
+
+@description('Keep authenticated development registration available without an expiring exact binding. Must remain false outside development.')
+param continuousDevelopmentProvisioningEnabled bool = false
+
+@description('Optional explicit UTC ISO-8601 deadline for provisioning admission. The API fails closed when this is missing, malformed, non-UTC, or expired.')
+param provisioningAdmissionExpiresAtUtc string = ''
+
+@description('Exact external agent ID authorized during the bounded initial-registration window.')
+param provisioningAuthorizedExternalAgentId string = ''
+
+@description('Exact Gateway registration ID authorized for an administrative retry window. Keep empty unless exact-bound retry is intended.')
+param provisioningAuthorizedRetryAgentId string = ''
+
+@description('Enable the development-only delegated administrator Agent 365 Registry action. This remains independently fail-closed from registration admission.')
+param agent365DelegatedRegistryEnabled bool = false
+
+@description('Keep authenticated delegated Registry completion available in continuous development mode.')
+param agent365DelegatedRegistryContinuousDevelopmentAccess bool = false
+
+@description('Independent UTC expiry for the delegated Registry completion action.')
+param agent365DelegatedRegistryActionExpiresAtUtc string = ''
+
+@description('Exact provisioning operation ID authorized for delegated Registry completion.')
+param agent365DelegatedRegistryAuthorizedOperationId string = ''
 
 @description('URI of the Azure Key Vault.')
 param keyVaultUri string
@@ -68,8 +95,59 @@ param entraIdClientId string
 @description('Entra ID audience for token validation.')
 param entraIdAudience string
 
+@description('Microsoft first-party application IDs required for an existing blueprint to be compatible with Agent 365 through this deployment.')
+@maxLength(10)
+param agent365ManagerApplicationIds array = []
+
+@description('Enable the Microsoft Purview Graph adapter only after its tenant permissions, policy, licensing, and canary prerequisites are verified.')
+param purviewEnabled bool = false
+
+@secure()
+@description('Existing application-scoped Container Apps secrets to preserve unchanged during a full ARM PUT. Values must come directly from the resource provider listSecrets operation and must never be logged or output.')
+param preservedConfigurationSecrets object = {}
+
 @description('Tags to apply to the resource.')
 param tags object = {}
+
+var managerApplicationEnvironmentVariables = [for (managerApplicationId, index) in agent365ManagerApplicationIds: {
+  name: 'Agent365__ManagerApplicationIds__${index}'
+  value: string(managerApplicationId)
+}]
+
+var admissionExpiryEnvironmentVariables = empty(provisioningAdmissionExpiresAtUtc) ? [] : [
+  {
+    name: 'Provisioning__AdmissionExpiresAtUtc'
+    value: provisioningAdmissionExpiresAtUtc
+  }
+]
+
+var provisioningBindingEnvironmentVariables = concat(
+  empty(provisioningAuthorizedExternalAgentId) ? [] : [
+    {
+      name: 'Provisioning__AuthorizedExternalAgentId'
+      value: provisioningAuthorizedExternalAgentId
+    }
+  ],
+  empty(provisioningAuthorizedRetryAgentId) ? [] : [
+    {
+      name: 'Provisioning__AuthorizedRetryAgentId'
+      value: provisioningAuthorizedRetryAgentId
+    }
+  ])
+
+var delegatedRegistryActionEnvironmentVariables = concat(
+  empty(agent365DelegatedRegistryActionExpiresAtUtc) ? [] : [
+    {
+      name: 'Agent365__DelegatedRegistry__ActionExpiresAtUtc'
+      value: agent365DelegatedRegistryActionExpiresAtUtc
+    }
+  ],
+  empty(agent365DelegatedRegistryAuthorizedOperationId) ? [] : [
+    {
+      name: 'Agent365__DelegatedRegistry__AuthorizedOperationId'
+      value: agent365DelegatedRegistryAuthorizedOperationId
+    }
+  ])
 
 // ============================================================================
 // Resources
@@ -86,6 +164,16 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: environmentId
     configuration: {
       activeRevisionsMode: 'Single'
+      // Container Apps create-or-update owns this collection. Carry the
+      // write-only values through a secure nested-deployment parameter so an
+      // unrelated API revision cannot silently delete existing app secrets.
+      secrets: preservedConfigurationSecrets.?value ?? []
+      registries: [
+        {
+          server: acrLoginServer
+          identity: 'system'
+        }
+      ]
       ingress: {
         external: true
         targetPort: targetPort
@@ -102,18 +190,30 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json(cpu)
             memory: memory
           }
-          env: [
+          env: concat([
             {
               name: 'ConnectionStrings__GatewayDb'
               value: 'Server=tcp:${sqlServerFqdn},1433;Database=${sqlDatabaseName};Authentication=Active Directory Managed Identity;Encrypt=True;TrustServerCertificate=False;'
             }
             {
-              name: 'ServiceBus__ConnectionString'
+              name: 'ServiceBus__FullyQualifiedNamespace'
               value: serviceBusNamespace
             }
             {
               name: 'ServiceBus__QueueName'
               value: serviceBusQueueName
+            }
+            {
+              name: 'Provisioning__ExecutionEnabled'
+              value: string(provisioningExecutionEnabled)
+            }
+            {
+              name: 'Provisioning__RequireExactAdmissionBinding'
+              value: string(!continuousDevelopmentProvisioningEnabled)
+            }
+            {
+              name: 'Provisioning__AllowContinuousDevelopmentAccess'
+              value: string(continuousDevelopmentProvisioningEnabled)
             }
             {
               name: 'BlobStorage__ServiceUri'
@@ -140,6 +240,14 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: entraIdAudience
             }
             {
+              name: 'EntraId__ClientCredentials__0__SourceType'
+              value: 'SignedAssertionFromManagedIdentity'
+            }
+            {
+              name: 'EntraId__ClientCredentials__0__TokenExchangeUrl'
+              value: 'api://AzureADTokenExchange'
+            }
+            {
               name: 'KeyVault__VaultUri'
               value: keyVaultUri
             }
@@ -148,8 +256,28 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: entraIdTenantId
             }
             {
+              name: 'Agent365__DelegatedRegistry__Enabled'
+              value: string(agent365DelegatedRegistryEnabled)
+            }
+            {
+              name: 'Agent365__DelegatedRegistry__RequireExactActionBinding'
+              value: string(!agent365DelegatedRegistryContinuousDevelopmentAccess)
+            }
+            {
+              name: 'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess'
+              value: string(agent365DelegatedRegistryContinuousDevelopmentAccess)
+            }
+            {
+              name: 'Agent365__DelegatedRegistry__Scopes__0'
+              value: 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All'
+            }
+            {
+              name: 'Agent365__DelegatedRegistry__Scopes__1'
+              value: 'https://graph.microsoft.com/AgentRegistration.Read.All'
+            }
+            {
               name: 'Purview__Enabled'
-              value: 'true'
+              value: string(purviewEnabled)
             }
             {
               name: 'OutboxRelay__PollingIntervalSeconds'
@@ -163,12 +291,12 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'ASPNETCORE_ENVIRONMENT'
               value: 'Production'
             }
-          ]
+          ], managerApplicationEnvironmentVariables, admissionExpiryEnvironmentVariables, provisioningBindingEnvironmentVariables, delegatedRegistryActionEnvironmentVariables)
           probes: [
             {
               type: 'Liveness'
               httpGet: {
-                path: '/health/checks'
+                path: '/health'
                 port: targetPort
               }
               periodSeconds: 10
@@ -176,7 +304,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               type: 'Readiness'
               httpGet: {
-                path: '/health/checks'
+                path: '/health/ready'
                 port: targetPort
               }
               periodSeconds: 15
@@ -185,7 +313,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               type: 'Startup'
               httpGet: {
-                path: '/health/checks'
+                path: '/health'
                 port: targetPort
               }
               periodSeconds: 5
@@ -224,6 +352,9 @@ output appName string = containerApp.name
 
 @description('Principal ID of the system-assigned managed identity.')
 output principalId string = containerApp.identity.principalId
+
+@description('Effective delegated administrator Registry action gate.')
+output agent365DelegatedRegistryEnabled bool = agent365DelegatedRegistryEnabled
 
 @description('FQDN of the Container App ingress.')
 output fqdn string = containerApp.properties.configuration.ingress.fqdn

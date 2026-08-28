@@ -1,23 +1,72 @@
-﻿@inherits LayoutComponentBase
+@inherits LayoutComponentBase
 
-<div class="page">
-    <div class="sidebar">
+<a class="skip-link" href="#main-content">Skip to main content</a>
+
+<div class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
         <NavMenu />
-    </div>
+    </aside>
 
-    <main>
-        <div class="top-row px-4">
-            <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
-        </div>
+    <main class="main-column">
+        <header class="topbar">
+            <div class="topbar-context" aria-label="Gateway administration portal">
+                <span class="environment-dot" aria-hidden="true"></span>
+                <span>Gateway control plane</span>
+            </div>
+            <AuthorizeView>
+                <Authorized Context="auth">
+                    <div class="account-menu">
+                        <span class="account-avatar" aria-hidden="true">@GetInitials(auth.User)</span>
+                        <span class="account-copy">
+                            <strong>@GetDisplayName(auth.User)</strong>
+                            <small>@GetPrimaryRole(auth.User)</small>
+                        </span>
+                        <form action="/authentication/logout?returnUrl=/" method="post" class="sign-out-form">
+                            <AntiforgeryToken />
+                            <button class="sign-out-link" type="submit">Sign out</button>
+                        </form>
+                    </div>
+                </Authorized>
+            </AuthorizeView>
+        </header>
 
-        <article class="content px-4">
+        <article class="content" id="main-content" tabindex="-1">
             @Body
         </article>
     </main>
 </div>
 
+<FluentToastProvider />
+<FluentDialogProvider />
+<FluentTooltipProvider />
+<FluentMessageBarProvider />
+<FluentMenuProvider />
+
 <div id="blazor-error-ui" data-nosnippet>
-    An unhandled error has occurred.
+    The portal connection encountered an error.
     <a href="." class="reload">Reload</a>
-    <span class="dismiss">🗙</span>
+    <span class="dismiss">×</span>
 </div>
+
+@code {
+    private static readonly string[] PortalRoles =
+    [
+        "Gateway.Administrator",
+        "Gateway.Operator",
+        "Gateway.Auditor",
+        "Gateway.SupportReader"
+    ];
+
+    private static string GetDisplayName(ClaimsPrincipal user) =>
+        user.FindFirst("name")?.Value ?? user.Identity?.Name ?? "Signed-in user";
+
+    private static string GetPrimaryRole(ClaimsPrincipal user) =>
+        PortalRoles.FirstOrDefault(user.IsInRole)?.Replace("Gateway.", string.Empty) ?? "Authenticated";
+
+    private static string GetInitials(ClaimsPrincipal user)
+    {
+        var name = GetDisplayName(user);
+        var words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return string.Concat(words.Take(2).Select(word => char.ToUpperInvariant(word[0])));
+    }
+}

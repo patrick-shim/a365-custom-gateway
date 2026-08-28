@@ -1,0 +1,23 @@
+using System.Diagnostics.Metrics;
+
+namespace Gateway.Observability;
+
+public static class GatewayObservabilityMetrics
+{
+    public const string MeterName = "Gateway.Observability";
+
+    private static readonly Meter Meter = new(MeterName);
+    private static readonly Counter<long> EmittedEvents = Meter.CreateCounter<long>(
+        "gateway.observability.azure_monitor.emitted_events",
+        unit: "{event}",
+        description: "Sanitized activity and interaction events emitted to the Azure Monitor pipeline.");
+
+    internal static void RecordAzureMonitorEmission(string recordType, string operation)
+    {
+        EmittedEvents.Add(
+            1,
+            new KeyValuePair<string, object?>("gateway.record.type", recordType),
+            new KeyValuePair<string, object?>("gateway.operation", operation),
+            new KeyValuePair<string, object?>("gateway.export.result", "emitted"));
+    }
+}

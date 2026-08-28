@@ -18,22 +18,6 @@ internal sealed class GetSystemConfigHandler : IRequestHandler<GetSystemConfigQu
         var config = await _configRepository.GetAsync(cancellationToken)
             ?? throw new NotFoundException("SystemConfiguration", "singleton");
 
-        return new SystemConfigDto(
-            config.ProvisioningMode,
-            config.DefaultObservabilityMode,
-            config.DefaultPurviewEnabled,
-            config.DefaultPurviewMode,
-            config.RetentionDaysActivityReceipts,
-            config.RetentionDaysAuditEvents,
-            config.RetentionDaysIdempotencyRecords,
-            config.RetentionDaysOutboxMessages,
-            config.RateLimitPerClient,
-            config.RateLimitPerAgent,
-            config.RateLimitGlobal,
-            config.ReconciliationEnabled,
-            config.ReconciliationIntervalHours,
-            config.StuckTransitionTimeoutDays,
-            config.UseGraphAgentRegistration,
-            config.UseCliProvisioningFallback);
+        return SystemConfigMapper.ToDto(config);
     }
 }

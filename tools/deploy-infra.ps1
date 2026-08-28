@@ -80,7 +80,6 @@ $ErrorActionPreference = 'Stop'
 $RequiredEnvVars = @(
     'ENTRA_CLIENT_ID',
     'ENTRA_AUDIENCE',
-    'SQL_ADMIN_PASSWORD',
     'ENTRA_ADMIN_OBJECT_ID',
     'ENTRA_ADMIN_LOGIN',
     'ALERT_EMAIL'

@@ -12,13 +12,6 @@ param databaseName string = 'GatewayDb'
 @description('Azure region for the resource.')
 param location string
 
-@description('SQL administrator login name.')
-param administratorLogin string
-
-@description('SQL administrator login password.')
-@secure()
-param administratorLoginPassword string
-
 @description('Entra ID object ID for the AD administrator.')
 param entraAdminObjectId string
 

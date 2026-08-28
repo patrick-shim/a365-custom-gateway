@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
 using Gateway.Infrastructure.Outbox;
@@ -10,74 +11,205 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NSubstitute;
-using NSubstitute.ExceptionExtensions;
 
 namespace Gateway.IntegrationTests.Outbox;
 
 public class OutboxRelayServiceTests
 {
-    private static (OutboxRelayService service, IServiceBusPublisher publisher, string dbName) CreateTestServices(
-        int batchSize = 50,
-        int pollingIntervalSeconds = 1)
+    [Fact]
+    public void Options_Should_DefaultToEnabled_ForApiRelayCompatibility()
     {
-        var dbName = Guid.NewGuid().ToString();
-        var publisher = Substitute.For<IServiceBusPublisher>();
-
-        var services = new ServiceCollection();
-        services.AddDbContext<GatewayDbContext>(options =>
-            options.UseInMemoryDatabase(dbName));
-        services.AddScoped<IOutboxRepository, OutboxRepository>();
-        services.AddScoped<IUnitOfWork, UnitOfWork>();
-        services.AddScoped(_ => publisher);
-
-        var serviceProvider = services.BuildServiceProvider();
-        var scopeFactory = serviceProvider.GetRequiredService<IServiceScopeFactory>();
-
-        var options = Options.Create(new OutboxRelayOptions
-        {
-            BatchSize = batchSize,
-            PollingIntervalSeconds = pollingIntervalSeconds,
-        });
-
-        var logger = NullLogger<OutboxRelayService>.Instance;
-        var service = new OutboxRelayService(scopeFactory, options, logger);
-
-        return (service, publisher, dbName);
+        new OutboxRelayOptions().Enabled.Should().BeTrue();
     }
 
     [Fact]
-    public async Task ProcessBatch_Should_PublishPendingMessages_When_PendingMessagesExist()
+    public async Task DisabledRelay_Should_ExitWithoutResolvingDatabaseOrPublisherServices()
     {
-        // Arrange
-        var (service, publisher, dbName) = CreateTestServices();
+        var scopeFactory = Substitute.For<IServiceScopeFactory>();
+        var options = Options.Create(new OutboxRelayOptions { Enabled = false });
+        var service = new OutboxRelayService(
+            scopeFactory,
+            options,
+            NullLogger<OutboxRelayService>.Instance);
 
-        // Seed pending messages
-        await using (var context = TestDbContextFactory.Create(dbName))
-        {
-            var repo = new OutboxRepository(context);
-            await repo.AddAsync(TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Pending), CancellationToken.None);
-            await repo.AddAsync(TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Pending), CancellationToken.None);
-            await context.SaveChangesAsync();
-        }
+        await service.StartAsync(CancellationToken.None);
+        await service.StopAsync(CancellationToken.None);
 
-        // Act - invoke StartAsync with a short-lived cancellation to run one cycle
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        try
-        {
-            await service.StartAsync(CancellationToken.None);
-            await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected
-        }
-        finally
-        {
-            await service.StopAsync(CancellationToken.None);
-        }
+        scopeFactory.DidNotReceive().CreateScope();
+    }
 
-        // Assert
-        await publisher.Received(2).PublishAsync(
+    [Fact]
+    public async Task DisabledRelay_Should_NotProcessBatchWhenInvokedDirectly()
+    {
+        var scopeFactory = Substitute.For<IServiceScopeFactory>();
+        var options = Options.Create(new OutboxRelayOptions { Enabled = false });
+        var service = new OutboxRelayService(
+            scopeFactory,
+            options,
+            NullLogger<OutboxRelayService>.Instance);
+
+        await service.ProcessBatchAsync(CancellationToken.None);
+
+        scopeFactory.DidNotReceive().CreateScope();
+    }
+
+    [Fact]
+    public async Task ProcessBatch_Should_PublishAndMarkPendingMessages_When_PublishSucceeds()
+    {
+        await using var fixture = new RelayFixture();
+        var first = TestEntityFactory.CreateOutboxMessage();
+        var second = TestEntityFactory.CreateOutboxMessage();
+        await fixture.SeedAsync(first, second);
+
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
+
+        await fixture.Publisher.Received(2).PublishAsync(
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            Arg.Any<Guid>(),
+            Arg.Any<CancellationToken>());
+
+        var messages = await fixture.ReadAsync(first.Id, second.Id);
+        messages.Should().OnlyContain(message =>
+            message.Status == OutboxMessageStatus.Published &&
+            message.PublishedAtUtc != null &&
+            message.NextRetryAtUtc == null);
+    }
+
+    [Fact]
+    public async Task ProcessBatch_Should_RetryAfterBackoff_When_FirstPublishFails()
+    {
+        await using var fixture = new RelayFixture(initialRetryDelaySeconds: 2);
+        var message = TestEntityFactory.CreateOutboxMessage();
+        await fixture.SeedAsync(message);
+
+        var callCount = 0;
+        fixture.Publisher.PublishAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<Guid>(),
+                Arg.Any<CancellationToken>())
+            .Returns(_ => ++callCount == 1
+                ? Task.FromException(new InvalidOperationException("Service Bus unavailable"))
+                : Task.CompletedTask);
+
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
+
+        var afterFailure = (await fixture.ReadAsync(message.Id)).Single();
+        afterFailure.Status.Should().Be(OutboxMessageStatus.Pending);
+        afterFailure.RetryCount.Should().Be(1);
+        afterFailure.NextRetryAtUtc.Should().Be(fixture.UtcNow.AddSeconds(2));
+
+        fixture.Advance(TimeSpan.FromSeconds(1));
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
+        callCount.Should().Be(1, "the retry delay has not elapsed");
+
+        fixture.Advance(TimeSpan.FromSeconds(1));
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
+
+        callCount.Should().Be(2);
+        var published = (await fixture.ReadAsync(message.Id)).Single();
+        published.Status.Should().Be(OutboxMessageStatus.Published);
+        published.RetryCount.Should().Be(1);
+        published.NextRetryAtUtc.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ProcessBatch_Should_UseBoundedExponentialBackoff_ThenFailTerminally()
+    {
+        await using var fixture = new RelayFixture(
+            maxRetryCount: 3,
+            initialRetryDelaySeconds: 2,
+            maxRetryDelaySeconds: 3);
+        var message = TestEntityFactory.CreateOutboxMessage();
+        await fixture.SeedAsync(message);
+
+        fixture.Publisher.PublishAsync(
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<Guid>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromException(new InvalidOperationException("Service Bus unavailable")));
+
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
+        var firstFailure = (await fixture.ReadAsync(message.Id)).Single();
+        firstFailure.Status.Should().Be(OutboxMessageStatus.Pending);
+        firstFailure.NextRetryAtUtc.Should().Be(fixture.UtcNow.AddSeconds(2));
+
+        fixture.Advance(TimeSpan.FromSeconds(2));
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
+        var secondFailure = (await fixture.ReadAsync(message.Id)).Single();
+        secondFailure.Status.Should().Be(OutboxMessageStatus.Pending);
+        secondFailure.NextRetryAtUtc.Should().Be(fixture.UtcNow.AddSeconds(3));
+
+        fixture.Advance(TimeSpan.FromSeconds(3));
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
+        var terminal = (await fixture.ReadAsync(message.Id)).Single();
+        terminal.Status.Should().Be(OutboxMessageStatus.Failed);
+        terminal.RetryCount.Should().Be(3);
+        terminal.NextRetryAtUtc.Should().BeNull();
+
+        fixture.Advance(TimeSpan.FromHours(1));
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
+        await fixture.Publisher.Received(3).PublishAsync(
+            Arg.Any<string>(),
+            Arg.Any<string>(),
+            message.Id,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_Should_ReclaimExpiredProcessingMessage_AfterRelayCrash()
+    {
+        await using var fixture = new RelayFixture();
+        var message = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Processing);
+        message.NextRetryAtUtc = fixture.UtcNow.AddSeconds(-1);
+        await fixture.SeedAsync(message);
+
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
+
+        await fixture.Publisher.Received(1).PublishAsync(
+            message.MessageType,
+            message.Payload,
+            message.Id,
+            Arg.Any<CancellationToken>());
+        var persisted = (await fixture.ReadAsync(message.Id)).Single();
+        persisted.Status.Should().Be(OutboxMessageStatus.Published);
+    }
+
+    [Fact]
+    public async Task ProcessBatch_Should_NotPublishSamePendingRow_FromConcurrentRelayInstances()
+    {
+        await using var fixture = new RelayFixture();
+        var message = TestEntityFactory.CreateOutboxMessage();
+        await fixture.SeedAsync(message);
+
+        var secondRelay = fixture.CreateService();
+        await Task.WhenAll(
+            fixture.Service.ProcessBatchAsync(CancellationToken.None),
+            secondRelay.ProcessBatchAsync(CancellationToken.None));
+
+        await fixture.Publisher.Received(1).PublishAsync(
+            message.MessageType,
+            message.Payload,
+            message.Id,
+            Arg.Any<CancellationToken>());
+        var persisted = (await fixture.ReadAsync(message.Id)).Single();
+        persisted.Status.Should().Be(OutboxMessageStatus.Published);
+    }
+
+    [Fact]
+    public async Task ProcessBatch_Should_RespectBatchSize()
+    {
+        await using var fixture = new RelayFixture(batchSize: 2);
+        var messages = Enumerable.Range(0, 5)
+            .Select(_ => TestEntityFactory.CreateOutboxMessage())
+            .ToArray();
+        await fixture.SeedAsync(messages);
+
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
+
+        await fixture.Publisher.Received(2).PublishAsync(
             Arg.Any<string>(),
             Arg.Any<string>(),
             Arg.Any<Guid>(),
@@ -85,251 +217,133 @@ public class OutboxRelayServiceTests
     }
 
     [Fact]
-    public async Task ProcessBatch_Should_MarkMessagesAsPublished_When_PublishSucceeds()
+    public async Task ProcessBatch_Should_SkipPublishedAndFutureRetryMessages()
     {
-        // Arrange
-        var (service, publisher, dbName) = CreateTestServices();
+        await using var fixture = new RelayFixture();
+        var published = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Published);
+        published.PublishedAtUtc = fixture.UtcNow.AddMinutes(-1);
+        var futureRetry = TestEntityFactory.CreateOutboxMessage();
+        futureRetry.NextRetryAtUtc = fixture.UtcNow.AddMinutes(1);
+        await fixture.SeedAsync(published, futureRetry);
 
-        Guid messageId;
-        await using (var context = TestDbContextFactory.Create(dbName))
-        {
-            var msg = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Pending);
-            messageId = msg.Id;
-            var repo = new OutboxRepository(context);
-            await repo.AddAsync(msg, CancellationToken.None);
-            await context.SaveChangesAsync();
-        }
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
 
-        // Act
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        try
-        {
-            await service.StartAsync(CancellationToken.None);
-            await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected
-        }
-        finally
-        {
-            await service.StopAsync(CancellationToken.None);
-        }
-
-        // Assert
-        await using var verifyContext = TestDbContextFactory.Create(dbName);
-        var message = await verifyContext.OutboxMessages.FindAsync(messageId);
-        message.Should().NotBeNull();
-        message!.Status.Should().Be(OutboxMessageStatus.Published);
-        message.PublishedAtUtc.Should().NotBeNull();
-    }
-
-    [Fact]
-    public async Task ProcessBatch_Should_MarkMessageAsFailed_When_PublishThrows()
-    {
-        // Arrange
-        var (service, publisher, dbName) = CreateTestServices();
-
-        publisher.PublishAsync(
+        await fixture.Publisher.DidNotReceive().PublishAsync(
             Arg.Any<string>(),
             Arg.Any<string>(),
             Arg.Any<Guid>(),
-            Arg.Any<CancellationToken>())
-            .ThrowsAsync(new InvalidOperationException("Service Bus unavailable"));
-
-        Guid messageId;
-        await using (var context = TestDbContextFactory.Create(dbName))
-        {
-            var msg = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Pending);
-            messageId = msg.Id;
-            var repo = new OutboxRepository(context);
-            await repo.AddAsync(msg, CancellationToken.None);
-            await context.SaveChangesAsync();
-        }
-
-        // Act
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        try
-        {
-            await service.StartAsync(CancellationToken.None);
-            await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected
-        }
-        finally
-        {
-            await service.StopAsync(CancellationToken.None);
-        }
-
-        // Assert
-        await using var verifyContext = TestDbContextFactory.Create(dbName);
-        var message = await verifyContext.OutboxMessages.FindAsync(messageId);
-        message.Should().NotBeNull();
-        message!.Status.Should().Be(OutboxMessageStatus.Failed);
-        message.RetryCount.Should().BeGreaterThan(0);
+            Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task ProcessBatch_Should_RespectBatchSize_When_MoreMessagesThanBatchExist()
+    public async Task ProcessBatch_Should_PassExactTypePayloadAndOutboxId()
     {
-        // Arrange
-        var (service, publisher, dbName) = CreateTestServices(batchSize: 2);
+        await using var fixture = new RelayFixture();
+        var message = TestEntityFactory.CreateOutboxMessage();
+        await fixture.SeedAsync(message);
 
-        await using (var context = TestDbContextFactory.Create(dbName))
+        await fixture.Service.ProcessBatchAsync(CancellationToken.None);
+
+        await fixture.Publisher.Received(1).PublishAsync(
+            message.MessageType,
+            message.Payload,
+            message.Id,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void ServiceBusMessage_Should_UseStableOutboxId_ForMessageAndCorrelationIds()
+    {
+        var outboxId = Guid.NewGuid();
+
+        var message = ServiceBusPublisher.CreateMessage(
+            "ProvisioningRequested",
+            "{}",
+            outboxId);
+
+        message.MessageId.Should().Be(outboxId.ToString("D"));
+        message.CorrelationId.Should().Be(outboxId.ToString("D"));
+        message.Subject.Should().Be("ProvisioningRequested");
+        message.ContentType.Should().Be("application/json");
+    }
+
+    private sealed class RelayFixture : IAsyncDisposable
+    {
+        private readonly string _dbName = Guid.NewGuid().ToString();
+        private readonly ServiceProvider _serviceProvider;
+        private readonly OutboxRelayOptions _options;
+        private readonly ManualTimeProvider _timeProvider = new(
+            new DateTimeOffset(2026, 8, 24, 12, 0, 0, TimeSpan.Zero));
+
+        public RelayFixture(
+            int batchSize = 50,
+            int maxRetryCount = 5,
+            int initialRetryDelaySeconds = 5,
+            int maxRetryDelaySeconds = 300)
         {
-            var repo = new OutboxRepository(context);
-            for (int i = 0; i < 5; i++)
+            Publisher = Substitute.For<IServiceBusPublisher>();
+
+            var services = new ServiceCollection();
+            services.AddDbContext<GatewayDbContext>(options =>
+                options.UseInMemoryDatabase(_dbName));
+            services.AddScoped<IOutboxRepository, OutboxRepository>();
+            services.AddScoped<IUnitOfWork, UnitOfWork>();
+            services.AddScoped(_ => Publisher);
+            _serviceProvider = services.BuildServiceProvider();
+
+            _options = new OutboxRelayOptions
             {
-                await repo.AddAsync(
-                    TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Pending),
-                    CancellationToken.None);
-            }
+                BatchSize = batchSize,
+                PollingIntervalSeconds = 1,
+                MaxRetryCount = maxRetryCount,
+                InitialRetryDelaySeconds = initialRetryDelaySeconds,
+                MaxRetryDelaySeconds = maxRetryDelaySeconds,
+                ClaimLeaseSeconds = 120,
+            };
+
+            Service = CreateService();
+        }
+
+        public OutboxRelayService Service { get; }
+        public IServiceBusPublisher Publisher { get; }
+        public DateTime UtcNow => _timeProvider.GetUtcNow().UtcDateTime;
+
+        public OutboxRelayService CreateService()
+        {
+            return new OutboxRelayService(
+                _serviceProvider.GetRequiredService<IServiceScopeFactory>(),
+                Options.Create(_options),
+                NullLogger<OutboxRelayService>.Instance,
+                _timeProvider);
+        }
+
+        public void Advance(TimeSpan amount) => _timeProvider.Advance(amount);
+
+        public async Task SeedAsync(params OutboxMessage[] messages)
+        {
+            await using var context = TestDbContextFactory.Create(_dbName);
+            await context.OutboxMessages.AddRangeAsync(messages);
             await context.SaveChangesAsync();
         }
 
-        // Act - run one cycle
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        try
+        public async Task<List<OutboxMessage>> ReadAsync(params Guid[] ids)
         {
-            await service.StartAsync(CancellationToken.None);
-            // Wait just enough for one processing cycle
-            await Task.Delay(TimeSpan.FromMilliseconds(500), cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected
-        }
-        finally
-        {
-            await service.StopAsync(CancellationToken.None);
+            await using var context = TestDbContextFactory.Create(_dbName);
+            return await context.OutboxMessages
+                .Where(message => ids.Contains(message.Id))
+                .OrderBy(message => message.CreatedAtUtc)
+                .ToListAsync();
         }
 
-        // Assert - only batchSize (2) messages should have been published in first cycle
-        await publisher.Received(2).PublishAsync(
-            Arg.Any<string>(),
-            Arg.Any<string>(),
-            Arg.Any<Guid>(),
-            Arg.Any<CancellationToken>());
+        public ValueTask DisposeAsync() => _serviceProvider.DisposeAsync();
     }
 
-    [Fact]
-    public async Task ProcessBatch_Should_SkipAlreadySentMessages_When_PublishedMessagesExist()
+    private sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {
-        // Arrange
-        var (service, publisher, dbName) = CreateTestServices();
+        private DateTimeOffset _utcNow = utcNow;
 
-        await using (var context = TestDbContextFactory.Create(dbName))
-        {
-            var repo = new OutboxRepository(context);
+        public override DateTimeOffset GetUtcNow() => _utcNow;
 
-            // Add one published and one pending
-            var published = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Published);
-            published.PublishedAtUtc = DateTime.UtcNow.AddMinutes(-5);
-            var pending = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Pending);
-
-            await repo.AddAsync(published, CancellationToken.None);
-            await repo.AddAsync(pending, CancellationToken.None);
-            await context.SaveChangesAsync();
-        }
-
-        // Act
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        try
-        {
-            await service.StartAsync(CancellationToken.None);
-            await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected
-        }
-        finally
-        {
-            await service.StopAsync(CancellationToken.None);
-        }
-
-        // Assert - only the pending message should be published (not the already-published one)
-        await publisher.Received(1).PublishAsync(
-            Arg.Any<string>(),
-            Arg.Any<string>(),
-            Arg.Any<Guid>(),
-            Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task ProcessBatch_Should_DoNothing_When_NoPendingMessages()
-    {
-        // Arrange
-        var (service, publisher, dbName) = CreateTestServices();
-
-        // No messages seeded
-
-        // Act
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        try
-        {
-            await service.StartAsync(CancellationToken.None);
-            await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected
-        }
-        finally
-        {
-            await service.StopAsync(CancellationToken.None);
-        }
-
-        // Assert
-        await publisher.DidNotReceive().PublishAsync(
-            Arg.Any<string>(),
-            Arg.Any<string>(),
-            Arg.Any<Guid>(),
-            Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task ProcessBatch_Should_PassCorrectPayload_When_PublishingMessage()
-    {
-        // Arrange
-        var (service, publisher, dbName) = CreateTestServices();
-
-        Guid messageId;
-        const string expectedPayload = """{"agentId":"test-agent-001","operation":"provision"}""";
-        const string expectedMessageType = "ProvisioningRequested";
-
-        await using (var context = TestDbContextFactory.Create(dbName))
-        {
-            var msg = TestEntityFactory.CreateOutboxMessage(OutboxMessageStatus.Pending);
-            messageId = msg.Id;
-            var repo = new OutboxRepository(context);
-            await repo.AddAsync(msg, CancellationToken.None);
-            await context.SaveChangesAsync();
-        }
-
-        // Act
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        try
-        {
-            await service.StartAsync(CancellationToken.None);
-            await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected
-        }
-        finally
-        {
-            await service.StopAsync(CancellationToken.None);
-        }
-
-        // Assert
-        await publisher.Received(1).PublishAsync(
-            expectedMessageType,
-            expectedPayload,
-            messageId,
-            Arg.Any<CancellationToken>());
+        public void Advance(TimeSpan amount) => _utcNow = _utcNow.Add(amount);
     }
 }

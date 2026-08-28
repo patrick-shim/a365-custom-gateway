@@ -12,4 +12,10 @@ public record OperationStatusDto(
     DateTime StartedAtUtc,
     DateTime? CompletedAtUtc,
     OperationErrorDto? Error,
-    List<OperationStepDto>? Steps);
+    List<OperationStepDto>? Steps,
+    int WorkflowVersion = 1,
+    bool Legacy = true,
+    bool ReplaySupported = false,
+    bool PollingRecommended = false,
+    string? RequiredAction = null,
+    bool Agent365RegistrationCompletionAvailable = false);

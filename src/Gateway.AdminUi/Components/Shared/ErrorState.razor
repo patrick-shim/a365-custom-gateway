@@ -1,0 +1,24 @@
+<div class="error-panel" role="alert">
+    <span class="error-symbol" aria-hidden="true">!</span>
+    <div>
+        <h2>@Title</h2>
+        <p>@Message</p>
+        @if (!string.IsNullOrWhiteSpace(CorrelationId))
+        {
+            <small>Correlation ID: <code>@CorrelationId</code></small>
+        }
+        @if (OnRetry.HasDelegate)
+        {
+            <div class="error-actions">
+                <FluentButton Appearance="Appearance.Neutral" OnClick="OnRetry">Try again</FluentButton>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Title { get; set; } = "We couldn't complete that request";
+    [Parameter, EditorRequired] public string Message { get; set; } = string.Empty;
+    [Parameter] public string? CorrelationId { get; set; }
+    [Parameter] public EventCallback OnRetry { get; set; }
+}

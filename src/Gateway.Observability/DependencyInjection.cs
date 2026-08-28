@@ -1,6 +1,7 @@
 using Azure.Monitor.OpenTelemetry.Exporter;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
@@ -18,25 +19,41 @@ public static class DependencyInjection
         services.Configure<ObservabilityOptions>(
             configuration.GetSection(ObservabilityOptions.SectionName));
 
-        services.AddOpenTelemetry()
-            .WithTracing(builder =>
-            {
-                builder
-                    .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(GatewayActivitySource.Name))
-                    .AddSource(GatewayActivitySource.Name)
-                    .AddAspNetCoreInstrumentation()
-                    .AddHttpClientInstrumentation()
-                    .AddEntityFrameworkCoreInstrumentation()
-                    .AddProcessor<RedactionProcessor>();
+        var openTelemetry = services.AddOpenTelemetry();
 
-                if (!string.IsNullOrWhiteSpace(options.ApplicationInsightsConnectionString))
+        openTelemetry.WithTracing(builder =>
+        {
+            builder
+                .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(GatewayActivitySource.Name))
+                .AddSource(GatewayActivitySource.Name)
+                .AddAspNetCoreInstrumentation()
+                .AddHttpClientInstrumentation()
+                .AddEntityFrameworkCoreInstrumentation()
+                .AddProcessor<RedactionProcessor>();
+
+            if (!string.IsNullOrWhiteSpace(options.ApplicationInsightsConnectionString))
+            {
+                builder.AddAzureMonitorTraceExporter(exporterOptions =>
                 {
-                    builder.AddAzureMonitorTraceExporter(exporterOptions =>
-                    {
-                        exporterOptions.ConnectionString = options.ApplicationInsightsConnectionString;
-                    });
-                }
-            });
+                    exporterOptions.ConnectionString = options.ApplicationInsightsConnectionString;
+                });
+            }
+        });
+
+        openTelemetry.WithMetrics(builder =>
+        {
+            builder
+                .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(GatewayActivitySource.Name))
+                .AddMeter(GatewayObservabilityMetrics.MeterName);
+
+            if (!string.IsNullOrWhiteSpace(options.ApplicationInsightsConnectionString))
+            {
+                builder.AddAzureMonitorMetricExporter(exporterOptions =>
+                {
+                    exporterOptions.ConnectionString = options.ApplicationInsightsConnectionString;
+                });
+            }
+        });
 
         return services;
     }

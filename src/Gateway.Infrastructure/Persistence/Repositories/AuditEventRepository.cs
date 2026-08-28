@@ -15,6 +15,11 @@ internal sealed class AuditEventRepository : IAuditEventRepository
         _dbContext = dbContext;
     }
 
+    public Task<bool> ExistsAsync(Guid auditEventId, CancellationToken ct)
+    {
+        return _dbContext.AuditEvents.AnyAsync(auditEvent => auditEvent.Id == auditEventId, ct);
+    }
+
     public async Task AddAsync(AuditEvent auditEvent, CancellationToken ct)
     {
         await _dbContext.AuditEvents.AddAsync(auditEvent, ct);

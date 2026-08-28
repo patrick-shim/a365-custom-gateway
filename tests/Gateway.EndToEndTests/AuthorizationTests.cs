@@ -1,6 +1,8 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Gateway.Contracts;
 using Gateway.Contracts.Requests;
 using Gateway.Contracts.Responses;
 using Gateway.EndToEndTests.Fixtures;
@@ -43,7 +45,8 @@ public class AuthorizationTests : IDisposable
             Description: null,
             OwnerObjectId: "owner-oid-001",
             Environment: "Development",
-            Features: null);
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
 
         // Act
         var response = await _client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);
@@ -64,7 +67,8 @@ public class AuthorizationTests : IDisposable
             Description: null,
             OwnerObjectId: "owner-oid-001",
             Environment: "Development",
-            Features: null);
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
 
         // Act
         var response = await _client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);
@@ -85,7 +89,8 @@ public class AuthorizationTests : IDisposable
             Description: null,
             OwnerObjectId: "owner-oid-001",
             Environment: "Development",
-            Features: null);
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
 
         // Act
         var response = await _client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);
@@ -175,7 +180,8 @@ public class AuthorizationTests : IDisposable
             Description: null,
             OwnerObjectId: "owner-oid-001",
             Environment: "Development",
-            Features: null);
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
 
         var registerResponse = await _client.PostAsJsonAsync("/api/v1/agents", registerRequest, JsonOptions);
         var registered = await registerResponse.Content.ReadFromJsonAsync<RegisterAgentResponse>(JsonOptions);
@@ -203,7 +209,8 @@ public class AuthorizationTests : IDisposable
             Description: null,
             OwnerObjectId: "owner-oid-001",
             Environment: "Development",
-            Features: null);
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
 
         // Act
         var response = await _client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);
@@ -213,7 +220,7 @@ public class AuthorizationTests : IDisposable
     }
 
     [Fact]
-    public async Task SubmitActivity_Should_Return403_When_RoleIsAdministrator()
+    public async Task SubmitActivity_Should_Return401_When_ControlPlaneTokenIsUsed()
     {
         // Arrange - Admin should not access data-plane endpoints (ExternalAgentOnly)
         HttpClientExtensions.SetRole("Gateway.Administrator");
@@ -236,7 +243,67 @@ public class AuthorizationTests : IDisposable
         var response = await _client.SendAsync(httpRequest);
 
         // Assert
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task AgentRuntimeReadiness_Should_Return204_When_GatewayCredentialIsValid()
+    {
+        var apiKey = await RegisterAndGetGatewayCredentialAsync(
+            $"runtime-readiness-{Guid.NewGuid():N}");
+        _client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", apiKey);
+
+        var response = await _client.GetAsync("/api/v1/agent-runtime/readiness");
+
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
+    public async Task AgentRuntimeReadiness_Should_Return401_When_ControlPlaneTokenIsUsed()
+    {
+        HttpClientExtensions.SetRole("Gateway.Administrator");
+
+        var response = await _client.GetAsync("/api/v1/agent-runtime/readiness");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task AgentRuntimeReadiness_Should_Return401_When_Unauthenticated()
+    {
+        HttpClientExtensions.SetUnauthenticated();
+
+        var response = await _client.GetAsync("/api/v1/agent-runtime/readiness");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task AgentRuntimeReadiness_Should_Return401_When_GatewayCredentialIsInvalid()
+    {
+        const string correlationId = "invalid-gateway-key-correlation";
+        _client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue(
+                "Bearer",
+                "a365gw_v1_00000000000000000000000000000000.invalid");
+        _client.DefaultRequestHeaders.Add("X-Correlation-Id", correlationId);
+
+        var response = await _client.GetAsync("/api/v1/agent-runtime/readiness");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        response.Content.Headers.ContentType!.MediaType.Should().Be("application/problem+json");
+        response.Headers.WwwAuthenticate.Should().ContainSingle();
+
+        var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = problem.RootElement;
+        root.GetProperty("status").GetInt32().Should().Be(401);
+        root.GetProperty("errorCode").GetString().Should()
+            .Be(ErrorCodes.AUTHENTICATION_REQUIRED);
+        root.GetProperty("correlationId").GetString().Should().Be(correlationId);
+        root.GetProperty("instance").GetString().Should()
+            .Be("/api/v1/agent-runtime/readiness");
+        root.GetRawText().Should().NotContain("00000000000000000000000000000000");
     }
 
     [Fact]
@@ -250,5 +317,32 @@ public class AuthorizationTests : IDisposable
 
         // Assert
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    private async Task<string> RegisterAndGetGatewayCredentialAsync(
+        string externalAgentId)
+    {
+        HttpClientExtensions.SetRole("Gateway.Administrator");
+
+        var request = new RegisterAgentRequest(
+            ExternalAgentId: externalAgentId,
+            Name: "Runtime readiness agent",
+            Description: null,
+            OwnerObjectId: "owner-oid-001",
+            Environment: "Development",
+            Features: null,
+            Blueprint: TestRequestData.ValidBlueprint);
+
+        var response = await _client.PostAsJsonAsync(
+            "/api/v1/agents",
+            request,
+            JsonOptions);
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        var registered = await response.Content
+            .ReadFromJsonAsync<RegisterAgentResponse>(JsonOptions);
+
+        registered!.GatewayCredential.Should().NotBeNull();
+        return registered.GatewayCredential!.ApiKey;
     }
 }
