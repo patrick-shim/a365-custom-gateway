@@ -20,7 +20,7 @@ or mutated by that bootstrap work.
 ## 2026-08-30 clean-subscription live bootstrap and recovery checkpoint
 
 The corrected Phase 6 candidate is frozen on branch `codex/phase6-candidate` at
-source commit `715bbf93dcefa95266f1ce7616f8d39ca137fa10`. The exact-account boundary now
+source commit `16138105ecf9a05deed2c275b39e4f850a10f924`. The exact-account boundary now
 acquires Microsoft Graph access through `az account get-access-token` with the
 reviewed subscription, verifies returned subscription/tenant/type/lifetime
 metadata, and sends only bounded Graph v1.0 requests through an in-process,
@@ -29,14 +29,70 @@ no-redirect client. Supported post-authentication code rejects native `az ad` an
 the accepted-source file or a byte-identical source-bound copy.
 
 The final local candidate gate is zero-warning/zero-error Release build and
-**1,279/1,279** direct Release tests with the unchanged project split below.
-Pester discovered **267** tests: **266** passed, none failed, and one Windows-only
-launcher test was skipped on macOS. The canonical source gate parsed **16**
-PowerShell files and **2** JSON contracts and compiled all **23** Bicep templates;
-`dotnet format --verify-no-changes` and `git diff --check` are clean. Focused
-bootstrap regressions pass **103/103** and architecture passes **113/113**.
-Independent settled-diff correctness/security review found no actionable issue.
-These are local-source results, not live deployment proof.
+**1,280/1,280** direct Release tests: unit 478, Admin UI 155, local Setup 75,
+observability/runtime 149, integration 92, end-to-end 106, architecture 114, and
+security 111. Pester discovered **338** tests: **337** passed, none failed, and one
+Windows-only launcher test was skipped on macOS. The canonical source gate parsed
+**17** PowerShell files and **2** JSON contracts and compiled all **25** Bicep
+templates plus **5** parameter files; `dotnet format --verify-no-changes` and
+`git diff --check` are clean. Focused terminal-deployment recovery passes **70/70**
+and existing-deployment image-pull compatibility passes **23/23**. Independent
+settled-diff correctness/security reviews found no blocking issue. These are local-
+source results, not live deployment proof.
+
+The most recent live generation is frozen `a365gw7-dev` in resource group
+`rg-a365-custom-gw-phase6f`, ownership
+`9593d817-e3ea-4643-ae49-e15dbfaaede6`, and ACR
+`acra365gw7devv47vkw`, exclusively in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Accepted Plan
+`sha256:0b1abe3e43efb282bd38070106aa8f8dae53dc2234e8f2b45b7d440e08c115aa`
+bound configuration
+`sha256:233278aa4965c14ffa7b5615df06edee7d0a9a65716c1877cf8ed29166fc6f79`
+and source
+`sha256:be92f53543729e6a467500db73dc4165c0f22e62762c05b758ad5edf992958ab`;
+What-If reported exactly six Creates and zero Deletes. Apply reached **6/19** and
+produced exactly three succeeded immutable `QuickRun`s: API `de1`
+`sha256:c6c5ad170b1de22460f2407d75aea1bd66f9c7502c009ac6b163b1cb92345752`,
+worker `de2`
+`sha256:9db329085a8c3be1bc85d684be9cf183742ce41a45e6d9970bf1ab07f858550a`,
+and Admin UI `de3`
+`sha256:197ecf9594670c819c39a6b1b8f60914aeda713e405ed69819af0bf225aee34e`.
+Gateway API application object/client/service-principal IDs are respectively
+`2d33d7eb-8a70-4ace-a79f-567cbbb3f6b2`,
+`722bb149-4e34-4d61-bd05-6778af55f7ca`, and
+`26e140fc-ae19-4fb1-889c-857128d01b28`.
+
+Inert deployment `a365gw-a365gw7-bootstrap-inert-dev` reached terminal `Failed`
+at `2026-08-29T19:32:39.849702+00:00`. All dependency nested modules succeeded;
+`deploy-worker-app` failed at the private-ACR first-pull boundary. The API app is
+absent. Partial worker `ca-gateway-worker-dev-v3` is failed with no revision and
+system-assigned principal `57fbc79c-fcc9-44a3-9395-c82efd1a3d7f`. The circular
+ordering was exact: the system identity needed an `AcrPull` role that could be
+assigned only after the app existed, while the app's first revision needed to pull
+the image before becoming provisioned. No provider body was emitted or persisted;
+safe diagnostics are
+`.bootstrap/diagnostics/a365gw7-dev-20260829-193316.json`.
+
+No runtime activation, database initialization, Agent 365 blueprint, workflow
+identity, Admin UI, registration, canary, Gateway-key, Registry, or Purview action
+completed. Preserve all `a365gw7` state, snapshots, shared foundation, Entra app,
+three images, terminal deployment, and partial worker identity. It must not Resume
+with changed source. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and its
+queues/messages were not accessed.
+
+Commit `16138105ecf9a05deed2c275b39e4f850a10f924` creates and grants one exact
+source/owner-bound pull UAMI before workloads, enables ACR managed-identity ARM-
+audience authentication, and makes API/worker registry pull use that identity
+while retaining system identities for runtime authority. It also permits only an
+exact terminal `Failed`/`Canceled` same-name Incremental recovery after durable
+checkpointing and exact source/owner/parameter/partial-app validation. Nonterminal,
+unknown, or drifted state fails closed. Existing-deployment compatibility requires
+an exact explicitly authorized historical contract or an already-migrated exact
+dedicated-identity contract; it performs no migration, role deletion, or cleanup.
+The next live action is fresh isolated project `a365gw8` in absent resource group
+`rg-a365-custom-gw-phase6g`, only in the target subscription above. `a365gw7` is
+frozen evidence, not a Resume candidate.
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local

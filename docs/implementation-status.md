@@ -323,7 +323,7 @@ reported as completion of the plan. The authoritative phase status is:
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved one deliberate interruption/Resume boundary. `a365gw6` reached 6/19, produced exactly one succeeded immutable build per component, and proved exact no-resubmit recovery. It also proved that Azure CLI emits no result object for `acr build --no-wait`, then exposed the inert call's empty worker-principal/manager-set PowerShell binding defects before ARM deployment. A completed corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved one deliberate interruption/Resume boundary. `a365gw6` proved exact no-resubmit image recovery; `a365gw7` reached 6/19 with three immutable images, then exposed the private-ACR first-pull/system-identity ordering defect in the inert deployment. Terminal deployment recovery and a preauthorized dedicated pull identity are now locally verified at commit `16138105ecf9a05deed2c275b39e4f850a10f924`. A completed corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
@@ -380,13 +380,16 @@ runbooks, and paired Claude/Codex deployment instructions all reference the new
 locations. This was a source-only relocation; no Azure or database state changed.
 
 The corrected 2026-08-30 Phase 6 candidate gate passes at source commit
-`715bbf93dcefa95266f1ce7616f8d39ca137fa10`. The Release solution build has zero
-warnings and zero errors. Direct Release tests are **1,279/1,279**: unit 478,
+`16138105ecf9a05deed2c275b39e4f850a10f924`. The Release solution build has zero
+warnings and zero errors. Direct Release tests are **1,280/1,280**: unit 478,
 Admin UI 155, local Setup 75, observability/runtime 149, integration 92,
-end-to-end 106, architecture 113, and security 111. Pester discovered **267** tests:
-**266** passed, none failed, and one Windows-only launcher test was skipped on macOS.
-The canonical bootstrap source gate parsed **16** PowerShell files and **2** JSON
-contracts and compiled all **23** Bicep templates. `dotnet format
+end-to-end 106, architecture 114, and security 111. Pester discovered **338** tests:
+**337** passed, none failed, and one Windows-only launcher test was skipped on macOS.
+The canonical bootstrap source gate parsed **17** PowerShell files and **2** JSON
+contracts and compiled all **25** Bicep templates plus **5** parameter files. Focused
+terminal-deployment recovery passes **70/70**, existing-deployment image-pull
+compatibility passes **23/23**, and independent settled-diff reviews found no
+blocking issue. `dotnet format
 --verify-no-changes` and `git diff --check` pass. The repository has **55**
 Markdown files and **58** repository-local links with no broken target.
 
@@ -593,6 +596,68 @@ a new isolated `a365gw7` generation in absent resource group
 `rg-a365-custom-gw-phase6f` in target subscription
 `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`; `a365gw6` remains frozen evidence and the
 protected running subscription remains outside the proof.
+
+Fresh generation `a365gw7-dev` used resource group
+`rg-a365-custom-gw-phase6f`, deployment ownership
+`9593d817-e3ea-4643-ae49-e15dbfaaede6`, and ACR
+`acra365gw7devv47vkw`, exclusively in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Its accepted Plan
+`sha256:0b1abe3e43efb282bd38070106aa8f8dae53dc2234e8f2b45b7d440e08c115aa`
+bound configuration
+`sha256:233278aa4965c14ffa7b5615df06edee7d0a9a65716c1877cf8ed29166fc6f79`
+and source
+`sha256:be92f53543729e6a467500db73dc4165c0f22e62762c05b758ad5edf992958ab`;
+authenticated What-If reported exactly six Create actions and zero Delete actions.
+The Gateway API application object/client/service-principal IDs are respectively
+`2d33d7eb-8a70-4ace-a79f-567cbbb3f6b2`,
+`722bb149-4e34-4d61-bd05-6778af55f7ca`, and
+`26e140fc-ae19-4fb1-889c-857128d01b28`.
+
+Apply reached **6/19** with exactly three succeeded immutable `QuickRun`s: API
+`de1` at digest
+`sha256:c6c5ad170b1de22460f2407d75aea1bd66f9c7502c009ac6b163b1cb92345752`,
+worker `de2` at
+`sha256:9db329085a8c3be1bc85d684be9cf183742ce41a45e6d9970bf1ab07f858550a`,
+and Admin UI `de3` at
+`sha256:197ecf9594670c819c39a6b1b8f60914aeda713e405ed69819af0bf225aee34e`.
+Inert deployment `a365gw-a365gw7-bootstrap-inert-dev` reached terminal `Failed`
+at `2026-08-29T19:32:39.849702+00:00`. Dependency modules created the reviewed
+foundation resources, but `deploy-worker-app` failed. The API app remains absent;
+the partial worker app `ca-gateway-worker-dev-v3` is failed with no revision and
+system-assigned principal `57fbc79c-fcc9-44a3-9395-c82efd1a3d7f`. Bounded
+operation readback isolated the defect to the first private-ACR pull: the workload
+system identity could not receive `AcrPull` until after the app existed, while the
+app could not provision its first revision without pulling the image. No provider
+body was emitted or persisted. Safe diagnostics are preserved at
+`.bootstrap/diagnostics/a365gw7-dev-20260829-193316.json`.
+
+No runtime activation, SQL initialization, Agent 365 blueprint, workflow identity,
+Admin UI, registration, canary, Gateway-key issuance/revocation, Registry, or
+Purview action completed. Preserve the `a365gw7` state, accepted snapshot, Entra
+application, three image digests, shared foundation, terminal deployment, and
+partial worker identity. Never Resume it with changed source, and do not treat its
+failed worker as a new workflow input. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated; its
+queues/messages were not accessed.
+
+Commit `16138105ecf9a05deed2c275b39e4f850a10f924` corrects this boundary without
+changing live state. Clean bootstrap now creates one source/owner-bound user-
+assigned pull identity, grants only the deterministic ACR-scoped `AcrPull` role,
+and enables ACR managed-identity ARM-audience authentication before either
+workload app. API and worker retain their system identities for runtime authority
+but use the dedicated identity for registry pull. Terminal `Failed` or `Canceled`
+same-name Incremental deployments can be retried only after exact source, owner,
+mode, parameter, partial-app, and durable-checkpoint validation; nonterminal,
+unknown, or drifted state fails closed. Existing-deployment tooling requires either
+an explicitly authorized exact historical system-identity contract or an already-
+migrated exact dedicated-identity contract; it performs no identity migration,
+role deletion, or cleanup.
+
+The corrected source passes the complete gate recorded above. The next live action
+is a new isolated `a365gw8` generation in absent resource group
+`rg-a365-custom-gw-phase6g`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. `a365gw7` is frozen evidence, not a Resume
+candidate.
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
@@ -934,11 +999,15 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    [`../bootstrap/README.md`](../bootstrap/README.md), run `Plan`, then use the
    resumable `Apply`. Preserve the exact checkout/source fingerprint and accepted
    snapshot for Resume; never mix durable state across source generations. Do not
-   substitute the old partial `tools/bootstrap.ps1`. Preserve `a365gw6` at 6/19;
-   it live-proves exact image-build recovery but cannot consume edited source. The
-   next clean-subscription action is a new isolated generation after the ACR
-   no-result scheduling/discovery and inert empty identity-input fixes pass the
-   complete local gate. Until one disposable run completes Apply/Verify,
+   substitute the old partial `tools/bootstrap.ps1`. Preserve `a365gw6` and
+   `a365gw7` at 6/19. The former live-proves exact image-build recovery; the latter
+   preserves the terminal inert-deployment/private-ACR first-pull failure and its
+   partial worker identity. Neither may consume edited source. The next clean-
+   subscription action is a new isolated `a365gw8` generation from commit
+   `16138105ecf9a05deed2c275b39e4f850a10f924`, in absent resource group
+   `rg-a365-custom-gw-phase6g`, only in target subscription
+   `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
+   Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof
    from a completed bootstrap. If a completed resource group was
    deleted, preserve state and use a separately reviewed disaster-recovery decision;
