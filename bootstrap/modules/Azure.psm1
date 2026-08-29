@@ -995,7 +995,7 @@ function Build-GatewayImages {
                     # `az acr build --no-wait` returns the sparse schedule-run
                     # receipt. Persist its canonical ID before requiring the
                     # full QuickRun contract through exact show-run readback.
-                    $submissionReceipt = Invoke-AzJson -Arguments @(
+                    $submissionReceipt = Invoke-AzJson -CaptureStdoutOnly -Arguments @(
                         'acr', 'build', '--registry', $registry, '--image', $imageTag,
                         '--file', [string]$entry.Value.dockerfile,
                         $buildContext, '--no-wait',

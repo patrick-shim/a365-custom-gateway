@@ -650,6 +650,50 @@ Describe 'External command redaction' {
         }
     }
 
+    It 'captures successful native stdout JSON without stderr contamination' {
+        $pwsh = (Get-Process -Id $PID).Path
+
+        $result = & {
+            Invoke-BootstrapCommand -FilePath $pwsh -CaptureStdoutOnly -ArgumentList @(
+                '-NoLogo',
+                '-NoProfile',
+                '-Command',
+                '[Console]::Out.Write(''{"runId":"de1"}''); [Console]::Error.Write("Queued a build with ID: private-stderr-marker"); exit 0'
+            )
+        } *>&1
+
+        $captured = @($result)
+        $captured.Count | Should -Be 1
+        [string]$captured[0] | Should -BeExactly '{"runId":"de1"}'
+        ([string]$captured[0] | ConvertFrom-Json -ErrorAction Stop).runId | Should -BeExactly 'de1'
+        ($result | Out-String) | Should -Not -Match 'private-stderr-marker'
+    }
+
+    It 'keeps stdout-only native failures fixed when the caller enables native error promotion' {
+        $pwsh = (Get-Process -Id $PID).Path
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        try {
+            $PSNativeCommandUseErrorActionPreference = $true
+            try {
+                Invoke-BootstrapCommand -FilePath $pwsh -CaptureStdoutOnly -ArgumentList @(
+                    '-NoLogo',
+                    '-NoProfile',
+                    '-Command',
+                    '[Console]::Out.Write("private-stdout-marker"); [Console]::Error.Write("private-stderr-marker"); exit 11'
+                )
+                throw 'Expected the command to fail.'
+            }
+            catch {
+                $_.Exception.Message | Should -BeLike '*failed with exit code 11*'
+                $_.Exception.Message | Should -Not -Match 'private-(stdout|stderr)-marker'
+                $_.Exception.GetType().Name | Should -Not -BeExactly 'NativeCommandExitException'
+            }
+        }
+        finally {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
+
     It 'suppresses NoCapture provider streams in structured-output mode' {
         $pwsh = (Get-Process -Id $PID).Path
         Set-BootstrapStructuredOutput -Enabled $true
@@ -691,6 +735,38 @@ Describe 'External command redaction' {
         }
         finally {
             Set-BootstrapStructuredOutput -Enabled $false
+        }
+    }
+}
+
+Describe 'Stdout-only Azure JSON capture' {
+    InModuleScope Common {
+        It 'forwards the opt-in only to the native command and parses its stdout JSON' {
+            Mock Invoke-BootstrapCommand { return '{"runId":"de1"}' }
+
+            $receipt = Invoke-AzJson -CaptureStdoutOnly -Arguments @(
+                'acr', 'build', '--query', '{runId:runId}')
+
+            $receipt.runId | Should -BeExactly 'de1'
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                $CaptureStdoutOnly -and
+                ($ArgumentList -join '|') -ceq (
+                    'acr|build|--query|{runId:runId}|--output|json|--only-show-errors')
+            }
+        }
+
+        It 'redacts malformed stdout at the opt-in JSON boundary' {
+            Mock Invoke-BootstrapCommand { return '{"private-provider-marker":' }
+
+            try {
+                Invoke-AzJson -CaptureStdoutOnly -Arguments @('acr', 'build')
+                throw 'Expected malformed stdout JSON to fail.'
+            }
+            catch {
+                $_.Exception.Message | Should -BeExactly 'Azure CLI returned malformed JSON; provider output was suppressed.'
+                $_.Exception.Message | Should -Not -Match 'private-provider-marker'
+            }
         }
     }
 }

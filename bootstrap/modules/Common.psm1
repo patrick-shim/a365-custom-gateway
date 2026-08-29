@@ -345,8 +345,13 @@ function Invoke-BootstrapCommand {
         [Parameter(Mandatory)][string]$FilePath,
         [Parameter()][string[]]$ArgumentList = @(),
         [switch]$AllowFailure,
-        [switch]$NoCapture
+        [switch]$NoCapture,
+        [switch]$CaptureStdoutOnly
     )
+
+    if ($NoCapture -and $CaptureStdoutOnly) {
+        throw 'NoCapture and CaptureStdoutOnly cannot be combined.'
+    }
 
     $resolvedFile = $FilePath
     $effectiveArguments = @($ArgumentList)
@@ -364,6 +369,10 @@ function Invoke-BootstrapCommand {
         }
     }
 
+    # This wrapper owns native exit-code handling and emits the fixed redacted
+    # failure contract below, regardless of the caller's PowerShell preference.
+    $PSNativeCommandUseErrorActionPreference = $false
+
     if ($NoCapture) {
         # A no-capture child may still emit dependency bodies, identities, or
         # credentials on stderr. Progress is represented by trusted bootstrap
@@ -377,7 +386,15 @@ function Invoke-BootstrapCommand {
         return $exitCode
     }
 
-    $output = & $resolvedFile @effectiveArguments 2>&1
+    if ($CaptureStdoutOnly) {
+        # Some successful native commands write informational provider text to
+        # stderr before returning machine-readable JSON. This opt-in boundary
+        # captures only stdout and discards stderr without persisting it.
+        $output = & $resolvedFile @effectiveArguments 2>$null
+    }
+    else {
+        $output = & $resolvedFile @effectiveArguments 2>&1
+    }
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0 -and -not $AllowFailure) {
         throw "Command '$FilePath' failed with exit code $exitCode. Provider output was suppressed at this trust boundary."
@@ -687,13 +704,32 @@ function Invoke-BootstrapGraphAzRest {
 
 function Invoke-AzJson {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string[]]$Arguments)
+    param(
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [switch]$CaptureStdoutOnly
+    )
     if ($Arguments.Count -gt 0 -and [string]$Arguments[0] -ceq 'rest') {
+        if ($CaptureStdoutOnly) {
+            throw 'Stdout-only Azure JSON capture is not available for Microsoft Graph requests.'
+        }
         return Invoke-BootstrapGraphAzRest -Arguments ($Arguments + @('--output', 'json', '--only-show-errors'))
     }
-    $raw = Invoke-BootstrapCommand -FilePath 'az' -ArgumentList ($Arguments + @('--output', 'json', '--only-show-errors'))
+    $command = @{
+        FilePath = 'az'
+        ArgumentList = $Arguments + @('--output', 'json', '--only-show-errors')
+    }
+    if ($CaptureStdoutOnly) { $command.CaptureStdoutOnly = $true }
+    $raw = Invoke-BootstrapCommand @command
     if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-    return $raw | ConvertFrom-Json -Depth 100
+    if (-not $CaptureStdoutOnly) {
+        return $raw | ConvertFrom-Json -Depth 100
+    }
+    try {
+        return $raw | ConvertFrom-Json -Depth 100 -ErrorAction Stop
+    }
+    catch {
+        throw 'Azure CLI returned malformed JSON; provider output was suppressed.'
+    }
 }
 
 function Invoke-AzTsv {

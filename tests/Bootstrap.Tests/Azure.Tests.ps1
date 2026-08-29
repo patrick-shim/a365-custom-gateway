@@ -472,7 +472,7 @@ Describe 'Deterministic resumable ACR image builds' {
                 }
             }
             Mock Invoke-AzJson {
-                param([string[]]$Arguments)
+                param([string[]]$Arguments, [switch]$CaptureStdoutOnly)
                 $script:buildArguments += ,@($Arguments)
                 $imageIndex = [Array]::IndexOf($Arguments, '--image')
                 $imageParts = $Arguments[$imageIndex + 1].Split(':')
@@ -494,7 +494,7 @@ Describe 'Deterministic resumable ACR image builds' {
 
             $result.workerDigest | Should -BeExactly $script:digestByRepository['gateway-worker']
             $result.adminUiDigest | Should -BeExactly $script:digestByRepository['gateway-admin']
-            Should -Invoke Invoke-AzJson -Times 3 -Exactly
+            Should -Invoke Invoke-AzJson -Times 3 -Exactly -ParameterFilter { $CaptureStdoutOnly }
             $script:buildArguments.Count | Should -Be 3
             $script:checkpointStates | Should -Be @(
                 'api=IntentRecorded',
@@ -551,6 +551,7 @@ Describe 'Deterministic resumable ACR image builds' {
 
             $script:invalidRunReadbackCheckpoints | Should -Be @('IntentRecorded', 'RunQueued')
             Should -Invoke Invoke-AzJson -Times 1 -Exactly
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter { $CaptureStdoutOnly }
             Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
                 $FilePath -ceq 'az' -and
                 [string]$ArgumentList[0] -ceq 'acr' -and
@@ -590,6 +591,7 @@ Describe 'Deterministic resumable ACR image builds' {
             $script:runQueuedWasDurableBeforeReadback | Should -BeTrue
             $script:unavailableRunCheckpoints | Should -Be @('IntentRecorded', 'RunQueued')
             Should -Invoke Invoke-AzJson -Times 1 -Exactly
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter { $CaptureStdoutOnly }
             Should -Invoke Get-GatewayAcrExactRunById -Times 1 -Exactly -ParameterFilter {
                 $Registry -ceq 'acrsafe' -and
                 $Repository -ceq 'gateway-api' -and
@@ -639,7 +641,7 @@ Describe 'Deterministic resumable ACR image builds' {
                 }
             }
             Mock Invoke-AzJson {
-                param([string[]]$Arguments)
+                param([string[]]$Arguments, [switch]$CaptureStdoutOnly)
                 $imageIndex = [Array]::IndexOf($Arguments, '--image')
                 $imageParts = $Arguments[$imageIndex + 1].Split(':')
                 $script:submittedRepositories += $imageParts[0]
