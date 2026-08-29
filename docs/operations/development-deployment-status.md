@@ -20,7 +20,7 @@ or mutated by that bootstrap work.
 ## 2026-08-30 clean-subscription live bootstrap and recovery checkpoint
 
 The corrected Phase 6 candidate is frozen on branch `codex/phase6-candidate` at
-source commit `78ef1c0fc5b81005a9ec56c4adde044ed6aeb900`. The exact-account boundary now
+source commit `1cdd5eb2deaefa3ba6989308566806f0920c2305`. The exact-account boundary now
 acquires Microsoft Graph access through `az account get-access-token` with the
 reviewed subscription, verifies returned subscription/tenant/type/lifetime
 metadata, and sends only bounded Graph v1.0 requests through an in-process,
@@ -29,18 +29,20 @@ no-redirect client. Supported post-authentication code rejects native `az ad` an
 the accepted-source file or a byte-identical source-bound copy.
 
 The final local candidate gate is zero-warning/zero-error Release build and
-**1,280/1,280** direct Release tests: unit 478, Admin UI 155, local Setup 75,
-observability/runtime 149, integration 92, end-to-end 106, architecture 114, and
-security 111. Pester discovered **339** tests: **338** passed, none failed, and one
+**1,304/1,304** direct Release tests: unit 479, Admin UI 155, local Setup 75,
+observability/runtime 149, integration 92, end-to-end 106, architecture 115, and
+security 133. Pester discovered **369** tests: **368** passed, none failed, and one
 Windows-only launcher test was skipped on macOS. The canonical source gate parsed
-**17** PowerShell files and **2** JSON contracts and compiled all **25** Bicep
+**19** PowerShell files and **2** JSON contracts and compiled all **25** Bicep
 templates plus **5** parameter files; `dotnet format --verify-no-changes` and
 `git diff --check` are clean. Focused terminal-deployment recovery passes **70/70**
-and existing-deployment image-pull compatibility passes **23/23**. Independent
-settled-diff correctness/security reviews found no blocking issue. These are local-
-source results, not live deployment proof.
+and existing-deployment image-pull compatibility passes **23/23**. The bounded
+interactive-user canary lifecycle/state gate passes **27/27**, and its exact
+Microsoft identity/evidence subset passes **22/22**. Independent settled-diff
+correctness/security reviews found no blocking issue. These are local-source
+results, not live deployment proof.
 
-The most recent live generation is frozen `a365gw7-dev` in resource group
+The retained `a365gw7-dev` generation is frozen in resource group
 `rg-a365-custom-gw-phase6f`, ownership
 `9593d817-e3ea-4643-ae49-e15dbfaaede6`, and ACR
 `acra365gw7devv47vkw`, exclusively in target subscription
@@ -138,10 +140,54 @@ Commit `78ef1c0fc5b81005a9ec56c4adde044ed6aeb900` changes all three ACR ARM-audi
 checks to exact resource-ID, target-subscription reads pinned to the same
 `2023-11-01-preview` ARM API as Bicep. Absent properties, disabled policy, API
 failure, wrong ID, or owner/source drift still fail closed. The full current local
-gate and independent review are recorded above. The next live action is fresh
-isolated project `a365gw9` in absent resource group
-`rg-a365-custom-gw-phase6h`, only in the target subscription. `a365gw8` is frozen
-evidence, not a Resume candidate.
+gate and independent review are recorded above.
+
+The latest retained live generation is `a365gw9-dev` in resource group
+`rg-a365-custom-gw-phase6h`, ownership
+`fc045585-0296-4e3c-a27f-00c3aa017f59`, and ACR
+`acra365gw9devisqxpa`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Initial Plan
+`sha256:1bc13d8f4b4c8b412308ae91de6b5440506aa9f68f7f1f8cdc799c7edbb09df9`
+bound configuration
+`sha256:7dd28b4a5c9c9589cb2c179630e4179fa183a7b242749ab69f54ab70a27c9c87`
+and source
+`sha256:ff0fe552aa52f478cb8cfc08a126f1e4f76a13f4bc9e222ae9c1c3545a067b4f`;
+authenticated What-If reported exactly eight Creates and zero Deletes. Apply
+completed Prerequisites, exact Azure authentication, provider registration,
+foundation, Gateway API identity, and all three immutable image builds. Pull
+identity principal `7aabeaf0-c67c-4d82-8cda-28733920b934` has exact ACR-scoped
+`AcrPull` assignment `3e3bf721-f4b6-5140-8d54-8af36b559a4f`. The exact succeeded
+`QuickRun`/digest pairs are API `de1`
+`sha256:a204d6a54b95fab7cc5b9edc03772aecec77a301e63a756a1a35daaf57de1bba`,
+worker `de2`
+`sha256:d9a6822a9262156e1501166133071468d550bf6e18494534c4bd023664f858e6`,
+and Admin UI `de3`
+`sha256:168987bba384b9e053cd948c9fbced45b3ee7eb07fb340c1c4717c2af9fb9ded`.
+Gateway API application object/client/service-principal IDs are
+`e4240e2f-e0d0-40aa-80d7-d6ba85b43388`,
+`107b5119-fa96-44af-9b39-3aae9fc65c0e`, and
+`b9fe7e69-4305-40c8-b16e-2bd06caed702`.
+
+Bootstrap stopped safely at **6/19**, 31%, before inert ARM deployment because a
+local guard still conflated the project-scoped delegated-scope URI with the bare
+v2 API token audience. Safe diagnostics are
+`.bootstrap/diagnostics/a365gw9-dev-20260829-211549.json`. No Container App,
+database initialization, Agent 365 blueprint, workflow identity, Admin UI,
+registration, canary, Gateway-key, Registry, Service Bus queue/message, or Purview
+action followed. Recovery Plan
+`sha256:655ecacf57bf726a9bb999436c816fab38d6cf807f9d7d622231ed283878a2ca`
+was accepted before the correction and is also frozen. Preserve all state,
+accepted snapshots, foundation, API identity, and images; do not Resume either
+Plan with edited source. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and its
+queues/messages were not accessed.
+
+Commit `1cdd5eb2deaefa3ba6989308566806f0920c2305` independently binds the custom
+delegated-scope URI and bare-client-ID v2 audience and adds the reviewed bounded
+interactive-user canary/recovery lifecycle. The next live action is fresh isolated
+project `a365gw10` in absent resource group `rg-a365-custom-gw-phase6i`, only in
+the target subscription. `a365gw8` and `a365gw9` are frozen evidence, not Resume
+candidates.
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local

@@ -9,7 +9,7 @@ deployment, Microsoft 365 Admin Center landing, blueprint-scoped Purview DLP pro
 the local Phase 0–6 clean-subscription bootstrap hardening, the unreleased Purview
 protection-profile source feature, and the live development Prompt Shields
 deployment:
-**2026-08-29**.
+**2026-08-30**.
 
 ## Live development checkpoint: pre-model prompt protection
 
@@ -323,7 +323,7 @@ reported as completion of the plan. The authoritative phase status is:
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. `a365gw6` proved no-resubmit image recovery; `a365gw7` exposed the private-ACR first-pull ordering defect; `a365gw8` created the dedicated pull identity/role and reached 3/19 before exposing Azure CLI's incomplete typed ACR policy projection. Authoritative ARM policy readback is locally verified at commit `78ef1c0fc5b81005a9ec56c4adde044ed6aeb900`. A completed corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. `a365gw6` proved no-resubmit image recovery; `a365gw7` exposed the private-ACR first-pull ordering defect; `a365gw8` exposed incomplete typed ACR policy projection; and `a365gw9` completed foundation, API identity, and all three immutable images before exposing a stale scope/audience guard at 6/19. The v2 audience split and bounded interactive-user canary are locally reviewed at commit `1cdd5eb2deaefa3ba6989308566806f0920c2305`. A completed corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and live bounded canary/revocation are still absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
@@ -380,16 +380,17 @@ runbooks, and paired Claude/Codex deployment instructions all reference the new
 locations. This was a source-only relocation; no Azure or database state changed.
 
 The corrected 2026-08-30 Phase 6 candidate gate passes at source commit
-`78ef1c0fc5b81005a9ec56c4adde044ed6aeb900`. The Release solution build has zero
-warnings and zero errors. Direct Release tests are **1,280/1,280**: unit 478,
+`1cdd5eb2deaefa3ba6989308566806f0920c2305`. The Release solution build has zero
+warnings and zero errors. Direct Release tests are **1,304/1,304**: unit 479,
 Admin UI 155, local Setup 75, observability/runtime 149, integration 92,
-end-to-end 106, architecture 114, and security 111. Pester discovered **339** tests:
-**338** passed, none failed, and one Windows-only launcher test was skipped on macOS.
-The canonical bootstrap source gate parsed **17** PowerShell files and **2** JSON
+end-to-end 106, architecture 115, and security 133. Pester discovered **369** tests:
+**368** passed, none failed, and one Windows-only launcher test was skipped on macOS.
+The canonical bootstrap source gate parsed **19** PowerShell files and **2** JSON
 contracts and compiled all **25** Bicep templates plus **5** parameter files. Focused
 terminal-deployment recovery passes **70/70**, existing-deployment image-pull
-compatibility passes **23/23**, and independent settled-diff reviews found no
-blocking issue. `dotnet format
+compatibility passes **23/23**, the bounded canary lifecycle/state gate passes
+**27/27**, and its exact Microsoft identity/evidence subset passes **22/22**.
+Independent settled-diff reviews found no blocking issue. `dotnet format
 --verify-no-changes` and `git diff --check` pass. The repository has **55**
 Markdown files and **58** repository-local links with no broken target.
 
@@ -704,9 +705,57 @@ policy checks with exact full-resource-ID, target-subscription reads pinned to t
 same `2023-11-01-preview` ARM API used by Bicep. The validator still rejects absent
 properties, disabled policy, API failure, wrong resource ID, or ownership/source
 drift. Independent review found no blocking issue, and the complete local gate is
-recorded above. The next live action is a new isolated `a365gw9` generation in
-absent resource group `rg-a365-custom-gw-phase6h`, only in the target subscription.
-`a365gw8` is frozen evidence, not a Resume candidate.
+recorded above.
+
+Fresh generation `a365gw9-dev` used resource group
+`rg-a365-custom-gw-phase6h`, deployment ownership
+`fc045585-0296-4e3c-a27f-00c3aa017f59`, and ACR
+`acra365gw9devisqxpa`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Its initial accepted Plan
+`sha256:1bc13d8f4b4c8b412308ae91de6b5440506aa9f68f7f1f8cdc799c7edbb09df9`
+bound configuration
+`sha256:7dd28b4a5c9c9589cb2c179630e4179fa183a7b242749ab69f54ab70a27c9c87`
+and source
+`sha256:ff0fe552aa52f478cb8cfc08a126f1e4f76a13f4bc9e222ae9c1c3545a067b4f`;
+authenticated What-If reported exactly eight Creates and zero Deletes. Apply
+completed Prerequisites, exact Azure authentication, provider registration,
+foundation, Gateway API identity, and all three immutable images. The dedicated
+pull identity principal is `7aabeaf0-c67c-4d82-8cda-28733920b934`, with exact
+ACR-scoped `AcrPull` assignment `3e3bf721-f4b6-5140-8d54-8af36b559a4f`.
+Succeeded `QuickRun`s are API `de1`
+`sha256:a204d6a54b95fab7cc5b9edc03772aecec77a301e63a756a1a35daaf57de1bba`,
+worker `de2`
+`sha256:d9a6822a9262156e1501166133071468d550bf6e18494534c4bd023664f858e6`,
+and Admin UI `de3`
+`sha256:168987bba384b9e053cd948c9fbced45b3ee7eb07fb340c1c4717c2af9fb9ded`.
+Gateway API application object/client/service-principal IDs are respectively
+`e4240e2f-e0d0-40aa-80d7-d6ba85b43388`,
+`107b5119-fa96-44af-9b39-3aae9fc65c0e`, and
+`b9fe7e69-4305-40c8-b16e-2bd06caed702`.
+
+Bootstrap stopped safely at **6/19**, 31%, before the inert ARM deployment. The
+local guard still required the v2 access-token audience to equal the custom
+Application ID URI, while Entra correctly returned the project-scoped scope URI
+and the bare API client ID as distinct values. Safe diagnostics are preserved at
+`.bootstrap/diagnostics/a365gw9-dev-20260829-211549.json`. No Container App,
+database initialization, Agent 365 blueprint, workflow identity, Admin UI,
+registration, canary, Gateway-key, Registry, Service Bus queue/message, or Purview
+action followed. A later recovery Plan
+`sha256:655ecacf57bf726a9bb999436c816fab38d6cf807f9d7d622231ed283878a2ca`
+was accepted before the source correction and is also frozen; neither Plan may be
+resumed with changed source. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and its
+queues/messages were not accessed.
+
+Commit `1cdd5eb2deaefa3ba6989308566806f0920c2305` makes the Entra scope base URI and
+v2 bare-client-ID token audience explicit and independently verified across Bicep,
+API, worker, Admin UI, and preflight. It also adds a reviewed bounded interactive-
+user canary with durable per-mutation recovery, exact token/registration/key
+binding, reverse-order exact Entra cleanup only after proven key revocation, and
+truthful minimal-profile behavior. The next live action is a new isolated
+`a365gw10` generation in absent resource group `rg-a365-custom-gw-phase6i`, only
+in the target subscription. `a365gw8` and `a365gw9` are frozen evidence, not Resume
+candidates.
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
@@ -1049,13 +1098,15 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    resumable `Apply`. Preserve the exact checkout/source fingerprint and accepted
    snapshot for Resume; never mix durable state across source generations. Do not
    substitute the old partial `tools/bootstrap.ps1`. Preserve `a365gw6` and
-   `a365gw7` at 6/19 and `a365gw8` at 3/19. They respectively preserve exact image-
-   build recovery, the terminal inert-deployment/private-ACR first-pull failure,
-   and a succeeded dedicated-pull foundation stopped by incomplete typed ACR policy
-   readback. None may consume edited source. The next clean-subscription action is
-   a new isolated `a365gw9` generation from commit
-   `78ef1c0fc5b81005a9ec56c4adde044ed6aeb900`, in absent resource group
-   `rg-a365-custom-gw-phase6h`, only in target subscription
+   `a365gw7` at 6/19, `a365gw8` at 3/19, and `a365gw9` at 6/19. They respectively
+   preserve exact image-build recovery, the terminal inert-deployment/private-ACR
+   first-pull failure, a succeeded dedicated-pull foundation stopped by incomplete
+   typed ACR policy readback, and a completed foundation/API/images prefix stopped
+   by the stale scope/audience guard. None may consume edited source or its later
+   recovery Plan. The next clean-subscription action is a new isolated `a365gw10`
+   generation from source commit
+   `1cdd5eb2deaefa3ba6989308566806f0920c2305`, in absent resource group
+   `rg-a365-custom-gw-phase6i`, only in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof
