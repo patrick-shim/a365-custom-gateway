@@ -725,7 +725,7 @@ function Get-GatewayAcrExactImageRuns {
     }
     foreach ($run in @($runs)) {
         if ([string]$run.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$' -or
-            [string]$run.runType -cne 'QuickBuild' -or
+            [string]$run.runType -cne 'QuickRun' -or
             @('Queued', 'Started', 'Running', 'Succeeded', 'Failed', 'Canceled', 'Error', 'Timeout') -cnotcontains [string]$run.status) {
             throw 'ACR exact image-run discovery returned a malformed run contract.'
         }
@@ -787,7 +787,7 @@ function Get-GatewayAcrExactRunById {
         [string]$run.runId -cne $RunId) {
         throw 'ACR exact run readback returned a different or malformed run.'
     }
-    if ([string]$run.runType -cne 'QuickBuild' -or
+    if ([string]$run.runType -cne 'QuickRun' -or
         @('Queued', 'Started', 'Running', 'Succeeded', 'Failed', 'Canceled', 'Error', 'Timeout') -cnotcontains [string]$run.status) {
         throw 'ACR exact run readback returned a malformed run contract.'
     }
@@ -817,9 +817,9 @@ function Assert-GatewayAcrQueuedRunContract {
         [Parameter(Mandatory)][string]$Tag
     )
     if ([string]$Run.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$' -or
-        [string]$Run.runType -cne 'QuickBuild' -or
+        [string]$Run.runType -cne 'QuickRun' -or
         [string]$Run.status -notin @('Queued', 'Started', 'Running')) {
-        throw 'The submitted ACR build did not return one canonical queued QuickBuild contract.'
+        throw 'The submitted ACR build did not return one canonical queued QuickRun contract.'
     }
     $outputImages = @($Run.outputImages)
     if ($outputImages.Count -gt 1 -or ($outputImages.Count -eq 1 -and (

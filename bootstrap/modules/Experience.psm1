@@ -2582,7 +2582,7 @@ function Test-GatewayImmutableImageEvidence {
             )
             $runImages = @($run.outputImages)
             if ([string]$run.runId -cne $runId -or [string]$run.status -cne 'Succeeded' -or
-                [string]$run.runType -cne 'QuickBuild' -or $runImages.Count -ne 1 -or
+                [string]$run.runType -cne 'QuickRun' -or $runImages.Count -ne 1 -or
                 [string]$runImages[0].repository -cne $repository -or
                 [string]$runImages[0].tag -cne $expectedTag -or
                 [string]$runImages[0].digest -cne $recordedDigest) { throw 'mismatch' }

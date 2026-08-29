@@ -222,6 +222,52 @@ Describe 'Deterministic resumable ACR image builds' {
             }
         }
 
+        It 'accepts only QuickRun from exact image-tag run discovery' {
+            $tag = Get-BootstrapImageBuildIntentTag `
+                -DeploymentOwnershipId $script:ownershipId `
+                -SourceFingerprint $script:sourceFingerprint `
+                -IntentId $script:intentIds.api
+            $script:acrDiscoveryRunType = 'QuickRun'
+            Mock Get-GatewayAcrExactTagDigest {
+                return [pscustomobject]@{ tag = $tag; digest = "sha256:$('1' * 64)" }
+            }
+            Mock Invoke-BootstrapCommand {
+                return (ConvertTo-Json -InputObject @([ordered]@{
+                    runId = 'run-api'
+                    status = 'Succeeded'
+                    runType = $script:acrDiscoveryRunType
+                    outputImages = @([ordered]@{
+                        repository = 'gateway-api'
+                        tag = $tag
+                        digest = "sha256:$('1' * 64)"
+                        providerOutput = 'private-provider-body-marker'
+                    })
+                }) -Depth 10 -Compress)
+            }
+
+            $runs = @(Get-GatewayAcrExactImageRuns `
+                -Registry 'acrsafe' `
+                -Repository 'gateway-api' `
+                -Tag $tag)
+            $runs.Count | Should -Be 1
+            $runs[0].runType | Should -BeExactly 'QuickRun'
+
+            foreach ($unsupportedRunType in @('QuickBuild', 'AutoBuild', 'AutoRun')) {
+                $script:acrDiscoveryRunType = $unsupportedRunType
+                try {
+                    Get-GatewayAcrExactImageRuns `
+                        -Registry 'acrsafe' `
+                        -Repository 'gateway-api' `
+                        -Tag $tag
+                    throw 'Expected the non-QuickRun discovery contract to fail closed.'
+                }
+                catch {
+                    $_.Exception.Message | Should -BeExactly 'ACR exact image-run discovery returned a malformed run contract.'
+                    $_.Exception.Message | Should -Not -Match 'private-provider-body-marker'
+                }
+            }
+        }
+
         It 'reads a durable queued run by its exact run ID without requiring the image tag' {
             $tag = Get-BootstrapImageBuildIntentTag `
                 -DeploymentOwnershipId $script:ownershipId `
@@ -229,7 +275,7 @@ Describe 'Deterministic resumable ACR image builds' {
                 -IntentId $script:intentIds.api
             Mock Get-GatewayAcrExactTagDigest { throw 'Run-ID readback must not require the image tag.' }
             Mock Invoke-BootstrapCommand {
-                return '{"runId":"run-api","status":"Running","runType":"QuickBuild","outputImages":[]}'
+                return '{"runId":"run-api","status":"Running","runType":"QuickRun","outputImages":[]}'
             }
 
             $run = Get-GatewayAcrExactRunById `
@@ -258,16 +304,28 @@ Describe 'Deterministic resumable ACR image builds' {
             Mock Invoke-BootstrapCommand { return $script:acrRunReadback }
             $cases = @(
                 [pscustomobject]@{
-                    output = '{"runId":"different-run","status":"Running","runType":"QuickBuild","outputImages":[]}'
+                    output = '{"runId":"different-run","status":"Running","runType":"QuickRun","outputImages":[]}'
                     expected = 'ACR exact run readback returned a different or malformed run.'
                 },
                 [pscustomobject]@{
-                    output = '{"runId":"run-api","status":"Running","runType":"QuickBuild","outputImages":[],"private-provider-body-marker":"private-token-marker"}'
+                    output = '{"runId":"run-api","status":"Running","runType":"QuickRun","outputImages":[],"private-provider-body-marker":"private-token-marker"}'
                     expected = 'ACR exact run readback returned a different or malformed run.'
                 },
                 [pscustomobject]@{
-                    output = '{"runId":"run-api","status":"Succeeded","runType":"QuickBuild","outputImages":[{"repository":"gateway-worker","tag":"private-provider-body-marker","digest":"sha256:' + ('1' * 64) + '"}]}'
+                    output = '{"runId":"run-api","status":"Succeeded","runType":"QuickRun","outputImages":[{"repository":"gateway-worker","tag":"private-provider-body-marker","digest":"sha256:' + ('1' * 64) + '"}]}'
                     expected = 'A succeeded ACR run did not report the one exact intended output image.'
+                },
+                [pscustomobject]@{
+                    output = '{"runId":"run-api","status":"Running","runType":"QuickBuild","outputImages":[{"private-provider-body-marker":"private-token-marker"}]}'
+                    expected = 'ACR exact run readback returned a malformed run contract.'
+                },
+                [pscustomobject]@{
+                    output = '{"runId":"run-api","status":"Running","runType":"AutoBuild","outputImages":[{"private-provider-body-marker":"private-token-marker"}]}'
+                    expected = 'ACR exact run readback returned a malformed run contract.'
+                },
+                [pscustomobject]@{
+                    output = '{"runId":"run-api","status":"Running","runType":"AutoRun","outputImages":[{"private-provider-body-marker":"private-token-marker"}]}'
+                    expected = 'ACR exact run readback returned a malformed run contract.'
                 },
                 [pscustomobject]@{
                     output = '{"private-provider-body-marker":'
@@ -288,6 +346,45 @@ Describe 'Deterministic resumable ACR image builds' {
                 catch {
                     $_.Exception.Message | Should -BeExactly $case.expected
                     $_.Exception.Message | Should -Not -Match 'private-(provider-body|token)-marker'
+                }
+            }
+        }
+
+        It 'accepts only the queued QuickRun contract returned by az acr build' {
+            $validRun = [pscustomobject]@{
+                runId = 'run-api'
+                status = 'Queued'
+                runType = 'QuickRun'
+                outputImages = @()
+            }
+            Assert-GatewayAcrQueuedRunContract `
+                -Run $validRun `
+                -Repository 'gateway-api' `
+                -Tag (Get-BootstrapImageBuildIntentTag `
+                    -DeploymentOwnershipId $script:ownershipId `
+                    -SourceFingerprint $script:sourceFingerprint `
+                    -IntentId $script:intentIds.api) |
+                Should -BeExactly 'run-api'
+
+            foreach ($unsupportedRunType in @('QuickBuild', 'AutoBuild', 'AutoRun')) {
+                $invalidRun = [pscustomobject]@{
+                    runId = 'run-api'
+                    status = 'Queued'
+                    runType = $unsupportedRunType
+                    outputImages = @([pscustomobject]@{
+                        providerOutput = 'private-provider-body-marker'
+                    })
+                }
+                try {
+                    Assert-GatewayAcrQueuedRunContract `
+                        -Run $invalidRun `
+                        -Repository 'gateway-api' `
+                        -Tag $script:expectedTag
+                    throw 'Expected the non-QuickRun submission contract to fail closed.'
+                }
+                catch {
+                    $_.Exception.Message | Should -BeExactly 'The submitted ACR build did not return one canonical queued QuickRun contract.'
+                    $_.Exception.Message | Should -Not -Match 'private-provider-body-marker'
                 }
             }
         }
@@ -354,7 +451,7 @@ Describe 'Deterministic resumable ACR image builds' {
                 param([string]$Registry, [string]$Repository, [string]$Tag)
                 if ($Repository -in $script:submittedRepositories) {
                     return @([pscustomobject]@{
-                        runId = "run-$Repository"; status = 'Succeeded'; runType = 'QuickBuild'
+                        runId = "run-$Repository"; status = 'Succeeded'; runType = 'QuickRun'
                         outputImages = @([pscustomobject]@{ repository = $Repository; tag = $Tag; digest = $script:digestByRepository[$Repository] })
                     })
                 }
@@ -363,7 +460,7 @@ Describe 'Deterministic resumable ACR image builds' {
             Mock Get-GatewayAcrExactRunById {
                 param([string]$Registry, [string]$Repository, [string]$Tag, [string]$RunId)
                 return [pscustomobject]@{
-                    runId = $RunId; status = 'Succeeded'; runType = 'QuickBuild'
+                    runId = $RunId; status = 'Succeeded'; runType = 'QuickRun'
                     outputImages = @([pscustomobject]@{
                         repository = $Repository; tag = $Tag; digest = $script:digestByRepository[$Repository]
                     })
@@ -375,7 +472,7 @@ Describe 'Deterministic resumable ACR image builds' {
                 $imageIndex = [Array]::IndexOf($Arguments, '--image')
                 $imageParts = $Arguments[$imageIndex + 1].Split(':')
                 $script:submittedRepositories += $imageParts[0]
-                return [pscustomobject]@{ runId = "run-$($imageParts[0])"; status = 'Queued'; runType = 'QuickBuild'; outputImages = @() }
+                return [pscustomobject]@{ runId = "run-$($imageParts[0])"; status = 'Queued'; runType = 'QuickRun'; outputImages = @() }
             }
             Mock Start-Sleep {}
 
@@ -415,6 +512,46 @@ Describe 'Deterministic resumable ACR image builds' {
             }
         }
 
+        It 'stops after one submitted build when the provider returns a non-QuickRun contract' {
+            $context = Join-Path $TestDrive 'acr-context-invalid-run-type'
+            New-Item -ItemType Directory -Path $context -Force | Out-Null
+            $script:invalidRunTypeCheckpoints = @()
+            Mock New-GatewayAcrBuildContext { return $context }
+            Mock Get-GatewayAcrExactTagDigest { return $null }
+            Mock Get-GatewayAcrExactImageRuns { return @() }
+            Mock Invoke-AzJson {
+                return [pscustomobject]@{
+                    runId = 'run-api'
+                    status = 'Queued'
+                    runType = 'QuickBuild'
+                    outputImages = @([pscustomobject]@{
+                        providerOutput = 'private-provider-body-marker'
+                    })
+                }
+            }
+
+            try {
+                Build-GatewayImages `
+                    -Config ([pscustomobject]@{}) `
+                    -AcrLoginServer 'acrsafe.azurecr.io' `
+                    -SourceFingerprint $script:sourceFingerprint `
+                    -DeploymentOwnershipId $script:ownershipId `
+                    -Checkpoint {
+                        param($evidence)
+                        $script:invalidRunTypeCheckpoints += [string]$evidence.buildIntents.api.state
+                    }
+                throw 'Expected the non-QuickRun submission contract to fail closed.'
+            }
+            catch {
+                $_.Exception.Message | Should -BeExactly 'The submitted ACR build did not return one canonical queued QuickRun contract.'
+                $_.Exception.Message | Should -Not -Match 'private-provider-body-marker'
+            }
+
+            $script:invalidRunTypeCheckpoints | Should -Be @('IntentRecorded')
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly
+            Should -Invoke New-GatewayAcrBuildContext -Times 1 -Exactly
+        }
+
         It 'reconciles a tag created after the pre-mutation intent checkpoint without resubmitting that build' {
             $context = Join-Path $TestDrive 'acr-context-recovery'
             New-Item -ItemType Directory -Path $context -Force | Out-Null
@@ -440,7 +577,7 @@ Describe 'Deterministic resumable ACR image builds' {
                 param([string]$Registry, [string]$Repository, [string]$Tag)
                 if ($Repository -in $script:submittedRepositories) {
                     return @([pscustomobject]@{
-                        runId = "run-$Repository"; status = 'Succeeded'; runType = 'QuickBuild'
+                        runId = "run-$Repository"; status = 'Succeeded'; runType = 'QuickRun'
                         outputImages = @([pscustomobject]@{ repository = $Repository; tag = $Tag; digest = $script:digestByRepository[$Repository] })
                     })
                 }
@@ -449,7 +586,7 @@ Describe 'Deterministic resumable ACR image builds' {
             Mock Get-GatewayAcrExactRunById {
                 param([string]$Registry, [string]$Repository, [string]$Tag, [string]$RunId)
                 return [pscustomobject]@{
-                    runId = $RunId; status = 'Succeeded'; runType = 'QuickBuild'
+                    runId = $RunId; status = 'Succeeded'; runType = 'QuickRun'
                     outputImages = @([pscustomobject]@{
                         repository = $Repository; tag = $Tag; digest = $script:digestByRepository[$Repository]
                     })
@@ -460,7 +597,7 @@ Describe 'Deterministic resumable ACR image builds' {
                 $imageIndex = [Array]::IndexOf($Arguments, '--image')
                 $imageParts = $Arguments[$imageIndex + 1].Split(':')
                 $script:submittedRepositories += $imageParts[0]
-                return [pscustomobject]@{ runId = "run-$($imageParts[0])"; status = 'Queued'; runType = 'QuickBuild'; outputImages = @() }
+                return [pscustomobject]@{ runId = "run-$($imageParts[0])"; status = 'Queued'; runType = 'QuickRun'; outputImages = @() }
             }
             Mock Start-Sleep {}
 
@@ -496,7 +633,7 @@ Describe 'Deterministic resumable ACR image builds' {
             Mock Get-GatewayAcrExactTagDigest { throw 'A failed queued run must not be treated as a completed image.' }
             Mock Get-GatewayAcrExactRunById {
                 return [pscustomobject]@{
-                    runId = 'durable-run-api'; status = 'Failed'; runType = 'QuickBuild'; outputImages = @()
+                    runId = 'durable-run-api'; status = 'Failed'; runType = 'QuickRun'; outputImages = @()
                 }
             }
             Mock Invoke-AzJson { throw 'A terminal run must never be resubmitted.' }

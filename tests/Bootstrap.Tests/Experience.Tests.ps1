@@ -545,6 +545,139 @@ Describe 'Azure What-If result boundary' {
     }
 }
 
+Describe 'Immutable ACR QuickRun verification boundary' {
+    InModuleScope Experience {
+        BeforeEach {
+            $script:imageSourceFingerprint = "sha256:$('a' * 64)"
+            $script:imageOwnershipId = '11111111-1111-4111-8111-111111111111'
+            $script:imageLoginServer = 'acrsafe.azurecr.io'
+            $script:imageRunType = 'QuickRun'
+            $script:imageDefinitions = [ordered]@{
+                api = [ordered]@{
+                    repository = 'gateway-api'
+                    intentId = '22222222-2222-4222-8222-222222222222'
+                    runId = 'run-api'
+                    digest = "sha256:$('1' * 64)"
+                }
+                worker = [ordered]@{
+                    repository = 'gateway-worker'
+                    intentId = '33333333-3333-4333-8333-333333333333'
+                    runId = 'run-worker'
+                    digest = "sha256:$('2' * 64)"
+                }
+                adminUi = [ordered]@{
+                    repository = 'gateway-admin'
+                    intentId = '44444444-4444-4444-8444-444444444444'
+                    runId = 'run-admin'
+                    digest = "sha256:$('3' * 64)"
+                }
+            }
+            $script:imageEvidence = [ordered]@{
+                schemaVersion = 2
+                registry = 'acrsafe'
+                sourceFingerprint = $script:imageSourceFingerprint
+                deploymentOwnershipId = $script:imageOwnershipId
+                provenance = 'BootstrapPreMutationIntentV2'
+                buildIntents = [ordered]@{}
+                checkpointedComponents = @('api', 'worker', 'adminUi')
+            }
+            foreach ($name in @('api', 'worker', 'adminUi')) {
+                $definition = $script:imageDefinitions[$name]
+                $tag = Get-BootstrapImageBuildIntentTag `
+                    -DeploymentOwnershipId $script:imageOwnershipId `
+                    -SourceFingerprint $script:imageSourceFingerprint `
+                    -IntentId ([string]$definition.intentId)
+                $image = "$($script:imageLoginServer)/$($definition.repository)@$($definition.digest)"
+                $script:imageEvidence.buildIntents[$name] = [ordered]@{
+                    component = $name
+                    repository = [string]$definition.repository
+                    intentId = [string]$definition.intentId
+                    tag = $tag
+                    state = 'DigestCheckpointed'
+                    runId = [string]$definition.runId
+                    digest = [string]$definition.digest
+                    image = $image
+                }
+                $script:imageEvidence[$name] = $image
+                $script:imageEvidence["${name}Digest"] = [string]$definition.digest
+            }
+
+            Mock Invoke-AzTsv {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'acr' -and [string]$Arguments[1] -ceq 'show') {
+                    return $script:imageLoginServer
+                }
+                if ([string]$Arguments[0] -ceq 'acr' -and [string]$Arguments[1] -ceq 'manifest') {
+                    $nameIndex = [Array]::IndexOf([object[]]$Arguments, '--name')
+                    $target = [string]$Arguments[$nameIndex + 1]
+                    foreach ($component in @('api', 'worker', 'adminUi')) {
+                        $definition = $script:imageDefinitions[$component]
+                        $intent = $script:imageEvidence.buildIntents[$component]
+                        if ($target -ceq "$($definition.repository):$($intent.tag)") {
+                            return [string]$definition.digest
+                        }
+                    }
+                }
+                throw 'Unexpected immutable-image TSV readback.'
+            }
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                $runIdIndex = [Array]::IndexOf([object[]]$Arguments, '--run-id')
+                $runId = [string]$Arguments[$runIdIndex + 1]
+                $components = @($script:imageDefinitions.Keys | Where-Object {
+                    [string]$script:imageDefinitions[$_].runId -ceq $runId
+                })
+                if ($components.Count -ne 1) { throw 'Unexpected immutable-image run readback.' }
+                $component = [string]$components[0]
+                $definition = $script:imageDefinitions[$component]
+                $intent = $script:imageEvidence.buildIntents[$component]
+                return [pscustomobject]@{
+                    runId = $runId
+                    status = 'Succeeded'
+                    runType = $script:imageRunType
+                    outputImages = @([pscustomobject]@{
+                        repository = [string]$definition.repository
+                        tag = [string]$intent.tag
+                        digest = [string]$definition.digest
+                    })
+                    providerOutput = 'private-provider-body-marker'
+                }
+            }
+        }
+
+        It 'accepts exact succeeded QuickRun evidence for all three az acr build outputs' {
+            Test-GatewayImmutableImageEvidence `
+                -Evidence $script:imageEvidence `
+                -SourceFingerprint $script:imageSourceFingerprint `
+                -DeploymentOwnershipId $script:imageOwnershipId |
+                Should -BeTrue
+
+            Should -Invoke Invoke-AzJson -Times 3 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'acr' -and
+                [string]$Arguments[1] -ceq 'task' -and
+                [string]$Arguments[2] -ceq 'show-run'
+            }
+        }
+
+        It 'rejects QuickBuild and automatic run types without disclosing provider output' {
+            foreach ($unsupportedRunType in @('QuickBuild', 'AutoBuild', 'AutoRun')) {
+                $script:imageRunType = $unsupportedRunType
+                try {
+                    Test-GatewayImmutableImageEvidence `
+                        -Evidence $script:imageEvidence `
+                        -SourceFingerprint $script:imageSourceFingerprint `
+                        -DeploymentOwnershipId $script:imageOwnershipId
+                    throw 'Expected non-QuickRun immutable-image evidence to fail closed.'
+                }
+                catch {
+                    $_.Exception.Message | Should -BeExactly 'Immutable-image revalidation was unavailable or mismatched; refusing automatic rebuild. Review access/state and run gateway diagnose.'
+                    $_.Exception.Message | Should -Not -Match 'private-provider-body-marker'
+                }
+            }
+        }
+    }
+}
+
 Describe 'Resume-time Entra application authentication boundary' {
     InModuleScope Experience {
         BeforeEach {
