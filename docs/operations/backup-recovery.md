@@ -28,7 +28,7 @@ This runbook covers backup configuration, recovery procedures, and disaster reco
 
 > The verified development state is API revision
 > `ca-gateway-api-dev--purviewguard-20260828222324`, worker revision
-> `ca-gateway-worker-dev-vnet--rbacrefresh-202608282058`, v3 queue `0/0/9`,
+> `ca-gateway-worker-dev-vnet--rbacrefresh-202608282058`, v3 queue `0/0/10`,
 > retained v2 `0/0/3`, and historical v1 `0/0/2`. The typed catalog is 12 total / 7
 > compatible / 5 incompatible. The current canary is Active, and
 > recovery work does not authorize opening admission or processing. Exact digests
@@ -400,7 +400,7 @@ az servicebus queue show \
 
 Run the same read-only query for all three generation-isolated queues. The v2 queue
 currently has three reviewed failed-canary DLQ messages and the historical queue has
-two older messages. The v3 queue is currently `0/0/9`; its DLQ entries are retained
+two older messages. The v3 queue is currently `0/0/10`; its DLQ entries are retained
 evidence, while current successful registrations are Active. Keep
 the queue isolated. Do not inspect payloads or settle any retained message as routine
 verification.

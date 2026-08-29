@@ -30,23 +30,25 @@ Continuous development is proven for both blueprint modes. Create-new registrati
 `ff685604-999c-4584-9cec-87ec21f870ee` completed operation
 `099248a5-e1a3-4c50-a456-d0a04a6f1933`. Their full blueprint/child/Registry maps
 are in `../implementation-status.md`. Both are Available in Microsoft 365 Admin
-Center. Current queues are v3 `0/0/9`, retained v2 `0/0/3`, and historical
+Center. Current queues are v3 `0/0/10`, retained v2 `0/0/3`, and historical
 `0/0/2`; all DLQs remain evidence-only.
 
 Blueprint-scoped Purview Enforce is live. Benign content returns `AuditLogged`, a
 synthetic credit-card `uploadText` returns `Blocked`, and `downloadText` is processed
-offline. The exact release gate is 1,119/1,119; authoritative counts and deployment
+offline. The exact release gate is 1,121/1,121; authoritative counts and deployment
 digests belong in `../implementation-status.md`.
 
-Current unreleased source also provisions optional Azure AI Content Safety Prompt
+Development now provisions optional Azure AI Content Safety Prompt
 Shields independently of Agent ID provisioning. Bicep creates one regional
 Content Safety account with local authentication disabled and grants the Gateway
 API managed identity the built-in Cognitive Services User role. It injects only the
 resource endpoint; runtime tokens use
 `https://cognitiveservices.azure.com/.default`. The feature adds no workflow-v3
-stage, Entra blueprint mutation, FIC, child Agent ID role, or Registry action. It is
-source-only until a separately authorized migration/deployment/readback and bounded
-data-plane canary are recorded.
+stage, Entra blueprint mutation, FIC, child Agent ID role, or Registry action. Live
+registration `ca5de6e3-d30a-4c57-8085-7382cc69fa0a` proves allow, block, activity/
+OTel 202, receipt-bound interaction 202, and temporary-key revocation. Use the exact
+resource, revisions, digests, correlations, and cleanup evidence in the deployment
+status; do not generalize development proof to production support.
 
 ### Historical superseded checkpoint
 

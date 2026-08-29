@@ -1198,9 +1198,48 @@ public class InfrastructureAsCodeSecurityTests
 
         runner.Should().Contain("AzureCliCredential");
         runner.Should().Contain("20260824_agent_identity_workflow_v2.sql");
+        runner.Should().Contain("20260829_purview_policy_profiles.sql");
+        runner.Should().Contain("20260829_prompt_protection.sql");
+
+        var purviewMigration = ReadRepositoryFile(
+            "infrastructure", "sql", "20260829_purview_policy_profiles.sql");
+        purviewMigration.Should().Contain("[BlueprintApplicationIdsJson] nvarchar(max) NOT NULL");
+        purviewMigration.Should().NotContain("nvarchar(8000)");
         runner.Should().Contain("20260825_scoped_idempotency_finalize.sql");
         runner.Should().Contain("SHA256.HashData");
         runner.Should().NotContainEquivalentOf("password");
+    }
+
+    [Fact]
+    public void ApiContainerBuild_ShouldRestoreEveryDirectProjectDependency()
+    {
+        var project = ReadRepositoryFile("src", "Gateway.Api", "Gateway.Api.csproj");
+        var dockerfile = ReadRepositoryFile("src", "Gateway.Api", "Dockerfile");
+
+        var projectReferences = Regex.Matches(
+                project,
+                "<ProjectReference Include=\"(?<path>[^\"]+)\"",
+                RegexOptions.CultureInvariant)
+            .Select(match => Path.GetFileName(match.Groups["path"].Value.Replace('\\', '/')))
+            .ToArray();
+
+        foreach (var projectFile in projectReferences)
+            dockerfile.Should().Contain(projectFile);
+    }
+
+    [Fact]
+    public void LiveCanary_ShouldKeepTemporaryCredentialsInMemoryAndRevokeThem()
+    {
+        var source = ReadRepositoryFile("tools", "Gateway.LiveCanary", "Program.cs");
+        var dockerfile = ReadRepositoryFile("tools", "Gateway.LiveCanary", "Dockerfile");
+
+        source.Should().Contain("credentialKey = string.Empty");
+        source.Should().Contain("credentials/{credentialId:D}");
+        source.Should().Contain("exitCode = 1;");
+        source.Should().Contain("The response body was deliberately not rendered.");
+        source.Should().NotContain("Console.WriteLine(credentialKey");
+        source.Should().NotContain("Console.WriteLine(token.Token");
+        dockerfile.Should().Contain("USER $APP_UID");
     }
 
     [Fact]

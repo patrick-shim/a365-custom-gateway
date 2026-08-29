@@ -42,7 +42,7 @@ synthetic-block proof.
 
 Final verification proved API revision
 `ca-gateway-api-dev--purviewguard-20260828222324`, worker revision
-`ca-gateway-worker-dev-vnet--rbacrefresh-202608282058`, and v3 queue `0/0/9`.
+`ca-gateway-worker-dev-vnet--rbacrefresh-202608282058`, and v3 queue `0/0/10`.
 Two exact-operation completion windows closed without user action. Three bounded
 workflow-v2 failures and their v2 DLQ messages are retained. The first
 failed GET-only at

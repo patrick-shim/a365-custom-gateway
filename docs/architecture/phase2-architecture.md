@@ -17,7 +17,7 @@ Workflow v3 development continuous mode is live with its isolated queue, delegat
 Graph consent, API-app federated identity credential, and Active registrations for
 both create-new and reuse-existing blueprint paths. Both are Available in Microsoft
 365 Admin Center, and blueprint-scoped Purview Enforce is proven. The v3 queue is
-`0/0/9`, retained v2 is `0/0/3`, and historical v1 is `0/0/2`; no worker may receive
+`0/0/10`, retained v2 is `0/0/3`, and historical v1 is `0/0/2`; no worker may receive
 from another generation's queue. Safe identifiers, exact revisions/digests, and the
 current resume boundary are maintained in
 [`docs/implementation-status.md`](../implementation-status.md) and the live

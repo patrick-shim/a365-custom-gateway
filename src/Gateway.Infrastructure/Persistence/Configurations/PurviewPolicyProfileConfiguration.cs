@@ -20,7 +20,7 @@ internal sealed class PurviewPolicyProfileConfiguration : IEntityTypeConfigurati
         builder.Property(profile => profile.CollectionPolicyId).HasMaxLength(256);
         builder.Property(profile => profile.DlpPolicyId).HasMaxLength(256);
         builder.Property(profile => profile.DlpRuleId).HasMaxLength(256);
-        builder.Property(profile => profile.BlueprintApplicationIdsJson).HasMaxLength(8000).IsRequired();
+        builder.Property(profile => profile.BlueprintApplicationIdsJson).HasColumnType("nvarchar(max)").IsRequired();
         builder.Property(profile => profile.LastErrorCode).HasMaxLength(64);
         builder.Property(profile => profile.RowVersion).IsRowVersion();
         builder.HasIndex(profile => profile.DisplayName).IsUnique();

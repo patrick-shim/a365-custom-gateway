@@ -266,9 +266,11 @@ protected completed interaction submission must return that receipt. The externa
 runtime still has to call and honor this route before model invocation because the
 Gateway does not proxy the model. `POST /api/v1/ai-interactions` receives the later
 completed pair and processes response-side policy according to its returned mode;
-it cannot retract a response the external client already displayed. The source
-pre-model path is not live deployment evidence until its migration/image/provider
-rollout and bounded canary are recorded.
+it cannot retract a response the external client already displayed. The development
+pre-model path now has migration, Content Safety identity/RBAC, ready revision,
+allow/block, receipt-bound submission, and temporary-key revocation evidence in the
+deployment status. This does not make the completed-pair response path an inline
+response gate or establish production support.
 
 Microsoft Graph does not document an idempotency key for creating a content
 activity. The Gateway's SQL idempotency lock prevents concurrent duplicate calls and

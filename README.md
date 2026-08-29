@@ -11,7 +11,9 @@ uses managed identity plus one reusable FIC per blueprint to obtain each child A
 ID's Agent 365 token. Agent 365 observability defaults on, sanitized Azure Monitor
 mirroring is optional/off, and Purview remains independent per registration.
 Azure AI Content Safety Prompt Shields is an independent, per-registration
-pre-model control when the deployment provisions it.
+pre-model control. It is deployed and live-proven in the external development
+environment; production support remains gated by the preview Agent 365 Registry
+dependency and the production-readiness reviews below.
 
 ## Start here
 
@@ -147,6 +149,7 @@ preserves verified completed rows and never repeats a completed Registry boundar
 | `src/Gateway.Infrastructure` | SQL, locks, idempotency, rate limits, outbox, Service Bus, and Blob storage |
 | `src/Gateway.Provisioning.Worker` | Idempotent workflow stages and data-plane relay |
 | `src/ExternalAgent.Sample` | Minimal external client for bounded ingestion verification |
+| `tools/Gateway.LiveCanary` | Disposable managed-identity operator canary; holds a temporary Gateway key only in memory and revokes it in cleanup |
 | `bootstrap` | Clean-subscription prerequisite, identity, infrastructure, build, deploy, and verify orchestration |
 | `infrastructure` | Declarative shared Bicep templates and ordered, reviewed SQL schema phases |
 | `operations` | Existing-environment deployment, preflight, canary, and recovery scripts |
@@ -171,7 +174,7 @@ Both agents are visible and Available in Microsoft 365 Admin Center on platform
 `A365CustomGateway`. Gateway activity and interaction requests return HTTP 202, the
 v3 queue drains to zero active/scheduled, and the earlier live canary separately
 proves two-stage child-token exchange and Agent 365 OTLP HTTP 200. Current queue
-counts are v3 `0/0/9`, retained v2 `0/0/3`, and historical `0/0/2`; all DLQ entries
+counts are v3 `0/0/10`, retained v2 `0/0/3`, and historical `0/0/2`; all DLQ entries
 remain immutable evidence. The latest exact SQL snapshot predates the two continuous
 canaries and is not represented as a current database count.
 
@@ -193,7 +196,7 @@ scope, and requires exact readback before child Agent ID creation. This source i
 live deployment evidence; see `docs/implementation-status.md` and the Purview
 runbook for the release and app-only RBAC boundary.
 
-Current source also implements an optional **pre-model prompt-protection gate**.
+The external development deployment also runs an optional **pre-model prompt-protection gate**.
 The Admin UI exposes Prompt Shields independently from Purview. The external client
 first calls `POST /api/v1/prompts:evaluate`; enabled Prompt Shields and prompt-only
 Purview evaluation run fail closed, and a blocked request returns safe RFC 9457
@@ -202,7 +205,11 @@ single-use receipt required by the matching completed interaction. SQL stores on
 a salted prompt hash and decision metadata for the evaluation; raw prompt content
 is not stored in that table or rendered in the Admin UI. The Bicep/bootstrap source
 can create the Content Safety account and grant the API managed identity Cognitive
-Services User. This source has not yet been deployed or live-verified.
+Services User. Registration `ca5de6e3-d30a-4c57-8085-7382cc69fa0a` has live proof
+for Prompt Shields allow and block, Purview `AuditLogged`, activity/OTel HTTP 202,
+receipt-bound interaction HTTP 202, and temporary-key revocation. Exact revisions,
+digests, safe correlations, cleanup evidence, and limitations are in the two status
+documents linked above.
 
 Historical v1/v2 and failed v3 attempts remain immutable evidence and must not be
 replayed or deleted. SQL finalization remains unapplied. See the implementation and

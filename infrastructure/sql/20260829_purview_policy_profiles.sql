@@ -16,7 +16,7 @@ BEGIN
         [CollectionPolicyId] nvarchar(256) NULL,
         [DlpPolicyId] nvarchar(256) NULL,
         [DlpRuleId] nvarchar(256) NULL,
-        [BlueprintApplicationIdsJson] nvarchar(8000) NOT NULL,
+        [BlueprintApplicationIdsJson] nvarchar(max) NOT NULL,
         [VerifiedAtUtc] datetime2 NULL,
         [LastErrorCode] nvarchar(64) NULL,
         [CreatedAtUtc] datetime2 NOT NULL,

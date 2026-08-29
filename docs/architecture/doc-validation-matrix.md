@@ -7,7 +7,7 @@ This document validates every Microsoft API, SDK, CLI command, permission, and c
 ## Implementation Boundary
 
 Documentation support is not deployment evidence. Local source implements workflow
-v3. The current broad Release gate passes 1,119/1,119 tests and the solution build
+v3. The current broad Release gate passes 1,121/1,121 tests and the solution build
 has zero warnings/errors. Development continuous mode has Active registrations for
 both create-new and reuse-existing blueprint paths. Both are Available as
 `A365CustomGateway` agents in Microsoft 365 Admin Center; bound ingress returned
@@ -23,7 +23,7 @@ checkpoint.
 The last independently captured live typed catalog reported 12 rows: 7 compatible/
 selectable and 5 incompatible. A later user-run create-new flow was reported
 successful, so these are point-in-time counts rather than a current inventory. The
-v3 queue is `0/0/9`, retained v2 is `0/0/3`, and historical v1 is `0/0/2` at the
+v3 queue is `0/0/10`, retained v2 is `0/0/3`, and historical v1 is `0/0/2` at the
 last independently captured queue checkpoint.
 
 Three bounded workflow-v2 canaries are retained separately with zero active, zero
@@ -282,7 +282,7 @@ completion reaches 85% and emits only final worker verification.
 | **Azure RBAC** | Built-in **Cognitive Services User**, role ID `a97b65f3-24c7-4388-baec-2e87135dc908`: https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/ai-machine-learning |
 | **Regional boundary** | Content Safety and Prompt Shields are documented in Korea Central. Deployment still validates the actual resource endpoint/readiness. |
 | **Decision** | Keep the feature optional and per registration. Fail closed when enabled and no trusted boolean is returned. Return only safe Gateway-owned decision codes; never return/log raw provider bodies. An allow issues a short-lived, single-use salted-hash-bound receipt. The external client must honor the pre-model ordering because the Gateway intentionally does not proxy the model call. |
-| **Evidence boundary** | Source, tests, Bicep, and bootstrap wiring are local only. No Azure Content Safety resource, role assignment, migration, deployed revision, or live allow/block proof is claimed until separately recorded. |
+| **Evidence boundary** | The development deployment has an exact Content Safety resource/RBAC readback, applied migration, ready API/Admin revisions, and bounded allow/block/receipt/activity/interaction/key-revocation proof recorded in the live deployment status. This is development evidence only; production support remains unclaimed. |
 
 ## 2. Microsoft Purview
 

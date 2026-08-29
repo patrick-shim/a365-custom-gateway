@@ -35,7 +35,7 @@ Current revisions are API `ca-gateway-api-dev--purviewguard-20260828222324` on
 digest `sha256:5275b3adcdb3e17f39e7b7466fc989bfeae04904f64f85226931be19c6e939b7`
 and worker `ca-gateway-worker-dev-vnet--rbacrefresh-202608282058` on digest
 `sha256:9dad873fe49b17c55677674688616c9770f8e3810c878702011632dda9dd7c9e`.
-The v3 queue is `0/0/9`, v2 is `0/0/3`, and v1 is `0/0/2`. All retained messages
+The v3 queue is `0/0/10`, v2 is `0/0/3`, and v1 is `0/0/2`. All retained messages
 remain untouched. SQL public access is disabled and finalization is unapplied.
 Before action, follow [`agent-guides/provisioning.md`](../agent-guides/provisioning.md)
 and the exact checkpoint in

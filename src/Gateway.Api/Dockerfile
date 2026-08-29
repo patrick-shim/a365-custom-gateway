@@ -13,6 +13,7 @@ COPY ["src/Gateway.Contracts/Gateway.Contracts.csproj", "src/Gateway.Contracts/"
 COPY ["src/Gateway.Infrastructure/Gateway.Infrastructure.csproj", "src/Gateway.Infrastructure/"]
 COPY ["src/Gateway.Agent365/Gateway.Agent365.csproj", "src/Gateway.Agent365/"]
 COPY ["src/Gateway.Purview/Gateway.Purview.csproj", "src/Gateway.Purview/"]
+COPY ["src/Gateway.ContentSafety/Gateway.ContentSafety.csproj", "src/Gateway.ContentSafety/"]
 COPY ["src/Gateway.Observability/Gateway.Observability.csproj", "src/Gateway.Observability/"]
 RUN dotnet restore "src/Gateway.Api/Gateway.Api.csproj" --configfile nuget.config
 COPY . .

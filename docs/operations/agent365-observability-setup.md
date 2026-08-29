@@ -10,7 +10,7 @@ registration, automatic delegated completion for a signed-in Gateway Administrat
 worker provisioning, and data-plane relay. Two registrations are Active: one created
 a new reusable blueprint and one selected an existing reusable blueprint. Both are
 Available A365CustomGateway agents in Microsoft 365 Admin Center. The v3 queue is
-`0/0/9`; retained v2 is `0/0/3`, and historical v1 is `0/0/2`.
+`0/0/10`; retained v2 is `0/0/3`, and historical v1 is `0/0/2`.
 
 Live clients proved registration-bound ingress, matched activity/interaction HTTP
 202, child token exchange, and sanitized Agent 365 OTLP HTTP 200. Blueprint-scoped

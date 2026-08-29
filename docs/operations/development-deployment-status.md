@@ -9,7 +9,7 @@ labeled historical and must never be mistaken for the resume point.
 Last reconciled: **2026-08-29**. Continuous workflow-v3 registration,
 automatic delegated Administrator completion, final Agent 365 verification,
 registration-bound ingestion, Microsoft 365 Admin Center landing, and blueprint-
-scoped prompt DLP are live in development.
+scoped prompt DLP and independent pre-model Prompt Shields are live in development.
 
 The repository now contains a separate `bootstrap/` first-deployment state machine
 for a clean subscription. Its local source/Plan/Bicep/migrator validations do not
@@ -18,7 +18,62 @@ development resource group in this checkpoint, and none of the live identifiers,
 queues, registrations, policies, or retained evidence below were mutated by that
 source work.
 
-## 2026-08-29 source-only repository checkpoint
+## 2026-08-29 live Prompt Shields deployment and proof
+
+The external development environment now runs the pre-model prompt-protection
+contract. This deployment did not create, retry, inspect, settle, or dispose any
+historical Registry or Service Bus failure artifact.
+
+- Target is subscription `95bedc30-f6ac-481b-a3a6-588d2883c216`, resource group
+  `rg-agent-gateway`. Final source verification is a zero-warning/error Release
+  build; **1,121/1,121** tests; clean `dotnet format`; PowerShell **18/18**;
+  Bicep **23/23** templates and **5/5** parameter files; and zero broken local
+  documentation links across 54 Markdown files.
+- Migration execution ran inside `cae-a365gw-dev-vnet` because Azure Policy keeps
+  SQL public network access disabled. One-time job
+  `job-gw-db-migrate-20260829-d8db90y` applied the complete Prepare set twice,
+  including `20260829_purview_policy_profiles.sql` and
+  `20260829_prompt_protection.sql`. SQL Entra administrator ownership was restored
+  immediately; the job was deleted and SQL public access remains disabled.
+- Azure AI Content Safety account `cs-a365gw-dev-s4a3t2` is S0 in Korea Central,
+  has local authentication disabled, and exposes
+  `https://cs-a365gw-dev-s4a3t2.cognitiveservices.azure.com/`. API managed identity
+  `11c2b9f3-1845-4fe2-82da-70b91c5abca7` has Cognitive Services User only at that
+  account scope.
+- API revision `ca-gateway-api-dev--ps-20260829-0239` is latest and ready on
+  `sha256:4b592efec95c6b3e415953ca3874f7863498d3e834e72b50d0c7162682fe8906`.
+  Admin revision `ca-gateway-admin-dev--ps-20260829-0241` is latest and ready on
+  `sha256:06ee96a84962440fdede9f381c4d0ca18b84f9bcfd34a46d98f7259b77a248aa`.
+  Both `/health` endpoints returned HTTP 200.
+- Gateway default Prompt Shields and registration
+  `ca5de6e3-d30a-4c57-8085-7382cc69fa0a` Prompt Shields are enabled. The selected
+  registration maps external ID `agent-9bf5e884c3f84d33af4d9fc72cd0dad9`, child
+  Agent ID `54bec58b-bf56-4a98-928a-318194686cc9`, blueprint
+  `99d9ac9a-7656-4088-b695-066457988735`, and Registry ID
+  `c27a612a-26a9-4460-a2e5-4fafaa5dd6dc`.
+- Disposable canary execution `job-gw-live-canary-20260829-mk14ghs` proved an
+  allowed prompt with Prompt Shields `Allowed` and Purview `AuditLogged`, activity/
+  OTel HTTP 202, receipt-bound interaction HTTP 202, and an injection prompt blocked
+  with HTTP 403 `PROMPT_BLOCKED_BY_PROMPT_SHIELD`. Safe correlations are
+  `ce1d7832-6fa9-463f-b41c-53af013aa0a4`,
+  `1d116dc0-bfcc-4eff-8f15-ababe7f650cb`,
+  `759e4244-5475-4b19-9221-319ba8cca92a`, and
+  `b05a3b95-b4e8-4e80-a4e1-0f245ff506cb`.
+- The canary held its one-time credential only in memory and revoked safe key ID
+  `7a275a31-7204-466a-9a1a-a37590a2ff4a`. Its temporary Gateway Administrator app
+  role, Container Apps job, and system service principal were removed. The live
+  agent page shows Prompt Evaluation Allowed, Prompt Evaluation Blocked, Activity
+  Submitted, Interaction Submitted, and the revoked key lifecycle entry.
+- Post-canary queues drained to v3 `0/0/10`, retained v2 `0/0/3`, and historical
+  v1 `0/0/2`. No DLQ was opened or disposed; the additional v3 retained item is not
+  assigned a cause without a separately authorized evidence review.
+
+This proves the external development path, not a supported production offering.
+The Agent 365 Registry dependency remains beta/preview and Microsoft does not
+support it for production use. Staging multi-replica, provider-outage, failover,
+capacity, backup, privilege, and incident-readiness gates remain outstanding.
+
+## 2026-08-29 source-only repository checkpoint (superseded by live proof above)
 
 The clean-subscription bootstrap, repository cleanup, API/Admin UI hardening, and
 documentation convergence were validated locally without an Azure, SQL, Entra,
@@ -29,10 +84,10 @@ document therefore remain unchanged.
 Validation at this source checkpoint is:
 
 - zero-warning/zero-error Release builds for the solution and DatabaseMigrator;
-- **1,119/1,119** direct Release tests: unit 409, Admin UI 151, end-to-end 106,
-  security 111, observability/runtime 144, integration 92, architecture 106;
+- **1,121/1,121** direct Release tests: unit 409, Admin UI 151, end-to-end 106,
+  security 111, observability/runtime 144, integration 92, architecture 108;
 - `dotnet format --verify-no-changes` clean;
-- PowerShell parsing **26/26**, Bicep templates **20/20**, and parameter files
+- PowerShell parsing **18/18**, Bicep templates **23/23**, and parameter files
   **5/5**;
 - a successful non-mutating bootstrap `Plan` through all 12 phases;
 - **52** Markdown files with **43** repository-local links and zero broken targets,
@@ -54,27 +109,27 @@ existing-environment deployment, preflight, canary, and recovery scripts live un
 `operations/`. `bootstrap/` remains the sole clean-subscription orchestration entry
 point. All workflows, bootstrap modules, migrator paths, architecture tests,
 runbooks, and Claude/Codex deployment instructions were synchronized. Validation
-remains zero-warning/error with **1,119/1,119** tests, PowerShell **26/26**, Bicep
-templates **20/20**, parameters **5/5**, and `dotnet format` clean. Documentation is
+remains zero-warning/error with **1,121/1,121** tests, PowerShell **18/18**, Bicep
+templates **23/23**, parameters **5/5**, and `dotnet format` clean. Documentation is
 now **54** Markdown files and **51** repository-local links with zero broken targets.
 No live resource, revision, queue, registration, policy, or SQL state changed.
 
-The latest source-only increment adds optional Azure AI Content Safety Prompt
+The source increment later deployed in the live checkpoint above adds optional Azure AI Content Safety Prompt
 Shields and a prompt-only Purview pre-model endpoint. Allowed evaluations issue a
 short-lived, single-use salted-hash-bound receipt required by protected completed
 interactions; blocked evaluations return safe RFC 9457 client details. Admin UI,
 sample client, OpenAPI, additive SQL migration, managed-identity Content Safety
 Bicep/bootstrap wiring, and focused allow/block/replay tests are synchronized. The
-complete gate is the 1,119-test/static total above. No prompt-protection migration,
-Content Safety resource or role assignment, image, revision, registration feature,
-live evaluation, queue, Registry, Purview policy, or retained artifact was changed.
+complete gate is the 1,121-test/static total above. At the time of this historical
+checkpoint no prompt-protection migration or Azure state had changed; the newer
+live section above supersedes that deployment status.
 
 An authenticated visual browser pass was not available in this local checkpoint:
 the in-app browser had no signed-in tenant session, and the local UI correctly
 refused startup without its required Gateway API URL/scopes. UI behavior is covered
-by the passing 151-test bUnit project. Do not claim these source changes as deployed
-until a reviewed deployment records a new digest/revision and authenticated route
-inspection. A disposable clean-subscription bootstrap `Apply` also remains the next
+by the passing 151-test bUnit project. At this historical checkpoint those changes
+were not deployed; the live Prompt Shields section above now supplies the later
+digest/revision and authenticated-route evidence. A disposable clean-subscription bootstrap `Apply` also remains the next
 recovery proof; the successful local `Plan` is not live deployment evidence.
 
 ## Current disposition
@@ -758,21 +813,19 @@ read-only preflight. A live enablement and one bounded new-blueprint canary requ
 separate authorization entry here.
 
 1. Keep continuous registration, delegated completion, and relay confined to the
-   development deployment. Preserve v3 `0/0/9`, retained v2 `0/0/3`, historical
+   development deployment. Preserve v3 `0/0/10`, retained v2 `0/0/3`, historical
    `0/0/2`, and every retained Microsoft artifact.
 2. Promote the same source through a staging review that restores exact-bound
    admission, validates multi-replica/failover behavior, and captures fresh SQL
    outbox/job evidence.
-3. Keep Purview policy locations blueprint-scoped. The pre-model prompt path is
-   implemented locally but not deployed; roll it out only through its recorded
-   additive migration, Content Safety resource/RBAC, images, read-only preflight,
-   and bounded allow/block/receipt canary. Response-before-release enforcement
-   remains separate because `downloadText` is currently offline.
-4. The user reported recreating the accidentally deleted Azure PAYG resource; the
-   Purview policy currently shows synchronization in progress. Wait for the billing
-   association and policy to become Active, then capture fresh collection evidence.
-   Until then recovery is unverified. This does not invalidate the proven Graph DLP
-   decision path.
+3. Keep Purview policy locations blueprint-scoped. Prompt Shields is now deployed
+   and proven independently from Purview. The next prompt-protection gate is staging
+   multi-replica, dependency-outage, expiry/mismatch, and failover validation.
+   Response-before-release enforcement remains separate because `downloadText` is
+   currently offline.
+4. The recreated Purview PAYG association is sufficient for the live prompt canary:
+   the allowed evaluation returned `AuditLogged`. Preserve the established Purview
+   policy and do not infer response-side inline enforcement from that result.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Prove `bootstrap/bootstrap.ps1` in a disposable clean development subscription,

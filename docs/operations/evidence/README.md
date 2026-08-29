@@ -9,7 +9,7 @@ two Active registrations, covering both create-new and reuse-existing blueprint
 paths. Both Registry records are Available in Microsoft 365 Admin Center. Live
 evidence proves bound ingress, Agent 365 OTLP HTTP 200, benign blueprint-scoped
 Purview audit, and a synthetic sensitive prompt blocked before observability enqueue.
-Queues are v3 `0/0/9`, v2 `0/0/3`, and v1 `0/0/2`; every DLQ remains evidence-only.
+Queues are v3 `0/0/10`, v2 `0/0/3`, and v1 `0/0/2`; every DLQ remains evidence-only.
 See [`continuous-development-proof-20260828.md`](continuous-development-proof-20260828.md)
 for safe identifiers and correlations.
 

@@ -44,16 +44,16 @@ until a successful bounded canary.
 Workflow v3 is deployed in development with explicit continuous registration,
 automatic signed-in Administrator Registry completion, worker provisioning, and
 data-plane relay. Staging and production retain exact-bound admission. The complete
-release gate passes a zero-warning/error Release build and 1,119/1,119 tests (unit
+release gate passes a zero-warning/error Release build and 1,121/1,121 tests (unit
 409, Admin UI 151, end-to-end 106, security 111, runtime 144, integration 92,
-architecture 106). PowerShell parsing passes 26/26; format, Bicep 20/20 templates and
+architecture 108). PowerShell parsing passes 18/18; format, Bicep 23/23 templates and
 5/5 parameters, OpenAPI YAML parsing, and diff checks also pass.
 
 Both create-new and reuse-existing blueprint paths are Active and Available in
 Microsoft 365 Admin Center. Bound Gateway activity/interaction requests returned
 HTTP 202 and Agent 365 OTLP accepted sanitized exports. A reusable-blueprint Purview
 policy live-proved benign audit and synthetic sensitive-prompt blocking. The v3
-queue is 0/0/9; retained v2 is 0/0/3 and historical v1 is 0/0/2. The final API
+queue is 0/0/10; retained v2 is 0/0/3 and historical v1 is 0/0/2. The final API
 revision is ca-gateway-api-dev--purviewguard-20260828222324 with digest
 sha256:5275b3adcdb3e17f39e7b7466fc989bfeae04904f64f85226931be19c6e939b7.
 The older SQL artifact predates the two continuous canaries and is not current

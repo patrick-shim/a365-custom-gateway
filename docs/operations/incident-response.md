@@ -16,7 +16,7 @@ accepted sanitized exports. Blueprint-scoped Purview Enforce produced benign aud
 and synthetic prompt-block proof. The current API revision is
 `ca-gateway-api-dev--purviewguard-20260828222324`; the worker is
 `ca-gateway-worker-dev-vnet--rbacrefresh-202608282058`. Queue baselines are v3
-`0/0/9`, v2 `0/0/3`, and v1 `0/0/2`. Preserve every retained message and historical
+`0/0/10`, v2 `0/0/3`, and v1 `0/0/2`. Preserve every retained message and historical
 Microsoft artifact. The older SQL evidence predates the continuous canaries, and SQL
 finalization remains unapplied.
 

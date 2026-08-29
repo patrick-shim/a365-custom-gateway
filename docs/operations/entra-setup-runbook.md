@@ -28,7 +28,7 @@ both create-new and reuse-existing blueprint paths. Both registrations are Activ
 and Available in Microsoft 365 Admin Center. API revision
 `ca-gateway-api-dev--purviewguard-20260828222324` and worker revision
 `ca-gateway-worker-dev-vnet--rbacrefresh-202608282058` are healthy. The v3 queue is
-`0/0/9`; retained v2 is `0/0/3`, and historical v1 is `0/0/2`. The typed catalog
+`0/0/10`; retained v2 is `0/0/3`, and historical v1 is `0/0/2`. The typed catalog
 last proved 7 compatible/selectable and 5 incompatible/disabled rows.
 
 The three bounded v2 failures remain historical and immutable. In particular, the
