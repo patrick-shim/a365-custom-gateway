@@ -323,7 +323,7 @@ reported as completion of the plan. The authoritative phase status is:
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved one deliberate interruption/Resume boundary. `a365gw6` proved exact no-resubmit image recovery; `a365gw7` reached 6/19 with three immutable images, then exposed the private-ACR first-pull/system-identity ordering defect in the inert deployment. Terminal deployment recovery and a preauthorized dedicated pull identity are now locally verified at commit `16138105ecf9a05deed2c275b39e4f850a10f924`. A completed corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. `a365gw6` proved no-resubmit image recovery; `a365gw7` exposed the private-ACR first-pull ordering defect; `a365gw8` created the dedicated pull identity/role and reached 3/19 before exposing Azure CLI's incomplete typed ACR policy projection. Authoritative ARM policy readback is locally verified at commit `78ef1c0fc5b81005a9ec56c4adde044ed6aeb900`. A completed corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
@@ -380,11 +380,11 @@ runbooks, and paired Claude/Codex deployment instructions all reference the new
 locations. This was a source-only relocation; no Azure or database state changed.
 
 The corrected 2026-08-30 Phase 6 candidate gate passes at source commit
-`16138105ecf9a05deed2c275b39e4f850a10f924`. The Release solution build has zero
+`78ef1c0fc5b81005a9ec56c4adde044ed6aeb900`. The Release solution build has zero
 warnings and zero errors. Direct Release tests are **1,280/1,280**: unit 478,
 Admin UI 155, local Setup 75, observability/runtime 149, integration 92,
-end-to-end 106, architecture 114, and security 111. Pester discovered **338** tests:
-**337** passed, none failed, and one Windows-only launcher test was skipped on macOS.
+end-to-end 106, architecture 114, and security 111. Pester discovered **339** tests:
+**338** passed, none failed, and one Windows-only launcher test was skipped on macOS.
 The canonical bootstrap source gate parsed **17** PowerShell files and **2** JSON
 contracts and compiled all **25** Bicep templates plus **5** parameter files. Focused
 terminal-deployment recovery passes **70/70**, existing-deployment image-pull
@@ -658,6 +658,55 @@ is a new isolated `a365gw8` generation in absent resource group
 `rg-a365-custom-gw-phase6g`, only in target subscription
 `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. `a365gw7` is frozen evidence, not a Resume
 candidate.
+
+Fresh generation `a365gw8-dev` used resource group
+`rg-a365-custom-gw-phase6g`, deployment ownership
+`e7aa5755-7e7f-448c-a7ef-92dadc054235`, and ACR
+`acra365gw8devphvcbm`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Its initial accepted Plan
+`sha256:8668df4700ca605e941adf7c455f4cf8e0fa568178d116542e0c450d3491417e`
+bound configuration
+`sha256:17b21308b8e58d78f2c8dab53775af91843157c128bf4ee8082fbec92947c37f`
+and source
+`sha256:eddc62123a1ee6d8d68540d0f5b560485c30d02a1a3f6c9a55e6bb0705b91c86`;
+authenticated What-If reported exactly eight Creates and zero Deletes. Apply was
+deliberately interrupted after Prerequisites and Azure authentication durably
+completed at **2/19**, before provider or resource mutation. Persisted status
+reported `Paused`, 10%, and Azure provider registration as the exact next step.
+
+Resume recomputed the identical Plan and completed provider registration. The
+subscription-scope foundation deployment then succeeded at
+`2026-08-29T20:47:03.973590+00:00`. It created the dedicated pull identity
+`id-gateway-runtime-pull-dev`, principal
+`28533d8c-e205-424e-b4f1-6457a47f1731`, and deterministic ACR-scoped role
+assignment `97063172-3842-5639-a570-9f50dfd5586e`. Bootstrap nevertheless stopped
+at **3/19** because its strict post-deployment validator used Azure CLI 2.89.1's
+typed `az acr show` projection, which returned null for
+`azureADAuthenticationAsArmPolicy`. Exact generic ARM readback at the deployed
+`2023-11-01-preview` API returned `enabled`; identity, assignment, ownership, and
+source fields also matched. The recovery Plan
+`sha256:0a2ef13a962f3499cdc379c2eec7d84c511bee5bf7ac8511a470240a2d2a3f5b`
+reported exactly eight Deploy actions and zero Deletes, but exact recovery failed
+closed on the same incomplete typed projection without replaying the deployment.
+Safe diagnostics are preserved at
+`.bootstrap/diagnostics/a365gw8-dev-20260829-204735.json`.
+
+No Gateway API identity, image build, Container App, SQL initialization, Agent 365
+blueprint, workflow identity, Admin UI, registration, canary, Gateway-key,
+Registry, queue/message, or Purview action followed. Preserve the `a365gw8` state,
+accepted snapshot, succeeded foundation deployment, ACR, pull identity, and role.
+Never Resume it with changed source. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and its
+queues/messages were not accessed.
+
+Commit `78ef1c0fc5b81005a9ec56c4adde044ed6aeb900` replaces all three ACR ARM-audience
+policy checks with exact full-resource-ID, target-subscription reads pinned to the
+same `2023-11-01-preview` ARM API used by Bicep. The validator still rejects absent
+properties, disabled policy, API failure, wrong resource ID, or ownership/source
+drift. Independent review found no blocking issue, and the complete local gate is
+recorded above. The next live action is a new isolated `a365gw9` generation in
+absent resource group `rg-a365-custom-gw-phase6h`, only in the target subscription.
+`a365gw8` is frozen evidence, not a Resume candidate.
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
@@ -1000,12 +1049,13 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    resumable `Apply`. Preserve the exact checkout/source fingerprint and accepted
    snapshot for Resume; never mix durable state across source generations. Do not
    substitute the old partial `tools/bootstrap.ps1`. Preserve `a365gw6` and
-   `a365gw7` at 6/19. The former live-proves exact image-build recovery; the latter
-   preserves the terminal inert-deployment/private-ACR first-pull failure and its
-   partial worker identity. Neither may consume edited source. The next clean-
-   subscription action is a new isolated `a365gw8` generation from commit
-   `16138105ecf9a05deed2c275b39e4f850a10f924`, in absent resource group
-   `rg-a365-custom-gw-phase6g`, only in target subscription
+   `a365gw7` at 6/19 and `a365gw8` at 3/19. They respectively preserve exact image-
+   build recovery, the terminal inert-deployment/private-ACR first-pull failure,
+   and a succeeded dedicated-pull foundation stopped by incomplete typed ACR policy
+   readback. None may consume edited source. The next clean-subscription action is
+   a new isolated `a365gw9` generation from commit
+   `78ef1c0fc5b81005a9ec56c4adde044ed6aeb900`, in absent resource group
+   `rg-a365-custom-gw-phase6h`, only in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof

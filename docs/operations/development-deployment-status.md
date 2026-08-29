@@ -20,7 +20,7 @@ or mutated by that bootstrap work.
 ## 2026-08-30 clean-subscription live bootstrap and recovery checkpoint
 
 The corrected Phase 6 candidate is frozen on branch `codex/phase6-candidate` at
-source commit `16138105ecf9a05deed2c275b39e4f850a10f924`. The exact-account boundary now
+source commit `78ef1c0fc5b81005a9ec56c4adde044ed6aeb900`. The exact-account boundary now
 acquires Microsoft Graph access through `az account get-access-token` with the
 reviewed subscription, verifies returned subscription/tenant/type/lifetime
 metadata, and sends only bounded Graph v1.0 requests through an in-process,
@@ -31,7 +31,7 @@ the accepted-source file or a byte-identical source-bound copy.
 The final local candidate gate is zero-warning/zero-error Release build and
 **1,280/1,280** direct Release tests: unit 478, Admin UI 155, local Setup 75,
 observability/runtime 149, integration 92, end-to-end 106, architecture 114, and
-security 111. Pester discovered **338** tests: **337** passed, none failed, and one
+security 111. Pester discovered **339** tests: **338** passed, none failed, and one
 Windows-only launcher test was skipped on macOS. The canonical source gate parsed
 **17** PowerShell files and **2** JSON contracts and compiled all **25** Bicep
 templates plus **5** parameter files; `dotnet format --verify-no-changes` and
@@ -93,6 +93,55 @@ dedicated-identity contract; it performs no migration, role deletion, or cleanup
 The next live action is fresh isolated project `a365gw8` in absent resource group
 `rg-a365-custom-gw-phase6g`, only in the target subscription above. `a365gw7` is
 frozen evidence, not a Resume candidate.
+
+Fresh `a365gw8-dev` then used resource group
+`rg-a365-custom-gw-phase6g`, ownership
+`e7aa5755-7e7f-448c-a7ef-92dadc054235`, and ACR
+`acra365gw8devphvcbm`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Initial Plan
+`sha256:8668df4700ca605e941adf7c455f4cf8e0fa568178d116542e0c450d3491417e`
+bound configuration
+`sha256:17b21308b8e58d78f2c8dab53775af91843157c128bf4ee8082fbec92947c37f`
+and source
+`sha256:eddc62123a1ee6d8d68540d0f5b560485c30d02a1a3f6c9a55e6bb0705b91c86`;
+authenticated What-If reported exactly eight Creates and zero Deletes.
+
+Apply completed Prerequisites and Azure authentication, then was deliberately
+interrupted before provider/resource mutation. Status preserved **2/19**, 10%,
+and Azure provider registration as the next step. Resume recomputed the identical
+Plan, completed provider registration, and submitted the foundation. Subscription
+deployment `a365gw-a365gw8-bootstrap-foundation-dev` succeeded at
+`2026-08-29T20:47:03.973590+00:00`. It created pull identity
+`id-gateway-runtime-pull-dev`, principal
+`28533d8c-e205-424e-b4f1-6457a47f1731`, and deterministic exact ACR-scoped role
+assignment `97063172-3842-5639-a570-9f50dfd5586e`.
+
+Bootstrap stopped at **3/19** during exact foundation validation. Azure CLI 2.89.1
+typed `az acr show` returned null for
+`azureADAuthenticationAsArmPolicy`, although exact generic ARM readback at API
+`2023-11-01-preview` returned `enabled`; identity, role, owner, and source fields
+also matched. Recovery Plan
+`sha256:0a2ef13a962f3499cdc379c2eec7d84c511bee5bf7ac8511a470240a2d2a3f5b`
+reported exactly eight Deploy actions and zero Deletes. Its Resume failed closed on
+the same projection without replaying the already-succeeded deployment. Safe
+diagnostics are `.bootstrap/diagnostics/a365gw8-dev-20260829-204735.json`.
+
+No API Entra identity, ACR build, Container App, SQL initialization, Agent 365
+blueprint, workflow identity, Admin UI, registration, canary, Gateway-key,
+Registry, Service Bus queue/message, or Purview action followed. Preserve all
+`a365gw8` state, snapshot, foundation, ACR, pull identity, and role evidence; it
+must not Resume with edited source. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and its
+queues/messages were not accessed.
+
+Commit `78ef1c0fc5b81005a9ec56c4adde044ed6aeb900` changes all three ACR ARM-audience
+checks to exact resource-ID, target-subscription reads pinned to the same
+`2023-11-01-preview` ARM API as Bicep. Absent properties, disabled policy, API
+failure, wrong ID, or owner/source drift still fail closed. The full current local
+gate and independent review are recorded above. The next live action is fresh
+isolated project `a365gw9` in absent resource group
+`rg-a365-custom-gw-phase6h`, only in the target subscription. `a365gw8` is frozen
+evidence, not a Resume candidate.
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
