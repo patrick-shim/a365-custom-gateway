@@ -1605,13 +1605,24 @@ function Test-GatewayGroupDeploymentEvidence {
             [string]$deployment.parameters.workerContainerAppName.value -cne "ca-gateway-worker-$($Config.environment)-v3" -or
             [bool]$deployment.parameters.databaseAttestationEnabled.value -ne [bool]$isRuntime -or
             [bool]$deployment.outputs.databaseAttestationEnabled.value -ne [bool]$isRuntime) { throw 'mismatch' }
-        foreach ($property in @(
-            'apiFqdn', 'apiPrincipalId', 'workerPrincipalId', 'acrLoginServer',
-            'containerRegistryId', 'keyVaultUri', 'sharedKeyVaultId', 'storageAccountId',
-            'sqlServerFqdn', 'serviceBusQueueName', 'serviceBusQueueId', 'registryProvider'
-        )) {
-            if ([string]$deployment.outputs.$property.value -ne [string]$Evidence.$property) { throw 'mismatch' }
+        $outputEvidenceNames = [ordered]@{
+            apiFqdn = 'apiFqdn'
+            apiPrincipalId = 'apiPrincipalId'
+            workerPrincipalId = 'workerPrincipalId'
+            acrLoginServer = 'acrLoginServer'
+            containerRegistryId = 'containerRegistryId'
+            keyVaultUri = 'keyVaultUri'
+            sharedKeyVaultId = 'sharedKeyVaultId'
+            storageAccountId = 'storageAccountId'
+            sqlServerFqdn = 'sqlServerFqdn'
+            serviceBusQueueName = 'serviceBusQueueName'
+            serviceBusQueueId = 'serviceBusQueueId'
+            agent365RegistryProvider = 'registryProvider'
         }
+        Assert-GatewayDeploymentOutputEvidenceMap `
+            -Outputs $deployment.outputs `
+            -Evidence $Evidence `
+            -OutputToEvidenceName $outputEvidenceNames | Out-Null
         foreach ($property in @('provisioningExecutionEnabled', 'workerProcessingEnabled')) {
             if ([bool]$deployment.outputs.$property.value -ne [bool]$Evidence.$property) { throw 'mismatch' }
         }
@@ -1813,6 +1824,25 @@ function Test-GatewayGroupDeploymentEvidence {
         return $true
     }
     catch { throw 'ARM deployment revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.' }
+}
+
+function Assert-GatewayDeploymentOutputEvidenceMap {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Outputs,
+        [Parameter(Mandatory)]$Evidence,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$OutputToEvidenceName
+    )
+
+    foreach ($entry in $OutputToEvidenceName.GetEnumerator()) {
+        $output = Get-GatewayOptionalObjectProperty -Object $Outputs -Name ([string]$entry.Key)
+        $evidenceValue = Get-GatewayOptionalObjectProperty -Object $Evidence -Name ([string]$entry.Value)
+        if ($null -eq $output -or $null -eq $evidenceValue -or
+            [string]$output.value -ne [string]$evidenceValue) {
+            throw 'Deployment output evidence does not match the reviewed output-to-evidence contract.'
+        }
+    }
+    return $true
 }
 
 function Test-GatewayNamedGroupDeployment {

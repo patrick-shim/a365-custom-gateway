@@ -93,6 +93,101 @@ Describe 'Final Entra and runtime admission boundaries' {
             { Get-GatewayRuntimeProvisioningMode -Config $config -Runtime $runtime } |
                 Should -Throw '*do not match the reviewed effective*'
         }
+
+        It 'binds the provisioning preflight through exact named parameters without flattening manager IDs' {
+            $managerIds = [string[]]@(
+                '66666666-6666-4666-8666-666666666666',
+                '77777777-7777-4777-8777-777777777777'
+            )
+            $arguments = Get-GatewayProvisioningPreflightArguments `
+                -Config ([pscustomobject]@{
+                    environment = 'dev'
+                    subscriptionId = '11111111-1111-4111-8111-111111111111'
+                    tenantId = '22222222-2222-4222-8222-222222222222'
+                    resourceGroupName = 'rg-safe-dev'
+                    projectName = 'safeproject'
+                }) `
+                -Foundation ([pscustomobject]@{ containerAppsEnvironmentName = 'cae-safe-dev' }) `
+                -Runtime ([pscustomobject]@{
+                    serviceBusQueueName = 'gateway-provisioning-v3'
+                    workerProcessingEnabled = $true
+                }) `
+                -Identity ([pscustomobject]@{ gatewayApiClientId = '33333333-3333-4333-8333-333333333333' }) `
+                -Blueprint ([pscustomobject]@{ managerApplicationIds = $managerIds }) `
+                -ExpectedRegistryProvider 'DirectRegistryPreview' `
+                -RuntimePreviewEnabled $true
+
+            $bound = & {
+                [CmdletBinding()]
+                param(
+                    [ValidateSet('dev', 'staging', 'prod')][string]$Environment,
+                    [string]$ExpectedSubscriptionId,
+                    [string]$ExpectedTenantId,
+                    [string]$ResourceGroup,
+                    [string]$ProjectName,
+                    [string]$ContainerAppsEnvironmentName,
+                    [string]$WorkerContainerAppName,
+                    [string]$ExpectedServiceBusQueueName,
+                    [bool]$WorkerProcessingEnabled,
+                    [string]$ExpectedGatewayApiApplicationClientId,
+                    [string]$ExpectedCredentialKeyVaultUri,
+                    [string[]]$ExpectedManagerApplicationIds,
+                    [ValidateSet('Disabled', 'DirectRegistryPreview')][string]$RegistryProvider,
+                    [string]$ExpectedGatewayApiFederatedCredentialName,
+                    [switch]$ManagerApplicationsPreflightConfirmed,
+                    [switch]$RequireDeployedConfigurationMatch,
+                    [switch]$DirectRegistryPreviewEnabled,
+                    [switch]$DelegatedRegistryEnabled,
+                    [switch]$RequireExecutionReady,
+                    [switch]$ExpectContinuousDevelopmentAccess
+                )
+                return [pscustomobject]@{
+                    environment = $Environment
+                    subscriptionId = $ExpectedSubscriptionId
+                    tenantId = $ExpectedTenantId
+                    resourceGroup = $ResourceGroup
+                    projectName = $ProjectName
+                    containerAppsEnvironmentName = $ContainerAppsEnvironmentName
+                    workerContainerAppName = $WorkerContainerAppName
+                    queueName = $ExpectedServiceBusQueueName
+                    workerProcessingEnabled = $WorkerProcessingEnabled
+                    gatewayApiClientId = $ExpectedGatewayApiApplicationClientId
+                    credentialVaultUri = $ExpectedCredentialKeyVaultUri
+                    managerIds = [string[]]@($ExpectedManagerApplicationIds)
+                    registryProvider = $RegistryProvider
+                    federatedCredentialName = $ExpectedGatewayApiFederatedCredentialName
+                    managerConfirmed = $ManagerApplicationsPreflightConfirmed.IsPresent
+                    deploymentMatchRequired = $RequireDeployedConfigurationMatch.IsPresent
+                    directRegistryEnabled = $DirectRegistryPreviewEnabled.IsPresent
+                    delegatedRegistryEnabled = $DelegatedRegistryEnabled.IsPresent
+                    executionReadyRequired = $RequireExecutionReady.IsPresent
+                    continuousDevelopmentExpected = $ExpectContinuousDevelopmentAccess.IsPresent
+                }
+            } @arguments
+
+            $bound.environment | Should -BeExactly 'dev'
+            $bound.subscriptionId | Should -BeExactly '11111111-1111-4111-8111-111111111111'
+            $bound.tenantId | Should -BeExactly '22222222-2222-4222-8222-222222222222'
+            $bound.resourceGroup | Should -BeExactly 'rg-safe-dev'
+            $bound.projectName | Should -BeExactly 'safeproject'
+            $bound.containerAppsEnvironmentName | Should -BeExactly 'cae-safe-dev'
+            $bound.workerContainerAppName | Should -BeExactly 'ca-gateway-worker-dev-v3'
+            $bound.queueName | Should -BeExactly 'gateway-provisioning-v3'
+            $bound.workerProcessingEnabled | Should -BeTrue
+            $bound.gatewayApiClientId | Should -BeExactly '33333333-3333-4333-8333-333333333333'
+            $bound.credentialVaultUri | Should -BeExactly 'https://kv-safeproject-dev-prov.vault.azure.net/'
+            @($bound.managerIds).Count | Should -Be 2
+            $bound.managerIds[0] | Should -BeExactly $managerIds[0]
+            $bound.managerIds[1] | Should -BeExactly $managerIds[1]
+            $bound.registryProvider | Should -BeExactly 'DirectRegistryPreview'
+            $bound.federatedCredentialName | Should -BeExactly 'a365gw-safeproject-api-obo-dev'
+            $bound.managerConfirmed | Should -BeTrue
+            $bound.deploymentMatchRequired | Should -BeTrue
+            $bound.directRegistryEnabled | Should -BeTrue
+            $bound.delegatedRegistryEnabled | Should -BeTrue
+            $bound.executionReadyRequired | Should -BeTrue
+            $bound.continuousDevelopmentExpected | Should -BeTrue
+        }
     }
 }
 
@@ -411,6 +506,21 @@ Describe 'Provisioning preflight account and OBO environment boundary' {
             $node.Name -eq 'Test-DeployedGatewayApiEntraCredentialConfiguration'
         }, $true)
         Invoke-Expression $credentialFunction.Extent.Text
+        foreach ($functionName in @(
+            'Get-ExactPlainContainerEnvironmentValue',
+            'Test-EquivalentOptionalUtcInstant',
+            'Test-DeployedDelegatedRegistryConfiguration',
+            'Test-DeployedProvisioningBindings',
+            'Test-ContinuousDevelopmentAccessInputContract'
+        )) {
+            $functionDefinition = $script:preflightAst.Find({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $functionName
+            }, $true)
+            $null = $functionDefinition | Should -Not -BeNullOrEmpty
+            Invoke-Expression $functionDefinition.Extent.Text
+        }
     }
 
     BeforeEach {
@@ -418,6 +528,12 @@ Describe 'Provisioning preflight account and OBO environment boundary' {
         $script:TokenExchangeAudience = 'api://AzureADTokenExchange'
         function Add-Failure { param([string]$Message) $script:preflightFailures.Add($Message) }
         function Write-Pass { param([string]$Message) }
+        function Get-ContainerEnvironmentEntriesWithPrefix {
+            param([Parameter(Mandatory)]$ContainerApp, [Parameter(Mandatory)][string]$Prefix)
+            return @($ContainerApp.properties.template.containers[0].env | Where-Object {
+                ([string]$_.name).StartsWith($Prefix, [StringComparison]::Ordinal)
+            })
+        }
         $script:safeApiEntries = @(
             [pscustomobject]@{ name = 'EntraId__TenantId'; value = '11111111-1111-4111-8111-111111111111' },
             [pscustomobject]@{ name = 'EntraId__ClientId'; value = '22222222-2222-4222-8222-222222222222' },
@@ -425,6 +541,88 @@ Describe 'Provisioning preflight account and OBO environment boundary' {
             [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__SourceType'; value = 'SignedAssertionFromManagedIdentity' },
             [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__TokenExchangeUrl'; value = 'api://AzureADTokenExchange' }
         )
+        function New-ContinuousDevelopmentAccessEntries {
+            return @(
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Enabled'; value = 'true' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__RequireExactActionBinding'; value = 'false' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess'; value = 'true' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Scopes__0'; value = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Scopes__1'; value = 'https://graph.microsoft.com/AgentRegistration.Read.All' }
+                [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__SourceType'; value = 'SignedAssertionFromManagedIdentity' }
+                [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__TokenExchangeUrl'; value = 'api://AzureADTokenExchange' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__ActionExpiresAtUtc'; value = '' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__AuthorizedOperationId'; value = '' }
+                [pscustomobject]@{ name = 'Provisioning__RequireExactAdmissionBinding'; value = 'false' }
+                [pscustomobject]@{ name = 'Provisioning__AllowContinuousDevelopmentAccess'; value = 'true' }
+                [pscustomobject]@{ name = 'Provisioning__AuthorizedExternalAgentId'; value = '' }
+                [pscustomobject]@{ name = 'Provisioning__AuthorizedRetryAgentId'; value = '' }
+                [pscustomobject]@{ name = 'Provisioning__AdmissionExpiresAtUtc'; value = '' }
+            )
+        }
+        function New-ExactRegistrationAccessEntries {
+            param([Parameter(Mandatory = $true)][string]$FutureExpiry)
+            return @(
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Enabled'; value = 'false' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__RequireExactActionBinding'; value = 'true' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess'; value = 'false' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Scopes__0'; value = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Scopes__1'; value = 'https://graph.microsoft.com/AgentRegistration.Read.All' }
+                [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__SourceType'; value = 'SignedAssertionFromManagedIdentity' }
+                [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__TokenExchangeUrl'; value = 'api://AzureADTokenExchange' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__ActionExpiresAtUtc'; value = '' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__AuthorizedOperationId'; value = '' }
+                [pscustomobject]@{ name = 'Provisioning__RequireExactAdmissionBinding'; value = 'true' }
+                [pscustomobject]@{ name = 'Provisioning__AllowContinuousDevelopmentAccess'; value = 'false' }
+                [pscustomobject]@{ name = 'Provisioning__AuthorizedExternalAgentId'; value = 'agent-safe-external-id' }
+                [pscustomobject]@{ name = 'Provisioning__AuthorizedRetryAgentId'; value = '' }
+                [pscustomobject]@{ name = 'Provisioning__AdmissionExpiresAtUtc'; value = $FutureExpiry }
+            )
+        }
+        function New-AccessContainerApp {
+            param([Parameter(Mandatory = $true)][object[]]$Entries)
+            return [pscustomobject]@{
+                properties = [pscustomobject]@{
+                    template = [pscustomobject]@{
+                        containers = @([pscustomobject]@{ env = @($Entries) })
+                    }
+                }
+            }
+        }
+        function Invoke-ContinuousDevelopmentAccessChecks {
+            param([Parameter(Mandatory = $true)][object]$ContainerApp)
+            Test-DeployedDelegatedRegistryConfiguration `
+                -ContainerApp $ContainerApp `
+                -ExpectedEnabled $true `
+                -ExpectedContinuousDevelopmentAccess $true `
+                -ExpectedActionExpiresAtUtc '' `
+                -ExpectedAuthorizedOperationId ''
+            Test-DeployedProvisioningBindings `
+                -ContainerApp $ContainerApp `
+                -ExpectedEnabled $true `
+                -ExpectedContinuousDevelopmentAccess $true `
+                -ExpectedExternalAgentId '' `
+                -ExpectedRetryAgentId '' `
+                -ExpectedAdmissionExpiresAtUtc ''
+        }
+        function Invoke-ExactRegistrationAccessChecks {
+            param(
+                [Parameter(Mandatory = $true)][object]$ContainerApp,
+                [Parameter(Mandatory = $true)][string]$FutureExpiry
+            )
+            Test-DeployedDelegatedRegistryConfiguration `
+                -ContainerApp $ContainerApp `
+                -ExpectedEnabled $false `
+                -ExpectedContinuousDevelopmentAccess $false `
+                -ExpectedActionExpiresAtUtc '' `
+                -ExpectedAuthorizedOperationId ''
+            Test-DeployedProvisioningBindings `
+                -ContainerApp $ContainerApp `
+                -ExpectedEnabled $true `
+                -ExpectedContinuousDevelopmentAccess $false `
+                -ExpectedExternalAgentId 'agent-safe-external-id' `
+                -ExpectedRetryAgentId '' `
+                -ExpectedAdmissionExpiresAtUtc $FutureExpiry
+        }
     }
 
     It 'requires canonical subscription and tenant inputs and passes both from final verification' {
@@ -439,8 +637,295 @@ Describe 'Provisioning preflight account and OBO environment boundary' {
         $script:preflightSource | Should -Match 'ExpectedTenantId must be one canonical lowercase non-empty GUID'
 
         $verificationSource = Get-Content -LiteralPath (Join-Path $script:preflightRepositoryRoot 'bootstrap/modules/Verification.psm1') -Raw
-        $verificationSource | Should -Match "'-ExpectedSubscriptionId', \[string\]\`$Config\.subscriptionId"
-        $verificationSource | Should -Match "'-ExpectedTenantId', \[string\]\`$Config\.tenantId"
+        $verificationSource | Should -Match 'ExpectedSubscriptionId\s*=\s*\[string\]\$Config\.subscriptionId'
+        $verificationSource | Should -Match 'ExpectedTenantId\s*=\s*\[string\]\$Config\.tenantId'
+    }
+
+    It 'accepts only the explicit continuous development admission and delegated Registry surface' {
+        $containerApp = New-AccessContainerApp -Entries @(New-ContinuousDevelopmentAccessEntries)
+
+        Invoke-ContinuousDevelopmentAccessChecks -ContainerApp $containerApp
+
+        $script:preflightFailures.Count | Should -Be 0
+    }
+
+    It 'fails every continuous-mode security-critical setting closed on case-conflicting duplicates and secret references' {
+        $safeEntries = @(New-ContinuousDevelopmentAccessEntries)
+        foreach ($targetName in @($safeEntries.name)) {
+            $duplicateEntries = @($safeEntries | ForEach-Object {
+                [pscustomobject]@{ name = [string]$_.name; value = [string]$_.value }
+            })
+            $duplicateEntries += [pscustomobject]@{
+                name = $targetName.ToUpperInvariant()
+                value = 'contradictory-redacted-value'
+            }
+            $script:preflightFailures.Clear()
+            Invoke-ContinuousDevelopmentAccessChecks `
+                -ContainerApp (New-AccessContainerApp -Entries $duplicateEntries)
+            $script:preflightFailures.Count | Should -BeGreaterThan 0
+
+            $secretReferenceEntries = @($safeEntries | ForEach-Object {
+                if ([string]::Equals([string]$_.name, $targetName, [StringComparison]::Ordinal)) {
+                    [pscustomobject]@{
+                        name = [string]$_.name
+                        value = [string]$_.value
+                        secretRef = 'redacted-reference'
+                    }
+                }
+                else {
+                    [pscustomobject]@{ name = [string]$_.name; value = [string]$_.value }
+                }
+            })
+            $script:preflightFailures.Clear()
+            Invoke-ContinuousDevelopmentAccessChecks `
+                -ContainerApp (New-AccessContainerApp -Entries $secretReferenceEntries)
+            $script:preflightFailures.Count | Should -BeGreaterThan 0
+        }
+    }
+
+    It 'fails every exact-bound security-critical setting closed on case-conflicting duplicates and secret references' {
+        $futureExpiry = [DateTimeOffset]::UtcNow.AddHours(1).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $safeEntries = @(New-ExactRegistrationAccessEntries -FutureExpiry $futureExpiry)
+        foreach ($targetName in @($safeEntries.name)) {
+            $duplicateEntries = @($safeEntries | ForEach-Object {
+                [pscustomobject]@{ name = [string]$_.name; value = [string]$_.value }
+            })
+            $duplicateEntries += [pscustomobject]@{
+                name = $targetName.ToUpperInvariant()
+                value = 'contradictory-redacted-value'
+            }
+            $script:preflightFailures.Clear()
+            Invoke-ExactRegistrationAccessChecks `
+                -ContainerApp (New-AccessContainerApp -Entries $duplicateEntries) `
+                -FutureExpiry $futureExpiry
+            $script:preflightFailures.Count | Should -BeGreaterThan 0
+
+            $secretReferenceEntries = @($safeEntries | ForEach-Object {
+                if ([string]::Equals([string]$_.name, $targetName, [StringComparison]::Ordinal)) {
+                    [pscustomobject]@{
+                        name = [string]$_.name
+                        value = [string]$_.value
+                        secretRef = 'redacted-reference'
+                    }
+                }
+                else {
+                    [pscustomobject]@{ name = [string]$_.name; value = [string]$_.value }
+                }
+            })
+            $script:preflightFailures.Clear()
+            Invoke-ExactRegistrationAccessChecks `
+                -ContainerApp (New-AccessContainerApp -Entries $secretReferenceEntries) `
+                -FutureExpiry $futureExpiry
+            $script:preflightFailures.Count | Should -BeGreaterThan 0
+        }
+    }
+
+    It 'requires one container and one plain Provisioning execution-gate value' {
+        $validContainerApp = New-AccessContainerApp -Entries @(
+            [pscustomobject]@{ name = 'Provisioning__ExecutionEnabled'; value = 'true' }
+        )
+        Get-ExactPlainContainerEnvironmentValue `
+            -ContainerApp $validContainerApp `
+            -Name 'Provisioning__ExecutionEnabled' | Should -BeExactly 'true'
+        $script:preflightFailures.Count | Should -Be 0
+
+        $unsafeContainerApps = @(
+            (New-AccessContainerApp -Entries @(
+                [pscustomobject]@{ name = 'Provisioning__ExecutionEnabled'; value = 'true' }
+                [pscustomobject]@{ name = 'provisioning__executionenabled'; value = 'false' }
+            )),
+            (New-AccessContainerApp -Entries @(
+                [pscustomobject]@{
+                    name = 'Provisioning__ExecutionEnabled'
+                    value = 'true'
+                    secretRef = 'redacted-reference'
+                }
+            )),
+            (New-AccessContainerApp -Entries @(
+                [pscustomobject]@{ name = 'Provisioning__ExecutionEnabled' }
+            )),
+            ([pscustomobject]@{
+                properties = [pscustomobject]@{
+                    template = [pscustomobject]@{
+                        containers = @(
+                            [pscustomobject]@{ env = @([pscustomobject]@{ name = 'Provisioning__ExecutionEnabled'; value = 'true' }) }
+                            [pscustomobject]@{ env = @([pscustomobject]@{ name = 'Provisioning__ExecutionEnabled'; value = 'true' }) }
+                        )
+                    }
+                }
+            })
+        )
+        foreach ($unsafeContainerApp in $unsafeContainerApps) {
+            $script:preflightFailures.Clear()
+            Get-ExactPlainContainerEnvironmentValue `
+                -ContainerApp $unsafeContainerApp `
+                -Name 'Provisioning__ExecutionEnabled' | Should -BeNullOrEmpty
+            $script:preflightFailures.Count | Should -BeGreaterThan 0
+        }
+
+        $script:preflightSource | Should -Match '(?s)deployedRegistrationGate\s*=\s*Get-ExactPlainContainerEnvironmentValue.+Provisioning__ExecutionEnabled'
+    }
+
+    It 'rejects continuous development combined with every exact-bound flag or input before deployed matching' {
+        $safeArguments = [ordered]@{
+            ContinuousDevelopmentAccessExpected = $true
+            ExecutionReadyRequired = $true
+            ApiAdmissionClosedExpected = $false
+            DelegatedRegistryActionOpenExpected = $false
+            ProvisioningAuthorizedExternalAgentId = ''
+            ProvisioningAuthorizedRetryAgentId = ''
+            ProvisioningAdmissionExpiresAtUtc = ''
+            DelegatedRegistryActionExpiresAtUtc = ''
+            DelegatedRegistryAuthorizedOperationId = ''
+        }
+        Test-ContinuousDevelopmentAccessInputContract @safeArguments
+        $script:preflightFailures.Count | Should -Be 0
+
+        $unsafeOverrides = @(
+            @{ ExecutionReadyRequired = $false },
+            @{ ApiAdmissionClosedExpected = $true },
+            @{ DelegatedRegistryActionOpenExpected = $true },
+            @{ ProvisioningAuthorizedExternalAgentId = 'agent-safe-external-id' },
+            @{ ProvisioningAuthorizedRetryAgentId = '99999999-9999-4999-8999-999999999999' },
+            @{ ProvisioningAdmissionExpiresAtUtc = '2099-01-01T00:00:00Z' },
+            @{ DelegatedRegistryActionExpiresAtUtc = '2099-01-01T00:00:00Z' },
+            @{ DelegatedRegistryAuthorizedOperationId = '88888888-8888-4888-8888-888888888888' }
+        )
+        foreach ($unsafeOverride in $unsafeOverrides) {
+            $arguments = [ordered]@{}
+            foreach ($entry in $safeArguments.GetEnumerator()) {
+                $arguments[$entry.Key] = $entry.Value
+            }
+            foreach ($entry in $unsafeOverride.GetEnumerator()) {
+                $arguments[$entry.Key] = $entry.Value
+            }
+            $script:preflightFailures.Clear()
+            Test-ContinuousDevelopmentAccessInputContract @arguments
+            $script:preflightFailures.Count | Should -BeGreaterThan 0
+        }
+
+        $contractCallIndex = $script:preflightSource.LastIndexOf('Test-ContinuousDevelopmentAccessInputContract')
+        $azureInspectionIndex = $script:preflightSource.IndexOf('Write-Check "Inspecting approved Container Apps environment')
+        $contractCallIndex | Should -BeGreaterThan 0
+        $contractCallIndex | Should -BeLessThan $azureInspectionIndex
+    }
+
+    It 'accepts distinct exact-bound registration and delegated Registry action windows' {
+        $futureExpiry = [DateTimeOffset]::UtcNow.AddHours(1).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $operationId = '88888888-8888-4888-8888-888888888888'
+        $commonExactEntries = @(
+            [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__RequireExactActionBinding'; value = 'true' },
+            [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess'; value = 'false' },
+            [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Scopes__0'; value = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All' },
+            [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Scopes__1'; value = 'https://graph.microsoft.com/AgentRegistration.Read.All' },
+            [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__SourceType'; value = 'SignedAssertionFromManagedIdentity' },
+            [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__TokenExchangeUrl'; value = 'api://AzureADTokenExchange' },
+            [pscustomobject]@{ name = 'Provisioning__RequireExactAdmissionBinding'; value = 'true' },
+            [pscustomobject]@{ name = 'Provisioning__AllowContinuousDevelopmentAccess'; value = 'false' }
+        )
+        $registrationEntries = @(
+            $commonExactEntries
+            [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Enabled'; value = 'false' }
+            [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__ActionExpiresAtUtc'; value = '' }
+            [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__AuthorizedOperationId'; value = '' }
+            [pscustomobject]@{ name = 'Provisioning__AuthorizedExternalAgentId'; value = 'agent-safe-external-id' }
+            [pscustomobject]@{ name = 'Provisioning__AuthorizedRetryAgentId'; value = '' }
+            [pscustomobject]@{ name = 'Provisioning__AdmissionExpiresAtUtc'; value = $futureExpiry }
+        )
+        $registrationContainerApp = [pscustomobject]@{
+            properties = [pscustomobject]@{
+                template = [pscustomobject]@{
+                    containers = @([pscustomobject]@{ env = $registrationEntries })
+                }
+            }
+        }
+
+        Test-DeployedDelegatedRegistryConfiguration `
+            -ContainerApp $registrationContainerApp `
+            -ExpectedEnabled $false `
+            -ExpectedContinuousDevelopmentAccess $false `
+            -ExpectedActionExpiresAtUtc '' `
+            -ExpectedAuthorizedOperationId ''
+        Test-DeployedProvisioningBindings `
+            -ContainerApp $registrationContainerApp `
+            -ExpectedEnabled $true `
+            -ExpectedContinuousDevelopmentAccess $false `
+            -ExpectedExternalAgentId 'agent-safe-external-id' `
+            -ExpectedRetryAgentId '' `
+            -ExpectedAdmissionExpiresAtUtc $futureExpiry
+        $script:preflightFailures.Count | Should -Be 0
+
+        $delegatedActionEntries = @(
+            $commonExactEntries
+            [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Enabled'; value = 'true' }
+            [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__ActionExpiresAtUtc'; value = $futureExpiry },
+            [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__AuthorizedOperationId'; value = $operationId },
+            [pscustomobject]@{ name = 'Provisioning__AuthorizedExternalAgentId'; value = '' },
+            [pscustomobject]@{ name = 'Provisioning__AuthorizedRetryAgentId'; value = '' },
+            [pscustomobject]@{ name = 'Provisioning__AdmissionExpiresAtUtc'; value = '' }
+        )
+        $delegatedActionContainerApp = [pscustomobject]@{
+            properties = [pscustomobject]@{
+                template = [pscustomobject]@{
+                    containers = @([pscustomobject]@{ env = $delegatedActionEntries })
+                }
+            }
+        }
+
+        $script:preflightFailures.Clear()
+        Test-DeployedDelegatedRegistryConfiguration `
+            -ContainerApp $delegatedActionContainerApp `
+            -ExpectedEnabled $true `
+            -ExpectedContinuousDevelopmentAccess $false `
+            -ExpectedActionExpiresAtUtc $futureExpiry `
+            -ExpectedAuthorizedOperationId $operationId
+        Test-DeployedProvisioningBindings `
+            -ContainerApp $delegatedActionContainerApp `
+            -ExpectedEnabled $false `
+            -ExpectedContinuousDevelopmentAccess $false `
+            -ExpectedExternalAgentId '' `
+            -ExpectedRetryAgentId '' `
+            -ExpectedAdmissionExpiresAtUtc ''
+        $script:preflightFailures.Count | Should -Be 0
+    }
+
+    It 'rejects a continuous deployed surface when exact-bound state is expected' {
+        $continuousContainerApp = [pscustomobject]@{
+            properties = [pscustomobject]@{
+                template = [pscustomobject]@{
+                    containers = @([pscustomobject]@{ env = @(
+                        [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Enabled'; value = 'true' }
+                        [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__RequireExactActionBinding'; value = 'false' }
+                        [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess'; value = 'true' }
+                        [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Scopes__0'; value = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All' }
+                        [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Scopes__1'; value = 'https://graph.microsoft.com/AgentRegistration.Read.All' }
+                        [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__SourceType'; value = 'SignedAssertionFromManagedIdentity' }
+                        [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__TokenExchangeUrl'; value = 'api://AzureADTokenExchange' }
+                        [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__ActionExpiresAtUtc'; value = '' }
+                        [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__AuthorizedOperationId'; value = '' }
+                        [pscustomobject]@{ name = 'Provisioning__RequireExactAdmissionBinding'; value = 'false' }
+                        [pscustomobject]@{ name = 'Provisioning__AllowContinuousDevelopmentAccess'; value = 'true' }
+                        [pscustomobject]@{ name = 'Provisioning__AuthorizedExternalAgentId'; value = '' }
+                        [pscustomobject]@{ name = 'Provisioning__AuthorizedRetryAgentId'; value = '' }
+                        [pscustomobject]@{ name = 'Provisioning__AdmissionExpiresAtUtc'; value = '' }
+                    ) })
+                }
+            }
+        }
+        Test-DeployedDelegatedRegistryConfiguration `
+            -ContainerApp $continuousContainerApp `
+            -ExpectedEnabled $false `
+            -ExpectedContinuousDevelopmentAccess $false `
+            -ExpectedActionExpiresAtUtc '' `
+            -ExpectedAuthorizedOperationId ''
+        Test-DeployedProvisioningBindings `
+            -ContainerApp $continuousContainerApp `
+            -ExpectedEnabled $true `
+            -ExpectedContinuousDevelopmentAccess $false `
+            -ExpectedExternalAgentId 'agent-safe-external-id' `
+            -ExpectedRetryAgentId '' `
+            -ExpectedAdmissionExpiresAtUtc ([DateTimeOffset]::UtcNow.AddHours(1).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ'))
+        $script:preflightFailures.Count | Should -BeGreaterThan 0
     }
 
     It 'accepts only the five exact plain-value managed-identity OBO settings' {

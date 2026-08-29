@@ -62,6 +62,38 @@ Describe 'Plan exact-account context boundary' {
     }
 }
 
+Describe 'Workload deployment output mapping' {
+    InModuleScope Experience {
+        It 'maps the real Agent 365 Registry ARM output to the normalized evidence field' {
+            $outputs = [pscustomobject]@{
+                agent365RegistryProvider = [pscustomobject]@{ value = 'DirectRegistryPreview' }
+            }
+            $evidence = [pscustomobject]@{ registryProvider = 'DirectRegistryPreview' }
+
+            Assert-GatewayDeploymentOutputEvidenceMap `
+                -Outputs $outputs `
+                -Evidence $evidence `
+                -OutputToEvidenceName ([ordered]@{ agent365RegistryProvider = 'registryProvider' }) |
+                Should -BeTrue
+
+            $outputs.PSObject.Properties.Name | Should -Not -Contain 'registryProvider'
+        }
+
+        It 'rejects a different normalized Registry provider value' {
+            $outputs = [pscustomobject]@{
+                agent365RegistryProvider = [pscustomobject]@{ value = 'Disabled' }
+            }
+            $evidence = [pscustomobject]@{ registryProvider = 'DirectRegistryPreview' }
+
+            { Assert-GatewayDeploymentOutputEvidenceMap `
+                -Outputs $outputs `
+                -Evidence $evidence `
+                -OutputToEvidenceName ([ordered]@{ agent365RegistryProvider = 'registryProvider' }) } |
+                Should -Throw '*output-to-evidence contract*'
+        }
+    }
+}
+
 Describe 'Plan-time Agent ID blueprint collision boundary' {
     InModuleScope Experience {
         BeforeEach {

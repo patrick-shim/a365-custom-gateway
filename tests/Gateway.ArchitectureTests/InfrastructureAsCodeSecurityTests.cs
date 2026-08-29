@@ -1440,7 +1440,10 @@ public class InfrastructureAsCodeSecurityTests
         azure.Should().Contain("'src/Gateway.Provisioning.Worker/Dockerfile'");
         azure.Should().Contain("'src/Gateway.AdminUi/Dockerfile'");
         azure.Should().Contain("$buildContext = New-GatewayAcrBuildContext");
-        azure.Should().Contain("$buildContext, '--no-wait'");
+        azure.Should().Contain("function Assert-GatewayAcrCompletedBuildContract");
+        azure.Should().Contain("$buildContext, '--no-logs'");
+        azure.Should().Contain("Invoke-AzJson -CaptureStdoutOnly");
+        azure.Should().NotContain("$buildContext, '--no-wait'");
         azure.Should().Contain("Remove-Item -LiteralPath $buildContext -Recurse -Force");
 
         dockerIgnore.Should().Contain("**/.secrets.*");

@@ -184,65 +184,51 @@ Describe 'Deterministic resumable ACR image builds' {
             $tag.Length | Should -BeLessOrEqual 128
         }
 
-        It 'returns no runs for an absent exact tag without calling the image-filtered run command' {
+        It 'scans a bounded registry-wide projection before the exact tag manifest exists' {
             $tag = Get-BootstrapImageBuildIntentTag `
                 -DeploymentOwnershipId $script:ownershipId `
                 -SourceFingerprint $script:sourceFingerprint `
                 -IntentId $script:intentIds.api
-            Mock Get-GatewayAcrExactTagDigest { return $null }
-            Mock Invoke-BootstrapCommand { throw 'Image-filtered run discovery must not execute for an absent tag.' }
-
-            @(Get-GatewayAcrExactImageRuns -Registry 'acrsafe' -Repository 'gateway-api' -Tag $tag).Count |
-                Should -Be 0
-
-            Should -Invoke Get-GatewayAcrExactTagDigest -Times 1 -Exactly
-            Should -Invoke Invoke-BootstrapCommand -Times 0 -Exactly
-        }
-
-        It 'uses image-filtered run discovery only after the exact tag exists' {
-            $tag = Get-BootstrapImageBuildIntentTag `
-                -DeploymentOwnershipId $script:ownershipId `
-                -SourceFingerprint $script:sourceFingerprint `
-                -IntentId $script:intentIds.api
-            $image = "gateway-api:$tag"
-            Mock Get-GatewayAcrExactTagDigest {
-                return [pscustomobject]@{ tag = $tag; digest = "sha256:$('1' * 64)" }
+            Mock Get-GatewayAcrExactTagDigest { throw 'Run discovery must not require a completed tag manifest.' }
+            Mock Invoke-BootstrapCommand {
+                return '[{"runId":"run-without-output-metadata","status":"Running","runType":"QuickRun","outputImages":[]}]'
             }
-            Mock Invoke-BootstrapCommand { return '[]' }
 
             @(Get-GatewayAcrExactImageRuns -Registry 'acrsafe' -Repository 'gateway-api' -Tag $tag).Count |
                 Should -Be 0
 
+            Should -Invoke Get-GatewayAcrExactTagDigest -Times 0 -Exactly
             Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
                 $FilePath -ceq 'az' -and
                 ((@($ArgumentList) -join ' ') -ceq (
-                    "acr task list-runs --registry acrsafe --image $image --top 2 " +
-                    '--query [].{runId:runId,status:status,runType:runType,outputImages:outputImages} ' +
+                    'acr task list-runs --registry acrsafe --top 101 ' +
+                    '--query [].{runId:runId,status:status,runType:runType,outputImages:not_null(outputImages, `[]`)[].{repository:repository,tag:tag,digest:digest}} ' +
                     '--output json --only-show-errors'))
+            }
+            Should -Invoke Invoke-BootstrapCommand -Times 0 -Exactly -ParameterFilter {
+                $ArgumentList -contains '--image'
             }
         }
 
-        It 'accepts only QuickRun from exact image-tag run discovery' {
+        It 'selects only the exact tagged QuickRun while ignoring unrelated valid runs' {
             $tag = Get-BootstrapImageBuildIntentTag `
                 -DeploymentOwnershipId $script:ownershipId `
                 -SourceFingerprint $script:sourceFingerprint `
                 -IntentId $script:intentIds.api
             $script:acrDiscoveryRunType = 'QuickRun'
-            Mock Get-GatewayAcrExactTagDigest {
-                return [pscustomobject]@{ tag = $tag; digest = "sha256:$('1' * 64)" }
-            }
             Mock Invoke-BootstrapCommand {
-                return (ConvertTo-Json -InputObject @([ordered]@{
-                    runId = 'run-api'
-                    status = 'Succeeded'
-                    runType = $script:acrDiscoveryRunType
-                    outputImages = @([ordered]@{
-                        repository = 'gateway-api'
-                        tag = $tag
-                        digest = "sha256:$('1' * 64)"
-                        providerOutput = 'private-provider-body-marker'
-                    })
-                }) -Depth 10 -Compress)
+                return (ConvertTo-Json -InputObject @(
+                    [ordered]@{
+                        runId = 'unrelated-run'; status = 'Running'; runType = 'AutoRun'
+                        outputImages = @([ordered]@{ repository = 'other-repository'; tag = 'other-tag'; digest = $null })
+                    },
+                    [ordered]@{
+                        runId = 'run-api'; status = 'Succeeded'; runType = $script:acrDiscoveryRunType
+                        outputImages = @([ordered]@{
+                            repository = 'gateway-api'; tag = $tag; digest = "sha256:$('1' * 64)"
+                        })
+                    }
+                ) -Depth 10 -Compress)
             }
 
             $runs = @(Get-GatewayAcrExactImageRuns `
@@ -263,8 +249,86 @@ Describe 'Deterministic resumable ACR image builds' {
                 }
                 catch {
                     $_.Exception.Message | Should -BeExactly 'ACR exact image-run discovery returned a malformed run contract.'
-                    $_.Exception.Message | Should -Not -Match 'private-provider-body-marker'
                 }
+            }
+        }
+
+        It 'rejects malformed or duplicate exact-tag discovery without disclosing provider output' {
+            $tag = Get-BootstrapImageBuildIntentTag `
+                -DeploymentOwnershipId $script:ownershipId `
+                -SourceFingerprint $script:sourceFingerprint `
+                -IntentId $script:intentIds.api
+            $exactRun = [ordered]@{
+                runId = 'run-api'; status = 'Running'; runType = 'QuickRun'
+                outputImages = @([ordered]@{ repository = 'gateway-api'; tag = $tag; digest = $null })
+            }
+            $script:acrDiscoveryOutput = ''
+            Mock Invoke-BootstrapCommand { return $script:acrDiscoveryOutput }
+            $cases = @(
+                [pscustomobject]@{
+                    output = ConvertTo-Json -InputObject @($exactRun, $exactRun) -Depth 10 -Compress
+                    expected = 'ACR exact image-run discovery found more than one run for the unique intent tag.'
+                },
+                [pscustomobject]@{
+                    output = '[{"runId":"run-api","status":"Running","runType":"QuickRun","outputImages":{},"providerOutput":"private-provider-body-marker"}]'
+                    expected = 'ACR exact image-run discovery returned a malformed run contract.'
+                },
+                [pscustomobject]@{
+                    output = '{"private-provider-body-marker":"private-token-marker"}'
+                    expected = 'ACR exact image-run discovery was non-array or exceeded its bounded result contract.'
+                }
+            )
+
+            foreach ($case in $cases) {
+                $script:acrDiscoveryOutput = $case.output
+                try {
+                    Get-GatewayAcrExactImageRuns -Registry 'acrsafe' -Repository 'gateway-api' -Tag $tag
+                    throw 'Expected malformed or duplicate exact-tag discovery to fail closed.'
+                }
+                catch {
+                    $_.Exception.Message | Should -BeExactly $case.expected
+                    $_.Exception.Message | Should -Not -Match 'private-(provider-body|token)-marker'
+                }
+            }
+        }
+
+        It 'accepts 100 bounded discovery records and rejects the 101st truncation sentinel' {
+            $tag = Get-BootstrapImageBuildIntentTag `
+                -DeploymentOwnershipId $script:ownershipId `
+                -SourceFingerprint $script:sourceFingerprint `
+                -IntentId $script:intentIds.api
+            $boundedRuns = @(1..100 | ForEach-Object {
+                    [ordered]@{
+                        runId = "unrelated-run-$_"
+                        status = 'Running'
+                        runType = 'AutoRun'
+                        outputImages = @()
+                    }
+                })
+            $script:acrDiscoveryOutput = ConvertTo-Json -InputObject $boundedRuns -Depth 10 -Compress
+            Mock Invoke-BootstrapCommand { return $script:acrDiscoveryOutput }
+
+            @(Get-GatewayAcrExactImageRuns -Registry 'acrsafe' -Repository 'gateway-api' -Tag $tag).Count |
+                Should -Be 0
+
+            $sentinelRun = [ordered]@{
+                runId = 'sentinel-run-101'
+                status = 'Running'
+                runType = 'QuickRun'
+                outputImages = @()
+                providerOutput = 'private-provider-body-marker'
+            }
+            $script:acrDiscoveryOutput = ConvertTo-Json `
+                -InputObject @($boundedRuns + $sentinelRun) `
+                -Depth 10 `
+                -Compress
+            try {
+                Get-GatewayAcrExactImageRuns -Registry 'acrsafe' -Repository 'gateway-api' -Tag $tag
+                throw 'Expected the 101st discovery record to fail closed as a truncation sentinel.'
+            }
+            catch {
+                $_.Exception.Message | Should -BeExactly 'ACR exact image-run discovery reached its truncation sentinel; absence and uniqueness were not proven.'
+                $_.Exception.Message | Should -Not -Match 'private-provider-body-marker'
             }
         }
 
@@ -350,37 +414,54 @@ Describe 'Deterministic resumable ACR image builds' {
             }
         }
 
-        It 'accepts only an exact one-property canonical ACR scheduling receipt' {
-            Assert-GatewayAcrBuildSubmissionReceiptContract `
-                -Receipt ([pscustomobject]@{ runId = 'de1' }) |
+        It 'accepts only one exact successful completed-build QuickRun contract' {
+            $tag = Get-BootstrapImageBuildIntentTag `
+                -DeploymentOwnershipId $script:ownershipId `
+                -SourceFingerprint $script:sourceFingerprint `
+                -IntentId $script:intentIds.api
+            $validRun = [pscustomobject]@{
+                runId = 'de1'; status = 'Succeeded'; runType = 'QuickRun'
+                outputImages = @([pscustomobject]@{
+                    repository = 'gateway-api'; tag = $tag; digest = "sha256:$('1' * 64)"
+                })
+            }
+            (Assert-GatewayAcrCompletedBuildContract -Run $validRun -Repository 'gateway-api' -Tag $tag).runId |
                 Should -BeExactly 'de1'
 
-            $invalidReceipts = @(
+            $invalidRuns = @(
                 $null,
                 'de1',
                 [pscustomobject]@{},
-                [pscustomobject]@{ RunId = 'de1' },
-                [pscustomobject]@{ runId = '' },
-                [pscustomobject]@{ runId = 'bad/run' },
                 [pscustomobject]@{
-                    runId = 'de1'
+                    runId = 'de1'; status = 'Succeeded'; runType = 'QuickRun'; outputImages = @()
                     providerOutput = 'private-provider-body-marker'
                 },
                 [pscustomobject]@{
-                    runId = 'de1'
-                    status = 'Queued'
-                    runType = 'QuickRun'
-                    outputImages = @()
-                    providerOutput = 'private-provider-body-marker'
+                    runId = 'de1'; status = 'Running'; runType = 'QuickRun'
+                    outputImages = $validRun.outputImages
+                },
+                [pscustomobject]@{
+                    runId = 'de1'; status = 'Succeeded'; runType = 'QuickBuild'
+                    outputImages = $validRun.outputImages
+                },
+                [pscustomobject]@{
+                    runId = 'bad/run'; status = 'Succeeded'; runType = 'QuickRun'
+                    outputImages = $validRun.outputImages
+                },
+                [pscustomobject]@{
+                    runId = 'de1'; status = 'Succeeded'; runType = 'QuickRun'
+                    outputImages = @([pscustomobject]@{
+                        repository = 'gateway-worker'; tag = 'private-provider-body-marker'; digest = "sha256:$('1' * 64)"
+                    })
                 }
             )
-            foreach ($invalidReceipt in $invalidReceipts) {
+            foreach ($invalidRun in $invalidRuns) {
                 try {
-                    Assert-GatewayAcrBuildSubmissionReceiptContract -Receipt $invalidReceipt
-                    throw 'Expected the malformed ACR scheduling receipt to fail closed.'
+                    Assert-GatewayAcrCompletedBuildContract -Run $invalidRun -Repository 'gateway-api' -Tag $tag
+                    throw 'Expected the malformed completed-build contract to fail closed.'
                 }
                 catch {
-                    $_.Exception.Message | Should -BeExactly 'The submitted ACR build did not return one canonical run-ID receipt.'
+                    $_.Exception.Message | Should -BeExactly 'The submitted ACR build did not return one exact successful QuickRun contract.'
                     $_.Exception.Message | Should -Not -Match 'private-provider-body-marker'
                 }
             }
@@ -477,7 +558,14 @@ Describe 'Deterministic resumable ACR image builds' {
                 $imageIndex = [Array]::IndexOf($Arguments, '--image')
                 $imageParts = $Arguments[$imageIndex + 1].Split(':')
                 $script:submittedRepositories += $imageParts[0]
-                return [pscustomobject]@{ runId = "run-$($imageParts[0])" }
+                return [pscustomobject]@{
+                    runId = "run-$($imageParts[0])"; status = 'Succeeded'; runType = 'QuickRun'
+                    outputImages = @([pscustomobject]@{
+                        repository = $imageParts[0]
+                        tag = $imageParts[1]
+                        digest = $script:digestByRepository[$imageParts[0]]
+                    })
+                }
             }
             Mock Start-Sleep {}
 
@@ -513,21 +601,70 @@ Describe 'Deterministic resumable ACR image builds' {
                 $fileIndex = [Array]::IndexOf($arguments, '--file')
                 $arguments[$fileIndex + 1] | Should -Match '^src/Gateway\.(Api|Provisioning\.Worker|AdminUi)/Dockerfile$'
                 $arguments | Should -Contain $context
-                $arguments | Should -Contain '--no-wait'
+                $arguments | Should -Contain '--no-logs'
+                $arguments | Should -Not -Contain '--no-wait'
                 $queryIndex = [Array]::IndexOf($arguments, '--query')
                 $queryIndex | Should -BeGreaterOrEqual 0
-                $arguments[$queryIndex + 1] | Should -BeExactly '{runId:runId}'
+                $arguments[$queryIndex + 1] | Should -BeExactly '{runId:runId,status:status,runType:runType,outputImages:not_null(outputImages, `[]`)[].{repository:repository,tag:tag,digest:digest}}'
             }
         }
 
-        It 'checkpoints the sparse scheduling receipt before rejecting a non-QuickRun exact readback' {
+        It 'keeps only IntentRecorded when completed-build stdout is malformed and does not read back or resubmit' {
+            $context = Join-Path $TestDrive 'acr-context-malformed-completed-run'
+            New-Item -ItemType Directory -Path $context -Force | Out-Null
+            $script:malformedCompletedRunCheckpoints = @()
+            Mock New-GatewayAcrBuildContext { return $context }
+            Mock Get-GatewayAcrExactTagDigest { return $null }
+            Mock Get-GatewayAcrExactImageRuns { return @() }
+            Mock Invoke-AzJson {
+                return [pscustomobject]@{
+                    runId = 'run-api'; status = 'Succeeded'; runType = 'QuickBuild'; outputImages = @()
+                    providerOutput = 'private-provider-body-marker'
+                }
+            }
+            Mock Get-GatewayAcrExactRunById { throw 'Malformed completed-build output must not reach show-run.' }
+
+            try {
+                Build-GatewayImages `
+                    -Config ([pscustomobject]@{}) `
+                    -AcrLoginServer 'acrsafe.azurecr.io' `
+                    -SourceFingerprint $script:sourceFingerprint `
+                    -DeploymentOwnershipId $script:ownershipId `
+                    -Checkpoint {
+                        param($evidence)
+                        $script:malformedCompletedRunCheckpoints += [string]$evidence.buildIntents.api.state
+                    }
+                throw 'Expected malformed completed-build output to fail closed.'
+            }
+            catch {
+                $_.Exception.Message | Should -BeExactly 'The submitted ACR build did not return one exact successful QuickRun contract.'
+                $_.Exception.Message | Should -Not -Match 'private-provider-body-marker'
+            }
+
+            $script:malformedCompletedRunCheckpoints | Should -Be @('IntentRecorded')
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter { $CaptureStdoutOnly }
+            Should -Invoke Get-GatewayAcrExactRunById -Times 0 -Exactly
+            Should -Invoke New-GatewayAcrBuildContext -Times 1 -Exactly
+        }
+
+        It 'checkpoints the completed scheduling result before rejecting a non-QuickRun exact readback' {
             $context = Join-Path $TestDrive 'acr-context-invalid-show-run'
             New-Item -ItemType Directory -Path $context -Force | Out-Null
             $script:invalidRunReadbackCheckpoints = @()
             Mock New-GatewayAcrBuildContext { return $context }
             Mock Get-GatewayAcrExactTagDigest { return $null }
             Mock Get-GatewayAcrExactImageRuns { return @() }
-            Mock Invoke-AzJson { return [pscustomobject]@{ runId = 'run-api' } }
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments, [switch]$CaptureStdoutOnly)
+                $imageIndex = [Array]::IndexOf($Arguments, '--image')
+                $imageParts = $Arguments[$imageIndex + 1].Split(':')
+                return [pscustomobject]@{
+                    runId = 'run-api'; status = 'Succeeded'; runType = 'QuickRun'
+                    outputImages = @([pscustomobject]@{
+                        repository = $imageParts[0]; tag = $imageParts[1]; digest = "sha256:$('1' * 64)"
+                    })
+                }
+            }
             Mock Invoke-BootstrapCommand {
                 return '{"runId":"run-api","status":"Running","runType":"QuickBuild","outputImages":[{"private-provider-body-marker":"private-token-marker"}]}'
             }
@@ -570,7 +707,17 @@ Describe 'Deterministic resumable ACR image builds' {
             Mock New-GatewayAcrBuildContext { return $context }
             Mock Get-GatewayAcrExactTagDigest { return $null }
             Mock Get-GatewayAcrExactImageRuns { return @() }
-            Mock Invoke-AzJson { return [pscustomobject]@{ runId = 'run-api' } }
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments, [switch]$CaptureStdoutOnly)
+                $imageIndex = [Array]::IndexOf($Arguments, '--image')
+                $imageParts = $Arguments[$imageIndex + 1].Split(':')
+                return [pscustomobject]@{
+                    runId = 'run-api'; status = 'Succeeded'; runType = 'QuickRun'
+                    outputImages = @([pscustomobject]@{
+                        repository = $imageParts[0]; tag = $imageParts[1]; digest = "sha256:$('1' * 64)"
+                    })
+                }
+            }
             Mock Get-GatewayAcrExactRunById {
                 $script:runQueuedWasDurableBeforeReadback =
                     ($script:unavailableRunCheckpoints -join ',') -ceq 'IntentRecorded,RunQueued'
@@ -645,7 +792,14 @@ Describe 'Deterministic resumable ACR image builds' {
                 $imageIndex = [Array]::IndexOf($Arguments, '--image')
                 $imageParts = $Arguments[$imageIndex + 1].Split(':')
                 $script:submittedRepositories += $imageParts[0]
-                return [pscustomobject]@{ runId = "run-$($imageParts[0])" }
+                return [pscustomobject]@{
+                    runId = "run-$($imageParts[0])"; status = 'Succeeded'; runType = 'QuickRun'
+                    outputImages = @([pscustomobject]@{
+                        repository = $imageParts[0]
+                        tag = $imageParts[1]
+                        digest = $script:digestByRepository[$imageParts[0]]
+                    })
+                }
             }
             Mock Start-Sleep {}
 
@@ -755,6 +909,227 @@ Describe 'Deterministic resumable ACR image builds' {
                 -Arguments @('acr', 'repository', 'list') `
                 -ExpectedValue 'gateway-api' } |
                 Should -Throw '*malformed or non-exact*'
+        }
+    }
+}
+
+Describe 'Gateway core initial and runtime identity bindings' {
+    InModuleScope Azure {
+        BeforeEach {
+            $script:coreSourceFingerprint = "sha256:$('b' * 64)"
+            $script:coreOwnershipId = '77777777-7777-4777-8777-777777777777'
+            $script:coreWorkerPrincipalId = '88888888-8888-4888-8888-888888888888'
+            $script:wrongCoreWorkerPrincipalId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            $script:coreManagerApplicationId = '99999999-9999-4999-8999-999999999999'
+            $script:coreConfig = [pscustomobject]@{
+                environment = 'dev'
+                location = 'koreacentral'
+                projectName = 'safe'
+                resourceGroupName = 'rg-safe-dev'
+                tenantId = '11111111-1111-4111-8111-111111111111'
+                alertEmail = ''
+                agent365 = [pscustomobject]@{
+                    reviewedManagerApplicationIds = @($script:coreManagerApplicationId)
+                    allowDevelopmentRegistryPreview = $false
+                }
+                promptShield = [pscustomobject]@{ enabled = $false; skuName = 'S0' }
+                purview = [pscustomobject]@{
+                    policyProvisioningEnabled = $false
+                    policyProvisioningOrganization = ''
+                    policyProvisioningApplicationId = ''
+                    policyProvisioningCertificateSecretUri = ''
+                    sensitiveInformationType = ''
+                }
+                sql = [pscustomobject]@{ skuName = 'Basic'; skuTier = 'Basic' }
+            }
+            $script:coreFoundation = [pscustomobject]@{
+                containerAppsEnvironmentName = 'cae-safe-dev'
+                virtualNetworkName = 'vnet-safe-dev'
+                privateEndpointSubnetName = 'snet-private-endpoints'
+            }
+            $script:coreIdentity = [pscustomobject]@{
+                gatewayApiClientId = '22222222-2222-4222-8222-222222222222'
+                gatewayApiAudience = 'api://22222222-2222-4222-8222-222222222222'
+                userObjectId = '33333333-3333-4333-8333-333333333333'
+                userPrincipalName = 'operator@example.invalid'
+            }
+            $script:coreDatabase = [pscustomobject]@{
+                deploymentOwnershipId = $script:coreOwnershipId
+                acceptedSourceFingerprint = $script:coreSourceFingerprint
+                server = 'sql-safe-dev.database.windows.net'
+                database = 'GatewayDb'
+                schemaFingerprint = "sha256:$('c' * 64)"
+                apiPrincipalName = 'ca-gateway-api-dev'
+                apiPrincipalClientId = '44444444-4444-4444-8444-444444444444'
+                workerPrincipalName = 'ca-gateway-worker-dev-v3'
+                workerPrincipalClientId = '55555555-5555-4555-8555-555555555555'
+                workerPrincipalObjectId = $script:coreWorkerPrincipalId
+            }
+            Mock Get-BootstrapExecutionSourceRoot { return $TestDrive }
+            Mock Get-BootstrapSourceFingerprint { return $script:coreSourceFingerprint }
+            Mock Invoke-AzTsv { return '0' }
+            Mock Invoke-AzJson { throw 'Unexpected Azure JSON read.' }
+            Mock Invoke-BootstrapCommand { throw 'Unexpected native Azure command.' }
+            Mock Invoke-ArmDeploymentWithSecureParameters { throw 'core-deployment-reached' }
+        }
+
+        It 'binds empty initial worker and manager IDs and reaches the inert deployment boundary' {
+            { Deploy-GatewayCore `
+                    -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation `
+                    -Identity $script:coreIdentity `
+                    -ApiImage "acrsafe.azurecr.io/gateway-api@sha256:$('1' * 64)" `
+                    -WorkerImage "acrsafe.azurecr.io/gateway-worker@sha256:$('2' * 64)" `
+                    -WorkerPrincipalId '' `
+                    -ManagerApplicationIds @() `
+                    -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint `
+                    -Initial } |
+                Should -Throw '*core-deployment-reached*'
+
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
+                [string]$Parameters.agent365ProvisioningManagedIdentityPrincipalId -ceq '' -and
+                @($Parameters.agent365ManagerApplicationIds).Count -eq 0 -and
+                [bool]$Parameters.agent365ManagerApplicationsPreflightConfirmed -eq $false
+            }
+        }
+
+        It 'rejects nonempty authority inputs on the initial inert deployment path' {
+            $invalidAuthorityInputs = @(
+                [pscustomobject]@{
+                    workerPrincipalId = $script:coreWorkerPrincipalId
+                    managerApplicationIds = @()
+                },
+                [pscustomobject]@{
+                    workerPrincipalId = ''
+                    managerApplicationIds = @($script:coreManagerApplicationId)
+                }
+            )
+            foreach ($invalidAuthorityInput in $invalidAuthorityInputs) {
+                { Deploy-GatewayCore `
+                        -Config $script:coreConfig `
+                        -Foundation $script:coreFoundation `
+                        -Identity $script:coreIdentity `
+                        -ApiImage "acrsafe.azurecr.io/gateway-api@sha256:$('1' * 64)" `
+                        -WorkerImage "acrsafe.azurecr.io/gateway-worker@sha256:$('2' * 64)" `
+                        -WorkerPrincipalId $invalidAuthorityInput.workerPrincipalId `
+                        -ManagerApplicationIds $invalidAuthorityInput.managerApplicationIds `
+                        -DeploymentOwnershipId $script:coreOwnershipId `
+                        -SourceFingerprint $script:coreSourceFingerprint `
+                        -Initial } |
+                    Should -Throw '*Initial inert deployment requires empty worker and managerApplications authority inputs*'
+            }
+
+            Should -Invoke Invoke-AzTsv -Times 0 -Exactly
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+        }
+
+        It 'rejects every runtime-only input on Initial before any Azure call' {
+            $runtimeOnlyCases = @(
+                [ordered]@{ Database = $script:coreDatabase },
+                [ordered]@{ EnableWorkerProcessing = $true },
+                [ordered]@{ EnableProvisioning = $true },
+                [ordered]@{ EnablePurview = $true },
+                [ordered]@{ AdminUiImage = 'acrsafe.azurecr.io/gateway-admin@sha256:' + ('3' * 64) },
+                [ordered]@{ AdminUiClientId = '66666666-6666-4666-8666-666666666666' },
+                [ordered]@{ AdminUiSecretUri = 'https://kv-safe-dev.vault.azure.net/secrets/admin-ui' }
+            )
+            foreach ($runtimeOnlyCase in $runtimeOnlyCases) {
+                $arguments = @{
+                    Config = $script:coreConfig
+                    Foundation = $script:coreFoundation
+                    Identity = $script:coreIdentity
+                    ApiImage = "acrsafe.azurecr.io/gateway-api@sha256:$('1' * 64)"
+                    WorkerImage = "acrsafe.azurecr.io/gateway-worker@sha256:$('2' * 64)"
+                    WorkerPrincipalId = ''
+                    ManagerApplicationIds = @()
+                    DeploymentOwnershipId = $script:coreOwnershipId
+                    SourceFingerprint = $script:coreSourceFingerprint
+                    Initial = $true
+                }
+                foreach ($entry in $runtimeOnlyCase.GetEnumerator()) {
+                    $arguments[[string]$entry.Key] = $entry.Value
+                }
+
+                { Deploy-GatewayCore @arguments } |
+                    Should -Throw '*Initial inert deployment rejects database, activation, Purview, and Admin UI runtime inputs*'
+            }
+
+            Should -Invoke Invoke-AzTsv -Times 0 -Exactly
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly
+            Should -Invoke Invoke-BootstrapCommand -Times 0 -Exactly
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+        }
+
+        It 'rejects an empty worker principal ID before any runtime deployment' {
+            { Deploy-GatewayCore `
+                    -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation `
+                    -Identity $script:coreIdentity `
+                    -ApiImage "acrsafe.azurecr.io/gateway-api@sha256:$('1' * 64)" `
+                    -WorkerImage "acrsafe.azurecr.io/gateway-worker@sha256:$('2' * 64)" `
+                    -WorkerPrincipalId '' `
+                    -ManagerApplicationIds @($script:coreManagerApplicationId) `
+                    -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint } |
+                Should -Throw '*canonical lowercase worker managed-identity principal ID*'
+
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+        }
+
+        It 'rejects an empty runtime managerApplications collection before deployment' {
+            $script:coreConfig.agent365.reviewedManagerApplicationIds = @()
+
+            { Deploy-GatewayCore `
+                    -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation `
+                    -Identity $script:coreIdentity `
+                    -ApiImage "acrsafe.azurecr.io/gateway-api@sha256:$('1' * 64)" `
+                    -WorkerImage "acrsafe.azurecr.io/gateway-worker@sha256:$('2' * 64)" `
+                    -WorkerPrincipalId $script:coreWorkerPrincipalId `
+                    -ManagerApplicationIds @() `
+                    -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint } |
+                Should -Throw '*Runtime managerApplications must exactly equal*'
+
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+        }
+
+        It 'accepts only the canonical worker principal exactly bound to database attestation' {
+            { Deploy-GatewayCore `
+                    -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation `
+                    -Identity $script:coreIdentity `
+                    -ApiImage "acrsafe.azurecr.io/gateway-api@sha256:$('1' * 64)" `
+                    -WorkerImage "acrsafe.azurecr.io/gateway-worker@sha256:$('2' * 64)" `
+                    -WorkerPrincipalId $script:coreWorkerPrincipalId `
+                    -ManagerApplicationIds @($script:coreManagerApplicationId) `
+                    -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint `
+                    -Database $script:coreDatabase } |
+                Should -Throw '*core-deployment-reached*'
+
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
+                [string]$Parameters.agent365ProvisioningManagedIdentityPrincipalId -ceq $script:coreWorkerPrincipalId -and
+                [string]$Parameters.databaseAttestationWorkerPrincipalClientId -ceq [string]$script:coreDatabase.workerPrincipalClientId
+            }
+        }
+
+        It 'rejects a different canonical worker principal from the database-bound object ID' {
+            { Deploy-GatewayCore `
+                    -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation `
+                    -Identity $script:coreIdentity `
+                    -ApiImage "acrsafe.azurecr.io/gateway-api@sha256:$('1' * 64)" `
+                    -WorkerImage "acrsafe.azurecr.io/gateway-worker@sha256:$('2' * 64)" `
+                    -WorkerPrincipalId $script:wrongCoreWorkerPrincipalId `
+                    -ManagerApplicationIds @($script:coreManagerApplicationId) `
+                    -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint `
+                    -Database $script:coreDatabase } |
+                Should -Throw '*exact ownership/source-bound current database-attestation evidence*'
+
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
         }
     }
 }

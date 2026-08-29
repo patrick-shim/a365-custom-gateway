@@ -192,8 +192,8 @@ function Deploy-GatewayCore {
         [Parameter(Mandatory)]$Identity,
         [Parameter(Mandatory)][string]$ApiImage,
         [Parameter(Mandatory)][string]$WorkerImage,
-        [Parameter(Mandatory)][string]$WorkerPrincipalId,
-        [Parameter(Mandatory)][string[]]$ManagerApplicationIds,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$WorkerPrincipalId,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ManagerApplicationIds,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
         [Parameter()]$Database,
@@ -214,6 +214,26 @@ function Deploy-GatewayCore {
     if ((Get-BootstrapSourceFingerprint -Root $root) -cne $SourceFingerprint) {
         throw 'The workload deployment source no longer matches the accepted content-addressed snapshot.'
     }
+    if ($Initial) {
+        if ($WorkerPrincipalId -cne '' -or $ManagerApplicationIds.Count -ne 0) {
+            throw 'Initial inert deployment requires empty worker and managerApplications authority inputs.'
+        }
+        if ($null -ne $Database -or
+            $EnableWorkerProcessing -or $EnableProvisioning -or $EnablePurview -or
+            -not [string]::IsNullOrEmpty($AdminUiImage) -or
+            -not [string]::IsNullOrEmpty($AdminUiClientId) -or
+            -not [string]::IsNullOrEmpty($AdminUiSecretUri)) {
+            throw 'Initial inert deployment rejects database, activation, Purview, and Admin UI runtime inputs.'
+        }
+    }
+    else {
+        $parsedWorkerPrincipalId = [guid]::Empty
+        if (-not [guid]::TryParse($WorkerPrincipalId, [ref]$parsedWorkerPrincipalId) -or
+            $parsedWorkerPrincipalId -eq [guid]::Empty -or
+            $WorkerPrincipalId -cne $parsedWorkerPrincipalId.ToString('D')) {
+            throw 'Runtime deployment requires one canonical lowercase worker managed-identity principal ID.'
+        }
+    }
     $canonicalManagerApplicationIds = @()
     if (-not $Initial) {
         $reviewedManagerIds = @($Config.agent365.reviewedManagerApplicationIds | ForEach-Object { ([guid][string]$_).ToString('D') } | Sort-Object -Unique)
@@ -232,7 +252,8 @@ function Deploy-GatewayCore {
             [string]$Database.database -cne 'GatewayDb' -or
             [string]$Database.schemaFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
             [string]$Database.apiPrincipalName -cne "ca-gateway-api-$($Config.environment)" -or
-            [string]$Database.workerPrincipalName -cne "ca-gateway-worker-$($Config.environment)-v3") {
+            [string]$Database.workerPrincipalName -cne "ca-gateway-worker-$($Config.environment)-v3" -or
+            [string]$Database.workerPrincipalObjectId -cne $WorkerPrincipalId) {
             throw 'Runtime deployment requires exact ownership/source-bound current database-attestation evidence.'
         }
         Assert-GuidValue -Value ([string]$Database.apiPrincipalClientId) -Label 'Gateway API database-principal client ID'
@@ -698,17 +719,14 @@ function Get-GatewayAcrExactImageRuns {
         $Tag -cnotmatch '^bootstrap-[0-9a-f]{32}-[0-9a-f]{32}-[0-9a-f]{32}$') {
         throw 'The exact ACR run-discovery target is malformed.'
     }
-    $tagDigest = Get-GatewayAcrExactTagDigest -Registry $Registry -Repository $Repository -Tag $Tag
-    if (-not $tagDigest) {
-        # `az acr task list-runs --image` resolves the tag to a manifest first and
-        # exits nonzero for a never-built tag. Exact tag absence is sufficient to
-        # prove that there is no discoverable completed output for this image.
-        return @()
-    }
+    # `az acr task list-runs --image` resolves the tag through the repository
+    # manifest first, so it cannot discover a queued/running quick build whose
+    # output manifest does not exist yet. Scan a bounded registry-wide projection
+    # and select only the run carrying this exact unique intent tag.
     $raw = Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @(
         'acr', 'task', 'list-runs', '--registry', $Registry,
-        '--image', "${Repository}:$Tag", '--top', '2',
-        '--query', '[].{runId:runId,status:status,runType:runType,outputImages:outputImages}',
+        '--top', '101',
+        '--query', '[].{runId:runId,status:status,runType:runType,outputImages:not_null(outputImages, `[]`)[].{repository:repository,tag:tag,digest:digest}}',
         '--output', 'json', '--only-show-errors'
     )
     if ([string]::IsNullOrWhiteSpace($raw)) {
@@ -720,33 +738,71 @@ function Get-GatewayAcrExactImageRuns {
     catch {
         throw 'ACR exact image-run discovery returned malformed JSON.'
     }
-    if ($runs -isnot [System.Array] -or $runs.Count -gt 1) {
-        throw 'ACR exact image-run discovery was non-array or ambiguous.'
+    if ($runs -isnot [System.Array] -or $runs.Count -gt 101) {
+        throw 'ACR exact image-run discovery was non-array or exceeded its bounded result contract.'
     }
+    if ($runs.Count -eq 101) {
+        throw 'ACR exact image-run discovery reached its truncation sentinel; absence and uniqueness were not proven.'
+    }
+    $matchingRuns = @()
     foreach ($run in @($runs)) {
-        if ([string]$run.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$' -or
-            [string]$run.runType -cne 'QuickRun' -or
+        if ($run -isnot [pscustomobject]) {
+            throw 'ACR exact image-run discovery returned a malformed run contract.'
+        }
+        $runPropertyNames = @($run.PSObject.Properties | ForEach-Object { [string]$_.Name })
+        if ($runPropertyNames.Count -ne 4 -or
+            @(@('runId', 'status', 'runType', 'outputImages') |
+                    Where-Object { $runPropertyNames -cnotcontains $_ }).Count -ne 0 -or
+            [string]$run.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$' -or
+            @('QuickBuild', 'QuickRun', 'AutoBuild', 'AutoRun') -cnotcontains [string]$run.runType -or
             @('Queued', 'Started', 'Running', 'Succeeded', 'Failed', 'Canceled', 'Error', 'Timeout') -cnotcontains [string]$run.status) {
             throw 'ACR exact image-run discovery returned a malformed run contract.'
         }
+        if ($null -eq $run.outputImages -or $run.outputImages -isnot [System.Array]) {
+            throw 'ACR exact image-run discovery returned a malformed run contract.'
+        }
         $outputImages = @($run.outputImages)
+        foreach ($outputImage in $outputImages) {
+            if ($outputImage -isnot [pscustomobject]) {
+                throw 'ACR exact image-run discovery returned a malformed output-image contract.'
+            }
+            $imagePropertyNames = @($outputImage.PSObject.Properties | ForEach-Object { [string]$_.Name })
+            if ($imagePropertyNames.Count -ne 3 -or
+                @(@('repository', 'tag', 'digest') |
+                        Where-Object { $imagePropertyNames -cnotcontains $_ }).Count -ne 0 -or
+                [string]$outputImage.repository -cnotmatch '^[a-z0-9]+(?:[._/-][a-z0-9]+)*$' -or
+                [string]$outputImage.tag -cnotmatch '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$' -or
+                (-not [string]::IsNullOrWhiteSpace([string]$outputImage.digest) -and
+                    [string]$outputImage.digest -cnotmatch '^sha256:[0-9a-f]{64}$')) {
+                throw 'ACR exact image-run discovery returned a malformed output-image contract.'
+            }
+        }
+
+        $matchingOutputs = @($outputImages | Where-Object {
+                [string]$_.repository -ceq $Repository -and [string]$_.tag -ceq $Tag
+            })
+        if ($matchingOutputs.Count -eq 0) { continue }
+        if ($matchingOutputs.Count -ne 1 -or $outputImages.Count -ne 1) {
+            throw 'An ACR run carrying the exact intent tag reported an ambiguous output-image contract.'
+        }
+        if ([string]$run.runType -cne 'QuickRun') {
+            throw 'ACR exact image-run discovery returned a malformed run contract.'
+        }
         if ([string]$run.status -ceq 'Succeeded') {
-            if ($outputImages.Count -ne 1 -or
-                [string]$outputImages[0].repository -cne $Repository -or
-                [string]$outputImages[0].tag -cne $Tag -or
-                [string]$outputImages[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            if ([string]$matchingOutputs[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
                 throw 'A succeeded ACR run did not report the one exact intended output image.'
             }
         }
-        elseif ($outputImages.Count -gt 1 -or ($outputImages.Count -eq 1 -and (
-            [string]$outputImages[0].repository -cne $Repository -or
-            [string]$outputImages[0].tag -cne $Tag -or
-            (-not [string]::IsNullOrWhiteSpace([string]$outputImages[0].digest) -and
-                [string]$outputImages[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$')))) {
+        elseif (-not [string]::IsNullOrWhiteSpace([string]$matchingOutputs[0].digest) -and
+            [string]$matchingOutputs[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
             throw 'A non-succeeded ACR run reported a mismatched output image contract.'
         }
+        $matchingRuns += $run
     }
-    return @($runs)
+    if ($matchingRuns.Count -gt 1) {
+        throw 'ACR exact image-run discovery found more than one run for the unique intent tag.'
+    }
+    return @($matchingRuns)
 }
 
 function Get-GatewayAcrExactRunById {
@@ -780,7 +836,7 @@ function Get-GatewayAcrExactRunById {
     if ($run -isnot [pscustomobject]) {
         throw 'ACR exact run readback returned a different or malformed run.'
     }
-    $propertyNames = @($run.PSObject.Properties.Name)
+    $propertyNames = @($run.PSObject.Properties | ForEach-Object { [string]$_.Name })
     if ($propertyNames.Count -ne 4 -or
         @(@('runId', 'status', 'runType', 'outputImages') |
                 Where-Object { $propertyNames -cnotcontains $_ }).Count -ne 0 -or
@@ -810,20 +866,41 @@ function Get-GatewayAcrExactRunById {
     return $run
 }
 
-function Assert-GatewayAcrBuildSubmissionReceiptContract {
+function Assert-GatewayAcrCompletedBuildContract {
     param(
-        [Parameter(Mandatory)][AllowNull()]$Receipt
+        [Parameter(Mandatory)][AllowNull()]$Run,
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][string]$Tag
     )
-    if ($Receipt -isnot [pscustomobject]) {
-        throw 'The submitted ACR build did not return one canonical run-ID receipt.'
+
+    if ($Run -isnot [pscustomobject]) {
+        throw 'The submitted ACR build did not return one exact successful QuickRun contract.'
     }
-    $propertyNames = @($Receipt.PSObject.Properties | ForEach-Object { [string]$_.Name })
-    if ($propertyNames.Count -ne 1 -or
-        [string]$propertyNames[0] -cne 'runId' -or
-        [string]$Receipt.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$') {
-        throw 'The submitted ACR build did not return one canonical run-ID receipt.'
+    $runPropertyNames = @($Run.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    if ($runPropertyNames.Count -ne 4 -or
+        @(@('runId', 'status', 'runType', 'outputImages') |
+                Where-Object { $runPropertyNames -cnotcontains $_ }).Count -ne 0 -or
+        [string]$Run.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$' -or
+        [string]$Run.status -cne 'Succeeded' -or
+        [string]$Run.runType -cne 'QuickRun' -or
+        $null -eq $Run.outputImages -or
+        $Run.outputImages -isnot [System.Array]) {
+        throw 'The submitted ACR build did not return one exact successful QuickRun contract.'
     }
-    return [string]$Receipt.runId
+    $outputImages = @($Run.outputImages)
+    if ($outputImages.Count -ne 1 -or $outputImages[0] -isnot [pscustomobject]) {
+        throw 'The submitted ACR build did not return one exact successful QuickRun contract.'
+    }
+    $imagePropertyNames = @($outputImages[0].PSObject.Properties | ForEach-Object { [string]$_.Name })
+    if ($imagePropertyNames.Count -ne 3 -or
+        @(@('repository', 'tag', 'digest') |
+                Where-Object { $imagePropertyNames -cnotcontains $_ }).Count -ne 0 -or
+        [string]$outputImages[0].repository -cne $Repository -or
+        [string]$outputImages[0].tag -cne $Tag -or
+        [string]$outputImages[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        throw 'The submitted ACR build did not return one exact successful QuickRun contract.'
+    }
+    return $Run
 }
 
 function Build-GatewayImages {
@@ -992,23 +1069,26 @@ function Build-GatewayImages {
                     if (-not $buildContext) {
                         $buildContext = New-GatewayAcrBuildContext -RepositoryRoot $root -SourceFingerprint $SourceFingerprint
                     }
-                    # `az acr build --no-wait` returns the sparse schedule-run
-                    # receipt. Persist its canonical ID before requiring the
-                    # full QuickRun contract through exact show-run readback.
-                    $submissionReceipt = Invoke-AzJson -CaptureStdoutOnly -Arguments @(
+                    # Azure CLI deliberately discards command output for
+                    # supports_no_wait. `--no-logs` instead schedules once, polls
+                    # that returned run ID to success without streaming build
+                    # logs, and returns the final projected run on stdout.
+                    $completedRun = Invoke-AzJson -CaptureStdoutOnly -Arguments @(
                         'acr', 'build', '--registry', $registry, '--image', $imageTag,
                         '--file', [string]$entry.Value.dockerfile,
-                        $buildContext, '--no-wait',
-                        '--query', '{runId:runId}')
-                    $intent.runId = Assert-GatewayAcrBuildSubmissionReceiptContract -Receipt $submissionReceipt
-                    $intent.state = 'RunQueued'
-                    & $Checkpoint $result
+                        $buildContext, '--no-logs',
+                        '--query', '{runId:runId,status:status,runType:runType,outputImages:not_null(outputImages, `[]`)[].{repository:repository,tag:tag,digest:digest}}')
+                    $completedRun = Assert-GatewayAcrCompletedBuildContract `
+                        -Run $completedRun `
+                        -Repository $repository `
+                        -Tag $tag
+                    $intent.runId = [string]$completedRun.runId
                 }
                 else {
                     $intent.runId = [string]$runs[0].runId
-                    $intent.state = 'RunQueued'
-                    & $Checkpoint $result
                 }
+                $intent.state = 'RunQueued'
+                & $Checkpoint $result
             }
 
             $terminalRun = $null

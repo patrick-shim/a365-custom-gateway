@@ -78,6 +78,8 @@ param(
 
     [switch]$RequireExecutionReady,
 
+    [switch]$ExpectContinuousDevelopmentAccess,
+
     [switch]$ExpectApiAdmissionClosed,
 
     [switch]$ExpectDelegatedRegistryActionOpen,
@@ -419,6 +421,45 @@ function Get-ContainerEnvironmentValue {
     $container = @($ContainerApp.properties.template.containers) | Select-Object -First 1
     $setting = @($container.env | Where-Object { $_.name -eq $Name }) | Select-Object -First 1
     if ($null -eq $setting) {
+        return $null
+    }
+
+    return [string]$setting.value
+}
+
+function Get-ExactPlainContainerEnvironmentValue {
+    param(
+        [Parameter(Mandatory = $true)][object]$ContainerApp,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $containers = @($ContainerApp.properties.template.containers)
+    if ($containers.Count -ne 1) {
+        Add-Failure 'The deployed API must contain exactly one container before security-critical settings can be verified.'
+        return $null
+    }
+
+    $settings = @($containers[0].env | Where-Object {
+        [string]::Equals(
+            [string]$_.name,
+            $Name,
+            [System.StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($settings.Count -ne 1) {
+        Add-Failure "Deployed API setting '$Name' must appear exactly once."
+        return $null
+    }
+
+    $setting = $settings[0]
+    $valueProperty = $setting.PSObject.Properties['value']
+    $secretReference = if ($null -ne $setting.PSObject.Properties['secretRef']) {
+        [string]$setting.secretRef
+    }
+    else {
+        ''
+    }
+    if ($null -eq $valueProperty -or -not [string]::IsNullOrWhiteSpace($secretReference)) {
+        Add-Failure "Deployed API setting '$Name' must use one plain value and no secret reference."
         return $null
     }
 
@@ -769,13 +810,15 @@ function Test-DeployedDelegatedRegistryConfiguration {
     param(
         [Parameter(Mandatory = $true)][object]$ContainerApp,
         [Parameter(Mandatory = $true)][bool]$ExpectedEnabled,
+        [Parameter(Mandatory = $true)][bool]$ExpectedContinuousDevelopmentAccess,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedActionExpiresAtUtc,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedAuthorizedOperationId
     )
 
     $expectedSettings = [ordered]@{
         'Agent365__DelegatedRegistry__Enabled' = $ExpectedEnabled.ToString().ToLowerInvariant()
-        'Agent365__DelegatedRegistry__RequireExactActionBinding' = 'true'
+        'Agent365__DelegatedRegistry__RequireExactActionBinding' = (-not $ExpectedContinuousDevelopmentAccess).ToString().ToLowerInvariant()
+        'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = $ExpectedContinuousDevelopmentAccess.ToString().ToLowerInvariant()
         'Agent365__DelegatedRegistry__Scopes__0' = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All'
         'Agent365__DelegatedRegistry__Scopes__1' = 'https://graph.microsoft.com/AgentRegistration.Read.All'
         'EntraId__ClientCredentials__0__SourceType' = 'SignedAssertionFromManagedIdentity'
@@ -783,7 +826,7 @@ function Test-DeployedDelegatedRegistryConfiguration {
     }
 
     foreach ($setting in $expectedSettings.GetEnumerator()) {
-        $actual = Get-ContainerEnvironmentValue `
+        $actual = Get-ExactPlainContainerEnvironmentValue `
             -ContainerApp $ContainerApp `
             -Name $setting.Key
         if (-not [string]::Equals(
@@ -804,10 +847,10 @@ function Test-DeployedDelegatedRegistryConfiguration {
         Add-Failure 'The deployed API delegated Registry scope collection must contain exactly two indexed entries.'
     }
 
-    $deployedActionExpiresAtUtc = Get-ContainerEnvironmentValue `
+    $deployedActionExpiresAtUtc = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $ContainerApp `
         -Name 'Agent365__DelegatedRegistry__ActionExpiresAtUtc'
-    $deployedAuthorizedOperationId = Get-ContainerEnvironmentValue `
+    $deployedAuthorizedOperationId = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $ContainerApp `
         -Name 'Agent365__DelegatedRegistry__AuthorizedOperationId'
     if (-not (Test-EquivalentOptionalUtcInstant `
@@ -818,6 +861,18 @@ function Test-DeployedDelegatedRegistryConfiguration {
             $ExpectedAuthorizedOperationId,
             [System.StringComparison]::OrdinalIgnoreCase)) {
         Add-Failure 'The deployed delegated Registry action expiry or exact operation binding does not match the reviewed state.'
+    }
+    elseif ($ExpectedContinuousDevelopmentAccess -and -not $ExpectedEnabled) {
+        Add-Failure 'Continuous development delegated Registry access requires the delegated Registry feature to be enabled.'
+    }
+    elseif ($ExpectedContinuousDevelopmentAccess) {
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedActionExpiresAtUtc) -or
+            -not [string]::IsNullOrWhiteSpace($ExpectedAuthorizedOperationId)) {
+            Add-Failure 'Continuous development delegated Registry access must not carry an exact action expiry or operation binding.'
+        }
+        else {
+            Write-Pass 'The delegated Registry action matches the explicit continuous development access contract.'
+        }
     }
     elseif ($ExpectedEnabled) {
         $parsedExpiry = [datetimeoffset]::MinValue
@@ -844,31 +899,45 @@ function Test-DeployedProvisioningBindings {
     param(
         [Parameter(Mandatory = $true)][object]$ContainerApp,
         [Parameter(Mandatory = $true)][bool]$ExpectedEnabled,
+        [Parameter(Mandatory = $true)][bool]$ExpectedContinuousDevelopmentAccess,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedExternalAgentId,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedRetryAgentId,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedAdmissionExpiresAtUtc
     )
 
-    $requireExactBinding = Get-ContainerEnvironmentValue `
+    $requireExactBinding = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $ContainerApp `
         -Name 'Provisioning__RequireExactAdmissionBinding'
+    $expectedExactBinding = (-not $ExpectedContinuousDevelopmentAccess).ToString().ToLowerInvariant()
     if (-not [string]::Equals(
             [string]$requireExactBinding,
-            'true',
+            $expectedExactBinding,
             [System.StringComparison]::OrdinalIgnoreCase)) {
-        Add-Failure 'The deployed API must enforce exact registration/retry admission binding.'
+        Add-Failure 'The deployed API exact registration/retry admission-binding mode does not match the reviewed contract.'
     }
     else {
-        Write-Pass 'The deployed API enforces exact registration/retry admission binding.'
+        Write-Pass 'The deployed API exact registration/retry admission-binding mode matches.'
+    }
+    $allowContinuousDevelopment = Get-ExactPlainContainerEnvironmentValue `
+        -ContainerApp $ContainerApp `
+        -Name 'Provisioning__AllowContinuousDevelopmentAccess'
+    if (-not [string]::Equals(
+            [string]$allowContinuousDevelopment,
+            $ExpectedContinuousDevelopmentAccess.ToString().ToLowerInvariant(),
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        Add-Failure 'The deployed API continuous development admission mode does not match the reviewed contract.'
+    }
+    else {
+        Write-Pass 'The deployed API continuous development admission mode matches.'
     }
 
-    $deployedExternalAgentId = Get-ContainerEnvironmentValue `
+    $deployedExternalAgentId = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $ContainerApp `
         -Name 'Provisioning__AuthorizedExternalAgentId'
-    $deployedRetryAgentId = Get-ContainerEnvironmentValue `
+    $deployedRetryAgentId = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $ContainerApp `
         -Name 'Provisioning__AuthorizedRetryAgentId'
-    $deployedAdmissionExpiresAtUtc = Get-ContainerEnvironmentValue `
+    $deployedAdmissionExpiresAtUtc = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $ContainerApp `
         -Name 'Provisioning__AdmissionExpiresAtUtc'
     if (-not [string]::Equals(
@@ -883,6 +952,19 @@ function Test-DeployedProvisioningBindings {
             -Actual ([string]$deployedAdmissionExpiresAtUtc) `
             -Expected $ExpectedAdmissionExpiresAtUtc)) {
         Add-Failure 'The deployed registration/retry expiry or bindings do not match the exact reviewed API admission state.'
+    }
+    elseif ($ExpectedContinuousDevelopmentAccess -and -not $ExpectedEnabled) {
+        Add-Failure 'Continuous development admission requires the API execution gate to be enabled.'
+    }
+    elseif ($ExpectedContinuousDevelopmentAccess) {
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedExternalAgentId) -or
+            -not [string]::IsNullOrWhiteSpace($ExpectedRetryAgentId) -or
+            -not [string]::IsNullOrWhiteSpace($ExpectedAdmissionExpiresAtUtc)) {
+            Add-Failure 'Continuous development admission must not carry exact registration/retry bindings or an admission expiry.'
+        }
+        else {
+            Write-Pass 'The API admission bindings match the explicit continuous development access contract.'
+        }
     }
     elseif ($ExpectedEnabled -and
             ([string]::IsNullOrWhiteSpace($ExpectedExternalAgentId) -eq
@@ -911,6 +993,36 @@ function Test-DeployedProvisioningBindings {
     }
     else {
         Write-Pass 'The API admission bindings match the exact reviewed registration/retry boundary.'
+    }
+}
+
+function Test-ContinuousDevelopmentAccessInputContract {
+    param(
+        [Parameter(Mandatory = $true)][bool]$ContinuousDevelopmentAccessExpected,
+        [Parameter(Mandatory = $true)][bool]$ExecutionReadyRequired,
+        [Parameter(Mandatory = $true)][bool]$ApiAdmissionClosedExpected,
+        [Parameter(Mandatory = $true)][bool]$DelegatedRegistryActionOpenExpected,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ProvisioningAuthorizedExternalAgentId,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ProvisioningAuthorizedRetryAgentId,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ProvisioningAdmissionExpiresAtUtc,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DelegatedRegistryActionExpiresAtUtc,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DelegatedRegistryAuthorizedOperationId
+    )
+
+    if (-not $ContinuousDevelopmentAccessExpected) {
+        return
+    }
+
+    $hasExactBoundInput =
+        $ApiAdmissionClosedExpected -or
+        $DelegatedRegistryActionOpenExpected -or
+        -not [string]::IsNullOrWhiteSpace($ProvisioningAuthorizedExternalAgentId) -or
+        -not [string]::IsNullOrWhiteSpace($ProvisioningAuthorizedRetryAgentId) -or
+        -not [string]::IsNullOrWhiteSpace($ProvisioningAdmissionExpiresAtUtc) -or
+        -not [string]::IsNullOrWhiteSpace($DelegatedRegistryActionExpiresAtUtc) -or
+        -not [string]::IsNullOrWhiteSpace($DelegatedRegistryAuthorizedOperationId)
+    if (-not $ExecutionReadyRequired -or $hasExactBoundInput) {
+        Add-Failure 'Continuous development access requires execution-ready development and cannot be combined with exact-bound flags or binding inputs.'
     }
 }
 
@@ -1102,6 +1214,16 @@ elseif ($RegistryProvider -ne 'Disabled' -or
 if ($ExpectApiAdmissionClosed -and -not $RequireExecutionReady) {
     Add-Failure 'ExpectApiAdmissionClosed is valid only with RequireExecutionReady for the worker-first canary staging state.'
 }
+Test-ContinuousDevelopmentAccessInputContract `
+    -ContinuousDevelopmentAccessExpected $ExpectContinuousDevelopmentAccess.IsPresent `
+    -ExecutionReadyRequired $RequireExecutionReady.IsPresent `
+    -ApiAdmissionClosedExpected $ExpectApiAdmissionClosed.IsPresent `
+    -DelegatedRegistryActionOpenExpected $ExpectDelegatedRegistryActionOpen.IsPresent `
+    -ProvisioningAuthorizedExternalAgentId $ExpectedProvisioningAuthorizedExternalAgentId `
+    -ProvisioningAuthorizedRetryAgentId $ExpectedProvisioningAuthorizedRetryAgentId `
+    -ProvisioningAdmissionExpiresAtUtc $ExpectedProvisioningAdmissionExpiresAtUtc `
+    -DelegatedRegistryActionExpiresAtUtc $ExpectedDelegatedRegistryActionExpiresAtUtc `
+    -DelegatedRegistryAuthorizedOperationId $ExpectedDelegatedRegistryAuthorizedOperationId
 if ($ExpectDelegatedRegistryActionOpen -and
     (-not $RequireExecutionReady -or -not $ExpectApiAdmissionClosed)) {
     Add-Failure 'A delegated Registry action window requires execution-ready worker state while registration/retry admission remains closed.'
@@ -1176,7 +1298,7 @@ if ($null -ne $apiApp -and $gatewayApiClientIdIsValid) {
 }
 
 if ($RequireDeployedConfigurationMatch -and $null -ne $apiApp) {
-    $deployedRegistrationGate = Get-ContainerEnvironmentValue `
+    $deployedRegistrationGate = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $apiApp `
         -Name 'Provisioning__ExecutionEnabled'
     $expectedRegistrationEnabled =
@@ -1204,12 +1326,14 @@ if ($RequireDeployedConfigurationMatch -and $null -ne $apiApp) {
 
     Test-DeployedDelegatedRegistryConfiguration `
         -ContainerApp $apiApp `
-        -ExpectedEnabled $ExpectDelegatedRegistryActionOpen.IsPresent `
+        -ExpectedEnabled ($ExpectDelegatedRegistryActionOpen.IsPresent -or $ExpectContinuousDevelopmentAccess.IsPresent) `
+        -ExpectedContinuousDevelopmentAccess $ExpectContinuousDevelopmentAccess.IsPresent `
         -ExpectedActionExpiresAtUtc $ExpectedDelegatedRegistryActionExpiresAtUtc `
         -ExpectedAuthorizedOperationId $ExpectedDelegatedRegistryAuthorizedOperationId
     Test-DeployedProvisioningBindings `
         -ContainerApp $apiApp `
         -ExpectedEnabled $expectedRegistrationEnabled `
+        -ExpectedContinuousDevelopmentAccess $ExpectContinuousDevelopmentAccess.IsPresent `
         -ExpectedExternalAgentId $ExpectedProvisioningAuthorizedExternalAgentId `
         -ExpectedRetryAgentId $ExpectedProvisioningAuthorizedRetryAgentId `
         -ExpectedAdmissionExpiresAtUtc $ExpectedProvisioningAdmissionExpiresAtUtc

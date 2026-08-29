@@ -576,6 +576,49 @@ function Get-GatewayPurviewCertificateMetadataEvidence {
     }
 }
 
+function Get-GatewayProvisioningPreflightArguments {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)]$Runtime,
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)]$Blueprint,
+        [Parameter(Mandatory)][string]$ExpectedRegistryProvider,
+        [Parameter(Mandatory)][bool]$RuntimePreviewEnabled
+    )
+
+    # PowerShell array splatting is positional; strings such as '-Environment'
+    # are not reparsed as named parameters. Keep this as one exact hashtable so
+    # string-array values and switches reach the read-only preflight binder with
+    # their intended names and types.
+    $arguments = [ordered]@{
+        Environment = [string]$Config.environment
+        ExpectedSubscriptionId = [string]$Config.subscriptionId
+        ExpectedTenantId = [string]$Config.tenantId
+        ResourceGroup = [string]$Config.resourceGroupName
+        ProjectName = [string]$Config.projectName
+        ContainerAppsEnvironmentName = [string]$Foundation.containerAppsEnvironmentName
+        WorkerContainerAppName = "ca-gateway-worker-$($Config.environment)-v3"
+        ExpectedServiceBusQueueName = [string]$Runtime.serviceBusQueueName
+        WorkerProcessingEnabled = [bool]$Runtime.workerProcessingEnabled
+        ExpectedGatewayApiApplicationClientId = [string]$Identity.gatewayApiClientId
+        ExpectedCredentialKeyVaultUri = "https://kv-$($Config.projectName)-$($Config.environment)-prov.vault.azure.net/"
+        ExpectedManagerApplicationIds = [string[]]@($Blueprint.managerApplicationIds)
+        RegistryProvider = $ExpectedRegistryProvider
+        ExpectedGatewayApiFederatedCredentialName = "a365gw-$($Config.projectName)-api-obo-$($Config.environment)"
+        ManagerApplicationsPreflightConfirmed = $true
+        RequireDeployedConfigurationMatch = $true
+    }
+    if ($RuntimePreviewEnabled) {
+        $arguments.DirectRegistryPreviewEnabled = $true
+        $arguments.DelegatedRegistryEnabled = $true
+        $arguments.RequireExecutionReady = $true
+        $arguments.ExpectContinuousDevelopmentAccess = $true
+    }
+    return $arguments
+}
+
 function Test-GatewayBootstrapDeployment {
     [CmdletBinding()]
     param(
@@ -759,25 +802,14 @@ function Test-GatewayBootstrapDeployment {
     $runtimePreviewEnabled = [bool]$provisioningMode.runtimePreviewEnabled
     $expectedRegistryProvider = [string]$provisioningMode.expectedRegistryProvider
     $provisioningAdmissionReady = $runtimePreviewEnabled -and $purviewProfilePrerequisites.profileProvisioningReady -eq $true
-    $preflightArguments = @(
-        '-Environment', [string]$Config.environment,
-        '-ExpectedSubscriptionId', [string]$Config.subscriptionId,
-        '-ExpectedTenantId', [string]$Config.tenantId,
-        '-ResourceGroup', [string]$Config.resourceGroupName,
-        '-ProjectName', [string]$Config.projectName,
-        '-ContainerAppsEnvironmentName', [string]$Foundation.containerAppsEnvironmentName,
-        '-WorkerContainerAppName', "ca-gateway-worker-$($Config.environment)-v3",
-        '-ExpectedServiceBusQueueName', [string]$Runtime.serviceBusQueueName,
-        '-WorkerProcessingEnabled', [bool]$Runtime.workerProcessingEnabled,
-        '-ExpectedGatewayApiApplicationClientId', [string]$Identity.gatewayApiClientId,
-        '-ExpectedCredentialKeyVaultUri', "https://kv-$($Config.projectName)-$($Config.environment)-prov.vault.azure.net/",
-        '-ExpectedManagerApplicationIds', @($Blueprint.managerApplicationIds),
-        '-RegistryProvider', $expectedRegistryProvider,
-        '-ExpectedGatewayApiFederatedCredentialName', "a365gw-$($Config.projectName)-api-obo-$($Config.environment)",
-        '-ManagerApplicationsPreflightConfirmed',
-        '-RequireDeployedConfigurationMatch'
-    )
-    if ($runtimePreviewEnabled) { $preflightArguments += @('-DirectRegistryPreviewEnabled', '-DelegatedRegistryEnabled', '-RequireExecutionReady') }
+    $preflightArguments = Get-GatewayProvisioningPreflightArguments `
+        -Config $Config `
+        -Foundation $Foundation `
+        -Runtime $Runtime `
+        -Identity $Identity `
+        -Blueprint $Blueprint `
+        -ExpectedRegistryProvider $expectedRegistryProvider `
+        -RuntimePreviewEnabled $runtimePreviewEnabled
     & (Join-Path $root 'operations/test-provisioning-prerequisites.ps1') @preflightArguments | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Read-only provisioning preflight failed.' }
 
