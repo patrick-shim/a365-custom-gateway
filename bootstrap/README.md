@@ -52,9 +52,118 @@ bootstrap\bootstrap.cmd -Mode Apply -Config bootstrap\config.json -OpenBrowser
 ```
 
 `bootstrap.cmd` installs PowerShell 7 with `winget` when needed. The PowerShell
-entry point can then install the remaining supported prerequisites. On Linux or
-macOS, install PowerShell 7, Azure CLI, and .NET 10 using Microsoft's platform
-instructions, then run `pwsh ./bootstrap/bootstrap.ps1 ...`.
+entry point can then install the remaining supported prerequisites.
+
+## Quick start on macOS
+
+The bootstrap is cross-platform PowerShell, but `bootstrap.cmd` and automatic
+installation of Git, Azure CLI, and .NET are Windows-only. On macOS, install the
+base toolchain first. The commands below work on both Apple silicon and Intel Macs;
+for .NET, select the installer matching the Mac's processor architecture.
+
+1. Install [Homebrew](https://brew.sh/) if it is not already available, then install
+   PowerShell 7, Git, and Azure CLI:
+
+```bash
+brew update
+brew install powershell git azure-cli
+```
+
+   A Microsoft-signed PowerShell package is also available from the official
+   [PowerShell macOS installation guide](https://learn.microsoft.com/powershell/scripting/install/install-powershell-on-macos).
+
+2. Install the **.NET 10 SDK**, not only the runtime, from the official
+   [.NET macOS installation guide](https://learn.microsoft.com/dotnet/core/install/macos).
+   Choose Arm64 for Apple silicon or x64 for an Intel Mac.
+
+3. Open a new Terminal and verify the required commands. The `dotnet` version must
+   begin with `10.`:
+
+```bash
+pwsh --version
+git --version
+az version
+dotnet --version
+```
+
+4. From the repository root, create the ignored local configuration and edit every
+   placeholder. Do not put passwords, tokens, certificates, Gateway keys, or other
+   secrets in this file:
+
+```bash
+cp bootstrap/config.example.json bootstrap/config.json
+nano bootstrap/config.json
+```
+
+5. Run an explicit non-mutating plan, then the resumable apply:
+
+```bash
+pwsh ./bootstrap/bootstrap.ps1 -Mode Plan -Config ./bootstrap/config.json
+pwsh ./bootstrap/bootstrap.ps1 -Mode Apply -Config ./bootstrap/config.json -OpenBrowser
+```
+
+   If the shell is already in the `bootstrap` directory, use
+   `pwsh ./bootstrap.ps1 -Mode Plan -Config ./config.json` and the corresponding
+   `Apply` command. Running `pwsh bootstrap.ps1` alone implicitly selects `Plan`
+   and `./config.json`, but the explicit form is recommended so the intended mode
+   and file are always visible.
+
+The macOS run installs/verifies Bicep through Azure CLI and can install the Agent
+365 CLI plus `ExchangeOnlineManagement` for the current user. If `a365` is installed
+but a later Terminal cannot find it, add the .NET global-tools directory to zsh and
+open a new Terminal:
+
+```bash
+echo 'export PATH="$PATH:$HOME/.dotnet/tools"' >> ~/.zprofile
+source ~/.zprofile
+a365 --version
+```
+
+The first `Apply` is intentionally interactive. Azure, Agent 365, tenant consent,
+and Purview may open browser/device authentication. Do not add `-NonInteractive`
+until all interactive prerequisites already exist. `-OpenBrowser` opens the Admin
+UI after successful verification; if macOS does not open it automatically, use the
+Admin UI URL printed at the end.
+
+### Fixing the Purview sensitive-information-type error
+
+This error is a configuration guard and is independent of macOS:
+
+```text
+purview.sensitiveInformationType is required when Purview is enabled
+```
+
+It occurs while `config.json` is loaded, before `Plan` or `Apply` changes Azure. Use
+one of these two valid configurations:
+
+- To bootstrap without Purview initially, keep the complete `purview` object from
+  `config.example.json` and set:
+
+```json
+{
+  "enabled": false,
+  "activateGatewayAdapterAfterPolicyReadback": false,
+  "collectionPolicyName": "A365 Gateway AI collection",
+  "dlpPolicyName": "A365 Gateway inline DLP",
+  "dlpRuleName": "A365 Gateway inline DLP rule",
+  "sensitiveInformationType": "",
+  "policyProvisioningEnabled": false,
+  "policyProvisioningOrganization": "",
+  "policyProvisioningApplicationId": "",
+  "policyProvisioningCertificateSecretUri": ""
+}
+```
+
+- To include Purview, set `enabled` to `true` and replace the empty
+  `sensitiveInformationType` with the exact tenant-approved Purview sensitive
+  information type name. Do not use a guessed name. Keep
+  `activateGatewayAdapterAfterPolicyReadback` false if this run should only create
+  and read back policy configuration; set it true only when the operator explicitly
+  wants the deployed Gateway adapter enabled after that read-back.
+
+After correcting `bootstrap/config.json`, rerun `Plan`, then `Apply`. If a later
+`Apply` step fails, fix that reported cause and use `-Mode Resume` with the same
+configuration instead of deleting `.bootstrap` state or starting a second run.
 
 The signed-in account needs Azure subscription Owner (or Contributor plus User
 Access Administrator) rights, permission to create Entra applications/service
@@ -146,6 +255,9 @@ runbooks.
 
 ## Official capability references
 
+- [Install PowerShell on macOS](https://learn.microsoft.com/powershell/scripting/install/install-powershell-on-macos)
+- [Install Azure CLI on macOS](https://learn.microsoft.com/cli/azure/install-azure-cli-macos)
+- [Install .NET on macOS](https://learn.microsoft.com/dotnet/core/install/macos)
 - [Subscription-scope Bicep deployments](https://learn.microsoft.com/azure/azure-resource-manager/bicep/deploy-to-subscription)
 - [Install the Agent 365 CLI](https://learn.microsoft.com/microsoft-agent-365/developer/agent-365-cli)
 - [Agent 365 CLI setup reference](https://learn.microsoft.com/microsoft-agent-365/developer/reference/cli/setup)

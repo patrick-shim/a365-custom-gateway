@@ -419,6 +419,19 @@ completion reaches 85% and emits only final worker verification.
 
 All GA. Use `Azure.Identity` with `DefaultAzureCredential` for all.
 
+### 3.6 Clean-subscription macOS bootstrap toolchain
+
+| Requirement | Official source | Mechanism | Status | Limitation | Bootstrap decision |
+|---|---|---|---|---|---|
+| PowerShell 7 | https://learn.microsoft.com/powershell/scripting/install/install-powershell-on-macos and https://learn.microsoft.com/powershell/scripting/install/alternate-install-methods | Microsoft-signed macOS package or Homebrew `powershell` formula | PowerShell 7 is supported on macOS | The Homebrew formula is community-maintained; `bootstrap.cmd` is Windows-only | Require an available `pwsh` 7+ before invoking `bootstrap.ps1` on macOS. |
+| Azure CLI | https://learn.microsoft.com/cli/azure/install-azure-cli-macos | `brew update && brew install azure-cli` | Current supported macOS installation path | Bootstrap does not install Azure CLI automatically on macOS | Install and verify `az` before `Apply`; bootstrap then pins the exact tenant/subscription and installs/verifies Bicep. |
+| .NET 10 SDK | https://learn.microsoft.com/dotnet/core/install/macos | Microsoft macOS SDK installer matching Arm64 or x64 | .NET 10 is the current repository target | Runtime-only installation is insufficient; architecture must match the Mac | Require `dotnet --version` to begin with `10.` before `Apply`. |
+
+The Agent 365 CLI and optional `ExchangeOnlineManagement` module remain governed by
+their existing validated sections. Bootstrap may install those user-scoped tools
+after the macOS base toolchain is present; it never treats prerequisite installation
+or a successful `Plan` as Azure deployment evidence.
+
 ---
 
 ## 4. Permissions Matrix
