@@ -140,6 +140,13 @@ function Invoke-GatewayPlanWorkflow {
         -BootstrapClientIpv4 $bootstrapClientIpv4 `
         -DeploymentOwnershipId ([string]$State.deploymentOwnershipId) `
         -SourceFingerprint $sourceFingerprintBefore
+    # Plan is read-only, but its ARM What-If and Graph collision checks must use
+    # the same exact subscription/tenant boundary as Apply. Without this context,
+    # the in-process Graph client correctly refuses token acquisition.
+    Clear-BootstrapAzureSubscriptionContext
+    Set-BootstrapAzureSubscriptionContext `
+        -SubscriptionId ([string]$Configuration.subscriptionId) `
+        -TenantId ([string]$Configuration.tenantId)
     $whatIf = Invoke-GatewayFoundationWhatIf -Config $Configuration -RepositoryRoot $root -DeploymentOwnershipId ([string]$State.deploymentOwnershipId)
     Assert-GatewaySeedBlueprintPlanBoundary -Descriptor $descriptor -Config $Configuration -State $State | Out-Null
     $sourceFingerprintAfter = Get-BootstrapSourceFingerprint

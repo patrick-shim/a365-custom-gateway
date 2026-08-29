@@ -39,6 +39,29 @@ Describe 'Plan input stability boundary' {
     }
 }
 
+Describe 'Plan exact-account context boundary' {
+    It 'sets the configured subscription and tenant before ARM What-If and Graph collision checks' {
+        $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+        $source = Get-Content -LiteralPath (
+            Join-Path $repositoryRoot 'bootstrap/bootstrap.ps1') -Raw
+        $planStart = $source.IndexOf('function Invoke-GatewayPlanWorkflow', [StringComparison]::Ordinal)
+        $planEnd = $source.IndexOf("`nSet-BootstrapStructuredOutput", $planStart, [StringComparison]::Ordinal)
+        $planSource = $source.Substring($planStart, $planEnd - $planStart)
+
+        $clearIndex = $planSource.IndexOf('Clear-BootstrapAzureSubscriptionContext', [StringComparison]::Ordinal)
+        $setIndex = $planSource.IndexOf('Set-BootstrapAzureSubscriptionContext', [StringComparison]::Ordinal)
+        $whatIfIndex = $planSource.IndexOf('Invoke-GatewayFoundationWhatIf', [StringComparison]::Ordinal)
+        $graphIndex = $planSource.IndexOf('Assert-GatewaySeedBlueprintPlanBoundary', [StringComparison]::Ordinal)
+
+        $planStart | Should -BeGreaterOrEqual 0
+        $clearIndex | Should -BeGreaterOrEqual 0
+        $setIndex | Should -BeGreaterThan $clearIndex
+        $whatIfIndex | Should -BeGreaterThan $setIndex
+        $graphIndex | Should -BeGreaterThan $whatIfIndex
+        $planSource | Should -Match 'Set-BootstrapAzureSubscriptionContext\s+`\s+-SubscriptionId \(\[string\]\$Configuration\.subscriptionId\)\s+`\s+-TenantId \(\[string\]\$Configuration\.tenantId\)'
+    }
+}
+
 Describe 'Plan-time Agent ID blueprint collision boundary' {
     InModuleScope Experience {
         BeforeEach {
