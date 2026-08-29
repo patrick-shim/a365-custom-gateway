@@ -580,7 +580,8 @@ function Ensure-GatewayApiApplication {
         -not [string]::IsNullOrWhiteSpace([string]$application.web.logoutUrl) -or
         -not [string]::IsNullOrWhiteSpace([string]$application.web.homePageUrl) -or
         @($application.spa.redirectUris).Count -ne 0 -or
-        @($application.publicClient.redirectUris).Count -ne 0) {
+        @($application.publicClient.redirectUris).Count -ne 0 -or
+        [int]$application.api.requestedAccessTokenVersion -ne 2) {
         throw 'Gateway API application does not match the exact single-tenant, credential-free audience boundary.'
     }
     $scope = @($application.api.oauth2PermissionScopes | Where-Object value -eq 'access_as_user')
@@ -659,7 +660,8 @@ function Ensure-GatewayApiApplication {
         gatewayApiApplicationObjectId = [string]$application.id
         gatewayApiClientId = [string]$application.appId
         gatewayApiServicePrincipalId = [string]$principal.id
-        gatewayApiAudience = $audience
+        gatewayApiScopeBaseUri = $audience
+        gatewayApiTokenAudience = [string]$application.appId
         gatewayApiAccessScopeId = [string]$scope[0].id
         gatewayAdministratorRoleId = [string]$adminRole[0].id
         deploymentOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')

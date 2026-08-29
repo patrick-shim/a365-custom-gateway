@@ -76,6 +76,15 @@ public sealed class AgentIngressCredentialLifecycleTests : IDisposable
         revoked.Credential.RevokedAtUtc.Should().NotBeNull();
         revoked.AlreadyRevoked.Should().BeFalse();
 
+        var repeatedRevokeResponse = await _client.DeleteAsync(
+            $"/api/v1/agents/{registration.AgentId:D}/credentials/{firstCredential.KeyId:D}");
+        repeatedRevokeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var alreadyRevoked = await repeatedRevokeResponse.Content
+            .ReadFromJsonAsync<RevokeAgentIngressCredentialResponse>(JsonOptions);
+        alreadyRevoked!.Credential.KeyId.Should().Be(firstCredential.KeyId);
+        alreadyRevoked.Credential.RevokedAtUtc.Should().Be(revoked.Credential.RevokedAtUtc);
+        alreadyRevoked.AlreadyRevoked.Should().BeTrue();
+
         await SetAgentStatusAsync(registration.AgentId, AgentStatus.Active);
         _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Bearer",

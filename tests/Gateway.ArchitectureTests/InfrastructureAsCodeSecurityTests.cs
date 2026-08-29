@@ -1396,14 +1396,96 @@ public class InfrastructureAsCodeSecurityTests
     public void LiveCanary_ShouldKeepTemporaryCredentialsInMemoryAndRevokeThem()
     {
         var source = ReadRepositoryFile("tools", "Gateway.LiveCanary", "Program.cs");
+        var tokenValidator = ReadRepositoryFile(
+            "tools", "Gateway.LiveCanary", "ControlTokenValidator.cs");
+        var evidenceValidator = ReadRepositoryFile(
+            "tools", "Gateway.LiveCanary", "CanaryEvidenceValidator.cs");
+        var wrapper = ReadRepositoryFile(
+            "operations", "invoke-bounded-user-canary.ps1");
+        var durableState = ReadRepositoryFile(
+            "operations", "BoundedUserCanaryState.psm1");
         var dockerfile = ReadRepositoryFile("tools", "Gateway.LiveCanary", "Dockerfile");
 
         source.Should().Contain("credentialKey = string.Empty");
         source.Should().Contain("credentials/{credentialId:D}");
+        source.Should().Contain("$\"{options.ApiScopeBaseUri}/access_as_user\"");
+        source.Should().Contain("InteractiveBrowserCredential");
+        source.Should().Contain("InteractiveBrowserUser");
+        source.Should().Contain("CanaryOperationMode.RevokeOnly");
+        source.Should().Contain("credentialId = options.RecoveryCredentialId!.Value");
+        source.Should().Contain("ControlTokenValidator.Validate(");
+        source.Should().Contain("access_as_user");
+        tokenValidator.Should().Contain("Gateway.Administrator");
+        tokenValidator.Should().Contain("parsedAudience != apiApplicationClientId");
+        tokenValidator.Should().Contain("parsedUserObjectId != expectedUserObjectId");
+        tokenValidator.Should().Contain("expectedClientApplicationId");
+        tokenValidator.Should().Contain("ReadRequiredStringClaim(root, \"azp\")");
+        evidenceValidator.Should().Contain("response.AgentId != expectedAgentRegistrationId");
+        evidenceValidator.Should().Contain("response.Credential.KeyId != expectedCredentialId");
+        evidenceValidator.Should().Contain("response.Credential.RevokedAtUtc is null");
+        evidenceValidator.Should().Contain("NonBlockingPurviewDecisions");
+        evidenceValidator.Should().Contain("expectPromptShieldEnabled ? \"Allowed\" : \"Disabled\"");
+        evidenceValidator.Should().Contain("\"PurviewDisabled\"");
+        evidenceValidator.Should().Contain("parsedHeader is null");
+        source.Should().Contain("$\"{options.ApiScopeBaseUri}/.default\"");
+        source.Should().Contain("Required(values, \"api-scope-base-uri\")");
+        source.Should().NotContain("$\"api://{options.ApiApplicationClientId:D}/.default\"");
         source.Should().Contain("exitCode = 1;");
         source.Should().Contain("The response body was deliberately not rendered.");
+        source.Should().Contain("provider details were suppressed");
+        source.Should().NotContain("exception.Message");
         source.Should().NotContain("Console.WriteLine(credentialKey");
         source.Should().NotContain("Console.WriteLine(token.Token");
+        source.Should().Contain("bool ExpectPromptShieldEnabled");
+        source.Should().Contain("bool ExpectPurviewEnabled");
+        source.Should().Contain("RequiredBoolean(values, \"expect-prompt-shield-enabled\")");
+        source.Should().Contain("RequiredBoolean(values, \"expect-purview-enabled\")");
+        source.Should().Contain("if (options.ExpectPromptShieldEnabled)");
+        source.Should().Contain("Prompt Shields injection-block proof was not attempted");
+        source.Should().Contain("[PASS] Live Gateway ingestion canary completed.");
+        var allowedEvaluation = source.IndexOf(
+            "ValidateAllowedEvaluation(await EvaluateAsync(",
+            StringComparison.Ordinal);
+        var activityIngestion = source.IndexOf(
+            "\"api/v1/agent-activities\"",
+            StringComparison.Ordinal);
+        var interactionIngestion = source.IndexOf(
+            "\"api/v1/ai-interactions\"",
+            StringComparison.Ordinal);
+        var promptShieldProof = source.IndexOf(
+            "if (options.ExpectPromptShieldEnabled)",
+            StringComparison.Ordinal);
+        allowedEvaluation.Should().BeGreaterThan(-1);
+        activityIngestion.Should().BeGreaterThan(allowedEvaluation);
+        interactionIngestion.Should().BeGreaterThan(activityIngestion);
+        promptShieldProof.Should().BeGreaterThan(interactionIngestion);
+        wrapper.Should().Contain("ApplicationCreateStarted");
+        wrapper.Should().Contain("OwnerAddStarted");
+        wrapper.Should().Contain("ServicePrincipalCreateStarted");
+        wrapper.Should().Contain("GrantCreateStarted");
+        wrapper.Should().Contain("ArmStarted");
+        wrapper.Should().Contain("ChildLaunchStarted");
+        wrapper.Should().Contain("Test-BoundedUserCanaryStateRequiresPreservation");
+        wrapper.Should().Contain("wrapperSha256");
+        wrapper.Should().Contain("helperBundleSha256");
+        wrapper.Should().Contain("canaryBundleSha256");
+        wrapper.Should().Contain("[switch]$ExpectPromptShieldEnabled");
+        wrapper.Should().Contain("[switch]$ExpectPurviewEnabled");
+        wrapper.Should().Contain("promptShieldExpected = ([bool]$ExpectPromptShieldEnabled).ToString().ToLowerInvariant()");
+        wrapper.Should().Contain("purviewExpected = ([bool]$ExpectPurviewEnabled).ToString().ToLowerInvariant()");
+        wrapper.Should().Contain("'--expect-prompt-shield-enabled'");
+        wrapper.Should().Contain("'--expect-purview-enabled'");
+        wrapper.Should().Contain("Get-ExactCanaryApplicationById");
+        wrapper.Should().Contain("Wait-ExactCanaryObjectAbsent");
+        wrapper.Should().Contain("& dotnet @canaryArguments");
+        wrapper.Should().NotContain("'run', '--project'");
+        durableState.Should().Contain("Completed = @()");
+        durableState.Should().Contain("'promptShieldExpected'");
+        durableState.Should().Contain("'purviewExpected'");
+        durableState.Should().Contain("'^(true|false)$'");
+        durableState.Should().Contain("Convert-CanaryParsedJsonDatesToStrings");
+        durableState.Should().Contain("$stream.Flush($true)");
+        durableState.Should().Contain("[IO.File]::Move($temporary, $fullPath, $true)");
         dockerfile.Should().Contain("USER $APP_UID");
     }
 
@@ -1628,6 +1710,8 @@ public class InfrastructureAsCodeSecurityTests
 
         sourceGate.Should().Contain("$result.FailedCount -gt 0 -or $failedContainerCount -gt 0");
         sourceGate.Should().Contain("Bootstrap/runtime Pester failed:");
+        sourceGate.Should().Contain("operations/BoundedUserCanaryState.psm1");
+        sourceGate.Should().Contain("operations/invoke-bounded-user-canary.ps1");
     }
 
     [Fact]
@@ -1690,6 +1774,44 @@ public class InfrastructureAsCodeSecurityTests
             .GetProperty("allowDevelopmentRegistryPreview").GetBoolean().Should().BeFalse();
         document.RootElement.GetProperty("promptShield")
             .GetProperty("enabled").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public void Bootstrap_ShouldKeepCustomScopeUriSeparateFromV2TokenAudience()
+    {
+        var azure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
+        var entra = ReadRepositoryFile("bootstrap", "modules", "Entra.psm1");
+        var experience = ReadRepositoryFile("bootstrap", "modules", "Experience.psm1");
+        var provisioningBootstrap = ReadRepositoryFile(
+            "infrastructure", "bicep", "provisioning-bootstrap.bicep");
+        var provisioningScript = ReadRepositoryFile(
+            "operations", "bootstrap-provisioning-worker.ps1");
+        var preflight = ReadRepositoryFile(
+            "operations", "test-provisioning-prerequisites.ps1");
+
+        entra.Should().Contain("gatewayApiScopeBaseUri = $audience");
+        entra.Should().Contain("gatewayApiTokenAudience = [string]$application.appId");
+        azure.Should().Contain("entraIdAudience = [string]$Identity.gatewayApiTokenAudience");
+        azure.Should().Contain(
+            "adminUiGatewayApiScope = \"$($Identity.gatewayApiScopeBaseUri)/access_as_user\"");
+        experience.Should().Contain(
+            "'EntraId__Audience' = [string]$Identity.gatewayApiTokenAudience");
+        experience.Should().Contain(
+            "'GatewayApi__Scopes__0' = \"$($Identity.gatewayApiScopeBaseUri)/access_as_user\"");
+        provisioningBootstrap.Should().Contain(
+            "agent365GatewayApiAudience: gatewayApiApplicationClientId");
+        provisioningBootstrap.Should().NotContain(
+            "agent365GatewayApiAudience: 'api://${gatewayApiApplicationClientId}'");
+        provisioningScript.Should().Contain(
+            "'Agent365__GatewayApiAudience' = $ExpectedGatewayApiClientId");
+        preflight.Should().Contain("-Audience $gatewayApiClientId");
+        preflight.Should().Contain("$select=id,appId,api");
+        preflight.Should().Contain("requestedAccessTokenVersion -ne 2");
+
+        var liveCanary = ReadRepositoryFile("tools", "Gateway.LiveCanary", "Program.cs");
+        liveCanary.Should().Contain("$\"{options.ApiScopeBaseUri}/access_as_user\"");
+        liveCanary.Should().Contain("InteractiveBrowserCredential");
+        liveCanary.Should().NotContain("$\"api://{options.ApiApplicationClientId:D}/.default\"");
     }
 
     private static string ReadRepositoryFile(params string[] pathSegments)

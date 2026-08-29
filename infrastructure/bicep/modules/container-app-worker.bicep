@@ -69,7 +69,7 @@ param agent365ObservabilityServerAddress string
 @description('Client/application ID of the Gateway API whose ExternalAgent app role is assigned to provisioned external-agent service principals.')
 param agent365GatewayApiApplicationClientId string
 
-@description('Configured token audience of the Gateway API.')
+@description('Bare Gateway API client ID required by the Microsoft identity platform v2 aud claim.')
 param agent365GatewayApiAudience string
 
 @description('HTTPS base URL used for the post-provisioning Agent Identity access proof.')

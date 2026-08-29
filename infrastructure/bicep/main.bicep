@@ -76,7 +76,7 @@ param entraIdTenantId string
 @description('Entra ID client (application) ID for the Gateway API.')
 param entraIdClientId string
 
-@description('Entra ID audience for token validation.')
+@description('Bare Gateway API client ID required by the Microsoft identity platform v2 aud claim.')
 param entraIdAudience string
 
 @description('Entra ID object ID for the SQL AD administrator.')

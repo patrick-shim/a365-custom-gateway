@@ -154,6 +154,41 @@ public sealed class AgentIngressCredentialHandlerTests
     }
 
     [Fact]
+    public async Task Revoke_ShouldReturnAlreadyRevokedWithoutDuplicateAuditOrSave()
+    {
+        var agent = CreateAgent();
+        var credential = CreateMetadata(revokedAtUtc: DateTime.UtcNow.AddMinutes(-1));
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
+            .Returns(agent);
+        _credentialService.RevokeAsync(
+                agent.Id,
+                credential.KeyId,
+                Arg.Any<DateTime>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AgentIngressCredentialRevocationResult(
+                AgentIngressCredentialRevocationStatus.AlreadyRevoked,
+                credential));
+        var handler = new RevokeAgentIngressCredentialHandler(
+            _agentRepository,
+            _credentialService,
+            _auditEventRepository,
+            _unitOfWork);
+
+        var result = await handler.Handle(
+            new RevokeAgentIngressCredentialCommand(
+                agent.Id,
+                credential.KeyId,
+                CallerObjectId),
+            CancellationToken.None);
+
+        result.Credential.KeyId.Should().Be(credential.KeyId);
+        result.Credential.RevokedAtUtc.Should().Be(credential.RevokedAtUtc);
+        result.AlreadyRevoked.Should().BeTrue();
+        await _auditEventRepository.DidNotReceiveWithAnyArgs().AddAsync(default!, default);
+        await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(default);
+    }
+
+    [Fact]
     public async Task List_ShouldReturnOnlySafeMetadataForRouteAgent()
     {
         var agent = CreateAgent();

@@ -703,7 +703,7 @@ function Get-GatewayInertPartialEnvironmentContract {
             'Agent365__TenantId' = [string]$Config.tenantId
             'Agent365__ObservabilityServerAddress' = $apiFqdn
             'Agent365__GatewayApiApplicationClientId' = [string]$Identity.gatewayApiClientId
-            'Agent365__GatewayApiAudience' = [string]$Identity.gatewayApiAudience
+            'Agent365__GatewayApiAudience' = [string]$Identity.gatewayApiTokenAudience
             'Agent365__GatewayApiBaseUrl' = "https://$apiFqdn/"
             'Agent365__CredentialKeyVaultUri' = "https://kv-$($Config.projectName)-$($Config.environment)-prov.vault.azure.net/"
             'Agent365__ProvisioningManagedIdentityPrincipalId' = ''
@@ -759,7 +759,7 @@ function Get-GatewayInertPartialEnvironmentContract {
         'Observability__ApplicationInsightsConnectionString' = [string]$appInsights.connectionString
         'EntraId__TenantId' = [string]$Config.tenantId
         'EntraId__ClientId' = [string]$Identity.gatewayApiClientId
-        'EntraId__Audience' = [string]$Identity.gatewayApiAudience
+        'EntraId__Audience' = [string]$Identity.gatewayApiTokenAudience
         'EntraId__ClientCredentials__0__SourceType' = 'SignedAssertionFromManagedIdentity'
         'EntraId__ClientCredentials__0__TokenExchangeUrl' = 'api://AzureADTokenExchange'
         'KeyVault__VaultUri' = "https://kv-$($Config.projectName)-$($Config.environment).vault.azure.net/"
@@ -1024,7 +1024,9 @@ function Deploy-GatewayCore {
             throw 'Gateway core identity evidence contains a noncanonical application or administrator ID.'
         }
     }
-    if ([string]$Identity.gatewayApiAudience -cne "api://$($Identity.gatewayApiClientId)" -or
+    $expectedGatewayApiScopeBaseUri = "api://a365-gateway-$($Config.projectName)-$($Config.environment)"
+    if ([string]$Identity.gatewayApiScopeBaseUri -cne $expectedGatewayApiScopeBaseUri -or
+        [string]$Identity.gatewayApiTokenAudience -cne [string]$Identity.gatewayApiClientId -or
         [string]::IsNullOrWhiteSpace([string]$Identity.userPrincipalName)) {
         throw 'Gateway core identity evidence does not match the exact API application authority contract.'
     }
@@ -1104,7 +1106,7 @@ function Deploy-GatewayCore {
         privateEndpointSubnetName = [string]$Foundation.privateEndpointSubnetName
         entraIdTenantId = [string]$Config.tenantId
         entraIdClientId = [string]$Identity.gatewayApiClientId
-        entraIdAudience = [string]$Identity.gatewayApiAudience
+        entraIdAudience = [string]$Identity.gatewayApiTokenAudience
         entraAdminObjectId = [string]$Identity.userObjectId
         entraAdminLogin = [string]$Identity.userPrincipalName
         apiContainerImage = $ApiImage
@@ -1139,7 +1141,7 @@ function Deploy-GatewayCore {
         adminUiContainerImage = $AdminUiImage
         adminUiEntraClientId = $AdminUiClientId
         adminUiEntraClientSecretKeyVaultSecretUri = $AdminUiSecretUri
-        adminUiGatewayApiScope = if ([string]::IsNullOrWhiteSpace($AdminUiClientId)) { '' } else { "$($Identity.gatewayApiAudience)/access_as_user" }
+        adminUiGatewayApiScope = if ([string]::IsNullOrWhiteSpace($AdminUiClientId)) { '' } else { "$($Identity.gatewayApiScopeBaseUri)/access_as_user" }
         alertEmail = [string]$Config.alertEmail
         logRetentionInDays = 30
         acrSku = 'Basic'
@@ -2055,7 +2057,7 @@ function Deploy-GatewayAdminUi {
         entraIdTenantId = [string]$Config.tenantId
         adminUiEntraClientId = [string]$AdminIdentity.adminUiClientId
         adminUiEntraClientSecretKeyVaultSecretUri = $AdminUiSecretUri
-        adminUiGatewayApiScope = "$($Identity.gatewayApiAudience)/access_as_user"
+        adminUiGatewayApiScope = "$($Identity.gatewayApiScopeBaseUri)/access_as_user"
         deployKeyVaultPrivateEndpoint = $true
         keyVaultPrivateEndpointSubnetId = [string]$Foundation.privateEndpointSubnetId
         keyVaultPrivateDnsVirtualNetworkId = [string]$Foundation.virtualNetworkId

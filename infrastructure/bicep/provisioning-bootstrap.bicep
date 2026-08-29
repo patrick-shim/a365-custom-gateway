@@ -35,7 +35,7 @@ param workerBootstrapImage string = 'mcr.microsoft.com/dotnet/runtime:10.0'
 @minLength(1)
 param entraIdTenantId string
 
-@description('Existing Gateway API application/client ID used later for ExternalAgent role assignment.')
+@description('Existing Gateway API application/client ID used for ExternalAgent role assignment and the exact v2 token audience.')
 @minLength(1)
 param gatewayApiApplicationClientId string
 
@@ -134,7 +134,7 @@ module workerApp './modules/container-app-worker.bicep' = {
     entraIdTenantId: entraIdTenantId
     agent365ObservabilityServerAddress: apiApp.properties.configuration.ingress.fqdn
     agent365GatewayApiApplicationClientId: gatewayApiApplicationClientId
-    agent365GatewayApiAudience: 'api://${gatewayApiApplicationClientId}'
+    agent365GatewayApiAudience: gatewayApiApplicationClientId
     agent365GatewayApiBaseUrl: 'https://${apiApp.properties.configuration.ingress.fqdn}/'
     agent365CredentialKeyVaultUri: provisioningKeyVault.outputs.vaultUri
     agent365ManagerApplicationIds: []

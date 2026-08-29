@@ -485,6 +485,11 @@ function Test-DeployedGatewayApiEntraCredentialConfiguration {
         [Parameter(Mandatory = $true)][string]$Audience
     )
 
+    if (-not [string]::Equals($Audience, $ClientId, [StringComparison]::Ordinal)) {
+        Add-Failure 'The Microsoft identity platform v2 token audience must exactly equal the canonical Gateway API client ID.'
+        return
+    }
+
     $containers = @($ContainerApp.properties.template.containers)
     if ($containers.Count -ne 1) {
         Add-Failure 'The deployed API must contain exactly one container before Entra credential configuration can be verified.'
@@ -540,6 +545,27 @@ function Test-DeployedGatewayApiEntraCredentialConfiguration {
     if ($configurationIsExact) {
         Write-Pass 'The deployed API uses only the exact managed-identity signed-assertion OBO environment boundary.'
     }
+}
+
+function Test-GatewayApiV2TokenApplicationContract {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Applications,
+        [Parameter(Mandatory = $true)][string]$ClientId
+    )
+
+    $matches = @($Applications | Where-Object {
+        [string]::Equals([string]$_.appId, $ClientId, [StringComparison]::Ordinal)
+    })
+    if ($Applications.Count -ne 1 -or $matches.Count -ne 1) {
+        Add-Failure 'The Gateway API client ID must resolve to exactly one canonical Entra application.'
+        return
+    }
+    if ([int]$matches[0].api.requestedAccessTokenVersion -ne 2) {
+        Add-Failure 'The Gateway API application must explicitly request v2 access tokens before the bare client ID can be used as its token audience.'
+        return
+    }
+
+    Write-Pass 'The Gateway API application explicitly requests v2 access tokens.'
 }
 
 function Test-DeployedManagerApplicationConfiguration {
@@ -1290,11 +1316,21 @@ $null = Test-AppEnvironment `
     -Required $false
 
 if ($null -ne $apiApp -and $gatewayApiClientIdIsValid) {
+    $gatewayApiClientId = $parsedGatewayApiClientId.ToString('D')
+    $gatewayApiFilter = [uri]::EscapeDataString("appId eq '$gatewayApiClientId'")
+    $gatewayApiApplications = Invoke-AzJson -Arguments @(
+        'rest',
+        '--method', 'GET',
+        '--url', "https://graph.microsoft.com/v1.0/applications?`$filter=$gatewayApiFilter&`$select=id,appId,api"
+    ) -FailureMessage 'Unable to inspect the Gateway API application token-version contract.'
+    Test-GatewayApiV2TokenApplicationContract `
+        -Applications @($gatewayApiApplications.value) `
+        -ClientId $gatewayApiClientId
     Test-DeployedGatewayApiEntraCredentialConfiguration `
         -ContainerApp $apiApp `
         -TenantId $ExpectedTenantId `
-        -ClientId ($parsedGatewayApiClientId.ToString('D')) `
-        -Audience "api://a365-gateway-$ProjectName-$Environment"
+        -ClientId $gatewayApiClientId `
+        -Audience $gatewayApiClientId
 }
 
 if ($RequireDeployedConfigurationMatch -and $null -ne $apiApp) {
@@ -1554,6 +1590,7 @@ if ($null -ne $workerApp) {
 
         if ($gatewayApiClientIdIsValid) {
             $expectedSettings['Agent365__GatewayApiApplicationClientId'] = $parsedGatewayApiClientId.ToString('D')
+            $expectedSettings['Agent365__GatewayApiAudience'] = $parsedGatewayApiClientId.ToString('D')
         }
         if ($credentialVaultUriIsValid) {
             $expectedSettings['Agent365__CredentialKeyVaultUri'] = $parsedCredentialVaultUri.AbsoluteUri

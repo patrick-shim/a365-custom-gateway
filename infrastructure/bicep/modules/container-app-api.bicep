@@ -95,7 +95,7 @@ param entraIdTenantId string
 @description('Entra ID client (application) ID.')
 param entraIdClientId string
 
-@description('Entra ID audience for token validation.')
+@description('Bare Gateway API client ID required by the Microsoft identity platform v2 aud claim.')
 param entraIdAudience string
 
 @description('Microsoft first-party application IDs required for an existing blueprint to be compatible with Agent 365 through this deployment.')

@@ -1750,7 +1750,7 @@ function Test-GatewayGroupDeploymentEvidence {
             [string]$deployment.parameters.containerAppsEnvironmentName.value -cne [string]$Foundation.containerAppsEnvironmentName -or
             [string]$deployment.parameters.entraIdTenantId.value -cne [string]$Config.tenantId -or
             [string]$deployment.parameters.entraIdClientId.value -cne [string]$Identity.gatewayApiClientId -or
-            [string]$deployment.parameters.entraIdAudience.value -cne [string]$Identity.gatewayApiAudience -or
+            [string]$deployment.parameters.entraIdAudience.value -cne [string]$Identity.gatewayApiTokenAudience -or
             [string]$deployment.parameters.workerContainerAppName.value -cne "ca-gateway-worker-$($Config.environment)-v3" -or
             [string]$deployment.parameters.runtimeImagePullIdentityId.value -cne [string]$Foundation.runtimeImagePullIdentityId -or
             [string]$deployment.parameters.runtimeImagePullIdentityPrincipalId.value -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId -or
@@ -1892,7 +1892,7 @@ function Test-GatewayGroupDeploymentEvidence {
                 'Observability__ApplicationInsightsConnectionString' = $appInsightsConnectionString
                 'EntraId__TenantId' = [string]$Config.tenantId
                 'EntraId__ClientId' = [string]$Identity.gatewayApiClientId
-                'EntraId__Audience' = [string]$Identity.gatewayApiAudience
+                'EntraId__Audience' = [string]$Identity.gatewayApiTokenAudience
                 'EntraId__ClientCredentials__0__SourceType' = 'SignedAssertionFromManagedIdentity'
                 'EntraId__ClientCredentials__0__TokenExchangeUrl' = 'api://AzureADTokenExchange'
                 'KeyVault__VaultUri' = [string]$Evidence.keyVaultUri
@@ -1930,7 +1930,7 @@ function Test-GatewayGroupDeploymentEvidence {
                 'Agent365__TenantId' = [string]$Config.tenantId
                 'Agent365__ObservabilityServerAddress' = [string]$Evidence.apiFqdn
                 'Agent365__GatewayApiApplicationClientId' = [string]$Identity.gatewayApiClientId
-                'Agent365__GatewayApiAudience' = [string]$Identity.gatewayApiAudience
+                'Agent365__GatewayApiAudience' = [string]$Identity.gatewayApiTokenAudience
                 'Agent365__GatewayApiBaseUrl' = "https://$($Evidence.apiFqdn)/"
                 'Agent365__CredentialKeyVaultUri' = $provisioningVaultUri
                 'Agent365__ProvisioningManagedIdentityPrincipalId' = $(if ($isRuntime) { [string]$Evidence.workerPrincipalId } else { '' })
@@ -2054,7 +2054,7 @@ function Test-GatewayNamedGroupDeployment {
             [string]$deployment.parameters.containerAppsEnvironmentName.value -cne [string]$Foundation.containerAppsEnvironmentName -or
             [string]$deployment.parameters.entraIdTenantId.value -cne [string]$Config.tenantId -or
             [string]$deployment.parameters.adminUiEntraClientId.value -cne [string]$AdminIdentity.adminUiClientId -or
-            [string]$deployment.parameters.adminUiGatewayApiScope.value -cne "$($Identity.gatewayApiAudience)/access_as_user" -or
+            [string]$deployment.parameters.adminUiGatewayApiScope.value -cne "$($Identity.gatewayApiScopeBaseUri)/access_as_user" -or
             [string]$deployment.outputs.adminUiFqdn.value -ne [string]$Evidence.adminUiFqdn -or
             [string]$deployment.outputs.adminUiUrl.value -ne [string]$Evidence.adminUiUrl -or
             [string]$deployment.outputs.adminUiPrincipalId.value -ne [string]$Evidence.adminUiPrincipalId -or
@@ -2113,7 +2113,7 @@ function Test-GatewayNamedGroupDeployment {
             'EntraId__CallbackPath' = '/signin-oidc'
             'EntraId__SignedOutCallbackPath' = '/signout-callback-oidc'
             'GatewayApi__BaseUrl' = "https://$($Runtime.apiFqdn)/"
-            'GatewayApi__Scopes__0' = "$($Identity.gatewayApiAudience)/access_as_user"
+            'GatewayApi__Scopes__0' = "$($Identity.gatewayApiScopeBaseUri)/access_as_user"
             'GatewayApi__TimeoutSeconds' = '120'
         }
         Assert-GatewayExactContainerEnvironment -Entries $admin.properties.template.containers[0].env `
@@ -2177,12 +2177,15 @@ function Test-GatewayApplicationEvidence {
             $expectedRoles = @('Gateway.Administrator', 'Gateway.Operator', 'Gateway.Auditor', 'Gateway.SupportReader')
             $actualRoles = @($application.appRoles | ForEach-Object { [string]$_.value })
             $adminRoles = @($application.appRoles | Where-Object { [string]$_.value -ceq 'Gateway.Administrator' })
-            if ([string]$application.displayName -cne $expectedDisplayName -or
+            if ([string]$Evidence.gatewayApiScopeBaseUri -cne $expectedAudience -or
+                [string]$Evidence.gatewayApiTokenAudience -cne $clientId -or
+                [string]$application.displayName -cne $expectedDisplayName -or
                 @($application.identifierUris).Count -ne 1 -or [string]$application.identifierUris[0] -cne $expectedAudience -or
                 @($application.passwordCredentials).Count -ne 0 -or
                 @($application.web.redirectUris).Count -ne 0 -or
                 -not [string]::IsNullOrWhiteSpace([string]$application.web.logoutUrl) -or
                 -not [string]::IsNullOrWhiteSpace([string]$application.web.homePageUrl) -or
+                [int]$application.api.requestedAccessTokenVersion -ne 2 -or
                 @($application.api.oauth2PermissionScopes).Count -ne 1 -or [string]$application.api.oauth2PermissionScopes[0].value -cne 'access_as_user' -or
                 (@($actualRoles | Sort-Object -Unique) -join '|') -cne (@($expectedRoles | Sort-Object -Unique) -join '|') -or
                 $actualRoles.Count -ne $expectedRoles.Count -or

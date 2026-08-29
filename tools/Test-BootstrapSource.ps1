@@ -88,6 +88,8 @@ $transitiveRuntimeFiles = @(
     'tools/_common.ps1',
     'tools/configure-workflow-v3-entra.ps1',
     'tools/generate-local-config.ps1',
+    'operations/BoundedUserCanaryState.psm1',
+    'operations/invoke-bounded-user-canary.ps1',
     'operations/RuntimeImagePull.psm1',
     'operations/test-provisioning-prerequisites.ps1'
 )

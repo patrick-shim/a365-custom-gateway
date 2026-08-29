@@ -8,5 +8,6 @@
 
   <ItemGroup>
     <PackageReference Include="Azure.Identity" Version="1.14.2" />
+    <InternalsVisibleTo Include="Gateway.SecurityTests" />
   </ItemGroup>
 </Project>

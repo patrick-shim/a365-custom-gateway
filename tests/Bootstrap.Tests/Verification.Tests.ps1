@@ -693,6 +693,7 @@ Describe 'Provisioning preflight account and OBO environment boundary' {
         Invoke-Expression $credentialFunction.Extent.Text
         foreach ($functionName in @(
             'Get-ExactPlainContainerEnvironmentValue',
+            'Test-GatewayApiV2TokenApplicationContract',
             'Test-EquivalentOptionalUtcInstant',
             'Test-DeployedDelegatedRegistryConfiguration',
             'Test-DeployedProvisioningBindings',
@@ -722,7 +723,7 @@ Describe 'Provisioning preflight account and OBO environment boundary' {
         $script:safeApiEntries = @(
             [pscustomobject]@{ name = 'EntraId__TenantId'; value = '11111111-1111-4111-8111-111111111111' },
             [pscustomobject]@{ name = 'EntraId__ClientId'; value = '22222222-2222-4222-8222-222222222222' },
-            [pscustomobject]@{ name = 'EntraId__Audience'; value = 'api://a365-gateway-safe-dev' },
+            [pscustomobject]@{ name = 'EntraId__Audience'; value = '22222222-2222-4222-8222-222222222222' },
             [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__SourceType'; value = 'SignedAssertionFromManagedIdentity' },
             [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__TokenExchangeUrl'; value = 'api://AzureADTokenExchange' }
         )
@@ -1126,9 +1127,80 @@ Describe 'Provisioning preflight account and OBO environment boundary' {
             -ContainerApp $containerApp `
             -TenantId '11111111-1111-4111-8111-111111111111' `
             -ClientId '22222222-2222-4222-8222-222222222222' `
-            -Audience 'api://a365-gateway-safe-dev'
+            -Audience '22222222-2222-4222-8222-222222222222'
 
         $script:preflightFailures.Count | Should -Be 0
+    }
+
+    It 'requires the canonical Gateway API application to explicitly request v2 access tokens' {
+        $clientId = '22222222-2222-4222-8222-222222222222'
+        $application = [pscustomobject]@{
+            appId = $clientId
+            api = [pscustomobject]@{ requestedAccessTokenVersion = 2 }
+        }
+
+        Test-GatewayApiV2TokenApplicationContract `
+            -Applications @($application) `
+            -ClientId $clientId
+        $script:preflightFailures.Count | Should -Be 0
+
+        $script:preflightFailures.Clear()
+        Test-GatewayApiV2TokenApplicationContract `
+            -Applications @() `
+            -ClientId $clientId
+        $script:preflightFailures.Count | Should -BeGreaterThan 0
+
+        foreach ($unsafeApplications in @(
+            @([pscustomobject]@{
+                appId = $clientId
+                api = [pscustomobject]@{ requestedAccessTokenVersion = 1 }
+            }),
+            @([pscustomobject]@{
+                appId = '33333333-3333-4333-8333-333333333333'
+                api = [pscustomobject]@{ requestedAccessTokenVersion = 2 }
+            }),
+            @($application, $application)
+        )) {
+            $script:preflightFailures.Clear()
+            Test-GatewayApiV2TokenApplicationContract `
+                -Applications $unsafeApplications `
+                -ClientId $clientId
+            $script:preflightFailures.Count | Should -BeGreaterThan 0
+        }
+    }
+
+    It 'rejects the custom scope URI when substituted for the v2 token audience' {
+        $entries = @($script:safeApiEntries | ForEach-Object {
+            if ([string]$_.name -ceq 'EntraId__Audience') {
+                [pscustomobject]@{ name = [string]$_.name; value = 'api://a365-gateway-safe-dev' }
+            }
+            else { $_ }
+        })
+        $containerApp = [pscustomobject]@{
+            properties = [pscustomobject]@{
+                template = [pscustomobject]@{
+                    containers = @([pscustomobject]@{ env = $entries })
+                }
+            }
+        }
+
+        Test-DeployedGatewayApiEntraCredentialConfiguration `
+            -ContainerApp $containerApp `
+            -TenantId '11111111-1111-4111-8111-111111111111' `
+            -ClientId '22222222-2222-4222-8222-222222222222' `
+            -Audience '22222222-2222-4222-8222-222222222222'
+
+        $script:preflightFailures.Count | Should -BeGreaterThan 0
+
+        $script:preflightFailures.Clear()
+        $containerApp.properties.template.containers[0].env = @($script:safeApiEntries)
+        Test-DeployedGatewayApiEntraCredentialConfiguration `
+            -ContainerApp $containerApp `
+            -TenantId '11111111-1111-4111-8111-111111111111' `
+            -ClientId '22222222-2222-4222-8222-222222222222' `
+            -Audience 'api://a365-gateway-safe-dev'
+
+        $script:preflightFailures.Count | Should -BeGreaterThan 0
     }
 
     It 'rejects secretRef, credential variants, duplicate names, and extra credential indices' {
@@ -1151,7 +1223,7 @@ Describe 'Provisioning preflight account and OBO environment boundary' {
                 -ContainerApp $containerApp `
                 -TenantId '11111111-1111-4111-8111-111111111111' `
                 -ClientId '22222222-2222-4222-8222-222222222222' `
-                -Audience 'api://a365-gateway-safe-dev'
+                -Audience '22222222-2222-4222-8222-222222222222'
             $script:preflightFailures.Count | Should -BeGreaterThan 0
         }
     }

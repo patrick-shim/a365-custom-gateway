@@ -487,6 +487,7 @@ function Assert-InertWorker {
         'Agent365__RegistryProvider' = 'Disabled'
         'Agent365__DirectRegistryPreviewEnabled' = 'false'
         'Agent365__GatewayApiApplicationClientId' = $ExpectedGatewayApiClientId
+        'Agent365__GatewayApiAudience' = $ExpectedGatewayApiClientId
         'Agent365__CredentialKeyVaultUri' = $ProvisioningVaultUri
     }
     if (-not [string]::IsNullOrWhiteSpace($ExpectedManagedIdentityPrincipalId)) {

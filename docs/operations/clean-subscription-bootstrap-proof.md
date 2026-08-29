@@ -208,10 +208,97 @@ environment. Follow the current workflow-v3 and canary procedures referenced fro
 - at most one Registry POST, persisted accepted ID, independent final verification,
   and `Active` at 100%;
 - temporary Gateway key held only in memory and revoked in cleanup;
-- bounded activity and interaction acceptance, Agent 365 landing, and drained new
-  v3 work;
+- a safe prompt evaluation followed by bounded activity and receipt-bound
+  interaction acceptance, Agent 365 landing, and drained new v3 work, even when
+  both optional prompt protections are disabled;
 - when authorized, benign and synthetic-sensitive Purview results and/or Prompt
   Shields allow/block evidence, without raw prompt/response content.
+
+The clean-bootstrap API publishes all four administrative roles for `User` members
+only. Its bounded canary must therefore authenticate the assigned Gateway
+Administrator as a user and request `{gatewayApiScopeBaseUri}/access_as_user`.
+`Gateway.LiveCanary` supports this through `InteractiveBrowserUser` and a separately
+reviewed, temporary public-client application with the exact loopback redirect. Do
+not add `Application` to `Gateway.Administrator`, grant the Azure CLI delegated
+consent as a workaround, or pass a bearer token on a command line. Remove the
+temporary client application, service principal, and delegated grant after the
+credential has been revoked, then rerun exact application and runtime verification.
+
+Before this wrapper is authorized, the signed-in bootstrap operator's existing
+Microsoft Graph delegated context must support the exact temporary-authority
+operations. Application create/update/delete and service-principal create/delete
+require `Application.ReadWrite.All`; adding the pinned operator as the sole
+application owner also requires `Directory.Read.All`; principal-specific grant
+create/delete requires `DelegatedPermissionGrant.ReadWrite.All`. The documented
+higher-permission alternative is `Directory.ReadWrite.All`. The user must hold a
+supported Entra role for every operation; `Application Administrator` or `Cloud
+Application Administrator` is the least common role boundary across this sequence.
+Do not begin the state machine and then broaden consent or activate a role as a
+retry. Correct missing authority first and use a new reviewed canary registration.
+
+The reviewed wrapper is `operations/invoke-bounded-user-canary.ps1`. It derives one
+deterministic `PreChild` and `ChildArmed` application name from the registration ID.
+Its `-ExpectPromptShieldEnabled` and `-ExpectPurviewEnabled` switches are expected-
+configuration assertions, not feature toggles. Both default to false when omitted,
+matching the recommended minimal bootstrap profile. The wrapper binds both values
+as canonical lowercase `true` or `false` in durable state and passes both required
+expectation arguments to the child; a mismatch with the registration's observed
+decisions fails closed.
+
+With both switches omitted, the child requires exact `Disabled` and
+`PurviewDisabled` decisions for the safe evaluation, then still proves sanitized
+activity/OTel acceptance and receipt-bound interaction acceptance. It does not send
+the synthetic injection prompt and reports that the Prompt Shields block proof was
+not attempted. This is valid baseline ingestion and credential-lifecycle evidence,
+but it is not Prompt Shields or Purview enforcement evidence. Pass
+`-ExpectPromptShieldEnabled` only for an exact registration where Prompt Shields is
+enabled; only that profile runs and requires the synthetic injection-block proof.
+Pass `-ExpectPurviewEnabled` only when Purview is enabled; it tightens the benign
+evaluation to the reviewed nonblocking Purview decisions. Record a separate
+authorized synthetic-sensitive Purview result before claiming Purview blocking.
+
+Its ignored `.bootstrap/canary/` record contains safe identifiers only: exact target,
+registration/user/application/principal/grant/key IDs, lifecycle timestamps, and
+hashes of the wrapper, its four imported helper modules, and the complete recursive
+Release canary runtime bundle. It never contains a token, clear Gateway key, prompt,
+response, or provider body. The state is written with file flush plus atomic replace
+while an exclusive bootstrap lock is held. PowerShell 7.0–7.4 JSON date
+materialization is normalized back to the canonical persisted UTC-string contract
+before validation, so the advertised PowerShell 7 floor supports Resume and
+`RevokeOnly`.
+
+Application create, owner add, service-principal create, delegated-grant create, and
+the `ChildArmed` rename each have separate durable `Started` and observed stages.
+Every `Started` marker is persisted before its one Graph mutation. Afterward that
+operation is GET-only across the current process and every resume; an absent or
+mismatched readback never causes a repeated POST or PATCH. Any nonterminal durable
+state preserves the exact temporary authority, including failures during later
+subscription or Graph validation. `ChildLaunchStarted` is persisted before process
+creation. If launch or key issuance becomes ambiguous before an ID is observed, a
+second Full launch is permanently forbidden and recovery is manual-only.
+
+The safe issued key ID is persisted as `CredentialObserved` before its terminal line
+is rendered. Rerun the same wrapper with that exact `-RecoveryCredentialId <key-id>`
+to select `RevokeOnly`; arbitrary IDs and missing or mismatched state are rejected.
+The child requires the issued and revoked response metadata to match the exact
+registration and key, requires the delegated token's `azp` to match the temporary
+public client, and renders only allowlisted decisions plus canonical correlation
+IDs. The wrapper performs no second key issuance or Entra create call and removes
+the temporary authority only after idempotent revocation succeeds. Each Entra
+cleanup proves the recorded object ID absent through bounded exact GET/404
+reconciliation; a filtered collection miss or a renamed application is never
+accepted as absence. Successful Full or
+RevokeOnly processing first persists an immutable `Completed` tombstone, which
+forbids a later Full run; subsequent default invocation is cleanup-only for exact
+leftovers. `Completed` proves that the exact observed key reached the idempotent
+revocation boundary and that no further Full launch is allowed. It is not, by
+itself, proof that the earlier data-plane assertions passed: a tombstone reached
+through `RevokeOnly` after a failed Full child records safe lifecycle closure only.
+Record the child result separately in the deployment evidence. If the state, bound
+executable bytes, or key ID cannot be validated, preserve everything and use exact
+reviewed manual recovery. Microsoft Graph active application deletion is
+recoverable soft deletion for 30 days; this procedure never permanently deletes the
+application.
 
 An unknown Registry POST outcome is exact-GET recovery only and is never posted
 again. Any mismatch or nonrecoverable ambiguity is manual-only.

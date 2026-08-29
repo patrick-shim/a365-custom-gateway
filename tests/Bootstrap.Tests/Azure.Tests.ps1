@@ -959,7 +959,8 @@ Describe 'Gateway core initial and runtime identity bindings' {
             }
             $script:coreIdentity = [pscustomobject]@{
                 gatewayApiClientId = '22222222-2222-4222-8222-222222222222'
-                gatewayApiAudience = 'api://22222222-2222-4222-8222-222222222222'
+                gatewayApiScopeBaseUri = 'api://a365-gateway-safe-dev'
+                gatewayApiTokenAudience = '22222222-2222-4222-8222-222222222222'
                 userObjectId = '33333333-3333-4333-8333-333333333333'
                 userPrincipalName = 'operator@example.invalid'
             }
@@ -1082,7 +1083,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
             Mock Invoke-ArmDeploymentWithSecureParameters { throw 'core-deployment-reached' }
         }
 
-        It 'binds empty initial worker and manager IDs and reaches the inert deployment boundary' {
+        It 'accepts the project-scoped API audience, binds empty initial authority, and reaches the inert deployment boundary' {
             { Deploy-GatewayCore `
                     -Config $script:coreConfig `
                     -Foundation $script:coreFoundation `
@@ -1099,8 +1100,26 @@ Describe 'Gateway core initial and runtime identity bindings' {
             Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
                 [string]$Parameters.agent365ProvisioningManagedIdentityPrincipalId -ceq '' -and
                 @($Parameters.agent365ManagerApplicationIds).Count -eq 0 -and
-                [bool]$Parameters.agent365ManagerApplicationsPreflightConfirmed -eq $false
+                [bool]$Parameters.agent365ManagerApplicationsPreflightConfirmed -eq $false -and
+                [string]$Parameters.entraIdAudience -ceq [string]$script:coreIdentity.gatewayApiTokenAudience
             }
+        }
+
+        It 'rejects swapped scope-base and v2 token-audience values before any Azure discovery or workload mutation' {
+            foreach ($identityMutation in @(
+                { $script:coreIdentity.gatewayApiScopeBaseUri = "api://$($script:coreIdentity.gatewayApiClientId)" },
+                { $script:coreIdentity.gatewayApiTokenAudience = $script:coreIdentity.gatewayApiScopeBaseUri }
+            )) {
+                $script:coreIdentity.gatewayApiScopeBaseUri = 'api://a365-gateway-safe-dev'
+                $script:coreIdentity.gatewayApiTokenAudience = $script:coreIdentity.gatewayApiClientId
+                & $identityMutation
+
+                { Deploy-GatewayCore @script:coreInitialArguments } |
+                    Should -Throw '*identity evidence does not match the exact API application authority contract*'
+            }
+
+            Should -Invoke Invoke-AzTsv -Times 0 -Exactly
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
         }
 
         It 'rejects nonempty authority inputs on the initial inert deployment path' {

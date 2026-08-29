@@ -203,7 +203,7 @@ preserves verified completed rows and never repeats a completed Registry boundar
 | `src/Gateway.Provisioning.Worker` | Idempotent workflow stages and data-plane relay |
 | `src/ExternalAgent.Sample` | Minimal external client for bounded ingestion verification |
 | `tools/Gateway.Setup` | Ephemeral loopback-only Fluent UI over the canonical bootstrap engine |
-| `tools/Gateway.LiveCanary` | Disposable managed-identity operator canary; holds a temporary Gateway key only in memory and revokes it in cleanup |
+| `tools/Gateway.LiveCanary` | Disposable user or managed-identity canary; holds a temporary Gateway key only in memory, supports exact revoke-only recovery, and revokes it in cleanup |
 | `bootstrap` | Clean-subscription prerequisite, identity, infrastructure, build, deploy, and verify orchestration |
 | `infrastructure` | Declarative shared Bicep templates and ordered, reviewed SQL schema phases |
 | `operations` | Existing-environment deployment, preflight, canary, and recovery scripts |
