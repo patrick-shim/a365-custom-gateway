@@ -12,16 +12,15 @@ registration-bound ingestion, Microsoft 365 Admin Center landing, and blueprint-
 scoped prompt DLP and independent pre-model Prompt Shields are live in development.
 
 The repository now contains a separate `bootstrap/` first-deployment state machine
-for a clean subscription. Its local source/Plan/Bicep/migrator validations do not
-change or prove this live deployment. No bootstrap `Apply` was run against the
-development resource group in this checkpoint, and none of the live identifiers,
-queues, registrations, policies, or retained evidence below were mutated by that
-source work.
+for a clean subscription. Its disposable-target execution described below did not
+run against the existing development subscription/resource group. None of the live
+identifiers, queues, registrations, policies, or retained evidence below were used
+or mutated by that bootstrap work.
 
-## 2026-08-30 clean-subscription candidate and pre-mutation recovery checkpoint
+## 2026-08-30 clean-subscription live bootstrap and recovery checkpoint
 
 The Phase 6 candidate is frozen on branch `codex/phase6-candidate` at source
-commit `603123a2f7097e2088e2620dde002cea0d4c37d9`. The exact-account boundary now
+commit `9b229434f4578a68fc8c60029838d30e133a1b93`. The exact-account boundary now
 acquires Microsoft Graph access through `az account get-access-token` with the
 reviewed subscription, verifies returned subscription/tenant/type/lifetime
 metadata, and sends only bounded Graph v1.0 requests through an in-process,
@@ -31,7 +30,7 @@ the accepted-source file or a byte-identical source-bound copy.
 
 The final local candidate gate is zero-warning/zero-error Release build and
 **1,279/1,279** direct Release tests with the unchanged project split below.
-Pester discovered **233** tests: **232** passed, none failed, and one Windows-only
+Pester discovered **238** tests: **237** passed, none failed, and one Windows-only
 launcher test was skipped on macOS. The canonical source gate parsed **16**
 PowerShell files and **2** JSON contracts and compiled all **23** Bicep templates;
 `git diff --check` is clean. Independent correctness/security reviews found no
@@ -46,12 +45,10 @@ SQL action, or Agent 365 mutation. Both the original resource group
 `rg-a365-custom-gw` and the new isolated target `rg-a365-custom-gw-phase6` read back
 absent in subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76` on 2026-08-30.
 The failed state/evidence remains preserved; it will not be rewritten under a new
-source generation. The next action is a fresh Plan using isolated project
-`a365gw2` and resource group `rg-a365-custom-gw-phase6`, followed by the authorized
-Apply, deliberate interruption/Resume, Verify, one Active registration, canary,
-and key revocation. Subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` and all of
-its live/retained evidence remain outside this bootstrap target and were not
-mutated.
+source generation. At that checkpoint the next action was the isolated `a365gw2`
+Plan/Apply recorded below. Subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` and all of its live/retained evidence remain
+outside this bootstrap target and were not mutated.
 
 The first fresh isolated Plan on intermediate commit
 `da0726a50f6fa77a3810c2517530520e4b7b1c66` also stopped before acceptance and
@@ -59,8 +56,43 @@ before every bootstrap step because its new Graph boundary had not yet been give
 the exact Plan tenant/subscription context. Commit
 `603123a2f7097e2088e2620dde002cea0d4c37d9` establishes that context before both
 ARM What-If and Graph collision discovery; the added regression is included in the
-233-test Pester gate above. The isolated state remains 0/19 with no Azure or Entra
-mutation evidence.
+earlier 233-test Pester gate. That intermediate isolated state remains 0/19 with no
+Azure or Entra mutation evidence.
+
+The corrected `a365gw2` Plan then ran against only disposable target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Plan
+`sha256:b062c6eb03899e2e902e1d92a7db33d5b0addcc73ce15c1712bf06b04296ec28`
+bound resource group `rg-a365-custom-gw-phase6`, source
+`sha256:077c357432f654c455edf0efc9edd8cc71b18fb887d4d5235b16fa6c913d0fbe`,
+and deployment ownership `967d17d1-e0f5-494b-bae7-0e1f00faff5c`; authenticated
+What-If reported exactly six Creates and zero Deletes. Apply completed
+Prerequisites and was deliberately interrupted immediately after Azure
+authentication started, before provider or resource mutation. Persisted status
+showed 1/19 and the exact next step. Resume recomputed the identical Plan
+fingerprint, completed authentication and provider registration, deployed the
+foundation, and created/read back the project-scoped Gateway API identity.
+
+The run stopped safely at **5/19** in `Immutable workload images`, before any ACR
+build submission. The fresh registry `acra365gw2devg6gn55` read back healthy and
+empty: repositories `[]`, task runs `[]`, and no image intent/evidence in bootstrap
+state. The exact cause was Azure CLI 2.89.1 returning exit 1 for
+`acr task list-runs --image <never-built-tag>` rather than `[]`. Foundation ARM
+deployment `a365gw-a365gw2-bootstrap-foundation-dev` succeeded; the preserved
+Gateway API application object/client/service-principal IDs are respectively
+`d3ecf2fb-912e-4900-8bff-588b31320a47`,
+`c23195bb-dea0-4c18-be3b-0b1f61fe3cc9`, and
+`bca509d0-3258-4104-ace3-2bca6550197a`. No SQL, Agent 365 blueprint, runtime,
+Service Bus queue/outbox, registration, canary, key, or Purview mutation occurred.
+
+That state and its accepted snapshot are preserved because durable evidence cannot
+be mixed with a new source fingerprint. Commit
+`9b229434f4578a68fc8c60029838d30e133a1b93` fixes empty-tag discovery and changes
+durable `RunQueued` reconciliation to exact GA `acr task show-run --run-id`
+readback; unknown `IntentRecorded` outcomes remain no-resubmit. The next live action
+uses distinct project `a365gw3` and absent resource group
+`rg-a365-custom-gw-phase6b` in the same disposable target. Existing deployment
+subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor
+mutated, and its retained queues/messages were not accessed.
 
 ## 2026-08-29 local Phase 0–6 bootstrap candidate (unreleased and incomplete)
 

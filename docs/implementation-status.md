@@ -317,13 +317,13 @@ reported as completion of the plan. The authoritative phase status is:
 
 | Phase | Current status | Remaining boundary |
 |---|---|---|
-| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. An explicit interruption/resume matrix for every bootstrap checkpoint and the required disposable clean-subscription proof are still absent. |
+| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. One live interruption after Prerequisites and exact-fingerprint Resume through Azure authentication is proven; an every-checkpoint interruption matrix and a completed disposable clean-subscription proof are still absent. |
 | 1 — One cross-platform front door | Source complete; proof incomplete | `gateway`/`gateway.cmd` and the terminal command surface are implemented. The current candidate has not completed Windows, macOS Intel, macOS Arm, and Linux execution evidence. |
 | 2 — Guided configuration | Partial | Quick Development, Staging Foundation, and Production-safe Foundation are implemented. The promised guided Connect Existing and Advanced profiles are not; existing-state import remains recovery-only and refuses unsafe adoption. Simulated Demo was explicitly optional-later and is absent. |
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | The cross-platform matrix, fresh-checkout disposable Apply, deliberate interruption/Resume, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation have not run for this candidate. README/runbook and local gates alone do not satisfy this phase. |
+| 6 — Release-quality proof | Not done | A disposable-target Apply accepted an exact Plan, proved one deliberate interruption/Resume boundary, and reached 5/19 before exposing the fresh-empty-ACR defect recorded below. That defect is fixed locally, but a completed Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
@@ -380,11 +380,11 @@ runbooks, and paired Claude/Codex deployment instructions all reference the new
 locations. This was a source-only relocation; no Azure or database state changed.
 
 The complete 2026-08-30 Phase 6 candidate gate passes at source commit
-`603123a2f7097e2088e2620dde002cea0d4c37d9`. The Release solution build has zero
+`9b229434f4578a68fc8c60029838d30e133a1b93`. The Release solution build has zero
 warnings and zero errors. Direct Release tests are **1,279/1,279**: unit 478,
 Admin UI 155, local Setup 75, observability/runtime 149, integration 92,
-end-to-end 106, architecture 113, and security 111. Pester discovered 233 tests:
-232 passed, none failed, and one Windows-only launcher test was skipped on macOS.
+end-to-end 106, architecture 113, and security 111. Pester discovered **238** tests:
+**237** passed, none failed, and one Windows-only launcher test was skipped on macOS.
 The canonical bootstrap source gate parsed **16** PowerShell files and **2** JSON
 contracts and compiled all **23** Bicep templates. `dotnet format
 --verify-no-changes` and `git diff --check` pass. The repository has **55**
@@ -396,11 +396,33 @@ imported, the wizard displayed the protected-file warning, disabled Start, and d
 not overwrite the configuration. The first disposable-target Apply attempt on the
 earlier source generation completed local Prerequisites and then failed at Azure
 authentication before any provider/resource/Entra/SQL/Agent 365 mutation. Its
-state/evidence is preserved. The next bootstrap-specific action is the authorized
-fresh isolated `a365gw2` Plan/Apply in resource group
-`rg-a365-custom-gw-phase6`, followed by deliberate interruption/Resume, Verify, a
-real registration, data-plane canary, and key revocation. No new bootstrap or
-runtime Purview behavior is live-proven yet.
+state/evidence is preserved.
+
+The next isolated `a365gw2` execution accepted Plan
+`sha256:b062c6eb03899e2e902e1d92a7db33d5b0addcc73ce15c1712bf06b04296ec28`
+for subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`, resource group
+`rg-a365-custom-gw-phase6`, and deployment ownership
+`967d17d1-e0f5-494b-bae7-0e1f00faff5c`. What-If contained exactly six Creates
+and no Deletes. Apply completed Prerequisites, was deliberately interrupted as
+Azure authentication started, then Resume recomputed and accepted the same Plan
+fingerprint. Provider registration, the Azure foundation, and Gateway API identity
+completed. The run stopped safely at **5/19** before an ACR build because Azure CLI
+2.89.1 returns a nonzero missing-tag result for `acr task list-runs --image` on a
+fresh empty registry instead of the expected empty array. Registry
+`acra365gw2devg6gn55` still had no repositories, no task runs, and no persisted
+image intent. The source-bound state, accepted snapshot, resource group, and Entra
+application remain preserved; they must not consume a different source generation.
+
+Commit `9b229434f4578a68fc8c60029838d30e133a1b93` fixes that discovered boundary:
+absent exact tags do not invoke image-filtered run discovery, while a durable
+`RunQueued` checkpoint is polled through exact `acr task show-run --run-id`
+readback with strict output/digest validation and no automatic resubmission of an
+unknown `IntentRecorded` outcome. The next bootstrap action is a new isolated
+`a365gw3` Plan/Apply in absent resource group `rg-a365-custom-gw-phase6b`, followed
+by Resume/Verify, one real registration through `Active`, a bounded data-plane
+canary, and key revocation. Subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was not mutated or used for this proof. No
+new bootstrap runtime, queue/outbox, or Purview behavior is live-proven yet.
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
