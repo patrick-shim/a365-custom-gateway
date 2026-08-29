@@ -49,7 +49,8 @@ public class AgentsController : ControllerBase
             request.Environment,
             request.Features,
             User.GetObjectId(),
-            request.Blueprint);
+            request.Blueprint,
+            request.PurviewPolicyProfile);
 
         var result = await _sender.Send(command, cancellationToken);
 

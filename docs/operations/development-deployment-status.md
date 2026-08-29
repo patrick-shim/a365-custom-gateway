@@ -29,10 +29,10 @@ document therefore remain unchanged.
 Validation at this source checkpoint is:
 
 - zero-warning/zero-error Release builds for the solution and DatabaseMigrator;
-- **1,102/1,102** direct Release tests: unit 397, Admin UI 150, end-to-end 103,
-  security 111, observability/runtime 143, integration 92, architecture 106;
+- **1,109/1,109** direct Release tests: unit 402, Admin UI 151, end-to-end 103,
+  security 111, observability/runtime 144, integration 92, architecture 106;
 - `dotnet format --verify-no-changes` clean;
-- PowerShell parsing **25/25**, Bicep templates **22/22**, and parameter files
+- PowerShell parsing **27/27**, Bicep templates **19/19**, and parameter files
   **5/5**;
 - a successful non-mutating bootstrap `Plan` through all 12 phases;
 - **52** Markdown files with **43** repository-local links and zero broken targets,
@@ -54,15 +54,15 @@ existing-environment deployment, preflight, canary, and recovery scripts live un
 `operations/`. `bootstrap/` remains the sole clean-subscription orchestration entry
 point. All workflows, bootstrap modules, migrator paths, architecture tests,
 runbooks, and Claude/Codex deployment instructions were synchronized. Validation
-remains zero-warning/error with **1,102/1,102** tests, PowerShell **25/25**, Bicep
-templates **22/22**, parameters **5/5**, and `dotnet format` clean. Documentation is
-now **54** Markdown files and **50** repository-local links with zero broken targets.
+remains zero-warning/error with **1,109/1,109** tests, PowerShell **27/27**, Bicep
+templates **19/19**, parameters **5/5**, and `dotnet format` clean. Documentation is
+now **54** Markdown files and **51** repository-local links with zero broken targets.
 No live resource, revision, queue, registration, policy, or SQL state changed.
 
 An authenticated visual browser pass was not available in this local checkpoint:
 the in-app browser had no signed-in tenant session, and the local UI correctly
 refused startup without its required Gateway API URL/scopes. UI behavior is covered
-by the passing 150-test bUnit project. Do not claim these source changes as deployed
+by the passing 151-test bUnit project. Do not claim these source changes as deployed
 until a reviewed deployment records a new digest/revision and authenticated route
 inspection. A disposable clean-subscription bootstrap `Apply` also remains the next
 recovery proof; the successful local `Plan` is not live deployment evidence.
@@ -727,6 +727,25 @@ procedure and downstream-landing boundary are in
 [`agent365-observability-setup.md`](agent365-observability-setup.md#bounded-data-plane-proof).
 
 ## Next safe actions
+
+### Local-only Purview protection-profile checkpoint (2026-08-29)
+
+The working tree now contains an unreleased Admin UI/API/worker implementation for
+selecting or creating a Gateway-managed Purview protection profile when creating a
+new blueprint. It preserves workflow v3 and performs the policy assignment inside
+`ResolveBlueprint` before child creation. The additive SQL script is
+`infrastructure/sql/20260829_purview_policy_profiles.sql`; the worker image adds
+PowerShell 7.5 and ExchangeOnlineManagement 3.10.1. No Azure revision, SQL schema,
+tenant policy, identity role, certificate, queue, or live registration was changed
+for this checkpoint. Do not treat local tests or Bicep compilation as deployment
+evidence.
+
+Before a reviewed development rollout, verify the automation application has
+`Exchange.ManageAsApp` and only the required Purview compliance RBAC, verify its
+certificate secret is versionless and readable by the worker identity, deploy with
+`purviewPolicyProvisioningEnabled=false`, apply the additive migration, and complete
+read-only preflight. A live enablement and one bounded new-blueprint canary require a
+separate authorization entry here.
 
 1. Keep continuous registration, delegated completion, and relay confined to the
    development deployment. Preserve v3 `0/0/9`, retained v2 `0/0/3`, historical

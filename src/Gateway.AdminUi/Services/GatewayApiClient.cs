@@ -141,6 +141,13 @@ public sealed class GatewayApiClient : IGatewayApiClient
             requiresAuthentication: true,
             cancellationToken);
 
+    public Task<PurviewPolicyProfileListResponse> GetPurviewPolicyProfilesAsync(
+        CancellationToken cancellationToken = default) =>
+        SendForValueAsync<PurviewPolicyProfileListResponse>(
+            new HttpRequestMessage(HttpMethod.Get, "api/v1/purview-policy-profiles"),
+            requiresAuthentication: true,
+            cancellationToken);
+
     public Task<RegisterAgentResponse> RegisterAgentAsync(
         RegisterAgentRequest request,
         Guid? idempotencyKey = null,

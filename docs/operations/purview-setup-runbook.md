@@ -67,8 +67,10 @@ Tenant prerequisites:
 5. Use a real Microsoft Entra user object ID in every Purview-enabled interaction.
    The Gateway does not fabricate user context or fall back to the signed-in admin.
 
-Purview policy authoring remains a tenant-administrator operation outside ordinary
-Gateway agent registration. Follow the current official configuration guide and
+Purview policy authoring has two explicit paths. Bootstrap/manual setup remains a
+tenant-administrator operation. When the reviewed app-only automation boundary is
+enabled, Admin UI registration of a **new** blueprint can instead select an existing
+Gateway-managed protection profile or create a new one. Follow the current official configuration guide and
 [current `New-DlpComplianceRule` Example 4](https://learn.microsoft.com/en-us/powershell/module/exchangepowershell/new-dlpcompliancerule?#example-4):
 the policy location is an individual Entra application, `Location` is the reusable
 blueprint client ID, `LocationSource` is `Entra`, and `EnforcementPlanes` contains
@@ -99,6 +101,28 @@ New-DlpComplianceRule `
     @{ setting = 'UploadText'; value = 'Block' }
   )
 ```
+
+### Automated protection-profile boundary
+
+The worker uses `Connect-IPPSSession` with an application ID and an X.509
+certificate object. The automation application requires `Exchange.ManageAsApp` for
+Security & Compliance PowerShell plus the narrow Purview compliance RBAC needed for
+`Get/New/Set-FeatureConfiguration`, `Get/New/Set-DlpCompliancePolicy`, and
+`Get/New-DlpComplianceRule`. Do not assign these permissions to the external agent,
+child Agent ID, blueprint, Gateway API identity, or ordinary signed-in user.
+
+Only Gateway-managed profiles stored in `PurviewPolicyProfiles` are reusable in the
+portal. On every assignment the worker performs a read-modify-write: it preserves
+all existing application locations, adds the exact blueprint client/application
+ID, and then exactly reads back both the collection and DLP policy. A missing or
+ambiguous readback fails the `ResolveBlueprint` step before child creation. The
+worker never removes an application location in this flow.
+
+The automation certificate is a base64 PKCS#12 stored as a Key Vault secret. It is
+loaded with `DefaultAzureCredential`, re-exported with a random process-only
+password, passed to PowerShell through a short-lived private file, and deleted in a
+`finally` block. Never place its value or password in Container Apps environment
+variables, command-line arguments, logs, docs, SQL, or chat.
 
 Development evidence: a separate attempt to create a new DSPM collection policy for
 the Gateway app was rejected with `InvalidAzureBillingSubscriptionException` because
@@ -165,7 +189,14 @@ Configuration keys and environment-variable equivalents:
     "RequestTimeoutSeconds": 15,
     "AppName": "A365 Gateway",
     "AppVersion": "1.0",
-    "ManagedIdentityClientId": ""
+    "ManagedIdentityClientId": "",
+    "PolicyProvisioningEnabled": false,
+    "PolicyProvisioningOrganization": "",
+    "PolicyProvisioningApplicationId": "",
+    "PolicyProvisioningCertificateSecretUri": "",
+    "PolicyProvisioningPowerShellPath": "pwsh",
+    "PolicyProvisioningTimeoutSeconds": 180,
+    "DefaultSensitiveInformationType": "Credit Card Number"
   }
 }
 ```
@@ -179,6 +210,23 @@ Configuration keys and environment-variable equivalents:
 | `AppName` | `Purview__AppName` | Nonempty, maximum 256 characters. Sent as integrated-app metadata. |
 | `AppVersion` | `Purview__AppVersion` | Nonempty, maximum 64 characters. |
 | `ManagedIdentityClientId` | `Purview__ManagedIdentityClientId` | Optional nonempty GUID for a user-assigned managed identity. |
+| `PolicyProvisioningEnabled` | `Purview__PolicyProvisioningEnabled` | Default false. Enables only the worker's reviewed protection-profile automation. |
+| `PolicyProvisioningOrganization` | `Purview__PolicyProvisioningOrganization` | Microsoft 365 organization domain used by app-only `Connect-IPPSSession`. |
+| `PolicyProvisioningApplicationId` | `Purview__PolicyProvisioningApplicationId` | Certificate-authenticated automation app client ID; not a secret. |
+| `PolicyProvisioningCertificateSecretUri` | `Purview__PolicyProvisioningCertificateSecretUri` | HTTPS Key Vault secret URI for the base64 PKCS#12. Never document its value. |
+| `PolicyProvisioningPowerShellPath` | `Purview__PolicyProvisioningPowerShellPath` | Defaults to `pwsh`; worker image pins ExchangeOnlineManagement 3.10.1. |
+| `PolicyProvisioningTimeoutSeconds` | `Purview__PolicyProvisioningTimeoutSeconds` | 30–900; default 180. |
+| `DefaultSensitiveInformationType` | `Purview__DefaultSensitiveInformationType` | Tenant-approved SIT used by the reviewed default rule template. |
+
+The clean-subscription bootstrap exposes these settings as
+`purview.policyProvisioningEnabled`, `policyProvisioningOrganization`,
+`policyProvisioningApplicationId`, and
+`policyProvisioningCertificateSecretUri`. The URI must be versionless and point to
+the Gateway shared Key Vault. Bootstrap grants the worker only **Key Vault Secrets
+User** when automation is enabled; it does not create or privilege the Microsoft 365
+automation application. This keeps tenant-wide Security & Compliance authority an
+explicit administrator prerequisite rather than an implicit Azure deployment side
+effect.
 
 Configuration is validated at API startup. `Enabled=false` is the safe deployment
 default. Enabling a registration or the system Purview default while it is false

@@ -12,4 +12,5 @@ public record RegisterAgentCommand(
     string Environment,
     AgentFeaturesDto? Features,
     string CallerObjectId,
-    AgentBlueprintSelectionDto? Blueprint = null) : IRequest<RegisterAgentResponse>;
+    AgentBlueprintSelectionDto? Blueprint = null,
+    PurviewPolicyProfileSelectionDto? PurviewPolicyProfile = null) : IRequest<RegisterAgentResponse>;

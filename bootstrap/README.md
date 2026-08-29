@@ -102,6 +102,20 @@ After the first real registration, use the documented bounded data-plane canary 
 confirm both benign and synthetic-sensitive behavior before treating new-tenant DLP
 as live proof.
 
+The optional Admin UI protection-profile workflow is configured separately with
+`purview.policyProvisioningEnabled`. Keep it `false` unless a certificate-authenticated
+application already has `Exchange.ManageAsApp` plus the required Security &
+Compliance PowerShell RBAC, and its base64 PKCS#12 certificate is stored as a
+versionless secret in the Gateway shared Key Vault. Supply only the verified
+organization domain, application/client ID, and secret URI in `config.json`.
+
+When enabled, bootstrap grants the worker only **Key Vault Secrets User** on the
+shared vault. Certificate values and passwords never belong in configuration,
+bootstrap state, or documentation. Bootstrap deliberately does not create or
+privilege the tenant-wide Microsoft 365 automation application. Follow the exact
+prerequisites and read-back checks in
+[`docs/operations/purview-setup-runbook.md`](../docs/operations/purview-setup-runbook.md).
+
 ## Files
 
 - `bootstrap.ps1` — orchestration and state transitions.

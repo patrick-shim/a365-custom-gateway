@@ -76,6 +76,51 @@ public class RegisterAgentValidator : AbstractValidator<RegisterAgentCommand>
                     .MaximumLength(256);
             });
         });
+
+        RuleFor(x => x.PurviewPolicyProfile)
+            .Must(selection => selection is null)
+            .WithMessage("PurviewPolicyProfile is only valid when Purview is enabled for a new blueprint.")
+            .When(x => x.Blueprint?.Mode != "CreateNew" || x.Features?.PurviewEnabled != true);
+
+        When(
+            x => x.Blueprint?.Mode == "CreateNew" && x.Features?.PurviewEnabled == true,
+            () =>
+            {
+                RuleFor(x => x.PurviewPolicyProfile)
+                    .NotNull()
+                    .WithMessage("Select an existing Purview profile or create a new one.");
+
+                When(x => x.PurviewPolicyProfile is not null, () =>
+                {
+                    RuleFor(x => x.PurviewPolicyProfile!.Mode)
+                        .Must(mode => mode is "UseExisting" or "CreateNew")
+                        .WithMessage("Purview profile mode must be UseExisting or CreateNew.");
+
+                    When(x => x.PurviewPolicyProfile!.Mode == "UseExisting", () =>
+                    {
+                        RuleFor(x => x.PurviewPolicyProfile!.ProfileId)
+                            .NotNull()
+                            .Must(id => id is { } value && value != Guid.Empty)
+                            .WithMessage("Select an existing Purview profile.");
+                        RuleFor(x => x.PurviewPolicyProfile!.DisplayName)
+                            .Must(string.IsNullOrWhiteSpace)
+                            .WithMessage("DisplayName is only valid when creating a Purview profile.");
+                    });
+
+                    When(x => x.PurviewPolicyProfile!.Mode == "CreateNew", () =>
+                    {
+                        RuleFor(x => x.PurviewPolicyProfile!.ProfileId)
+                            .Null()
+                            .WithMessage("ProfileId is only valid when selecting an existing Purview profile.");
+                        RuleFor(x => x.PurviewPolicyProfile!.DisplayName)
+                            .NotEmpty()
+                            .MaximumLength(120);
+                        RuleFor(x => x.PurviewPolicyProfile!.Template)
+                            .Equal("AllSensitiveInformation")
+                            .WithMessage("Only the reviewed AllSensitiveInformation template is currently supported.");
+                    });
+                });
+            });
     }
 
     private static bool BeValidAgentEnvironment(string env) =>

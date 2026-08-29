@@ -59,7 +59,8 @@ var scripts = phase switch
         "20260824_agent_identity_workflow_v2.sql",
         "20260825_agent_ingress_credentials.sql",
         "20260825_scoped_idempotency.sql",
-        "20260825_ingress_rate_limit_buckets.sql"
+        "20260825_ingress_rate_limit_buckets.sql",
+        "20260829_purview_policy_profiles.sql"
     },
     "finalize" => new[] { "20260825_scoped_idempotency_finalize.sql" },
     _ => Array.Empty<string>()

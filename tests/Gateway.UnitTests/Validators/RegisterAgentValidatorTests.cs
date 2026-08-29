@@ -49,6 +49,38 @@ public class RegisterAgentValidatorTests
     }
 
     [Fact]
+    public void Validate_Should_Pass_When_CreatingNewBlueprintAndPurviewProfile()
+    {
+        var command = CreateValidCommand() with
+        {
+            Blueprint = new AgentBlueprintSelectionDto("CreateNew", null, "Protected blueprint"),
+            Features = new AgentFeaturesDto("Agent365", true, "Enforce"),
+            PurviewPolicyProfile = new PurviewPolicyProfileSelectionDto(
+                "CreateNew",
+                null,
+                "Production protection",
+                "AllSensitiveInformation")
+        };
+
+        _validator.Validate(command).IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Validate_Should_FailClosed_When_NewProtectedBlueprintHasNoProfileSelection()
+    {
+        var command = CreateValidCommand() with
+        {
+            Blueprint = new AgentBlueprintSelectionDto("CreateNew", null, "Protected blueprint"),
+            Features = new AgentFeaturesDto("Agent365", true, "Enforce")
+        };
+
+        var result = _validator.Validate(command);
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "PurviewPolicyProfile");
+    }
+
+    [Fact]
     public void Validate_Should_Fail_When_UseExistingDoesNotIdentifyBlueprint()
     {
         var command = CreateValidCommand() with

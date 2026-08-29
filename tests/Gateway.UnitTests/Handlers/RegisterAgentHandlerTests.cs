@@ -25,6 +25,8 @@ public class RegisterAgentHandlerTests
     private readonly IAgentIdentityBlueprintCatalog _blueprintCatalog;
     private readonly IAgentIngressCredentialService _agentIngressCredentialService;
     private readonly IPurviewPolicyClient _purviewPolicyClient;
+    private readonly IPurviewPolicyProfileRepository _purviewPolicyProfileRepository;
+    private readonly IPurviewPolicyProvisioningClient _purviewPolicyProvisioningClient;
     private readonly IUnitOfWork _unitOfWork;
     private readonly RegisterAgentHandler _handler;
 
@@ -49,6 +51,9 @@ public class RegisterAgentHandlerTests
         _agentIngressCredentialService = Substitute.For<IAgentIngressCredentialService>();
         _purviewPolicyClient = Substitute.For<IPurviewPolicyClient>();
         _purviewPolicyClient.IsEnabled.Returns(true);
+        _purviewPolicyProfileRepository = Substitute.For<IPurviewPolicyProfileRepository>();
+        _purviewPolicyProvisioningClient = Substitute.For<IPurviewPolicyProvisioningClient>();
+        _purviewPolicyProvisioningClient.IsEnabled.Returns(true);
         _unitOfWork = Substitute.For<IUnitOfWork>();
 
         var credential = new AgentIngressCredential
@@ -69,6 +74,8 @@ public class RegisterAgentHandlerTests
             _blueprintCatalog,
             _agentIngressCredentialService,
             _purviewPolicyClient,
+            _purviewPolicyProfileRepository,
+            _purviewPolicyProvisioningClient,
             _unitOfWork);
     }
 
@@ -449,5 +456,40 @@ public class RegisterAgentHandlerTests
         exception.Which.ErrorCode.Should().Be(ErrorCodes.UNSUPPORTED_FEATURE_CONFIGURATION);
         await _agentRepository.DidNotReceive()
             .AddAsync(Arg.Any<AgentRegistration>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Handle_ShouldCreatePendingPurviewProfileForNewProtectedBlueprint()
+    {
+        AgentRegistration? createdAgent = null;
+        PurviewPolicyProfile? createdProfile = null;
+        _agentRepository.AddAsync(
+                Arg.Do<AgentRegistration>(agent => createdAgent = agent),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+        _purviewPolicyProfileRepository.AddAsync(
+                Arg.Do<PurviewPolicyProfile>(profile => createdProfile = profile),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+
+        var command = CreateValidCommand() with
+        {
+            Blueprint = new AgentBlueprintSelectionDto("CreateNew", null, "Protected blueprint"),
+            Features = new AgentFeaturesDto("Agent365", true, "Enforce"),
+            PurviewPolicyProfile = new PurviewPolicyProfileSelectionDto(
+                "CreateNew",
+                null,
+                "Protected production agents",
+                "AllSensitiveInformation")
+        };
+
+        await _handler.Handle(command, CancellationToken.None);
+
+        createdProfile.Should().NotBeNull();
+        createdProfile!.Status.Should().Be("Pending");
+        createdProfile.Mode.Should().Be("Enforce");
+        createdProfile.CollectionPolicyName.Should().Contain("Protected production agents");
+        createdAgent!.PurviewPolicyProfileId.Should().Be(createdProfile.Id);
+        createdAgent.PurviewPolicySelectionMode.Should().Be("CreateNew");
     }
 }

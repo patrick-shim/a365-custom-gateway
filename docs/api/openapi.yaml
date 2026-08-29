@@ -238,6 +238,29 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /purview-policy-profiles:
+    get:
+      operationId: listPurviewPolicyProfiles
+      summary: List verified Gateway-managed Purview protection profiles
+      description: |
+        Returns durable, non-secret metadata for collection-policy and DLP-policy
+        pairs that the Gateway has created and exactly verified. Only Ready profiles
+        are returned. Certificate material and arbitrary tenant policies are never exposed.
+      tags: [Configuration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      responses:
+        '200':
+          description: Verified reusable Purview profile inventory
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurviewPolicyProfileListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /agents/{agentId}:
     parameters:
       - $ref: '#/components/parameters/AgentId'
@@ -1471,6 +1494,62 @@ components:
           items:
             $ref: '#/components/schemas/AgentIdentityBlueprintSummary'
 
+    PurviewPolicyProfileSelection:
+      type: object
+      description: |
+        Required only when Purview is enabled while creating a new blueprint.
+        Selects a verified Gateway-managed profile or requests a new reviewed profile.
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [UseExisting, CreateNew]
+        profileId:
+          type: string
+          format: uuid
+          nullable: true
+        displayName:
+          type: string
+          maxLength: 120
+          nullable: true
+        template:
+          type: string
+          enum: [AllSensitiveInformation]
+          nullable: true
+
+    PurviewPolicyProfileSummary:
+      type: object
+      required: [id, displayName, template, mode, status, blueprintCount]
+      properties:
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        template:
+          type: string
+        mode:
+          $ref: '#/components/schemas/PurviewMode'
+        status:
+          type: string
+          enum: [Ready]
+        blueprintCount:
+          type: integer
+          minimum: 0
+        verifiedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+
+    PurviewPolicyProfileListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurviewPolicyProfileSummary'
+
     AgentGatewayCredential:
       type: object
       description: |
@@ -1571,6 +1650,8 @@ components:
           $ref: '#/components/schemas/AgentFeatures'
         blueprint:
           $ref: '#/components/schemas/AgentBlueprintSelection'
+        purviewPolicyProfile:
+          $ref: '#/components/schemas/PurviewPolicyProfileSelection'
 
     RegisterAgentResponse:
       type: object
@@ -1932,6 +2013,13 @@ components:
             window is effectively open. Authenticated Admin UI clients use this value
             verbatim. It is admission/routing metadata, not a Gateway key, Microsoft
             credential, or authority for delegated completion.
+        purviewPolicyProvisioningEnabled:
+          type: boolean
+          readOnly: true
+          description: |
+            True only when the Gateway worker has the reviewed app-only Security &
+            Compliance PowerShell configuration needed to create or extend a
+            protection profile for a new blueprint.
 
     UpdateSystemConfigRequest:
       type: object

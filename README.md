@@ -178,6 +178,14 @@ The live scope is intentionally mixed: `uploadText` is evaluated inline and
 `downloadText` is submitted offline. The current completed-pair endpoint therefore
 proves prompt DLP, not a pre-model response gate.
 
+Current unreleased source also adds reusable Purview **protection profiles** to the
+new-blueprint registration experience. An administrator can select a verified
+Gateway-managed collection/DLP policy pair or create one from the reviewed template.
+The worker preserves existing policy locations, adds the new blueprint application
+scope, and requires exact readback before child Agent ID creation. This source is not
+live deployment evidence; see `docs/implementation-status.md` and the Purview
+runbook for the release and app-only RBAC boundary.
+
 Historical v1/v2 and failed v3 attempts remain immutable evidence and must not be
 replayed or deleted. SQL finalization remains unapplied. See the implementation and
 deployment status documents for exact digests, correlations, test counts, retained

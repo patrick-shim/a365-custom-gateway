@@ -33,6 +33,50 @@ public sealed class PurviewPolicyClientTests
 
         provider.GetRequiredService<Gateway.Domain.Interfaces.IPurviewPolicyClient>()
             .IsEnabled.Should().BeFalse();
+        provider.GetRequiredService<Gateway.Domain.Interfaces.IPurviewPolicyProvisioningClient>()
+            .IsEnabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Options_ShouldFailClosed_WhenPolicyProvisioningIdentityIsIncomplete()
+    {
+        var validator = new PurviewOptionsValidator();
+        var options = new PurviewOptions
+        {
+            Enabled = true,
+            PolicyProvisioningEnabled = true,
+            PolicyProvisioningOrganization = "tenant.onmicrosoft.com",
+            PolicyProvisioningApplicationId = Guid.NewGuid().ToString("D")
+        };
+
+        var result = validator.Validate(null, options);
+
+        result.Failed.Should().BeTrue();
+        result.FailureMessage.Should().Contain("CertificateSecretUri");
+    }
+
+    [Fact]
+    public void Options_ShouldRejectUntrustedOrVersionedCertificateSecretUris()
+    {
+        var validator = new PurviewOptionsValidator();
+        foreach (var invalidUri in new[]
+                 {
+                     "https://attacker.example/secrets/certificate",
+                     "https://gateway.vault.azure.net/secrets/certificate/version"
+                 })
+        {
+            var result = validator.Validate(null, new PurviewOptions
+            {
+                Enabled = true,
+                PolicyProvisioningEnabled = true,
+                PolicyProvisioningOrganization = "tenant.onmicrosoft.com",
+                PolicyProvisioningApplicationId = Guid.NewGuid().ToString("D"),
+                PolicyProvisioningCertificateSecretUri = invalidUri
+            });
+
+            result.Failed.Should().BeTrue();
+            result.FailureMessage.Should().Contain("versionless HTTPS Azure Key Vault");
+        }
     }
 
     [Fact]

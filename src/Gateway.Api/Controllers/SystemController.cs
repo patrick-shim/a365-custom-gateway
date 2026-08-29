@@ -6,6 +6,7 @@ using Gateway.Application.Configuration.Queries;
 using Gateway.Contracts.Requests;
 using Gateway.Contracts.Responses;
 using MediatR;
+using Gateway.Domain.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -17,13 +18,16 @@ public class SystemController : ControllerBase
 {
     private readonly ISender _sender;
     private readonly ProvisioningAdmissionGate _provisioningAdmissionGate;
+    private readonly IPurviewPolicyProvisioningClient _purviewPolicyProvisioningClient;
 
     public SystemController(
         ISender sender,
-        ProvisioningAdmissionGate provisioningAdmissionGate)
+        ProvisioningAdmissionGate provisioningAdmissionGate,
+        IPurviewPolicyProvisioningClient purviewPolicyProvisioningClient)
     {
         _sender = sender;
         _provisioningAdmissionGate = provisioningAdmissionGate;
+        _purviewPolicyProvisioningClient = purviewPolicyProvisioningClient;
     }
 
     [HttpGet("config")]
@@ -76,6 +80,7 @@ public class SystemController : ControllerBase
         {
             ProvisioningExecutionEnabled = _provisioningAdmissionGate.IsRegistrationOpen,
             AuthorizedRegistrationExternalAgentId =
-                _provisioningAdmissionGate.AuthorizedRegistrationExternalAgentId
+                _provisioningAdmissionGate.AuthorizedRegistrationExternalAgentId,
+            PurviewPolicyProvisioningEnabled = _purviewPolicyProvisioningClient.IsEnabled
         };
 }

@@ -26,6 +26,8 @@ internal sealed class ProvisioningMessageHandler
     private readonly IOutboxRepository _outboxRepository;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IProvisioningExecutionLockProvider _provisioningExecutionLockProvider;
+    private readonly IPurviewPolicyProfileRepository _purviewPolicyProfileRepository;
+    private readonly IPurviewPolicyProvisioningClient _purviewPolicyProvisioningClient;
     private readonly ProvisioningWorkerOptions _options;
     private readonly ILogger<ProvisioningMessageHandler> _logger;
 
@@ -40,6 +42,8 @@ internal sealed class ProvisioningMessageHandler
         IOutboxRepository outboxRepository,
         IUnitOfWork unitOfWork,
         IProvisioningExecutionLockProvider provisioningExecutionLockProvider,
+        IPurviewPolicyProfileRepository purviewPolicyProfileRepository,
+        IPurviewPolicyProvisioningClient purviewPolicyProvisioningClient,
         IOptions<ProvisioningWorkerOptions> options,
         ILogger<ProvisioningMessageHandler> logger)
     {
@@ -53,6 +57,8 @@ internal sealed class ProvisioningMessageHandler
         _outboxRepository = outboxRepository;
         _unitOfWork = unitOfWork;
         _provisioningExecutionLockProvider = provisioningExecutionLockProvider;
+        _purviewPolicyProfileRepository = purviewPolicyProfileRepository;
+        _purviewPolicyProvisioningClient = purviewPolicyProvisioningClient;
         _options = options.Value;
         _logger = logger;
     }
@@ -907,6 +913,42 @@ internal sealed class ProvisioningMessageHandler
                 validationError);
         }
 
+        if (currentStep.StepType == ProvisioningStepType.ResolveBlueprint &&
+            agent.PurviewPolicyProfileId is not null)
+        {
+            try
+            {
+                result = await EnsurePurviewPolicyAssignmentAsync(agent, result, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (PurviewPolicyException exception) when (exception.IsTransient)
+            {
+                currentStep.Status = StepStatus.Pending;
+                currentStep.ErrorCode = exception.FailureCode;
+                currentStep.ErrorMessage = exception.Message;
+                job.ErrorCode = exception.FailureCode;
+                job.ErrorSummary = exception.Message;
+                await _unitOfWork.SaveChangesAsync(ct);
+                throw;
+            }
+            catch (PurviewPolicyException exception)
+            {
+                await PersistProvisioningFailureAsync(
+                    agent,
+                    job,
+                    currentStep,
+                    exception.FailureCode,
+                    exception.Message,
+                    requiresManualIntervention: false,
+                    message.CorrelationId,
+                    ct);
+                return MessageHandlingResult.DeadLetter(exception.FailureCode, exception.Message);
+            }
+        }
+
         var resultData = JsonSerializer.Serialize(result);
         if (resultData.Length > 4000)
         {
@@ -1357,6 +1399,13 @@ internal sealed class ProvisioningMessageHandler
                Preserves(previous.ObservabilityAppRoleAssignmentId, current.ObservabilityAppRoleAssignmentId) &&
                Preserves(previous.GatewayManagedIdentityPrincipalId, current.GatewayManagedIdentityPrincipalId) &&
                Preserves(previous.GatewayFederatedCredentialId, current.GatewayFederatedCredentialId) &&
+               Preserves(previous.PurviewPolicyProfileId, current.PurviewPolicyProfileId) &&
+               Preserves(previous.PurviewCollectionPolicyId, current.PurviewCollectionPolicyId) &&
+               Preserves(previous.PurviewDlpPolicyId, current.PurviewDlpPolicyId) &&
+               Preserves(previous.PurviewDlpRuleId, current.PurviewDlpRuleId) &&
+               Preserves(
+                   previous.PurviewPolicyAssignmentVerifiedAtUtc,
+                   current.PurviewPolicyAssignmentVerifiedAtUtc) &&
                Preserves(previous.PlannedAgent365RegistrationId, current.PlannedAgent365RegistrationId) &&
                Preserves(previous.Agent365RegistrationId, current.Agent365RegistrationId) &&
                Preserves(previous.RegistryProvider, current.RegistryProvider) &&
@@ -1379,6 +1428,9 @@ internal sealed class ProvisioningMessageHandler
     private static bool Preserves(DateTimeOffset? previous, DateTimeOffset? current) =>
         previous is null || previous == current;
 
+    private static bool Preserves(Guid? previous, Guid? current) =>
+        previous is null || previous == current;
+
     private static bool HasValue(string? value) => !string.IsNullOrWhiteSpace(value);
 
     private static bool IsSafeCompletionEvidence(string? evidence) =>
@@ -1397,6 +1449,10 @@ internal sealed class ProvisioningMessageHandler
         agent.BlueprintId = state.BlueprintClientId ?? agent.BlueprintId;
         agent.Agent365AgentId = state.AgentIdentityClientId ?? agent.Agent365AgentId;
         agent.Agent365InstanceId = state.Agent365RegistrationId ?? agent.Agent365InstanceId;
+        agent.PurviewPolicyProfileId = state.PurviewPolicyProfileId ?? agent.PurviewPolicyProfileId;
+        agent.PurviewPolicyAssignmentVerifiedAtUtc =
+            state.PurviewPolicyAssignmentVerifiedAtUtc?.UtcDateTime ??
+            agent.PurviewPolicyAssignmentVerifiedAtUtc;
 
         if (state.KeyVaultSecretUri is null)
             return;
@@ -1416,6 +1472,81 @@ internal sealed class ProvisioningMessageHandler
         }
 
         agent.CredentialReference.ExpiresAtUtc = state.CredentialExpiresAtUtc?.UtcDateTime;
+    }
+
+    private async Task<Agent365ProvisioningStepResult> EnsurePurviewPolicyAssignmentAsync(
+        AgentRegistration agent,
+        Agent365ProvisioningStepResult result,
+        CancellationToken ct)
+    {
+        if (!_purviewPolicyProvisioningClient.IsEnabled)
+        {
+            throw new PurviewPolicyException(
+                "PURVIEW_POLICY_PROVISIONING_DISABLED",
+                "Automated Purview policy assignment is not configured for this worker.");
+        }
+
+        var profileId = agent.PurviewPolicyProfileId!.Value;
+        await using var profileLease = await _provisioningExecutionLockProvider.AcquireAsync(
+            profileId,
+            ct);
+        var profile = await _purviewPolicyProfileRepository.GetByIdAsync(
+            profileId,
+            ct) ?? throw new PurviewPolicyException(
+                "PURVIEW_POLICY_PROFILE_NOT_FOUND",
+                "The selected Purview policy profile no longer exists.");
+        var blueprintApplicationId = result.State.BlueprintClientId;
+        if (!TryParseNonEmptyGuid(blueprintApplicationId, out _))
+        {
+            throw new PurviewPolicyException(
+                "PURVIEW_POLICY_BLUEPRINT_INVALID",
+                "The resolved blueprint did not provide a valid Application ID.");
+        }
+
+        var provisioned = await _purviewPolicyProvisioningClient.EnsureProfileAssignmentAsync(
+            new PurviewPolicyProvisioningRequest(
+                profile.Id,
+                profile.DisplayName,
+                profile.Template,
+                profile.Mode,
+                profile.CollectionPolicyName,
+                profile.DlpPolicyName,
+                profile.DlpRuleName,
+                blueprintApplicationId!,
+                agent.RequestedBlueprintDisplayName ?? agent.Name),
+            ct);
+        if (!provisioned.BlueprintApplicationIds.Contains(
+                blueprintApplicationId,
+                StringComparer.OrdinalIgnoreCase))
+        {
+            throw new PurviewPolicyException(
+                "PURVIEW_POLICY_READBACK_MISMATCH",
+                "Purview did not read back the exact blueprint Application scope.");
+        }
+
+        profile.CollectionPolicyId = provisioned.CollectionPolicyId;
+        profile.DlpPolicyId = provisioned.DlpPolicyId;
+        profile.DlpRuleId = provisioned.DlpRuleId;
+        profile.BlueprintApplicationIdsJson = JsonSerializer.Serialize(
+            provisioned.BlueprintApplicationIds.Distinct(StringComparer.OrdinalIgnoreCase));
+        profile.Status = "Ready";
+        profile.VerifiedAtUtc = provisioned.VerifiedAtUtc.UtcDateTime;
+        profile.LastErrorCode = null;
+        profile.UpdatedAtUtc = DateTime.UtcNow;
+        agent.PurviewPolicyAssignmentVerifiedAtUtc = provisioned.VerifiedAtUtc.UtcDateTime;
+
+        return result with
+        {
+            State = result.State with
+            {
+                PurviewPolicyProfileId = profile.Id,
+                PurviewCollectionPolicyId = provisioned.CollectionPolicyId,
+                PurviewDlpPolicyId = provisioned.DlpPolicyId,
+                PurviewDlpRuleId = provisioned.DlpRuleId,
+                PurviewPolicyAssignmentVerifiedAtUtc = provisioned.VerifiedAtUtc
+            },
+            CompletionEvidence = "BlueprintAndPurviewProfileVerified"
+        };
     }
 
     private async Task FinalizeProvisioningAsync(

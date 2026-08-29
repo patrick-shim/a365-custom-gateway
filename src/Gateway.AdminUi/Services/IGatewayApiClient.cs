@@ -35,6 +35,9 @@ public interface IGatewayApiClient
     Task<AgentIdentityBlueprintListResponse> GetAgentIdentityBlueprintsAsync(
         CancellationToken cancellationToken = default);
 
+    Task<PurviewPolicyProfileListResponse> GetPurviewPolicyProfilesAsync(
+        CancellationToken cancellationToken = default);
+
     Task<RegisterAgentResponse> RegisterAgentAsync(
         RegisterAgentRequest request,
         Guid? idempotencyKey = null,

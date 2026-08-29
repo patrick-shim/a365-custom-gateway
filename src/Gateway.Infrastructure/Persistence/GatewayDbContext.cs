@@ -20,6 +20,7 @@ public class GatewayDbContext : DbContext
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
     public DbSet<SystemConfiguration> SystemConfigurations => Set<SystemConfiguration>();
+    public DbSet<PurviewPolicyProfile> PurviewPolicyProfiles => Set<PurviewPolicyProfile>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

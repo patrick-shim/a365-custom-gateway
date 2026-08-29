@@ -22,7 +22,8 @@ public record SystemConfigDto(
     bool? DefaultAgent365ObservabilityEnabled = null,
     bool? DefaultAzureMonitorExportEnabled = null,
     bool ProvisioningExecutionEnabled = false,
-    string? AuthorizedRegistrationExternalAgentId = null);
+    string? AuthorizedRegistrationExternalAgentId = null,
+    bool PurviewPolicyProvisioningEnabled = false);
 
 public record UpdateFeaturesResponse(
     Guid AgentId,

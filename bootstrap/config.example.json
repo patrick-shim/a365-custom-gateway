@@ -21,6 +21,10 @@
     "collectionPolicyName": "A365 Gateway AI collection",
     "dlpPolicyName": "A365 Gateway inline DLP",
     "dlpRuleName": "A365 Gateway inline DLP rule",
-    "sensitiveInformationType": ""
+    "sensitiveInformationType": "",
+    "policyProvisioningEnabled": false,
+    "policyProvisioningOrganization": "",
+    "policyProvisioningApplicationId": "",
+    "policyProvisioningCertificateSecretUri": ""
   }
 }

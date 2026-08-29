@@ -60,7 +60,11 @@
         "collectionPolicyName": { "type": "string", "minLength": 1 },
         "dlpPolicyName": { "type": "string", "minLength": 1 },
         "dlpRuleName": { "type": "string", "minLength": 1 },
-        "sensitiveInformationType": { "type": "string" }
+        "sensitiveInformationType": { "type": "string" },
+        "policyProvisioningEnabled": { "type": "boolean" },
+        "policyProvisioningOrganization": { "type": "string" },
+        "policyProvisioningApplicationId": { "type": "string" },
+        "policyProvisioningCertificateSecretUri": { "type": "string" }
       }
     }
   }

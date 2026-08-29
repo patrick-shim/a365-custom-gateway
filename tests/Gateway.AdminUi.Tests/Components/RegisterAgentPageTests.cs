@@ -39,6 +39,18 @@ public sealed class RegisterAgentPageTests : BunitContext
             .Returns(CreateConfig("Agent365", agent365Enabled: true, azureMonitorEnabled: false));
         _api.GetAgentIdentityBlueprintsAsync(Arg.Any<CancellationToken>())
             .Returns(CreateBlueprintInventory());
+        _api.GetPurviewPolicyProfilesAsync(Arg.Any<CancellationToken>())
+            .Returns(new PurviewPolicyProfileListResponse(
+            [
+                new PurviewPolicyProfileSummaryDto(
+                    Guid.Parse("cfe7a481-8295-4f6a-a54b-434b1e9cb66c"),
+                    "Enterprise AI protection",
+                    "AllSensitiveInformation",
+                    "AuditOnly",
+                    "Ready",
+                    2,
+                    DateTime.UtcNow)
+            ]));
 
         _authorization = AddAuthorization();
         _authorization.SetAuthorized("Admin user");
@@ -93,6 +105,24 @@ public sealed class RegisterAgentPageTests : BunitContext
         cut.FindAll("#runtime-managed-identity-object-id").Should().BeEmpty();
         cut.Find("#existing-blueprint-help").TextContent.Should().Contain("may be the same GUID");
         cut.Markup.Should().Contain("Only typed Agent ID blueprints are listed");
+    }
+
+    [Fact]
+    public void NewProtectedBlueprint_OffersExistingOrNewPurviewProfile()
+    {
+        _authorization.SetClaims(new Claim("oid", "02ed1e89-4ad1-4073-8e90-4aa865784896"));
+        var cut = Render<RegisterAgent>();
+
+        cut.Find("#blueprint-mode").Change("CreateNew");
+        cut.Find("#purview-enabled").Change(true);
+
+        cut.Find("#purview-profile-mode").Should().NotBeNull();
+        cut.Find("#purview-profile").TextContent.Should().Contain("Enterprise AI protection");
+        cut.Find("#purview-profile").TextContent.Should().Contain("2 blueprints");
+
+        cut.Find("#purview-profile-mode").Change("CreateNew");
+        cut.Find("#new-purview-profile-name").Should().NotBeNull();
+        cut.Markup.Should().Contain("preserves every existing blueprint assignment");
     }
 
     [Fact]
@@ -814,7 +844,8 @@ public sealed class RegisterAgentPageTests : BunitContext
         DefaultAgent365ObservabilityEnabled: agent365Enabled,
         DefaultAzureMonitorExportEnabled: azureMonitorEnabled,
         ProvisioningExecutionEnabled: provisioningExecutionEnabled,
-        AuthorizedRegistrationExternalAgentId: authorizedRegistrationExternalAgentId);
+        AuthorizedRegistrationExternalAgentId: authorizedRegistrationExternalAgentId,
+        PurviewPolicyProvisioningEnabled: true);
 
     private static AgentIdentityBlueprintListResponse CreateBlueprintInventory() => new(
     [

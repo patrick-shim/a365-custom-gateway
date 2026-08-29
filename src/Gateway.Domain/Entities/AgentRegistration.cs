@@ -21,6 +21,12 @@ public class AgentRegistration
     public string BlueprintSelectionMode { get; set; } = "Legacy";
     public string? RequestedBlueprintObjectId { get; set; }
     public string? RequestedBlueprintDisplayName { get; set; }
+    public string PurviewPolicySelectionMode { get; set; } = "NotRequested";
+    public Guid? RequestedPurviewPolicyProfileId { get; set; }
+    public string? RequestedPurviewPolicyDisplayName { get; set; }
+    public string? RequestedPurviewPolicyTemplate { get; set; }
+    public Guid? PurviewPolicyProfileId { get; set; }
+    public DateTime? PurviewPolicyAssignmentVerifiedAtUtc { get; set; }
     public string? LastProvisioningErrorCode { get; set; }
     public string? LastProvisioningErrorSummary { get; set; }
     public bool IsDeleted { get; set; }
@@ -34,6 +40,7 @@ public class AgentRegistration
     public AgentFeatureConfiguration FeatureConfiguration { get; set; } = null!;
     public ICollection<ProvisioningJob> ProvisioningJobs { get; set; }
     public AgentCredentialReference? CredentialReference { get; set; }
+    public PurviewPolicyProfile? PurviewPolicyProfile { get; set; }
 
     public AgentRegistration()
     {

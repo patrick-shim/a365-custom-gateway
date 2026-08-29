@@ -35,6 +35,12 @@ internal sealed class AgentRegistrationConfiguration : IEntityTypeConfiguration<
             .IsRequired();
         builder.Property(e => e.RequestedBlueprintObjectId).HasMaxLength(64);
         builder.Property(e => e.RequestedBlueprintDisplayName).HasMaxLength(256);
+        builder.Property(e => e.PurviewPolicySelectionMode)
+            .HasMaxLength(32)
+            .HasDefaultValue("NotRequested")
+            .IsRequired();
+        builder.Property(e => e.RequestedPurviewPolicyDisplayName).HasMaxLength(200);
+        builder.Property(e => e.RequestedPurviewPolicyTemplate).HasMaxLength(64);
         builder.Property(e => e.LastProvisioningErrorCode).HasMaxLength(64);
         builder.Property(e => e.LastProvisioningErrorSummary).HasMaxLength(2000);
         builder.Property(e => e.IsDeleted).HasDefaultValue(false);
@@ -67,6 +73,11 @@ internal sealed class AgentRegistrationConfiguration : IEntityTypeConfiguration<
             .WithOne(e => e.AgentRegistration)
             .HasForeignKey<AgentCredentialReference>(e => e.AgentRegistrationId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasOne(e => e.PurviewPolicyProfile)
+            .WithMany(e => e.AgentRegistrations)
+            .HasForeignKey(e => e.PurviewPolicyProfileId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasQueryFilter(e => !e.IsDeleted);
     }

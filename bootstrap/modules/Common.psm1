@@ -86,6 +86,16 @@ function Read-BootstrapConfig {
     param([Parameter(Mandatory)][string]$Path)
     $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
     $config = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json -Depth 30
+    foreach ($entry in ([ordered]@{
+        policyProvisioningEnabled = $false
+        policyProvisioningOrganization = ''
+        policyProvisioningApplicationId = ''
+        policyProvisioningCertificateSecretUri = ''
+    }).GetEnumerator()) {
+        if ($config.purview.PSObject.Properties.Name -notcontains $entry.Key) {
+            $config.purview | Add-Member -MemberType NoteProperty -Name $entry.Key -Value $entry.Value
+        }
+    }
     foreach ($name in @('subscriptionId', 'tenantId', 'environment', 'location', 'projectName', 'resourceGroupName', 'alertEmail')) {
         if ([string]::IsNullOrWhiteSpace([string]$config.$name)) { throw "Config property '$name' is required." }
     }
@@ -112,6 +122,25 @@ function Read-BootstrapConfig {
     }
     if ($config.purview.activateGatewayAdapterAfterPolicyReadback -eq $true -and $config.purview.enabled -ne $true) {
         throw 'Purview adapter activation requires purview.enabled=true.'
+    }
+    if ($config.purview.policyProvisioningEnabled -eq $true) {
+        if ($config.purview.enabled -ne $true) {
+            throw 'Purview policy-profile automation requires purview.enabled=true.'
+        }
+        if ([string]$config.purview.policyProvisioningOrganization -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$') {
+            throw 'purview.policyProvisioningOrganization must be the verified Microsoft 365 organization domain.'
+        }
+        Assert-GuidValue -Value ([string]$config.purview.policyProvisioningApplicationId) -Label 'purview.policyProvisioningApplicationId'
+        $certificateSecretUri = $null
+        if (-not [Uri]::TryCreate([string]$config.purview.policyProvisioningCertificateSecretUri, [UriKind]::Absolute, [ref]$certificateSecretUri) -or
+            $certificateSecretUri.Scheme -ne 'https' -or
+            -not $certificateSecretUri.IsDefaultPort -or
+            $certificateSecretUri.Host -notlike '*.vault.azure.net' -or
+            $certificateSecretUri.AbsolutePath -notmatch '^/secrets/[^/]+/?$' -or
+            -not [string]::IsNullOrEmpty($certificateSecretUri.Query) -or
+            -not [string]::IsNullOrEmpty($certificateSecretUri.Fragment)) {
+            throw 'purview.policyProvisioningCertificateSecretUri must be a versionless HTTPS Azure Key Vault secret URI.'
+        }
     }
     return $config
 }

@@ -35,7 +35,7 @@ Center. Current queues are v3 `0/0/9`, retained v2 `0/0/3`, and historical
 
 Blueprint-scoped Purview Enforce is live. Benign content returns `AuditLogged`, a
 synthetic credit-card `uploadText` returns `Blocked`, and `downloadText` is processed
-offline. The exact release gate is 1,102/1,102; authoritative counts and deployment
+offline. The exact release gate is 1,109/1,109; authoritative counts and deployment
 digests belong in `../implementation-status.md`.
 
 ### Historical superseded checkpoint
@@ -314,6 +314,14 @@ persists its planned Registry ID as the one-POST/exact-GET recovery invariant.
 ## Queue ownership
 
 - workflow-v3 API publisher/worker: `gateway-provisioning-v3`;
+- New-blueprint Purview protection profiles do not add or reorder persisted
+  workflow-v3 steps. After `ResolveBlueprint` returns the blueprint application ID,
+  the worker idempotently creates or extends the selected Gateway-managed
+  collection/DLP policy pair, preserves every existing Application location, and
+  requires exact readback before completing that stage. A failure occurs before
+  child Agent ID creation. Automation uses the dedicated certificate-authenticated
+  Security & Compliance application; it never uses a Gateway key, child identity,
+  blueprint identity, or signed-in administrator token.
 - retained workflow-v2 artifacts/worker: `gateway-provisioning-v2`;
 - historical workflow-v1 worker: `gateway-provisioning`.
 

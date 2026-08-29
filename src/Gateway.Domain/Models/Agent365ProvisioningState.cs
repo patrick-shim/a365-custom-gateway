@@ -21,6 +21,11 @@ public sealed record Agent365ProvisioningState
     public string? ObservabilityAppRoleAssignmentId { get; init; }
     public string? GatewayManagedIdentityPrincipalId { get; init; }
     public string? GatewayFederatedCredentialId { get; init; }
+    public Guid? PurviewPolicyProfileId { get; init; }
+    public string? PurviewCollectionPolicyId { get; init; }
+    public string? PurviewDlpPolicyId { get; init; }
+    public string? PurviewDlpRuleId { get; init; }
+    public DateTimeOffset? PurviewPolicyAssignmentVerifiedAtUtc { get; init; }
     public string? PlannedAgent365RegistrationId { get; init; }
     public string? Agent365RegistrationId { get; init; }
     public string? RegistryProvider { get; init; }

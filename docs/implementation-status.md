@@ -6,8 +6,41 @@ relevant guide under `docs/agent-guides`, and the latest live evidence in
 
 Last reconciled with the workflow-v3 working tree, continuous development
 deployment, Microsoft 365 Admin Center landing, blueprint-scoped Purview DLP proof,
-and the new clean-subscription bootstrap source checkpoint:
+the clean-subscription bootstrap source checkpoint, and the unreleased Purview
+protection-profile source feature:
 **2026-08-29**.
+
+## Unreleased source checkpoint: Purview protection profiles
+
+The current working tree adds an Admin UI experience for a Purview-enabled **new**
+blueprint: the administrator selects a verified reusable protection profile or
+creates a new reviewed profile while registering the agent. A profile is a durable,
+non-secret Gateway record pairing one Know Your Data collection policy, one DLP
+policy, and one DLP rule. It scopes the reusable blueprint application ID—not each
+child Agent ID—so later blueprints can reuse the same policy pair without policy
+sprawl.
+
+This feature preserves workflow v3 and its seven persisted step values. During
+`ResolveBlueprint`, after Graph returns the exact blueprint application ID, the
+worker uses certificate-based app-only `Connect-IPPSSession` to create or safely
+extend the profile. Existing `Locations` are read, preserved, and written back with
+the new `Application` location. Both the collection policy and DLP policy must read
+back the exact blueprint ID before `ResolveBlueprint` completes; otherwise the
+workflow fails closed before a child Agent ID is created. `AuditOnly` maps to DLP
+`TestWithoutNotifications`; `Enforce` maps to `Enable`. The clear certificate and
+password are never persisted or logged; the base64 PKCS#12 is fetched from a Key
+Vault secret and materialized only in a short-lived worker-private directory.
+
+The source checkpoint includes the typed request/catalog contracts,
+`GET /api/v1/purview-policy-profiles`, SQL migration
+`20260829_purview_policy_profiles.sql`, worker automation, Container Apps settings,
+clean-subscription bootstrap wiring with least-privilege worker Key Vault access,
+Admin UI, OpenAPI, and focused tests. It is **not deployed evidence**. Before any
+live rollout: review the Security & Compliance app role/RBAC, store the automation
+certificate in the designated Key Vault, run the additive migration, build the new
+worker image (which pins ExchangeOnlineManagement 3.10.1), deploy with policy
+provisioning disabled, complete read-only preflight, then authorize one bounded
+development canary separately.
 
 ## Product outcome
 
@@ -233,7 +266,7 @@ locations. This was a source-only relocation; no Azure or database state changed
 
 Source validation currently includes PowerShell parsing, all three new Bicep
 templates, a zero-warning/error solution/DatabaseMigrator build, a successful
-non-mutating `Plan`, the bootstrap architecture regression, and the full 1,102-test
+non-mutating `Plan`, the bootstrap architecture regression, and the full 1,109-test
 gate. A complete `Apply` has
 not yet been executed against a disposable clean subscription and is not live
 deployment evidence. The next bootstrap-specific action is that disposable
@@ -242,20 +275,20 @@ record its safe evidence here before describing clean-subscription recovery as
 live-proven.
 
 The current broad workflow-v3 plus bootstrap gate has a zero-warning/zero-error
-Release solution build and **1,102/1,102** passing tests:
+Release solution build and **1,109/1,109** passing tests:
 
-- unit **397/397**;
-- Admin UI **150/150**;
+- unit **402/402**;
+- Admin UI **151/151**;
 - end-to-end **103/103**;
 - security **111/111**;
-- observability/runtime **143/143**;
+- observability/runtime **144/144**;
 - integration **92/92**; and
 - architecture **106/106**.
 
 Every `tests/**/*.csproj` was run directly in Release with `--no-restore`; invoking
 `dotnet test` against the solution alone runs no test projects. PowerShell parsing
-passed 25/25 after obsolete local wrappers were removed, `dotnet format
---verify-no-changes` passed, all 22/22 Bicep templates compile without diagnostics,
+passed 27/27, `dotnet format
+--verify-no-changes` passed, all 19/19 Bicep templates compile without diagnostics,
 and all 5/5 parameter files validate. Final diff checks pass;
 line-ending notices are informational. Local success is not deployment evidence.
 
@@ -266,7 +299,7 @@ architecture regression test covers the operation-ID binding. Focused architectu
 test-project gate and zero-warning/error Release build also pass.
 
 The 2026-08-29 repository synchronization verified **54** Markdown files and all
-**50** repository-local Markdown links with no broken targets. All **8** current
+**51** repository-local Markdown links with no broken targets. All **8** current
 non-evidence JSON configuration files parse. The **15** Claude/Codex agent role
 names match, and the three shared workstream skills are byte-identical across
 `.claude/skills` and `.agents/skills`. The synchronization also removed the unused
@@ -570,21 +603,25 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    [`operations/development-deployment-status.md`](operations/development-deployment-status.md)
    entry. Chat history, an open browser, and a local process are not handoff
    evidence.
-2. Preserve the three v2 registrations/messages, the reconciled FIC, child, and
+2. Treat the Purview protection-profile implementation above as local, unreleased
+   source until its full release gate and a separately authorized deployment are
+   recorded. The immediate source action is to finish the broad gate and review the
+   app-only PowerShell/RBAC boundary; the immediate live action remains none.
+3. Preserve the three v2 registrations/messages, the reconciled FIC, child, and
    role. Reverify their retained queue baselines remain unchanged; never use the new
    v3 path to reconcile or mutate those artifacts.
-3. Distinguish local source, any ephemeral local UI, and the continuous deployed
+4. Distinguish local source, any ephemeral local UI, and the continuous deployed
    development service. Preserve every current Active registration, its child/
    blueprint/Registry mapping, and safe credential boundary.
-4. Admin Center landing and blueprint-scoped prompt DLP are confirmed. Resume with
+5. Admin Center landing and blueprint-scoped prompt DLP are confirmed. Resume with
    staging/multi-replica/failover and production-readiness work. Do not reinterpret
    offline `downloadText` as an inline response gate, and do not use historical
    failures as retry inputs.
-5. For a new subscription or deleted resource group, start at
+6. For a new subscription or deleted resource group, start at
    [`../bootstrap/README.md`](../bootstrap/README.md), run `Plan`, then use the
    resumable `Apply`. Do not substitute the old partial `tools/bootstrap.ps1`.
    Until one disposable clean-subscription run is captured, distinguish locally
    validated bootstrap source from a live-proven recovery path.
-6. After every verified change, update this file and the deployment checkpoint with
+7. After every verified change, update this file and the deployment checkpoint with
    exact tests, digests, revisions, schema/recovery state, all queue/outbox counts,
    safe external identifiers, and the next action. Never record secret material.

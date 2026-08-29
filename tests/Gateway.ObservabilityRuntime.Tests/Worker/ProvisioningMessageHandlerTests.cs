@@ -107,6 +107,66 @@ public sealed class ProvisioningMessageHandlerTests
     }
 
     [Fact]
+    public async Task HandleAsync_NewProtectedBlueprint_VerifiesPurviewBeforeCompletingResolveStep()
+    {
+        var fixture = new HandlerFixture();
+        var agent = CreateAgent(ObservabilityMode.Agent365);
+        var profile = new PurviewPolicyProfile
+        {
+            Id = Guid.NewGuid(),
+            DisplayName = "Enterprise AI protection",
+            Template = "AllSensitiveInformation",
+            Mode = "Enforce",
+            Status = "Pending",
+            CollectionPolicyName = "collection",
+            DlpPolicyName = "dlp",
+            DlpRuleName = "rule"
+        };
+        agent.PurviewPolicyProfileId = profile.Id;
+        agent.RequestedBlueprintDisplayName = "Protected blueprint";
+        var job = CreateCurrentProvisioningJob(agent.Id);
+        fixture.Arrange(agent, job);
+        fixture.PurviewProfiles.GetByIdAsync(profile.Id, Arg.Any<CancellationToken>())
+            .Returns(profile);
+        fixture.PurviewProvisioning.IsEnabled.Returns(true);
+        fixture.ProvisioningClient.ExecuteStepAsync(
+                Arg.Any<Agent365ProvisioningStepRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new Agent365ProvisioningStepResult(
+                ProvisioningStepType.ResolveBlueprint,
+                new Agent365ProvisioningState
+                {
+                    BlueprintObjectId = "8ab75b14-01f8-4258-893a-f8121b96cb46",
+                    BlueprintClientId = "8ab75b14-01f8-4258-893a-f8121b96cb46"
+                },
+                "verified_ResolveBlueprint"));
+        fixture.PurviewProvisioning.EnsureProfileAssignmentAsync(
+                Arg.Any<PurviewPolicyProvisioningRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new PurviewPolicyProvisioningResult(
+                "collection-id",
+                "dlp-id",
+                "rule-id",
+                ["8ab75b14-01f8-4258-893a-f8121b96cb46"],
+                DateTimeOffset.UtcNow));
+
+        var result = await fixture.Handler.HandleAsync(
+            "ProvisionAgent",
+            CreateProvisioningPayload(agent.Id, job.Id),
+            CancellationToken.None);
+
+        result.ShouldDeadLetter.Should().BeFalse();
+        job.Steps.OrderBy(step => step.OrderIndex).First().Status.Should().Be(StepStatus.Completed);
+        profile.Status.Should().Be("Ready");
+        profile.DlpPolicyId.Should().Be("dlp-id");
+        agent.PurviewPolicyAssignmentVerifiedAtUtc.Should().NotBeNull();
+        var state = JsonSerializer.Deserialize<Agent365ProvisioningStepResult>(
+            job.Steps.OrderBy(step => step.OrderIndex).First().ResultData!)!.State;
+        state.PurviewPolicyProfileId.Should().Be(profile.Id);
+        state.PurviewPolicyAssignmentVerifiedAtUtc.Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task HandleAsync_ProvisioningNotImplemented_NeverCompletesStepOrJob()
     {
         var fixture = new HandlerFixture();
@@ -1727,6 +1787,8 @@ public sealed class ProvisioningMessageHandlerTests
                 Outbox,
                 UnitOfWork,
                 ProvisioningExecutionLockProvider,
+                PurviewProfiles,
+                PurviewProvisioning,
                 Options.Create(new ProvisioningWorkerOptions
                 {
                     ProvisioningExecutionEnabled = provisioningExecutionEnabled
@@ -1750,6 +1812,10 @@ public sealed class ProvisioningMessageHandlerTests
         public IUnitOfWork UnitOfWork { get; } = Substitute.For<IUnitOfWork>();
         public IProvisioningExecutionLockProvider ProvisioningExecutionLockProvider { get; } =
             new NoOpProvisioningExecutionLockProvider();
+        public IPurviewPolicyProfileRepository PurviewProfiles { get; } =
+            Substitute.For<IPurviewPolicyProfileRepository>();
+        public IPurviewPolicyProvisioningClient PurviewProvisioning { get; } =
+            Substitute.For<IPurviewPolicyProvisioningClient>();
         public ProvisioningMessageHandler Handler { get; }
 
         public void Arrange(AgentRegistration agent, ActivityReceipt receipt)

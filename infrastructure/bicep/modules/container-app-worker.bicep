@@ -98,6 +98,24 @@ param agent365RegistryProvider string = 'Disabled'
 @description('Explicit development-only gate for the unsupported-for-production Microsoft Graph beta registry provider.')
 param agent365DirectRegistryPreviewEnabled bool = false
 
+@description('Enable the Purview runtime and policy-provisioning module.')
+param purviewEnabled bool = false
+
+@description('Enable app-only Security & Compliance PowerShell policy provisioning for new blueprints.')
+param purviewPolicyProvisioningEnabled bool = false
+
+@description('Microsoft 365 organization domain used by Connect-IPPSSession app-only authentication.')
+param purviewPolicyProvisioningOrganization string = ''
+
+@description('Application/client ID of the certificate-authenticated Purview automation application.')
+param purviewPolicyProvisioningApplicationId string = ''
+
+@description('Versionless Key Vault secret URI containing the base64 PKCS#12 automation certificate.')
+param purviewPolicyProvisioningCertificateSecretUri string = ''
+
+@description('Sensitive information type used by the reviewed default DLP rule template.')
+param purviewDefaultSensitiveInformationType string = 'Credit Card Number'
+
 @description('Tags to apply to the resource.')
 param tags object = {}
 
@@ -213,6 +231,30 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
             {
               name: 'Agent365__DirectRegistryPreviewEnabled'
               value: string(agent365DirectRegistryPreviewEnabled)
+            }
+            {
+              name: 'Purview__Enabled'
+              value: string(purviewEnabled)
+            }
+            {
+              name: 'Purview__PolicyProvisioningEnabled'
+              value: string(purviewPolicyProvisioningEnabled)
+            }
+            {
+              name: 'Purview__PolicyProvisioningOrganization'
+              value: purviewPolicyProvisioningOrganization
+            }
+            {
+              name: 'Purview__PolicyProvisioningApplicationId'
+              value: purviewPolicyProvisioningApplicationId
+            }
+            {
+              name: 'Purview__PolicyProvisioningCertificateSecretUri'
+              value: purviewPolicyProvisioningCertificateSecretUri
+            }
+            {
+              name: 'Purview__DefaultSensitiveInformationType'
+              value: purviewDefaultSensitiveInformationType
             }
             {
               name: 'DOTNET_ENVIRONMENT'

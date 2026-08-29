@@ -37,6 +37,7 @@ public static class DependencyInjection
                 serviceProvider.GetRequiredService<IOptions<PurviewOptions>>(),
                 serviceProvider.GetRequiredService<IMemoryCache>(),
                 serviceProvider.GetRequiredService<IPurviewGraphClient>()));
+        services.AddSingleton<IPurviewPolicyProvisioningClient, PowerShellPurviewPolicyProvisioningClient>();
 
         return services;
     }

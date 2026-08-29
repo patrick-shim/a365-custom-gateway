@@ -18,6 +18,9 @@ param workerCredentialKeyVaultName string
 @description('Legacy-only switch granting the worker Key Vault Secrets Officer on the provisioning credential vault. Workflow v3 does not require it.')
 param enableWorkerCredentialKeyVaultSecretsOfficer bool = false
 
+@description('Grant the worker read-only secret access to the shared Key Vault for certificate-based Purview policy automation.')
+param enableWorkerKeyVaultSecretsUser bool = false
+
 @description('Name of the Azure Storage Account.')
 param storageAccountName string
 
@@ -122,6 +125,17 @@ resource apiAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 // ============================================================================
 // Worker Role Assignments
 // ============================================================================
+
+// Worker -> shared Key Vault: read-only certificate retrieval for Purview policy automation.
+resource workerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableWorkerKeyVaultSecretsUser) {
+  name: guid(subscription().id, workerPrincipalId, keyVault.id, keyVaultSecretsUserRoleId)
+  scope: keyVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
+    principalId: workerPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
 
 // Legacy-only worker credential-vault access. Workflow v3 defaults this off.
 resource workerKeyVaultSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableWorkerCredentialKeyVaultSecretsOfficer) {

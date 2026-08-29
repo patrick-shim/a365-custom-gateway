@@ -126,6 +126,13 @@ function Deploy-GatewayCore {
         [Parameter()][switch]$EnablePurview
     )
     $root = Get-RepositoryRoot
+    if ($EnablePurview -and $Config.purview.policyProvisioningEnabled -eq $true) {
+        $configuredVaultHost = ([Uri][string]$Config.purview.policyProvisioningCertificateSecretUri).Host
+        $gatewayVaultHost = ([Uri][string]$Foundation.keyVaultUri).Host
+        if (-not $configuredVaultHost.Equals($gatewayVaultHost, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Purview policy automation certificate must be stored in the Gateway shared Key Vault '$gatewayVaultHost' so the worker's read-only role remains narrowly scoped."
+        }
+    }
     $name = if ($Initial) { "a365gw-bootstrap-inert-$($Config.environment)" } else { "a365gw-bootstrap-runtime-$($Config.environment)" }
     if ($Initial) {
         $existingDeployment = $null
@@ -191,6 +198,11 @@ function Deploy-GatewayCore {
         agent365ManagerApplicationsPreflightConfirmed = [bool]($ManagerApplicationIds.Count -gt 0)
         agent365ManagerApplicationIds = @($ManagerApplicationIds)
         purviewEnabled = [bool]$EnablePurview
+        purviewPolicyProvisioningEnabled = [bool]($EnablePurview -and $Config.purview.policyProvisioningEnabled -eq $true)
+        purviewPolicyProvisioningOrganization = [string]$Config.purview.policyProvisioningOrganization
+        purviewPolicyProvisioningApplicationId = [string]$Config.purview.policyProvisioningApplicationId
+        purviewPolicyProvisioningCertificateSecretUri = [string]$Config.purview.policyProvisioningCertificateSecretUri
+        purviewDefaultSensitiveInformationType = [string]$Config.purview.sensitiveInformationType
         deployAdminUi = -not [string]::IsNullOrWhiteSpace($AdminUiImage)
         adminUiContainerImage = $AdminUiImage
         adminUiEntraClientId = $AdminUiClientId

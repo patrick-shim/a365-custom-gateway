@@ -117,6 +117,21 @@ param agent365ManagerApplicationIds array = []
 @description('Enable the globally configured Microsoft Purview Graph adapter. Keep false until tenant licensing, policies, all three Graph app roles, and a synthetic canary are verified.')
 param purviewEnabled bool = false
 
+@description('Enable automated Purview collection/DLP policy profile assignment for newly-created blueprints. Requires the reviewed app-only Security & Compliance PowerShell identity.')
+param purviewPolicyProvisioningEnabled bool = false
+
+@description('Microsoft 365 organization domain used by Purview policy automation.')
+param purviewPolicyProvisioningOrganization string = ''
+
+@description('Application/client ID of the certificate-authenticated Purview policy automation application.')
+param purviewPolicyProvisioningApplicationId string = ''
+
+@description('Versionless Key Vault secret URI containing the base64 PKCS#12 Purview automation certificate.')
+param purviewPolicyProvisioningCertificateSecretUri string = ''
+
+@description('Sensitive information type used by the reviewed default protection-profile rule.')
+param purviewDefaultSensitiveInformationType string = 'Credit Card Number'
+
 @description('Deploy the Admin UI Container App. Disabled by default so existing API/worker deployments are unchanged.')
 param deployAdminUi bool = false
 
@@ -489,6 +504,12 @@ module workerApp './modules/container-app-worker.bicep' = {
     provisioningExecutionEnabled: effectiveWorkerProvisioningExecutionEnabled
     agent365RegistryProvider: agent365RegistryProvider
     agent365DirectRegistryPreviewEnabled: agent365DirectRegistryPreviewEnabled
+    purviewEnabled: purviewEnabled
+    purviewPolicyProvisioningEnabled: purviewEnabled && purviewPolicyProvisioningEnabled
+    purviewPolicyProvisioningOrganization: purviewPolicyProvisioningOrganization
+    purviewPolicyProvisioningApplicationId: purviewPolicyProvisioningApplicationId
+    purviewPolicyProvisioningCertificateSecretUri: purviewPolicyProvisioningCertificateSecretUri
+    purviewDefaultSensitiveInformationType: purviewDefaultSensitiveInformationType
     tags: tags
   }
 }
@@ -531,6 +552,7 @@ module roleAssignments './modules/role-assignments.bicep' = {
     keyVaultName: names.keyVault
     workerCredentialKeyVaultName: names.provisioningKeyVault
     enableWorkerCredentialKeyVaultSecretsOfficer: enableLegacyWorkerCredentialKeyVaultSecretsOfficer
+    enableWorkerKeyVaultSecretsUser: purviewEnabled && purviewPolicyProvisioningEnabled
     storageAccountName: names.storage
     serviceBusNamespaceName: names.serviceBus
     serviceBusQueueName: serviceBus.outputs.queueName

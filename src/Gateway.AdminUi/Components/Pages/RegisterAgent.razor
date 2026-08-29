@@ -361,6 +361,79 @@ else
                                     <option value="Enforce">Enforce</option>
                                 </InputSelect>
                             </div>
+                            @if (form.BlueprintMode == BlueprintModeCreateNew)
+                            {
+                                @if (!purviewPolicyProvisioningEnabled)
+                                {
+                                    <div class="form-field full">
+                                        <div class="validation-summary-errors" role="alert">
+                                            <strong>Automatic Purview policy assignment is unavailable.</strong>
+                                            <span>An operator must configure the Gateway's app-only Purview automation identity before a protected blueprint can be created.</span>
+                                        </div>
+                                    </div>
+                                }
+                                <div class="form-field full policy-profile-panel">
+                                    <label for="purview-profile-mode">Protect the new blueprint</label>
+                                    <InputSelect id="purview-profile-mode"
+                                                 class="form-control"
+                                                 @bind-Value="form.PurviewProfileMode">
+                                        <option value="@PurviewProfileModeUseExisting">Add to an existing protection profile</option>
+                                        <option value="@PurviewProfileModeCreateNew">Create a new protection profile</option>
+                                    </InputSelect>
+                                    <span class="field-help">A protection profile is a Gateway-managed Purview collection policy and DLP policy pair. The Gateway preserves every existing blueprint assignment and verifies the new Application scope before creating the Agent ID.</span>
+                                </div>
+
+                                @if (form.PurviewProfileMode == PurviewProfileModeUseExisting)
+                                {
+                                    @if (purviewProfilesLoading)
+                                    {
+                                        <div class="form-field full"><LoadingState Label="Loading Purview profiles…" Detail="Reading verified Gateway-managed policy profiles." /></div>
+                                    }
+                                    else if (purviewProfileLoadError is not null)
+                                    {
+                                        <div class="form-field full">
+                                            <ErrorState Title="Purview profiles are unavailable"
+                                                        Message="@purviewProfileLoadError.Message"
+                                                        CorrelationId="@purviewProfileLoadError.CorrelationId"
+                                                        OnRetry="LoadPurviewProfilesAsync" />
+                                        </div>
+                                    }
+                                    else if (purviewProfilesLoaded && purviewProfiles.Count == 0)
+                                    {
+                                        <div class="form-field full">
+                                            <EmptyState Icon="⌁" Title="No protection profiles yet" Description="Create the first Gateway-managed Purview protection profile with this blueprint.">
+                                                <FluentButton Type="ButtonType.Button" Appearance="Appearance.Accent" OnClick="UseCreateNewPurviewProfile">Create a protection profile</FluentButton>
+                                            </EmptyState>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div class="form-field full">
+                                            <label for="purview-profile">Existing protection profile</label>
+                                            <InputSelect id="purview-profile" class="form-control" @bind-Value="form.PurviewProfileId">
+                                                <option value="">Select a verified profile</option>
+                                                @foreach (var profile in CompatiblePurviewProfiles)
+                                                {
+                                                    <option value="@profile.Id">@FormatPurviewProfile(profile)</option>
+                                                }
+                                            </InputSelect>
+                                            <ValidationMessage For="@(() => form.PurviewProfileId)" />
+                                        </div>
+                                    }
+                                }
+                                else
+                                {
+                                    <div class="form-field full">
+                                        <label for="new-purview-profile-name">New protection profile name</label>
+                                        <InputText id="new-purview-profile-name"
+                                                   class="form-control"
+                                                   @bind-Value="form.PurviewProfileDisplayName"
+                                                   autocomplete="off" />
+                                        <span class="field-help">The reviewed template collects supported AI interactions and blocks uploads containing the configured sensitive information type. It can be reused by later blueprints.</span>
+                                        <ValidationMessage For="@(() => form.PurviewProfileDisplayName)" />
+                                    </div>
+                                }
+                            }
                         }
                     </div>
                 </fieldset>
@@ -369,7 +442,7 @@ else
 
         <div class="form-actions">
             <FluentAnchor Appearance="Appearance.Neutral" Href="/agents">Cancel</FluentAnchor>
-            <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent" Disabled="@(submitting || !identityReady || !provisioningExecutionEnabled || ExistingBlueprintInventoryUnavailable)">
+            <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent" Disabled="@(submitting || !identityReady || !provisioningExecutionEnabled || ExistingBlueprintInventoryUnavailable || ExistingPurviewProfileInventoryUnavailable)">
                 @(submitting
                     ? "Registering…"
                     : !provisioningCapabilityChecked
@@ -402,23 +475,30 @@ else
     private const string EntraObjectIdShortClaim = "oid";
     private const string BlueprintModeUseExisting = "UseExisting";
     private const string BlueprintModeCreateNew = "CreateNew";
+    private const string PurviewProfileModeUseExisting = "UseExisting";
+    private const string PurviewProfileModeCreateNew = "CreateNew";
     private readonly CancellationTokenSource disposeCts = new();
     private readonly RegistrationForm form = new();
     private readonly List<string> remoteValidationErrors = [];
     private IReadOnlyList<AgentIdentityBlueprintSummaryDto> blueprintOptions = [];
+    private IReadOnlyList<PurviewPolicyProfileSummaryDto> purviewProfiles = [];
     private RegisterAgentResponse? acceptedRegistration;
     private AgentGatewayCredentialDto? gatewayCredential;
     private UiErrorInfo? error;
     private UiErrorInfo? blueprintLoadError;
+    private UiErrorInfo? purviewProfileLoadError;
     private string? identityError;
     private string? ownerDisplay;
     private string blueprintInventoryStatus = string.Empty;
     private bool blueprintOptionsLoaded;
     private bool blueprintOptionsLoading;
+    private bool purviewProfilesLoaded;
+    private bool purviewProfilesLoading;
     private bool identityReady;
     private bool provisioningCapabilityChecked;
     private bool provisioningCapabilityLoadFailed;
     private bool provisioningExecutionEnabled;
+    private bool purviewPolicyProvisioningEnabled;
     private bool submitting;
 
     protected override async Task OnInitializedAsync()
@@ -426,6 +506,7 @@ else
         form.ExternalAgentId = $"agent-{Guid.NewGuid():N}";
         var featureDefaultsTask = LoadFeatureDefaultsAsync();
         var blueprintOptionsTask = LoadBlueprintOptionsAsync();
+        var purviewProfilesTask = LoadPurviewProfilesAsync();
 
         try
         {
@@ -459,9 +540,44 @@ else
         }
         finally
         {
-            await Task.WhenAll(featureDefaultsTask, blueprintOptionsTask);
+            await Task.WhenAll(featureDefaultsTask, blueprintOptionsTask, purviewProfilesTask);
         }
     }
+
+    private async Task LoadPurviewProfilesAsync()
+    {
+        if (purviewProfilesLoading) return;
+        purviewProfilesLoading = true;
+        purviewProfilesLoaded = false;
+        purviewProfileLoadError = null;
+        try
+        {
+            var response = await Api.GetPurviewPolicyProfilesAsync(disposeCts.Token);
+            purviewProfiles = response.Items
+                .Where(profile => profile.Status == "Ready")
+                .OrderBy(profile => profile.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            purviewProfilesLoaded = true;
+            if (purviewProfiles.Count == 0)
+                form.PurviewProfileMode = PurviewProfileModeCreateNew;
+            else if (form.PurviewProfileId is { } selected &&
+                     !purviewProfiles.Any(profile => profile.Id.ToString("D") == selected))
+                form.PurviewProfileId = null;
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            purviewProfiles = [];
+            purviewProfileLoadError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            purviewProfilesLoading = false;
+        }
+    }
+
+    private void UseCreateNewPurviewProfile() =>
+        form.PurviewProfileMode = PurviewProfileModeCreateNew;
 
     private async Task LoadBlueprintOptionsAsync()
     {
@@ -548,7 +664,12 @@ else
                 ?? LegacyAgent365ObservabilityEnabled(config.DefaultObservabilityMode);
             form.AzureMonitorExportEnabled = config.DefaultAzureMonitorExportEnabled
                 ?? LegacyAzureMonitorExportEnabled(config.DefaultObservabilityMode);
+            form.PurviewEnabled = config.DefaultPurviewEnabled;
+            form.PurviewMode = config.DefaultPurviewMode is "AuditOnly" or "Enforce"
+                ? config.DefaultPurviewMode
+                : "AuditOnly";
             provisioningExecutionEnabled = config.ProvisioningExecutionEnabled;
+            purviewPolicyProvisioningEnabled = config.PurviewPolicyProvisioningEnabled;
             if (provisioningExecutionEnabled &&
                 !string.IsNullOrWhiteSpace(config.AuthorizedRegistrationExternalAgentId))
             {
@@ -615,7 +736,21 @@ else
                         : null,
                     form.BlueprintMode == BlueprintModeCreateNew
                         ? NullIfEmpty(form.BlueprintDisplayName)
-                        : null));
+                        : null),
+                form.PurviewEnabled && form.BlueprintMode == BlueprintModeCreateNew
+                    ? new PurviewPolicyProfileSelectionDto(
+                        form.PurviewProfileMode,
+                        form.PurviewProfileMode == PurviewProfileModeUseExisting &&
+                        Guid.TryParse(form.PurviewProfileId, out var profileId)
+                            ? profileId
+                            : null,
+                        form.PurviewProfileMode == PurviewProfileModeCreateNew
+                            ? NullIfEmpty(form.PurviewProfileDisplayName)
+                            : null,
+                        form.PurviewProfileMode == PurviewProfileModeCreateNew
+                            ? "AllSensitiveInformation"
+                            : null)
+                    : null);
 
             var response = await Api.RegisterAgentAsync(request, Guid.NewGuid(), disposeCts.Token);
             if (response.GatewayCredential is null)
@@ -679,6 +814,19 @@ else
          blueprintLoadError is not null ||
          CompatibleBlueprintCount == 0);
 
+    private bool ExistingPurviewProfileInventoryUnavailable =>
+        form.PurviewEnabled &&
+        form.BlueprintMode == BlueprintModeCreateNew &&
+        (!purviewPolicyProvisioningEnabled ||
+         (form.PurviewProfileMode == PurviewProfileModeUseExisting &&
+          (purviewProfilesLoading || !purviewProfilesLoaded || purviewProfileLoadError is not null || CompatiblePurviewProfiles.Count == 0)));
+
+    private IReadOnlyList<PurviewPolicyProfileSummaryDto> CompatiblePurviewProfiles =>
+        purviewProfiles.Where(profile => string.Equals(
+            profile.Mode,
+            form.PurviewMode,
+            StringComparison.Ordinal)).ToArray();
+
     private int CompatibleBlueprintCount =>
         blueprintOptions.Count(item => item.IsAgent365Compatible);
 
@@ -701,6 +849,9 @@ else
             : " — Unavailable for Agent 365";
         return $"{displayName} — Graph ID {blueprint.BlueprintObjectId:D}{compatibility}";
     }
+
+    private static string FormatPurviewProfile(PurviewPolicyProfileSummaryDto profile) =>
+        $"{profile.DisplayName} — {profile.Mode}, {profile.BlueprintCount} blueprint{(profile.BlueprintCount == 1 ? string.Empty : "s")}";
 
     private static string ToLegacyObservabilityMode(bool agent365Enabled, bool azureMonitorEnabled) =>
         (agent365Enabled, azureMonitorEnabled) switch
@@ -770,6 +921,9 @@ else
         public bool AzureMonitorExportEnabled { get; set; }
         public bool PurviewEnabled { get; set; }
         public string PurviewMode { get; set; } = "AuditOnly";
+        public string PurviewProfileMode { get; set; } = PurviewProfileModeUseExisting;
+        public string? PurviewProfileId { get; set; }
+        public string? PurviewProfileDisplayName { get; set; }
 
         public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
         {
@@ -802,6 +956,27 @@ else
                 yield return new ValidationResult(
                     "Select whether to use an existing blueprint or create a new one.",
                     [nameof(BlueprintMode)]);
+            }
+
+            if (PurviewEnabled && BlueprintMode == BlueprintModeCreateNew)
+            {
+                if (PurviewProfileMode == PurviewProfileModeUseExisting && !TryParseNonEmptyGuid(PurviewProfileId))
+                {
+                    yield return new ValidationResult(
+                        "Select a verified Purview protection profile.",
+                        [nameof(PurviewProfileId)]);
+                }
+                else if (PurviewProfileMode == PurviewProfileModeCreateNew)
+                {
+                    if (string.IsNullOrWhiteSpace(PurviewProfileDisplayName))
+                        yield return new ValidationResult(
+                            "Enter a name for the new Purview protection profile.",
+                            [nameof(PurviewProfileDisplayName)]);
+                    else if (PurviewProfileDisplayName.Trim().Length > 120)
+                        yield return new ValidationResult(
+                            "The Purview protection profile name cannot exceed 120 characters.",
+                            [nameof(PurviewProfileDisplayName)]);
+                }
             }
 
         }

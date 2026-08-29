@@ -217,6 +217,12 @@ Do not invent these APIs. Build dashboards from agent-list data and health probe
   continuous mode and do not invent client-side admission. In exact-bound mode,
   registration closes before the separate delegated completion window opens.
 - Present Agent 365 observability and the optional Azure Monitor mirror as independent controls. Agent 365 defaults on and Azure Monitor defaults off; do not expose the deprecated `observabilityMode` string as the primary UI model. Gateway/platform diagnostics and Purview remain separate settings. Purview defaults off; if the API returns `UNSUPPORTED_FEATURE_CONFIGURATION`, explain that the deployment-level adapter is not configured and keep the toggle off. Do not imply that signing in as Global Administrator supplies the backend managed identity's Graph permissions or tenant DLP policy.
+- When Purview is enabled for `CreateNew` blueprint registration, require a
+  protection-profile choice. List only `Ready` Gateway-managed profiles from
+  `GET /api/v1/purview-policy-profiles`, filtered to the selected AuditOnly/Enforce
+  mode, or collect a new profile name for the reviewed template. Disable submission
+  when `purviewPolicyProvisioningEnabled` is false or the selected catalog cannot be
+  verified. Never expose certificate, tenant PowerShell, or raw policy internals.
 - Every remote view has loading, empty, error, retry, and cancellation behavior.
 - Use explicit UTC/local time labels and accessible status text in addition to color.
 - Confirm destructive and state-changing actions.

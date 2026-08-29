@@ -38,6 +38,7 @@ public static class DependencyInjection
         services.AddSingleton<IngressRateLimitProcessStore>();
         services.AddScoped<IIngressRateLimiter, SqlIngressRateLimiter>();
         services.AddScoped<ISystemConfigurationRepository, SystemConfigurationRepository>();
+        services.AddScoped<IPurviewPolicyProfileRepository, PurviewPolicyProfileRepository>();
         services
             .AddOptions<AgentIngressCredentialOptions>()
             .Bind(configuration.GetSection(AgentIngressCredentialOptions.SectionName))
