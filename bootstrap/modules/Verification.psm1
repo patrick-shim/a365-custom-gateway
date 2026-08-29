@@ -182,13 +182,36 @@ function Assert-GatewayPrincipalExactAzureRoleAssignments {
     $canonicalPrincipalId = ([guid]$PrincipalId).ToString('D')
     $canonicalSubscriptionId = ([guid]$SubscriptionId).ToString('D')
     $expected = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $expectedAssignmentIds = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($assignment in $ExpectedAssignments) {
         $scope = ([string]$assignment.scope).TrimEnd('/')
         $roleId = ([guid][string]$assignment.roleDefinitionId).ToString('D')
+        $key = "$scope|$roleId"
+        $expectedAssignmentId = if ($assignment -is [System.Collections.IDictionary]) {
+            if ($assignment.Contains('assignmentId')) { [string]$assignment['assignmentId'] } else { '' }
+        }
+        elseif ($null -ne $assignment.PSObject.Properties['assignmentId']) {
+            [string]$assignment.assignmentId
+        }
+        else { '' }
         if (-not $scope.StartsWith("/subscriptions/$canonicalSubscriptionId/", [StringComparison]::OrdinalIgnoreCase) -or
-            -not $expected.Add("$scope|$roleId")) {
+            -not $expected.Add($key)) {
             throw "$PrincipalLabel expected Azure role matrix is malformed or duplicated."
         }
+        if (-not [string]::IsNullOrWhiteSpace($expectedAssignmentId)) {
+            $assignmentPrefix = "$scope/providers/Microsoft.Authorization/roleAssignments/"
+            $assignmentGuidText = if ($expectedAssignmentId.StartsWith($assignmentPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                $expectedAssignmentId.Substring($assignmentPrefix.Length)
+            }
+            else { '' }
+            $assignmentGuid = [guid]::Empty
+            if (-not [guid]::TryParse($assignmentGuidText, [ref]$assignmentGuid) -or
+                $assignmentGuid -eq [guid]::Empty -or
+                $assignmentGuidText -cne $assignmentGuid.ToString('D')) {
+                throw "$PrincipalLabel expected Azure role-assignment receipt is malformed."
+            }
+        }
+        $expectedAssignmentIds.Add($key, $expectedAssignmentId)
     }
 
     $actualAssignments = @(Invoke-AzJsonArray -OperationLabel "$PrincipalLabel Azure role-assignment discovery" -Arguments @(
@@ -227,7 +250,10 @@ function Assert-GatewayPrincipalExactAzureRoleAssignments {
             throw "$PrincipalLabel Azure role-assignment evidence is malformed or carries an unreviewed condition/delegation."
         }
         $key = "$scope|$($roleId.ToString('D'))"
-        if (-not $expected.Contains($key) -or -not $seen.Add($key)) {
+        $requiredAssignmentId = if ($expectedAssignmentIds.ContainsKey($key)) { $expectedAssignmentIds[$key] } else { '' }
+        if (-not $expected.Contains($key) -or -not $seen.Add($key) -or
+            (-not [string]::IsNullOrWhiteSpace($requiredAssignmentId) -and
+                -not $assignmentId.Equals($requiredAssignmentId, [StringComparison]::OrdinalIgnoreCase))) {
             throw "$PrincipalLabel has duplicate, inherited, or unreviewed Azure role assignments."
         }
     }
@@ -267,14 +293,46 @@ function Assert-GatewayExactAzureRoleAssignments {
     $expectedRegistryId = "$resourceGroupScope/providers/Microsoft.ContainerRegistry/registries/$registryName"
     $expectedVaultId = "$resourceGroupScope/providers/Microsoft.KeyVault/vaults/kv-$($Config.projectName)-$($Config.environment)"
     $expectedQueueId = "$resourceGroupScope/providers/Microsoft.ServiceBus/namespaces/sb-$($Config.projectName)-$($Config.environment)/queues/$($Runtime.serviceBusQueueName)"
+    $runtimeImagePullIdentityName = "id-gateway-runtime-pull-$($Config.environment)"
+    $expectedRuntimeImagePullIdentityId = "$resourceGroupScope/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$runtimeImagePullIdentityName"
     $storagePrefix = "$resourceGroupScope/providers/Microsoft.Storage/storageAccounts/"
     $storageId = ([string]$Runtime.storageAccountId).TrimEnd('/')
+    $runtimeImagePullPrincipalId = [string]$Runtime.runtimeImagePullIdentityPrincipalId
+    $parsedRuntimeImagePullPrincipalId = [guid]::Empty
+    $runtimeImagePullRoleAssignmentId = [string]$Runtime.runtimeImagePullAcrPullRoleAssignmentId
+    $runtimeImagePullRoleAssignmentPrefix = "$expectedRegistryId/providers/Microsoft.Authorization/roleAssignments/"
+    $runtimeImagePullRoleAssignmentGuidText = if ($runtimeImagePullRoleAssignmentId.StartsWith($runtimeImagePullRoleAssignmentPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        $runtimeImagePullRoleAssignmentId.Substring($runtimeImagePullRoleAssignmentPrefix.Length)
+    }
+    else { '' }
+    $parsedRuntimeImagePullRoleAssignmentId = [guid]::Empty
     if (-not ([string]$Runtime.containerRegistryId).Equals($expectedRegistryId, [StringComparison]::OrdinalIgnoreCase) -or
         -not ([string]$Runtime.sharedKeyVaultId).Equals($expectedVaultId, [StringComparison]::OrdinalIgnoreCase) -or
         -not ([string]$Runtime.serviceBusQueueId).Equals($expectedQueueId, [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([string]$Runtime.runtimeImagePullIdentityId).Equals($expectedRuntimeImagePullIdentityId, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [guid]::TryParse($runtimeImagePullPrincipalId, [ref]$parsedRuntimeImagePullPrincipalId) -or
+        $parsedRuntimeImagePullPrincipalId -eq [guid]::Empty -or
+        $runtimeImagePullPrincipalId -cne $parsedRuntimeImagePullPrincipalId.ToString('D') -or
+        -not [guid]::TryParse($runtimeImagePullRoleAssignmentGuidText, [ref]$parsedRuntimeImagePullRoleAssignmentId) -or
+        $parsedRuntimeImagePullRoleAssignmentId -eq [guid]::Empty -or
+        $runtimeImagePullRoleAssignmentGuidText -cne $parsedRuntimeImagePullRoleAssignmentId.ToString('D') -or
         -not $storageId.StartsWith($storagePrefix, [StringComparison]::OrdinalIgnoreCase) -or
         $storageId.Substring($storagePrefix.Length) -cnotmatch '^[a-z0-9]{3,24}$') {
         throw 'Runtime resource IDs do not match the exact reviewed Azure RBAC scope boundary.'
+    }
+
+    $runtimeImagePullIdentity = Invoke-AzJson -Arguments @(
+        'identity', 'show', '--subscription', $subscriptionId,
+        '--resource-group', [string]$Config.resourceGroupName, '--name', $runtimeImagePullIdentityName,
+        '--query', '{id:id,name:name,principalId:principalId,type:type,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
+    )
+    if (-not ([string]$runtimeImagePullIdentity.id).Equals($expectedRuntimeImagePullIdentityId, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$runtimeImagePullIdentity.name -cne $runtimeImagePullIdentityName -or
+        [string]$runtimeImagePullIdentity.principalId -cne $runtimeImagePullPrincipalId -or
+        [string]$runtimeImagePullIdentity.type -cne 'Microsoft.ManagedIdentity/userAssignedIdentities' -or
+        [string]$runtimeImagePullIdentity.ownershipId -cne [string]$Runtime.deploymentOwnershipId -or
+        [string]$runtimeImagePullIdentity.sourceFingerprint -cne [string]$Runtime.sourceFingerprint) {
+        throw 'Runtime image-pull identity resource is missing or outside the exact identity, ownership, and source boundary.'
     }
 
     foreach ($resource in @(
@@ -306,7 +364,6 @@ function Assert-GatewayExactAzureRoleAssignments {
     $apiExpected = [Collections.Generic.List[object]]::new()
     $apiExpected.Add([ordered]@{ scope = $storageId; roleDefinitionId = $storageContributor })
     $apiExpected.Add([ordered]@{ scope = $expectedQueueId; roleDefinitionId = $serviceBusSender })
-    $apiExpected.Add([ordered]@{ scope = $expectedRegistryId; roleDefinitionId = $acrPull })
     if ($Config.promptShield.enabled -eq $true) {
         $promptShieldId = ([string]$Runtime.promptShieldAccountId).TrimEnd('/')
         if (-not $promptShieldId.StartsWith("$resourceGroupScope/providers/Microsoft.CognitiveServices/accounts/", [StringComparison]::OrdinalIgnoreCase)) {
@@ -318,7 +375,6 @@ function Assert-GatewayExactAzureRoleAssignments {
     $workerExpected = [Collections.Generic.List[object]]::new()
     $workerExpected.Add([ordered]@{ scope = $storageId; roleDefinitionId = $storageContributor })
     $workerExpected.Add([ordered]@{ scope = $expectedQueueId; roleDefinitionId = $serviceBusReceiver })
-    $workerExpected.Add([ordered]@{ scope = $expectedRegistryId; roleDefinitionId = $acrPull })
     if ($Config.purview.policyProvisioningEnabled -eq $true) {
         $certificateUri = [Uri][string]$Config.purview.policyProvisioningCertificateSecretUri
         $segments = @($certificateUri.AbsolutePath.Trim('/').Split('/', [StringSplitOptions]::RemoveEmptyEntries))
@@ -333,15 +389,24 @@ function Assert-GatewayExactAzureRoleAssignments {
         [ordered]@{ scope = $expectedRegistryId; roleDefinitionId = $acrPull },
         [ordered]@{ scope = "$expectedVaultId/secrets/admin-ui-entra-client-secret"; roleDefinitionId = $keyVaultSecretsUser }
     )
+    $runtimeImagePullExpected = @(
+        [ordered]@{
+            scope = $expectedRegistryId
+            roleDefinitionId = $acrPull
+            assignmentId = $runtimeImagePullRoleAssignmentId
+        }
+    )
 
     Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId ([string]$Runtime.apiPrincipalId) -PrincipalLabel 'Gateway API identity' | Out-Null
     Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId ([string]$Runtime.workerPrincipalId) -PrincipalLabel 'Workflow-v3 worker identity' | Out-Null
+    Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId $runtimeImagePullPrincipalId -PrincipalLabel 'Runtime image-pull identity' | Out-Null
     Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId ([string]$AdminUi.adminUiPrincipalId) -PrincipalLabel 'Admin UI identity' | Out-Null
 
     for ($attempt = 1; $attempt -le 6; $attempt++) {
         try {
             Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId ([string]$Runtime.apiPrincipalId) -SubscriptionId $subscriptionId -ExpectedAssignments @($apiExpected) -PrincipalLabel 'Gateway API identity' | Out-Null
             Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId ([string]$Runtime.workerPrincipalId) -SubscriptionId $subscriptionId -ExpectedAssignments @($workerExpected) -PrincipalLabel 'Workflow-v3 worker identity' | Out-Null
+            Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId $runtimeImagePullPrincipalId -SubscriptionId $subscriptionId -ExpectedAssignments $runtimeImagePullExpected -PrincipalLabel 'Runtime image-pull identity' | Out-Null
             Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId ([string]$AdminUi.adminUiPrincipalId) -SubscriptionId $subscriptionId -ExpectedAssignments $adminExpected -PrincipalLabel 'Admin UI identity' | Out-Null
             return $true
         }
@@ -364,12 +429,13 @@ function Assert-GatewayExactAzureLocalCredentialControls {
     $registryName = ([string]$Runtime.acrLoginServer).Split('.')[0]
     $registry = Invoke-AzJson -Arguments @(
         'acr', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $registryName,
-        '--query', '{adminUserEnabled:adminUserEnabled,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
+        '--query', '{adminUserEnabled:adminUserEnabled,armAudienceStatus:policies.azureADAuthenticationAsArmPolicy.status,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
     )
     if ($registry.adminUserEnabled -ne $false -or
+        [string]$registry.armAudienceStatus -cne 'enabled' -or
         [string]$registry.ownershipId -cne [string]$Runtime.deploymentOwnershipId -or
         [string]$registry.sourceFingerprint -cne [string]$Runtime.sourceFingerprint) {
-        throw 'ACR local credentials or deployment ownership/source controls are not exact.'
+        throw 'ACR local credentials, ARM-audience authentication, or deployment ownership/source controls are not exact.'
     }
 
     $storageName = ([string]$Runtime.storageAccountId).TrimEnd('/').Split('/')[-1]

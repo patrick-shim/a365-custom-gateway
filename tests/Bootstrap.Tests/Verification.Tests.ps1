@@ -323,7 +323,11 @@ Describe 'Exact Azure runtime identity RBAC boundary' {
             Assert-GatewayPrincipalExactAzureRoleAssignments `
                 -PrincipalId $script:principalId `
                 -SubscriptionId $script:subscriptionId `
-                -ExpectedAssignments @([ordered]@{ scope = $script:scope; roleDefinitionId = $script:roleId }) `
+                -ExpectedAssignments @([ordered]@{
+                    scope = $script:scope
+                    roleDefinitionId = $script:roleId
+                    assignmentId = [string]$script:assignments[0].id
+                }) `
                 -PrincipalLabel 'Test identity' |
                 Should -BeTrue
 
@@ -365,6 +369,30 @@ Describe 'Exact Azure runtime identity RBAC boundary' {
                 Should -Throw '*unreviewed condition*'
         }
 
+        It 'rejects a mismatched or malformed exact role-assignment receipt' {
+            { Assert-GatewayPrincipalExactAzureRoleAssignments `
+                -PrincipalId $script:principalId `
+                -SubscriptionId $script:subscriptionId `
+                -ExpectedAssignments @([ordered]@{
+                    scope = $script:scope
+                    roleDefinitionId = $script:roleId
+                    assignmentId = "$script:scope/providers/Microsoft.Authorization/roleAssignments/99999999-9999-4999-8999-999999999999"
+                }) `
+                -PrincipalLabel 'Test identity' } |
+                Should -Throw '*unreviewed Azure role assignments*'
+
+            { Assert-GatewayPrincipalExactAzureRoleAssignments `
+                -PrincipalId $script:principalId `
+                -SubscriptionId $script:subscriptionId `
+                -ExpectedAssignments @([ordered]@{
+                    scope = $script:scope
+                    roleDefinitionId = $script:roleId
+                    assignmentId = "$script:scope/providers/Microsoft.Authorization/roleAssignments/not-a-guid"
+                }) `
+                -PrincipalLabel 'Test identity' } |
+                Should -Throw '*receipt is malformed*'
+        }
+
         It 'requires a dedicated managed identity to have no transitive group or directory-role membership' {
             Mock Get-BoundedGraphCollection { return @() }
 
@@ -391,6 +419,142 @@ Describe 'Exact Azure runtime identity RBAC boundary' {
     }
 }
 
+Describe 'Dedicated runtime image-pull identity least-privilege boundary' {
+    InModuleScope Verification {
+        BeforeEach {
+            $script:pullSubscriptionId = '11111111-1111-4111-8111-111111111111'
+            $script:pullResourceGroupScope = "/subscriptions/$script:pullSubscriptionId/resourceGroups/rg-safe-dev"
+            $script:pullRegistryId = "$script:pullResourceGroupScope/providers/Microsoft.ContainerRegistry/registries/acrsafe"
+            $script:pullIdentityName = 'id-gateway-runtime-pull-dev'
+            $script:pullIdentityId = "$script:pullResourceGroupScope/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$script:pullIdentityName"
+            $script:pullPrincipalId = '22222222-2222-4222-8222-222222222222'
+            $script:pullRoleAssignmentId = "$script:pullRegistryId/providers/Microsoft.Authorization/roleAssignments/33333333-3333-4333-8333-333333333333"
+            $script:pullOwnershipId = '44444444-4444-4444-8444-444444444444'
+            $script:pullSourceFingerprint = "sha256:$('a' * 64)"
+            $script:pullIdentitySourceFingerprint = $script:pullSourceFingerprint
+            $script:pullConfig = [pscustomobject]@{
+                subscriptionId = $script:pullSubscriptionId
+                resourceGroupName = 'rg-safe-dev'
+                projectName = 'safe'
+                environment = 'dev'
+                promptShield = [pscustomobject]@{ enabled = $false }
+                purview = [pscustomobject]@{ policyProvisioningEnabled = $false }
+            }
+            $script:pullRuntime = [pscustomobject]@{
+                acrLoginServer = 'acrsafe.azurecr.io'
+                containerRegistryId = $script:pullRegistryId
+                sharedKeyVaultId = "$script:pullResourceGroupScope/providers/Microsoft.KeyVault/vaults/kv-safe-dev"
+                serviceBusQueueName = 'gateway-provisioning-v3'
+                serviceBusQueueId = "$script:pullResourceGroupScope/providers/Microsoft.ServiceBus/namespaces/sb-safe-dev/queues/gateway-provisioning-v3"
+                storageAccountId = "$script:pullResourceGroupScope/providers/Microsoft.Storage/storageAccounts/stsafe"
+                apiPrincipalId = '55555555-5555-4555-8555-555555555555'
+                workerPrincipalId = '66666666-6666-4666-8666-666666666666'
+                runtimeImagePullIdentityId = $script:pullIdentityId
+                runtimeImagePullIdentityPrincipalId = $script:pullPrincipalId
+                runtimeImagePullAcrPullRoleAssignmentId = $script:pullRoleAssignmentId
+                deploymentOwnershipId = $script:pullOwnershipId
+                sourceFingerprint = $script:pullSourceFingerprint
+            }
+            $script:pullAdmin = [pscustomobject]@{
+                adminUiPrincipalId = '77777777-7777-4777-8777-777777777777'
+            }
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ($Arguments[0] -eq 'identity') {
+                    return [pscustomobject]@{
+                        id = $script:pullIdentityId
+                        name = $script:pullIdentityName
+                        principalId = $script:pullPrincipalId
+                        type = 'Microsoft.ManagedIdentity/userAssignedIdentities'
+                        ownershipId = $script:pullOwnershipId
+                        sourceFingerprint = $script:pullIdentitySourceFingerprint
+                    }
+                }
+                if ($Arguments[0] -eq 'resource') {
+                    $idIndex = [Array]::IndexOf($Arguments, '--ids')
+                    $id = [string]$Arguments[$idIndex + 1]
+                    $type = if ($id -like '*/Microsoft.Storage/storageAccounts/*') {
+                        'Microsoft.Storage/storageAccounts'
+                    }
+                    elseif ($id -like '*/Microsoft.ContainerRegistry/registries/*') {
+                        'Microsoft.ContainerRegistry/registries'
+                    }
+                    elseif ($id -like '*/Microsoft.KeyVault/vaults/*') {
+                        'Microsoft.KeyVault/vaults'
+                    }
+                    else { 'Microsoft.ServiceBus/namespaces/queues' }
+                    return [pscustomobject]@{
+                        id = $id
+                        type = $type
+                        ownershipId = $script:pullOwnershipId
+                        sourceFingerprint = $script:pullSourceFingerprint
+                    }
+                }
+                throw 'Unexpected mocked Azure identity readback.'
+            }
+            Mock Assert-GatewayServicePrincipalHasNoDirectoryMemberships { return $true }
+            Mock Assert-GatewayPrincipalExactAzureRoleAssignments { return $true }
+            Mock Start-Sleep { }
+        }
+
+        It 'removes AcrPull from runtime system identities and binds one exact receipt to the pull UAMI' {
+            Assert-GatewayExactAzureRoleAssignments `
+                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin |
+                Should -BeTrue
+
+            Should -Invoke Assert-GatewayServicePrincipalHasNoDirectoryMemberships -Times 1 -Exactly -ParameterFilter {
+                $PrincipalId -eq $script:pullPrincipalId -and $PrincipalLabel -eq 'Runtime image-pull identity'
+            }
+            Should -Invoke Assert-GatewayPrincipalExactAzureRoleAssignments -Times 1 -Exactly -ParameterFilter {
+                $PrincipalId -eq $script:pullPrincipalId -and
+                    $PrincipalLabel -eq 'Runtime image-pull identity' -and
+                    @($ExpectedAssignments).Count -eq 1 -and
+                    [string]$ExpectedAssignments[0].scope -eq $script:pullRegistryId -and
+                    [string]$ExpectedAssignments[0].roleDefinitionId -eq '7f951dda-4ed3-4680-a7ca-43fe172d538d' -and
+                    [string]$ExpectedAssignments[0].assignmentId -eq $script:pullRoleAssignmentId
+            }
+            foreach ($systemPrincipalId in @($script:pullRuntime.apiPrincipalId, $script:pullRuntime.workerPrincipalId)) {
+                Should -Invoke Assert-GatewayPrincipalExactAzureRoleAssignments -Times 1 -Exactly -ParameterFilter {
+                    $PrincipalId -eq $systemPrincipalId -and
+                        @($ExpectedAssignments | Where-Object { [string]$_.roleDefinitionId -eq '7f951dda-4ed3-4680-a7ca-43fe172d538d' }).Count -eq 0
+                }
+            }
+        }
+
+        It 'rejects pull-UAMI directory membership and any extra Azure role' {
+            Mock Assert-GatewayServicePrincipalHasNoDirectoryMemberships {
+                if ($PrincipalLabel -eq 'Runtime image-pull identity') { throw 'unreviewed membership' }
+                return $true
+            }
+            { Assert-GatewayExactAzureRoleAssignments `
+                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin } |
+                Should -Throw '*unreviewed membership*'
+
+            Mock Assert-GatewayServicePrincipalHasNoDirectoryMemberships { return $true }
+            Mock Assert-GatewayPrincipalExactAzureRoleAssignments {
+                if ($PrincipalLabel -eq 'Runtime image-pull identity') { throw 'unreviewed extra role' }
+                return $true
+            }
+            { Assert-GatewayExactAzureRoleAssignments `
+                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin } |
+                Should -Throw '*least-privilege role/scope matrix*'
+        }
+
+        It 'rejects malformed role receipts and wrong identity ownership or source tags' {
+            $script:pullRuntime.runtimeImagePullAcrPullRoleAssignmentId = "$script:pullRegistryId/providers/Microsoft.Authorization/roleAssignments/not-a-guid"
+            { Assert-GatewayExactAzureRoleAssignments `
+                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin } |
+                Should -Throw '*resource IDs*'
+
+            $script:pullRuntime.runtimeImagePullAcrPullRoleAssignmentId = $script:pullRoleAssignmentId
+            $script:pullIdentitySourceFingerprint = "sha256:$('b' * 64)"
+            { Assert-GatewayExactAzureRoleAssignments `
+                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin } |
+                Should -Throw '*ownership, and source boundary*'
+        }
+    }
+}
+
 Describe 'Exact Azure local-credential and transport controls' {
     InModuleScope Verification {
         BeforeEach {
@@ -410,6 +574,7 @@ Describe 'Exact Azure local-credential and transport controls' {
                 sourceFingerprint = "sha256:$('a' * 64)"
             }
             $script:acrAdminEnabled = $false
+            $script:acrArmAudienceStatus = 'enabled'
             $script:storageSharedKeys = $false
             Mock Invoke-AzTsv { return 'true' }
             Mock Invoke-AzJson {
@@ -418,6 +583,7 @@ Describe 'Exact Azure local-credential and transport controls' {
                     'acr' {
                         return [pscustomobject]@{
                             adminUserEnabled = $script:acrAdminEnabled
+                            armAudienceStatus = $script:acrArmAudienceStatus
                             ownershipId = $script:controlRuntime.deploymentOwnershipId
                             sourceFingerprint = $script:controlRuntime.sourceFingerprint
                         }
@@ -477,6 +643,12 @@ Describe 'Exact Azure local-credential and transport controls' {
             $script:acrAdminEnabled = $true
             { Assert-GatewayExactAzureLocalCredentialControls -Config $script:controlConfig -Runtime $script:controlRuntime } |
                 Should -Throw '*ACR local credentials*'
+        }
+
+        It 'rejects ACR without managed-identity ARM-audience authentication' {
+            $script:acrArmAudienceStatus = 'disabled'
+            { Assert-GatewayExactAzureLocalCredentialControls -Config $script:controlConfig -Runtime $script:controlRuntime } |
+                Should -Throw '*ARM-audience authentication*'
         }
 
         It 'rejects drift that enables Storage shared keys' {

@@ -18,6 +18,9 @@ param containerImage string
 @description('Login server URL of the Azure Container Registry.')
 param acrLoginServer string
 
+@description('Resource ID of the dedicated user-assigned identity authorized to pull runtime images from the exact ACR. Empty is retained only for the guarded historical system-identity deployment path.')
+param imagePullIdentityResourceId string = ''
+
 @description('CPU cores allocated to the container (e.g., 0.25, 0.5, 1.0).')
 param cpu string = '0.5'
 
@@ -193,9 +196,18 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: appName
   location: location
   tags: tags
-  identity: {
-    type: 'SystemAssigned'
-  }
+  // The empty branch preserves only the guarded historical system-identity
+  // deployment path. Clean bootstrap always supplies the pre-authorized UAMI.
+  identity: empty(imagePullIdentityResourceId)
+    ? {
+        type: 'SystemAssigned'
+      }
+    : {
+        type: 'SystemAssigned, UserAssigned'
+        userAssignedIdentities: {
+          '${imagePullIdentityResourceId}': {}
+        }
+      }
   properties: {
     managedEnvironmentId: environmentId
     configuration: {
@@ -207,7 +219,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       registries: [
         {
           server: acrLoginServer
-          identity: 'system'
+          identity: empty(imagePullIdentityResourceId) ? 'system' : imagePullIdentityResourceId
         }
       ]
       ingress: {

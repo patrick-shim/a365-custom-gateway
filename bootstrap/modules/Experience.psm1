@@ -950,13 +950,15 @@ function Invoke-GatewayFoundationWhatIf {
     param(
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)][string]$RepositoryRoot,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
     )
 
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
     if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
         throw 'Plan ownership ID must be the canonical lowercase GUID from the current bootstrap state.'
     }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Plan source fingerprint'
 
     $account = $null
     try {
@@ -989,6 +991,7 @@ function Invoke-GatewayFoundationWhatIf {
         "environment=$($Config.environment)",
         "projectName=$($Config.projectName)",
         "deploymentOwnershipId=$canonicalOwnershipId",
+        "bootstrapSourceFingerprint=$SourceFingerprint",
         '--result-format', 'ResourceIdOnly',
         '--no-pretty-print'
     )
@@ -1371,20 +1374,132 @@ function Test-GatewayResourceProviderEvidence {
     return $true
 }
 
+function Assert-GatewayRuntimeImagePullIdentityEvidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Evidence,
+        [Parameter(Mandatory)][string]$ExpectedRegistryId,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    try {
+        $subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
+        $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+        Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Runtime image-pull identity source fingerprint'
+        if ([string]$Config.subscriptionId -cne $subscriptionId -or
+            $DeploymentOwnershipId -cne $canonicalOwnershipId) {
+            throw 'mismatch'
+        }
+
+        $resourceGroupScope = "/subscriptions/$subscriptionId/resourceGroups/$($Config.resourceGroupName)"
+        $registryPrefix = "$resourceGroupScope/providers/Microsoft.ContainerRegistry/registries/"
+        $registryId = $ExpectedRegistryId.TrimEnd('/')
+        if ($ExpectedRegistryId -cne $registryId -or
+            -not $registryId.StartsWith($registryPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+            $registryId.Substring($registryPrefix.Length) -cnotmatch '^[A-Za-z0-9]{5,50}$') {
+            throw 'mismatch'
+        }
+        $registryName = $registryId.Substring($registryPrefix.Length)
+
+        $identityName = "id-gateway-runtime-pull-$($Config.environment)"
+        $expectedIdentityId = "$resourceGroupScope/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$identityName"
+        $identityId = [string](Get-GatewayOptionalObjectProperty -Object $Evidence -Name 'runtimeImagePullIdentityId')
+        $principalId = [string](Get-GatewayOptionalObjectProperty -Object $Evidence -Name 'runtimeImagePullIdentityPrincipalId')
+        $roleAssignmentId = [string](Get-GatewayOptionalObjectProperty -Object $Evidence -Name 'runtimeImagePullAcrPullRoleAssignmentId')
+        $parsedPrincipalId = [guid]::Empty
+        if (-not $identityId.Equals($expectedIdentityId, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [guid]::TryParse($principalId, [ref]$parsedPrincipalId) -or
+            $parsedPrincipalId -eq [guid]::Empty -or
+            $principalId -cne $parsedPrincipalId.ToString('D')) {
+            throw 'mismatch'
+        }
+
+        $roleAssignmentPrefix = "$registryId/providers/Microsoft.Authorization/roleAssignments/"
+        $roleAssignmentGuidText = if ($roleAssignmentId.StartsWith($roleAssignmentPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            $roleAssignmentId.Substring($roleAssignmentPrefix.Length)
+        }
+        else { '' }
+        $parsedRoleAssignmentId = [guid]::Empty
+        if (-not [guid]::TryParse($roleAssignmentGuidText, [ref]$parsedRoleAssignmentId) -or
+            $parsedRoleAssignmentId -eq [guid]::Empty -or
+            $roleAssignmentGuidText -cne $parsedRoleAssignmentId.ToString('D')) {
+            throw 'mismatch'
+        }
+
+        $identity = Invoke-AzJson -Arguments @(
+            'identity', 'show', '--subscription', $subscriptionId,
+            '--resource-group', [string]$Config.resourceGroupName, '--name', $identityName,
+            '--query', '{id:id,name:name,principalId:principalId,type:type,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
+        )
+        if (-not ([string]$identity.id).Equals($expectedIdentityId, [StringComparison]::OrdinalIgnoreCase) -or
+            [string]$identity.name -cne $identityName -or
+            [string]$identity.principalId -cne $principalId -or
+            [string]$identity.type -cne 'Microsoft.ManagedIdentity/userAssignedIdentities' -or
+            [string]$identity.ownershipId -cne $canonicalOwnershipId -or
+            [string]$identity.sourceFingerprint -cne $SourceFingerprint) {
+            throw 'mismatch'
+        }
+
+        $assignments = @(Invoke-AzJsonArray `
+            -OperationLabel 'Runtime image-pull identity AcrPull readback' `
+            -Arguments @(
+                'role', 'assignment', 'list', '--subscription', $subscriptionId,
+                '--assignee-object-id', $principalId, '--scope', $registryId, '--include-inherited',
+                '--fill-principal-name', 'false', '--fill-role-definition-name', 'false',
+                '--query', '[].{id:id,principalId:principalId,principalType:principalType,scope:scope,roleDefinitionId:roleDefinitionId,condition:condition,conditionVersion:conditionVersion,delegatedManagedIdentityResourceId:delegatedManagedIdentityResourceId}'
+            ))
+        $acrPullRoleId = "/subscriptions/$subscriptionId/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
+        if ($assignments.Count -ne 1 -or
+            -not ([string]$assignments[0].id).Equals($roleAssignmentId, [StringComparison]::OrdinalIgnoreCase) -or
+            -not ([string]$assignments[0].principalId).Equals($principalId, [StringComparison]::OrdinalIgnoreCase) -or
+            [string]$assignments[0].principalType -cne 'ServicePrincipal' -or
+            -not ([string]$assignments[0].scope).Equals($registryId, [StringComparison]::OrdinalIgnoreCase) -or
+            -not ([string]$assignments[0].roleDefinitionId).Equals($acrPullRoleId, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $assignments[0] -Name 'condition')) -or
+            -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $assignments[0] -Name 'conditionVersion')) -or
+            -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $assignments[0] -Name 'delegatedManagedIdentityResourceId'))) {
+            throw 'mismatch'
+        }
+
+        $registry = Invoke-AzJson -Arguments @(
+            'acr', 'show', '--subscription', $subscriptionId,
+            '--resource-group', [string]$Config.resourceGroupName, '--name', $registryName,
+            '--query', '{id:id,name:name,adminUserEnabled:adminUserEnabled,armAudienceStatus:policies.azureADAuthenticationAsArmPolicy.status,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
+        )
+        if (-not ([string]$registry.id).Equals($registryId, [StringComparison]::OrdinalIgnoreCase) -or
+            [string]$registry.name -cne $registryName -or
+            $registry.adminUserEnabled -ne $false -or
+            [string]$registry.armAudienceStatus -cne 'enabled' -or
+            [string]$registry.ownershipId -cne $canonicalOwnershipId -or
+            [string]$registry.sourceFingerprint -cne $SourceFingerprint) {
+            throw 'mismatch'
+        }
+        return $true
+    }
+    catch {
+        throw 'Dedicated runtime image-pull identity, AcrPull receipt, ACR policy, or ownership/source evidence is unavailable or mismatched.'
+    }
+}
+
 function Test-GatewaySubscriptionDeploymentEvidence {
     param(
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$Evidence,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
     )
     if (-not $Evidence -or [string]::IsNullOrWhiteSpace([string]$Evidence.deploymentName)) { throw 'Foundation evidence is incomplete; refusing automatic replay.' }
     try {
         $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+        Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Foundation source fingerprint'
         $expectedDeploymentName = "a365gw-$($Config.projectName)-bootstrap-foundation-$($Config.environment)"
         if ([string]$Evidence.deploymentName -ne $expectedDeploymentName -or
             [string]$Evidence.resourceGroupName -ne [string]$Config.resourceGroupName -or
             $DeploymentOwnershipId -cne $canonicalOwnershipId -or
-            [string]$Evidence.deploymentOwnershipId -cne $canonicalOwnershipId) { throw 'mismatch' }
+            [string]$Evidence.deploymentOwnershipId -cne $canonicalOwnershipId -or
+            [string]$Evidence.sourceFingerprint -cne $SourceFingerprint) { throw 'mismatch' }
 
         $deployment = Invoke-AzJson -Arguments @(
             'deployment', 'sub', 'show', '--subscription', [string]$Config.subscriptionId,
@@ -1393,11 +1508,16 @@ function Test-GatewaySubscriptionDeploymentEvidence {
         if ([string]$deployment.state -ne 'Succeeded' -or
             [string]$deployment.parameters.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
             [string]$deployment.outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
+            [string]$deployment.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
+            [string]$deployment.outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
             [string]$deployment.outputs.resourceGroupName.value -ne [string]$Evidence.resourceGroupName -or
             [string]$deployment.outputs.containerAppsEnvironmentId.value -ne [string]$Evidence.containerAppsEnvironmentId -or
             [string]$deployment.outputs.virtualNetworkId.value -ne [string]$Evidence.virtualNetworkId -or
             [string]$deployment.outputs.privateEndpointSubnetId.value -ne [string]$Evidence.privateEndpointSubnetId -or
-            [string]$deployment.outputs.acrLoginServer.value -ne [string]$Evidence.acrLoginServer) { throw 'mismatch' }
+            [string]$deployment.outputs.acrLoginServer.value -ne [string]$Evidence.acrLoginServer -or
+            [string]$deployment.outputs.runtimeImagePullIdentityId.value -ne [string]$Evidence.runtimeImagePullIdentityId -or
+            [string]$deployment.outputs.runtimeImagePullIdentityPrincipalId.value -ne [string]$Evidence.runtimeImagePullIdentityPrincipalId -or
+            [string]$deployment.outputs.runtimeImagePullAcrPullRoleAssignmentId.value -ne [string]$Evidence.runtimeImagePullAcrPullRoleAssignmentId) { throw 'mismatch' }
 
         $group = Invoke-AzJson -Arguments @(
             'group', 'show', '--subscription', [string]$Config.subscriptionId,
@@ -1410,7 +1530,8 @@ function Test-GatewaySubscriptionDeploymentEvidence {
             [string]$group.tags.environment -ne [string]$Config.environment -or
             [string]$group.tags.managedBy -ne 'bootstrap' -or
             [string]$group.tags.deploymentId -ne "$($Config.projectName)-$($Config.environment)" -or
-            [string]$group.tags.bootstrapOwnershipId -cne $canonicalOwnershipId) { throw 'mismatch' }
+            [string]$group.tags.bootstrapOwnershipId -cne $canonicalOwnershipId -or
+            [string]$group.tags.bootstrapSourceFingerprint -cne $SourceFingerprint) { throw 'mismatch' }
 
         foreach ($resource in @(
             [ordered]@{ id = [string]$Evidence.containerAppsEnvironmentId; type = 'Microsoft.App/managedEnvironments'; name = [string]$Evidence.containerAppsEnvironmentName; tagged = $true },
@@ -1418,26 +1539,40 @@ function Test-GatewaySubscriptionDeploymentEvidence {
             [ordered]@{ id = [string]$Evidence.privateEndpointSubnetId; type = 'Microsoft.Network/virtualNetworks/subnets'; name = [string]$Evidence.privateEndpointSubnetName; tagged = $false }
         )) {
             if ([string]::IsNullOrWhiteSpace($resource.id)) { throw 'mismatch' }
-            $actual = Invoke-AzJson -Arguments @('resource', 'show', '--ids', $resource.id, '--query', '{id:id,type:type,name:name,ownershipId:tags.bootstrapOwnershipId}')
+            $actual = Invoke-AzJson -Arguments @('resource', 'show', '--ids', $resource.id, '--query', '{id:id,type:type,name:name,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}')
             if ([string]$actual.id -ne $resource.id -or [string]$actual.type -ne $resource.type -or
                 -not ([string]$actual.name).EndsWith([string]$resource.name, [StringComparison]::OrdinalIgnoreCase) -or
-                ($resource.tagged -and [string]$actual.ownershipId -cne $canonicalOwnershipId)) { throw 'mismatch' }
+                ($resource.tagged -and (
+                    [string]$actual.ownershipId -cne $canonicalOwnershipId -or
+                    [string]$actual.sourceFingerprint -cne $SourceFingerprint))) { throw 'mismatch' }
         }
 
         $workspace = Invoke-AzJson -Arguments @(
             'monitor', 'log-analytics', 'workspace', 'show', '--resource-group', [string]$Config.resourceGroupName,
-            '--workspace-name', [string]$Evidence.logAnalyticsWorkspaceName, '--query', '{name:name,location:location,ownershipId:tags.bootstrapOwnershipId}'
+            '--workspace-name', [string]$Evidence.logAnalyticsWorkspaceName, '--query', '{name:name,location:location,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
         )
         $registry = Invoke-AzJson -Arguments @(
             'acr', 'show', '--resource-group', [string]$Config.resourceGroupName,
-            '--name', [string]$Evidence.acrName, '--query', '{name:name,loginServer:loginServer,ownershipId:tags.bootstrapOwnershipId}'
+            '--name', [string]$Evidence.acrName, '--query', '{id:id,name:name,loginServer:loginServer,adminUserEnabled:adminUserEnabled,armAudienceStatus:policies.azureADAuthenticationAsArmPolicy.status,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
         )
+        $expectedRegistryId = "/subscriptions/$(([guid][string]$Config.subscriptionId).ToString('D'))/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.ContainerRegistry/registries/$($Evidence.acrName)"
         if ([string]$workspace.name -ne [string]$Evidence.logAnalyticsWorkspaceName -or
             [string]$workspace.location -ne [string]$Config.location -or
             [string]$workspace.ownershipId -cne $canonicalOwnershipId -or
+            [string]$workspace.sourceFingerprint -cne $SourceFingerprint -or
+            -not ([string]$registry.id).Equals($expectedRegistryId, [StringComparison]::OrdinalIgnoreCase) -or
             [string]$registry.name -ne [string]$Evidence.acrName -or
             [string]$registry.loginServer -ne [string]$Evidence.acrLoginServer -or
-            [string]$registry.ownershipId -cne $canonicalOwnershipId) { throw 'mismatch' }
+            $registry.adminUserEnabled -ne $false -or
+            [string]$registry.armAudienceStatus -cne 'enabled' -or
+            [string]$registry.ownershipId -cne $canonicalOwnershipId -or
+            [string]$registry.sourceFingerprint -cne $SourceFingerprint) { throw 'mismatch' }
+        Assert-GatewayRuntimeImagePullIdentityEvidence `
+            -Config $Config `
+            -Evidence $Evidence `
+            -ExpectedRegistryId $expectedRegistryId `
+            -DeploymentOwnershipId $canonicalOwnershipId `
+            -SourceFingerprint $SourceFingerprint | Out-Null
         return $true
     }
     catch { throw 'Foundation revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.' }
@@ -1515,6 +1650,7 @@ function Assert-GatewayExactSystemContainerAppEnvelope {
         [Parameter(Mandatory)][string]$ExpectedName,
         [Parameter(Mandatory)][string]$ExpectedLocation,
         [Parameter(Mandatory)][string]$ExpectedPrincipalId,
+        [Parameter(Mandatory)][string]$ExpectedImagePullIdentityResourceId,
         [Parameter(Mandatory)][string]$ExpectedManagedEnvironmentId,
         [Parameter(Mandatory)][string]$ExpectedRegistryServer,
         [Parameter(Mandatory)][string]$ExpectedImage,
@@ -1524,10 +1660,14 @@ function Assert-GatewayExactSystemContainerAppEnvelope {
     $containers = @($App.properties.template.containers)
     $secrets = @(Get-GatewayOptionalObjectProperty -Object $App.properties.configuration -Name 'secrets')
     $userAssigned = Get-GatewayOptionalObjectProperty -Object $App.identity -Name 'userAssignedIdentities'
-    $userAssignedCount = if ($null -eq $userAssigned) { 0 } else { @($userAssigned.PSObject.Properties).Count }
+    $userAssignedIdentityIds = @(if ($null -ne $userAssigned) {
+        $userAssigned.PSObject.Properties | ForEach-Object { [string]$_.Name }
+    })
     if ([string]$App.name -cne $ExpectedName -or [string]$App.location -cne $ExpectedLocation -or
         [string]$App.properties.provisioningState -cne 'Succeeded' -or
-        [string]$App.identity.type -cne 'SystemAssigned' -or $userAssignedCount -ne 0 -or
+        [string]$App.identity.type -cne 'SystemAssigned, UserAssigned' -or
+        $userAssignedIdentityIds.Count -ne 1 -or
+        -not ([string]$userAssignedIdentityIds[0]).Equals($ExpectedImagePullIdentityResourceId, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$App.identity.principalId -cne $ExpectedPrincipalId -or
         -not ([string]$App.properties.managedEnvironmentId).Equals($ExpectedManagedEnvironmentId, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$App.properties.configuration.activeRevisionsMode -cne 'Single' -or
@@ -1535,7 +1675,7 @@ function Assert-GatewayExactSystemContainerAppEnvelope {
         [string]$containers[0].name -cne $ExpectedName -or [string]$containers[0].image -cne $ExpectedImage) {
         throw 'Container App identity, environment, revision, secret, or immutable-image envelope is not exact.'
     }
-    Assert-GatewayExactContainerRegistry -Registries $App.properties.configuration.registries -ExpectedServer $ExpectedRegistryServer -ExpectedIdentity 'system' | Out-Null
+    Assert-GatewayExactContainerRegistry -Registries $App.properties.configuration.registries -ExpectedServer $ExpectedRegistryServer -ExpectedIdentity $ExpectedImagePullIdentityResourceId | Out-Null
     $ingress = Get-GatewayOptionalObjectProperty -Object $App.properties.configuration -Name 'ingress'
     if ($ExternalIngress) {
         if ($null -eq $ingress -or $ingress.external -ne $true -or $ingress.allowInsecure -ne $false -or
@@ -1568,10 +1708,15 @@ function Test-GatewayGroupDeploymentEvidence {
         $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
         Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Deployment source fingerprint'
         if ($DeploymentOwnershipId -cne $canonicalOwnershipId -or
+            [string]$Foundation.deploymentOwnershipId -cne $canonicalOwnershipId -or
+            [string]$Foundation.sourceFingerprint -cne $SourceFingerprint -or
             [string]$Evidence.deploymentOwnershipId -cne $canonicalOwnershipId -or
             [string]$Evidence.sourceFingerprint -cne $SourceFingerprint -or
             [string]$Evidence.apiImage -cne $ApiImage -or
-            [string]$Evidence.workerImage -cne $WorkerImage) { throw 'mismatch' }
+            [string]$Evidence.workerImage -cne $WorkerImage -or
+            [string]$Evidence.runtimeImagePullIdentityId -cne [string]$Foundation.runtimeImagePullIdentityId -or
+            [string]$Evidence.runtimeImagePullIdentityPrincipalId -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId -or
+            [string]$Evidence.runtimeImagePullAcrPullRoleAssignmentId -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId) { throw 'mismatch' }
         $inertDeploymentName = "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)"
         $runtimeDeploymentName = "a365gw-$($Config.projectName)-bootstrap-runtime-$($Config.environment)"
         if ([string]$Evidence.deploymentName -notin @($inertDeploymentName, $runtimeDeploymentName)) { throw 'mismatch' }
@@ -1603,12 +1748,21 @@ function Test-GatewayGroupDeploymentEvidence {
             [string]$deployment.parameters.entraIdClientId.value -cne [string]$Identity.gatewayApiClientId -or
             [string]$deployment.parameters.entraIdAudience.value -cne [string]$Identity.gatewayApiAudience -or
             [string]$deployment.parameters.workerContainerAppName.value -cne "ca-gateway-worker-$($Config.environment)-v3" -or
+            [string]$deployment.parameters.runtimeImagePullIdentityId.value -cne [string]$Foundation.runtimeImagePullIdentityId -or
+            [string]$deployment.parameters.runtimeImagePullIdentityPrincipalId.value -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId -or
+            [string]$deployment.parameters.runtimeImagePullAcrPullRoleAssignmentId.value -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId -or
+            [string]$deployment.outputs.runtimeImagePullIdentityId.value -cne [string]$Foundation.runtimeImagePullIdentityId -or
+            [string]$deployment.outputs.runtimeImagePullIdentityPrincipalId.value -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId -or
+            [string]$deployment.outputs.runtimeImagePullAcrPullRoleAssignmentId.value -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId -or
             [bool]$deployment.parameters.databaseAttestationEnabled.value -ne [bool]$isRuntime -or
             [bool]$deployment.outputs.databaseAttestationEnabled.value -ne [bool]$isRuntime) { throw 'mismatch' }
         $outputEvidenceNames = [ordered]@{
             apiFqdn = 'apiFqdn'
             apiPrincipalId = 'apiPrincipalId'
             workerPrincipalId = 'workerPrincipalId'
+            runtimeImagePullIdentityId = 'runtimeImagePullIdentityId'
+            runtimeImagePullIdentityPrincipalId = 'runtimeImagePullIdentityPrincipalId'
+            runtimeImagePullAcrPullRoleAssignmentId = 'runtimeImagePullAcrPullRoleAssignmentId'
             acrLoginServer = 'acrLoginServer'
             containerRegistryId = 'containerRegistryId'
             keyVaultUri = 'keyVaultUri'
@@ -1623,6 +1777,16 @@ function Test-GatewayGroupDeploymentEvidence {
             -Outputs $deployment.outputs `
             -Evidence $Evidence `
             -OutputToEvidenceName $outputEvidenceNames | Out-Null
+        $expectedRegistryId = "/subscriptions/$(([guid][string]$Config.subscriptionId).ToString('D'))/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.ContainerRegistry/registries/$($Foundation.acrName)"
+        if (-not ([string]$Evidence.containerRegistryId).Equals($expectedRegistryId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'mismatch'
+        }
+        Assert-GatewayRuntimeImagePullIdentityEvidence `
+            -Config $Config `
+            -Evidence $Evidence `
+            -ExpectedRegistryId $expectedRegistryId `
+            -DeploymentOwnershipId $canonicalOwnershipId `
+            -SourceFingerprint $SourceFingerprint | Out-Null
         foreach ($property in @('provisioningExecutionEnabled', 'workerProcessingEnabled')) {
             if ([bool]$deployment.outputs.$property.value -ne [bool]$Evidence.$property) { throw 'mismatch' }
         }
@@ -1787,10 +1951,12 @@ function Test-GatewayGroupDeploymentEvidence {
 
             Assert-GatewayExactSystemContainerAppEnvelope -App $api -ExpectedName "ca-gateway-api-$($Config.environment)" `
                 -ExpectedLocation ([string]$Config.location) -ExpectedPrincipalId ([string]$Evidence.apiPrincipalId) `
+                -ExpectedImagePullIdentityResourceId ([string]$Evidence.runtimeImagePullIdentityId) `
                 -ExpectedManagedEnvironmentId ([string]$Foundation.containerAppsEnvironmentId) -ExpectedRegistryServer ([string]$Evidence.acrLoginServer) `
                 -ExpectedImage $ApiImage -ExternalIngress $true -ExpectedFqdn ([string]$Evidence.apiFqdn) | Out-Null
             Assert-GatewayExactSystemContainerAppEnvelope -App $worker -ExpectedName "ca-gateway-worker-$($Config.environment)-v3" `
                 -ExpectedLocation ([string]$Config.location) -ExpectedPrincipalId ([string]$Evidence.workerPrincipalId) `
+                -ExpectedImagePullIdentityResourceId ([string]$Evidence.runtimeImagePullIdentityId) `
                 -ExpectedManagedEnvironmentId ([string]$Foundation.containerAppsEnvironmentId) -ExpectedRegistryServer ([string]$Evidence.acrLoginServer) `
                 -ExpectedImage $WorkerImage -ExternalIngress $false | Out-Null
             Assert-GatewayExactContainerEnvironment -Entries $api.properties.template.containers[0].env -ExpectedValues $apiEnvironment | Out-Null

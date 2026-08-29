@@ -22,16 +22,32 @@
     Azure subscription ID. Default: 95bedc30-f6ac-481b-a3a6-588d2883c216.
 
 .PARAMETER ApiImage
-    Full ACR image path for the Gateway API container (e.g., myacr.azurecr.io/gateway-api:abc1234).
-    When omitted, the Bicep parameter file default is used.
+    Immutable ACR digest reference for the Gateway API container. Required unless
+    SkipInfra is set and must use ExpectedContainerRegistryLoginServer.
 
 .PARAMETER WorkerImage
-    Full ACR image path for the Provisioning Worker container (e.g., myacr.azurecr.io/gateway-worker:abc1234).
-    When omitted, the Bicep parameter file default is used.
+    Immutable ACR digest reference for the Provisioning Worker container. Required
+    unless SkipInfra is set and must use ExpectedContainerRegistryLoginServer.
 
 .PARAMETER ContainerAppsEnvironmentName
     Approved existing VNet-integrated Container Apps environment shared by the API,
     worker, and Admin UI.
+
+.PARAMETER RuntimeImagePullIdentityId
+    Exact resource ID of the pre-authorized user-assigned identity used by the API
+    and worker to pull from ACR. Supply this only with both matching receipt values.
+
+.PARAMETER RuntimeImagePullIdentityPrincipalId
+    Exact principal ID of RuntimeImagePullIdentityId.
+
+.PARAMETER RuntimeImagePullAcrPullRoleAssignmentId
+    Exact ACR-scoped AcrPull assignment resource ID for the pull identity.
+
+.PARAMETER ExpectedContainerRegistryName
+    Exact ACR name deployed by main.bicep and named in the runtime pull receipt.
+
+.PARAMETER ExpectedContainerRegistryLoginServer
+    Exact ACR login server hosting both immutable runtime image digests.
 
 .PARAMETER HistoricalWorkerContainerAppName
     Existing worker retained during a blue/green migration. Provisioning-failure
@@ -76,10 +92,10 @@
     Skip the SQL managed-identity user creation step.
 
 .EXAMPLE
-    ./deploy.ps1 -Environment dev
+    ./deploy.ps1 -Environment dev -ApiImage myacr.azurecr.io/gateway-api@sha256:<64-hex> -WorkerImage myacr.azurecr.io/gateway-worker@sha256:<64-hex> -ExpectedContainerRegistryName myacr -ExpectedContainerRegistryLoginServer myacr.azurecr.io
 
 .EXAMPLE
-    ./deploy.ps1 -Environment staging -ApiImage myacr.azurecr.io/gateway-api:v1.2.3 -WorkerImage myacr.azurecr.io/gateway-worker:v1.2.3
+    ./deploy.ps1 -Environment staging -ApiImage myacr.azurecr.io/gateway-api@sha256:<64-hex> -WorkerImage myacr.azurecr.io/gateway-worker@sha256:<64-hex> -ExpectedContainerRegistryName myacr -ExpectedContainerRegistryLoginServer myacr.azurecr.io
 
 .EXAMPLE
     ./deploy.ps1 -Environment prod -SkipInfra -SkipSqlSetup
@@ -105,6 +121,21 @@ param(
 
     [Parameter(Mandatory = $false)]
     [string]$ContainerAppsEnvironmentName,
+
+    [Parameter(Mandatory = $false)]
+    [string]$RuntimeImagePullIdentityId = $env:RUNTIME_IMAGE_PULL_IDENTITY_ID,
+
+    [Parameter(Mandatory = $false)]
+    [string]$RuntimeImagePullIdentityPrincipalId = $env:RUNTIME_IMAGE_PULL_IDENTITY_PRINCIPAL_ID,
+
+    [Parameter(Mandatory = $false)]
+    [string]$RuntimeImagePullAcrPullRoleAssignmentId = $env:RUNTIME_IMAGE_PULL_ACR_PULL_ROLE_ASSIGNMENT_ID,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ExpectedContainerRegistryName = $env:ACR_NAME,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ExpectedContainerRegistryLoginServer = $env:ACR_LOGIN_SERVER,
 
     [Parameter(Mandatory = $false)]
     [string]$WorkerContainerAppName,
@@ -176,7 +207,13 @@ $TemplateFile = Join-Path $BicepDir 'main.bicep'
 $ParameterFile = Join-Path $BicepDir 'parameters' "$Environment.bicepparam"
 $SetupSqlScript = Join-Path $ScriptDir 'setup-sql-user.ps1'
 $ProvisioningPreflightScript = Join-Path $ScriptDir 'test-provisioning-prerequisites.ps1'
+$RuntimeImagePullModule = Join-Path $ScriptDir 'RuntimeImagePull.psm1'
 $DeploymentName = "a365gw-$Environment-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+
+if (-not (Test-Path -LiteralPath $RuntimeImagePullModule -PathType Leaf)) {
+    throw "Runtime image-pull validation module not found: $RuntimeImagePullModule"
+}
+Import-Module $RuntimeImagePullModule -Force -ErrorAction Stop
 
 $RequiredProviders = @(
     'Microsoft.App',
@@ -366,6 +403,43 @@ function Invoke-PreflightChecks {
     }
     Write-Success "Resource group '$ResourceGroup' exists."
 
+    if ($SkipInfra) {
+        $script:RuntimeImagePullIdentityContract = [pscustomobject]@{
+            Mode = 'NotEvaluatedSkipInfra'
+            IdentityId = ''
+            PrincipalId = ''
+            RoleAssignmentId = ''
+            AllowLegacySystemAssignedImagePull = $false
+        }
+        $script:AllowLegacySystemAssignedImagePull = $false
+        Write-Info 'Runtime image-pull deployment contract skipped because SkipInfra prevents any infrastructure mutation.'
+    }
+    else {
+        if ([string]::IsNullOrWhiteSpace($ApiImage) -or
+            [string]::IsNullOrWhiteSpace($WorkerImage) -or
+            [string]::IsNullOrWhiteSpace($ExpectedContainerRegistryName) -or
+            [string]::IsNullOrWhiteSpace($ExpectedContainerRegistryLoginServer)) {
+            throw 'Infrastructure deployment requires both immutable runtime image digests plus the exact expected ACR name and login server.'
+        }
+        $script:RuntimeImagePullIdentityContract = Assert-GatewayRuntimeImagePullContract `
+            -SubscriptionId $SubscriptionId `
+            -ResourceGroup $ResourceGroup `
+            -ApiContainerAppName "ca-gateway-api-$Environment" `
+            -WorkerContainerAppName $WorkerContainerAppName `
+            -RuntimeImagePullIdentityId $RuntimeImagePullIdentityId `
+            -RuntimeImagePullIdentityPrincipalId $RuntimeImagePullIdentityPrincipalId `
+            -RuntimeImagePullAcrPullRoleAssignmentId $RuntimeImagePullAcrPullRoleAssignmentId `
+            -ExpectedAcrName $ExpectedContainerRegistryName `
+            -ExpectedAcrLoginServer $ExpectedContainerRegistryLoginServer `
+            -ApiContainerImage $ApiImage `
+            -WorkerContainerImage $WorkerImage `
+            -AllowExistingLegacySystemAssignedImagePull:(-not $ApiContainerAppIsNew.IsPresent) `
+            -AllowFreshDedicatedImagePull:$ApiContainerAppIsNew.IsPresent
+        $script:AllowLegacySystemAssignedImagePull =
+            [bool]$RuntimeImagePullIdentityContract.AllowLegacySystemAssignedImagePull
+        Write-Success "Runtime image-pull contract validated ($($RuntimeImagePullIdentityContract.Mode))."
+    }
+
     # Verify Bicep files exist (unless skipping infra)
     if (-not $SkipInfra) {
         Write-Info 'Verifying Bicep template and parameter files...'
@@ -481,6 +555,10 @@ function Invoke-InfraDeployment {
     $overrides += "workerContainerAppName=$WorkerContainerAppName"
     $overrides += "historicalWorkerContainerAppName=$HistoricalWorkerContainerAppName"
     $overrides += "serviceBusQueueName=$ServiceBusQueueName"
+    $overrides += "runtimeImagePullIdentityId=$($RuntimeImagePullIdentityContract.IdentityId)"
+    $overrides += "runtimeImagePullIdentityPrincipalId=$($RuntimeImagePullIdentityContract.PrincipalId)"
+    $overrides += "runtimeImagePullAcrPullRoleAssignmentId=$($RuntimeImagePullIdentityContract.RoleAssignmentId)"
+    $overrides += "allowLegacySystemAssignedImagePull=$($AllowLegacySystemAssignedImagePull.ToString().ToLowerInvariant())"
     $overrides += "preserveExistingApiSecrets=$((-not $ApiContainerAppIsNew.IsPresent).ToString().ToLowerInvariant())"
     $overrides += "workerProcessingEnabled=$($WorkerProcessingEnabled.ToString().ToLowerInvariant())"
     $overrides += "enableLegacyWorkerCredentialKeyVaultSecretsOfficer=$($EnableLegacyWorkerCredentialKeyVaultSecretsOfficer.IsPresent.ToString().ToLowerInvariant())"
@@ -679,6 +757,7 @@ function Write-DeploymentSummary {
     Write-Host "  Historical worker: $HistoricalWorkerContainerAppName" -ForegroundColor White
     Write-Host "  Target worker:     $WorkerContainerAppName" -ForegroundColor White
     Write-Host "  Preserve API secrets: $(-not $ApiContainerAppIsNew.IsPresent)" -ForegroundColor White
+    Write-Host "  Runtime image pull: $($RuntimeImagePullIdentityContract.Mode)" -ForegroundColor White
     Write-Host "  Shared processing: $WorkerProcessingEnabled" -ForegroundColor White
     Write-Host "  Legacy worker credential-vault role: $($EnableLegacyWorkerCredentialKeyVaultSecretsOfficer.IsPresent)" -ForegroundColor White
     Write-Host "  Worker identity pinned: $(-not [string]::IsNullOrWhiteSpace($ResolvedProvisioningManagedIdentityPrincipalId))" -ForegroundColor White

@@ -95,6 +95,154 @@ public class InfrastructureAsCodeSecurityTests
     }
 
     [Fact]
+    public void CleanBootstrap_Should_PreAuthorizeOneDedicatedRuntimeImagePullIdentity()
+    {
+        var subscription = ReadRepositoryFile(
+            "bootstrap", "infra", "subscription.bicep");
+        var foundation = ReadRepositoryFile(
+            "bootstrap", "infra", "foundation.bicep");
+        var pullIdentity = ReadRepositoryFile(
+            "infrastructure", "bicep", "modules", "runtime-image-pull-identity.bicep");
+        var pullContract = ReadRepositoryFile(
+            "infrastructure", "bicep", "modules", "runtime-image-pull-contract.bicep");
+        var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
+        var api = ReadRepositoryFile(
+            "infrastructure", "bicep", "modules", "container-app-api.bicep");
+        var worker = ReadRepositoryFile(
+            "infrastructure", "bicep", "modules", "container-app-worker.bicep");
+        var roles = ReadRepositoryFile(
+            "infrastructure", "bicep", "modules", "role-assignments.bicep");
+        var registry = ReadRepositoryFile(
+            "infrastructure", "bicep", "modules", "container-registry.bicep");
+        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
+        var runtimeImagePullOperations = ReadRepositoryFile(
+            "operations", "RuntimeImagePull.psm1");
+        var deployWorkflow = ReadRepositoryFile(".github", "workflows", "deploy.yml");
+        var sharedParameterFiles = new[] { "dev", "staging", "prod" }
+            .Select(environment => ReadRepositoryFile(
+                "infrastructure", "bicep", "parameters", $"{environment}.bicepparam"))
+            .ToArray();
+
+        subscription.Should().Contain("param bootstrapSourceFingerprint string");
+        subscription.Should().Contain(
+            "runtimeImagePullIdentityId string = foundation.outputs.runtimeImagePullIdentityId");
+        foundation.Should().Contain(
+            "module runtimeImagePullIdentity '../../infrastructure/bicep/modules/runtime-image-pull-identity.bicep'");
+        foundation.Should().Contain("identityName: 'id-gateway-runtime-pull-${environment}'");
+        foundation.Should().Contain("bootstrapSourceFingerprint: bootstrapSourceFingerprint");
+
+        pullIdentity.Should().Contain(
+            "resource imagePullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@");
+        pullIdentity.Should().Contain(
+            "resource acrPull 'Microsoft.Authorization/roleAssignments@");
+        pullIdentity.Should().Contain("scope: containerRegistry");
+        pullIdentity.Should().Contain("principalId: imagePullIdentity.properties.principalId");
+        pullIdentity.Should().Contain("acrPullRoleDefinitionGuid = '7f951dda-4ed3-4680-a7ca-43fe172d538d'");
+
+        main.Should().Contain("param runtimeImagePullIdentityId string");
+        main.Should().Contain("param runtimeImagePullIdentityPrincipalId string");
+        main.Should().Contain("param runtimeImagePullAcrPullRoleAssignmentId string");
+        main.Should().Contain("param allowLegacySystemAssignedImagePull bool = false");
+        main.Should().Contain(
+            "var runtimeImagePullIdentityInputsAreEmpty = empty(runtimeImagePullIdentityId) && empty(runtimeImagePullIdentityPrincipalId) && empty(runtimeImagePullAcrPullRoleAssignmentId)");
+        main.Should().Contain(
+            "var runtimeImagePullIdentityInputsArePopulated = !empty(runtimeImagePullIdentityId) && !empty(runtimeImagePullIdentityPrincipalId) && !empty(runtimeImagePullAcrPullRoleAssignmentId)");
+        main.Should().Contain("'InvalidPartialOrBootstrapIdentityEvidence'");
+        main.Should().Contain(
+            "runtimeImagePullAcrRoleAssignmentPrefix = '${toLower(acr.outputs.registryId)}/providers/microsoft.authorization/roleassignments/'");
+        main.Should().Contain(
+            "var runtimeImagesAreDeploymentAcrDigests = startsWith(toLower(apiContainerImage), '${toLower(acr.outputs.loginServer)}/')");
+        main.Should().Contain(
+            "enableLegacySystemAssignedAcrPull: runtimeImagePullIdentityInputsAreEmpty && allowLegacySystemAssignedImagePull && !bootstrapOwnedDeployment");
+        pullContract.Should().Contain("'DedicatedUserAssignedIdentity'");
+        pullContract.Should().Contain("'LegacySystemAssignedIdentity'");
+        Regex.Matches(
+                main,
+                "imagePullIdentityResourceId: runtimeImagePullIdentityId",
+                RegexOptions.CultureInvariant)
+            .Count.Should().Be(2);
+        api.Should().Contain("type: 'SystemAssigned, UserAssigned'");
+        api.Should().Contain("type: 'SystemAssigned'");
+        api.Should().Contain(
+            "identity: empty(imagePullIdentityResourceId) ? 'system' : imagePullIdentityResourceId");
+        worker.Should().Contain("type: 'SystemAssigned, UserAssigned'");
+        worker.Should().Contain(
+            "identity: empty(imagePullIdentityResourceId) ? 'system' : imagePullIdentityResourceId");
+
+        roles.Should().Contain(
+            "resource apiAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableLegacySystemAssignedAcrPull)");
+        roles.Should().Contain(
+            "resource workerAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableLegacySystemAssignedAcrPull)");
+        roles.Should().Contain(
+            "name: guid(subscription().id, apiPrincipalId, containerRegistry.id, acrPullRoleId)");
+        roles.Should().Contain(
+            "name: guid(subscription().id, workerPrincipalId, containerRegistry.id, acrPullRoleId)");
+        registry.Should().Contain("azureADAuthenticationAsArmPolicy:");
+        registry.Should().Contain("status: 'enabled'");
+
+        sharedParameterFiles.Should().OnlyContain(parameterFile =>
+            parameterFile.Contains("RUNTIME_IMAGE_PULL_IDENTITY_ID", StringComparison.Ordinal) &&
+            parameterFile.Contains("RUNTIME_IMAGE_PULL_IDENTITY_PRINCIPAL_ID", StringComparison.Ordinal) &&
+            parameterFile.Contains("RUNTIME_IMAGE_PULL_ACR_PULL_ROLE_ASSIGNMENT_ID", StringComparison.Ordinal) &&
+            parameterFile.Contains("ALLOW_LEGACY_SYSTEM_ASSIGNED_IMAGE_PULL", StringComparison.Ordinal));
+        deployScript.Should().Contain("Import-Module $RuntimeImagePullModule");
+        deployScript.Should().Contain("Assert-GatewayRuntimeImagePullContract");
+        runtimeImagePullOperations.Should().Contain(
+            "function Assert-GatewayRuntimeImagePullContract");
+        runtimeImagePullOperations.Should().Contain(
+            "$script:ArmGuidNamespace = [guid]'11fb06fb-712d-4ddd-98c7-e71bbd588830'");
+        runtimeImagePullOperations.Should().Contain(
+            "Get-ArmDeterministicGuid -Values @(");
+        runtimeImagePullOperations.Should().Contain(
+            "[string]$assignment.principalType -cne 'ServicePrincipal'");
+        runtimeImagePullOperations.Should().Contain(
+            "Get-RuntimeImagePullOptionalProperty -InputObject $assignment -Name 'delegatedManagedIdentityResourceId'");
+        runtimeImagePullOperations.Should().Contain(
+            "$identityTypes.Count -ne 1");
+        runtimeImagePullOperations.Should().Contain(
+            "$userAssignedIdentityIds.Count -ne 0");
+        runtimeImagePullOperations.Should().Contain(
+            "function Assert-RuntimeImageAcrBinding");
+        runtimeImagePullOperations.Should().Contain(
+            "Runtime images must be immutable digest references hosted by the exact expected deployment ACR.");
+        runtimeImagePullOperations.Should().NotContain(
+            "'--include-inherited', 'false'");
+        runtimeImagePullOperations.Should().Contain(
+            "A fresh private-image deployment cannot use the legacy post-compute system-identity AcrPull path.");
+        runtimeImagePullOperations.Should().Contain(
+            "cannot silently migrate an existing system-identity deployment while direct system AcrPull remains");
+        runtimeImagePullOperations.Should().Contain(
+            "Use a separately reviewed migration; this path never deletes role assignments.");
+        runtimeImagePullOperations.Should().Contain(
+            "--subscription', $canonicalSubscriptionId");
+        deployScript.Should().Contain(
+            "allowLegacySystemAssignedImagePull=$($AllowLegacySystemAssignedImagePull.ToString().ToLowerInvariant())");
+        deployScript.Should().Contain(
+            "-ExpectedAcrName $ExpectedContainerRegistryName");
+        deployScript.Should().Contain(
+            "Infrastructure deployment requires both immutable runtime image digests plus the exact expected ACR name and login server.");
+        deployScript.Should().Contain("Mode = 'NotEvaluatedSkipInfra'");
+        deployWorkflow.Should().Contain(
+            "Import-Module ./operations/RuntimeImagePull.psm1");
+        deployWorkflow.Should().Contain(
+            "allow_legacy_system_assigned_image_pull=$($allowLegacySystemAssignedImagePull.ToString().ToLowerInvariant())");
+        deployWorkflow.Should().Contain(
+            "-ExpectedAcrName $env:EXPECTED_ACR_NAME");
+        deployWorkflow.Should().Contain(
+            "az acr login --subscription \"$AZURE_SUBSCRIPTION_ID\"");
+        deployWorkflow.Should().MatchRegex(
+            @"build-and-push:\s+name: Build and Push Images\s+runs-on: ubuntu-latest\s+environment: \$\{\{ inputs\.environment \|\| 'dev' \}\}");
+        deployWorkflow.Should().Contain(
+            "az acr repository show --subscription \"$AZURE_SUBSCRIPTION_ID\"");
+        deployWorkflow.Should().Contain(
+            "'--subscription', $env:AZURE_SUBSCRIPTION_ID");
+        deployWorkflow.Should().Contain(
+            "--subscription $env:AZURE_SUBSCRIPTION_ID `");
+        deployWorkflow.Should().Contain("$parameterValidationExitCode -ne 0");
+        deployWorkflow.Should().Contain("Error\\s+BCP\\d+:");
+    }
+
+    [Fact]
     public void ProvisioningFailureAlert_Should_TargetHistoricalAndNewWorkers()
     {
         var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");

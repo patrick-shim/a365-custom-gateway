@@ -23,6 +23,11 @@ param projectName string = 'a365gw'
 @maxLength(36)
 param deploymentOwnershipId string
 
+@description('Canonical source fingerprint accepted by the bootstrap plan and propagated to the resource group and foundation resources.')
+@minLength(71)
+@maxLength(71)
+param bootstrapSourceFingerprint string
+
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
@@ -33,6 +38,7 @@ resource resourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
     projectName: projectName
     deploymentId: '${projectName}-${environment}'
     bootstrapOwnershipId: deploymentOwnershipId
+    bootstrapSourceFingerprint: bootstrapSourceFingerprint
   }
 }
 
@@ -44,11 +50,13 @@ module foundation './foundation.bicep' = {
     location: location
     projectName: projectName
     deploymentOwnershipId: deploymentOwnershipId
+    bootstrapSourceFingerprint: bootstrapSourceFingerprint
   }
 }
 
 output resourceGroupId string = resourceGroup.id
 output deploymentOwnershipId string = deploymentOwnershipId
+output bootstrapSourceFingerprint string = bootstrapSourceFingerprint
 output resourceGroupName string = resourceGroup.name
 output containerAppsEnvironmentName string = foundation.outputs.containerAppsEnvironmentName
 output containerAppsEnvironmentId string = foundation.outputs.containerAppsEnvironmentId
@@ -59,3 +67,6 @@ output privateEndpointSubnetId string = foundation.outputs.privateEndpointSubnet
 output logAnalyticsWorkspaceName string = foundation.outputs.logAnalyticsWorkspaceName
 output acrLoginServer string = foundation.outputs.acrLoginServer
 output acrName string = foundation.outputs.acrName
+output runtimeImagePullIdentityId string = foundation.outputs.runtimeImagePullIdentityId
+output runtimeImagePullIdentityPrincipalId string = foundation.outputs.runtimeImagePullIdentityPrincipalId
+output runtimeImagePullAcrPullRoleAssignmentId string = foundation.outputs.runtimeImagePullAcrPullRoleAssignmentId

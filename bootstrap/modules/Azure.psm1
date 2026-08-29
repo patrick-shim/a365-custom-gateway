@@ -68,12 +68,17 @@ function Register-BootstrapResourceProviders {
 function Deploy-BootstrapFoundation {
     param(
         [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
     )
     $root = Get-BootstrapExecutionSourceRoot
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
     if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
         throw 'Foundation deployment ownership ID must be a canonical lowercase GUID from the current bootstrap state.'
+    }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Foundation source fingerprint'
+    if ((Get-BootstrapSourceFingerprint -Root $root) -cne $SourceFingerprint) {
+        throw 'The foundation deployment source no longer matches the accepted content-addressed snapshot.'
     }
     $groupExists = Invoke-AzTsv -Arguments @('group', 'exists', '--name', [string]$Config.resourceGroupName)
     if ($groupExists -notin @('true', 'false')) {
@@ -96,15 +101,18 @@ function Deploy-BootstrapFoundation {
         "location=$($Config.location)",
         "environment=$($Config.environment)",
         "projectName=$($Config.projectName)",
-        "deploymentOwnershipId=$canonicalOwnershipId"
+        "deploymentOwnershipId=$canonicalOwnershipId",
+        "bootstrapSourceFingerprint=$SourceFingerprint"
     )
     $outputs = $result.properties.outputs
-    if ([string]$outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId) {
-        throw 'Foundation deployment did not echo the exact bootstrap ownership ID.'
+    if ([string]$outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
+        [string]$outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint) {
+        throw 'Foundation deployment did not echo the exact bootstrap ownership and source boundary.'
     }
     return [ordered]@{
         deploymentName = $deploymentName
         deploymentOwnershipId = $canonicalOwnershipId
+        sourceFingerprint = $SourceFingerprint
         resourceGroupName = [string]$outputs.resourceGroupName.value
         containerAppsEnvironmentName = [string]$outputs.containerAppsEnvironmentName.value
         containerAppsEnvironmentId = [string]$outputs.containerAppsEnvironmentId.value
@@ -115,18 +123,23 @@ function Deploy-BootstrapFoundation {
         logAnalyticsWorkspaceName = [string]$outputs.logAnalyticsWorkspaceName.value
         acrLoginServer = [string]$outputs.acrLoginServer.value
         acrName = [string]$outputs.acrName.value
+        runtimeImagePullIdentityId = [string]$outputs.runtimeImagePullIdentityId.value
+        runtimeImagePullIdentityPrincipalId = [string]$outputs.runtimeImagePullIdentityPrincipalId.value
+        runtimeImagePullAcrPullRoleAssignmentId = [string]$outputs.runtimeImagePullAcrPullRoleAssignmentId.value
     }
 }
 
 function Get-BootstrapFoundationEvidence {
     param(
         [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)][string]$DeploymentOwnershipId
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
     )
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
     if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
         throw 'Foundation recovery ownership ID is not canonical.'
     }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Foundation recovery source fingerprint'
     $deploymentName = "a365gw-$($Config.projectName)-bootstrap-foundation-$($Config.environment)"
     $result = Invoke-AzJson -Arguments @(
         'deployment', 'sub', 'show', '--subscription', [string]$Config.subscriptionId,
@@ -134,13 +147,16 @@ function Get-BootstrapFoundationEvidence {
     )
     if (-not $result -or [string]$result.properties.provisioningState -ne 'Succeeded' -or
         [string]$result.properties.parameters.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
-        [string]$result.properties.outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId) {
+        [string]$result.properties.outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
+        [string]$result.properties.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
+        [string]$result.properties.outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint) {
         throw 'The prior foundation deployment was absent, incomplete, or not owned by this bootstrap state.'
     }
     $outputs = $result.properties.outputs
     return [ordered]@{
         deploymentName = $deploymentName
         deploymentOwnershipId = $canonicalOwnershipId
+        sourceFingerprint = $SourceFingerprint
         resourceGroupName = [string]$outputs.resourceGroupName.value
         containerAppsEnvironmentName = [string]$outputs.containerAppsEnvironmentName.value
         containerAppsEnvironmentId = [string]$outputs.containerAppsEnvironmentId.value
@@ -151,6 +167,9 @@ function Get-BootstrapFoundationEvidence {
         logAnalyticsWorkspaceName = [string]$outputs.logAnalyticsWorkspaceName.value
         acrLoginServer = [string]$outputs.acrLoginServer.value
         acrName = [string]$outputs.acrName.value
+        runtimeImagePullIdentityId = [string]$outputs.runtimeImagePullIdentityId.value
+        runtimeImagePullIdentityPrincipalId = [string]$outputs.runtimeImagePullIdentityPrincipalId.value
+        runtimeImagePullAcrPullRoleAssignmentId = [string]$outputs.runtimeImagePullAcrPullRoleAssignmentId.value
     }
 }
 
@@ -159,7 +178,8 @@ function Invoke-ArmDeploymentWithSecureParameters {
         [Parameter(Mandatory)][string]$ResourceGroup,
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$TemplateFile,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$Parameters
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Parameters,
+        [Parameter()][ValidateSet('Incremental')][string]$Mode = 'Incremental'
     )
     $parameterObject = [ordered]@{ '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'; contentVersion = '1.0.0.0'; parameters = [ordered]@{} }
     foreach ($entry in $Parameters.GetEnumerator()) { $parameterObject.parameters[$entry.Key] = @{ value = $entry.Value } }
@@ -177,11 +197,769 @@ function Invoke-ArmDeploymentWithSecureParameters {
             & chmod 600 $temporary
             if ($LASTEXITCODE -ne 0) { throw 'Could not restrict the temporary ARM parameter file to the current user.' }
         }
-        return Invoke-AzJson -Arguments @('deployment', 'group', 'create', '--resource-group', $ResourceGroup, '--name', $Name, '--template-file', $TemplateFile, '--parameters', "@$temporary")
+        return Invoke-AzJson -Arguments @(
+            'deployment', 'group', 'create', '--resource-group', $ResourceGroup,
+            '--name', $Name, '--mode', $Mode, '--template-file', $TemplateFile,
+            '--parameters', "@$temporary"
+        )
     }
     finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
     }
+}
+
+function Get-GatewayArmObjectPropertyNames {
+    param([AllowNull()]$Object)
+    if ($null -eq $Object) { return @() }
+    if ($Object -is [System.Collections.IDictionary]) { return @($Object.Keys | ForEach-Object { [string]$_ }) }
+    return @($Object.PSObject.Properties.Name | ForEach-Object { [string]$_ })
+}
+
+function Test-GatewayArmObjectProperty {
+    param([AllowNull()]$Object, [Parameter(Mandatory)][string]$Name)
+    if ($null -eq $Object) { return $false }
+    if ($Object -is [System.Collections.IDictionary]) { return $Object.Contains($Name) }
+    return $null -ne $Object.PSObject.Properties[$Name]
+}
+
+function Get-GatewayArmObjectProperty {
+    param([AllowNull()]$Object, [Parameter(Mandatory)][string]$Name)
+    if (-not (Test-GatewayArmObjectProperty -Object $Object -Name $Name)) { return $null }
+    if ($Object -is [System.Collections.IDictionary]) { return ,$Object[$Name] }
+    return ,$Object.PSObject.Properties[$Name].Value
+}
+
+function Get-GatewayArmArrayItems {
+    param([AllowNull()]$Value)
+    if ($null -eq $Value) { return }
+    return $Value
+}
+
+function Assert-GatewayRuntimeImagePullFoundationEvidence {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation
+    )
+    $expectedIdentityId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-runtime-pull-$($Config.environment)"
+    $identityId = [string](Get-GatewayArmObjectProperty -Object $Foundation -Name 'runtimeImagePullIdentityId')
+    if ([string]::IsNullOrWhiteSpace($identityId) -or
+        -not $identityId.Equals($expectedIdentityId, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Foundation runtime image-pull identity evidence does not match the exact deployment scope and name.'
+    }
+
+    $principalId = [string](Get-GatewayArmObjectProperty -Object $Foundation -Name 'runtimeImagePullIdentityPrincipalId')
+    $parsedPrincipalId = [guid]::Empty
+    if (-not [guid]::TryParse($principalId, [ref]$parsedPrincipalId) -or
+        $parsedPrincipalId -eq [guid]::Empty -or $principalId -cne $parsedPrincipalId.ToString('D')) {
+        throw 'Foundation runtime image-pull principal evidence is not one canonical nonempty GUID.'
+    }
+
+    $acrName = [string](Get-GatewayArmObjectProperty -Object $Foundation -Name 'acrName')
+    if ($acrName -cnotmatch '^[a-z0-9]{5,50}$') {
+        throw 'Foundation ACR evidence is invalid for runtime image-pull recovery.'
+    }
+    $roleAssignmentId = [string](Get-GatewayArmObjectProperty -Object $Foundation -Name 'runtimeImagePullAcrPullRoleAssignmentId')
+    $expectedRolePrefix = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.ContainerRegistry/registries/$acrName/providers/Microsoft.Authorization/roleAssignments/"
+    if (-not $roleAssignmentId.StartsWith($expectedRolePrefix, [StringComparison]::Ordinal) -or
+        $roleAssignmentId.Length -ne ($expectedRolePrefix.Length + 36)) {
+        throw 'Foundation runtime image-pull role-assignment evidence is outside the exact ACR scope.'
+    }
+    $roleAssignmentName = $roleAssignmentId.Substring($expectedRolePrefix.Length)
+    $parsedRoleAssignmentName = [guid]::Empty
+    if (-not [guid]::TryParse($roleAssignmentName, [ref]$parsedRoleAssignmentName) -or
+        $parsedRoleAssignmentName -eq [guid]::Empty -or $roleAssignmentName -cne $parsedRoleAssignmentName.ToString('D')) {
+        throw 'Foundation runtime image-pull role-assignment evidence is not canonical.'
+    }
+
+    return [ordered]@{
+        identityId = $identityId
+        principalId = $principalId
+        roleAssignmentId = $roleAssignmentId
+    }
+}
+
+function Assert-GatewayExactReadableArmParameters {
+    param(
+        [Parameter(Mandatory)]$ActualParameters,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ExpectedParameters,
+        [Parameter()][string[]]$SecureParameterNames = @()
+    )
+    $expectedNames = @($ExpectedParameters.Keys | ForEach-Object { [string]$_ })
+    $actualNames = @(Get-GatewayArmObjectPropertyNames -Object $ActualParameters)
+    if ($actualNames.Count -ne $expectedNames.Count -or
+        (($actualNames | Sort-Object -CaseSensitive) -join '|') -cne (($expectedNames | Sort-Object -CaseSensitive) -join '|')) {
+        throw 'The prior inert deployment parameter surface does not exactly match the current reviewed template contract.'
+    }
+    foreach ($name in $expectedNames) {
+        $actualParameter = Get-GatewayArmObjectProperty -Object $ActualParameters -Name $name
+        if ($null -eq $actualParameter) {
+            throw 'The prior inert deployment is missing a reviewed parameter.'
+        }
+        if ($name -in $SecureParameterNames) { continue }
+        if (-not (Test-GatewayArmObjectProperty -Object $actualParameter -Name 'value')) {
+            throw 'A non-secret prior inert deployment parameter has no readable value.'
+        }
+        $actualValue = Get-GatewayArmObjectProperty -Object $actualParameter -Name 'value'
+        $matches = if ($name -ceq 'runtimeImagePullIdentityId') {
+            [string]$actualValue -ieq [string]$ExpectedParameters[$name]
+        }
+        else {
+            (Get-BootstrapObjectFingerprint -InputObject $actualValue) -ceq
+                (Get-BootstrapObjectFingerprint -InputObject $ExpectedParameters[$name])
+        }
+        if (-not $matches) {
+            throw "A prior inert deployment parameter does not match the exact reviewed value contract ($name)."
+        }
+    }
+    return $true
+}
+
+function New-GatewayInertDeploymentRetryReceipt {
+    param([Parameter(Mandatory)]$Deployment)
+    $state = [string]$Deployment.properties.provisioningState
+    if ($state -notin @('Failed', 'Canceled')) {
+        throw 'Only a terminal Failed or Canceled inert deployment can produce a retry receipt.'
+    }
+    $correlationId = [string]$Deployment.properties.correlationId
+    $parsedCorrelationId = [guid]::Empty
+    if (-not [guid]::TryParse($correlationId, [ref]$parsedCorrelationId) -or
+        $parsedCorrelationId -eq [guid]::Empty -or $correlationId -cne $parsedCorrelationId.ToString('D')) {
+        throw 'The terminal inert deployment correlation ID is not canonical.'
+    }
+    $timestamp = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse(
+        [string]$Deployment.properties.timestamp,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$timestamp)) {
+        throw 'The terminal inert deployment timestamp is invalid.'
+    }
+    if ([string]$Deployment.properties.mode -cne 'Incremental') {
+        throw 'The terminal inert deployment was not an Incremental deployment.'
+    }
+    return [ordered]@{
+        state = $state
+        correlationId = $correlationId
+        timestamp = $timestamp.ToUniversalTime().ToString('O')
+        mode = 'Incremental'
+    }
+}
+
+function Assert-GatewayExactPartialEnvironmentSubset {
+    param(
+        [AllowNull()]$Entries,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ExpectedValues,
+        [switch]$RequireComplete
+    )
+    $actualEntries = @(Get-GatewayArmArrayItems -Value $Entries)
+    if ($RequireComplete -and $actualEntries.Count -ne $ExpectedValues.Count) {
+        throw 'A completed child Container App environment is not complete.'
+    }
+    $expectedByName = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    foreach ($entry in $ExpectedValues.GetEnumerator()) {
+        if (-not $expectedByName.TryAdd([string]$entry.Key, $entry.Value)) {
+            throw 'The reviewed partial Container App environment contract contains a duplicate exact name.'
+        }
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($entry in $actualEntries) {
+        $name = [string](Get-GatewayArmObjectProperty -Object $entry -Name 'name')
+        if ([string]::IsNullOrWhiteSpace($name) -or -not $seen.Add($name) -or -not $expectedByName.ContainsKey($name)) {
+            throw 'A partial Container App environment contains a missing, duplicate, or unreviewed name.'
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string](Get-GatewayArmObjectProperty -Object $entry -Name 'secretRef')) -or
+            -not (Test-GatewayArmObjectProperty -Object $entry -Name 'value') -or
+            [string](Get-GatewayArmObjectProperty -Object $entry -Name 'value') -cne [string]$expectedByName[$name]) {
+            throw 'A partial Container App environment value does not match its exact inert plain-value contract.'
+        }
+    }
+    return $true
+}
+
+function Assert-GatewayExactTagMap {
+    param(
+        [Parameter(Mandatory)]$ActualTags,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ExpectedTags
+    )
+    $actualNames = @(Get-GatewayArmObjectPropertyNames -Object $ActualTags)
+    $expectedNames = @($ExpectedTags.Keys | ForEach-Object { [string]$_ })
+    if ($actualNames.Count -ne $expectedNames.Count -or
+        (($actualNames | Sort-Object -CaseSensitive) -join '|') -cne (($expectedNames | Sort-Object -CaseSensitive) -join '|')) {
+        throw 'A partial Gateway resource tag surface is not exact.'
+    }
+    foreach ($name in $expectedNames) {
+        if ([string](Get-GatewayArmObjectProperty -Object $ActualTags -Name $name) -cne [string]$ExpectedTags[$name]) {
+            throw 'A partial Gateway resource tag value does not match the current ownership and source boundary.'
+        }
+    }
+    return $true
+}
+
+function Assert-GatewayPresentTerminalProvisioningState {
+    param([Parameter(Mandatory)]$Object)
+    if (Test-GatewayArmObjectProperty -Object $Object -Name 'provisioningState') {
+        if ([string](Get-GatewayArmObjectProperty -Object $Object -Name 'provisioningState') -notin @('Succeeded', 'Failed', 'Canceled')) {
+            throw 'A present partial-resource provisioning state is not terminal.'
+        }
+    }
+    return $true
+}
+
+function Assert-GatewayExactImagePullIdentityEnvelope {
+    param(
+        [AllowNull()]$Identity,
+        [Parameter(Mandatory)][string]$ExpectedIdentityId,
+        [Parameter(Mandatory)][string]$ExpectedIdentityPrincipalId,
+        [Parameter(Mandatory)][string]$ExpectedTenantId,
+        [switch]$RequireComplete
+    )
+    if ($null -eq $Identity) {
+        if ($RequireComplete) { throw 'A completed Container App has no managed-identity envelope.' }
+        return $true
+    }
+    if (Test-GatewayArmObjectProperty -Object $Identity -Name 'type') {
+        $types = @(([string](Get-GatewayArmObjectProperty -Object $Identity -Name 'type')).Split(',') | ForEach-Object { $_.Trim() })
+        if ($types.Count -ne 2 -or $types -cnotcontains 'SystemAssigned' -or $types -cnotcontains 'UserAssigned') {
+            throw 'A Container App identity is not exactly system-assigned plus the dedicated pull identity.'
+        }
+    }
+    elseif ($RequireComplete) { throw 'A completed Container App identity type is absent.' }
+
+    if (Test-GatewayArmObjectProperty -Object $Identity -Name 'principalId') {
+        $principalId = [string](Get-GatewayArmObjectProperty -Object $Identity -Name 'principalId')
+        $parsedPrincipalId = [guid]::Empty
+        if (-not [guid]::TryParse($principalId, [ref]$parsedPrincipalId) -or $parsedPrincipalId -eq [guid]::Empty -or
+            $principalId -cne $parsedPrincipalId.ToString('D')) {
+            throw 'A Container App system-assigned principal ID is not canonical.'
+        }
+    }
+    elseif ($RequireComplete) { throw 'A completed Container App system-assigned principal ID is absent.' }
+
+    if (Test-GatewayArmObjectProperty -Object $Identity -Name 'tenantId') {
+        if ([string](Get-GatewayArmObjectProperty -Object $Identity -Name 'tenantId') -cne $ExpectedTenantId) {
+            throw 'A Container App identity tenant does not match the exact deployment tenant.'
+        }
+    }
+    elseif ($RequireComplete) { throw 'A completed Container App identity tenant is absent.' }
+
+    $hasUserAssigned = Test-GatewayArmObjectProperty -Object $Identity -Name 'userAssignedIdentities'
+    $userAssigned = if ($hasUserAssigned) { Get-GatewayArmObjectProperty -Object $Identity -Name 'userAssignedIdentities' } else { $null }
+    if ($null -ne $userAssigned) {
+        $ids = @(Get-GatewayArmObjectPropertyNames -Object $userAssigned)
+        if ($ids.Count -ne 1 -or -not $ids[0].Equals($ExpectedIdentityId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'A Container App user-assigned identity set is not exactly the foundation pull identity.'
+        }
+        $identityDetails = Get-GatewayArmObjectProperty -Object $userAssigned -Name $ids[0]
+        if ($null -ne $identityDetails -and (Test-GatewayArmObjectProperty -Object $identityDetails -Name 'principalId')) {
+            if ([string](Get-GatewayArmObjectProperty -Object $identityDetails -Name 'principalId') -cne $ExpectedIdentityPrincipalId) {
+                throw 'A Container App pull-identity principal readback does not match Foundation evidence.'
+            }
+        }
+        if ($null -ne $identityDetails -and (Test-GatewayArmObjectProperty -Object $identityDetails -Name 'clientId')) {
+            $clientId = [string](Get-GatewayArmObjectProperty -Object $identityDetails -Name 'clientId')
+            $parsedClientId = [guid]::Empty
+            if (-not [guid]::TryParse($clientId, [ref]$parsedClientId) -or $parsedClientId -eq [guid]::Empty -or
+                $clientId -cne $parsedClientId.ToString('D')) {
+                throw 'A present Container App pull-identity client ID is not canonical.'
+            }
+        }
+    }
+    elseif ($RequireComplete) { throw 'A completed Container App pull-identity map is absent.' }
+    return $true
+}
+
+function Assert-GatewayExactPartialRegistryEnvelope {
+    param(
+        [AllowNull()]$Registries,
+        [Parameter(Mandatory)][string]$ExpectedServer,
+        [Parameter(Mandatory)][string]$ExpectedIdentityId,
+        [switch]$RequireComplete
+    )
+    $entries = @(Get-GatewayArmArrayItems -Value $Registries)
+    if ($entries.Count -eq 0) {
+        if ($RequireComplete) { throw 'A completed Container App registry envelope is absent.' }
+        return $true
+    }
+    if ($entries.Count -ne 1 -or [string](Get-GatewayArmObjectProperty -Object $entries[0] -Name 'server') -cne $ExpectedServer -or
+        -not ([string](Get-GatewayArmObjectProperty -Object $entries[0] -Name 'identity')).Equals($ExpectedIdentityId, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::IsNullOrWhiteSpace([string](Get-GatewayArmObjectProperty -Object $entries[0] -Name 'username')) -or
+        -not [string]::IsNullOrWhiteSpace([string](Get-GatewayArmObjectProperty -Object $entries[0] -Name 'passwordSecretRef'))) {
+        throw 'A Container App registry envelope is not the exact secret-free dedicated-identity contract.'
+    }
+    return $true
+}
+
+function Assert-GatewayExactPartialContainerAppEnvelope {
+    param(
+        [Parameter(Mandatory)]$App,
+        [Parameter(Mandatory)][ValidateSet('Api', 'Worker')][string]$Role,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)][string]$ExpectedImage,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ExpectedEnvironment
+    )
+    $expectedContainerEnvironment = [ordered]@{}
+    foreach ($entry in $ExpectedEnvironment.GetEnumerator()) {
+        if ([string]$entry.Key -cne '__recoveryApiFqdn') { $expectedContainerEnvironment[$entry.Key] = $entry.Value }
+    }
+    $name = if ($Role -ceq 'Api') { "ca-gateway-api-$($Config.environment)" } else { "ca-gateway-worker-$($Config.environment)-v3" }
+    $expectedId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/containerApps/$name"
+    if ([string]$App.name -cne $name -or [string]$App.type -cne 'Microsoft.App/containerApps' -or
+        [string]$App.location -cne [string]$Config.location -or
+        -not ([string]$App.id).Equals($expectedId, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'A partial Container App is outside the exact name, type, location, and resource scope.'
+    }
+    Assert-GatewayExactTagMap -ActualTags $App.tags -ExpectedTags ([ordered]@{
+        project = 'a365-gateway'
+        environment = [string]$Config.environment
+        managedBy = 'bicep'
+        projectName = [string]$Config.projectName
+        deploymentId = "$($Config.projectName)-$($Config.environment)"
+        bootstrapOwnershipId = $DeploymentOwnershipId
+        bootstrapSourceFingerprint = $SourceFingerprint
+    }) | Out-Null
+
+    $properties = Get-GatewayArmObjectProperty -Object $App -Name 'properties'
+    if ($null -eq $properties) { throw 'A partial Container App has no readable properties envelope.' }
+    Assert-GatewayPresentTerminalProvisioningState -Object $properties | Out-Null
+    $requireComplete = [string](Get-GatewayArmObjectProperty -Object $properties -Name 'provisioningState') -ceq 'Succeeded'
+    if (Test-GatewayArmObjectProperty -Object $properties -Name 'managedEnvironmentId') {
+        if (-not ([string](Get-GatewayArmObjectProperty -Object $properties -Name 'managedEnvironmentId')).Equals(
+            [string]$Foundation.containerAppsEnvironmentId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'A partial Container App is not bound to the exact Foundation Container Apps environment.'
+        }
+    }
+    elseif ($requireComplete) { throw 'A completed child Container App has no managed-environment binding.' }
+    Assert-GatewayExactImagePullIdentityEnvelope -Identity (Get-GatewayArmObjectProperty -Object $App -Name 'identity') `
+        -ExpectedIdentityId ([string]$Foundation.runtimeImagePullIdentityId) `
+        -ExpectedIdentityPrincipalId ([string]$Foundation.runtimeImagePullIdentityPrincipalId) `
+        -ExpectedTenantId ([string]$Config.tenantId) -RequireComplete:$requireComplete | Out-Null
+
+    $configuration = Get-GatewayArmObjectProperty -Object $properties -Name 'configuration'
+    if ($requireComplete -and $null -eq $configuration) { throw 'A completed child Container App has no configuration envelope.' }
+    if ($null -ne $configuration) {
+        if ((Test-GatewayArmObjectProperty -Object $configuration -Name 'activeRevisionsMode') -and
+            [string](Get-GatewayArmObjectProperty -Object $configuration -Name 'activeRevisionsMode') -cne 'Single') {
+            throw 'A partial Container App revision mode is not exact.'
+        }
+        if ($requireComplete -and -not (Test-GatewayArmObjectProperty -Object $configuration -Name 'activeRevisionsMode')) {
+            throw 'A completed child Container App has no active-revision mode.'
+        }
+        $secretCount = 0
+        if (-not (Test-GatewayArmObjectProperty -Object $configuration -Name 'secretCount') -or
+            -not [int]::TryParse([string](Get-GatewayArmObjectProperty -Object $configuration -Name 'secretCount'), [ref]$secretCount) -or
+            $secretCount -ne 0) {
+            throw 'A partial inert Container App unexpectedly contains application secrets.'
+        }
+        if (Test-GatewayArmObjectProperty -Object $configuration -Name 'registries') {
+            Assert-GatewayExactPartialRegistryEnvelope `
+                -Registries (Get-GatewayArmObjectProperty -Object $configuration -Name 'registries') `
+                -ExpectedServer ([string]$Foundation.acrLoginServer) `
+                -ExpectedIdentityId ([string]$Foundation.runtimeImagePullIdentityId) -RequireComplete:$requireComplete | Out-Null
+        }
+        elseif ($requireComplete) { throw 'A completed child Container App has no registry envelope.' }
+        $ingress = Get-GatewayArmObjectProperty -Object $configuration -Name 'ingress'
+        if ($Role -ceq 'Worker') {
+            if ($null -ne $ingress) { throw 'A partial inert worker unexpectedly exposes ingress.' }
+        }
+        elseif ($null -ne $ingress) {
+            foreach ($entry in ([ordered]@{ external = $true; allowInsecure = $false; targetPort = 8080; transport = 'auto' }).GetEnumerator()) {
+                if ($requireComplete -and -not (Test-GatewayArmObjectProperty -Object $ingress -Name ([string]$entry.Key))) {
+                    throw 'A completed child API ingress field is absent.'
+                }
+                if ((Test-GatewayArmObjectProperty -Object $ingress -Name ([string]$entry.Key)) -and
+                    (Get-BootstrapObjectFingerprint -InputObject (Get-GatewayArmObjectProperty -Object $ingress -Name ([string]$entry.Key))) -cne
+                    (Get-BootstrapObjectFingerprint -InputObject $entry.Value)) {
+                    throw 'A partial API ingress field is outside the exact external HTTPS-only contract.'
+                }
+            }
+            if (Test-GatewayArmObjectProperty -Object $ingress -Name 'fqdn') {
+                $expectedFqdn = [string]$ExpectedEnvironment['__recoveryApiFqdn']
+                if ([string](Get-GatewayArmObjectProperty -Object $ingress -Name 'fqdn') -cne $expectedFqdn) {
+                    throw 'A partial API ingress FQDN is outside the exact Container Apps environment domain.'
+                }
+            }
+            elseif ($requireComplete) { throw 'A completed child API ingress FQDN is absent.' }
+            foreach ($collectionName in @('customDomains', 'ipSecurityRestrictions')) {
+                if (@(Get-GatewayArmArrayItems -Value (Get-GatewayArmObjectProperty -Object $ingress -Name $collectionName)).Count -ne 0) {
+                    throw 'A partial API ingress contains an unreviewed custom-domain or network-restriction entry.'
+                }
+            }
+        }
+        elseif ($requireComplete) { throw 'A completed child API Container App has no ingress envelope.' }
+    }
+
+    $template = Get-GatewayArmObjectProperty -Object $properties -Name 'template'
+    if ($requireComplete -and $null -eq $template) { throw 'A completed child Container App has no template envelope.' }
+    if ($null -ne $template) {
+        $containers = @(Get-GatewayArmArrayItems -Value (Get-GatewayArmObjectProperty -Object $template -Name 'containers'))
+        if ($containers.Count -gt 1) { throw 'A partial Container App contains more than the one reviewed container.' }
+        if ($requireComplete -and $containers.Count -ne 1) { throw 'A completed child Container App does not contain the one reviewed container.' }
+        if ($containers.Count -eq 1) {
+            $container = $containers[0]
+            if ([string](Get-GatewayArmObjectProperty -Object $container -Name 'name') -cne $name -or
+                [string](Get-GatewayArmObjectProperty -Object $container -Name 'image') -cne $ExpectedImage) {
+                throw 'A partial Container App container name or immutable image is not exact.'
+            }
+            foreach ($collectionName in @('command', 'args', 'probes', 'volumeMounts')) {
+                if (@(Get-GatewayArmArrayItems -Value (Get-GatewayArmObjectProperty -Object $container -Name $collectionName)).Count -ne 0) {
+                    throw 'A partial Container App container contains an unreviewed execution or mount override.'
+                }
+            }
+            $resources = Get-GatewayArmObjectProperty -Object $container -Name 'resources'
+            if ($requireComplete -and $null -eq $resources) { throw 'A completed child Container App resource allocation is absent.' }
+            if ($null -ne $resources) {
+                $expectedCpu = if ($Role -ceq 'Api') { 0.5 } else { 0.25 }
+                $expectedMemory = if ($Role -ceq 'Api') { '1Gi' } else { '0.5Gi' }
+                if ($requireComplete -and (-not (Test-GatewayArmObjectProperty -Object $resources -Name 'cpu') -or
+                    -not (Test-GatewayArmObjectProperty -Object $resources -Name 'memory'))) {
+                    throw 'A completed child Container App CPU or memory allocation is absent.'
+                }
+                if ((Test-GatewayArmObjectProperty -Object $resources -Name 'cpu') -and [double](Get-GatewayArmObjectProperty -Object $resources -Name 'cpu') -ne $expectedCpu) {
+                    throw 'A partial Container App CPU allocation is not exact.'
+                }
+                if ((Test-GatewayArmObjectProperty -Object $resources -Name 'memory') -and [string](Get-GatewayArmObjectProperty -Object $resources -Name 'memory') -cne $expectedMemory) {
+                    throw 'A partial Container App memory allocation is not exact.'
+                }
+            }
+            if (Test-GatewayArmObjectProperty -Object $container -Name 'env') {
+                Assert-GatewayExactPartialEnvironmentSubset `
+                    -Entries (Get-GatewayArmObjectProperty -Object $container -Name 'env') `
+                    -ExpectedValues $expectedContainerEnvironment -RequireComplete:$requireComplete | Out-Null
+            }
+            elseif ($requireComplete) { throw 'A completed child Container App has no environment-variable envelope.' }
+        }
+        if (@(Get-GatewayArmArrayItems -Value (Get-GatewayArmObjectProperty -Object $template -Name 'volumes')).Count -ne 0) {
+            throw 'A partial inert Container App unexpectedly contains volumes.'
+        }
+        $scale = Get-GatewayArmObjectProperty -Object $template -Name 'scale'
+        if ($requireComplete -and $null -eq $scale) { throw 'A completed child Container App has no scale envelope.' }
+        if ($null -ne $scale) {
+            $expectedMin = if ($Role -ceq 'Api') { 1 } else { 0 }
+            foreach ($entry in ([ordered]@{ minReplicas = $expectedMin; maxReplicas = 3 }).GetEnumerator()) {
+                if ($requireComplete -and -not (Test-GatewayArmObjectProperty -Object $scale -Name ([string]$entry.Key))) {
+                    throw 'A completed child Container App scale boundary is absent.'
+                }
+                if ((Test-GatewayArmObjectProperty -Object $scale -Name ([string]$entry.Key)) -and
+                    [int](Get-GatewayArmObjectProperty -Object $scale -Name ([string]$entry.Key)) -ne [int]$entry.Value) {
+                    throw 'A partial inert Container App scale boundary is not exact.'
+                }
+            }
+            if (@(Get-GatewayArmArrayItems -Value (Get-GatewayArmObjectProperty -Object $scale -Name 'rules')).Count -ne 0) {
+                throw 'A partial inert Container App unexpectedly contains a scale rule.'
+            }
+        }
+    }
+    return $true
+}
+
+function Get-GatewayInertPartialEnvironmentContract {
+    param(
+        [Parameter(Mandatory)][ValidateSet('Api', 'Worker')][string[]]$Roles,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+    $environment = Invoke-AzJson -Arguments @(
+        'containerapp', 'env', 'show', '--resource-group', [string]$Config.resourceGroupName,
+        '--name', [string]$Foundation.containerAppsEnvironmentName,
+        '--query', '{id:id,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint,defaultDomain:properties.defaultDomain}'
+    )
+    if (-not $environment -or
+        -not ([string]$environment.id).Equals([string]$Foundation.containerAppsEnvironmentId, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$environment.ownershipId -cne $DeploymentOwnershipId -or
+        [string]$environment.sourceFingerprint -cne $SourceFingerprint -or
+        [string]$environment.defaultDomain -cnotmatch '^[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])?$') {
+        throw 'The exact Foundation Container Apps environment readback needed for inert recovery is unavailable.'
+    }
+    $appInsightsName = "ai-$($Config.projectName)-$($Config.environment)"
+    $appInsights = Invoke-AzJson -Arguments @(
+        'monitor', 'app-insights', 'component', 'show', '--resource-group', [string]$Config.resourceGroupName,
+        '--app', $appInsightsName,
+        '--query', '{ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint,connectionString:connectionString}'
+    )
+    if (-not $appInsights -or [string]$appInsights.ownershipId -cne $DeploymentOwnershipId -or
+        [string]$appInsights.sourceFingerprint -cne $SourceFingerprint -or
+        [string]::IsNullOrWhiteSpace([string]$appInsights.connectionString)) {
+        throw 'The exact source-owned Application Insights readback needed for inert recovery is unavailable.'
+    }
+
+    $sqlConnection = "Server=tcp:sql-$($Config.projectName)-$($Config.environment).database.windows.net,1433;Database=GatewayDb;Authentication=Active Directory Managed Identity;Encrypt=True;TrustServerCertificate=False;"
+    $serviceBusNamespace = "sb-$($Config.projectName)-$($Config.environment).servicebus.windows.net"
+    $apiFqdn = "ca-gateway-api-$($Config.environment).$($environment.defaultDomain)"
+    $contracts = [ordered]@{}
+    if ($Roles -contains 'Worker') {
+        $contracts.Worker = [ordered]@{
+            'ConnectionStrings__GatewayDb' = $sqlConnection
+            'ServiceBus__FullyQualifiedNamespace' = $serviceBusNamespace
+            'ServiceBus__QueueName' = 'gateway-provisioning-v3'
+            'OutboxRelay__Enabled' = 'false'
+            'Observability__ApplicationInsightsConnectionString' = [string]$appInsights.connectionString
+            'KeyVault__VaultUri' = "https://kv-$($Config.projectName)-$($Config.environment).vault.azure.net/"
+            'Agent365__TenantId' = [string]$Config.tenantId
+            'Agent365__ObservabilityServerAddress' = $apiFqdn
+            'Agent365__GatewayApiApplicationClientId' = [string]$Identity.gatewayApiClientId
+            'Agent365__GatewayApiAudience' = [string]$Identity.gatewayApiAudience
+            'Agent365__GatewayApiBaseUrl' = "https://$apiFqdn/"
+            'Agent365__CredentialKeyVaultUri' = "https://kv-$($Config.projectName)-$($Config.environment)-prov.vault.azure.net/"
+            'Agent365__ProvisioningManagedIdentityPrincipalId' = ''
+            'ProvisioningWorker__QueueName' = 'gateway-provisioning-v3'
+            'ProvisioningWorker__MaxConcurrentCalls' = '5'
+            'ProvisioningWorker__ProcessingEnabled' = 'false'
+            'ProvisioningWorker__ProvisioningExecutionEnabled' = 'false'
+            'Agent365__RegistryProvider' = 'Disabled'
+            'Agent365__DirectRegistryPreviewEnabled' = 'false'
+            'Purview__Enabled' = 'false'
+            'Purview__PolicyProvisioningEnabled' = 'false'
+            'Purview__PolicyProvisioningOrganization' = [string]$Config.purview.policyProvisioningOrganization
+            'Purview__PolicyProvisioningApplicationId' = [string]$Config.purview.policyProvisioningApplicationId
+            'Purview__PolicyProvisioningCertificateSecretUri' = [string]$Config.purview.policyProvisioningCertificateSecretUri
+            'Purview__DefaultSensitiveInformationType' = [string]$Config.purview.sensitiveInformationType
+            'DOTNET_ENVIRONMENT' = 'Production'
+        }
+    }
+    if ($Roles -notcontains 'Api') { return $contracts }
+
+    $storageNames = @(Invoke-AzJson -Arguments @(
+        'resource', 'list', '--resource-group', [string]$Config.resourceGroupName,
+        '--resource-type', 'Microsoft.Storage/storageAccounts', '--query',
+        "[?tags.bootstrapOwnershipId=='$DeploymentOwnershipId' && tags.bootstrapSourceFingerprint=='$SourceFingerprint' && tags.projectName=='$($Config.projectName)' && tags.environment=='$($Config.environment)' && tags.managedBy=='bicep'].name"
+    ))
+    if ($storageNames.Count -ne 1 -or [string]$storageNames[0] -cnotmatch '^[a-z0-9]{3,24}$') {
+        throw 'The exact source-owned Storage account needed for inert API recovery was not unique.'
+    }
+    $storageName = [string]$storageNames[0]
+
+    $promptShieldEndpoint = ''
+    if ($Config.promptShield.enabled -eq $true) {
+        $contentNames = @(Invoke-AzJson -Arguments @(
+            'resource', 'list', '--resource-group', [string]$Config.resourceGroupName,
+            '--resource-type', 'Microsoft.CognitiveServices/accounts', '--query',
+            "[?kind=='ContentSafety' && tags.bootstrapOwnershipId=='$DeploymentOwnershipId' && tags.bootstrapSourceFingerprint=='$SourceFingerprint' && tags.workload=='prompt-protection'].name"
+        ))
+        if ($contentNames.Count -ne 1 -or
+            [string]$contentNames[0] -cnotmatch "^cs-$([regex]::Escape([string]$Config.projectName))-$([regex]::Escape([string]$Config.environment))-[a-z0-9]{6}$") {
+            throw 'The exact source-owned Content Safety account needed for inert API recovery was not unique.'
+        }
+        $promptShieldEndpoint = "https://$($contentNames[0]).cognitiveservices.azure.com/"
+    }
+    $contracts.Api = [ordered]@{
+        'ConnectionStrings__GatewayDb' = $sqlConnection
+        'ServiceBus__FullyQualifiedNamespace' = $serviceBusNamespace
+        'ServiceBus__QueueName' = 'gateway-provisioning-v3'
+        'Provisioning__ExecutionEnabled' = 'false'
+        'Provisioning__RequireExactAdmissionBinding' = 'true'
+        'Provisioning__AllowContinuousDevelopmentAccess' = 'false'
+        'BlobStorage__ServiceUri' = "https://$storageName.blob.core.windows.net/"
+        'BlobStorage__ContainerName' = 'a365-gateway-interactions'
+        'Observability__ApplicationInsightsConnectionString' = [string]$appInsights.connectionString
+        'EntraId__TenantId' = [string]$Config.tenantId
+        'EntraId__ClientId' = [string]$Identity.gatewayApiClientId
+        'EntraId__Audience' = [string]$Identity.gatewayApiAudience
+        'EntraId__ClientCredentials__0__SourceType' = 'SignedAssertionFromManagedIdentity'
+        'EntraId__ClientCredentials__0__TokenExchangeUrl' = 'api://AzureADTokenExchange'
+        'KeyVault__VaultUri' = "https://kv-$($Config.projectName)-$($Config.environment).vault.azure.net/"
+        'Agent365__TenantId' = [string]$Config.tenantId
+        'Agent365__DelegatedRegistry__Enabled' = 'false'
+        'Agent365__DelegatedRegistry__RequireExactActionBinding' = 'true'
+        'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = 'false'
+        'Agent365__DelegatedRegistry__Scopes__0' = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All'
+        'Agent365__DelegatedRegistry__Scopes__1' = 'https://graph.microsoft.com/AgentRegistration.Read.All'
+        'Purview__Enabled' = 'false'
+        'PromptShield__Enabled' = ([bool]$Config.promptShield.enabled).ToString().ToLowerInvariant()
+        'PromptShield__Endpoint' = $promptShieldEndpoint
+        'PromptShield__ApiVersion' = '2024-09-01'
+        'DatabaseAttestation__Enabled' = 'false'
+        'DatabaseAttestation__DeploymentOwnershipId' = ''
+        'DatabaseAttestation__AcceptedSourceFingerprint' = ''
+        'DatabaseAttestation__ExpectedSchemaFingerprint' = ''
+        'DatabaseAttestation__SqlServerFqdn' = ''
+        'DatabaseAttestation__DatabaseName' = ''
+        'DatabaseAttestation__ApiPrincipalName' = ''
+        'DatabaseAttestation__ApiPrincipalClientId' = ''
+        'DatabaseAttestation__WorkerPrincipalName' = ''
+        'DatabaseAttestation__WorkerPrincipalClientId' = ''
+        'OutboxRelay__PollingIntervalSeconds' = '5'
+        'OutboxRelay__BatchSize' = '10'
+        'ASPNETCORE_ENVIRONMENT' = 'Production'
+        '__recoveryApiFqdn' = $apiFqdn
+    }
+    return $contracts
+}
+
+function Get-GatewayCoreOutputValue {
+    param([Parameter(Mandatory)]$Outputs, [Parameter(Mandatory)][string]$Name)
+    $output = Get-GatewayArmObjectProperty -Object $Outputs -Name $Name
+    if ($null -eq $output -or -not (Test-GatewayArmObjectProperty -Object $output -Name 'value')) {
+        throw 'The workload deployment omitted a required reviewed output.'
+    }
+    return Get-GatewayArmObjectProperty -Object $output -Name 'value'
+}
+
+function New-GatewayCoreEvidence {
+    param(
+        [Parameter(Mandatory)][string]$DeploymentName,
+        [Parameter(Mandatory)]$Outputs,
+        [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Parameters,
+        [Parameter()][object[]]$RetryReceipts = @(),
+        [Parameter()][System.Collections.IDictionary]$ObservedPartialPrincipalIds = ([ordered]@{})
+    )
+    if ([string](Get-GatewayCoreOutputValue -Outputs $Outputs -Name 'deploymentOwnershipId') -cne [string]$Parameters.deploymentOwnershipId -or
+        [string](Get-GatewayCoreOutputValue -Outputs $Outputs -Name 'bootstrapSourceFingerprint') -cne [string]$Parameters.bootstrapSourceFingerprint -or
+        [string](Get-GatewayCoreOutputValue -Outputs $Outputs -Name 'apiContainerImage') -cne [string]$Parameters.apiContainerImage -or
+        [string](Get-GatewayCoreOutputValue -Outputs $Outputs -Name 'workerContainerImage') -cne [string]$Parameters.workerContainerImage -or
+        -not ([string](Get-GatewayCoreOutputValue -Outputs $Outputs -Name 'runtimeImagePullIdentityId')).Equals([string]$Foundation.runtimeImagePullIdentityId, [StringComparison]::OrdinalIgnoreCase) -or
+        [string](Get-GatewayCoreOutputValue -Outputs $Outputs -Name 'runtimeImagePullIdentityPrincipalId') -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId -or
+        [string](Get-GatewayCoreOutputValue -Outputs $Outputs -Name 'runtimeImagePullAcrPullRoleAssignmentId') -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId) {
+        throw 'The workload deployment did not echo the exact ownership, source, image, and dedicated-pull-identity boundary.'
+    }
+    $evidence = [ordered]@{
+        deploymentName = $DeploymentName
+        deploymentOwnershipId = [string]$Parameters.deploymentOwnershipId
+        sourceFingerprint = [string]$Parameters.bootstrapSourceFingerprint
+        apiImage = [string]$Parameters.apiContainerImage
+        workerImage = [string]$Parameters.workerContainerImage
+        runtimeImagePullIdentityId = [string]$Foundation.runtimeImagePullIdentityId
+        runtimeImagePullIdentityPrincipalId = [string]$Foundation.runtimeImagePullIdentityPrincipalId
+        runtimeImagePullAcrPullRoleAssignmentId = [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId
+    }
+    foreach ($mapping in @(
+        @('apiFqdn', 'apiFqdn'), @('apiPrincipalId', 'apiPrincipalId'), @('workerPrincipalId', 'workerPrincipalId'),
+        @('adminUiFqdn', 'adminUiFqdn'), @('acrLoginServer', 'acrLoginServer'), @('containerRegistryId', 'containerRegistryId'),
+        @('keyVaultUri', 'keyVaultUri'), @('sharedKeyVaultId', 'sharedKeyVaultId'), @('storageAccountId', 'storageAccountId'),
+        @('sqlServerFqdn', 'sqlServerFqdn'), @('serviceBusQueueName', 'serviceBusQueueName'), @('serviceBusQueueId', 'serviceBusQueueId'),
+        @('agent365RegistryProvider', 'registryProvider'), @('promptShieldEndpoint', 'promptShieldEndpoint'),
+        @('promptShieldAccountId', 'promptShieldAccountId'), @('promptShieldAccountName', 'promptShieldAccountName'),
+        @('databaseAttestationExpectedSchemaFingerprint', 'databaseAttestationExpectedSchemaFingerprint'),
+        @('databaseAttestationApiPrincipalName', 'databaseAttestationApiPrincipalName'),
+        @('databaseAttestationApiPrincipalClientId', 'databaseAttestationApiPrincipalClientId'),
+        @('databaseAttestationWorkerPrincipalName', 'databaseAttestationWorkerPrincipalName'),
+        @('databaseAttestationWorkerPrincipalClientId', 'databaseAttestationWorkerPrincipalClientId'),
+        @('databaseAttestationDatabaseName', 'databaseAttestationDatabaseName')
+    )) { $evidence[$mapping[1]] = [string](Get-GatewayCoreOutputValue -Outputs $Outputs -Name $mapping[0]) }
+    foreach ($mapping in @(
+        @('provisioningExecutionEnabled', 'provisioningExecutionEnabled'),
+        @('workerProcessingEnabled', 'workerProcessingEnabled'),
+        @('databaseAttestationEnabled', 'databaseAttestationEnabled')
+    )) { $evidence[$mapping[1]] = [bool](Get-GatewayCoreOutputValue -Outputs $Outputs -Name $mapping[0]) }
+    foreach ($entry in $ObservedPartialPrincipalIds.GetEnumerator()) {
+        $outputName = if ([string]$entry.Key -ceq 'Api') { 'apiPrincipalId' } elseif ([string]$entry.Key -ceq 'Worker') { 'workerPrincipalId' } else { '' }
+        if ([string]::IsNullOrWhiteSpace($outputName) -or [string]$evidence[$outputName] -cne [string]$entry.Value) {
+            throw 'A recovered Container App system principal drifted across the same-name ARM retry.'
+        }
+    }
+    if ($RetryReceipts.Count -gt 0) { $evidence.terminalDeploymentRetryReceipts = @($RetryReceipts) }
+    if ($ObservedPartialPrincipalIds.Count -gt 0) { $evidence.observedPartialPrincipalIds = $ObservedPartialPrincipalIds }
+    return $evidence
+}
+
+function Get-GatewayInertRecoveredRetryReceipts {
+    param(
+        [AllowNull()]$RecoveredEvidence,
+        [Parameter(Mandatory)][string]$DeploymentName,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+    if ($null -eq $RecoveredEvidence) { return [ordered]@{ receipts = @(); principalIds = [ordered]@{} } }
+    foreach ($entry in ([ordered]@{
+        deploymentName = $DeploymentName
+        deploymentOwnershipId = $DeploymentOwnershipId
+        sourceFingerprint = $SourceFingerprint
+    }).GetEnumerator()) {
+        if ([string](Get-GatewayArmObjectProperty -Object $RecoveredEvidence -Name ([string]$entry.Key)) -cne [string]$entry.Value) {
+            throw 'Recovered inert retry evidence is not bound to the exact deployment, owner, and source.'
+        }
+    }
+    $receipts = @(Get-GatewayArmArrayItems -Value (Get-GatewayArmObjectProperty -Object $RecoveredEvidence -Name 'terminalDeploymentRetryReceipts'))
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($receipt in $receipts) {
+        $names = @(Get-GatewayArmObjectPropertyNames -Object $receipt)
+        if ($names.Count -ne 4 -or (($names | Sort-Object -CaseSensitive) -join '|') -cne 'correlationId|mode|state|timestamp') {
+            throw 'Recovered inert retry evidence contains a non-minimal receipt.'
+        }
+        $correlationId = [string](Get-GatewayArmObjectProperty -Object $receipt -Name 'correlationId')
+        $parsed = [guid]::Empty
+        $timestamp = [DateTimeOffset]::MinValue
+        if (-not $seen.Add($correlationId) -or -not [guid]::TryParse($correlationId, [ref]$parsed) -or $parsed -eq [guid]::Empty -or
+            $correlationId -cne $parsed.ToString('D') -or [string](Get-GatewayArmObjectProperty -Object $receipt -Name 'state') -notin @('Failed', 'Canceled') -or
+            [string](Get-GatewayArmObjectProperty -Object $receipt -Name 'mode') -cne 'Incremental' -or
+            -not [DateTimeOffset]::TryParse([string](Get-GatewayArmObjectProperty -Object $receipt -Name 'timestamp'), [ref]$timestamp)) {
+            throw 'Recovered inert retry evidence contains an invalid receipt.'
+        }
+    }
+    $principalIds = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+    $recoveredPrincipalIds = Get-GatewayArmObjectProperty -Object $RecoveredEvidence -Name 'observedPartialPrincipalIds'
+    if ($null -ne $recoveredPrincipalIds) {
+        foreach ($role in @(Get-GatewayArmObjectPropertyNames -Object $recoveredPrincipalIds)) {
+            $value = [string](Get-GatewayArmObjectProperty -Object $recoveredPrincipalIds -Name $role)
+            $parsedPrincipalId = [guid]::Empty
+            if ($role -cnotin @('Api', 'Worker') -or -not [guid]::TryParse($value, [ref]$parsedPrincipalId) -or
+                $parsedPrincipalId -eq [guid]::Empty -or $value -cne $parsedPrincipalId.ToString('D')) {
+                throw 'Recovered inert retry evidence contains an invalid observed principal binding.'
+            }
+            $principalIds[$role] = $value
+        }
+    }
+    foreach ($entry in ([ordered]@{ Api = 'apiPrincipalId'; Worker = 'workerPrincipalId' }).GetEnumerator()) {
+        $value = [string](Get-GatewayArmObjectProperty -Object $RecoveredEvidence -Name ([string]$entry.Value))
+        if ([string]::IsNullOrWhiteSpace($value)) { continue }
+        $parsedPrincipalId = [guid]::Empty
+        if (-not [guid]::TryParse($value, [ref]$parsedPrincipalId) -or $parsedPrincipalId -eq [guid]::Empty -or
+            $value -cne $parsedPrincipalId.ToString('D') -or
+            ($principalIds.ContainsKey([string]$entry.Key) -and [string]$principalIds[$entry.Key] -cne $value)) {
+            throw 'Recovered completed inert evidence conflicts with its observed principal binding.'
+        }
+        $principalIds[$entry.Key] = $value
+    }
+    return [ordered]@{ receipts = @($receipts); principalIds = $principalIds }
+}
+
+function Assert-GatewaySucceededContainerAppBoundary {
+    param(
+        [Parameter(Mandatory)]$App,
+        [Parameter(Mandatory)][ValidateSet('Api', 'Worker')][string]$Role,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)][string]$ExpectedImage,
+        [Parameter(Mandatory)][string]$ExpectedPrincipalId,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+    $name = if ($Role -ceq 'Api') { "ca-gateway-api-$($Config.environment)" } else { "ca-gateway-worker-$($Config.environment)-v3" }
+    if ([string]$App.name -cne $name -or [string]$App.properties.provisioningState -cne 'Succeeded' -or
+        [string]$App.location -cne [string]$Config.location -or
+        [string]$App.properties.template.containers[0].name -cne $name -or
+        [string]$App.properties.template.containers[0].image -cne $ExpectedImage -or
+        [string]$App.identity.principalId -cne $ExpectedPrincipalId -or
+        -not ([string]$App.properties.managedEnvironmentId).Equals([string]$Foundation.containerAppsEnvironmentId, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$App.properties.configuration.activeRevisionsMode -cne 'Single' -or
+        @($App.properties.configuration.secrets).Count -ne 0) {
+        throw 'A completed inert Container App is outside the exact image, identity, environment, and secret-free boundary.'
+    }
+    Assert-GatewayExactTagMap -ActualTags $App.tags -ExpectedTags ([ordered]@{
+        project = 'a365-gateway'; environment = [string]$Config.environment; managedBy = 'bicep'
+        projectName = [string]$Config.projectName; deploymentId = "$($Config.projectName)-$($Config.environment)"
+        bootstrapOwnershipId = $DeploymentOwnershipId; bootstrapSourceFingerprint = $SourceFingerprint
+    }) | Out-Null
+    Assert-GatewayExactImagePullIdentityEnvelope -Identity $App.identity `
+        -ExpectedIdentityId ([string]$Foundation.runtimeImagePullIdentityId) `
+        -ExpectedIdentityPrincipalId ([string]$Foundation.runtimeImagePullIdentityPrincipalId) `
+        -ExpectedTenantId ([string]$Config.tenantId) -RequireComplete | Out-Null
+    Assert-GatewayExactPartialRegistryEnvelope -Registries $App.properties.configuration.registries `
+        -ExpectedServer ([string]$Foundation.acrLoginServer) `
+        -ExpectedIdentityId ([string]$Foundation.runtimeImagePullIdentityId) -RequireComplete | Out-Null
+    $ingress = Get-GatewayArmObjectProperty -Object $App.properties.configuration -Name 'ingress'
+    if ($Role -ceq 'Worker' -and $null -ne $ingress) { throw 'A completed inert worker unexpectedly exposes ingress.' }
+    if ($Role -ceq 'Api' -and ($null -eq $ingress -or $ingress.external -ne $true -or $ingress.allowInsecure -ne $false -or
+        [int]$ingress.targetPort -ne 8080 -or [string]$ingress.transport -cne 'auto')) {
+        throw 'A completed inert API does not retain the exact external HTTPS-only ingress boundary.'
+    }
+    return $true
 }
 
 function Deploy-GatewayCore {
@@ -203,7 +981,9 @@ function Deploy-GatewayCore {
         [Parameter()][switch]$Initial,
         [Parameter()][switch]$EnableWorkerProcessing,
         [Parameter()][switch]$EnableProvisioning,
-        [Parameter()][switch]$EnablePurview
+        [Parameter()][switch]$EnablePurview,
+        [Parameter()][AllowNull()]$RecoveredEvidence,
+        [Parameter()][scriptblock]$Checkpoint
     )
     $root = Get-BootstrapExecutionSourceRoot
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
@@ -213,6 +993,40 @@ function Deploy-GatewayCore {
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Deployment source fingerprint'
     if ((Get-BootstrapSourceFingerprint -Root $root) -cne $SourceFingerprint) {
         throw 'The workload deployment source no longer matches the accepted content-addressed snapshot.'
+    }
+    $subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
+    $tenantId = ([guid][string]$Config.tenantId).ToString('D')
+    if ([string]$Config.subscriptionId -cne $subscriptionId -or [string]$Config.tenantId -cne $tenantId) {
+        throw 'Gateway core scope requires canonical subscription and tenant IDs.'
+    }
+    $pullEvidence = Assert-GatewayRuntimeImagePullFoundationEvidence -Config $Config -Foundation $Foundation
+    $expectedCaeName = "cae-$($Config.projectName)-$($Config.environment)-vnet"
+    $expectedCaeId = "/subscriptions/$subscriptionId/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/managedEnvironments/$expectedCaeName"
+    $expectedAcrPrefix = "acr$($Config.projectName)$($Config.environment)"
+    if ([string]$Foundation.deploymentOwnershipId -cne $canonicalOwnershipId -or
+        [string]$Foundation.sourceFingerprint -cne $SourceFingerprint -or
+        [string]$Foundation.resourceGroupName -cne [string]$Config.resourceGroupName -or
+        [string]$Foundation.containerAppsEnvironmentName -cne $expectedCaeName -or
+        -not ([string]$Foundation.containerAppsEnvironmentId).Equals($expectedCaeId, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$Foundation.virtualNetworkName -cne "vnet-$($Config.projectName)-$($Config.environment)" -or
+        [string]$Foundation.privateEndpointSubnetName -cne 'snet-private-endpoints' -or
+        [string]$Foundation.acrName -cnotmatch "^$([regex]::Escape($expectedAcrPrefix))[a-z0-9]{6}$" -or
+        [string]$Foundation.acrLoginServer -cne "$($Foundation.acrName).azurecr.io") {
+        throw 'Gateway core Foundation evidence is not the exact current owner/source-bound deployment foundation.'
+    }
+    foreach ($entry in ([ordered]@{
+        gatewayApiClientId = [string]$Identity.gatewayApiClientId
+        userObjectId = [string]$Identity.userObjectId
+    }).GetEnumerator()) {
+        $parsedIdentityGuid = [guid]::Empty
+        if (-not [guid]::TryParse([string]$entry.Value, [ref]$parsedIdentityGuid) -or $parsedIdentityGuid -eq [guid]::Empty -or
+            [string]$entry.Value -cne $parsedIdentityGuid.ToString('D')) {
+            throw 'Gateway core identity evidence contains a noncanonical application or administrator ID.'
+        }
+    }
+    if ([string]$Identity.gatewayApiAudience -cne "api://$($Identity.gatewayApiClientId)" -or
+        [string]::IsNullOrWhiteSpace([string]$Identity.userPrincipalName)) {
+        throw 'Gateway core identity evidence does not match the exact API application authority contract.'
     }
     if ($Initial) {
         if ($WorkerPrincipalId -cne '' -or $ManagerApplicationIds.Count -ne 0) {
@@ -269,108 +1083,6 @@ function Deploy-GatewayCore {
             throw "Purview policy automation certificate must be stored in the Gateway shared Key Vault '$gatewayVaultHost' so the worker's read-only role remains narrowly scoped."
         }
     }
-    $name = if ($Initial) { "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)" } else { "a365gw-$($Config.projectName)-bootstrap-runtime-$($Config.environment)" }
-    if ($Initial) {
-        $deploymentCountText = Invoke-AzTsv -Arguments @(
-            'deployment', 'group', 'list', '--resource-group', [string]$Config.resourceGroupName,
-            '--query', "length([?name=='$name'])"
-        )
-        $deploymentCount = 0
-        if (-not [int]::TryParse($deploymentCountText, [ref]$deploymentCount) -or $deploymentCount -notin @(0, 1)) {
-            throw 'Azure returned an invalid or duplicate inert deployment discovery result; no workload mutation was attempted.'
-        }
-        if ($deploymentCount -eq 1) {
-            $existingDeployment = Invoke-AzJson -Arguments @(
-                'deployment', 'group', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $name
-            )
-            if (-not $existingDeployment -or [string]$existingDeployment.properties.provisioningState -ne 'Succeeded') {
-                throw "The existing inert deployment '$name' is not a completed exact recovery candidate."
-            }
-            $existingOutputs = $existingDeployment.properties.outputs
-            $recordedOwnershipId = [string]$existingDeployment.properties.parameters.deploymentOwnershipId.value
-            $outputOwnershipId = [string]$existingOutputs.deploymentOwnershipId.value
-            $recordedSourceFingerprint = [string]$existingDeployment.properties.parameters.bootstrapSourceFingerprint.value
-            $outputSourceFingerprint = [string]$existingOutputs.bootstrapSourceFingerprint.value
-            if ($recordedOwnershipId -cne $canonicalOwnershipId -or $outputOwnershipId -cne $canonicalOwnershipId -or
-                $recordedSourceFingerprint -cne $SourceFingerprint -or $outputSourceFingerprint -cne $SourceFingerprint -or
-                [string]$existingDeployment.properties.parameters.apiContainerImage.value -cne $ApiImage -or
-                [string]$existingDeployment.properties.parameters.workerContainerImage.value -cne $WorkerImage -or
-                [bool]$existingDeployment.properties.parameters.databaseAttestationEnabled.value -ne $false -or
-                [string]$existingOutputs.apiContainerImage.value -cne $ApiImage -or
-                [string]$existingOutputs.workerContainerImage.value -cne $WorkerImage) {
-                throw "The existing inert deployment '$name' is not owned by this bootstrap state. Refusing to adopt its identities or outputs."
-            }
-            $existingApi = Invoke-AzJson -Arguments @(
-                'containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName,
-                '--name', "ca-gateway-api-$($Config.environment)",
-                '--query', '{principalId:identity.principalId,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint,image:properties.template.containers[0].image}'
-            )
-            $existingWorker = Invoke-AzJson -Arguments @(
-                'containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName,
-                '--name', "ca-gateway-worker-$($Config.environment)-v3",
-                '--query', '{principalId:identity.principalId,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint,image:properties.template.containers[0].image}'
-            )
-            if ([string]$existingApi.ownershipId -cne $canonicalOwnershipId -or
-                [string]$existingWorker.ownershipId -cne $canonicalOwnershipId -or
-                [string]$existingApi.sourceFingerprint -cne $SourceFingerprint -or
-                [string]$existingWorker.sourceFingerprint -cne $SourceFingerprint -or
-                [string]$existingApi.image -cne $ApiImage -or
-                [string]$existingWorker.image -cne $WorkerImage -or
-                [string]$existingApi.principalId -ne [string]$existingOutputs.apiPrincipalId.value -or
-                [string]$existingWorker.principalId -ne [string]$existingOutputs.workerPrincipalId.value) {
-                throw "The existing inert deployment '$name' resources do not match this bootstrap state's exact ownership and identity boundary."
-            }
-            $promptShieldEndpoint = if ($null -ne $existingOutputs.PSObject.Properties['promptShieldEndpoint']) { [string]$existingOutputs.promptShieldEndpoint.value } else { '' }
-            $promptShieldAccountId = if ($null -ne $existingOutputs.PSObject.Properties['promptShieldAccountId']) { [string]$existingOutputs.promptShieldAccountId.value } else { '' }
-            $promptShieldAccountName = if ($null -ne $existingOutputs.PSObject.Properties['promptShieldAccountName']) { [string]$existingOutputs.promptShieldAccountName.value } else { '' }
-            return [ordered]@{
-                deploymentName = $name
-                deploymentOwnershipId = $canonicalOwnershipId
-                sourceFingerprint = $SourceFingerprint
-                apiImage = $ApiImage
-                workerImage = $WorkerImage
-                apiFqdn = [string]$existingOutputs.apiFqdn.value
-                apiPrincipalId = [string]$existingOutputs.apiPrincipalId.value
-                workerPrincipalId = [string]$existingOutputs.workerPrincipalId.value
-                adminUiFqdn = [string]$existingOutputs.adminUiFqdn.value
-                acrLoginServer = [string]$existingOutputs.acrLoginServer.value
-                containerRegistryId = [string]$existingOutputs.containerRegistryId.value
-                keyVaultUri = [string]$existingOutputs.keyVaultUri.value
-                sharedKeyVaultId = [string]$existingOutputs.sharedKeyVaultId.value
-                storageAccountId = [string]$existingOutputs.storageAccountId.value
-                sqlServerFqdn = [string]$existingOutputs.sqlServerFqdn.value
-                serviceBusQueueName = [string]$existingOutputs.serviceBusQueueName.value
-                serviceBusQueueId = [string]$existingOutputs.serviceBusQueueId.value
-                provisioningExecutionEnabled = [bool]$existingOutputs.provisioningExecutionEnabled.value
-                workerProcessingEnabled = [bool]$existingOutputs.workerProcessingEnabled.value
-                registryProvider = [string]$existingOutputs.agent365RegistryProvider.value
-                promptShieldEndpoint = $promptShieldEndpoint
-                promptShieldAccountId = $promptShieldAccountId
-                promptShieldAccountName = $promptShieldAccountName
-                databaseAttestationEnabled = [bool]$existingOutputs.databaseAttestationEnabled.value
-                databaseAttestationExpectedSchemaFingerprint = [string]$existingOutputs.databaseAttestationExpectedSchemaFingerprint.value
-                databaseAttestationApiPrincipalName = [string]$existingOutputs.databaseAttestationApiPrincipalName.value
-                databaseAttestationApiPrincipalClientId = [string]$existingOutputs.databaseAttestationApiPrincipalClientId.value
-                databaseAttestationWorkerPrincipalName = [string]$existingOutputs.databaseAttestationWorkerPrincipalName.value
-                databaseAttestationWorkerPrincipalClientId = [string]$existingOutputs.databaseAttestationWorkerPrincipalClientId.value
-                databaseAttestationDatabaseName = [string]$existingOutputs.databaseAttestationDatabaseName.value
-            }
-        }
-        foreach ($containerAppName in @(
-            "ca-gateway-api-$($Config.environment)",
-            "ca-gateway-worker-$($Config.environment)-v3"
-        )) {
-            $resourceCountText = Invoke-AzTsv -Arguments @(
-                'resource', 'list', '--resource-group', [string]$Config.resourceGroupName,
-                '--name', $containerAppName, '--resource-type', 'Microsoft.App/containerApps',
-                '--query', 'length(@)'
-            )
-            $resourceCount = 0
-            if (-not [int]::TryParse($resourceCountText, [ref]$resourceCount) -or $resourceCount -ne 0) {
-                throw "The fresh inert deployment target '$containerAppName' was not proven absent. Refusing to adopt or overwrite a pre-existing security principal."
-            }
-        }
-    }
     $enablePreview = $EnableProvisioning -and [string]$Config.environment -eq 'dev' -and $Config.agent365.allowDevelopmentRegistryPreview -eq $true
     $parameters = [ordered]@{
         environment = [string]$Config.environment
@@ -385,6 +1097,9 @@ function Deploy-GatewayCore {
         databaseAttestationWorkerPrincipalName = if ($Initial) { '' } else { [string]$Database.workerPrincipalName }
         databaseAttestationWorkerPrincipalClientId = if ($Initial) { '' } else { [string]$Database.workerPrincipalClientId }
         containerAppsEnvironmentName = [string]$Foundation.containerAppsEnvironmentName
+        runtimeImagePullIdentityId = [string]$pullEvidence.identityId
+        runtimeImagePullIdentityPrincipalId = [string]$pullEvidence.principalId
+        runtimeImagePullAcrPullRoleAssignmentId = [string]$pullEvidence.roleAssignmentId
         virtualNetworkName = [string]$Foundation.virtualNetworkName
         privateEndpointSubnetName = [string]$Foundation.privateEndpointSubnetName
         entraIdTenantId = [string]$Config.tenantId
@@ -426,49 +1141,163 @@ function Deploy-GatewayCore {
         adminUiEntraClientSecretKeyVaultSecretUri = $AdminUiSecretUri
         adminUiGatewayApiScope = if ([string]::IsNullOrWhiteSpace($AdminUiClientId)) { '' } else { "$($Identity.gatewayApiAudience)/access_as_user" }
         alertEmail = [string]$Config.alertEmail
+        logRetentionInDays = 30
+        acrSku = 'Basic'
         sqlSkuName = [string]$Config.sql.skuName
         sqlSkuTier = [string]$Config.sql.skuTier
+        serviceBusSku = 'Basic'
+        serviceBusQueueName = 'gateway-provisioning-v3'
+        storageSku = 'Standard_LRS'
+        apiCpu = '0.5'
+        apiMemory = '1Gi'
+        apiMinReplicas = 1
+        apiMaxReplicas = 3
+        workerCpu = '0.25'
+        workerMemory = '0.5Gi'
+        workerMaxReplicas = 3
+        adminUiCpu = '0.5'
+        adminUiMemory = '1Gi'
+        adminUiMinReplicas = 1
+        adminUiMaxReplicas = 1
+        keyVaultPurgeProtection = $true
     }
-    $deployment = Invoke-ArmDeploymentWithSecureParameters -ResourceGroup ([string]$Config.resourceGroupName) -Name $name -TemplateFile (Join-Path $root 'infrastructure/bicep/main.bicep') -Parameters $parameters
-    $outputs = $deployment.properties.outputs
-    if ([string]$outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
-        [string]$outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
-        [string]$outputs.apiContainerImage.value -cne $ApiImage -or
-        [string]$outputs.workerContainerImage.value -cne $WorkerImage) {
-        throw 'The workload deployment did not echo the exact ownership, source, and immutable-image boundary.'
+    $name = if ($Initial) { "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)" } else { "a365gw-$($Config.projectName)-bootstrap-runtime-$($Config.environment)" }
+    $retryReceipts = @()
+    $observedPartialPrincipalIds = [ordered]@{}
+    if ($Initial) {
+        $deploymentCountText = Invoke-AzTsv -Arguments @(
+            'deployment', 'group', 'list', '--resource-group', [string]$Config.resourceGroupName,
+            '--query', "length([?name=='$name'])"
+        )
+        $deploymentCount = 0
+        if (-not [int]::TryParse($deploymentCountText, [ref]$deploymentCount) -or $deploymentCount -notin @(0, 1)) {
+            throw 'Azure returned an invalid or duplicate inert deployment discovery result; no workload mutation was attempted.'
+        }
+        if ($deploymentCount -eq 0) {
+            if ($null -ne $RecoveredEvidence) {
+                throw 'A prior inert deployment receipt or evidence exists but the source-bound ARM deployment record is absent.'
+            }
+            foreach ($containerAppName in @("ca-gateway-api-$($Config.environment)", "ca-gateway-worker-$($Config.environment)-v3")) {
+                $resourceCountText = Invoke-AzTsv -Arguments @(
+                    'resource', 'list', '--resource-group', [string]$Config.resourceGroupName,
+                    '--name', $containerAppName, '--resource-type', 'Microsoft.App/containerApps', '--query', 'length(@)'
+                )
+                $resourceCount = 0
+                if (-not [int]::TryParse($resourceCountText, [ref]$resourceCount) -or $resourceCount -ne 0) {
+                    throw "The fresh inert deployment target '$containerAppName' was not proven absent. Refusing to adopt or overwrite a pre-existing security principal."
+                }
+            }
+        }
+        else {
+            $existingDeployment = Invoke-AzJson -Arguments @(
+                'deployment', 'group', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $name
+            )
+            if (-not $existingDeployment -or [string]$existingDeployment.properties.mode -cne 'Incremental') {
+                throw 'The existing inert deployment is absent, unreadable, or not the exact Incremental contract.'
+            }
+            Assert-GatewayExactReadableArmParameters `
+                -ActualParameters $existingDeployment.properties.parameters `
+                -ExpectedParameters $parameters `
+                -SecureParameterNames @('adminUiEntraClientSecretKeyVaultSecretUri') | Out-Null
+            $existingState = [string]$existingDeployment.properties.provisioningState
+            $recoveryCheckpoint = Get-GatewayInertRecoveredRetryReceipts -RecoveredEvidence $RecoveredEvidence `
+                -DeploymentName $name -DeploymentOwnershipId $canonicalOwnershipId -SourceFingerprint $SourceFingerprint
+            $retryReceipts = @($recoveryCheckpoint.receipts)
+            foreach ($entry in $recoveryCheckpoint.principalIds.GetEnumerator()) { $observedPartialPrincipalIds[$entry.Key] = $entry.Value }
+            if ($existingState -ceq 'Succeeded') {
+                $evidence = New-GatewayCoreEvidence -DeploymentName $name -Outputs $existingDeployment.properties.outputs `
+                    -Foundation $Foundation -Parameters $parameters -RetryReceipts $retryReceipts `
+                    -ObservedPartialPrincipalIds $observedPartialPrincipalIds
+                $existingApi = Invoke-AzJson -Arguments @('containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', "ca-gateway-api-$($Config.environment)")
+                $existingWorker = Invoke-AzJson -Arguments @('containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', "ca-gateway-worker-$($Config.environment)-v3")
+                Assert-GatewaySucceededContainerAppBoundary -App $existingApi -Role Api -Config $Config -Foundation $Foundation `
+                    -ExpectedImage $ApiImage -ExpectedPrincipalId ([string]$evidence.apiPrincipalId) `
+                    -DeploymentOwnershipId $canonicalOwnershipId -SourceFingerprint $SourceFingerprint | Out-Null
+                Assert-GatewaySucceededContainerAppBoundary -App $existingWorker -Role Worker -Config $Config -Foundation $Foundation `
+                    -ExpectedImage $WorkerImage -ExpectedPrincipalId ([string]$evidence.workerPrincipalId) `
+                    -DeploymentOwnershipId $canonicalOwnershipId -SourceFingerprint $SourceFingerprint | Out-Null
+                return $evidence
+            }
+            if ($existingState -notin @('Failed', 'Canceled')) {
+                throw 'The existing inert deployment is nonterminal or has an unknown state; no mutation was attempted.'
+            }
+
+            $partialApps = @()
+            foreach ($target in @(
+                [ordered]@{ role = 'Api'; name = "ca-gateway-api-$($Config.environment)"; image = $ApiImage },
+                [ordered]@{ role = 'Worker'; name = "ca-gateway-worker-$($Config.environment)-v3"; image = $WorkerImage }
+            )) {
+                $resourceCountText = Invoke-AzTsv -Arguments @(
+                    'resource', 'list', '--resource-group', [string]$Config.resourceGroupName,
+                    '--name', [string]$target.name, '--resource-type', 'Microsoft.App/containerApps', '--query', 'length(@)'
+                )
+                $resourceCount = 0
+                if (-not [int]::TryParse($resourceCountText, [ref]$resourceCount) -or $resourceCount -notin @(0, 1)) {
+                    throw 'The terminal inert deployment has an invalid or duplicate partial Container App boundary.'
+                }
+                if ($resourceCount -eq 1) { $partialApps += ,$target }
+            }
+            $environmentContracts = if ($partialApps.Count -gt 0) {
+                Get-GatewayInertPartialEnvironmentContract -Roles @($partialApps | ForEach-Object { [string]$_.role }) `
+                    -Config $Config -Foundation $Foundation -Identity $Identity `
+                    -DeploymentOwnershipId $canonicalOwnershipId -SourceFingerprint $SourceFingerprint
+            }
+            else { [ordered]@{} }
+            $currentPartialPrincipalIds = [ordered]@{}
+            foreach ($target in $partialApps) {
+                $partialApp = Invoke-AzJson -Arguments @(
+                    'containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', [string]$target.name,
+                    '--query', '{id:id,name:name,type:type,location:location,tags:tags,identity:identity,properties:{provisioningState:properties.provisioningState,managedEnvironmentId:properties.managedEnvironmentId,configuration:{activeRevisionsMode:properties.configuration.activeRevisionsMode,secretCount:length(not_null(properties.configuration.secrets, `[]`)),registries:properties.configuration.registries,ingress:properties.configuration.ingress},template:{containers:properties.template.containers[].{name:name,image:image,resources:resources,env:env,command:command,args:args,probes:probes,volumeMounts:volumeMounts},volumes:properties.template.volumes,scale:properties.template.scale}}}'
+                )
+                Assert-GatewayExactPartialContainerAppEnvelope -App $partialApp -Role ([string]$target.role) `
+                    -Config $Config -Foundation $Foundation -ExpectedImage ([string]$target.image) `
+                    -DeploymentOwnershipId $canonicalOwnershipId -SourceFingerprint $SourceFingerprint `
+                    -ExpectedEnvironment $environmentContracts[[string]$target.role] | Out-Null
+                $principalId = [string](Get-GatewayArmObjectProperty `
+                    -Object (Get-GatewayArmObjectProperty -Object $partialApp -Name 'identity') -Name 'principalId')
+                if (-not [string]::IsNullOrWhiteSpace($principalId)) { $currentPartialPrincipalIds[[string]$target.role] = $principalId }
+            }
+            foreach ($entry in $observedPartialPrincipalIds.GetEnumerator()) {
+                if (-not $currentPartialPrincipalIds.Contains($entry.Key) -or
+                    [string]$currentPartialPrincipalIds[$entry.Key] -cne [string]$entry.Value) {
+                    throw 'A previously observed partial Container App principal is absent or has drifted.'
+                }
+            }
+            foreach ($entry in $currentPartialPrincipalIds.GetEnumerator()) {
+                if ($observedPartialPrincipalIds.Contains($entry.Key) -and
+                    [string]$observedPartialPrincipalIds[$entry.Key] -cne [string]$entry.Value) {
+                    throw 'A partial Container App principal has drifted before retry.'
+                }
+                $observedPartialPrincipalIds[$entry.Key] = $entry.Value
+            }
+
+            $receipt = New-GatewayInertDeploymentRetryReceipt -Deployment $existingDeployment
+            $matchingReceipt = @($retryReceipts | Where-Object { [string]$_.correlationId -ceq [string]$receipt.correlationId })
+            if ($matchingReceipt.Count -gt 1 -or ($matchingReceipt.Count -eq 1 -and
+                (Get-BootstrapObjectFingerprint -InputObject $matchingReceipt[0]) -cne (Get-BootstrapObjectFingerprint -InputObject $receipt))) {
+                throw 'The current terminal deployment receipt conflicts with preserved retry history.'
+            }
+            if ($matchingReceipt.Count -eq 0) { $retryReceipts += ,$receipt }
+            if ($null -eq $Checkpoint) {
+                throw 'Terminal inert deployment recovery requires a durable pre-retry checkpoint callback.'
+            }
+            & $Checkpoint ([ordered]@{
+                deploymentName = $name
+                deploymentOwnershipId = $canonicalOwnershipId
+                sourceFingerprint = $SourceFingerprint
+                terminalDeploymentRetryReceipts = @($retryReceipts)
+                observedPartialPrincipalIds = $observedPartialPrincipalIds
+            }) | Out-Null
+        }
     }
-    return [ordered]@{
-        deploymentName = $name
-        deploymentOwnershipId = [string]$outputs.deploymentOwnershipId.value
-        sourceFingerprint = [string]$outputs.bootstrapSourceFingerprint.value
-        apiImage = [string]$outputs.apiContainerImage.value
-        workerImage = [string]$outputs.workerContainerImage.value
-        apiFqdn = [string]$outputs.apiFqdn.value
-        apiPrincipalId = [string]$outputs.apiPrincipalId.value
-        workerPrincipalId = [string]$outputs.workerPrincipalId.value
-        adminUiFqdn = [string]$outputs.adminUiFqdn.value
-        acrLoginServer = [string]$outputs.acrLoginServer.value
-        containerRegistryId = [string]$outputs.containerRegistryId.value
-        keyVaultUri = [string]$outputs.keyVaultUri.value
-        sharedKeyVaultId = [string]$outputs.sharedKeyVaultId.value
-        storageAccountId = [string]$outputs.storageAccountId.value
-        sqlServerFqdn = [string]$outputs.sqlServerFqdn.value
-        serviceBusQueueName = [string]$outputs.serviceBusQueueName.value
-        serviceBusQueueId = [string]$outputs.serviceBusQueueId.value
-        provisioningExecutionEnabled = [bool]$outputs.provisioningExecutionEnabled.value
-        workerProcessingEnabled = [bool]$outputs.workerProcessingEnabled.value
-        registryProvider = [string]$outputs.agent365RegistryProvider.value
-        promptShieldEndpoint = [string]$outputs.promptShieldEndpoint.value
-        promptShieldAccountId = [string]$outputs.promptShieldAccountId.value
-        promptShieldAccountName = [string]$outputs.promptShieldAccountName.value
-        databaseAttestationEnabled = [bool]$outputs.databaseAttestationEnabled.value
-        databaseAttestationExpectedSchemaFingerprint = [string]$outputs.databaseAttestationExpectedSchemaFingerprint.value
-        databaseAttestationApiPrincipalName = [string]$outputs.databaseAttestationApiPrincipalName.value
-        databaseAttestationApiPrincipalClientId = [string]$outputs.databaseAttestationApiPrincipalClientId.value
-        databaseAttestationWorkerPrincipalName = [string]$outputs.databaseAttestationWorkerPrincipalName.value
-        databaseAttestationWorkerPrincipalClientId = [string]$outputs.databaseAttestationWorkerPrincipalClientId.value
-        databaseAttestationDatabaseName = [string]$outputs.databaseAttestationDatabaseName.value
+    $deployment = Invoke-ArmDeploymentWithSecureParameters -ResourceGroup ([string]$Config.resourceGroupName) -Name $name `
+        -TemplateFile (Join-Path $root 'infrastructure/bicep/main.bicep') -Parameters $parameters -Mode Incremental
+    if (-not $deployment -or [string]$deployment.properties.provisioningState -cne 'Succeeded') {
+        throw 'The workload ARM deployment did not return a completed Succeeded result.'
     }
+    return New-GatewayCoreEvidence -DeploymentName $name -Outputs $deployment.properties.outputs `
+        -Foundation $Foundation -Parameters $parameters -RetryReceipts $retryReceipts `
+        -ObservedPartialPrincipalIds $observedPartialPrincipalIds
 }
 
 function Get-GatewayAcrBuildSourceFiles {

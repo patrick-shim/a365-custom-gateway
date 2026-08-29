@@ -7,7 +7,8 @@
 .DESCRIPTION
     Parses every bootstrap PowerShell source file, validates the checked-in JSON
     artifacts, optionally runs the isolated Pester suite, and optionally compiles
-    every Bicep template. It performs no Azure sign-in and no resource mutation.
+    every Bicep template and parameter file. It performs no Azure sign-in and no
+    resource mutation.
 #>
 
 [CmdletBinding()]
@@ -22,6 +23,60 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $bootstrapRoot = Join-Path $repositoryRoot 'bootstrap'
 
+function Invoke-GatewayBicepCompiler {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Arguments,
+
+        [Parameter(Mandatory)]
+        [string]$FailureMessage,
+
+        [hashtable]$EnvironmentOverrides = @{}
+    )
+
+    $azCommand = Get-Command az -ErrorAction Stop
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $azCommand.Source
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $Arguments) {
+        [void]$startInfo.ArgumentList.Add($argument)
+    }
+    foreach ($environmentName in $EnvironmentOverrides.Keys) {
+        $startInfo.Environment[[string]$environmentName] = [string]$EnvironmentOverrides[$environmentName]
+    }
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw $FailureMessage
+        }
+
+        $standardOutput = $process.StandardOutput.ReadToEndAsync()
+        $standardError = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        [void]$standardOutput.GetAwaiter().GetResult()
+        $errorText = $standardError.GetAwaiter().GetResult()
+
+        # Azure CLI 2.89.1 can emit a Bicep ERROR diagnostic while returning
+        # exit code zero. Treat either signal as a failed source gate.
+        if ($process.ExitCode -ne 0 -or $errorText -match '(?mi)^\s*(ERROR|FATAL):') {
+            $safeDiagnostic = $errorText.Trim()
+            if ([string]::IsNullOrWhiteSpace($safeDiagnostic)) {
+                throw $FailureMessage
+            }
+
+            throw "$FailureMessage`n$safeDiagnostic"
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 $powerShellFiles = @(
     Get-ChildItem -LiteralPath $bootstrapRoot -Recurse -File |
         Where-Object Extension -in @('.ps1', '.psm1')
@@ -33,6 +88,7 @@ $transitiveRuntimeFiles = @(
     'tools/_common.ps1',
     'tools/configure-workflow-v3-entra.ps1',
     'tools/generate-local-config.ps1',
+    'operations/RuntimeImagePull.psm1',
     'operations/test-provisioning-prerequisites.ps1'
 )
 foreach ($relativePath in $transitiveRuntimeFiles) {
@@ -79,7 +135,8 @@ if ($RunPester) {
     }
     $pesterPaths = @(
         (Join-Path $repositoryRoot 'tests/Bootstrap.Tests'),
-        (Join-Path $repositoryRoot 'tests/Gateway.Purview.Tests')
+        (Join-Path $repositoryRoot 'tests/Gateway.Purview.Tests'),
+        (Join-Path $repositoryRoot 'tests/Operations.Tests')
     )
     foreach ($pesterPath in $pesterPaths) {
         if (-not (Test-Path -LiteralPath $pesterPath)) {
@@ -105,12 +162,35 @@ if ($CompileBicep) {
         Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'infrastructure/bicep') -Filter '*.bicep' -Recurse -File
     ) | Sort-Object FullName -Unique
     foreach ($file in $bicepFiles) {
-        & az bicep build --file $file.FullName --stdout --only-show-errors | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            $relativePath = [IO.Path]::GetRelativePath($repositoryRoot, $file.FullName)
-            throw "Bicep compilation failed for '$relativePath'."
-        }
+        $relativePath = [IO.Path]::GetRelativePath($repositoryRoot, $file.FullName)
+        Invoke-GatewayBicepCompiler `
+            -Arguments @('bicep', 'build', '--file', $file.FullName, '--stdout', '--only-show-errors') `
+            -FailureMessage "Bicep compilation failed for '$relativePath'."
+    }
+
+    $bicepParameterFiles = @(
+        Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'infrastructure/bicep/parameters') -Filter '*.bicepparam' -File
+    ) | Sort-Object FullName -Unique
+    $parameterCompileEnvironment = @{
+        # The two checked-in runtime parameter files intentionally require
+        # deployment-time values. Compile them against inert placeholders so
+        # source validation never consumes a caller's live runtime settings.
+        CONTAINER_APPS_ENVIRONMENT_ID = '/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-source-validation/providers/Microsoft.App/managedEnvironments/cae-source-validation'
+        API_IMAGE = 'mcr.microsoft.com/dotnet/aspnet:10.0'
+        WORKER_IMAGE = 'mcr.microsoft.com/dotnet/runtime:10.0'
+        APPLICATIONINSIGHTS_CONNECTION_STRING = 'InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.invalid/'
+        ALERT_EMAIL = 'source-validation@example.invalid'
+        RUNTIME_IMAGE_PULL_IDENTITY_ID = ''
+        RUNTIME_IMAGE_PULL_IDENTITY_PRINCIPAL_ID = ''
+        RUNTIME_IMAGE_PULL_ACR_PULL_ROLE_ASSIGNMENT_ID = ''
+    }
+    foreach ($file in $bicepParameterFiles) {
+        $relativePath = [IO.Path]::GetRelativePath($repositoryRoot, $file.FullName)
+        Invoke-GatewayBicepCompiler `
+            -Arguments @('bicep', 'build-params', '--file', $file.FullName, '--stdout', '--only-show-errors') `
+            -FailureMessage "Bicep parameter compilation failed for '$relativePath'." `
+            -EnvironmentOverrides $parameterCompileEnvironment
     }
 }
 
-Write-Host "Bootstrap source gate passed: $($powerShellFiles.Count) PowerShell files and 2 JSON files$(if ($CompileBicep) { ', with Bicep compilation' } else { '' })$(if ($RunPester) { ', with Pester behavior tests' } else { '' })."
+Write-Host "Bootstrap source gate passed: $($powerShellFiles.Count) PowerShell files and 2 JSON files$(if ($CompileBicep) { ", with $($bicepFiles.Count) Bicep templates and $($bicepParameterFiles.Count) parameter files compiled" } else { '' })$(if ($RunPester) { ', with Pester behavior tests' } else { '' })."

@@ -50,6 +50,18 @@ param databaseAttestationWorkerPrincipalClientId string = ''
 @minLength(1)
 param containerAppsEnvironmentName string
 
+@description('Exact resource ID of the foundation-owned user-assigned identity used by API and worker for ACR image pulls. The all-empty value set is retained only for the guarded historical system-identity deployment path.')
+param runtimeImagePullIdentityId string = ''
+
+@description('Exact principal ID of the foundation-owned runtime image-pull identity.')
+param runtimeImagePullIdentityPrincipalId string = ''
+
+@description('Exact resource ID of the foundation-created AcrPull assignment for the runtime image-pull identity and ACR.')
+param runtimeImagePullAcrPullRoleAssignmentId string = ''
+
+@description('Explicitly authorize the retained system-assigned identity image-pull path for an independently verified existing deployment. Never enable this for clean bootstrap or a fresh private-image deployment.')
+param allowLegacySystemAssignedImagePull bool = false
+
 @description('Name of the existing virtual network used by the Container Apps environment and private dependencies.')
 @minLength(1)
 param virtualNetworkName string = 'vnet-${projectName}-${environment}'
@@ -300,6 +312,22 @@ var purviewCertificateSecretName = empty(purviewPolicyProvisioningCertificateSec
   ? ''
   : last(split(purviewPolicyProvisioningCertificateSecretUri, '/'))
 
+// Shared existing-environment deployments may retain the historical system-
+// identity image-pull path only by supplying the explicit all-empty triple.
+// Clean bootstrap always supplies all three foundation receipts. Any partial
+// identity/role receipt set is ambiguous and blocks either workload Container App.
+var runtimeImagePullIdentityInputsAreEmpty = empty(runtimeImagePullIdentityId) && empty(runtimeImagePullIdentityPrincipalId) && empty(runtimeImagePullAcrPullRoleAssignmentId)
+var runtimeImagePullIdentityInputsArePopulated = !empty(runtimeImagePullIdentityId) && !empty(runtimeImagePullIdentityPrincipalId) && !empty(runtimeImagePullAcrPullRoleAssignmentId)
+var bootstrapOwnedDeployment = !empty(deploymentOwnershipId) || !empty(bootstrapSourceFingerprint)
+var runtimeImagePullAcrRoleAssignmentPrefix = '${toLower(acr.outputs.registryId)}/providers/microsoft.authorization/roleassignments/'
+var runtimeImagesAreDeploymentAcrDigests = startsWith(toLower(apiContainerImage), '${toLower(acr.outputs.loginServer)}/') && contains(toLower(apiContainerImage), '@sha256:') && length(last(split(toLower(apiContainerImage), '@sha256:'))) == 64 && startsWith(toLower(workerContainerImage), '${toLower(acr.outputs.loginServer)}/') && contains(toLower(workerContainerImage), '@sha256:') && length(last(split(toLower(workerContainerImage), '@sha256:'))) == 64
+var runtimeImagePullIdentityInputsAreTyped = runtimeImagePullIdentityInputsArePopulated && contains(toLower(runtimeImagePullIdentityId), '/providers/microsoft.managedidentity/userassignedidentities/') && startsWith(toLower(runtimeImagePullAcrPullRoleAssignmentId), runtimeImagePullAcrRoleAssignmentPrefix) && length(last(split(runtimeImagePullAcrPullRoleAssignmentId, '/'))) == 36 && length(runtimeImagePullIdentityPrincipalId) == 36 && runtimeImagesAreDeploymentAcrDigests
+var runtimeImagePullContractMode = runtimeImagePullIdentityInputsAreEmpty && allowLegacySystemAssignedImagePull && !bootstrapOwnedDeployment && runtimeImagesAreDeploymentAcrDigests
+  ? 'LegacySystemAssignedIdentity'
+  : runtimeImagePullIdentityInputsAreTyped
+    ? 'DedicatedUserAssignedIdentity'
+    : 'InvalidPartialOrBootstrapIdentityEvidence'
+
 // Fail closed even when main.bicep is invoked outside the guarded deployment
 // scripts. Provisioning becomes effective only for the explicitly acknowledged
 // development preview combination; shared observability remains independent.
@@ -322,6 +350,20 @@ var effectiveApiMaxReplicas = effectiveApiBoundedActionEnabled ? 1 : apiMaxRepli
 // ============================================================================
 // Tier 1 — Foundation Resources (no dependencies)
 // ============================================================================
+
+// This nested validation deployment has no provider resources. Its allowed-value
+// contract blocks either workload Container App when receipts or immutable image
+// hosts do not bind to the exact deployment ACR, when bootstrap attempts legacy
+// mode, or when empty legacy mode lacks explicit authorization. Other independent
+// foundation resources may deploy in parallel; the ACR output is validated first.
+module runtimeImagePullContract './modules/runtime-image-pull-contract.bicep' = {
+  name: 'validate-runtime-image-pull-contract'
+  params: {
+    // any() intentionally preserves runtime evaluation so the child template's
+    // allowed-values contract remains the authoritative ARM validation boundary.
+    mode: any(runtimeImagePullContractMode)
+  }
+}
 
 module logAnalytics './modules/log-analytics.bicep' = {
   name: 'deploy-log-analytics'
@@ -486,6 +528,7 @@ var preservedApiConfigurationSecrets = preserveExistingApiSecrets
 module apiApp './modules/container-app-api.bicep' = {
   name: 'deploy-api-app'
   dependsOn: [
+    runtimeImagePullContract
     workerApp
     storagePrivateEndpoint
   ]
@@ -495,6 +538,7 @@ module apiApp './modules/container-app-api.bicep' = {
     environmentId: containerAppsEnvironment.id
     containerImage: apiContainerImage
     acrLoginServer: acr.outputs.loginServer
+    imagePullIdentityResourceId: runtimeImagePullIdentityId
     cpu: apiCpu
     memory: apiMemory
     minReplicas: effectiveApiMinReplicas
@@ -539,12 +583,16 @@ module apiApp './modules/container-app-api.bicep' = {
 
 module workerApp './modules/container-app-worker.bicep' = {
   name: 'deploy-worker-app'
+  dependsOn: [
+    runtimeImagePullContract
+  ]
   params: {
     appName: names.workerApp
     location: containerAppsEnvironment.location
     environmentId: containerAppsEnvironment.id
     containerImage: workerContainerImage
     acrLoginServer: acr.outputs.loginServer
+    imagePullIdentityResourceId: runtimeImagePullIdentityId
     cpu: workerCpu
     memory: workerMemory
     // Duplicate detection is unavailable on the current Basic Service Bus tier.
@@ -624,6 +672,7 @@ module roleAssignments './modules/role-assignments.bicep' = {
     serviceBusNamespaceName: names.serviceBus
     serviceBusQueueName: serviceBus.outputs.queueName
     containerRegistryName: names.acr
+    enableLegacySystemAssignedAcrPull: runtimeImagePullIdentityInputsAreEmpty && allowLegacySystemAssignedImagePull && !bootstrapOwnedDeployment
   }
 }
 
@@ -710,6 +759,15 @@ output apiPrincipalId string = apiApp.outputs.principalId
 
 @description('Principal ID of the Worker managed identity.')
 output workerPrincipalId string = workerApp.outputs.principalId
+
+@description('Resource ID of the dedicated user-assigned identity used by API and worker for ACR image pulls.')
+output runtimeImagePullIdentityId string = runtimeImagePullIdentityId
+
+@description('Principal ID of the dedicated user-assigned runtime image-pull identity.')
+output runtimeImagePullIdentityPrincipalId string = runtimeImagePullIdentityPrincipalId
+
+@description('Resource ID of the exact AcrPull assignment established before API and worker creation.')
+output runtimeImagePullAcrPullRoleAssignmentId string = runtimeImagePullAcrPullRoleAssignmentId
 
 @description('Approved Container Apps environment used by the API, worker, and optional Admin UI.')
 output containerAppsEnvironmentName string = containerAppsEnvironment.name

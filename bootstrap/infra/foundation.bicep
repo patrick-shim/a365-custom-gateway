@@ -21,6 +21,11 @@ param projectName string = 'a365gw'
 @maxLength(36)
 param deploymentOwnershipId string
 
+@description('Canonical source fingerprint accepted by the bootstrap plan and propagated to every foundation resource tag.')
+@minLength(71)
+@maxLength(71)
+param bootstrapSourceFingerprint string
+
 @description('Address prefix for the dedicated Gateway virtual network.')
 param virtualNetworkAddressPrefix string = '10.42.0.0/16'
 
@@ -39,6 +44,7 @@ var tags = {
   projectName: projectName
   deploymentId: '${projectName}-${environment}'
   bootstrapOwnershipId: deploymentOwnershipId
+  bootstrapSourceFingerprint: bootstrapSourceFingerprint
 }
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -106,6 +112,19 @@ module containerRegistry '../../infrastructure/bicep/modules/container-registry.
   }
 }
 
+module runtimeImagePullIdentity '../../infrastructure/bicep/modules/runtime-image-pull-identity.bicep' = {
+  name: 'bootstrap-runtime-image-pull-identity'
+  params: {
+    identityName: 'id-gateway-runtime-pull-${environment}'
+    location: location
+    containerRegistryName: containerRegistry.outputs.registryName
+    bootstrapSourceFingerprint: bootstrapSourceFingerprint
+    tags: union(tags, {
+      workload: 'runtime-image-pull'
+    })
+  }
+}
+
 module containerAppsEnvironment '../../infrastructure/bicep/modules/container-apps-environment.bicep' = {
   name: 'bootstrap-container-apps-environment'
   params: {
@@ -128,4 +147,8 @@ output privateEndpointSubnetId string = virtualNetwork.properties.subnets[1].id
 output logAnalyticsWorkspaceName string = logAnalytics.name
 output acrLoginServer string = containerRegistry.outputs.loginServer
 output acrName string = containerRegistry.outputs.registryName
+output runtimeImagePullIdentityId string = runtimeImagePullIdentity.outputs.runtimeImagePullIdentityId
+output runtimeImagePullIdentityPrincipalId string = runtimeImagePullIdentity.outputs.runtimeImagePullIdentityPrincipalId
+output runtimeImagePullAcrPullRoleAssignmentId string = runtimeImagePullIdentity.outputs.runtimeImagePullAcrPullRoleAssignmentId
 output deploymentOwnershipId string = deploymentOwnershipId
+output bootstrapSourceFingerprint string = bootstrapSourceFingerprint

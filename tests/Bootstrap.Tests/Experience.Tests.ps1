@@ -64,16 +64,31 @@ Describe 'Plan exact-account context boundary' {
 
 Describe 'Workload deployment output mapping' {
     InModuleScope Experience {
-        It 'maps the real Agent 365 Registry ARM output to the normalized evidence field' {
+        It 'maps the real Agent 365 Registry and runtime image-pull ARM outputs to evidence' {
+            $identityId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-runtime-pull-dev'
+            $assignmentId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.ContainerRegistry/registries/acrsafe/providers/Microsoft.Authorization/roleAssignments/44444444-4444-4444-8444-444444444444'
             $outputs = [pscustomobject]@{
                 agent365RegistryProvider = [pscustomobject]@{ value = 'DirectRegistryPreview' }
+                runtimeImagePullIdentityId = [pscustomobject]@{ value = $identityId }
+                runtimeImagePullIdentityPrincipalId = [pscustomobject]@{ value = '33333333-3333-4333-8333-333333333333' }
+                runtimeImagePullAcrPullRoleAssignmentId = [pscustomobject]@{ value = $assignmentId }
             }
-            $evidence = [pscustomobject]@{ registryProvider = 'DirectRegistryPreview' }
+            $evidence = [pscustomobject]@{
+                registryProvider = 'DirectRegistryPreview'
+                runtimeImagePullIdentityId = $identityId
+                runtimeImagePullIdentityPrincipalId = '33333333-3333-4333-8333-333333333333'
+                runtimeImagePullAcrPullRoleAssignmentId = $assignmentId
+            }
 
             Assert-GatewayDeploymentOutputEvidenceMap `
                 -Outputs $outputs `
                 -Evidence $evidence `
-                -OutputToEvidenceName ([ordered]@{ agent365RegistryProvider = 'registryProvider' }) |
+                -OutputToEvidenceName ([ordered]@{
+                    agent365RegistryProvider = 'registryProvider'
+                    runtimeImagePullIdentityId = 'runtimeImagePullIdentityId'
+                    runtimeImagePullIdentityPrincipalId = 'runtimeImagePullIdentityPrincipalId'
+                    runtimeImagePullAcrPullRoleAssignmentId = 'runtimeImagePullAcrPullRoleAssignmentId'
+                }) |
                 Should -BeTrue
 
             $outputs.PSObject.Properties.Name | Should -Not -Contain 'registryProvider'
@@ -90,6 +105,123 @@ Describe 'Workload deployment output mapping' {
                 -Evidence $evidence `
                 -OutputToEvidenceName ([ordered]@{ agent365RegistryProvider = 'registryProvider' }) } |
                 Should -Throw '*output-to-evidence contract*'
+        }
+
+        It 'accepts only the exact source-bound runtime image-pull identity and AcrPull receipt' {
+            $subscriptionId = '11111111-1111-4111-8111-111111111111'
+            $ownershipId = '22222222-2222-4222-8222-222222222222'
+            $principalId = '33333333-3333-4333-8333-333333333333'
+            $sourceFingerprint = "sha256:$('a' * 64)"
+            $registryId = "/subscriptions/$subscriptionId/resourceGroups/rg-safe-dev/providers/Microsoft.ContainerRegistry/registries/acrsafe"
+            $identityId = "/subscriptions/$subscriptionId/resourceGroups/rg-safe-dev/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-runtime-pull-dev"
+            $assignmentId = "$registryId/providers/Microsoft.Authorization/roleAssignments/44444444-4444-4444-8444-444444444444"
+            $script:pullSubscriptionId = $subscriptionId
+            $script:pullOwnershipId = $ownershipId
+            $script:pullPrincipalId = $principalId
+            $script:pullSourceFingerprint = $sourceFingerprint
+            $script:pullRegistryId = $registryId
+            $script:pullIdentityId = $identityId
+            $script:pullAssignmentId = $assignmentId
+            $config = [pscustomobject]@{
+                subscriptionId = $subscriptionId
+                resourceGroupName = 'rg-safe-dev'
+                environment = 'dev'
+            }
+            $evidence = [pscustomobject]@{
+                runtimeImagePullIdentityId = $identityId
+                runtimeImagePullIdentityPrincipalId = $principalId
+                runtimeImagePullAcrPullRoleAssignmentId = $assignmentId
+            }
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ($Arguments[0] -eq 'identity') {
+                    return [pscustomobject]@{
+                        id = $script:pullIdentityId
+                        name = 'id-gateway-runtime-pull-dev'
+                        principalId = $script:pullPrincipalId
+                        type = 'Microsoft.ManagedIdentity/userAssignedIdentities'
+                        ownershipId = $script:pullOwnershipId
+                        sourceFingerprint = $script:pullSourceFingerprint
+                    }
+                }
+                if ($Arguments[0] -eq 'acr') {
+                    return [pscustomobject]@{
+                        id = $script:pullRegistryId
+                        name = 'acrsafe'
+                        adminUserEnabled = $false
+                        armAudienceStatus = 'enabled'
+                        ownershipId = $script:pullOwnershipId
+                        sourceFingerprint = $script:pullSourceFingerprint
+                    }
+                }
+                throw 'Unexpected mocked Azure readback.'
+            }
+            Mock Invoke-AzJsonArray {
+                return @([pscustomobject]@{
+                    id = $script:pullAssignmentId
+                    principalId = $script:pullPrincipalId
+                    principalType = 'ServicePrincipal'
+                    scope = $script:pullRegistryId
+                    roleDefinitionId = "/subscriptions/$script:pullSubscriptionId/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
+                    condition = $null
+                    conditionVersion = $null
+                    delegatedManagedIdentityResourceId = $null
+                })
+            }
+
+            Assert-GatewayRuntimeImagePullIdentityEvidence `
+                -Config $config -Evidence $evidence -ExpectedRegistryId $registryId `
+                -DeploymentOwnershipId $ownershipId -SourceFingerprint $sourceFingerprint |
+                Should -BeTrue
+        }
+
+        It 'rejects malformed pull-identity IDs, role receipts, and source tags' {
+            $subscriptionId = '11111111-1111-4111-8111-111111111111'
+            $ownershipId = '22222222-2222-4222-8222-222222222222'
+            $principalId = '33333333-3333-4333-8333-333333333333'
+            $sourceFingerprint = "sha256:$('a' * 64)"
+            $registryId = "/subscriptions/$subscriptionId/resourceGroups/rg-safe-dev/providers/Microsoft.ContainerRegistry/registries/acrsafe"
+            $identityId = "/subscriptions/$subscriptionId/resourceGroups/rg-safe-dev/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-runtime-pull-dev"
+            $assignmentId = "$registryId/providers/Microsoft.Authorization/roleAssignments/44444444-4444-4444-8444-444444444444"
+            $script:adversarialPullIdentityId = $identityId
+            $script:adversarialPullPrincipalId = $principalId
+            $script:adversarialPullOwnershipId = $ownershipId
+            $config = [pscustomobject]@{ subscriptionId = $subscriptionId; resourceGroupName = 'rg-safe-dev'; environment = 'dev' }
+            $evidence = [pscustomobject]@{
+                runtimeImagePullIdentityId = $identityId
+                runtimeImagePullIdentityPrincipalId = $principalId
+                runtimeImagePullAcrPullRoleAssignmentId = $assignmentId
+            }
+            $script:identitySourceTag = "sha256:$('b' * 64)"
+            Mock Invoke-AzJson {
+                return [pscustomobject]@{
+                    id = $script:adversarialPullIdentityId
+                    name = 'id-gateway-runtime-pull-dev'
+                    principalId = $script:adversarialPullPrincipalId
+                    type = 'Microsoft.ManagedIdentity/userAssignedIdentities'
+                    ownershipId = $script:adversarialPullOwnershipId
+                    sourceFingerprint = $script:identitySourceTag
+                }
+            }
+            Mock Invoke-AzJsonArray { throw 'Role readback should not be reached for wrong identity tags.' }
+
+            { Assert-GatewayRuntimeImagePullIdentityEvidence `
+                -Config $config -Evidence $evidence -ExpectedRegistryId $registryId `
+                -DeploymentOwnershipId $ownershipId -SourceFingerprint $sourceFingerprint } |
+                Should -Throw '*unavailable or mismatched*'
+
+            $evidence.runtimeImagePullIdentityId = "$identityId/extra"
+            { Assert-GatewayRuntimeImagePullIdentityEvidence `
+                -Config $config -Evidence $evidence -ExpectedRegistryId $registryId `
+                -DeploymentOwnershipId $ownershipId -SourceFingerprint $sourceFingerprint } |
+                Should -Throw '*unavailable or mismatched*'
+
+            $evidence.runtimeImagePullIdentityId = $identityId
+            $evidence.runtimeImagePullAcrPullRoleAssignmentId = "$registryId/providers/Microsoft.Authorization/roleAssignments/not-a-guid"
+            { Assert-GatewayRuntimeImagePullIdentityEvidence `
+                -Config $config -Evidence $evidence -ExpectedRegistryId $registryId `
+                -DeploymentOwnershipId $ownershipId -SourceFingerprint $sourceFingerprint } |
+                Should -Throw '*unavailable or mismatched*'
         }
     }
 }
@@ -446,10 +578,11 @@ Describe 'Azure What-If result boundary' {
                 location = 'koreacentral'
                 resourceGroupName = 'rg-safe-dev'
             }
+            $script:whatIfSourceFingerprint = "sha256:$('a' * 64)"
         }
 
         It 'accepts an explicit empty changes array' {
-            $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333'
+            $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint
 
             $result.executed | Should -BeTrue
             $result.applyReady | Should -BeTrue
@@ -457,6 +590,7 @@ Describe 'Azure What-If result boundary' {
             Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
                 $formatIndex = [Array]::IndexOf([object[]]$Arguments, '--result-format')
                 $Arguments -contains '--no-pretty-print' -and
+                    $Arguments -contains "bootstrapSourceFingerprint=$script:whatIfSourceFingerprint" -and
                     $formatIndex -ge 0 -and
                     $formatIndex + 1 -lt $Arguments.Count -and
                     $Arguments[$formatIndex + 1] -ceq 'ResourceIdOnly'
@@ -473,7 +607,7 @@ Describe 'Azure What-If result boundary' {
                 })
             }
 
-            $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333'
+            $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint
 
             $result.executed | Should -BeTrue
             $result.applyReady | Should -BeTrue
@@ -490,7 +624,7 @@ Describe 'Azure What-If result boundary' {
                 })
             }
 
-            $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333'
+            $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint
 
             $result.applyReady | Should -BeTrue
             $result.changeCounts['Deploy'] | Should -Be 1
@@ -504,7 +638,7 @@ Describe 'Azure What-If result boundary' {
                 properties = [pscustomobject]@{ changes = @() }
             }
 
-            $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333'
+            $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint
 
             $result.applyReady | Should -BeFalse
             $result.reason | Should -BeLike '*malformed result contract*'
@@ -517,7 +651,7 @@ Describe 'Azure What-If result boundary' {
             )) {
                 $script:whatIfResult = $malformed
 
-                $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333'
+                $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint
 
                 $result.applyReady | Should -BeFalse
                 $result.reason | Should -BeLike '*malformed result contract*'
@@ -535,7 +669,7 @@ Describe 'Azure What-If result boundary' {
                     })
                 }
 
-                (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333').applyReady |
+                (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint).applyReady |
                     Should -BeFalse
             }
         }
@@ -548,7 +682,7 @@ Describe 'Azure What-If result boundary' {
             )) {
                 $script:whatIfResult = $malformed
 
-                $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333'
+                $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint
 
                 $result.executed | Should -BeTrue
                 $result.applyReady | Should -BeFalse
@@ -564,14 +698,14 @@ Describe 'Azure What-If result boundary' {
                     changes = [pscustomobject]@{ changeType = 'Create'; resourceId = '/subscriptions/other/resourceGroups/rg-safe-dev' }
                 }
             }
-            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333').applyReady |
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint).applyReady |
                 Should -BeFalse
 
             $script:whatIfResult.properties.changes = @([pscustomobject]@{
                 changeType = 'Create'
                 resourceId = '/subscriptions/99999999-9999-4999-8999-999999999999/resourceGroups/rg-other'
             })
-            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333').applyReady |
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint).applyReady |
                 Should -BeFalse
         }
     }

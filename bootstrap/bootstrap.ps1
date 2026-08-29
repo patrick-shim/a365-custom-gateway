@@ -147,7 +147,7 @@ function Invoke-GatewayPlanWorkflow {
     Set-BootstrapAzureSubscriptionContext `
         -SubscriptionId ([string]$Configuration.subscriptionId) `
         -TenantId ([string]$Configuration.tenantId)
-    $whatIf = Invoke-GatewayFoundationWhatIf -Config $Configuration -RepositoryRoot $root -DeploymentOwnershipId ([string]$State.deploymentOwnershipId)
+    $whatIf = Invoke-GatewayFoundationWhatIf -Config $Configuration -RepositoryRoot $root -DeploymentOwnershipId ([string]$State.deploymentOwnershipId) -SourceFingerprint $sourceFingerprintBefore
     Assert-GatewaySeedBlueprintPlanBoundary -Descriptor $descriptor -Config $Configuration -State $State | Out-Null
     $sourceFingerprintAfter = Get-BootstrapSourceFingerprint
     $configurationFingerprintAfter = Get-BootstrapConfigurationFingerprint -Config $Configuration
@@ -586,7 +586,7 @@ try {
             Write-GatewayExperienceEvent -Type Info -Message 'Rechecking the accepted Azure What-If prediction before any mutation...' -Data ([ordered]@{
                 step = 'Plan review'; index = 1; total = $stepNames.Count
             }) -OutputFormat $OutputFormat
-            $applyWhatIf = Invoke-GatewayFoundationWhatIf -Config $configuration -RepositoryRoot $executionSourceRoot -DeploymentOwnershipId ([string]$state.deploymentOwnershipId)
+            $applyWhatIf = Invoke-GatewayFoundationWhatIf -Config $configuration -RepositoryRoot $executionSourceRoot -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint
         }
         if (-not $applyWhatIf.applyReady) { throw 'Accepted plan revalidation could not run authenticated Azure What-If. No mutation was started.' }
         $expectedPlanFingerprint = Get-GatewayPlanContractFingerprint -Descriptor $descriptor -WhatIf $applyWhatIf -ConfigurationFingerprint $configurationFingerprint -SourceFingerprint $activeAcceptedSourceFingerprint
@@ -648,16 +648,16 @@ try {
     } | Out-Null
 
     $foundation = Invoke-GatewayStateStep -Name 'Azure foundation' -Validate {
-        Test-GatewaySubscriptionDeploymentEvidence -Config $configuration -Evidence $state.steps['Azure foundation'].evidence -DeploymentOwnershipId ([string]$state.deploymentOwnershipId)
+        Test-GatewaySubscriptionDeploymentEvidence -Config $configuration -Evidence $state.steps['Azure foundation'].evidence -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint
     } -Reconcile {
         Invoke-GatewayExactReconciliation -Readback {
-            $recovered = Get-BootstrapFoundationEvidence -Config $configuration -DeploymentOwnershipId ([string]$state.deploymentOwnershipId)
-            $null = Test-GatewaySubscriptionDeploymentEvidence -Config $configuration -Evidence $recovered -DeploymentOwnershipId ([string]$state.deploymentOwnershipId)
+            $recovered = Get-BootstrapFoundationEvidence -Config $configuration -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint
+            $null = Test-GatewaySubscriptionDeploymentEvidence -Config $configuration -Evidence $recovered -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint
             return $recovered
         }
     } -NoAutomaticReplayAfterStart -Action {
-        $created = Deploy-BootstrapFoundation -Config $configuration -DeploymentOwnershipId ([string]$state.deploymentOwnershipId)
-        $null = Test-GatewaySubscriptionDeploymentEvidence -Config $configuration -Evidence $created -DeploymentOwnershipId ([string]$state.deploymentOwnershipId)
+        $created = Deploy-BootstrapFoundation -Config $configuration -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint
+        $null = Test-GatewaySubscriptionDeploymentEvidence -Config $configuration -Evidence $created -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint
         return $created
     }
 
@@ -695,7 +695,15 @@ try {
         $runtimeSupersededInert = $state.steps['Gateway runtime deployment'] -and [string]$state.steps['Gateway runtime deployment'].status -eq 'Completed'
         Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $state.steps['Inert identity deployment'].evidence -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -AllowRuntimeSupersession:$runtimeSupersededInert
     } -Action {
-        $created = Deploy-GatewayCore -Config $configuration -Foundation $foundation -Identity $identity -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -WorkerPrincipalId '' -ManagerApplicationIds @() -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint -Initial
+        $recoveredInertEvidence = if ($state.steps['Inert identity deployment'].Contains('evidence')) {
+            $state.steps['Inert identity deployment'].evidence
+        }
+        else { $null }
+        $created = Deploy-GatewayCore -Config $configuration -Foundation $foundation -Identity $identity -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -WorkerPrincipalId '' -ManagerApplicationIds @() -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint -Initial -RecoveredEvidence $recoveredInertEvidence -Checkpoint {
+            param($partialEvidence)
+            $state.steps['Inert identity deployment'].evidence = $partialEvidence
+            Save-BootstrapState -State $state -Path $statePath
+        }
         $null = Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $created -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker)
         return $created
     }

@@ -33,8 +33,11 @@ param serviceBusNamespaceName string
 @description('Name of the isolated provisioning queue. Data-plane roles are scoped to this queue, not the namespace.')
 param serviceBusQueueName string
 
-@description('Name of the Azure Container Registry.')
+@description('Name of the Azure Container Registry. Used only by the guarded historical system-identity image-pull path.')
 param containerRegistryName string
+
+@description('Restore the deterministic historical API and worker system-identity AcrPull assignments. Clean bootstrap leaves this false and uses its pre-authorized dedicated pull identity.')
+param enableLegacySystemAssignedAcrPull bool = false
 
 // ============================================================================
 // Variables
@@ -108,8 +111,10 @@ resource apiServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-0
   }
 }
 
-// API -> ACR: AcrPull
-resource apiAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+// Historical API -> ACR: AcrPull. This post-compute assignment is safe only for
+// updates to an already bootstrapped system-identity deployment or for the
+// explicitly guarded public-image identity bootstrap.
+resource apiAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableLegacySystemAssignedAcrPull) {
   name: guid(subscription().id, apiPrincipalId, containerRegistry.id, acrPullRoleId)
   scope: containerRegistry
   properties: {
@@ -168,8 +173,8 @@ resource workerServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2
   }
 }
 
-// Worker -> ACR: AcrPull
-resource workerAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+// Historical worker -> ACR: AcrPull. See the API assignment above.
+resource workerAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableLegacySystemAssignedAcrPull) {
   name: guid(subscription().id, workerPrincipalId, containerRegistry.id, acrPullRoleId)
   scope: containerRegistry
   properties: {

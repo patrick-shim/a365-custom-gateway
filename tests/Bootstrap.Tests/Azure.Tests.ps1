@@ -922,6 +922,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
             $script:wrongCoreWorkerPrincipalId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
             $script:coreManagerApplicationId = '99999999-9999-4999-8999-999999999999'
             $script:coreConfig = [pscustomobject]@{
+                subscriptionId = '10101010-1010-4010-8010-101010101010'
                 environment = 'dev'
                 location = 'koreacentral'
                 projectName = 'safe'
@@ -943,9 +944,18 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 sql = [pscustomobject]@{ skuName = 'Basic'; skuTier = 'Basic' }
             }
             $script:coreFoundation = [pscustomobject]@{
-                containerAppsEnvironmentName = 'cae-safe-dev'
+                deploymentOwnershipId = $script:coreOwnershipId
+                sourceFingerprint = $script:coreSourceFingerprint
+                resourceGroupName = 'rg-safe-dev'
+                containerAppsEnvironmentName = 'cae-safe-dev-vnet'
+                containerAppsEnvironmentId = '/subscriptions/10101010-1010-4010-8010-101010101010/resourceGroups/rg-safe-dev/providers/Microsoft.App/managedEnvironments/cae-safe-dev-vnet'
                 virtualNetworkName = 'vnet-safe-dev'
                 privateEndpointSubnetName = 'snet-private-endpoints'
+                acrName = 'acrsafedevabc123'
+                acrLoginServer = 'acrsafedevabc123.azurecr.io'
+                runtimeImagePullIdentityId = '/subscriptions/10101010-1010-4010-8010-101010101010/resourceGroups/rg-safe-dev/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-runtime-pull-dev'
+                runtimeImagePullIdentityPrincipalId = 'abababab-abab-4bab-8bab-abababababab'
+                runtimeImagePullAcrPullRoleAssignmentId = '/subscriptions/10101010-1010-4010-8010-101010101010/resourceGroups/rg-safe-dev/providers/Microsoft.ContainerRegistry/registries/acrsafedevabc123/providers/Microsoft.Authorization/roleAssignments/cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd'
             }
             $script:coreIdentity = [pscustomobject]@{
                 gatewayApiClientId = '22222222-2222-4222-8222-222222222222'
@@ -964,6 +974,105 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 workerPrincipalName = 'ca-gateway-worker-dev-v3'
                 workerPrincipalClientId = '55555555-5555-4555-8555-555555555555'
                 workerPrincipalObjectId = $script:coreWorkerPrincipalId
+            }
+            $script:coreApiImage = "acrsafe.azurecr.io/gateway-api@sha256:$('1' * 64)"
+            $script:coreWorkerImage = "acrsafe.azurecr.io/gateway-worker@sha256:$('2' * 64)"
+            $script:coreInitialArguments = @{
+                Config = $script:coreConfig
+                Foundation = $script:coreFoundation
+                Identity = $script:coreIdentity
+                ApiImage = $script:coreApiImage
+                WorkerImage = $script:coreWorkerImage
+                WorkerPrincipalId = ''
+                ManagerApplicationIds = @()
+                DeploymentOwnershipId = $script:coreOwnershipId
+                SourceFingerprint = $script:coreSourceFingerprint
+                Initial = $true
+            }
+            $script:newPartialWorkerApp = {
+                $userAssigned = [ordered]@{}
+                $userAssigned[[string]$script:coreFoundation.runtimeImagePullIdentityId] = [ordered]@{
+                    principalId = [string]$script:coreFoundation.runtimeImagePullIdentityPrincipalId
+                    clientId = 'dededede-dede-4ede-8ede-dededededede'
+                }
+                return [pscustomobject]@{
+                    id = "/subscriptions/$($script:coreConfig.subscriptionId)/resourceGroups/$($script:coreConfig.resourceGroupName)/providers/Microsoft.App/containerApps/ca-gateway-worker-dev-v3"
+                    name = 'ca-gateway-worker-dev-v3'
+                    type = 'Microsoft.App/containerApps'
+                    location = 'koreacentral'
+                    tags = [ordered]@{
+                        project = 'a365-gateway'
+                        environment = 'dev'
+                        managedBy = 'bicep'
+                        projectName = 'safe'
+                        deploymentId = 'safe-dev'
+                        bootstrapOwnershipId = $script:coreOwnershipId
+                        bootstrapSourceFingerprint = $script:coreSourceFingerprint
+                    }
+                    identity = [ordered]@{
+                        type = 'SystemAssigned, UserAssigned'
+                        principalId = 'efefefef-efef-4fef-8fef-efefefefefef'
+                        tenantId = [string]$script:coreConfig.tenantId
+                        userAssignedIdentities = $userAssigned
+                    }
+                    properties = [ordered]@{
+                        provisioningState = 'Failed'
+                        managedEnvironmentId = [string]$script:coreFoundation.containerAppsEnvironmentId
+                        configuration = [ordered]@{
+                            activeRevisionsMode = 'Single'
+                            secretCount = 0
+                            registries = @([ordered]@{
+                                server = [string]$script:coreFoundation.acrLoginServer
+                                identity = [string]$script:coreFoundation.runtimeImagePullIdentityId
+                            })
+                            ingress = $null
+                        }
+                        template = [ordered]@{
+                            containers = @([ordered]@{
+                                name = 'ca-gateway-worker-dev-v3'
+                                image = $script:coreWorkerImage
+                                resources = [ordered]@{ cpu = 0.25; memory = '0.5Gi' }
+                                env = @([ordered]@{ name = 'DOTNET_ENVIRONMENT'; value = 'Production' })
+                            })
+                            volumes = @()
+                            scale = [ordered]@{ minReplicas = 0; maxReplicas = 3; rules = @() }
+                        }
+                    }
+                }
+            }
+            $script:newCompleteApiApp = {
+                $app = & $script:newPartialWorkerApp
+                $app.id = "/subscriptions/$($script:coreConfig.subscriptionId)/resourceGroups/$($script:coreConfig.resourceGroupName)/providers/Microsoft.App/containerApps/ca-gateway-api-dev"
+                $app.name = 'ca-gateway-api-dev'
+                $app.properties.provisioningState = 'Succeeded'
+                $app.properties.configuration.ingress = [ordered]@{
+                    external = $true
+                    allowInsecure = $false
+                    targetPort = 8080
+                    transport = 'auto'
+                    fqdn = 'ca-gateway-api-dev.safe.azurecontainerapps.io'
+                    customDomains = @()
+                    ipSecurityRestrictions = @()
+                }
+                $app.properties.template.containers[0].name = 'ca-gateway-api-dev'
+                $app.properties.template.containers[0].image = $script:coreApiImage
+                $app.properties.template.containers[0].resources = [ordered]@{ cpu = 0.5; memory = '1Gi' }
+                $app.properties.template.containers[0].env = @([ordered]@{ name = 'ASPNETCORE_ENVIRONMENT'; value = 'Production' })
+                $app.properties.template.scale = [ordered]@{ minReplicas = 1; maxReplicas = 3; rules = @() }
+                return $app
+            }
+            $script:newTerminalCoreDeployment = {
+                param([string]$State, [string]$CorrelationId = '12121212-1212-4212-8212-121212121212')
+                return [pscustomobject]@{
+                    properties = [pscustomobject]@{
+                        provisioningState = $State
+                        mode = 'Incremental'
+                        correlationId = $CorrelationId
+                        timestamp = '2026-08-30T01:02:03.0000000+00:00'
+                        parameters = [pscustomobject]@{}
+                        outputs = [pscustomobject]@{}
+                    }
+                }
             }
             Mock Get-BootstrapExecutionSourceRoot { return $TestDrive }
             Mock Get-BootstrapSourceFingerprint { return $script:coreSourceFingerprint }
@@ -1130,6 +1239,483 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 Should -Throw '*exact ownership/source-bound current database-attestation evidence*'
 
             Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+        }
+
+        It 'accepts the exact readable parameter surface while treating the secure Admin UI URI as logically blank' {
+            $expected = [ordered]@{
+                deployAdminUi = $false
+                adminUiContainerImage = ''
+                adminUiEntraClientId = ''
+                adminUiEntraClientSecretKeyVaultSecretUri = ''
+                runtimeImagePullIdentityId = [string]$script:coreFoundation.runtimeImagePullIdentityId
+            }
+            $actual = [ordered]@{
+                deployAdminUi = [ordered]@{ value = $false }
+                adminUiContainerImage = [ordered]@{ value = '' }
+                adminUiEntraClientId = [ordered]@{ value = '' }
+                adminUiEntraClientSecretKeyVaultSecretUri = [ordered]@{}
+                runtimeImagePullIdentityId = [ordered]@{ value = ([string]$script:coreFoundation.runtimeImagePullIdentityId).ToUpperInvariant() }
+            }
+
+            Assert-GatewayExactReadableArmParameters -ActualParameters $actual -ExpectedParameters $expected `
+                -SecureParameterNames @('adminUiEntraClientSecretKeyVaultSecretUri') | Should -BeTrue
+        }
+
+        It 'rejects exact deployment parameter mismatch <Mutation>' -ForEach @(
+            @{ Mutation = 'extra' },
+            @{ Mutation = 'missing' },
+            @{ Mutation = 'value' },
+            @{ Mutation = 'unreadable' }
+        ) {
+            $expected = [ordered]@{ environment = 'dev'; workerProcessingEnabled = $false }
+            $actual = [ordered]@{
+                environment = [ordered]@{ value = 'dev' }
+                workerProcessingEnabled = [ordered]@{ value = $false }
+            }
+            switch ($Mutation) {
+                'extra' { $actual['unreviewed'] = [ordered]@{ value = 'x' } }
+                'missing' { $actual.Remove('environment') }
+                'value' { $actual.workerProcessingEnabled.value = $true }
+                'unreadable' { $actual.environment = [ordered]@{} }
+            }
+
+            { Assert-GatewayExactReadableArmParameters -ActualParameters $actual -ExpectedParameters $expected } |
+                Should -Throw '*prior inert deployment*'
+        }
+
+        It 'accepts truly absent partial provider fields without weakening the exact resource boundary' {
+            $app = & $script:newPartialWorkerApp
+            $app.PSObject.Properties.Remove('identity')
+            $app.properties.Remove('configuration')
+            $app.properties.Remove('template')
+
+            Assert-GatewayExactPartialContainerAppEnvelope -App $app -Role Worker `
+                -Config $script:coreConfig -Foundation $script:coreFoundation `
+                -ExpectedImage $script:coreWorkerImage -DeploymentOwnershipId $script:coreOwnershipId `
+                -SourceFingerprint $script:coreSourceFingerprint `
+                -ExpectedEnvironment ([ordered]@{ DOTNET_ENVIRONMENT = 'Production' }) | Should -BeTrue
+        }
+
+        It 'rejects a Succeeded child whose identity, configuration, and template are incomplete' {
+            $app = & $script:newPartialWorkerApp
+            $app.properties.provisioningState = 'Succeeded'
+            $app.PSObject.Properties.Remove('identity')
+            $app.properties.Remove('configuration')
+            $app.properties.Remove('template')
+
+            { Assert-GatewayExactPartialContainerAppEnvelope -App $app -Role Worker `
+                    -Config $script:coreConfig -Foundation $script:coreFoundation `
+                    -ExpectedImage $script:coreWorkerImage -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint `
+                    -ExpectedEnvironment ([ordered]@{ DOTNET_ENVIRONMENT = 'Production' }) } |
+                Should -Throw '*completed Container App*'
+        }
+
+        It 'rejects a Succeeded worker with missing complete field <Field>' -ForEach @(
+            @{ Field = 'tenantId' },
+            @{ Field = 'cpu' },
+            @{ Field = 'memory' },
+            @{ Field = 'minReplicas' },
+            @{ Field = 'maxReplicas' }
+        ) {
+            $app = & $script:newPartialWorkerApp
+            $app.properties.provisioningState = 'Succeeded'
+            switch ($Field) {
+                'tenantId' { $app.identity.Remove('tenantId') }
+                'cpu' { $app.properties.template.containers[0].resources.Remove('cpu') }
+                'memory' { $app.properties.template.containers[0].resources.Remove('memory') }
+                'minReplicas' { $app.properties.template.scale.Remove('minReplicas') }
+                'maxReplicas' { $app.properties.template.scale.Remove('maxReplicas') }
+            }
+
+            { Assert-GatewayExactPartialContainerAppEnvelope -App $app -Role Worker `
+                    -Config $script:coreConfig -Foundation $script:coreFoundation `
+                    -ExpectedImage $script:coreWorkerImage -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint `
+                    -ExpectedEnvironment ([ordered]@{ DOTNET_ENVIRONMENT = 'Production' }) } |
+                Should -Throw
+        }
+
+        It 'rejects a Succeeded API with missing ingress field <Field>' -ForEach @(
+            @{ Field = 'external' },
+            @{ Field = 'allowInsecure' },
+            @{ Field = 'targetPort' },
+            @{ Field = 'transport' },
+            @{ Field = 'fqdn' }
+        ) {
+            $app = & $script:newCompleteApiApp
+            $app.properties.configuration.ingress.Remove($Field)
+            $expectedEnvironment = [ordered]@{
+                ASPNETCORE_ENVIRONMENT = 'Production'
+                __recoveryApiFqdn = 'ca-gateway-api-dev.safe.azurecontainerapps.io'
+            }
+
+            { Assert-GatewayExactPartialContainerAppEnvelope -App $app -Role Api `
+                    -Config $script:coreConfig -Foundation $script:coreFoundation `
+                    -ExpectedImage $script:coreApiImage -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint -ExpectedEnvironment $expectedEnvironment } |
+                Should -Throw
+        }
+
+        It 'rejects a wrong-case partial environment name under ordinal matching' {
+            $app = & $script:newPartialWorkerApp
+            $app.properties.template.containers[0].env[0].name = 'dotnet_environment'
+
+            { Assert-GatewayExactPartialContainerAppEnvelope -App $app -Role Worker `
+                    -Config $script:coreConfig -Foundation $script:coreFoundation `
+                    -ExpectedImage $script:coreWorkerImage -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint `
+                    -ExpectedEnvironment ([ordered]@{ DOTNET_ENVIRONMENT = 'Production' }) } |
+                Should -Throw '*missing, duplicate, or unreviewed name*'
+        }
+
+        It 'rejects partial Container App mismatch <Mutation>' -ForEach @(
+            @{ Mutation = 'source' },
+            @{ Mutation = 'extraIdentity' },
+            @{ Mutation = 'systemRegistry' },
+            @{ Mutation = 'secret' },
+            @{ Mutation = 'extraEnvironment' },
+            @{ Mutation = 'nonterminal' },
+            @{ Mutation = 'environmentId' },
+            @{ Mutation = 'scaleRule' },
+            @{ Mutation = 'workerIngress' }
+        ) {
+            $app = & $script:newPartialWorkerApp
+            switch ($Mutation) {
+                'source' { $app.tags.bootstrapSourceFingerprint = "sha256:$('f' * 64)" }
+                'extraIdentity' { $app.identity.userAssignedIdentities['/subscriptions/other/resourceGroups/other/providers/Microsoft.ManagedIdentity/userAssignedIdentities/other'] = [ordered]@{} }
+                'systemRegistry' { $app.properties.configuration.registries[0].identity = 'system' }
+                'secret' { $app.properties.configuration.secretCount = 1 }
+                'extraEnvironment' { $app.properties.template.containers[0].env += ,[ordered]@{ name = 'Unreviewed__Gate'; value = 'true' } }
+                'nonterminal' { $app.properties.provisioningState = 'Running' }
+                'environmentId' { $app.properties.managedEnvironmentId = '/subscriptions/other/resourceGroups/other/providers/Microsoft.App/managedEnvironments/other' }
+                'scaleRule' { $app.properties.template.scale.rules = @([ordered]@{ name = 'unreviewed' }) }
+                'workerIngress' { $app.properties.configuration.ingress = [ordered]@{ external = $true; targetPort = 8080 } }
+            }
+
+            { Assert-GatewayExactPartialContainerAppEnvelope -App $app -Role Worker `
+                    -Config $script:coreConfig -Foundation $script:coreFoundation `
+                    -ExpectedImage $script:coreWorkerImage -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint `
+                    -ExpectedEnvironment ([ordered]@{ DOTNET_ENVIRONMENT = 'Production' }) } |
+                Should -Throw
+        }
+
+        It 'rejects an absent deployment that collides with either fresh app target' {
+            Mock Invoke-AzTsv {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'deployment') { return '0' }
+                if ($Arguments -contains 'ca-gateway-worker-dev-v3') { return '1' }
+                return '0'
+            }
+
+            { Deploy-GatewayCore @script:coreInitialArguments } |
+                Should -Throw '*was not proven absent*'
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+        }
+
+        It 'retries an exact terminal <State> deployment under the same Incremental name only after checkpointing' -ForEach @(
+            @{ State = 'Failed'; CorrelationId = '12121212-1212-4212-8212-121212121212' },
+            @{ State = 'Canceled'; CorrelationId = '13131313-1313-4313-8313-131313131313' }
+        ) {
+            $script:retryCheckpoint = $null
+            $terminal = & $script:newTerminalCoreDeployment $State $CorrelationId
+            Mock Assert-GatewayExactReadableArmParameters { return $true }
+            Mock Invoke-AzTsv {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'deployment') { return '1' }
+                return '0'
+            }
+            Mock Invoke-AzJson { return $terminal }
+            Mock Invoke-ArmDeploymentWithSecureParameters { throw 'terminal-retry-reached' }
+
+            { Deploy-GatewayCore @script:coreInitialArguments -Checkpoint {
+                    param($partialEvidence)
+                    $script:retryCheckpoint = $partialEvidence
+                } } | Should -Throw '*terminal-retry-reached*'
+
+            $script:retryCheckpoint.terminalDeploymentRetryReceipts.Count | Should -Be 1
+            @($script:retryCheckpoint.Keys | Sort-Object -CaseSensitive) -join '|' |
+                Should -BeExactly 'deploymentName|deploymentOwnershipId|observedPartialPrincipalIds|sourceFingerprint|terminalDeploymentRetryReceipts'
+            $receipt = $script:retryCheckpoint.terminalDeploymentRetryReceipts[0]
+            @($receipt.Keys | Sort-Object) -join '|' | Should -BeExactly 'correlationId|mode|state|timestamp'
+            $receipt.state | Should -BeExactly $State
+            $receipt.correlationId | Should -BeExactly $CorrelationId
+            $receipt.mode | Should -BeExactly 'Incremental'
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
+                $Name -ceq 'a365gw-safe-bootstrap-inert-dev' -and $Mode -ceq 'Incremental'
+            }
+        }
+
+        It 'rejects nonterminal deployment state <State> without mutation' -ForEach @(
+            @{ State = 'Running' },
+            @{ State = 'Accepted' }
+        ) {
+            $terminal = & $script:newTerminalCoreDeployment $State
+            Mock Assert-GatewayExactReadableArmParameters { return $true }
+            Mock Invoke-AzTsv { return '1' }
+            Mock Invoke-AzJson { return $terminal }
+
+            { Deploy-GatewayCore @script:coreInitialArguments -Checkpoint {} } |
+                Should -Throw '*nonterminal or has an unknown state*'
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+        }
+
+        It 'adopts a Succeeded deployment through GET-only evidence and app validation' {
+            $succeeded = & $script:newTerminalCoreDeployment 'Succeeded'
+            $script:succeededEvidence = [ordered]@{
+                deploymentName = 'a365gw-safe-bootstrap-inert-dev'
+                apiPrincipalId = '14141414-1414-4414-8414-141414141414'
+                workerPrincipalId = '15151515-1515-4515-8515-151515151515'
+            }
+            Mock Assert-GatewayExactReadableArmParameters { return $true }
+            Mock New-GatewayCoreEvidence { return $script:succeededEvidence }
+            Mock Assert-GatewaySucceededContainerAppBoundary { return $true }
+            Mock Invoke-AzTsv { return '1' }
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'deployment') { return $succeeded }
+                return [pscustomobject]@{ name = [string]$Arguments[$Arguments.Count - 1] }
+            }
+
+            $result = Deploy-GatewayCore @script:coreInitialArguments -Checkpoint { throw 'checkpoint must not run' }
+
+            $result.deploymentName | Should -BeExactly 'a365gw-safe-bootstrap-inert-dev'
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+            Should -Invoke Assert-GatewaySucceededContainerAppBoundary -Times 2 -Exactly
+        }
+
+        It 'validates both exact extant app targets before a terminal retry' {
+            $terminal = & $script:newTerminalCoreDeployment 'Failed'
+            Mock Assert-GatewayExactReadableArmParameters { return $true }
+            Mock Get-GatewayInertPartialEnvironmentContract { return [ordered]@{ Api = [ordered]@{}; Worker = [ordered]@{} } }
+            Mock Assert-GatewayExactPartialContainerAppEnvelope { return $true }
+            Mock Invoke-AzTsv { return '1' }
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'deployment') { return $terminal }
+                return [pscustomobject]@{ name = [string]$Arguments[$Arguments.Count - 1] }
+            }
+            Mock Invoke-ArmDeploymentWithSecureParameters { throw 'two-app-retry-reached' }
+
+            { Deploy-GatewayCore @script:coreInitialArguments -Checkpoint {} } |
+                Should -Throw '*two-app-retry-reached*'
+            Should -Invoke Assert-GatewayExactPartialContainerAppEnvelope -Times 2 -Exactly
+        }
+
+        It 'runs terminal retry through real parameter and partial-app validators and blocks a mismatch first' {
+            $script:capturedCoreParameters = $null
+            Mock Invoke-AzTsv { return '0' }
+            Mock Invoke-ArmDeploymentWithSecureParameters {
+                param($ResourceGroup, $Name, $TemplateFile, $Parameters, $Mode)
+                $script:capturedCoreParameters = $Parameters
+                throw 'parameter-capture-complete'
+            }
+            { Deploy-GatewayCore @script:coreInitialArguments } | Should -Throw '*parameter-capture-complete*'
+
+            $actualParameters = [ordered]@{}
+            foreach ($entry in $script:capturedCoreParameters.GetEnumerator()) {
+                $actualParameters[$entry.Key] = [ordered]@{}
+                if ([string]$entry.Key -cne 'adminUiEntraClientSecretKeyVaultSecretUri') {
+                    $actualParameters[$entry.Key]['value'] = $entry.Value
+                }
+            }
+            $actualParameters.agent365ManagerApplicationIds.value = @()
+            $terminal = & $script:newTerminalCoreDeployment 'Failed'
+            $terminal.properties.parameters = $actualParameters
+            $partialWorker = & $script:newPartialWorkerApp
+            $script:terminalRetryCalls = 0
+            $script:integratedCheckpoint = $null
+            $script:partialContainerAppQuery = $null
+            Mock Get-GatewayInertPartialEnvironmentContract {
+                return [ordered]@{ Worker = [ordered]@{ DOTNET_ENVIRONMENT = 'Production' } }
+            }
+            Mock Invoke-AzTsv {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'deployment') { return '1' }
+                if ($Arguments -contains 'ca-gateway-worker-dev-v3') { return '1' }
+                return '0'
+            }
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'deployment') { return $terminal }
+                $script:partialContainerAppQuery = [string]$Arguments[[Array]::IndexOf($Arguments, '--query') + 1]
+                return $partialWorker
+            }
+            Mock Invoke-ArmDeploymentWithSecureParameters {
+                $script:terminalRetryCalls++
+                throw 'integrated-terminal-retry-reached'
+            }
+
+            $terminal.properties.parameters.workerProcessingEnabled.value = $true
+            { Deploy-GatewayCore @script:coreInitialArguments -Checkpoint {} } |
+                Should -Throw '*parameter does not match*'
+            $script:terminalRetryCalls | Should -Be 0
+
+            $terminal.properties.parameters.workerProcessingEnabled.value = $false
+            { Deploy-GatewayCore @script:coreInitialArguments -Checkpoint {
+                    param($partialEvidence)
+                    $script:integratedCheckpoint = $partialEvidence
+                } } | Should -Throw '*integrated-terminal-retry-reached*'
+            $script:terminalRetryCalls | Should -Be 1
+            $script:integratedCheckpoint.observedPartialPrincipalIds.Worker | Should -BeExactly 'efefefef-efef-4fef-8fef-efefefefefef'
+            $script:partialContainerAppQuery.Contains('secretCount:length(not_null(properties.configuration.secrets, `[]`))') | Should -BeTrue
+            $script:partialContainerAppQuery | Should -Not -BeLike '*secrets:properties.configuration.secrets*'
+        }
+
+        It 'does not invoke ARM when the durable retry checkpoint fails' {
+            $terminal = & $script:newTerminalCoreDeployment 'Failed'
+            Mock Assert-GatewayExactReadableArmParameters { return $true }
+            Mock Invoke-AzTsv {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'deployment') { return '1' }
+                return '0'
+            }
+            Mock Invoke-AzJson { return $terminal }
+
+            { Deploy-GatewayCore @script:coreInitialArguments -Checkpoint { throw 'checkpoint-write-failed' } } |
+                Should -Throw '*checkpoint-write-failed*'
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+        }
+
+        It 'rejects a previously observed partial principal drift before mutation' {
+            $terminal = & $script:newTerminalCoreDeployment 'Failed'
+            $partialWorker = & $script:newPartialWorkerApp
+            $priorEvidence = [ordered]@{
+                deploymentName = 'a365gw-safe-bootstrap-inert-dev'
+                deploymentOwnershipId = $script:coreOwnershipId
+                sourceFingerprint = $script:coreSourceFingerprint
+                terminalDeploymentRetryReceipts = @()
+                observedPartialPrincipalIds = [ordered]@{ Worker = '18181818-1818-4818-8818-181818181818' }
+            }
+            Mock Assert-GatewayExactReadableArmParameters { return $true }
+            Mock Get-GatewayInertPartialEnvironmentContract {
+                return [ordered]@{ Worker = [ordered]@{ DOTNET_ENVIRONMENT = 'Production' } }
+            }
+            Mock Invoke-AzTsv {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'deployment') { return '1' }
+                if ($Arguments -contains 'ca-gateway-worker-dev-v3') { return '1' }
+                return '0'
+            }
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'deployment') { return $terminal }
+                return $partialWorker
+            }
+
+            { Deploy-GatewayCore @script:coreInitialArguments -RecoveredEvidence $priorEvidence -Checkpoint {} } |
+                Should -Throw '*principal is absent or has drifted*'
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+        }
+
+        It 'seeds recovery principal bindings from prior completed inert evidence' {
+            $priorEvidence = [ordered]@{
+                deploymentName = 'a365gw-safe-bootstrap-inert-dev'
+                deploymentOwnershipId = $script:coreOwnershipId
+                sourceFingerprint = $script:coreSourceFingerprint
+                apiPrincipalId = '19191919-1919-4919-8919-191919191919'
+                workerPrincipalId = '20202020-2020-4020-8020-202020202020'
+            }
+
+            $recovered = Get-GatewayInertRecoveredRetryReceipts -RecoveredEvidence $priorEvidence `
+                -DeploymentName 'a365gw-safe-bootstrap-inert-dev' `
+                -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint
+
+            $recovered.principalIds.Api | Should -BeExactly '19191919-1919-4919-8919-191919191919'
+            $recovered.principalIds.Worker | Should -BeExactly '20202020-2020-4020-8020-202020202020'
+
+            $malformedCases = @(
+                [ordered]@{
+                    deploymentName = 'a365gw-safe-bootstrap-inert-dev'
+                    deploymentOwnershipId = $script:coreOwnershipId
+                    sourceFingerprint = $script:coreSourceFingerprint
+                    terminalDeploymentRetryReceipts = @([ordered]@{
+                        state = 'Failed'; correlationId = '23232323-2323-4323-8323-232323232323'
+                        timestamp = '2026-08-29T00:00:00.0000000+00:00'; mode = 'Incremental'
+                        providerBody = 'private-provider-body-marker'
+                    })
+                },
+                [ordered]@{
+                    deploymentName = 'a365gw-safe-bootstrap-inert-dev'
+                    deploymentOwnershipId = $script:coreOwnershipId
+                    sourceFingerprint = $script:coreSourceFingerprint
+                    observedPartialPrincipalIds = [ordered]@{ Unknown = '24242424-2424-4424-8424-242424242424' }
+                }
+            )
+            foreach ($malformed in $malformedCases) {
+                try {
+                    Get-GatewayInertRecoveredRetryReceipts -RecoveredEvidence $malformed `
+                        -DeploymentName 'a365gw-safe-bootstrap-inert-dev' `
+                        -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint
+                    throw 'Expected malformed recovered evidence to fail closed.'
+                }
+                catch {
+                    $_.Exception.Message | Should -Match '^Recovered inert retry evidence contains (?:an invalid observed principal binding|a non-minimal receipt)\.$'
+                    $_.Exception.Message | Should -Not -Match 'private-provider-body-marker'
+                }
+            }
+        }
+
+        It 'rejects successful deployment output principal drift from the durable partial binding' {
+            Mock Get-GatewayCoreOutputValue {
+                param($Outputs, [string]$Name)
+                switch ($Name) {
+                    'deploymentOwnershipId' { return $script:coreOwnershipId }
+                    'bootstrapSourceFingerprint' { return $script:coreSourceFingerprint }
+                    'apiContainerImage' { return $script:coreApiImage }
+                    'workerContainerImage' { return $script:coreWorkerImage }
+                    'runtimeImagePullIdentityId' { return [string]$script:coreFoundation.runtimeImagePullIdentityId }
+                    'runtimeImagePullIdentityPrincipalId' { return [string]$script:coreFoundation.runtimeImagePullIdentityPrincipalId }
+                    'runtimeImagePullAcrPullRoleAssignmentId' { return [string]$script:coreFoundation.runtimeImagePullAcrPullRoleAssignmentId }
+                    'workerPrincipalId' { return '22222222-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }
+                    default { return '' }
+                }
+            }
+            $parameters = [ordered]@{
+                deploymentOwnershipId = $script:coreOwnershipId
+                bootstrapSourceFingerprint = $script:coreSourceFingerprint
+                apiContainerImage = $script:coreApiImage
+                workerContainerImage = $script:coreWorkerImage
+            }
+
+            { New-GatewayCoreEvidence -DeploymentName 'a365gw-safe-bootstrap-inert-dev' -Outputs ([pscustomobject]@{}) `
+                    -Foundation $script:coreFoundation -Parameters $parameters `
+                    -ObservedPartialPrincipalIds ([ordered]@{ Worker = '21212121-2121-4121-8121-212121212121' }) } |
+                Should -Throw '*system principal drifted*'
+        }
+
+        It 'preserves prior safe receipts and checkpoints the current terminal receipt when retry submission fails' {
+            $terminal = & $script:newTerminalCoreDeployment 'Canceled' '17171717-1717-4717-8717-171717171717'
+            $priorEvidence = [ordered]@{
+                deploymentName = 'a365gw-safe-bootstrap-inert-dev'
+                deploymentOwnershipId = $script:coreOwnershipId
+                sourceFingerprint = $script:coreSourceFingerprint
+                terminalDeploymentRetryReceipts = @([ordered]@{
+                    state = 'Failed'
+                    correlationId = '16161616-1616-4616-8616-161616161616'
+                    timestamp = '2026-08-29T00:00:00.0000000+00:00'
+                    mode = 'Incremental'
+                })
+            }
+            $script:retryCheckpoint = $null
+            Mock Assert-GatewayExactReadableArmParameters { return $true }
+            Mock Invoke-AzTsv {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'deployment') { return '1' }
+                return '0'
+            }
+            Mock Invoke-AzJson { return $terminal }
+            Mock Invoke-ArmDeploymentWithSecureParameters { throw 'provider-retry-failed' }
+
+            { Deploy-GatewayCore @script:coreInitialArguments -RecoveredEvidence $priorEvidence -Checkpoint {
+                    param($partialEvidence)
+                    $script:retryCheckpoint = $partialEvidence
+                } } | Should -Throw '*provider-retry-failed*'
+
+            $script:retryCheckpoint.terminalDeploymentRetryReceipts.Count | Should -Be 2
+            $script:retryCheckpoint.terminalDeploymentRetryReceipts[0].correlationId | Should -BeExactly '16161616-1616-4616-8616-161616161616'
+            $script:retryCheckpoint.terminalDeploymentRetryReceipts[1].correlationId | Should -BeExactly '17171717-1717-4717-8717-171717171717'
         }
     }
 }

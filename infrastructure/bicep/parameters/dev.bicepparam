@@ -6,6 +6,12 @@ param projectName = 'a365gw'
 param containerAppsEnvironmentName = readEnvironmentVariable('CONTAINER_APPS_ENVIRONMENT_NAME', 'cae-a365gw-dev-vnet')
 param virtualNetworkName = readEnvironmentVariable('VIRTUAL_NETWORK_NAME', 'vnet-a365gw-dev')
 param privateEndpointSubnetName = readEnvironmentVariable('PRIVATE_ENDPOINT_SUBNET_NAME', 'snet-private-endpoints')
+// Existing-environment compatibility is the explicit all-empty triple. Supply
+// all three foundation receipts together to use the dedicated pull identity.
+param runtimeImagePullIdentityId = readEnvironmentVariable('RUNTIME_IMAGE_PULL_IDENTITY_ID', '')
+param runtimeImagePullIdentityPrincipalId = readEnvironmentVariable('RUNTIME_IMAGE_PULL_IDENTITY_PRINCIPAL_ID', '')
+param runtimeImagePullAcrPullRoleAssignmentId = readEnvironmentVariable('RUNTIME_IMAGE_PULL_ACR_PULL_ROLE_ASSIGNMENT_ID', '')
+param allowLegacySystemAssignedImagePull = readEnvironmentVariable('ALLOW_LEGACY_SYSTEM_ASSIGNED_IMAGE_PULL', 'false') == 'true'
 
 param entraIdTenantId = 'ff8b1e46-ff0f-4bc2-ab02-caf2b92da496'
 param entraIdClientId = readEnvironmentVariable('ENTRA_CLIENT_ID', '00000000-0000-0000-0000-000000000000')

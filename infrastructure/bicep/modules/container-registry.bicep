@@ -40,6 +40,9 @@ resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-11-01-pr
   properties: {
     adminUserEnabled: adminUserEnabled
     policies: {
+      azureADAuthenticationAsArmPolicy: {
+        status: 'enabled'
+      }
       quarantinePolicy: {
         status: 'disabled'
       }
