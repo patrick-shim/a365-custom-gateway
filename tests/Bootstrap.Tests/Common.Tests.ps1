@@ -735,6 +735,22 @@ Describe 'Accepted deployment plan binding' {
         Test-Path -LiteralPath (Resolve-BootstrapAcceptedSourceRoot -State $state) -PathType Container | Should -BeTrue
     }
 
+    It 'validates an accepted plan after the persisted state is reloaded' {
+        $config = New-TestBootstrapConfig
+        $state = New-BootstrapState -Config $config
+        $path = Join-Path $TestDrive 'accepted-plan-roundtrip.json'
+        $planFingerprint = Get-BootstrapObjectFingerprint -InputObject ([ordered]@{
+            configurationFingerprint = $state.configurationFingerprint
+            operations = @('foundation', 'runtime')
+        })
+        Set-BootstrapAcceptedPlan -State $state -StatePath $path -PlanFingerprint $planFingerprint -BootstrapClientIpv4 '192.0.2.10' | Out-Null
+
+        $reloaded = Read-BootstrapState -Path $path -Config $config
+
+        $reloaded.acceptedPlan.acceptedAtUtc | Should -BeOfType [string]
+        Assert-BootstrapAcceptedPlan -State $reloaded -PlanFingerprint $planFingerprint | Should -BeTrue
+    }
+
     It 'rejects a plan fingerprint that was not accepted' {
         $config = New-TestBootstrapConfig
         $state = New-BootstrapState -Config $config

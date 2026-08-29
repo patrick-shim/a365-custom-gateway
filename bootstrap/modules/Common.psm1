@@ -833,12 +833,58 @@ function Assert-BootstrapIpv4Value {
     }
 }
 
+function Convert-BootstrapParsedJsonDatesToStrings {
+    param([Parameter()][AllowNull()]$Value)
+
+    if ($null -eq $Value) { return }
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($key in @($Value.Keys)) {
+            $child = $Value[$key]
+            if ($child -is [DateTime]) {
+                $Value[$key] = ([DateTimeOffset]$child).ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+            }
+            elseif ($child -is [DateTimeOffset]) {
+                $Value[$key] = $child.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+            }
+            elseif ($child -is [System.Collections.IDictionary] -or
+                ($child -is [System.Collections.IList] -and $child -isnot [string])) {
+                Convert-BootstrapParsedJsonDatesToStrings -Value $child
+            }
+        }
+        return
+    }
+    if ($Value -is [System.Collections.IList] -and $Value -isnot [string]) {
+        for ($index = 0; $index -lt $Value.Count; $index++) {
+            $child = $Value[$index]
+            if ($child -is [DateTime]) {
+                $Value[$index] = ([DateTimeOffset]$child).ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+            }
+            elseif ($child -is [DateTimeOffset]) {
+                $Value[$index] = $child.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+            }
+            elseif ($child -is [System.Collections.IDictionary] -or
+                ($child -is [System.Collections.IList] -and $child -isnot [string])) {
+                Convert-BootstrapParsedJsonDatesToStrings -Value $child
+            }
+        }
+    }
+}
+
 function Read-BootstrapState {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Config)
     if (-not (Test-Path -LiteralPath $Path)) { return New-BootstrapState -Config $Config }
 
     try {
-        $state = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 100 -AsHashtable -ErrorAction Stop
+        $rawState = Get-Content -LiteralPath $Path -Raw
+        $convertParameters = @{ Depth = 100; AsHashtable = $true; ErrorAction = 'Stop' }
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+            $convertParameters['DateKind'] = 'String'
+        }
+        $state = $rawState | ConvertFrom-Json @convertParameters
+        # PowerShell versions before 7.5 have no DateKind switch and Json.NET
+        # coerces ISO-8601 state strings to DateTime. Normalize those values back
+        # to the persisted string contract before any restart validation.
+        Convert-BootstrapParsedJsonDatesToStrings -Value $state
     }
     catch {
         throw "Bootstrap state '$Path' is not valid JSON. Preserve it for diagnosis; do not edit it to claim completion."
