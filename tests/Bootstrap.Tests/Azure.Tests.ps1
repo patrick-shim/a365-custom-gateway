@@ -184,6 +184,114 @@ Describe 'Deterministic resumable ACR image builds' {
             $tag.Length | Should -BeLessOrEqual 128
         }
 
+        It 'returns no runs for an absent exact tag without calling the image-filtered run command' {
+            $tag = Get-BootstrapImageBuildIntentTag `
+                -DeploymentOwnershipId $script:ownershipId `
+                -SourceFingerprint $script:sourceFingerprint `
+                -IntentId $script:intentIds.api
+            Mock Get-GatewayAcrExactTagDigest { return $null }
+            Mock Invoke-BootstrapCommand { throw 'Image-filtered run discovery must not execute for an absent tag.' }
+
+            @(Get-GatewayAcrExactImageRuns -Registry 'acrsafe' -Repository 'gateway-api' -Tag $tag).Count |
+                Should -Be 0
+
+            Should -Invoke Get-GatewayAcrExactTagDigest -Times 1 -Exactly
+            Should -Invoke Invoke-BootstrapCommand -Times 0 -Exactly
+        }
+
+        It 'uses image-filtered run discovery only after the exact tag exists' {
+            $tag = Get-BootstrapImageBuildIntentTag `
+                -DeploymentOwnershipId $script:ownershipId `
+                -SourceFingerprint $script:sourceFingerprint `
+                -IntentId $script:intentIds.api
+            $image = "gateway-api:$tag"
+            Mock Get-GatewayAcrExactTagDigest {
+                return [pscustomobject]@{ tag = $tag; digest = "sha256:$('1' * 64)" }
+            }
+            Mock Invoke-BootstrapCommand { return '[]' }
+
+            @(Get-GatewayAcrExactImageRuns -Registry 'acrsafe' -Repository 'gateway-api' -Tag $tag).Count |
+                Should -Be 0
+
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                ((@($ArgumentList) -join ' ') -ceq (
+                    "acr task list-runs --registry acrsafe --image $image --top 2 " +
+                    '--query [].{runId:runId,status:status,runType:runType,outputImages:outputImages} ' +
+                    '--output json --only-show-errors'))
+            }
+        }
+
+        It 'reads a durable queued run by its exact run ID without requiring the image tag' {
+            $tag = Get-BootstrapImageBuildIntentTag `
+                -DeploymentOwnershipId $script:ownershipId `
+                -SourceFingerprint $script:sourceFingerprint `
+                -IntentId $script:intentIds.api
+            Mock Get-GatewayAcrExactTagDigest { throw 'Run-ID readback must not require the image tag.' }
+            Mock Invoke-BootstrapCommand {
+                return '{"runId":"run-api","status":"Running","runType":"QuickBuild","outputImages":[]}'
+            }
+
+            $run = Get-GatewayAcrExactRunById `
+                -Registry 'acrsafe' `
+                -Repository 'gateway-api' `
+                -Tag $tag `
+                -RunId 'run-api'
+
+            $run.status | Should -BeExactly 'Running'
+            Should -Invoke Get-GatewayAcrExactTagDigest -Times 0 -Exactly
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                ((@($ArgumentList) -join ' ') -ceq (
+                    'acr task show-run --registry acrsafe --run-id run-api ' +
+                    '--query {runId:runId,status:status,runType:runType,outputImages:outputImages} ' +
+                    '--output json --only-show-errors'))
+            }
+        }
+
+        It 'rejects mismatched or malformed exact-run readback without disclosing provider output' {
+            $tag = Get-BootstrapImageBuildIntentTag `
+                -DeploymentOwnershipId $script:ownershipId `
+                -SourceFingerprint $script:sourceFingerprint `
+                -IntentId $script:intentIds.api
+            $script:acrRunReadback = ''
+            Mock Invoke-BootstrapCommand { return $script:acrRunReadback }
+            $cases = @(
+                [pscustomobject]@{
+                    output = '{"runId":"different-run","status":"Running","runType":"QuickBuild","outputImages":[]}'
+                    expected = 'ACR exact run readback returned a different or malformed run.'
+                },
+                [pscustomobject]@{
+                    output = '{"runId":"run-api","status":"Running","runType":"QuickBuild","outputImages":[],"private-provider-body-marker":"private-token-marker"}'
+                    expected = 'ACR exact run readback returned a different or malformed run.'
+                },
+                [pscustomobject]@{
+                    output = '{"runId":"run-api","status":"Succeeded","runType":"QuickBuild","outputImages":[{"repository":"gateway-worker","tag":"private-provider-body-marker","digest":"sha256:' + ('1' * 64) + '"}]}'
+                    expected = 'A succeeded ACR run did not report the one exact intended output image.'
+                },
+                [pscustomobject]@{
+                    output = '{"private-provider-body-marker":'
+                    expected = 'ACR exact run readback returned malformed JSON.'
+                }
+            )
+
+            foreach ($case in $cases) {
+                $script:acrRunReadback = $case.output
+                try {
+                    Get-GatewayAcrExactRunById `
+                        -Registry 'acrsafe' `
+                        -Repository 'gateway-api' `
+                        -Tag $tag `
+                        -RunId 'run-api'
+                    throw 'Expected the mismatched ACR run readback to fail closed.'
+                }
+                catch {
+                    $_.Exception.Message | Should -BeExactly $case.expected
+                    $_.Exception.Message | Should -Not -Match 'private-(provider-body|token)-marker'
+                }
+            }
+        }
+
         It 'reuses only exact intent tags carrying durable digest checkpoints' {
             Mock Get-GatewayAcrExactTagDigest {
                 param([string]$Registry, [string]$Repository, [string]$Tag)
@@ -251,6 +359,15 @@ Describe 'Deterministic resumable ACR image builds' {
                     })
                 }
                 return @()
+            }
+            Mock Get-GatewayAcrExactRunById {
+                param([string]$Registry, [string]$Repository, [string]$Tag, [string]$RunId)
+                return [pscustomobject]@{
+                    runId = $RunId; status = 'Succeeded'; runType = 'QuickBuild'
+                    outputImages = @([pscustomobject]@{
+                        repository = $Repository; tag = $Tag; digest = $script:digestByRepository[$Repository]
+                    })
+                }
             }
             Mock Invoke-AzJson {
                 param([string[]]$Arguments)
@@ -329,6 +446,15 @@ Describe 'Deterministic resumable ACR image builds' {
                 }
                 return @()
             }
+            Mock Get-GatewayAcrExactRunById {
+                param([string]$Registry, [string]$Repository, [string]$Tag, [string]$RunId)
+                return [pscustomobject]@{
+                    runId = $RunId; status = 'Succeeded'; runType = 'QuickBuild'
+                    outputImages = @([pscustomobject]@{
+                        repository = $Repository; tag = $Tag; digest = $script:digestByRepository[$Repository]
+                    })
+                }
+            }
             Mock Invoke-AzJson {
                 param([string[]]$Arguments)
                 $imageIndex = [Array]::IndexOf($Arguments, '--image')
@@ -348,6 +474,52 @@ Describe 'Deterministic resumable ACR image builds' {
                 $imageIndex = [Array]::IndexOf($Arguments, '--image')
                 $Arguments[$imageIndex + 1] -like 'gateway-api:*'
             }
+        }
+
+        It 'polls a recovered RunQueued checkpoint by durable run ID and never resubmits a terminal failure' {
+            $apiTag = Get-BootstrapImageBuildIntentTag `
+                -DeploymentOwnershipId $script:ownershipId `
+                -SourceFingerprint $script:sourceFingerprint `
+                -IntentId $script:intentIds.api
+            $recovered = [ordered]@{
+                schemaVersion = 2; registry = 'acrsafe'; sourceFingerprint = $script:sourceFingerprint
+                deploymentOwnershipId = $script:ownershipId; provenance = 'BootstrapPreMutationIntentV2'
+                buildIntents = [ordered]@{
+                    api = [ordered]@{
+                        component = 'api'; repository = 'gateway-api'; intentId = $script:intentIds.api
+                        tag = $apiTag; state = 'RunQueued'; runId = 'durable-run-api'
+                    }
+                }
+                checkpointedComponents = @()
+            }
+            Mock Get-GatewayAcrExactImageRuns { throw 'RunQueued recovery must not rediscover by image tag.' }
+            Mock Get-GatewayAcrExactTagDigest { throw 'A failed queued run must not be treated as a completed image.' }
+            Mock Get-GatewayAcrExactRunById {
+                return [pscustomobject]@{
+                    runId = 'durable-run-api'; status = 'Failed'; runType = 'QuickBuild'; outputImages = @()
+                }
+            }
+            Mock Invoke-AzJson { throw 'A terminal run must never be resubmitted.' }
+            Mock New-GatewayAcrBuildContext { throw 'A terminal run must not create a new build context.' }
+
+            { Build-GatewayImages `
+                    -Config ([pscustomobject]@{}) `
+                    -AcrLoginServer 'acrsafe.azurecr.io' `
+                    -SourceFingerprint $script:sourceFingerprint `
+                    -DeploymentOwnershipId $script:ownershipId `
+                    -RecoveredEvidence $recovered `
+                    -Checkpoint {} } |
+                Should -Throw '*exact ACR build reached a terminal failure*'
+
+            Should -Invoke Get-GatewayAcrExactRunById -Times 1 -Exactly -ParameterFilter {
+                $Registry -ceq 'acrsafe' -and
+                $Repository -ceq 'gateway-api' -and
+                $Tag -ceq $apiTag -and
+                $RunId -ceq 'durable-run-api'
+            }
+            Should -Invoke Get-GatewayAcrExactImageRuns -Times 0 -Exactly
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly
+            Should -Invoke New-GatewayAcrBuildContext -Times 0 -Exactly
         }
 
         It 'refuses to resubmit a recovered intent when neither the run nor its outcome can be proven' {

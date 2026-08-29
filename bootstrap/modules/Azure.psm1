@@ -698,6 +698,13 @@ function Get-GatewayAcrExactImageRuns {
         $Tag -cnotmatch '^bootstrap-[0-9a-f]{32}-[0-9a-f]{32}-[0-9a-f]{32}$') {
         throw 'The exact ACR run-discovery target is malformed.'
     }
+    $tagDigest = Get-GatewayAcrExactTagDigest -Registry $Registry -Repository $Repository -Tag $Tag
+    if (-not $tagDigest) {
+        # `az acr task list-runs --image` resolves the tag to a manifest first and
+        # exits nonzero for a never-built tag. Exact tag absence is sufficient to
+        # prove that there is no discoverable completed output for this image.
+        return @()
+    }
     $raw = Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @(
         'acr', 'task', 'list-runs', '--registry', $Registry,
         '--image', "${Repository}:$Tag", '--top', '2',
@@ -719,7 +726,7 @@ function Get-GatewayAcrExactImageRuns {
     foreach ($run in @($runs)) {
         if ([string]$run.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$' -or
             [string]$run.runType -cne 'QuickBuild' -or
-            [string]$run.status -notin @('Queued', 'Started', 'Running', 'Succeeded', 'Failed', 'Canceled', 'Error', 'Timeout')) {
+            @('Queued', 'Started', 'Running', 'Succeeded', 'Failed', 'Canceled', 'Error', 'Timeout') -cnotcontains [string]$run.status) {
             throw 'ACR exact image-run discovery returned a malformed run contract.'
         }
         $outputImages = @($run.outputImages)
@@ -740,6 +747,67 @@ function Get-GatewayAcrExactImageRuns {
         }
     }
     return @($runs)
+}
+
+function Get-GatewayAcrExactRunById {
+    param(
+        [Parameter(Mandatory)][string]$Registry,
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][string]$Tag,
+        [Parameter(Mandatory)][string]$RunId
+    )
+
+    if ($Registry -cnotmatch '^[a-z0-9]{5,50}$' -or
+        $Repository -cnotmatch '^[a-z0-9]+(?:[._/-][a-z0-9]+)*$' -or
+        $Tag -cnotmatch '^bootstrap-[0-9a-f]{32}-[0-9a-f]{32}-[0-9a-f]{32}$' -or
+        $RunId -cnotmatch '^[A-Za-z0-9-]{1,64}$') {
+        throw 'The exact ACR run readback target is malformed.'
+    }
+    $raw = Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @(
+        'acr', 'task', 'show-run', '--registry', $Registry, '--run-id', $RunId,
+        '--query', '{runId:runId,status:status,runType:runType,outputImages:outputImages}',
+        '--output', 'json', '--only-show-errors'
+    )
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw 'ACR exact run readback returned no JSON object.'
+    }
+    try {
+        $run = ConvertFrom-Json -InputObject $raw -Depth 30 -NoEnumerate -ErrorAction Stop
+    }
+    catch {
+        throw 'ACR exact run readback returned malformed JSON.'
+    }
+    if ($run -isnot [pscustomobject]) {
+        throw 'ACR exact run readback returned a different or malformed run.'
+    }
+    $propertyNames = @($run.PSObject.Properties.Name)
+    if ($propertyNames.Count -ne 4 -or
+        @(@('runId', 'status', 'runType', 'outputImages') |
+                Where-Object { $propertyNames -cnotcontains $_ }).Count -ne 0 -or
+        [string]$run.runId -cne $RunId) {
+        throw 'ACR exact run readback returned a different or malformed run.'
+    }
+    if ([string]$run.runType -cne 'QuickBuild' -or
+        @('Queued', 'Started', 'Running', 'Succeeded', 'Failed', 'Canceled', 'Error', 'Timeout') -cnotcontains [string]$run.status) {
+        throw 'ACR exact run readback returned a malformed run contract.'
+    }
+    $outputImages = @($run.outputImages)
+    if ([string]$run.status -ceq 'Succeeded') {
+        if ($outputImages.Count -ne 1 -or
+            [string]$outputImages[0].repository -cne $Repository -or
+            [string]$outputImages[0].tag -cne $Tag -or
+            [string]$outputImages[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            throw 'A succeeded ACR run did not report the one exact intended output image.'
+        }
+    }
+    elseif ($outputImages.Count -gt 1 -or ($outputImages.Count -eq 1 -and (
+        [string]$outputImages[0].repository -cne $Repository -or
+        [string]$outputImages[0].tag -cne $Tag -or
+        (-not [string]::IsNullOrWhiteSpace([string]$outputImages[0].digest) -and
+            [string]$outputImages[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$')))) {
+        throw 'A non-succeeded ACR run reported a mismatched output image contract.'
+    }
+    return $run
 }
 
 function Assert-GatewayAcrQueuedRunContract {
@@ -913,39 +981,34 @@ function Build-GatewayImages {
                 continue
             }
 
-            $runs = @()
-            for ($discoveryAttempt = 1; $discoveryAttempt -le 6 -and $runs.Count -eq 0; $discoveryAttempt++) {
-                $runs = @(Get-GatewayAcrExactImageRuns -Registry $registry -Repository $repository -Tag $tag)
-                if ($runs.Count -eq 0 -and -not $intentCreatedThisInvocation -and $discoveryAttempt -lt 6) {
-                    Start-Sleep -Seconds 2
+            if ([string]$intent.state -ceq 'IntentRecorded') {
+                $runs = @()
+                for ($discoveryAttempt = 1; $discoveryAttempt -le 6 -and $runs.Count -eq 0; $discoveryAttempt++) {
+                    $runs = @(Get-GatewayAcrExactImageRuns -Registry $registry -Repository $repository -Tag $tag)
+                    if ($runs.Count -eq 0 -and -not $intentCreatedThisInvocation -and $discoveryAttempt -lt 6) {
+                        Start-Sleep -Seconds 2
+                    }
+                    elseif ($intentCreatedThisInvocation) { break }
                 }
-                elseif ($intentCreatedThisInvocation) { break }
-            }
 
-            if ([string]$intent.state -ceq 'IntentRecorded' -and $runs.Count -eq 0) {
-                if (-not $intentCreatedThisInvocation) {
-                    throw 'A recovered image-build intent has neither an exact ACR run nor a digest. Submission outcome is ambiguous, so automatic resubmission is forbidden.'
+                if ($runs.Count -eq 0) {
+                    if (-not $intentCreatedThisInvocation) {
+                        throw 'A recovered image-build intent has neither an exact ACR run nor a digest. Submission outcome is ambiguous, so automatic resubmission is forbidden.'
+                    }
+                    if (-not $buildContext) {
+                        $buildContext = New-GatewayAcrBuildContext -RepositoryRoot $root -SourceFingerprint $SourceFingerprint
+                    }
+                    $queuedRun = Invoke-AzJson -Arguments @(
+                        'acr', 'build', '--registry', $registry, '--image', $imageTag,
+                        '--file', [string]$entry.Value.dockerfile,
+                        $buildContext, '--no-wait',
+                        '--query', '{runId:runId,status:status,runType:runType,outputImages:outputImages}')
+                    $intent.runId = Assert-GatewayAcrQueuedRunContract -Run $queuedRun -Repository $repository -Tag $tag
+                    $intent.state = 'RunQueued'
+                    & $Checkpoint $result
                 }
-                if (-not $buildContext) {
-                    $buildContext = New-GatewayAcrBuildContext -RepositoryRoot $root -SourceFingerprint $SourceFingerprint
-                }
-                $queuedRun = Invoke-AzJson -Arguments @(
-                    'acr', 'build', '--registry', $registry, '--image', $imageTag,
-                    '--file', [string]$entry.Value.dockerfile,
-                    $buildContext, '--no-wait',
-                    '--query', '{runId:runId,status:status,runType:runType,outputImages:outputImages}')
-                $intent.runId = Assert-GatewayAcrQueuedRunContract -Run $queuedRun -Repository $repository -Tag $tag
-                $intent.state = 'RunQueued'
-                & $Checkpoint $result
-                $runs = @($queuedRun)
-            }
-            elseif ($runs.Count -eq 1) {
-                $observedRunId = [string]$runs[0].runId
-                if ([string]$intent.state -ceq 'RunQueued' -and [string]$intent.runId -cne $observedRunId) {
-                    throw 'The exact image tag resolved to a different ACR run than the durable checkpoint.'
-                }
-                if ([string]$intent.state -ceq 'IntentRecorded') {
-                    $intent.runId = $observedRunId
+                else {
+                    $intent.runId = [string]$runs[0].runId
                     $intent.state = 'RunQueued'
                     & $Checkpoint $result
                 }
@@ -953,16 +1016,14 @@ function Build-GatewayImages {
 
             $terminalRun = $null
             for ($attempt = 1; $attempt -le 30; $attempt++) {
-                $currentRuns = @(Get-GatewayAcrExactImageRuns -Registry $registry -Repository $repository -Tag $tag)
-                if ($currentRuns.Count -eq 1 -and [string]$currentRuns[0].runId -ceq [string]$intent.runId) {
-                    $currentRun = $currentRuns[0]
-                    if ([string]$currentRun.status -ceq 'Succeeded') { $terminalRun = $currentRun; break }
-                    if ([string]$currentRun.status -in @('Failed', 'Canceled', 'Error', 'Timeout')) {
-                        throw 'The exact ACR build reached a terminal failure. Automatic resubmission is forbidden; review the run and start a newly accepted plan.'
-                    }
-                }
-                elseif ($currentRuns.Count -gt 0) {
-                    throw 'ACR run reconciliation returned a different or ambiguous exact-tag run.'
+                $currentRun = Get-GatewayAcrExactRunById `
+                    -Registry $registry `
+                    -Repository $repository `
+                    -Tag $tag `
+                    -RunId ([string]$intent.runId)
+                if ([string]$currentRun.status -ceq 'Succeeded') { $terminalRun = $currentRun; break }
+                if ([string]$currentRun.status -in @('Failed', 'Canceled', 'Error', 'Timeout')) {
+                    throw 'The exact ACR build reached a terminal failure. Automatic resubmission is forbidden; review the run and start a newly accepted plan.'
                 }
                 if ($attempt -lt 30) { Start-Sleep -Seconds 2 }
             }
