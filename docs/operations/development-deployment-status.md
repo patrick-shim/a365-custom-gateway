@@ -20,7 +20,7 @@ or mutated by that bootstrap work.
 ## 2026-08-30 clean-subscription live bootstrap and recovery checkpoint
 
 The Phase 6 candidate is frozen on branch `codex/phase6-candidate` at source
-commit `9b229434f4578a68fc8c60029838d30e133a1b93`. The exact-account boundary now
+commit `00018600b8b1bdd466f16ab28a66b58348b82a0b`. The exact-account boundary now
 acquires Microsoft Graph access through `az account get-access-token` with the
 reviewed subscription, verifies returned subscription/tenant/type/lifetime
 metadata, and sends only bounded Graph v1.0 requests through an in-process,
@@ -30,7 +30,7 @@ the accepted-source file or a byte-identical source-bound copy.
 
 The final local candidate gate is zero-warning/zero-error Release build and
 **1,279/1,279** direct Release tests with the unchanged project split below.
-Pester discovered **238** tests: **237** passed, none failed, and one Windows-only
+Pester discovered **243** tests: **242** passed, none failed, and one Windows-only
 launcher test was skipped on macOS. The canonical source gate parsed **16**
 PowerShell files and **2** JSON contracts and compiled all **23** Bicep templates;
 `git diff --check` is clean. Independent correctness/security reviews found no
@@ -89,10 +89,35 @@ be mixed with a new source fingerprint. Commit
 `9b229434f4578a68fc8c60029838d30e133a1b93` fixes empty-tag discovery and changes
 durable `RunQueued` reconciliation to exact GA `acr task show-run --run-id`
 readback; unknown `IntentRecorded` outcomes remain no-resubmit. The next live action
-uses distinct project `a365gw3` and absent resource group
-`rg-a365-custom-gw-phase6b` in the same disposable target. Existing deployment
-subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor
-mutated, and its retained queues/messages were not accessed.
+at that checkpoint was distinct project `a365gw3` and resource group
+`rg-a365-custom-gw-phase6b` in the same disposable target.
+
+The `a365gw3` Plan
+`sha256:16bcceb1a065ed2ab7b4fa86ae668048c3e79aca9cd7927e1c4a564d22724eaf`
+bound source `sha256:8262d7a88aea42b2032e8f512c32864762129f9531ccaa0d0fef464c81a0e05c`
+and ownership `8be8e474-c48d-43d0-9470-69b28659df4a`; authenticated What-If again
+reported six Creates and zero Deletes. Apply completed provider/foundation/API
+identity steps and reached 5/19. It persisted API build intent
+`34d63927-4d89-44a5-a4b2-34eddac8cb6a`, then submitted exactly one ACR run before
+rejecting the provider result: `az acr build` returned service run type `QuickRun`
+while the accepted source required `QuickBuild`. No `RunQueued` claim was persisted
+and no second build was submitted.
+
+Exact readback showed run `de1` was the only ACR run and later succeeded as
+`QuickRun`, producing only `gateway-api` digest
+`sha256:6b7bec7ac533440f39ae5826c6b7829458e3af315dcddd259e1b3de835a4a829`.
+No worker/Admin UI build, SQL, Agent 365 blueprint, runtime, Service Bus
+queue/outbox, registration, canary, key, or Purview mutation occurred. The
+`a365gw3` state, accepted snapshot, resource group, successful image, and Entra
+application remain preserved and cannot consume changed source.
+
+Commit `00018600b8b1bdd466f16ab28a66b58348b82a0b` aligns submission, exact-tag
+discovery, exact run-ID polling, and final image verification to the one exact
+`QuickRun` contract; it rejects `QuickBuild`, `AutoBuild`, and `AutoRun` without
+provider-body disclosure. The next live action uses distinct project `a365gw4` and
+absent resource group `rg-a365-custom-gw-phase6c`. Existing deployment subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and its
+retained queues/messages were not accessed.
 
 ## 2026-08-29 local Phase 0–6 bootstrap candidate (unreleased and incomplete)
 

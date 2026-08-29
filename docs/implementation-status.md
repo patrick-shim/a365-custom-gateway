@@ -380,11 +380,11 @@ runbooks, and paired Claude/Codex deployment instructions all reference the new
 locations. This was a source-only relocation; no Azure or database state changed.
 
 The complete 2026-08-30 Phase 6 candidate gate passes at source commit
-`9b229434f4578a68fc8c60029838d30e133a1b93`. The Release solution build has zero
+`00018600b8b1bdd466f16ab28a66b58348b82a0b`. The Release solution build has zero
 warnings and zero errors. Direct Release tests are **1,279/1,279**: unit 478,
 Admin UI 155, local Setup 75, observability/runtime 149, integration 92,
-end-to-end 106, architecture 113, and security 111. Pester discovered **238** tests:
-**237** passed, none failed, and one Windows-only launcher test was skipped on macOS.
+end-to-end 106, architecture 113, and security 111. Pester discovered **243** tests:
+**242** passed, none failed, and one Windows-only launcher test was skipped on macOS.
 The canonical bootstrap source gate parsed **16** PowerShell files and **2** JSON
 contracts and compiled all **23** Bicep templates. `dotnet format
 --verify-no-changes` and `git diff --check` pass. The repository has **55**
@@ -417,10 +417,25 @@ Commit `9b229434f4578a68fc8c60029838d30e133a1b93` fixes that discovered boundary
 absent exact tags do not invoke image-filtered run discovery, while a durable
 `RunQueued` checkpoint is polled through exact `acr task show-run --run-id`
 readback with strict output/digest validation and no automatic resubmission of an
-unknown `IntentRecorded` outcome. The next bootstrap action is a new isolated
-`a365gw3` Plan/Apply in absent resource group `rg-a365-custom-gw-phase6b`, followed
-by Resume/Verify, one real registration through `Active`, a bounded data-plane
-canary, and key revocation. Subscription
+unknown `IntentRecorded` outcome.
+
+The resulting isolated `a365gw3` Plan
+`sha256:16bcceb1a065ed2ab7b4fa86ae668048c3e79aca9cd7927e1c4a564d22724eaf`
+again contained exactly six Creates and no Deletes for
+`rg-a365-custom-gw-phase6b`. Apply reached 5/19 and submitted exactly one API image
+build before the next live contract mismatch: Azure reports an `az acr build`
+execution as `QuickRun`, not the source's `QuickBuild`. State had durably recorded
+only the pre-mutation API intent, so it did not claim the rejected run ID and did
+not submit again. Exact run `de1` subsequently succeeded with one `gateway-api`
+digest; no worker or Admin UI build was submitted. The source-bound `a365gw3`
+state/snapshot and its foundation/API identity remain preserved.
+
+Commit `00018600b8b1bdd466f16ab28a66b58348b82a0b` now requires `QuickRun` consistently
+for submission, exact tag discovery, durable run-ID polling, and final immutable
+image verification; `QuickBuild` and both automatic run types fail closed. The
+next bootstrap action is a new isolated `a365gw4` Plan/Apply in absent resource
+group `rg-a365-custom-gw-phase6c`, followed by Resume/Verify, one real registration
+through `Active`, a bounded data-plane canary, and key revocation. Subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was not mutated or used for this proof. No
 new bootstrap runtime, queue/outbox, or Purview behavior is live-proven yet.
 
