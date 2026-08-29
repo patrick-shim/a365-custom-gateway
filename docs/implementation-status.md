@@ -323,7 +323,7 @@ reported as completion of the plan. The authoritative phase status is:
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans, proved one deliberate interruption/Resume boundary, and reached 5/19 while exposing successive fresh-ACR recovery contracts. `a365gw4` exposed the sparse scheduling receipt; `a365gw5` proved the run-ID projection but exposed Azure CLI stderr contaminating the captured JSON before its checkpoint. A completed fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans, proved one deliberate interruption/Resume boundary, and reached 5/19 while exposing successive fresh-ACR recovery contracts. `a365gw4` exposed the sparse scheduling receipt; `a365gw5` exposed Azure CLI stderr contaminating its JSON. Both receipt boundaries are fixed and locally verified; a completed fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
@@ -503,11 +503,17 @@ stderr, contaminating the JSON stream before receipt validation and checkpointin
 No worker or Admin UI build, SQL initialization, Agent 365 blueprint, runtime,
 Service Bus queue/outbox, registration, canary, Gateway-key action, or Purview
 action occurred. Preserve `a365gw5` and do not Resume it with edited source. A
-targeted stdout-only receipt boundary is in progress; no implementation or test
-result for that change is claimed at this checkpoint. Protected subscription
-`95bedc30-f6ac-481b-a3a6-588d2883c216` remains unselected and unmodified, and its
-queues/messages were not accessed. The next live action is another fresh isolated
-generation only after the fix, tests, and review pass.
+targeted stdout-only receipt boundary is implemented in commit
+`a165519df704fdeb30dae7092f8f88cd4a89b22f`. It discards stderr without disk
+persistence, preserves fixed redacted exit-code handling even when the caller
+enables native error promotion, and is used by exactly the ACR no-wait scheduling
+receipt. Focused tests pass 87/87; the complete Bootstrap suite passes 234 with zero
+failures and one pre-existing macOS skip. All four changed PowerShell files parse,
+`git diff --check` passes, and independent review found no remaining issue.
+Protected subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` remains unselected
+and unmodified, and its queues/messages were not accessed. The next live action is
+fresh isolated project `a365gw6` in absent resource group
+`rg-a365-custom-gw-phase6e`.
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an

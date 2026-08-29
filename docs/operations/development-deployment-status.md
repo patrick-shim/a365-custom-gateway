@@ -189,11 +189,16 @@ fails before checkpointing.
 No worker or Admin UI build, SQL initialization, Agent 365 blueprint, runtime,
 Service Bus queue/outbox, registration, canary, Gateway-key action, or Purview
 action occurred. Preserve this generation and do not Resume it with edited source.
-A targeted stdout-only receipt-capture fix is in progress; no implementation or
-test result for it is claimed at this checkpoint. The existing deployment
-subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` remains unselected and
-unmodified, and its retained queues/messages were not accessed. The next live
-action is a fresh isolated generation only after implementation, tests, and review.
+Commit `a165519df704fdeb30dae7092f8f88cd4a89b22f` adds an explicit stdout-only
+receipt-capture boundary that discards stderr without disk persistence, preserves
+fixed redacted exit-code handling even when native error promotion is enabled, and
+is used by exactly the ACR no-wait scheduling receipt. Focused tests pass 87/87;
+the complete Bootstrap suite passes 234 with zero failures and one pre-existing
+macOS skip. All four changed PowerShell files parse, `git diff --check` passes, and
+independent review found no remaining issue. The existing deployment subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` remains unselected and unmodified, and its
+retained queues/messages were not accessed. The next live action is fresh isolated
+project `a365gw6` in absent resource group `rg-a365-custom-gw-phase6e`.
 
 ## 2026-08-29 local Phase 0–6 bootstrap candidate (unreleased and incomplete)
 
