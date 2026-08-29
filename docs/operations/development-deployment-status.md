@@ -163,6 +163,38 @@ deployment subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and its
 retained queues/messages were not accessed.
 
+Fresh generation `a365gw5-dev` then started from absent resource group
+`rg-a365-custom-gw-phase6d` and absent bootstrap state in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Ownership is
+`06bba549-69ba-474b-97e7-100cdc31a4fa`; ACR is `acra365gw5devtn2ykh`.
+Its accepted Plan
+`sha256:ffc845dc08b140faf9e81362de3fc22d6cfab74000fd119f5a80e9cd19faaa98`
+bound configuration
+`sha256:40da086f6562c28b29a1c7a414ab3f35e806ef5b85c88693761208be2c6a509e`
+and source
+`sha256:2936dcb8ad1d742304a571717f0c7d48ae2c4d54074725fc5244a2043e7ad493`;
+authenticated What-If reported exactly six Create actions and zero Delete actions.
+
+Apply completed 5/19, persisted API intent
+`396d698d-2968-4714-956a-cf8be964e9c8`, submitted exactly one API build, and
+stopped before the `RunQueued` checkpoint. Exact run `de1` succeeded as `QuickRun`,
+producing `gateway-api` digest
+`sha256:375361ec21424dbb038c409ea018b96e0cc34c9e2926ee81803429e95b361fdd`;
+bootstrap evidence remains `IntentRecorded`. The run-ID-only projection in commit
+`3ad90d764bbd64acc778c24b0b09c0ff02be564e` is correct, but
+`Invoke-BootstrapCommand` merges stderr into stdout. Azure CLI 2.89.1 writes its
+queued-build notice to stderr, so the merged stream is not the one JSON receipt and
+fails before checkpointing.
+
+No worker or Admin UI build, SQL initialization, Agent 365 blueprint, runtime,
+Service Bus queue/outbox, registration, canary, Gateway-key action, or Purview
+action occurred. Preserve this generation and do not Resume it with edited source.
+A targeted stdout-only receipt-capture fix is in progress; no implementation or
+test result for it is claimed at this checkpoint. The existing deployment
+subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` remains unselected and
+unmodified, and its retained queues/messages were not accessed. The next live
+action is a fresh isolated generation only after implementation, tests, and review.
+
 ## 2026-08-29 local Phase 0–6 bootstrap candidate (unreleased and incomplete)
 
 The working tree now exposes the day-zero path through `./gateway` on macOS/Linux

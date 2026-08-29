@@ -323,7 +323,7 @@ reported as completion of the plan. The authoritative phase status is:
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans, proved one deliberate interruption/Resume boundary, and reached 5/19 while exposing successive fresh-ACR recovery contracts. The latest `a365gw4` attempt exactly recovered one successful API build and then stopped after exactly one successful worker build because its sparse scheduling receipt was not checkpointed. The receipt contract is fixed and locally verified; a completed fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans, proved one deliberate interruption/Resume boundary, and reached 5/19 while exposing successive fresh-ACR recovery contracts. `a365gw4` exposed the sparse scheduling receipt; `a365gw5` proved the run-ID projection but exposed Azure CLI stderr contaminating the captured JSON before its checkpoint. A completed fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
@@ -478,6 +478,36 @@ source.
 Protected subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` was not selected,
 mutated, or used for this proof. No new bootstrap runtime, queue/outbox, or Purview
 behavior is live-proven yet.
+
+The next isolated generation, `a365gw5-dev`, started from absent resource group
+`rg-a365-custom-gw-phase6d` and absent bootstrap state. Ownership is
+`06bba549-69ba-474b-97e7-100cdc31a4fa`; ACR is `acra365gw5devtn2ykh`.
+Its accepted Plan
+`sha256:ffc845dc08b140faf9e81362de3fc22d6cfab74000fd119f5a80e9cd19faaa98`
+bound configuration
+`sha256:40da086f6562c28b29a1c7a414ab3f35e806ef5b85c88693761208be2c6a509e`
+and source
+`sha256:2936dcb8ad1d742304a571717f0c7d48ae2c4d54074725fc5244a2043e7ad493`;
+authenticated What-If reported exactly six Create actions and zero Delete actions.
+
+Apply completed 5/19, recorded API intent
+`396d698d-2968-4714-956a-cf8be964e9c8`, submitted exactly one build, and stopped
+before `RunQueued`. Exact run `de1` succeeded as `QuickRun` with `gateway-api`
+digest
+`sha256:375361ec21424dbb038c409ea018b96e0cc34c9e2926ee81803429e95b361fdd`,
+while bootstrap state remains `IntentRecorded`. The run-ID-only projection from
+commit `3ad90d764bbd64acc778c24b0b09c0ff02be564e` is correct, but the shared command
+runner merges stderr into stdout. Azure CLI 2.89.1 emits its queued-build notice on
+stderr, contaminating the JSON stream before receipt validation and checkpointing.
+
+No worker or Admin UI build, SQL initialization, Agent 365 blueprint, runtime,
+Service Bus queue/outbox, registration, canary, Gateway-key action, or Purview
+action occurred. Preserve `a365gw5` and do not Resume it with edited source. A
+targeted stdout-only receipt boundary is in progress; no implementation or test
+result for that change is claimed at this checkpoint. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` remains unselected and unmodified, and its
+queues/messages were not accessed. The next live action is another fresh isolated
+generation only after the fix, tests, and review pass.
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
