@@ -379,12 +379,12 @@ exists. Bootstrap modules, workflows, the database migrator, architecture tests,
 runbooks, and paired Claude/Codex deployment instructions all reference the new
 locations. This was a source-only relocation; no Azure or database state changed.
 
-The complete 2026-08-30 Phase 6 candidate gate passes at source commit
-`00018600b8b1bdd466f16ab28a66b58348b82a0b`. The Release solution build has zero
+The corrected 2026-08-30 Phase 6 candidate gate passes at source commit
+`715bbf93dcefa95266f1ce7616f8d39ca137fa10`. The Release solution build has zero
 warnings and zero errors. Direct Release tests are **1,279/1,279**: unit 478,
 Admin UI 155, local Setup 75, observability/runtime 149, integration 92,
-end-to-end 106, architecture 113, and security 111. Pester discovered **243** tests:
-**242** passed, none failed, and one Windows-only launcher test was skipped on macOS.
+end-to-end 106, architecture 113, and security 111. Pester discovered **267** tests:
+**266** passed, none failed, and one Windows-only launcher test was skipped on macOS.
 The canonical bootstrap source gate parsed **16** PowerShell files and **2** JSON
 contracts and compiled all **23** Bicep templates. `dotnet format
 --verify-no-changes` and `git diff --check` pass. The repository has **55**
@@ -565,6 +565,34 @@ no-result ACR scheduling/discovery fix plus initial-only empty identity-input fi
 complete local verification, and a new isolated generation. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
 retained queue/message was accessed.
+
+Commit `715bbf93dcefa95266f1ce7616f8d39ca137fa10` implements and independently
+reviews that correction without touching live Azure state. A fresh build now uses
+one stdout-isolated `az acr build --no-logs`, accepts only its exact succeeded
+`QuickRun` projection, checkpoints the run ID, and independently revalidates the
+run plus immutable tag/digest. Recovery scans a bounded registry-wide projection
+for the unique intent tag, requests a 101st truncation sentinel, and fails closed
+on truncation, ambiguity, terminal failure, or an unknown recovered submission;
+it never automatically resubmits that outcome. Initial deployment accepts only the
+intentional empty worker/manager authority inputs and rejects database, activation,
+Purview, or Admin UI runtime inputs before Azure access. Runtime deployment binds
+the canonical worker principal exactly to ownership/source-bound database evidence.
+
+The same commit maps the real ARM output `agent365RegistryProvider` to normalized
+evidence `registryProvider`, replaces positional string-array preflight splatting
+with one named hashtable that preserves the manager-ID array, and verifies the
+explicit continuous-development contract. Security-critical Registry/admission
+environment settings must now be one plain value in exactly one container;
+case-conflicting duplicates, missing values, secret references, mixed continuous/
+exact inputs fail closed, and exact registration/delegated-action windows are
+exercised only as independent states. Focused regression tests pass **103/103**,
+the architecture suite passes **113/113**, the complete Pester gate passes **266**
+with the one macOS skip, and
+independent settled-diff review found no actionable issue. The next live action is
+a new isolated `a365gw7` generation in absent resource group
+`rg-a365-custom-gw-phase6f` in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`; `a365gw6` remains frozen evidence and the
+protected running subscription remains outside the proof.
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an

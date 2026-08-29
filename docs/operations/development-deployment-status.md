@@ -19,8 +19,8 @@ or mutated by that bootstrap work.
 
 ## 2026-08-30 clean-subscription live bootstrap and recovery checkpoint
 
-The Phase 6 candidate is frozen on branch `codex/phase6-candidate` at source
-commit `00018600b8b1bdd466f16ab28a66b58348b82a0b`. The exact-account boundary now
+The corrected Phase 6 candidate is frozen on branch `codex/phase6-candidate` at
+source commit `715bbf93dcefa95266f1ce7616f8d39ca137fa10`. The exact-account boundary now
 acquires Microsoft Graph access through `az account get-access-token` with the
 reviewed subscription, verifies returned subscription/tenant/type/lifetime
 metadata, and sends only bounded Graph v1.0 requests through an in-process,
@@ -30,11 +30,13 @@ the accepted-source file or a byte-identical source-bound copy.
 
 The final local candidate gate is zero-warning/zero-error Release build and
 **1,279/1,279** direct Release tests with the unchanged project split below.
-Pester discovered **243** tests: **242** passed, none failed, and one Windows-only
+Pester discovered **267** tests: **266** passed, none failed, and one Windows-only
 launcher test was skipped on macOS. The canonical source gate parsed **16**
 PowerShell files and **2** JSON contracts and compiled all **23** Bicep templates;
-`git diff --check` is clean. Independent correctness/security reviews found no
-remaining P0/P1 blocker. These are local-source results, not live deployment proof.
+`dotnet format --verify-no-changes` and `git diff --check` are clean. Focused
+bootstrap regressions pass **103/103** and architecture passes **113/113**.
+Independent settled-diff correctness/security review found no actionable issue.
+These are local-source results, not live deployment proof.
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
@@ -258,6 +260,33 @@ run the complete local gate, and
 start a new isolated generation. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was never selected or mutated, and its
 queues/messages were not accessed.
+
+Commit `715bbf93dcefa95266f1ce7616f8d39ca137fa10` is the corrected source for the
+next isolated generation. It replaces the impossible `--no-wait` receipt contract
+with one stdout-isolated, synchronous `az acr build --no-logs` completed-`QuickRun`
+projection, followed by exact run-ID and immutable tag/digest readback. The
+pre-mutation intent remains durable; recovery scans registry-wide for only its
+unique output tag, requests a 101st truncation sentinel, and never resubmits an
+unknown recovered outcome. Initial deployment permits only the intentional empty
+worker and manager-authority inputs and rejects every runtime-only database,
+activation, Purview, and Admin UI input before Azure access. Runtime worker
+authority must exactly match the ownership/source-bound database-attestation
+object ID.
+
+The correction also maps ARM `agent365RegistryProvider` to evidence
+`registryProvider`, uses named hashtable splatting for the final preflight, and
+preserves `managerApplications` as a string array. Continuous development is
+explicitly mutually exclusive with every exact-bound flag/value. Registry and
+admission readback requires one plain-value setting in exactly one container and
+rejects case-conflicting duplicates, missing values, and secret references; exact
+registration and delegated-action windows are verified as independent states.
+The full local gate and independent review are recorded above. No Azure, Entra,
+SQL, Agent 365, Service Bus, Registry, Purview, registration, key, or canary
+mutation was performed by this correction. The next live action is a fresh
+`a365gw7` Plan in absent resource group `rg-a365-custom-gw-phase6f`, only in target
+subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Preserve every earlier
+generation, and keep protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` completely outside the proof.
 
 ## 2026-08-29 local Phase 0–6 bootstrap candidate (unreleased and incomplete)
 
