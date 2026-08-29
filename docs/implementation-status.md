@@ -379,11 +379,12 @@ exists. Bootstrap modules, workflows, the database migrator, architecture tests,
 runbooks, and paired Claude/Codex deployment instructions all reference the new
 locations. This was a source-only relocation; no Azure or database state changed.
 
-The complete post-hardening local gate passes. The Release solution build has zero
+The complete 2026-08-30 Phase 6 candidate gate passes at source commit
+`191e047ec8ccab79921dd02f6c70ab1c5d2ba76c`. The Release solution build has zero
 warnings and zero errors. Direct Release tests are **1,279/1,279**: unit 478,
 Admin UI 155, local Setup 75, observability/runtime 149, integration 92,
-end-to-end 106, architecture 113, and security 111. Pester discovered 209 tests:
-208 passed, none failed, and one Windows-only launcher test was skipped on macOS.
+end-to-end 106, architecture 113, and security 111. Pester discovered 232 tests:
+231 passed, none failed, and one Windows-only launcher test was skipped on macOS.
 The canonical bootstrap source gate parsed **16** PowerShell files and **2** JSON
 contracts and compiled all **23** Bicep templates. `dotnet format
 --verify-no-changes` and `git diff --check` pass. The repository has **55**
@@ -392,11 +393,14 @@ Markdown files and **58** repository-local links with no broken target.
 The loopback Setup UI was also inspected at 1280x720 and 390x844 with no horizontal
 overflow. When the existing ignored `bootstrap/config.json` could not be safely
 imported, the wizard displayed the protected-file warning, disabled Start, and did
-not overwrite the configuration. No disposable clean-subscription Apply has run,
-no Azure/Entra/SQL/tenant state was changed by this checkpoint, and no new bootstrap
-or runtime Purview behavior is live-proven. The next bootstrap-specific action
-remains a separately authorized disposable development Apply followed by a real
-registration, data-plane, and optional Purview canary.
+not overwrite the configuration. The first disposable-target Apply attempt on the
+earlier source generation completed local Prerequisites and then failed at Azure
+authentication before any provider/resource/Entra/SQL/Agent 365 mutation. Its
+state/evidence is preserved. The next bootstrap-specific action is the authorized
+fresh isolated `a365gw2` Plan/Apply in resource group
+`rg-a365-custom-gw-phase6`, followed by deliberate interruption/Resume, Verify, a
+real registration, data-plane canary, and key revocation. No new bootstrap or
+runtime Purview behavior is live-proven yet.
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an

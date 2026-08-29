@@ -6,7 +6,7 @@ SQL, Entra, Service Bus, Graph, or deployment action. It records evidence, not
 desired state. Current state is kept first; retained chronology below is explicitly
 labeled historical and must never be mistaken for the resume point.
 
-Last reconciled: **2026-08-29**. Continuous workflow-v3 registration,
+Last reconciled: **2026-08-30**. Continuous workflow-v3 registration,
 automatic delegated Administrator completion, final Agent 365 verification,
 registration-bound ingestion, Microsoft 365 Admin Center landing, and blueprint-
 scoped prompt DLP and independent pre-model Prompt Shields are live in development.
@@ -17,6 +17,41 @@ change or prove this live deployment. No bootstrap `Apply` was run against the
 development resource group in this checkpoint, and none of the live identifiers,
 queues, registrations, policies, or retained evidence below were mutated by that
 source work.
+
+## 2026-08-30 clean-subscription candidate and pre-mutation recovery checkpoint
+
+The Phase 6 candidate is frozen on branch `codex/phase6-candidate` at source
+commit `191e047ec8ccab79921dd02f6c70ab1c5d2ba76c`. The exact-account boundary now
+acquires Microsoft Graph access through `az account get-access-token` with the
+reviewed subscription, verifies returned subscription/tenant/type/lifetime
+metadata, and sends only bounded Graph v1.0 requests through an in-process,
+no-redirect client. Supported post-authentication code rejects native `az ad` and
+`az rest`; the workflow-v3 helper also verifies that its loaded Common module is
+the accepted-source file or a byte-identical source-bound copy.
+
+The final local candidate gate is zero-warning/zero-error Release build and
+**1,279/1,279** direct Release tests with the unchanged project split below.
+Pester discovered **232** tests: **231** passed, none failed, and one Windows-only
+launcher test was skipped on macOS. The canonical source gate parsed **16**
+PowerShell files and **2** JSON contracts and compiled all **23** Bicep templates;
+`git diff --check` is clean. Independent correctness/security reviews found no
+remaining P0/P1 blocker. These are local-source results, not live deployment proof.
+
+The first target-subscription Apply attempt used the earlier source generation
+`560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
+Prerequisites, then failed during Azure authentication because the old dispatcher
+appended `--subscription` to a tenant-scoped signed-in-user command. It reached no
+provider registration, resource-group creation, ARM deployment, Entra mutation,
+SQL action, or Agent 365 mutation. Both the original resource group
+`rg-a365-custom-gw` and the new isolated target `rg-a365-custom-gw-phase6` read back
+absent in subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76` on 2026-08-30.
+The failed state/evidence remains preserved; it will not be rewritten under a new
+source generation. The next action is a fresh Plan using isolated project
+`a365gw2` and resource group `rg-a365-custom-gw-phase6`, followed by the authorized
+Apply, deliberate interruption/Resume, Verify, one Active registration, canary,
+and key revocation. Subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` and all of
+its live/retained evidence remain outside this bootstrap target and were not
+mutated.
 
 ## 2026-08-29 local Phase 0–6 bootstrap candidate (unreleased and incomplete)
 
