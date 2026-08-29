@@ -114,8 +114,48 @@ application remain preserved and cannot consume changed source.
 Commit `00018600b8b1bdd466f16ab28a66b58348b82a0b` aligns submission, exact-tag
 discovery, exact run-ID polling, and final image verification to the one exact
 `QuickRun` contract; it rejects `QuickBuild`, `AutoBuild`, and `AutoRun` without
-provider-body disclosure. The next live action uses distinct project `a365gw4` and
-absent resource group `rg-a365-custom-gw-phase6c`. Existing deployment subscription
+provider-body disclosure.
+
+The resulting isolated deployment `a365gw4-dev` used resource group
+`rg-a365-custom-gw-phase6c`, ownership
+`ced0c22f-ba7a-491c-8c25-38d76a55e7a8`, and registry
+`acra365gw4dev6hdqn4`, exclusively in clean target subscription
+`internal-security-lab-02` (`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`). Its initial
+accepted Plan
+`sha256:21efe30b101e5092bb03d8547d50f08af88c0fcc6e138fbae69ead5d59d7c626`
+bound configuration
+`sha256:a45df6a92e10fe39c1bb5330b76c5f210c62aaba0175e627353d680c68e16cdb`
+and source
+`sha256:e13454d6d3258d8a6ac216c1bf7b92c237fc8fd1ec34bdbdff7a95b9aeac3af9`.
+Authenticated What-If reported exactly six Deploy actions and zero Delete actions.
+
+Apply completed 5/19 and stopped in `Immutable workload images` after persisting
+API build intent `30bac341-4ef9-414b-bce1-499bb9efda8d`. The exact defect was a
+sparse `az acr build --no-wait` scheduling receipt being validated as a full run
+record before the `RunQueued` checkpoint. Exact readback showed run `de1`
+succeeded as `QuickRun`, producing `gateway-api` digest
+`sha256:3c65a6903a5cb3b95ee314d7bf495d4675ee777fb4816747e6e651e4fa327980`.
+
+A fresh Resume Plan
+`sha256:5caa84429699de696f9e3bb305913933158aa6683ab0209bfd380331e4611aa0`
+bound the same configuration, source, ownership, and six-Deploy/zero-Delete
+contract. Resume exactly recovered and digest-checkpointed the API image, persisted
+worker intent `bafe753a-62e0-4f2d-8f59-69d75053b58c`, submitted exactly one worker
+build, and stopped on the same sparse-receipt defect. Exact run `de2` later
+succeeded as `QuickRun`, producing `gateway-worker` digest
+`sha256:6d5743b68ed84d8a6016c8b66d18caea0481cfe764aeb27d48a77836b77bb3d0`.
+State remains API `DigestCheckpointed` and worker `IntentRecorded`; it does not
+claim the worker run or digest as a durable bootstrap checkpoint.
+
+No Admin UI build, SQL initialization, Agent 365 blueprint, runtime, Service Bus
+queue/outbox, registration, canary, Gateway-key issuance or revocation, or Purview
+action occurred. Preserve the accepted snapshots, state, resource group, Entra
+objects, and successful images; do not Resume this generation with edited source.
+The required remediation is to accept the exact run-ID-only scheduling receipt,
+persist `RunQueued`, and validate `QuickRun` plus output only through exact
+`show-run` readback. No implementation or test result for that fix is claimed at
+this checkpoint. After implementation and verification, the next live action is a
+new isolated generation. Existing deployment subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and its
 retained queues/messages were not accessed.
 
