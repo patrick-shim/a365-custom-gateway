@@ -323,7 +323,7 @@ reported as completion of the plan. The authoritative phase status is:
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans, proved one deliberate interruption/Resume boundary, and reached 5/19 while exposing successive fresh-ACR recovery contracts. The latest `a365gw4` attempt exactly recovered one successful API build and then stopped after exactly one successful worker build because its sparse scheduling receipt was not checkpointed. A completed Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans, proved one deliberate interruption/Resume boundary, and reached 5/19 while exposing successive fresh-ACR recovery contracts. The latest `a365gw4` attempt exactly recovered one successful API build and then stopped after exactly one successful worker build because its sparse scheduling receipt was not checkpointed. The receipt contract is fixed and locally verified; a completed fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
@@ -436,7 +436,7 @@ image verification; `QuickBuild` and both automatic run types fail closed. The
 next isolated project was `a365gw4-dev`, resource group
 `rg-a365-custom-gw-phase6c`, ownership
 `ced0c22f-ba7a-491c-8c25-38d76a55e7a8`, and ACR
-`acra365gw4dev6hdqn4` in target subscription `internal-security-lab-02`
+`acra365gw4dev6hdqn4` in disposable target subscription `internal-security-lab-02`
 (`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`). Its initial accepted Plan
 `sha256:21efe30b101e5092bb03d8547d50f08af88c0fcc6e138fbae69ead5d59d7c626`
 bound configuration
@@ -466,10 +466,15 @@ Bootstrap state remains API `DigestCheckpointed` and worker `IntentRecorded`.
 No Admin UI build, SQL initialization, Agent 365 blueprint, runtime, Service Bus
 queue/outbox, registration, canary, Gateway-key issuance or revocation, or Purview
 action occurred. Preserve this attempt and do not Resume it with edited source.
-The required remediation is to accept only the exact run ID from the submission
-receipt, persist `RunQueued`, and then validate `QuickRun` and output through exact
-`show-run` readback. That change and its tests are not yet claimed; the next live
-action is a fresh isolated generation only after implementation and verification.
+Commit `3ad90d764bbd64acc778c24b0b09c0ff02be564e` accepts only the exact
+one-property run-ID submission receipt, persists `RunQueued` before polling, and
+then validates `QuickRun` and output through exact `show-run` readback. Focused ACR
+tests pass 21/21; the complete Bootstrap suite passes 230 with zero failures and one
+pre-existing macOS skip. Both changed PowerShell files parse, `git diff --check`
+passes, and independent review found no P0/P1/P2 issue. The next live action is
+fresh isolated project `a365gw5` in absent resource group
+`rg-a365-custom-gw-phase6d`; no `a365gw4` Resume is authorized with the changed
+source.
 Protected subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` was not selected,
 mutated, or used for this proof. No new bootstrap runtime, queue/outbox, or Purview
 behavior is live-proven yet.

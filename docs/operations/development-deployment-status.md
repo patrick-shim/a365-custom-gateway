@@ -119,7 +119,7 @@ provider-body disclosure.
 The resulting isolated deployment `a365gw4-dev` used resource group
 `rg-a365-custom-gw-phase6c`, ownership
 `ced0c22f-ba7a-491c-8c25-38d76a55e7a8`, and registry
-`acra365gw4dev6hdqn4`, exclusively in clean target subscription
+`acra365gw4dev6hdqn4`, exclusively in disposable target subscription
 `internal-security-lab-02` (`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`). Its initial
 accepted Plan
 `sha256:21efe30b101e5092bb03d8547d50f08af88c0fcc6e138fbae69ead5d59d7c626`
@@ -151,11 +151,15 @@ No Admin UI build, SQL initialization, Agent 365 blueprint, runtime, Service Bus
 queue/outbox, registration, canary, Gateway-key issuance or revocation, or Purview
 action occurred. Preserve the accepted snapshots, state, resource group, Entra
 objects, and successful images; do not Resume this generation with edited source.
-The required remediation is to accept the exact run-ID-only scheduling receipt,
-persist `RunQueued`, and validate `QuickRun` plus output only through exact
-`show-run` readback. No implementation or test result for that fix is claimed at
-this checkpoint. After implementation and verification, the next live action is a
-new isolated generation. Existing deployment subscription
+Commit `3ad90d764bbd64acc778c24b0b09c0ff02be564e` now accepts only the exact
+one-property run-ID scheduling receipt, persists `RunQueued` before polling, and
+validates `QuickRun` plus output only through exact `show-run` readback. Focused ACR
+tests pass 21/21; the complete Bootstrap suite passes 230 with zero failures and one
+pre-existing macOS skip. Both changed PowerShell files parse, `git diff --check`
+passes, and independent review found no P0/P1/P2 issue. The next live action is
+fresh isolated project `a365gw5` in absent resource group
+`rg-a365-custom-gw-phase6d`; do not Resume `a365gw4` with changed source. Existing
+deployment subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and its
 retained queues/messages were not accessed.
 
