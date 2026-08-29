@@ -21,7 +21,7 @@ source work.
 ## 2026-08-30 clean-subscription candidate and pre-mutation recovery checkpoint
 
 The Phase 6 candidate is frozen on branch `codex/phase6-candidate` at source
-commit `191e047ec8ccab79921dd02f6c70ab1c5d2ba76c`. The exact-account boundary now
+commit `603123a2f7097e2088e2620dde002cea0d4c37d9`. The exact-account boundary now
 acquires Microsoft Graph access through `az account get-access-token` with the
 reviewed subscription, verifies returned subscription/tenant/type/lifetime
 metadata, and sends only bounded Graph v1.0 requests through an in-process,
@@ -31,7 +31,7 @@ the accepted-source file or a byte-identical source-bound copy.
 
 The final local candidate gate is zero-warning/zero-error Release build and
 **1,279/1,279** direct Release tests with the unchanged project split below.
-Pester discovered **232** tests: **231** passed, none failed, and one Windows-only
+Pester discovered **233** tests: **232** passed, none failed, and one Windows-only
 launcher test was skipped on macOS. The canonical source gate parsed **16**
 PowerShell files and **2** JSON contracts and compiled all **23** Bicep templates;
 `git diff --check` is clean. Independent correctness/security reviews found no
@@ -52,6 +52,15 @@ Apply, deliberate interruption/Resume, Verify, one Active registration, canary,
 and key revocation. Subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` and all of
 its live/retained evidence remain outside this bootstrap target and were not
 mutated.
+
+The first fresh isolated Plan on intermediate commit
+`da0726a50f6fa77a3810c2517530520e4b7b1c66` also stopped before acceptance and
+before every bootstrap step because its new Graph boundary had not yet been given
+the exact Plan tenant/subscription context. Commit
+`603123a2f7097e2088e2620dde002cea0d4c37d9` establishes that context before both
+ARM What-If and Graph collision discovery; the added regression is included in the
+233-test Pester gate above. The isolated state remains 0/19 with no Azure or Entra
+mutation evidence.
 
 ## 2026-08-29 local Phase 0–6 bootstrap candidate (unreleased and incomplete)
 

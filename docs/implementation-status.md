@@ -380,11 +380,11 @@ runbooks, and paired Claude/Codex deployment instructions all reference the new
 locations. This was a source-only relocation; no Azure or database state changed.
 
 The complete 2026-08-30 Phase 6 candidate gate passes at source commit
-`191e047ec8ccab79921dd02f6c70ab1c5d2ba76c`. The Release solution build has zero
+`603123a2f7097e2088e2620dde002cea0d4c37d9`. The Release solution build has zero
 warnings and zero errors. Direct Release tests are **1,279/1,279**: unit 478,
 Admin UI 155, local Setup 75, observability/runtime 149, integration 92,
-end-to-end 106, architecture 113, and security 111. Pester discovered 232 tests:
-231 passed, none failed, and one Windows-only launcher test was skipped on macOS.
+end-to-end 106, architecture 113, and security 111. Pester discovered 233 tests:
+232 passed, none failed, and one Windows-only launcher test was skipped on macOS.
 The canonical bootstrap source gate parsed **16** PowerShell files and **2** JSON
 contracts and compiled all **23** Bicep templates. `dotnet format
 --verify-no-changes` and `git diff --check` pass. The repository has **55**
