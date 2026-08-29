@@ -15,7 +15,8 @@
     3. Removes the two obsolete AgentRegistration application-role assignments from
        the workflow-v3 worker managed identity.
 
-    The script never acquires, prints, or persists an access token or credential.
+    The shared Graph boundary acquires and briefly caches the exact-account token
+    in process memory. This script never prints or persists a token or credential.
     It deliberately does not invoke blanket `az ad app permission admin-consent`.
     Without -Apply it is read-only and reports the exact pending change categories.
 #>
@@ -49,6 +50,64 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Get-CommonModuleFileDigest {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw 'The Common Graph trust-boundary module file was not found.'
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.Length -le 0 -or $item.Length -gt 2097152 -or
+        ($item.PSObject.Properties.Name -contains 'LinkType' -and
+         -not [string]::IsNullOrWhiteSpace([string]$item.LinkType))) {
+        throw 'The Common Graph trust-boundary module file has an untrusted shape.'
+    }
+    $stream = [IO.File]::Open(
+        $item.FullName,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($algorithm.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+    }
+    finally {
+        $algorithm.Dispose()
+        $stream.Dispose()
+    }
+}
+
+$acceptedSourceRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+$commonModulePath = [IO.Path]::GetFullPath((Join-Path $acceptedSourceRoot 'bootstrap/modules/Common.psm1'))
+if (-not (Test-Path -LiteralPath $commonModulePath -PathType Leaf)) {
+    throw 'The accepted bootstrap Common module was not found beside the workflow-v3 Entra helper.'
+}
+$pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+$loadedCommonModules = @(Get-Module -Name Common)
+if ($loadedCommonModules.Count -gt 1) {
+    throw 'More than one Common module is loaded; refusing an ambiguous Graph trust boundary.'
+}
+if ($loadedCommonModules.Count -eq 1) {
+    $loadedCommonPath = [string]$loadedCommonModules[0].Path
+    if ([string]::IsNullOrWhiteSpace($loadedCommonPath)) {
+        throw 'A dynamic Common module cannot provide the accepted Graph trust boundary.'
+    }
+    $loadedCommonPath = [IO.Path]::GetFullPath($loadedCommonPath)
+    if (-not $loadedCommonPath.Equals($commonModulePath, $pathComparison) -and
+        (Get-CommonModuleFileDigest -Path $loadedCommonPath) -cne
+            (Get-CommonModuleFileDigest -Path $commonModulePath)) {
+        throw 'The loaded Common module does not match the accepted-source Graph trust boundary.'
+    }
+}
+if ($loadedCommonModules.Count -eq 0) {
+    Import-Module $commonModulePath -ErrorAction Stop
+    $loadedCommonModules = @(Get-Module -Name Common)
+}
+if ($loadedCommonModules.Count -ne 1 -or
+    [string]::IsNullOrWhiteSpace([string]$loadedCommonModules[0].Path)) {
+    throw 'The exact accepted-source Common Graph trust boundary was not loaded.'
+}
+
 $GraphApplicationId = [guid]'00000003-0000-0000-c000-000000000000'
 $TokenExchangeAudience = 'api://AzureADTokenExchange'
 $RequiredDelegatedScopes = @(
@@ -75,99 +134,15 @@ function Write-Plan {
     Write-Host "[PLAN] $Message" -ForegroundColor Yellow
 }
 
-function Get-ExactBootstrapSubscriptionPin {
-    $raw = [Environment]::GetEnvironmentVariable('A365GW_BOOTSTRAP_SUBSCRIPTION_ID')
-    $parsed = [guid]::Empty
-    if ([string]::IsNullOrWhiteSpace($raw) -or
-        -not [guid]::TryParseExact($raw, 'D', [ref]$parsed) -or
-        $parsed -eq [guid]::Empty -or
-        $raw -cne $parsed.ToString('D')) {
-        throw 'A365GW_BOOTSTRAP_SUBSCRIPTION_ID must be one canonical, non-empty lowercase GUID established by the verified bootstrap login.'
-    }
-    if ($parsed -ne $ExpectedSubscriptionId) {
-        throw 'The bootstrap subscription environment pin does not match ExpectedSubscriptionId.'
-    }
-    return $parsed.ToString('D')
-}
-
-function Add-ExactSubscriptionPin {
-    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Arguments)
-
-    $explicitValues = [Collections.Generic.List[string]]::new()
-    for ($index = 0; $index -lt $Arguments.Count; $index++) {
-        $argument = [string]$Arguments[$index]
-        if ($argument -ceq '--subscription') {
-            if ($index + 1 -ge $Arguments.Count -or
-                [string]::IsNullOrWhiteSpace([string]$Arguments[$index + 1])) {
-                throw 'Azure CLI --subscription requires the exact pinned subscription ID.'
-            }
-            $explicitValues.Add([string]$Arguments[$index + 1])
-        }
-        elseif ($argument.StartsWith('--subscription=', [StringComparison]::Ordinal)) {
-            $explicitValues.Add($argument.Substring('--subscription='.Length))
-        }
-    }
-
-    if ($explicitValues.Count -gt 1) {
-        throw 'Azure CLI arguments contain more than one explicit subscription target.'
-    }
-    if ($explicitValues.Count -eq 1) {
-        if ($explicitValues[0] -cne $script:PinnedSubscriptionId) {
-            throw 'Azure CLI arguments do not match the exact bootstrap subscription pin.'
-        }
-        return @($Arguments)
-    }
-    return @($Arguments) + @('--subscription', $script:PinnedSubscriptionId)
-}
-
-function Invoke-AzJson {
+function Invoke-GraphAzRest {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
-
-    $effectiveArguments = Add-ExactSubscriptionPin -Arguments $Arguments
-
-    # The Windows Azure CLI entry point is a .cmd wrapper. PowerShell's legacy
-    # native argument marshalling can let URL query separators (`&`) escape into
-    # cmd.exe instead of preserving the URL as one argument. Invoke the bundled
-    # CLI Python module directly on Windows so Graph query URLs remain intact.
-    $azCommand = Get-Command az -ErrorAction Stop
-    $azPython = if ($IsWindows -and $azCommand.Source.EndsWith(
-            '.cmd',
-            [System.StringComparison]::OrdinalIgnoreCase)) {
-        Join-Path (Split-Path $azCommand.Source -Parent) '..\python.exe'
-    }
-    else {
-        $null
-    }
-
-    $output = if ($null -ne $azPython -and (Test-Path -LiteralPath $azPython)) {
-        & $azPython -IBm azure.cli @effectiveArguments --only-show-errors 2>&1
-    }
-    else {
-        & az @effectiveArguments --only-show-errors 2>&1
-    }
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        throw "Azure CLI operation failed without rendering its response. Command category: $($Arguments[0..([math]::Min(2, $Arguments.Count - 1))] -join ' ')."
-    }
-
-    $text = ($output | Out-String).Trim()
-    if ([string]::IsNullOrWhiteSpace($text)) {
-        return $null
-    }
-
-    try {
-        return $text | ConvertFrom-Json -Depth 100 -ErrorAction Stop
-    }
-    catch {
-        throw 'Azure CLI returned malformed JSON; provider output was suppressed.'
-    }
+    return Common\Invoke-BootstrapGraphAzRest -Arguments $Arguments
 }
 
 function Assert-ExpectedAzureContext {
-    $account = Invoke-AzJson -Arguments @(
+    $account = Common\Invoke-AzJson -Arguments @(
         'account', 'show',
-        '--query', '{subscription:id,tenant:tenantId}',
-        '--output', 'json'
+        '--query', '{subscription:id,tenant:tenantId}'
     )
     $actualSubscription = [guid]::Empty
     $actualTenant = [guid]::Empty
@@ -187,7 +162,7 @@ function Invoke-AzMutation {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     $null = Assert-ExpectedAzureContext
-    $null = Invoke-AzJson -Arguments (@($Arguments) + @('--output', 'none'))
+    $null = Invoke-GraphAzRest -Arguments (@($Arguments) + @('--output', 'none'))
 }
 
 function Get-SingleGraphObject {
@@ -199,7 +174,7 @@ function Get-SingleGraphObject {
     )
 
     $url = "https://graph.microsoft.com/v1.0/${Resource}?`$filter=appId%20eq%20'$($ApplicationId.ToString('D'))'&`$select=$Select"
-    $result = Invoke-AzJson -Arguments @('rest', '--method', 'GET', '--url', $url)
+    $result = Invoke-GraphAzRest -Arguments @('rest', '--method', 'GET', '--url', $url)
     $matches = @($result.value)
     if ($matches.Count -ne 1) {
         throw "Expected exactly one $Label for the supplied application ID."
@@ -243,7 +218,9 @@ function Get-RequiredPermissionObjects {
 if ($ExpectedSubscriptionId -eq [guid]::Empty -or $ExpectedTenantId -eq [guid]::Empty) {
     throw 'ExpectedSubscriptionId and ExpectedTenantId must both be non-empty GUIDs.'
 }
-$script:PinnedSubscriptionId = Get-ExactBootstrapSubscriptionPin
+Common\Set-BootstrapAzureSubscriptionContext `
+    -SubscriptionId ($ExpectedSubscriptionId.ToString('D')) `
+    -TenantId ($ExpectedTenantId.ToString('D'))
 
 Write-Stage 'Pinned Azure account'
 $account = Assert-ExpectedAzureContext
@@ -279,7 +256,7 @@ Write-Pass 'Resolved the two documented delegated scopes and two obsolete worker
 # before any PATCH/POST so it cannot expand authority and only then discover a
 # destructive cleanup requirement. Existing-environment operators may omit this
 # switch and follow the separately reviewed removal plan below.
-$initialWorkerAssignments = Invoke-AzJson -Arguments @(
+$initialWorkerAssignments = Invoke-GraphAzRest -Arguments @(
     'rest', '--method', 'GET',
     '--url', "https://graph.microsoft.com/v1.0/servicePrincipals/$($WorkerManagedIdentityPrincipalId.ToString('D'))/appRoleAssignments?`$select=id,resourceId,appRoleId"
 )
@@ -364,7 +341,7 @@ else {
 Write-Stage 'Gateway API managed-identity federated credential'
 $issuer = "https://login.microsoftonline.com/$($ExpectedTenantId.ToString('D'))/v2.0"
 $ficUrl = "https://graph.microsoft.com/v1.0/applications/$($gatewayApplication.id)/federatedIdentityCredentials"
-$fics = Invoke-AzJson -Arguments @(
+$fics = Invoke-GraphAzRest -Arguments @(
     'rest', '--method', 'GET',
     '--url', "${ficUrl}?`$select=id,name,issuer,subject,audiences"
 )
@@ -403,7 +380,7 @@ else {
 
 Write-Stage 'Exact tenant-wide delegated Microsoft Graph consent'
 $grantFilter = "clientId%20eq%20'$($gatewayServicePrincipal.id)'%20and%20resourceId%20eq%20'$($graphServicePrincipal.id)'%20and%20consentType%20eq%20'AllPrincipals'"
-$grants = Invoke-AzJson -Arguments @(
+$grants = Invoke-GraphAzRest -Arguments @(
     'rest', '--method', 'GET',
     '--url', "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=$grantFilter&`$select=id,clientId,resourceId,consentType,scope"
 )

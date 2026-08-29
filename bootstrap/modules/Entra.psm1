@@ -23,6 +23,33 @@ function Get-ServicePrincipalByAppId {
     return $null
 }
 
+function Get-ApplicationsByExactIdentifierUri {
+    param([Parameter(Mandatory)][string]$IdentifierUri)
+
+    if ([string]::IsNullOrWhiteSpace($IdentifierUri) -or $IdentifierUri.Length -gt 512) {
+        throw 'Application identifier URI must be one bounded nonempty value.'
+    }
+    $escaped = $IdentifierUri.Replace("'", "''")
+    $filter = [Uri]::EscapeDataString("identifierUris/any(uri:uri eq '$escaped')")
+    $applications = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/applications?`$filter=$filter&`$select=id,identifierUris")
+    foreach ($application in $applications) {
+        $identifierUris = $null
+        if ($application -is [System.Collections.IDictionary]) {
+            if ($application.Contains('identifierUris')) { $identifierUris = $application['identifierUris'] }
+        }
+        else {
+            $property = $application.PSObject.Properties['identifierUris']
+            if ($null -ne $property) { $identifierUris = $property.Value }
+        }
+        if ($null -eq $identifierUris -or $identifierUris -is [string] -or
+            $identifierUris -isnot [System.Collections.IEnumerable] -or
+            -not (@($identifierUris) -ccontains $IdentifierUri)) {
+            throw 'Microsoft Graph identifier-URI collision discovery returned an object outside the exact requested boundary.'
+        }
+    }
+    return $applications
+}
+
 function Invoke-GraphJsonBody {
     param([Parameter(Mandatory)][string]$Method, [Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)]$Body)
     $json = $Body | ConvertTo-Json -Depth 30 -Compress
@@ -509,7 +536,7 @@ function Ensure-GatewayApiApplication {
     $audience = "api://a365-gateway-$($Config.projectName)-$($Config.environment)"
     $application = Get-ExactApplicationByDisplayName -DisplayName $displayName
     if (-not $application) {
-        $audienceMatches = @(Invoke-AzJson -Arguments @('ad', 'app', 'list', '--identifier-uri', $audience))
+        $audienceMatches = @(Get-ApplicationsByExactIdentifierUri -IdentifierUri $audience)
         if ($audienceMatches.Count -gt 0) { throw "The requested Gateway API audience '$audience' is already owned by an application that is not bound to this bootstrap state; refusing adoption." }
         if ($ReconcileOnly) { throw 'The state-owned Gateway API application was not observable during read-only reconciliation.' }
     }

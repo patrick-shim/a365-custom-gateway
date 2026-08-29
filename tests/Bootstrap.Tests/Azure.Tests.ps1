@@ -2,6 +2,60 @@ $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Common.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Azure.psm1') -Force
 
+Describe 'Bootstrap Azure authentication boundary' {
+    InModuleScope Azure {
+        BeforeEach {
+            $script:config = [pscustomobject]@{
+                subscriptionId = '11111111-1111-4111-8111-111111111111'
+                tenantId = '22222222-2222-4222-8222-222222222222'
+            }
+            Mock Clear-BootstrapAzureSubscriptionContext
+            Mock Set-BootstrapAzureSubscriptionContext
+            Mock Invoke-BootstrapCommand
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'account') {
+                    return [pscustomobject]@{
+                        id = $script:config.subscriptionId
+                        tenantId = $script:config.tenantId
+                    }
+                }
+                if ([string]$Arguments[0] -ceq 'rest') {
+                    return [pscustomobject]@{
+                        id = '33333333-3333-4333-8333-333333333333'
+                        userPrincipalName = 'bootstrap.operator@example.invalid'
+                        displayName = 'Bootstrap Operator'
+                    }
+                }
+                throw 'Unexpected Azure authentication command family.'
+            }
+        }
+
+        It 'reads the signed-in user through the bounded subscription-pinned Graph route' {
+            $identity = Connect-BootstrapAzure -Config $script:config -NonInteractive
+
+            $identity.subscriptionId | Should -BeExactly $script:config.subscriptionId
+            $identity.tenantId | Should -BeExactly $script:config.tenantId
+            $identity.userObjectId | Should -BeExactly '33333333-3333-4333-8333-333333333333'
+            Should -Invoke Set-BootstrapAzureSubscriptionContext -Times 1 -Exactly -ParameterFilter {
+                $SubscriptionId -ceq $script:config.subscriptionId -and
+                $TenantId -ceq $script:config.tenantId
+            }
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                $Arguments.Count -eq 5 -and
+                [string]$Arguments[0] -ceq 'rest' -and
+                [string]$Arguments[1] -ceq '--method' -and
+                [string]$Arguments[2] -ceq 'GET' -and
+                [string]$Arguments[3] -ceq '--url' -and
+                [string]$Arguments[4] -ceq 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName,displayName'
+            }
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'ad'
+            }
+        }
+    }
+}
+
 Describe 'Allowlisted ACR build context' {
     It 'copies only reviewed runtime source classes and excludes credential-file classes' {
         $projectRoots = @(

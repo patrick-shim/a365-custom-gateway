@@ -16,8 +16,13 @@ function Connect-BootstrapAzure {
     if ([string]$account.tenantId -ne [string]$Config.tenantId -or [string]$account.id -ne [string]$Config.subscriptionId) {
         throw 'Azure CLI tenant/subscription selection does not match bootstrap configuration.'
     }
-    Set-BootstrapAzureSubscriptionContext -SubscriptionId ([string]$Config.subscriptionId)
-    $user = Invoke-AzJson -Arguments @('ad', 'signed-in-user', 'show', '--query', '{id:id,userPrincipalName:userPrincipalName,displayName:displayName}')
+    Set-BootstrapAzureSubscriptionContext `
+        -SubscriptionId ([string]$Config.subscriptionId) `
+        -TenantId ([string]$Config.tenantId)
+    $user = Invoke-AzJson -Arguments @(
+        'rest', '--method', 'GET', '--url',
+        'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName,displayName'
+    )
     Assert-GuidValue -Value ([string]$user.id) -Label 'Signed-in user object ID'
     return [ordered]@{
         subscriptionId = [string]$account.id

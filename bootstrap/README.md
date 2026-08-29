@@ -265,9 +265,12 @@ resource group was deleted, bootstrap preserves its state and fails before any
 replay. Tenant-scoped Entra/Agent ID objects can survive while Key Vault credential
 metadata does not, so rebuilding that identity requires a separately reviewed
 disaster-recovery procedure or a new isolated deployment identity.
-The verified subscription ID is also appended to every supported Azure CLI,
-deployment, and Graph `az rest` call, so a later default-subscription change cannot
-redirect the operation; tenant and subscription readback still fail closed.
+The verified subscription ID is appended to every supported Azure CLI/ARM call.
+For Graph, bootstrap acquires a short-lived token with the exact subscription,
+verifies the returned tenant and subscription metadata, and sends only bounded
+Graph v1.0 requests through its in-process no-redirect client. Authenticated native
+`az ad` and `az rest` calls are rejected, so a later default-subscription change
+cannot redirect the operation; tenant and subscription readback still fail closed.
 
 Each new deployment state contains a generated, unguessable
 `deploymentOwnershipId`. The two bootstrap-managed Entra applications must carry

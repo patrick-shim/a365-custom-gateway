@@ -108,6 +108,45 @@ Describe 'Bounded Microsoft Graph collection traversal' {
     }
 }
 
+Describe 'Exact application identifier URI collision discovery' {
+    InModuleScope Entra {
+        BeforeEach {
+            $script:requestedUrl = ''
+            $script:collisionObjects = @()
+            Mock Get-BoundedGraphCollection {
+                param([string]$InitialUrl)
+                $script:requestedUrl = $InitialUrl
+                return @($script:collisionObjects)
+            }
+        }
+
+        It 'uses the documented Graph v1.0 identifierUris filter and exact readback' {
+            $identifierUri = 'api://a365-gateway-safe-dev'
+            $script:collisionObjects = @([pscustomobject]@{
+                id = '11111111-1111-4111-8111-111111111111'
+                identifierUris = @($identifierUri)
+            })
+
+            $matches = @(Get-ApplicationsByExactIdentifierUri -IdentifierUri $identifierUri)
+
+            $matches.Count | Should -Be 1
+            $matches[0].id | Should -BeExactly '11111111-1111-4111-8111-111111111111'
+            ([Uri]::UnescapeDataString($script:requestedUrl)) |
+                Should -BeExactly "https://graph.microsoft.com/v1.0/applications?`$filter=identifierUris/any(uri:uri eq '$identifierUri')&`$select=id,identifierUris"
+        }
+
+        It 'rejects a provider object outside the exact requested identifier URI' {
+            $script:collisionObjects = @([pscustomobject]@{
+                id = '11111111-1111-4111-8111-111111111111'
+                identifierUris = @('api://different-audience')
+            })
+
+            { Get-ApplicationsByExactIdentifierUri -IdentifierUri 'api://a365-gateway-safe-dev' } |
+                Should -Throw '*outside the exact requested boundary*'
+        }
+    }
+}
+
 Describe 'Exact application authentication surface' {
     InModuleScope Entra {
         It 'accepts only disabled or null optional authentication switches and empty client authority' {

@@ -7,24 +7,44 @@ $script:BootstrapEventWriter = $null
 $script:BootstrapStructuredOutput = $false
 $script:BootstrapExecutionSourceRoot = ''
 $script:BootstrapAzureSubscriptionId = ''
+$script:BootstrapAzureTenantId = ''
+$script:BootstrapGraphAccessToken = ''
+$script:BootstrapGraphAccessTokenExpiresOn = 0L
+$script:BootstrapGraphHttpClient = $null
 
 function Clear-BootstrapAzureSubscriptionContext {
     $script:BootstrapAzureSubscriptionId = ''
+    $script:BootstrapAzureTenantId = ''
+    $script:BootstrapGraphAccessToken = ''
+    $script:BootstrapGraphAccessTokenExpiresOn = 0L
     [Environment]::SetEnvironmentVariable('A365GW_BOOTSTRAP_SUBSCRIPTION_ID', $null, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable('A365GW_BOOTSTRAP_TENANT_ID', $null, [EnvironmentVariableTarget]::Process)
 }
 
 function Set-BootstrapAzureSubscriptionContext {
-    param([Parameter(Mandatory)][string]$SubscriptionId)
+    param(
+        [Parameter(Mandatory)][string]$SubscriptionId,
+        [Parameter(Mandatory)][string]$TenantId
+    )
 
     Assert-GuidValue -Value $SubscriptionId -Label 'Azure subscription context'
-    $canonical = ([guid]$SubscriptionId).ToString('D')
-    if ($SubscriptionId -cne $canonical) {
+    Assert-GuidValue -Value $TenantId -Label 'Azure tenant context'
+    $canonicalSubscription = ([guid]$SubscriptionId).ToString('D')
+    $canonicalTenant = ([guid]$TenantId).ToString('D')
+    if ($SubscriptionId -cne $canonicalSubscription) {
         throw 'Azure subscription context must be a canonical lowercase GUID.'
     }
-    $script:BootstrapAzureSubscriptionId = $canonical
+    if ($TenantId -cne $canonicalTenant) {
+        throw 'Azure tenant context must be a canonical lowercase GUID.'
+    }
+    $script:BootstrapAzureSubscriptionId = $canonicalSubscription
+    $script:BootstrapAzureTenantId = $canonicalTenant
+    $script:BootstrapGraphAccessToken = ''
+    $script:BootstrapGraphAccessTokenExpiresOn = 0L
     # This is a non-secret identifier used only by reviewed child scripts so their
     # direct Azure CLI calls cannot drift to another default subscription.
-    [Environment]::SetEnvironmentVariable('A365GW_BOOTSTRAP_SUBSCRIPTION_ID', $canonical, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable('A365GW_BOOTSTRAP_SUBSCRIPTION_ID', $canonicalSubscription, [EnvironmentVariableTarget]::Process)
+    [Environment]::SetEnvironmentVariable('A365GW_BOOTSTRAP_TENANT_ID', $canonicalTenant, [EnvironmentVariableTarget]::Process)
 }
 
 function Set-BootstrapStructuredOutput {
@@ -215,6 +235,110 @@ function Write-BootstrapSuccess {
     Write-Host "[ok] $Message" -ForegroundColor Green
 }
 
+function Get-BootstrapAzureCliArguments {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [string[]]$Arguments
+    )
+
+    $effectiveArguments = @($Arguments)
+    if ([string]::IsNullOrWhiteSpace($script:BootstrapAzureSubscriptionId)) {
+        return $effectiveArguments
+    }
+    if ([string]::IsNullOrWhiteSpace($script:BootstrapAzureTenantId)) {
+        throw 'Azure CLI invocation requires the exact bootstrap tenant context after authentication.'
+    }
+    if ($effectiveArguments.Count -eq 0) {
+        throw 'Azure CLI invocation requires a command group after bootstrap authentication.'
+    }
+
+    $explicitSubscriptions = [Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt $effectiveArguments.Count; $index++) {
+        $argument = [string]$effectiveArguments[$index]
+        if ($argument -ceq '--subscription') {
+            if ($index + 1 -ge $effectiveArguments.Count -or
+                [string]::IsNullOrWhiteSpace([string]$effectiveArguments[$index + 1])) {
+                throw 'Azure CLI --subscription requires the exact bootstrap subscription ID.'
+            }
+            $explicitSubscriptions.Add([string]$effectiveArguments[$index + 1])
+        }
+        elseif ($argument.StartsWith('--subscription=', [StringComparison]::Ordinal)) {
+            $explicitSubscriptions.Add($argument.Substring('--subscription='.Length))
+        }
+    }
+    if ($explicitSubscriptions.Count -gt 1) {
+        throw 'Azure CLI arguments contain more than one explicit subscription target.'
+    }
+    if ($explicitSubscriptions.Count -eq 1 -and
+        $explicitSubscriptions[0] -cne $script:BootstrapAzureSubscriptionId) {
+        throw 'Azure CLI arguments do not match the exact bootstrap subscription context.'
+    }
+
+    $commandGroup = [string]$effectiveArguments[0]
+    $resourceCommandGroups = @(
+        'acr', 'containerapp', 'deployment', 'group', 'identity', 'keyvault',
+        'monitor', 'network', 'provider', 'resource', 'role', 'servicebus',
+        'sql', 'storage'
+    )
+    if ($resourceCommandGroups -ccontains $commandGroup) {
+        if ($explicitSubscriptions.Count -eq 0) {
+            $effectiveArguments += @('--subscription', $script:BootstrapAzureSubscriptionId)
+        }
+        return $effectiveArguments
+    }
+
+    if ($commandGroup -ceq 'account') {
+        if ($effectiveArguments.Count -lt 2) {
+            throw 'Azure CLI account invocation requires one reviewed subcommand.'
+        }
+        $accountSubcommand = [string]$effectiveArguments[1]
+        if ($accountSubcommand -ceq 'show') {
+            if ($explicitSubscriptions.Count -ne 0) {
+                throw 'Post-authentication account show is an active-context probe and must not name a subscription.'
+            }
+            return $effectiveArguments
+        }
+        if ($accountSubcommand -ceq 'get-access-token') {
+            if ($explicitSubscriptions.Count -eq 0) {
+                $effectiveArguments += @('--subscription', $script:BootstrapAzureSubscriptionId)
+            }
+            return $effectiveArguments
+        }
+        throw "Azure CLI account subcommand '$accountSubcommand' is not allowed after bootstrap authentication."
+    }
+
+    if ($commandGroup -ceq 'bicep') {
+        if ($explicitSubscriptions.Count -ne 0) {
+            throw 'Local Azure CLI Bicep commands must not carry a subscription selector.'
+        }
+        if ($effectiveArguments.Count -lt 2 -or
+            @('build', 'install', 'version') -cnotcontains [string]$effectiveArguments[1]) {
+            throw 'Only reviewed local Azure CLI Bicep commands are allowed after bootstrap authentication.'
+        }
+        return $effectiveArguments
+    }
+
+    if ($commandGroup -ceq 'version') {
+        if ($explicitSubscriptions.Count -ne 0) {
+            throw 'Local Azure CLI version inspection must not carry a subscription selector.'
+        }
+        return $effectiveArguments
+    }
+
+    if ($commandGroup -ceq 'rest') {
+        throw 'Native Azure CLI rest is not allowed after bootstrap authentication. Microsoft Graph must use the exact-account in-process Graph boundary.'
+    }
+    if ($commandGroup -ceq 'ad') {
+        throw 'Tenant-scoped Azure CLI ad commands are not allowed after bootstrap authentication. Microsoft Graph must use the exact-account in-process Graph boundary.'
+    }
+    if ($commandGroup -ceq 'login') {
+        throw 'Azure CLI login is not allowed after the exact bootstrap authentication context is established.'
+    }
+    throw "Azure CLI command group '$commandGroup' is not in the reviewed post-authentication allowlist."
+}
+
 function Invoke-BootstrapCommand {
     [CmdletBinding()]
     param(
@@ -226,30 +350,8 @@ function Invoke-BootstrapCommand {
 
     $resolvedFile = $FilePath
     $effectiveArguments = @($ArgumentList)
-    if ($FilePath -eq 'az' -and -not [string]::IsNullOrWhiteSpace($script:BootstrapAzureSubscriptionId)) {
-        $explicitSubscriptions = [Collections.Generic.List[string]]::new()
-        for ($index = 0; $index -lt $effectiveArguments.Count; $index++) {
-            $argument = [string]$effectiveArguments[$index]
-            if ($argument -ceq '--subscription') {
-                if ($index + 1 -ge $effectiveArguments.Count -or
-                    [string]::IsNullOrWhiteSpace([string]$effectiveArguments[$index + 1])) {
-                    throw 'Azure CLI --subscription requires the exact bootstrap subscription ID.'
-                }
-                $explicitSubscriptions.Add([string]$effectiveArguments[$index + 1])
-            }
-            elseif ($argument.StartsWith('--subscription=', [StringComparison]::Ordinal)) {
-                $explicitSubscriptions.Add($argument.Substring('--subscription='.Length))
-            }
-        }
-        if ($explicitSubscriptions.Count -gt 1) {
-            throw 'Azure CLI arguments contain more than one explicit subscription target.'
-        }
-        if ($explicitSubscriptions.Count -eq 1 -and $explicitSubscriptions[0] -cne $script:BootstrapAzureSubscriptionId) {
-            throw 'Azure CLI arguments do not match the exact bootstrap subscription context.'
-        }
-        if ($explicitSubscriptions.Count -eq 0) {
-            $effectiveArguments += @('--subscription', $script:BootstrapAzureSubscriptionId)
-        }
+    if ($FilePath -eq 'az') {
+        $effectiveArguments = @(Get-BootstrapAzureCliArguments -Arguments $effectiveArguments)
     }
     if ($IsWindows -and $FilePath -eq 'az') {
         $azCommand = Get-Command az -ErrorAction Stop
@@ -283,9 +385,312 @@ function Invoke-BootstrapCommand {
     return ($output | Out-String).Trim()
 }
 
+function Get-BootstrapGraphAccessToken {
+    [CmdletBinding()]
+    param()
+
+    if ([string]::IsNullOrWhiteSpace($script:BootstrapAzureSubscriptionId) -or
+        [string]::IsNullOrWhiteSpace($script:BootstrapAzureTenantId)) {
+        throw 'Microsoft Graph access requires the exact bootstrap subscription and tenant context.'
+    }
+
+    $minimumExpiry = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 300
+    if (-not [string]::IsNullOrWhiteSpace($script:BootstrapGraphAccessToken) -and
+        $script:BootstrapGraphAccessTokenExpiresOn -gt $minimumExpiry) {
+        return $script:BootstrapGraphAccessToken
+    }
+
+    $rawTokenResponse = $null
+    $tokenResponse = $null
+    $accessToken = ''
+    try {
+        $rawTokenResponse = Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @(
+            'account', 'get-access-token',
+            '--subscription', $script:BootstrapAzureSubscriptionId,
+            '--resource', 'https://graph.microsoft.com/',
+            '--output', 'json', '--only-show-errors'
+        )
+        if ([string]::IsNullOrWhiteSpace($rawTokenResponse)) {
+            throw 'Exact-account Microsoft Graph token acquisition returned no metadata.'
+        }
+        try {
+            $tokenResponse = ConvertFrom-Json -InputObject $rawTokenResponse -Depth 20 -ErrorAction Stop
+        }
+        catch {
+            throw 'Exact-account Microsoft Graph token acquisition returned malformed metadata.'
+        }
+
+        $expiresOn = 0L
+        if ($null -eq $tokenResponse -or
+            [string]$tokenResponse.subscription -cne $script:BootstrapAzureSubscriptionId -or
+            [string]$tokenResponse.tenant -cne $script:BootstrapAzureTenantId -or
+            [string]$tokenResponse.tokenType -cne 'Bearer' -or
+            -not [long]::TryParse(
+                [string]$tokenResponse.expires_on,
+                [Globalization.NumberStyles]::Integer,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$expiresOn) -or
+            $expiresOn -le $minimumExpiry) {
+            throw 'Exact-account Microsoft Graph token metadata did not match the reviewed subscription, tenant, type, and lifetime.'
+        }
+        $accessToken = [string]$tokenResponse.accessToken
+        if ([string]::IsNullOrWhiteSpace($accessToken) -or
+            $accessToken.Length -gt 131072 -or $accessToken -match '\s') {
+            throw 'Exact-account Microsoft Graph token material had an invalid bounded shape.'
+        }
+
+        $script:BootstrapGraphAccessToken = $accessToken
+        $script:BootstrapGraphAccessTokenExpiresOn = $expiresOn
+        return $script:BootstrapGraphAccessToken
+    }
+    finally {
+        $accessToken = ''
+        $tokenResponse = $null
+        $rawTokenResponse = $null
+    }
+}
+
+function ConvertFrom-BootstrapGraphAzRestArguments {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string[]]$Arguments)
+
+    if ($Arguments.Count -lt 1 -or [string]$Arguments[0] -cne 'rest') {
+        throw 'The Microsoft Graph boundary requires one Azure CLI rest-shaped argument contract.'
+    }
+
+    $method = ''
+    $url = ''
+    $body = $null
+    $output = 'json'
+    $headers = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $seenOnlyShowErrors = $false
+    for ($index = 1; $index -lt $Arguments.Count; $index++) {
+        $argument = [string]$Arguments[$index]
+        switch -CaseSensitive ($argument) {
+            '--method' {
+                if (-not [string]::IsNullOrWhiteSpace($method) -or $index + 1 -ge $Arguments.Count) {
+                    throw 'Microsoft Graph request contains a missing or duplicate method.'
+                }
+                $method = ([string]$Arguments[++$index]).ToUpperInvariant()
+            }
+            { $_ -ceq '--url' -or $_ -ceq '--uri' } {
+                if (-not [string]::IsNullOrWhiteSpace($url) -or $index + 1 -ge $Arguments.Count) {
+                    throw 'Microsoft Graph request contains a missing or duplicate URL.'
+                }
+                $url = [string]$Arguments[++$index]
+            }
+            '--body' {
+                if ($null -ne $body -or $index + 1 -ge $Arguments.Count) {
+                    throw 'Microsoft Graph request contains a missing or duplicate body.'
+                }
+                $body = [string]$Arguments[++$index]
+            }
+            '--headers' {
+                $headerCount = 0
+                while ($index + 1 -lt $Arguments.Count -and
+                    -not ([string]$Arguments[$index + 1]).StartsWith('--', [StringComparison]::Ordinal)) {
+                    $headerText = [string]$Arguments[++$index]
+                    $separator = $headerText.IndexOf('=')
+                    if ($separator -le 0 -or $separator -eq $headerText.Length - 1) {
+                        throw 'Microsoft Graph request header must use the reviewed name=value shape.'
+                    }
+                    $name = $headerText.Substring(0, $separator)
+                    $value = $headerText.Substring($separator + 1)
+                    if ($headers.ContainsKey($name)) {
+                        throw 'Microsoft Graph request contains a duplicate header.'
+                    }
+                    if (($name -ceq 'Content-Type' -and $value -cne 'application/json') -or
+                        ($name -ceq 'OData-Version' -and $value -cne '4.0') -or
+                        $name -cnotin @('Content-Type', 'OData-Version')) {
+                        throw 'Microsoft Graph request contains a header outside the reviewed JSON/OData boundary.'
+                    }
+                    $headers.Add($name, $value)
+                    $headerCount++
+                }
+                if ($headerCount -eq 0) {
+                    throw 'Microsoft Graph request declared headers without a reviewed value.'
+                }
+            }
+            { $_ -ceq '--output' -or $_ -ceq '-o' } {
+                if ($index + 1 -ge $Arguments.Count) {
+                    throw 'Microsoft Graph request output selector is missing its value.'
+                }
+                $output = [string]$Arguments[++$index]
+                if ($output -cnotin @('json', 'none')) {
+                    throw 'Microsoft Graph request output selector must be json or none.'
+                }
+            }
+            '--only-show-errors' {
+                if ($seenOnlyShowErrors) {
+                    throw 'Microsoft Graph request contains a duplicate error-output selector.'
+                }
+                $seenOnlyShowErrors = $true
+            }
+            default {
+                throw "Microsoft Graph request argument '$argument' is outside the reviewed boundary."
+            }
+        }
+    }
+
+    if ($method -cnotin @('GET', 'POST', 'PATCH', 'DELETE')) {
+        throw 'Microsoft Graph request method is outside the reviewed GET/POST/PATCH/DELETE boundary.'
+    }
+    if (($method -cin @('POST', 'PATCH') -and [string]::IsNullOrWhiteSpace([string]$body)) -or
+        ($method -cin @('GET', 'DELETE') -and $null -ne $body)) {
+        throw 'Microsoft Graph request body does not match the reviewed method contract.'
+    }
+    if ($null -ne $body) {
+        if ($body.Length -gt 1048576) {
+            throw 'Microsoft Graph request body exceeds the reviewed one-megabyte boundary.'
+        }
+        try { $null = ConvertFrom-Json -InputObject $body -Depth 100 -ErrorAction Stop }
+        catch { throw 'Microsoft Graph request body is not valid JSON.' }
+    }
+
+    $uri = $null
+    if ([string]::IsNullOrWhiteSpace($url) -or $url.Length -gt 16384 -or
+        -not [Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$uri) -or
+        $uri.Scheme -cne 'https' -or
+        -not $uri.DnsSafeHost.Equals('graph.microsoft.com', [StringComparison]::OrdinalIgnoreCase) -or
+        (-not $uri.IsDefaultPort -and $uri.Port -ne 443) -or
+        -not [string]::IsNullOrEmpty($uri.UserInfo) -or
+        -not [string]::IsNullOrEmpty($uri.Fragment) -or
+        -not $uri.AbsolutePath.StartsWith('/v1.0/', [StringComparison]::Ordinal)) {
+        throw 'Microsoft Graph request URL must remain on the exact public-cloud HTTPS v1.0 boundary.'
+    }
+
+    return [pscustomobject]@{
+        method = $method
+        uri = $uri
+        body = $body
+        output = $output
+        headers = $headers
+    }
+}
+
+function Get-BootstrapGraphHttpClient {
+    if ($null -eq $script:BootstrapGraphHttpClient) {
+        $handler = [Net.Http.HttpClientHandler]::new()
+        $handler.AllowAutoRedirect = $false
+        $client = [Net.Http.HttpClient]::new($handler, $true)
+        $client.Timeout = [TimeSpan]::FromSeconds(60)
+        $script:BootstrapGraphHttpClient = $client
+    }
+    return $script:BootstrapGraphHttpClient
+}
+
+function Invoke-BootstrapGraphAzRest {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string[]]$Arguments)
+
+    $descriptor = ConvertFrom-BootstrapGraphAzRestArguments -Arguments $Arguments
+    $token = Get-BootstrapGraphAccessToken
+    $request = $null
+    $response = $null
+    $responseText = $null
+    $responseStream = $null
+    $responseBuffer = $null
+    $readCancellation = $null
+    $readBuffer = $null
+    try {
+        $request = [Net.Http.HttpRequestMessage]::new(
+            [Net.Http.HttpMethod]::new([string]$descriptor.method),
+            [Uri]$descriptor.uri)
+        $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $token)
+        $request.Headers.Accept.Add([Net.Http.Headers.MediaTypeWithQualityHeaderValue]::new('application/json'))
+        if ($descriptor.headers.ContainsKey('OData-Version')) {
+            if (-not $request.Headers.TryAddWithoutValidation('OData-Version', [string]$descriptor.headers['OData-Version'])) {
+                throw 'Microsoft Graph OData header could not be applied at the trusted request boundary.'
+            }
+        }
+        if ($null -ne $descriptor.body) {
+            $request.Content = [Net.Http.StringContent]::new(
+                [string]$descriptor.body,
+                [Text.Encoding]::UTF8,
+                'application/json')
+        }
+
+        try {
+            $response = (Get-BootstrapGraphHttpClient).SendAsync(
+                $request,
+                [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        }
+        catch {
+            throw 'Microsoft Graph request failed before a trusted HTTP response was available; provider details were suppressed.'
+        }
+        if (-not $response.IsSuccessStatusCode) {
+            throw "Microsoft Graph request returned HTTP $([int]$response.StatusCode); provider body was suppressed."
+        }
+        if ($null -eq $response.Content) { return $null }
+        $contentLength = $response.Content.Headers.ContentLength
+        if ($null -ne $contentLength -and [long]$contentLength -gt 16777216) {
+            throw 'Microsoft Graph response exceeded the reviewed sixteen-megabyte boundary.'
+        }
+
+        $readCancellation = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(60))
+        try {
+            # Keep compatibility with the repository's PowerShell 7.0 floor
+            # (.NET Core 3.1); the cancellable size-bounded reads below enforce
+            # the independent content timeout.
+            $responseStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        }
+        catch {
+            throw 'Microsoft Graph response content was unavailable within the trusted read boundary; provider details were suppressed.'
+        }
+        $responseBuffer = [IO.MemoryStream]::new()
+        $readBuffer = [byte[]]::new(81920)
+        $totalBytes = 0L
+        while ($true) {
+            try {
+                $bytesRead = $responseStream.ReadAsync(
+                    $readBuffer,
+                    0,
+                    $readBuffer.Length,
+                    $readCancellation.Token).GetAwaiter().GetResult()
+            }
+            catch {
+                throw 'Microsoft Graph response content was not read within the trusted time and size boundary; provider details were suppressed.'
+            }
+            if ($bytesRead -eq 0) { break }
+            $totalBytes += [long]$bytesRead
+            if ($totalBytes -gt 16777216) {
+                throw 'Microsoft Graph response exceeded the reviewed sixteen-megabyte boundary.'
+            }
+            $responseBuffer.Write($readBuffer, 0, $bytesRead)
+        }
+        try {
+            $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+            $responseText = $strictUtf8.GetString($responseBuffer.ToArray())
+        }
+        catch {
+            throw 'Microsoft Graph returned malformed UTF-8 JSON; provider content was suppressed.'
+        }
+        if ([string]::IsNullOrWhiteSpace($responseText)) { return $null }
+        try {
+            return ConvertFrom-Json -InputObject $responseText -Depth 100 -ErrorAction Stop
+        }
+        catch {
+            throw 'Microsoft Graph returned malformed JSON; provider content was suppressed.'
+        }
+    }
+    finally {
+        $token = ''
+        $responseText = $null
+        if ($null -ne $readBuffer) { [Array]::Clear($readBuffer, 0, $readBuffer.Length) }
+        if ($null -ne $responseBuffer) { $responseBuffer.Dispose() }
+        if ($null -ne $responseStream) { $responseStream.Dispose() }
+        if ($null -ne $readCancellation) { $readCancellation.Dispose() }
+        if ($null -ne $response) { $response.Dispose() }
+        if ($null -ne $request) { $request.Dispose() }
+    }
+}
+
 function Invoke-AzJson {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string[]]$Arguments)
+    if ($Arguments.Count -gt 0 -and [string]$Arguments[0] -ceq 'rest') {
+        return Invoke-BootstrapGraphAzRest -Arguments ($Arguments + @('--output', 'json', '--only-show-errors'))
+    }
     $raw = Invoke-BootstrapCommand -FilePath 'az' -ArgumentList ($Arguments + @('--output', 'json', '--only-show-errors'))
     if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
     return $raw | ConvertFrom-Json -Depth 100

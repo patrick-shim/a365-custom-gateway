@@ -1,6 +1,8 @@
+$script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Common.psm1') -Force
+
 BeforeAll {
     $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-    Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Common.psm1') -Force
 
     function New-TestBootstrapConfig {
         $config = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'bootstrap/config.example.json') -Raw |
@@ -689,6 +691,254 @@ Describe 'External command redaction' {
         }
         finally {
             Set-BootstrapStructuredOutput -Enabled $false
+        }
+    }
+}
+
+Describe 'Bootstrap Azure CLI subscription boundary' {
+    BeforeEach {
+        Clear-BootstrapAzureSubscriptionContext
+        Set-BootstrapAzureSubscriptionContext `
+            -SubscriptionId '11111111-1111-4111-8111-111111111111' `
+            -TenantId '22222222-2222-4222-8222-222222222222'
+    }
+
+    AfterEach {
+        Clear-BootstrapAzureSubscriptionContext
+    }
+
+    It 'pins reviewed Azure resource families to the exact subscription' {
+        @(Get-BootstrapAzureCliArguments -Arguments @('group', 'show', '--name', 'rg-safe')) |
+            Should -Be @(
+                'group', 'show', '--name', 'rg-safe',
+                '--subscription', '11111111-1111-4111-8111-111111111111')
+
+        @(Get-BootstrapAzureCliArguments -Arguments @(
+                'account', 'get-access-token', '--resource', 'https://graph.microsoft.com/')) |
+            Should -Be @(
+                'account', 'get-access-token', '--resource', 'https://graph.microsoft.com/',
+                '--subscription', '11111111-1111-4111-8111-111111111111')
+    }
+
+    It 'keeps one matching explicit resource subscription and rejects conflicts or duplicates' {
+        @(Get-BootstrapAzureCliArguments -Arguments @(
+                'group', 'show', '--subscription=11111111-1111-4111-8111-111111111111')) |
+            Should -Be @(
+                'group', 'show', '--subscription=11111111-1111-4111-8111-111111111111')
+
+        { Get-BootstrapAzureCliArguments -Arguments @(
+                'group', 'show', '--subscription', '22222222-2222-4222-8222-222222222222') } |
+            Should -Throw '*exact bootstrap subscription context*'
+        { Get-BootstrapAzureCliArguments -Arguments @(
+                'group', 'show', '--subscription', '11111111-1111-4111-8111-111111111111',
+                '--subscription=11111111-1111-4111-8111-111111111111') } |
+            Should -Throw '*more than one explicit subscription*'
+    }
+
+    It 'keeps account show as an unpinned active-context probe' {
+        @(Get-BootstrapAzureCliArguments -Arguments @('account', 'show', '--output', 'json')) |
+            Should -Be @('account', 'show', '--output', 'json')
+
+        { Get-BootstrapAzureCliArguments -Arguments @(
+                'account', 'show', '--subscription', '11111111-1111-4111-8111-111111111111') } |
+            Should -Throw '*active-context probe*'
+    }
+
+    It 'leaves reviewed local Bicep commands unpinned' {
+        @(Get-BootstrapAzureCliArguments -Arguments @('bicep', 'version')) |
+            Should -Be @('bicep', 'version')
+        @(Get-BootstrapAzureCliArguments -Arguments @('version')) |
+            Should -Be @('version')
+    }
+
+    It 'rejects native Graph, context-changing, and unknown commands after authentication' {
+        foreach ($arguments in @(
+            @('ad', 'signed-in-user', 'show'),
+            @('rest', '--method', 'GET', '--url', 'https://graph.microsoft.com/v1.0/me'),
+            @('account', 'set', '--subscription', '11111111-1111-4111-8111-111111111111'),
+            @('login', '--tenant', '22222222-2222-4222-8222-222222222222'),
+            @('extension', 'list')
+        )) {
+            { Get-BootstrapAzureCliArguments -Arguments $arguments } | Should -Throw
+        }
+    }
+}
+
+Describe 'Exact-account Microsoft Graph token boundary' {
+    InModuleScope Common {
+        BeforeEach {
+            Clear-BootstrapAzureSubscriptionContext
+            Set-BootstrapAzureSubscriptionContext `
+                -SubscriptionId '11111111-1111-4111-8111-111111111111' `
+                -TenantId '22222222-2222-4222-8222-222222222222'
+            $script:tokenMetadata = [ordered]@{
+                accessToken = 'test-only-token-value'
+                expires_on = [DateTimeOffset]::UtcNow.AddHours(1).ToUnixTimeSeconds()
+                subscription = '11111111-1111-4111-8111-111111111111'
+                tenant = '22222222-2222-4222-8222-222222222222'
+                tokenType = 'Bearer'
+            }
+            Mock Invoke-BootstrapCommand {
+                return $script:tokenMetadata | ConvertTo-Json -Compress
+            }
+        }
+
+        AfterEach {
+            Clear-BootstrapAzureSubscriptionContext
+        }
+
+        It 'acquires and caches a token from the exact subscription and verifies returned tenant metadata' {
+            Get-BootstrapGraphAccessToken | Should -BeExactly 'test-only-token-value'
+            Get-BootstrapGraphAccessToken | Should -BeExactly 'test-only-token-value'
+
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                ($ArgumentList -join '|') -ceq (
+                    'account|get-access-token|--subscription|11111111-1111-4111-8111-111111111111|' +
+                    '--resource|https://graph.microsoft.com/|--output|json|--only-show-errors')
+            }
+        }
+
+        It 'rejects mismatched or malformed token metadata without reflecting token material' {
+            foreach ($mutation in @('tenant', 'subscription', 'tokenType', 'expires_on')) {
+                Set-BootstrapAzureSubscriptionContext `
+                    -SubscriptionId '11111111-1111-4111-8111-111111111111' `
+                    -TenantId '22222222-2222-4222-8222-222222222222'
+                $script:tokenMetadata = [ordered]@{
+                    accessToken = 'private-token-marker'
+                    expires_on = [DateTimeOffset]::UtcNow.AddHours(1).ToUnixTimeSeconds()
+                    subscription = '11111111-1111-4111-8111-111111111111'
+                    tenant = '22222222-2222-4222-8222-222222222222'
+                    tokenType = 'Bearer'
+                }
+                switch ($mutation) {
+                    'tenant' { $script:tokenMetadata.tenant = '33333333-3333-4333-8333-333333333333' }
+                    'subscription' { $script:tokenMetadata.subscription = '33333333-3333-4333-8333-333333333333' }
+                    'tokenType' { $script:tokenMetadata.tokenType = 'Unexpected' }
+                    'expires_on' { $script:tokenMetadata.expires_on = 1 }
+                }
+                try {
+                    Get-BootstrapGraphAccessToken
+                    throw 'Expected token metadata rejection.'
+                }
+                catch {
+                    $_.Exception.Message | Should -Not -Match 'private-token-marker'
+                    $_.Exception.Message | Should -Match 'metadata'
+                }
+            }
+        }
+    }
+}
+
+Describe 'Bounded in-process Microsoft Graph request contract' {
+    It 'accepts only reviewed v1.0 URLs, methods, headers, and JSON bodies' {
+        $get = ConvertFrom-BootstrapGraphAzRestArguments -Arguments @(
+            'rest', '--method', 'GET', '--url',
+            'https://graph.microsoft.com/v1.0/me?$select=id',
+            '--output', 'json', '--only-show-errors')
+        $get.method | Should -BeExactly 'GET'
+        $get.uri.AbsoluteUri | Should -BeExactly 'https://graph.microsoft.com/v1.0/me?$select=id'
+
+        foreach ($method in @('POST', 'PATCH')) {
+            $write = ConvertFrom-BootstrapGraphAzRestArguments -Arguments @(
+                'rest', '--method', $method, '--url',
+                'https://graph.microsoft.com/v1.0/applications',
+                '--headers', 'Content-Type=application/json', 'OData-Version=4.0',
+                '--body', '{"displayName":"safe"}', '--output', 'none')
+            $write.method | Should -BeExactly $method
+            $write.body | Should -BeExactly '{"displayName":"safe"}'
+        }
+
+        (ConvertFrom-BootstrapGraphAzRestArguments -Arguments @(
+                'rest', '--method', 'DELETE', '--url',
+                'https://graph.microsoft.com/v1.0/applications/11111111-1111-4111-8111-111111111111')).method |
+            Should -BeExactly 'DELETE'
+    }
+
+    It 'rejects off-origin, beta, redirect-shaped, credentialed, and malformed requests' {
+        foreach ($url in @(
+            'http://graph.microsoft.com/v1.0/me',
+            'https://example.invalid/v1.0/me',
+            'https://graph.microsoft.com/beta/applications',
+            'https://user@graph.microsoft.com/v1.0/me',
+            'https://graph.microsoft.com/v1.0/me#fragment'
+        )) {
+            { ConvertFrom-BootstrapGraphAzRestArguments -Arguments @(
+                    'rest', '--method', 'GET', '--url', $url) } |
+                Should -Throw '*exact public-cloud HTTPS v1.0*'
+        }
+
+        { ConvertFrom-BootstrapGraphAzRestArguments -Arguments @(
+                'rest', '--method', 'GET', '--url', 'https://graph.microsoft.com/v1.0/me',
+                '--headers', 'Authorization=private-marker') } |
+            Should -Throw '*outside the reviewed*'
+        { ConvertFrom-BootstrapGraphAzRestArguments -Arguments @(
+                'rest', '--method', 'POST', '--url', 'https://graph.microsoft.com/v1.0/applications',
+                '--body', 'not-json') } |
+            Should -Throw '*not valid JSON*'
+    }
+}
+
+Describe 'Bounded in-process Microsoft Graph HTTP execution' {
+    InModuleScope Common {
+        BeforeEach {
+            $script:graphResponse = $null
+            $script:fakeGraphClient = [pscustomobject]@{}
+            $script:fakeGraphClient | Add-Member -MemberType ScriptMethod -Name SendAsync -Value {
+                param($Request, $CompletionOption)
+                $script:capturedGraphMethod = [string]$Request.Method.Method
+                $script:capturedGraphUri = [string]$Request.RequestUri.AbsoluteUri
+                $completion = [Threading.Tasks.TaskCompletionSource[Net.Http.HttpResponseMessage]]::new()
+                $completion.SetResult($script:graphResponse)
+                return $completion.Task
+            }
+            Mock Get-BootstrapGraphAccessToken { return 'private-token-marker' }
+            Mock Get-BootstrapGraphHttpClient { return $script:fakeGraphClient }
+        }
+
+        AfterEach {
+            if ($null -ne $script:graphResponse) {
+                $script:graphResponse.Dispose()
+                $script:graphResponse = $null
+            }
+        }
+
+        It 'parses a bounded successful JSON response with a concrete content length' {
+            $script:graphResponse = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]::OK)
+            $script:graphResponse.Content = [Net.Http.StringContent]::new('{"id":"safe-id"}')
+
+            $result = Invoke-BootstrapGraphAzRest -Arguments @(
+                'rest', '--method', 'GET', '--url',
+                'https://graph.microsoft.com/v1.0/me?$select=id')
+
+            $result.id | Should -BeExactly 'safe-id'
+            $script:capturedGraphMethod | Should -BeExactly 'GET'
+            $script:capturedGraphUri | Should -BeExactly 'https://graph.microsoft.com/v1.0/me?$select=id'
+        }
+
+        It 'suppresses provider bodies and bearer material on an HTTP failure' {
+            $script:graphResponse = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]::BadRequest)
+            $script:graphResponse.Content = [Net.Http.StringContent]::new('private-provider-body-marker')
+
+            try {
+                Invoke-BootstrapGraphAzRest -Arguments @(
+                    'rest', '--method', 'GET', '--url', 'https://graph.microsoft.com/v1.0/me')
+                throw 'Expected the Graph request to fail.'
+            }
+            catch {
+                $_.Exception.Message | Should -Match 'HTTP 400'
+                $_.Exception.Message | Should -Not -Match 'private-provider-body-marker|private-token-marker'
+            }
+        }
+
+        It 'enforces the byte cap when the provider omits Content-Length' {
+            $script:graphResponse = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]::OK)
+            $script:graphResponse.Content = [Net.Http.ByteArrayContent]::new([byte[]]::new(16777217))
+            $script:graphResponse.Content.Headers.ContentLength = $null
+
+            { Invoke-BootstrapGraphAzRest -Arguments @(
+                    'rest', '--method', 'GET', '--url', 'https://graph.microsoft.com/v1.0/me') } |
+                Should -Throw '*exceeded the reviewed sixteen-megabyte boundary*'
         }
     }
 }
