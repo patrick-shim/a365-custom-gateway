@@ -323,7 +323,7 @@ reported as completion of the plan. The authoritative phase status is:
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans, proved one deliberate interruption/Resume boundary, and reached 5/19 while exposing successive fresh-ACR recovery contracts. `a365gw4` exposed the sparse scheduling receipt; `a365gw5` exposed Azure CLI stderr contaminating its JSON. Both receipt boundaries are fixed and locally verified; a completed fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved one deliberate interruption/Resume boundary. `a365gw6` reached 6/19, produced exactly one succeeded immutable build per component, and proved exact no-resubmit recovery. It also proved that Azure CLI emits no result object for `acr build --no-wait`, then exposed the inert call's empty worker-principal/manager-set PowerShell binding defects before ARM deployment. A completed corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation are still absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
@@ -446,10 +446,10 @@ and source
 authenticated What-If reported exactly six Deploy actions and zero Delete actions.
 
 Apply completed 5/19 and stopped in immutable images after recording API intent
-`30bac341-4ef9-414b-bce1-499bb9efda8d`. The provider returned a sparse
-`az acr build --no-wait` scheduling receipt containing the exact run ID, but the
-source validated it as if it were the later full run record and therefore did not
-persist `RunQueued`. Exact readback showed API run `de1` succeeded as `QuickRun`
+`30bac341-4ef9-414b-bce1-499bb9efda8d`. At this checkpoint the failure was
+interpreted as a sparse `az acr build --no-wait` scheduling receipt being validated
+as a full run record; the later `a365gw6` investigation below supersedes that
+interpretation. Exact readback showed API run `de1` succeeded as `QuickRun`
 with digest
 `sha256:3c65a6903a5cb3b95ee314d7bf495d4675ee777fb4816747e6e651e4fa327980`.
 
@@ -458,7 +458,7 @@ A fresh Resume Plan
 kept the same configuration, source, ownership, and six-Deploy/zero-Delete
 contract. Resume exactly recovered and digest-checkpointed the API image, recorded
 worker intent `bafe753a-62e0-4f2d-8f59-69d75053b58c`, submitted exactly one worker
-build, and stopped on the same sparse-receipt defect. Exact run `de2` subsequently
+build, and stopped on the same then-unresolved submission-result defect. Exact run `de2` subsequently
 succeeded as `QuickRun` with digest
 `sha256:6d5743b68ed84d8a6016c8b66d18caea0481cfe764aeb27d48a77836b77bb3d0`.
 Bootstrap state remains API `DigestCheckpointed` and worker `IntentRecorded`.
@@ -495,10 +495,12 @@ Apply completed 5/19, recorded API intent
 before `RunQueued`. Exact run `de1` succeeded as `QuickRun` with `gateway-api`
 digest
 `sha256:375361ec21424dbb038c409ea018b96e0cc34c9e2926ee81803429e95b361fdd`,
-while bootstrap state remains `IntentRecorded`. The run-ID-only projection from
-commit `3ad90d764bbd64acc778c24b0b09c0ff02be564e` is correct, but the shared command
-runner merges stderr into stdout. Azure CLI 2.89.1 emits its queued-build notice on
-stderr, contaminating the JSON stream before receipt validation and checkpointing.
+while bootstrap state remains `IntentRecorded`. Commit
+`3ad90d764bbd64acc778c24b0b09c0ff02be564e` had introduced a run-ID-only
+projection based on the then-current receipt hypothesis. This attempt proved that
+the shared runner merged the queued-build stderr notice into the parsed value;
+`a365gw6` later proved the CLI returns no result object or JSON stdout for this
+`--no-wait` command.
 
 No worker or Admin UI build, SQL initialization, Agent 365 blueprint, runtime,
 Service Bus queue/outbox, registration, canary, Gateway-key action, or Purview
@@ -514,6 +516,55 @@ Protected subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` remains unselected
 and unmodified, and its queues/messages were not accessed. The next live action is
 fresh isolated project `a365gw6` in absent resource group
 `rg-a365-custom-gw-phase6e`.
+
+Fresh generation `a365gw6-dev` then started from absent resource group
+`rg-a365-custom-gw-phase6e` and absent state in only disposable target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Ownership is
+`b354e365-48f9-4255-bb98-4f6222e192e7`; ACR is
+`acra365gw6devkgafft`. Initial Plan
+`sha256:462a3cf947f0bd3be3a03f9ad7ed71e94f0a2c2aa629c68db021e30c09ed07cf`
+bound configuration
+`sha256:cc58aa76fd5b1bfd2556ae19a9e0df61f4f9ee862f189986b105814b2169f85e`
+and source
+`sha256:93dbe20bb0dcf061fb6f01fe07b4d9eef73fb146578fb5c4dc3db80ee591ccfe`;
+What-If reported six Creates and zero Deletes. Foundation and Gateway API identity
+completed.
+
+The first API build recorded intent
+`9c351f63-7b39-4d83-8d26-05ade97264fb`, submitted once, and stopped before
+`RunQueued`. Exact local Azure CLI 2.89.1 source inspection proved that the invoker
+sets every `supports_no_wait` command result to null when `--no-wait` is present,
+after the handler schedules the run. Therefore the presumed stdout receipt cannot
+exist; stderr separation was correct. Exact API run `de1` succeeded as `QuickRun`
+with digest
+`sha256:2cf9d8f03d4d5b9ac3fbb14265f526229b2927e990109cbacdc72ca773d47cbb`.
+
+Resume Plan
+`sha256:da4bb058ab387b4ac1736abb2d109c4d376bbb0fef93bb808447001d266b599e`
+kept the exact configuration/source/ownership boundary and reported six Deploys,
+zero Deletes. Three bounded Resumes recovered each prior intent by its unique exact
+tag without resubmission. `Immutable workload images` completed with exactly three
+succeeded `QuickRun`s: API `de1` at the digest above; worker `de2` at
+`sha256:3f8ffaa95b0546090c5e49987899001657bccd1f25a15edeef5263200698f2e1`;
+and Admin UI `de3` at
+`sha256:da6f12c8383bc5be015157b11ff88ba65d3aba476975650824eadcfbd3236b45`.
+The live result proves exact crash recovery and no duplicate builds, while also
+disproving the receipt-producing CLI assumption.
+
+The next step stopped safely at **6/19** before any inert group deployment. The
+inert call's intentionally empty worker principal and `managerApplications` set
+were passed to mandatory PowerShell parameters that did not allow those initial
+empty values; independent binding reproductions returned
+`ParameterBindingValidationException` for each. Both intended
+Container Apps and the inert deployment remain absent. No SQL initialization,
+Agent 365 blueprint, workflow identity, Service Bus queue/outbox, runtime, Admin UI,
+registration, canary, Gateway-key action, or Purview action followed. Preserve the
+source-bound `a365gw6` state, snapshots, foundation, API identity, three images, and
+failed step; never Resume it with edited source. The next action is the reviewed
+no-result ACR scheduling/discovery fix plus initial-only empty identity-input fixes,
+complete local verification, and a new isolated generation. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
+retained queue/message was accessed.
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
@@ -855,9 +906,13 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    [`../bootstrap/README.md`](../bootstrap/README.md), run `Plan`, then use the
    resumable `Apply`. Preserve the exact checkout/source fingerprint and accepted
    snapshot for Resume; never mix durable state across source generations. Do not
-   substitute the old partial `tools/bootstrap.ps1`. Until one disposable
-   clean-subscription run is captured, distinguish locally validated bootstrap
-   source from a live-proven recovery path. If a completed resource group was
+   substitute the old partial `tools/bootstrap.ps1`. Preserve `a365gw6` at 6/19;
+   it live-proves exact image-build recovery but cannot consume edited source. The
+   next clean-subscription action is a new isolated generation after the ACR
+   no-result scheduling/discovery and inert empty identity-input fixes pass the
+   complete local gate. Until one disposable run completes Apply/Verify,
+   distinguish locally validated corrected source and partial live recovery proof
+   from a completed bootstrap. If a completed resource group was
    deleted, preserve state and use a separately reviewed disaster-recovery decision;
    bootstrap intentionally refuses automatic tenant-object/credential replay.
 7. After every verified change, update this file and the deployment checkpoint with
