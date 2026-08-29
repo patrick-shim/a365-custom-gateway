@@ -757,6 +757,56 @@ truthful minimal-profile behavior. The next live action is a new isolated
 in the target subscription. `a365gw8` and `a365gw9` are frozen evidence, not Resume
 candidates.
 
+Fresh generation `a365gw10-dev` used resource group
+`rg-a365-custom-gw-phase6i`, ownership
+`c388ba75-6a77-45b7-a2d2-e3c4bce8e99d`, and ACR
+`acra365gw10devg6eltw`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Accepted Plan
+`sha256:f83b11d238e722ca3396a390a9fa0802f3f55ba7e29dba1f4413536dfb734c0c`
+bound configuration
+`sha256:c1847f79831db3c1ea1dec85e6c3f1a3b9e0b05f9a2632a81895f65a76ee6f01`
+and source
+`sha256:a2f22eda691af86fc61cac1bd1e3309382520ed6a9b246736dbdc5df9b6a4c6b`;
+authenticated What-If reported exactly eight Creates and zero Deletes. Apply was
+deliberately interrupted after Prerequisites and exact Azure authentication reached
+**2/19**, 10%. Status reported `Paused`; Resume recomputed the identical Plan and
+revalidated both checkpoints before continuing. This is live proof of the intended
+same-source interruption boundary.
+
+Resume completed provider registration, foundation, Gateway API identity, and all
+three immutable images. Pull identity principal
+`ee85af3d-8fc0-4d94-9666-430519dcbd20` has deterministic exact ACR-scoped role
+assignment `e0f5a084-0f56-5b8b-8cd6-9aa93d50e856`. API, worker, and Admin UI
+`QuickRun`s `de1`, `de2`, and `de3` produced digests
+`sha256:6a44f3fbe718d4f050c487cc13ad9ca9bab645c2c6b16bd12a2b9bbd68909861`,
+`sha256:247d7257736cfb2ca8dcc0a30403f01e707146b02361fd216305b4fcebdd6171`,
+and
+`sha256:e5c5bf8328ea682ccb1650d67e82cbc88e41857b77fe22f3a79e7448cbff7113`.
+Gateway API application object/client/service-principal IDs are respectively
+`9798e855-f286-4315-b798-1cead0df0c0d`,
+`26c59e63-a339-419b-bbb5-0e5701ba869f`, and
+`ac862a1a-6109-4503-a8b3-0d97af9d2c74`. The scope base URI is
+`api://a365-gateway-a365gw10-dev`; its separately persisted v2 token audience is the
+bare API client ID above.
+
+The inert top-level deployment and every observed nested deployment reached
+`Succeeded` under correlation `b283f5b9-f9b4-4b93-ac78-05371854a3df`, but bootstrap
+failed during immediate strict post-deployment validation and preserved **6/19**.
+No database initialization, Agent 365 seed blueprint, workflow identity, Admin UI
+identity/credential deployment, runtime activation, registration, canary,
+Gateway-key, Registry, or Purview action followed. A read-only recovery Plan
+`sha256:8aafa9d8ea77535dcfdbff7b0df00f65ece3d1a9d2a3cbc8065219c14f35ca6e`
+reported eight `Deploy`, twenty-five `Ignore`, and zero `Delete` changes. The current
+validator rejected every `Ignore`, so the Plan was not apply-ready and its earlier
+acceptance was correctly cleared. Microsoft documents `Ignore` as an existing
+resource absent from the current desired template that will not be deployed or
+modified; the observed ignored set is the exact target-resource-group surface from
+the succeeded inert graph. Expansion-limit ambiguity means the bootstrap must add
+a bounded, state-aware fail-closed rule rather than permit `Ignore` globally.
+Preserve `a365gw10`; never reconstruct acceptance or Resume it with changed source.
+Protected subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected
+nor mutated, and its queues/messages were not accessed.
+
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
 architecture regression test covers the operation-ID binding. Focused architecture
@@ -1098,15 +1148,17 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    resumable `Apply`. Preserve the exact checkout/source fingerprint and accepted
    snapshot for Resume; never mix durable state across source generations. Do not
    substitute the old partial `tools/bootstrap.ps1`. Preserve `a365gw6` and
-   `a365gw7` at 6/19, `a365gw8` at 3/19, and `a365gw9` at 6/19. They respectively
-   preserve exact image-build recovery, the terminal inert-deployment/private-ACR
-   first-pull failure, a succeeded dedicated-pull foundation stopped by incomplete
-   typed ACR policy readback, and a completed foundation/API/images prefix stopped
-   by the stale scope/audience guard. None may consume edited source or its later
-   recovery Plan. The next clean-subscription action is a new isolated `a365gw10`
-   generation from source commit
-   `1cdd5eb2deaefa3ba6989308566806f0920c2305`, in absent resource group
-   `rg-a365-custom-gw-phase6i`, only in target subscription
+   `a365gw7` at 6/19, `a365gw8` at 3/19, `a365gw9` at 6/19, and `a365gw10` at
+   6/19. In order, those generations preserve exact image-build recovery; the
+   terminal inert-deployment/private-ACR first-pull failure; a succeeded
+   dedicated-pull foundation stopped by incomplete typed ACR policy readback; a
+   completed foundation/API/images prefix stopped by the stale scope/audience
+   guard; and a succeeded inert graph whose recovery What-If exposed the unhandled
+   `Ignore` contract. None may consume edited source or its later recovery Plan.
+   First implement and independently review a bounded,
+   state-aware `Ignore` rule that cannot hide expansion limits or unrelated
+   resources. The next live generation after that correction must be a new isolated
+   `a365gw11` deployment and absent resource group, only in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof

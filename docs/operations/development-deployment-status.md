@@ -189,6 +189,68 @@ project `a365gw10` in absent resource group `rg-a365-custom-gw-phase6i`, only in
 the target subscription. `a365gw8` and `a365gw9` are frozen evidence, not Resume
 candidates.
 
+Fresh `a365gw10-dev` then used resource group
+`rg-a365-custom-gw-phase6i`, ownership
+`c388ba75-6a77-45b7-a2d2-e3c4bce8e99d`, and ACR
+`acra365gw10devg6eltw`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Accepted Plan
+`sha256:f83b11d238e722ca3396a390a9fa0802f3f55ba7e29dba1f4413536dfb734c0c`
+bound configuration
+`sha256:c1847f79831db3c1ea1dec85e6c3f1a3b9e0b05f9a2632a81895f65a76ee6f01`
+and source
+`sha256:a2f22eda691af86fc61cac1bd1e3309382520ed6a9b246736dbdc5df9b6a4c6b`;
+authenticated What-If reported exactly eight Creates and zero Deletes. Apply
+completed Prerequisites and exact Azure authentication, then was deliberately
+interrupted at the start of provider registration. Persisted status was `Paused`
+at **2/19**, 10%, with no resource mutation. Resume recomputed the identical Plan,
+revalidated both completed checkpoints, and continued only in the target
+subscription.
+
+Resume completed provider registration, foundation, Gateway API identity, and all
+three immutable images. Pull identity principal
+`ee85af3d-8fc0-4d94-9666-430519dcbd20` has exact deterministic ACR-scoped
+`AcrPull` assignment `e0f5a084-0f56-5b8b-8cd6-9aa93d50e856`. API, worker, and
+Admin UI `QuickRun`s `de1`, `de2`, and `de3` produced digests
+`sha256:6a44f3fbe718d4f050c487cc13ad9ca9bab645c2c6b16bd12a2b9bbd68909861`,
+`sha256:247d7257736cfb2ca8dcc0a30403f01e707146b02361fd216305b4fcebdd6171`,
+and
+`sha256:e5c5bf8328ea682ccb1650d67e82cbc88e41857b77fe22f3a79e7448cbff7113`.
+Gateway API application object/client/service-principal IDs are
+`9798e855-f286-4315-b798-1cead0df0c0d`,
+`26c59e63-a339-419b-bbb5-0e5701ba869f`, and
+`ac862a1a-6109-4503-a8b3-0d97af9d2c74`. Its scope base URI is
+`api://a365-gateway-a365gw10-dev`; the v2 token audience is the bare API client ID.
+
+Inert deployment `a365gw-a365gw10-bootstrap-inert-dev` and every observed nested
+deployment reached `Succeeded` under correlation
+`b283f5b9-f9b4-4b93-ac78-05371854a3df`. Bootstrap then stopped during immediate
+strict post-deployment validation and preserved **6/19**, 31%. Safe diagnostics
+are `.bootstrap/diagnostics/a365gw10-dev-20260829-233308.json`. A read-only recovery
+Plan
+`sha256:8aafa9d8ea77535dcfdbff7b0df00f65ece3d1a9d2a3cbc8065219c14f35ca6e`
+reported exactly eight `Deploy`, twenty-five `Ignore`, and zero `Delete` changes.
+The current categorical validator rejected `Ignore`, marked that Plan not
+apply-ready, and cleared the earlier acceptance before any further mutation.
+
+The twenty-five ignored IDs are the existing inert graph omitted from the
+subscription-level foundation template. They cannot be accepted by prefix, count,
+or tag alone: the correction must require exact set equality against a GET-only,
+Succeeded/Incremental, source/owner/parameter/resource-bound recovery graph,
+including the single private-endpoint-generated NIC and SQL `master` parent
+bindings. The succeeded deployment also exposed a strict recovery-surface defect:
+ARM records the reviewed default `allowLegacySystemAssignedImagePull=false`, while
+the local expected parameter dictionary omitted that name. Preserve `a365gw10` and
+never reconstruct its acceptance or Resume it with edited source. No database
+initialization, seed blueprint, workflow identity, Admin UI identity/credential,
+runtime activation, registration, Gateway key, Registry, canary, or later Purview
+action followed. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and its
+queues/messages were not accessed.
+
+The next live action is to finish and independently review the bounded recovery
+contract, then start a new isolated `a365gw11` generation and absent resource group
+only in target subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`.
+
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
 Prerequisites, then failed during Azure authentication because the old dispatcher
