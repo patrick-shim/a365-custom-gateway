@@ -810,26 +810,20 @@ function Get-GatewayAcrExactRunById {
     return $run
 }
 
-function Assert-GatewayAcrQueuedRunContract {
+function Assert-GatewayAcrBuildSubmissionReceiptContract {
     param(
-        [Parameter(Mandatory)]$Run,
-        [Parameter(Mandatory)][string]$Repository,
-        [Parameter(Mandatory)][string]$Tag
+        [Parameter(Mandatory)][AllowNull()]$Receipt
     )
-    if ([string]$Run.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$' -or
-        [string]$Run.runType -cne 'QuickRun' -or
-        [string]$Run.status -notin @('Queued', 'Started', 'Running')) {
-        throw 'The submitted ACR build did not return one canonical queued QuickRun contract.'
+    if ($Receipt -isnot [pscustomobject]) {
+        throw 'The submitted ACR build did not return one canonical run-ID receipt.'
     }
-    $outputImages = @($Run.outputImages)
-    if ($outputImages.Count -gt 1 -or ($outputImages.Count -eq 1 -and (
-        [string]$outputImages[0].repository -cne $Repository -or
-        [string]$outputImages[0].tag -cne $Tag -or
-        (-not [string]::IsNullOrWhiteSpace([string]$outputImages[0].digest) -and
-            [string]$outputImages[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$')))) {
-        throw 'The submitted ACR build returned a mismatched output image contract.'
+    $propertyNames = @($Receipt.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    if ($propertyNames.Count -ne 1 -or
+        [string]$propertyNames[0] -cne 'runId' -or
+        [string]$Receipt.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$') {
+        throw 'The submitted ACR build did not return one canonical run-ID receipt.'
     }
-    return [string]$Run.runId
+    return [string]$Receipt.runId
 }
 
 function Build-GatewayImages {
@@ -998,12 +992,15 @@ function Build-GatewayImages {
                     if (-not $buildContext) {
                         $buildContext = New-GatewayAcrBuildContext -RepositoryRoot $root -SourceFingerprint $SourceFingerprint
                     }
-                    $queuedRun = Invoke-AzJson -Arguments @(
+                    # `az acr build --no-wait` returns the sparse schedule-run
+                    # receipt. Persist its canonical ID before requiring the
+                    # full QuickRun contract through exact show-run readback.
+                    $submissionReceipt = Invoke-AzJson -Arguments @(
                         'acr', 'build', '--registry', $registry, '--image', $imageTag,
                         '--file', [string]$entry.Value.dockerfile,
                         $buildContext, '--no-wait',
-                        '--query', '{runId:runId,status:status,runType:runType,outputImages:outputImages}')
-                    $intent.runId = Assert-GatewayAcrQueuedRunContract -Run $queuedRun -Repository $repository -Tag $tag
+                        '--query', '{runId:runId}')
+                    $intent.runId = Assert-GatewayAcrBuildSubmissionReceiptContract -Receipt $submissionReceipt
                     $intent.state = 'RunQueued'
                     & $Checkpoint $result
                 }
