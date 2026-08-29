@@ -58,7 +58,7 @@ application, and integration modules share one solution and strict dependency
 boundaries, while `Gateway.Api`, `Gateway.AdminUi`, and
 `Gateway.Provisioning.Worker` are independently versioned/scaled Container App
 processes. Modules can still be extracted further if scaling or ownership requires
-it. The gateway is decomposed into 10 source modules:
+it. The gateway is decomposed into 11 source modules:
 
 | Module | Responsibility |
 |---|---|
@@ -69,6 +69,7 @@ it. The gateway is decomposed into 10 source modules:
 | `Gateway.Infrastructure` | EF Core, Service Bus, Key Vault, Graph implementations |
 | `Gateway.Agent365` | Agent 365 integration adapter; observability and the gated development create adapter are implemented and deployed in development, while deletion/reconciliation remain fail-closed unsupported |
 | `Gateway.Purview` | Microsoft Purview policy evaluation adapter |
+| `Gateway.ContentSafety` | Azure AI Content Safety Prompt Shields adapter using the API managed identity |
 | `Gateway.Observability` | OpenTelemetry, Application Insights, Agent 365 telemetry export |
 | `Gateway.Provisioning.Worker` | Background worker for async provisioning via Service Bus |
 | `Gateway.Contracts` | Shared DTOs, API contracts, error codes |
@@ -103,6 +104,14 @@ it. The gateway is decomposed into 10 source modules:
     the Registry completion gate. Completion requires its own future action expiry
     and exact `AuthorizedOperationId`; the two windows must never overlap or be
     treated as one broad execution switch.
+12. **Explicit pre-model receipt boundary** — an external client evaluates the
+    prompt before invoking its model. Enabled Prompt Shields and Purview checks fail
+    closed. Only an allowed evaluation receives a short-lived, single-use receipt
+    bound to registration, interaction ID, tenant user, content type, and salted
+    prompt hash; protected completed-interaction ingestion rejects a missing,
+    expired, consumed, or mismatched receipt. The Gateway does not proxy the model
+    call, so client compliance with the order remains observable rather than
+    absolute model-call enforcement.
 
 Two prototypes inform this boundary without defining it:
 
@@ -169,6 +178,7 @@ C4Context
     System_Ext(graph, "Microsoft Graph API", "Blueprint/Agent ID provisioning, Registry preview, and Purview user-scoped calls")
     System_Ext(a365, "Microsoft Agent 365", "Agent runtime, observability OTLP endpoint")
     System_Ext(purview, "Microsoft Purview", "DLP policy evaluation, content activity audit")
+    System_Ext(contentSafety, "Azure AI Content Safety", "Prompt Shields injection and jailbreak detection")
     System_Ext(keyVault, "Azure Key Vault", "Platform secret/certificate storage; not workflow-v3 Agent ID or OBO credentials")
     System_Ext(monitor, "Azure Monitor / App Insights", "Metrics, traces, logs, alerts")
 
@@ -185,6 +195,7 @@ C4Context
     Rel(gateway, graph, "Worker manages blueprints/FICs/Agent IDs/roles; API completes preview Registry through delegated administrator OBO", "Graph REST API v1.0 + beta")
     Rel(gateway, a365, "Exports telemetry via OTLP", "OTLP/HTTP")
     Rel(gateway, purview, "Evaluates content, submits audit records", "Graph REST API v1.0")
+    Rel(gateway, contentSafety, "Evaluates prompts before model invocation", "Prompt Shield REST API 2024-09-01 + managed identity")
     Rel(gateway, keyVault, "Platform-only secret references; not workflow-v3 Agent credentials or delegated assertions", "Azure SDK + managed identity")
     Rel(gateway, monitor, "Exports metrics, traces, logs", "OpenTelemetry / Azure SDK")
 ```
@@ -621,6 +632,51 @@ sequenceDiagram
 
 ---
 
+## 7.1 Pre-model prompt protection
+
+```mermaid
+sequenceDiagram
+    participant Client as External client
+    participant API as Gateway API
+    participant Shield as Azure AI Content Safety
+    participant Purview as Microsoft Purview
+    participant DB as Azure SQL
+    participant Model as External model
+
+    Client->>API: POST /api/v1/prompts:evaluate + Gateway key + Idempotency-Key
+    API->>API: Resolve registration; validate agent, user context, and feature availability
+    par Prompt Shields enabled
+        API->>Shield: shieldPrompt(userPrompt)
+        Shield-->>API: attackDetected true/false
+    and Purview enabled
+        API->>Purview: prompt-only uploadText evaluation/audit
+        Purview-->>API: trusted policy decision
+    end
+    alt any enabled control blocks
+        API->>DB: Decision metadata + salted prompt verifier; no raw prompt
+        API-->>Client: 403 RFC 9457 + safe machine-readable reason; no receipt
+    else all enabled controls allow
+        API->>DB: Allowed metadata + salted verifier + expiry
+        API-->>Client: 200 + short-lived single-use receipt
+        Client->>Model: Invoke only after allow
+        Model-->>Client: Response
+        Client->>API: POST /api/v1/ai-interactions + exact receipt
+        API->>API: Under scoped idempotency lease, verify and consume receipt
+        API-->>Client: 202 interaction receipt
+    else provider failure or ambiguous result
+        API-->>Client: 503; no trusted allow receipt
+    end
+```
+
+Prompt Shields and Purview are independent per-registration controls. Prompt
+Shields uses the API Container App managed identity and the Cognitive Services User
+role; local keys are disabled. Provider bodies, raw prompts, keys, and tokens are
+never logged or returned. The client receives only `PROMPT_ALLOWED`,
+`PROMPT_BLOCKED_BY_PROMPT_SHIELD`, `PROMPT_BLOCKED_BY_DLP`, or
+`PROMPT_BLOCKED_BY_MULTIPLE_CONTROLS` plus safe processing labels and a correlation
+ID. Repeating the same idempotency key and canonical payload replays the same result;
+using that key for a different prompt returns 409 before new provider work.
+
 ## 8. Purview Integration Flow
 
 ```mermaid
@@ -680,9 +736,11 @@ sequenceDiagram
 | `purviewEnabled=true`, `AuditOnly` | Present | Available | Synchronously submit metadata-only prompt and response content activities, then persist `AuditLogged`. |
 | `purviewEnabled=true`, `AuditOnly` | Present | **Unavailable** | Return 503 and persist nothing; no audit retry queue is implemented. |
 
-The current interaction endpoint receives a completed prompt/response pair. It can
-prevent Gateway persistence/export after a block, but cannot undo external model
-execution. Pre-model DLP requires a separately implemented phase-specific endpoint.
+The prompt-only `POST /api/v1/prompts:evaluate` endpoint is the implemented pre-model
+Purview phase. The completed interaction endpoint still processes the response
+according to its returned Purview execution mode. It can prevent Gateway
+persistence/export after a response-side error or block, but cannot undo external
+model execution or retract a response already shown by the external client.
 
 ---
 

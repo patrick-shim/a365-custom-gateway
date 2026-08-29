@@ -18,4 +18,5 @@ public record UpdateSystemConfigRequest(
     bool? UseGraphAgentRegistration,
     bool? UseCliProvisioningFallback,
     bool? DefaultAgent365ObservabilityEnabled = null,
-    bool? DefaultAzureMonitorExportEnabled = null);
+    bool? DefaultAzureMonitorExportEnabled = null,
+    bool? DefaultPromptShieldEnabled = null);

@@ -21,6 +21,7 @@ public class GatewayDbContext : DbContext
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
     public DbSet<SystemConfiguration> SystemConfigurations => Set<SystemConfiguration>();
     public DbSet<PurviewPolicyProfile> PurviewPolicyProfiles => Set<PurviewPolicyProfile>();
+    public DbSet<PromptEvaluationRecord> PromptEvaluationRecords => Set<PromptEvaluationRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

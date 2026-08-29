@@ -15,4 +15,5 @@ public sealed record SubmitInteractionCommand(
     ModelDto? Model,
     Dictionary<string, string>? Metadata,
     Guid CallerAgentRegistrationId,
-    string? IdempotencyKey) : IRequest<InteractionReceiptDto>;
+    string? IdempotencyKey,
+    Guid? PromptEvaluationReceiptId = null) : IRequest<InteractionReceiptDto>;

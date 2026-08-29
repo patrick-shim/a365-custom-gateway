@@ -62,6 +62,41 @@ function Test-GatewayBootstrapDeployment {
         }
     }
 
+    $promptShieldVerification = 'NotConfigured'
+    if ($Config.promptShield.enabled -eq $true) {
+        if ([string]::IsNullOrWhiteSpace([string]$Runtime.promptShieldEndpoint) -or
+            [string]::IsNullOrWhiteSpace([string]$Runtime.promptShieldAccountId) -or
+            [string]::IsNullOrWhiteSpace([string]$Runtime.promptShieldAccountName)) {
+            throw 'Prompt Shield is enabled but the Content Safety deployment outputs are incomplete.'
+        }
+
+        $contentSafety = Invoke-AzJson -Arguments @(
+            'resource', 'show',
+            '--ids', [string]$Runtime.promptShieldAccountId,
+            '--api-version', '2023-05-01'
+        )
+        if ([string]$contentSafety.kind -ne 'ContentSafety') {
+            throw "Resource '$($Runtime.promptShieldAccountName)' is not an Azure AI Content Safety account."
+        }
+        if ($contentSafety.properties.disableLocalAuth -ne $true) {
+            throw "Azure AI Content Safety account '$($Runtime.promptShieldAccountName)' does not have local authentication disabled."
+        }
+
+        $cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
+        $roleAssignments = Invoke-AzJson -Arguments @(
+            'role', 'assignment', 'list',
+            '--assignee-object-id', [string]$Runtime.apiPrincipalId,
+            '--scope', [string]$Runtime.promptShieldAccountId
+        )
+        $hasCognitiveServicesUser = @($roleAssignments | Where-Object {
+            ([string]$_.roleDefinitionId).EndsWith("/$cognitiveServicesUserRoleId", [StringComparison]::OrdinalIgnoreCase)
+        }).Count -gt 0
+        if (-not $hasCognitiveServicesUser) {
+            throw "Gateway API managed identity is missing Cognitive Services User on '$($Runtime.promptShieldAccountName)'."
+        }
+        $promptShieldVerification = 'Passed'
+    }
+
     $expectedSignIn = "$($AdminUi.adminUiUrl.TrimEnd('/'))/signin-oidc"
     $expectedSignOut = "$($AdminUi.adminUiUrl.TrimEnd('/'))/signout-callback-oidc"
     $redirectsVerified = $false
@@ -109,6 +144,7 @@ function Test-GatewayBootstrapDeployment {
         privateEndpointCount = $privateEndpointCount
         immutableImages = $expectedImages
         purviewGraphRoles = if ($Config.purview.enabled -eq $true) { 'Passed' } else { 'NotConfigured' }
+        promptShield = $promptShieldVerification
         adminUiIdentity = 'Passed'
         provisioningPreflight = 'Passed'
         registrationMode = if ($enablePreview) { 'ContinuousDevelopmentPreview' } else { 'ClosedUnsupportedForProduction' }

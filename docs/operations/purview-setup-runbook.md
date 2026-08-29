@@ -260,14 +260,15 @@ synthetic block canary.
 
 ## Current product boundary
 
-`POST /api/v1/ai-interactions` receives a completed prompt/response pair. In
-`Enforce` mode it handles each returned activity mode before the Gateway persists or
-exports the completed pair and marks a blocked receipt as failed, but it cannot undo
-model execution that already occurred in the external runtime. A true pre-model prompt gate requires a separate
-phase-specific evaluation API and an external runtime that calls it before model
-invocation. The old OpenAPI text for `/ai-interactions:evaluate` is not evidence of
-an implemented route. Do not claim pre-execution enforcement until that route and
-its idempotent persistence contract are implemented and tested.
+`POST /api/v1/prompts:evaluate` is the implemented pre-model prompt phase. It can
+run prompt-only Purview evaluation and returns an allowed receipt or safe block;
+protected completed interaction submission must return that receipt. The external
+runtime still has to call and honor this route before model invocation because the
+Gateway does not proxy the model. `POST /api/v1/ai-interactions` receives the later
+completed pair and processes response-side policy according to its returned mode;
+it cannot retract a response the external client already displayed. The source
+pre-model path is not live deployment evidence until its migration/image/provider
+rollout and bounded canary are recorded.
 
 Microsoft Graph does not document an idempotency key for creating a content
 activity. The Gateway's SQL idempotency lock prevents concurrent duplicate calls and

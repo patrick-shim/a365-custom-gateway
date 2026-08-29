@@ -29,10 +29,10 @@ document therefore remain unchanged.
 Validation at this source checkpoint is:
 
 - zero-warning/zero-error Release builds for the solution and DatabaseMigrator;
-- **1,109/1,109** direct Release tests: unit 402, Admin UI 151, end-to-end 103,
+- **1,119/1,119** direct Release tests: unit 409, Admin UI 151, end-to-end 106,
   security 111, observability/runtime 144, integration 92, architecture 106;
 - `dotnet format --verify-no-changes` clean;
-- PowerShell parsing **27/27**, Bicep templates **19/19**, and parameter files
+- PowerShell parsing **26/26**, Bicep templates **20/20**, and parameter files
   **5/5**;
 - a successful non-mutating bootstrap `Plan` through all 12 phases;
 - **52** Markdown files with **43** repository-local links and zero broken targets,
@@ -54,10 +54,20 @@ existing-environment deployment, preflight, canary, and recovery scripts live un
 `operations/`. `bootstrap/` remains the sole clean-subscription orchestration entry
 point. All workflows, bootstrap modules, migrator paths, architecture tests,
 runbooks, and Claude/Codex deployment instructions were synchronized. Validation
-remains zero-warning/error with **1,109/1,109** tests, PowerShell **27/27**, Bicep
-templates **19/19**, parameters **5/5**, and `dotnet format` clean. Documentation is
+remains zero-warning/error with **1,119/1,119** tests, PowerShell **26/26**, Bicep
+templates **20/20**, parameters **5/5**, and `dotnet format` clean. Documentation is
 now **54** Markdown files and **51** repository-local links with zero broken targets.
 No live resource, revision, queue, registration, policy, or SQL state changed.
+
+The latest source-only increment adds optional Azure AI Content Safety Prompt
+Shields and a prompt-only Purview pre-model endpoint. Allowed evaluations issue a
+short-lived, single-use salted-hash-bound receipt required by protected completed
+interactions; blocked evaluations return safe RFC 9457 client details. Admin UI,
+sample client, OpenAPI, additive SQL migration, managed-identity Content Safety
+Bicep/bootstrap wiring, and focused allow/block/replay tests are synchronized. The
+complete gate is the 1,119-test/static total above. No prompt-protection migration,
+Content Safety resource or role assignment, image, revision, registration feature,
+live evaluation, queue, Registry, Purview policy, or retained artifact was changed.
 
 An authenticated visual browser pass was not available in this local checkpoint:
 the in-app browser had no signed-in tenant session, and the local UI correctly
@@ -753,9 +763,11 @@ separate authorization entry here.
 2. Promote the same source through a staging review that restores exact-bound
    admission, validates multi-replica/failover behavior, and captures fresh SQL
    outbox/job evidence.
-3. Keep Purview policy locations blueprint-scoped. Inline prompt enforcement is
-   proven; implement a separate pre-model/response path only if response content
-   must be blocked before it reaches the external runtime.
+3. Keep Purview policy locations blueprint-scoped. The pre-model prompt path is
+   implemented locally but not deployed; roll it out only through its recorded
+   additive migration, Content Safety resource/RBAC, images, read-only preflight,
+   and bounded allow/block/receipt canary. Response-before-release enforcement
+   remains separate because `downloadText` is currently offline.
 4. The user reported recreating the accidentally deleted Azure PAYG resource; the
    Purview policy currently shows synchronization in progress. Wait for the billing
    association and policy to become Active, then capture fresh collection evidence.

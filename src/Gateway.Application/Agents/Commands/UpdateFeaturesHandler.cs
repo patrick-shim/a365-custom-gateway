@@ -12,17 +12,20 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
     private readonly IAgentRepository _agentRepository;
     private readonly IAuditEventRepository _auditEventRepository;
     private readonly IPurviewPolicyClient _purviewPolicyClient;
+    private readonly IPromptShieldClient _promptShieldClient;
     private readonly IUnitOfWork _unitOfWork;
 
     public UpdateFeaturesHandler(
         IAgentRepository agentRepository,
         IAuditEventRepository auditEventRepository,
         IPurviewPolicyClient purviewPolicyClient,
+        IPromptShieldClient promptShieldClient,
         IUnitOfWork unitOfWork)
     {
         _agentRepository = agentRepository;
         _auditEventRepository = auditEventRepository;
         _purviewPolicyClient = purviewPolicyClient;
+        _promptShieldClient = promptShieldClient;
         _unitOfWork = unitOfWork;
     }
 
@@ -73,6 +76,15 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
         agent.FeatureConfiguration.PurviewMode = purviewEnabled
             ? purviewMode ?? _purviewPolicyClient.DefaultMode
             : purviewMode;
+        var promptShieldEnabled = request.PromptShieldEnabled
+            ?? agent.FeatureConfiguration.PromptShieldEnabled;
+        if (promptShieldEnabled && !_promptShieldClient.IsEnabled)
+        {
+            throw new DomainException(
+                "Prompt Shields cannot be enabled because Azure AI Content Safety is not configured for this Gateway deployment.",
+                Gateway.Contracts.ErrorCodes.UNSUPPORTED_FEATURE_CONFIGURATION);
+        }
+        agent.FeatureConfiguration.PromptShieldEnabled = promptShieldEnabled;
 
         agent.FeatureConfiguration.UpdatedAtUtc = DateTime.UtcNow;
         agent.UpdatedAtUtc = DateTime.UtcNow;
@@ -99,7 +111,8 @@ internal sealed class UpdateFeaturesHandler : IRequestHandler<UpdateFeaturesComm
                 agent.FeatureConfiguration.PurviewEnabled,
                 agent.FeatureConfiguration.PurviewMode?.ToString(),
                 destinations.Agent365ObservabilityEnabled,
-                destinations.AzureMonitorExportEnabled),
+                destinations.AzureMonitorExportEnabled,
+                agent.FeatureConfiguration.PromptShieldEnabled),
             agent.FeatureConfiguration.UpdatedAtUtc);
     }
 }

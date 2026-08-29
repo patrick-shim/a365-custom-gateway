@@ -1,4 +1,4 @@
-CURRENT IMPLEMENTATION NOTE (2026-08-28)
+CURRENT IMPLEMENTATION NOTE (2026-08-29)
 ========================================
 
 This file preserves the original product brief and is below implemented code, tests,
@@ -27,6 +27,10 @@ generic Entra data-plane wording:
   gen_ai.agent.type and microsoft.a365.agent.platform.id;
 - an Agent 365 OTLP HTTP 200 is endpoint acceptance, not proof that the event later
   landed in Defender CloudAppEvents.
+- optional Prompt Shields and prompt-only Purview run through a pre-model Gateway
+  endpoint; an allowed result issues a short-lived, single-use receipt required by
+  protected completed interaction submission, while raw evaluation prompts are not
+  stored in SQL or rendered in the Admin UI.
 
 Scoped data-plane replay/conflict behavior is implemented by registration + endpoint
 + key with a canonical request hash and a SQL transaction-owned application lock held
@@ -40,9 +44,9 @@ until a successful bounded canary.
 Workflow v3 is deployed in development with explicit continuous registration,
 automatic signed-in Administrator Registry completion, worker provisioning, and
 data-plane relay. Staging and production retain exact-bound admission. The complete
-release gate passes a zero-warning/error Release build and 1,102/1,102 tests (unit
-397, Admin UI 150, end-to-end 103, security 111, runtime 143, integration 92,
-architecture 106). PowerShell parsing passes 25/25; format, Bicep 22/22 templates and
+release gate passes a zero-warning/error Release build and 1,119/1,119 tests (unit
+409, Admin UI 151, end-to-end 106, security 111, runtime 144, integration 92,
+architecture 106). PowerShell parsing passes 26/26; format, Bicep 20/20 templates and
 5/5 parameters, OpenAPI YAML parsing, and diff checks also pass.
 
 Both create-new and reuse-existing blueprint paths are Active and Available in
@@ -843,13 +847,14 @@ HTTP/1.1 202 Accepted
   "observabilityProcessing": "Queued"
 }
 
-Current implemented boundary: `/api/v1/ai-interactions` receives a completed pair.
-AuditOnly synchronously records metadata-only content activities. Enforce
-synchronously evaluates both pieces before Gateway persistence/export and represents
-an exact `restrictAccess:block` as an HTTP 202 receipt with `status=Failed` and
-`purviewProcessing=Blocked`. A true pre-model gate needs a future phase-specific
-endpoint and an external runtime that invokes it before model execution;
-`/api/v1/ai-interactions:evaluate` is not implemented.
+Current implemented boundary: `/api/v1/prompts:evaluate` is the pre-model phase.
+It combines enabled Prompt Shields and prompt-only Purview checks and returns an
+allowed, short-lived receipt or safe block Problem Details. A protected
+`/api/v1/ai-interactions` call must return that exact receipt with the completed
+pair. AuditOnly records metadata-only content activities; Enforce represents exact
+`restrictAccess:block` decisions safely. The external runtime must invoke and honor
+the evaluation before its model because the Gateway intentionally does not proxy
+the model call. `/api/v1/ai-interactions:evaluate` remains nonexistent.
 
 Do not expose sensitive policy internals or matched content unless the official documentation explicitly requires it and the caller is authorized.
 

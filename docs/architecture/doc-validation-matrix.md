@@ -2,12 +2,12 @@
 
 ## Executive Summary
 
-This document validates every Microsoft API, SDK, CLI command, permission, and capability required by the A365 Custom Gateway against official Microsoft Learn documentation. The original research was conducted on 2026-08-23. Agent ID, Agent 365 Registry create/permissions, blueprint creation, Purview mixed execution modes, and clean-subscription bootstrap dependencies were revalidated against current Microsoft Learn pages through **2026-08-29**. The N:N correction changes the Gateway-owned ingress model, not the cited Microsoft outbound identity contract.
+This document validates every Microsoft API, SDK, CLI command, permission, and capability required by the A365 Custom Gateway against official Microsoft Learn documentation. The original research was conducted on 2026-08-23. Agent ID, Agent 365 Registry create/permissions, blueprint creation, Purview mixed execution modes, Azure AI Content Safety Prompt Shields, and clean-subscription bootstrap dependencies were revalidated against current Microsoft Learn pages through **2026-08-29**. The N:N correction changes the Gateway-owned ingress model, not the cited Microsoft outbound identity contract.
 
 ## Implementation Boundary
 
 Documentation support is not deployment evidence. Local source implements workflow
-v3. The current broad Release gate passes 1,109/1,109 tests and the solution build
+v3. The current broad Release gate passes 1,119/1,119 tests and the solution build
 has zero warnings/errors. Development continuous mode has Active registrations for
 both create-new and reuse-existing blueprint paths. Both are Available as
 `A365CustomGateway` agents in Microsoft 365 Admin Center; bound ingress returned
@@ -83,6 +83,10 @@ completion reaches 85% and emits only final worker verification.
 9. **Purview DLP policies for custom apps must be created via PowerShell** — portal UI does not support this.
 10. **No Purview APIs exist to read data out** — APIs are input-only.
 11. **Observability has a documented OTLP endpoint** — telemetry export via `agent365.svc.cloud.microsoft` with `Agent365.Observability.OtelWrite` permission.
+12. **Prompt Shields has a GA Azure AI Content Safety REST contract** —
+    `POST /contentsafety/text:shieldPrompt?api-version=2024-09-01` returns
+    `userPromptAnalysis.attackDetected`; managed identity uses the Cognitive
+    Services resource audience and the Cognitive Services User data-plane role.
 
 ### Decision Impact
 
@@ -96,6 +100,7 @@ completion reaches 85% and emits only final worker verification.
 | Observability export to Agent 365 | GA | Use OTLP endpoint with documented SDK |
 | Purview inline evaluation | GA | Use `processContent` with `evaluateInline` mode |
 | Purview audit logging | GA | Use `contentActivities` API |
+| Prompt Shields | Azure AI Content Safety API `2024-09-01` | Call `shieldPrompt` with the API managed identity, treat `attackDetected=true` as block, and fail closed on transport/auth/schema ambiguity. Do not use account keys or expose provider bodies. |
 | Gateway ingress authentication | Gateway-owned API-key scheme | Issue a unique key per registration, store only a salted hash, resolve it to one registration, and cross-check `externalAgentId`. This is not a Microsoft API and requires no external managed identity. |
 | Gateway data-plane idempotency | Gateway-owned scoped record plus SQL application lock | Resolve the caller registration first, canonical-hash the typed request, then acquire an exclusive transaction-owned SQL application lock for registration + normalized endpoint + normalized UUIDv4 key before replay lookup. Hold it through all side effects and commit; same hash replays and different hash fails 409 before effects. One-time secret responses are never cached. The implementation and prepare script are deployed in development and focused races pass; real SQL Server multi-replica/staging stress remains required. [`sp_getapplock`](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-getapplock-transact-sql) |
 | Gateway ingress rate limiting | Gateway-owned SQL fixed-window limiter | After Gateway-key authorization, atomically enforce database-UTC one-minute buckets for credential, authenticated registration, and global scopes. Return safe 429 Problem Details and limit/reset headers; dependency failures fail closed. The InMemory fallback is test-only. `20260825_ingress_rate_limit_buckets.sql` and the limiter are deployed in development; multi-replica load/security proof remains open. |
@@ -264,6 +269,21 @@ completion reaches 85% and emits only final worker verification.
 
 ---
 
+## 1.8 Azure AI Content Safety Prompt Shields
+
+| Field | Value |
+|---|---|
+| **Requirement** | Detect prompt-injection and jailbreak attacks before an external client invokes its model |
+| **REST reference** | https://learn.microsoft.com/rest/api/contentsafety/text-operations/shield-prompt?view=rest-contentsafety-2024-09-01 |
+| **Concept/regions** | https://learn.microsoft.com/azure/ai-services/content-safety/concepts/jailbreak-detection and https://learn.microsoft.com/azure/ai-services/content-safety/overview |
+| **Endpoint** | `POST {endpoint}/contentsafety/text:shieldPrompt?api-version=2024-09-01` |
+| **Request/response** | Send `userPrompt`; inspect the required `userPromptAnalysis.attackDetected` boolean. The current Gateway does not submit model documents. |
+| **Authentication** | Gateway API managed identity token for `https://cognitiveservices.azure.com/.default`; local account-key authentication is disabled. |
+| **Azure RBAC** | Built-in **Cognitive Services User**, role ID `a97b65f3-24c7-4388-baec-2e87135dc908`: https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/ai-machine-learning |
+| **Regional boundary** | Content Safety and Prompt Shields are documented in Korea Central. Deployment still validates the actual resource endpoint/readiness. |
+| **Decision** | Keep the feature optional and per registration. Fail closed when enabled and no trusted boolean is returned. Return only safe Gateway-owned decision codes; never return/log raw provider bodies. An allow issues a short-lived, single-use salted-hash-bound receipt. The external client must honor the pre-model ordering because the Gateway intentionally does not proxy the model call. |
+| **Evidence boundary** | Source, tests, Bicep, and bootstrap wiring are local only. No Azure Content Safety resource, role assignment, migration, deployed revision, or live allow/block proof is claimed until separately recorded. |
+
 ## 2. Microsoft Purview
 
 ### 2.1 Compute Protection Scopes
@@ -324,7 +344,7 @@ completion reaches 85% and emits only final worker verification.
 | **Limitations** | Tenant policy authoring and collection settings are external prerequisites. Microsoft now documents the `Application` enforcement plane; the older `Entra` plane is deprecated. Exact portal/PowerShell availability can change. |
 | **Decision** | Use the reusable blueprint client ID as the protected application location and child/blueprint IDs as Enforce `aiAgentInfo`. This makes the blueprint the shared governance boundary and avoids one DLP policy per child. Development proves inline `uploadText` blocking plus offline `downloadText` submission with a synthetic Enforce canary. |
 
-### 2.5 Azure AI Content Safety (Complementary)
+### 2.5 Azure AI Content Safety harm-category analysis (not implemented)
 
 | Field | Value |
 |---|---|
@@ -335,7 +355,7 @@ completion reaches 85% and emits only final worker verification.
 | **Auth Mode** | API Key or Managed Identity |
 | **Status** | GA |
 | **Limitations** | Evaluates harm categories (Hate, SelfHarm, Sexual, Violence), NOT organizational DLP policies. 10K char limit per request. |
-| **Decision** | Not required for MVP. Can be added as an optional content safety layer alongside Purview. Design the interface to accommodate this later. |
+| **Decision** | The Gateway implements the separate Prompt Shield operation documented in section 1.8, not this `text:analyze` harm-category operation. Harm-category moderation remains optional future work and must not be inferred from a Prompt Shields allow. |
 
 ---
 

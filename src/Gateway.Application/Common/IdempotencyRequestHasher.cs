@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Gateway.Application.Activities.Commands;
 using Gateway.Application.Interactions.Commands;
+using Gateway.Application.Prompts.Commands;
 
 namespace Gateway.Application.Common;
 
@@ -10,6 +11,26 @@ internal static class IdempotencyRequestHasher
     internal const string ActivityEndpoint = "/api/v1/agent-activities";
     internal const string BatchActivityEndpoint = "/api/v1/agent-activities:batch";
     internal const string InteractionEndpoint = "/api/v1/ai-interactions";
+    internal const string PromptEvaluationEndpoint = "/api/v1/prompts:evaluate";
+
+    public static string Compute(EvaluatePromptCommand request)
+    {
+        var canonicalPayload = new
+        {
+            request.ExternalAgentId,
+            request.InteractionId,
+            OccurredAtUtc = AsUtc(request.OccurredAtUtc),
+            UserContext = request.UserContext is null
+                ? null
+                : new { request.UserContext.TenantUserObjectId },
+            Prompt = new
+            {
+                request.Prompt.ContentType,
+                request.Prompt.Content
+            }
+        };
+        return Compute(canonicalPayload);
+    }
 
     public static string Compute(SubmitActivityCommand request)
     {
@@ -71,7 +92,8 @@ internal static class IdempotencyRequestHasher
                     request.Model.Provider,
                     request.Model.Name
                 },
-            Metadata = Sort(request.Metadata)
+            Metadata = Sort(request.Metadata),
+            request.PromptEvaluationReceiptId
         };
 
         return Compute(canonicalPayload);

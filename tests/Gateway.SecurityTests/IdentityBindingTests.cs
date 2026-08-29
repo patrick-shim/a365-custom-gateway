@@ -32,6 +32,7 @@ public class IdentityBindingTests
     private readonly IAiInteractionRepository _aiInteractionRepository = Substitute.For<IAiInteractionRepository>();
     private readonly IInteractionContentStore _interactionContentStore = Substitute.For<IInteractionContentStore>();
     private readonly IPurviewPolicyClient _purviewPolicyClient = Substitute.For<IPurviewPolicyClient>();
+    private readonly IPromptEvaluationRepository _promptEvaluationRepository = Substitute.For<IPromptEvaluationRepository>();
 
     // ---------------------------------------------------------------
     // Helpers
@@ -71,7 +72,7 @@ public class IdentityBindingTests
     private SubmitInteractionHandler CreateInteractionHandler() =>
         new(_agentRepository, _aiInteractionRepository, _interactionContentStore,
             _purviewPolicyClient, _idempotencyService, _outboxRepository,
-            _auditEventRepository, _unitOfWork,
+            _auditEventRepository, _promptEvaluationRepository, _unitOfWork,
             NullLogger<SubmitInteractionHandler>.Instance);
 
     private static SubmitActivityCommand CreateActivityCommand(

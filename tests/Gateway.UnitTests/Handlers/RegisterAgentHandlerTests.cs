@@ -27,6 +27,7 @@ public class RegisterAgentHandlerTests
     private readonly IPurviewPolicyClient _purviewPolicyClient;
     private readonly IPurviewPolicyProfileRepository _purviewPolicyProfileRepository;
     private readonly IPurviewPolicyProvisioningClient _purviewPolicyProvisioningClient;
+    private readonly IPromptShieldClient _promptShieldClient;
     private readonly IUnitOfWork _unitOfWork;
     private readonly RegisterAgentHandler _handler;
 
@@ -54,6 +55,8 @@ public class RegisterAgentHandlerTests
         _purviewPolicyProfileRepository = Substitute.For<IPurviewPolicyProfileRepository>();
         _purviewPolicyProvisioningClient = Substitute.For<IPurviewPolicyProvisioningClient>();
         _purviewPolicyProvisioningClient.IsEnabled.Returns(true);
+        _promptShieldClient = Substitute.For<IPromptShieldClient>();
+        _promptShieldClient.IsEnabled.Returns(true);
         _unitOfWork = Substitute.For<IUnitOfWork>();
 
         var credential = new AgentIngressCredential
@@ -76,6 +79,7 @@ public class RegisterAgentHandlerTests
             _purviewPolicyClient,
             _purviewPolicyProfileRepository,
             _purviewPolicyProvisioningClient,
+            _promptShieldClient,
             _unitOfWork);
     }
 

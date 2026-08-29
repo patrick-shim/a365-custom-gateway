@@ -67,6 +67,25 @@ else if (form is not null)
                     </div>
                 </fieldset>
 
+                <fieldset class="feature-group full" aria-describedby="default-prompt-shield-help">
+                    <legend>Prompt Shields default</legend>
+                    <p id="default-prompt-shield-help">New registrations can evaluate prompts for injection and jailbreak attacks before model invocation.</p>
+                    <div class="form-grid">
+                        <div class="form-field checkbox-field">
+                            <label class="checkbox-label" for="default-prompt-shield-enabled">
+                                <InputCheckbox id="default-prompt-shield-enabled"
+                                               @bind-Value="form.DefaultPromptShieldEnabled"
+                                               disabled="@(!form.PromptShieldAvailable)" />
+                                <span><strong>Enable Prompt Shields by default</strong><small>New agents inherit this setting. The deployment must have Azure AI Content Safety configured.</small></span>
+                            </label>
+                            @if (!form.PromptShieldAvailable)
+                            {
+                                <span class="field-help">Unavailable until Azure AI Content Safety is provisioned for this Gateway.</span>
+                            }
+                        </div>
+                    </div>
+                </fieldset>
+
                 <fieldset class="feature-group full" aria-describedby="default-purview-help">
                     <legend>Microsoft Purview defaults</legend>
                     <p id="default-purview-help">Purview policy evaluation is independent of both observability destinations.</p>
@@ -228,6 +247,8 @@ else if (form is not null)
         public bool DefaultAgent365ObservabilityEnabled { get; set; } = true;
         public bool DefaultAzureMonitorExportEnabled { get; set; }
         public bool DefaultPurviewEnabled { get; set; }
+        public bool DefaultPromptShieldEnabled { get; set; }
+        public bool PromptShieldAvailable { get; set; }
         public string DefaultPurviewMode { get; set; } = "AuditOnly";
         [Range(1, 3_650)] public int RetentionDaysActivityReceipts { get; set; }
         [Range(1, 3_650)] public int RetentionDaysAuditEvents { get; set; }
@@ -249,6 +270,8 @@ else if (form is not null)
                 ?? LegacyAzureMonitorExportEnabled(config.DefaultObservabilityMode),
             DefaultPurviewEnabled = config.DefaultPurviewEnabled,
             DefaultPurviewMode = config.DefaultPurviewMode ?? "AuditOnly",
+            DefaultPromptShieldEnabled = config.PromptShieldAvailable && config.DefaultPromptShieldEnabled,
+            PromptShieldAvailable = config.PromptShieldAvailable,
             RetentionDaysActivityReceipts = config.RetentionDaysActivityReceipts,
             RetentionDaysAuditEvents = config.RetentionDaysAuditEvents,
             RetentionDaysIdempotencyRecords = config.RetentionDaysIdempotencyRecords,
@@ -279,7 +302,8 @@ else if (form is not null)
             UseGraphAgentRegistration: null,
             UseCliProvisioningFallback: null,
             DefaultAgent365ObservabilityEnabled,
-            DefaultAzureMonitorExportEnabled);
+            DefaultAzureMonitorExportEnabled,
+            DefaultPromptShieldEnabled);
 
         private static string ToLegacyObservabilityMode(bool agent365Enabled, bool azureMonitorEnabled) =>
             (agent365Enabled, azureMonitorEnabled) switch

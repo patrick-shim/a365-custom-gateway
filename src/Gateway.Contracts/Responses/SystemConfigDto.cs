@@ -23,7 +23,9 @@ public record SystemConfigDto(
     bool? DefaultAzureMonitorExportEnabled = null,
     bool ProvisioningExecutionEnabled = false,
     string? AuthorizedRegistrationExternalAgentId = null,
-    bool PurviewPolicyProvisioningEnabled = false);
+    bool PurviewPolicyProvisioningEnabled = false,
+    bool DefaultPromptShieldEnabled = false,
+    bool PromptShieldAvailable = false);
 
 public record UpdateFeaturesResponse(
     Guid AgentId,

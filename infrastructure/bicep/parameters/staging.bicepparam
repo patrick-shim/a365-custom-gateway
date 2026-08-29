@@ -33,6 +33,7 @@ param agent365DelegatedRegistryAuthorizedOperationId = ''
 param agent365ManagerApplicationsPreflightConfirmed = false
 param agent365ManagerApplicationIds = json(readEnvironmentVariable('AGENT365_MANAGER_APPLICATION_IDS_JSON', '[]'))
 param purviewEnabled = false
+param promptShieldEnabled = false
 // Admin UI is opt-in here so the existing API/worker deployment remains unchanged.
 param deployAdminUi = readEnvironmentVariable('DEPLOY_ADMIN_UI', 'false') == 'true'
 param adminUiContainerImage = readEnvironmentVariable('ADMIN_UI_IMAGE', '')

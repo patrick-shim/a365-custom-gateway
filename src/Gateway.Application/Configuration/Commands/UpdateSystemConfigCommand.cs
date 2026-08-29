@@ -22,4 +22,5 @@ public record UpdateSystemConfigCommand(
     bool? UseCliProvisioningFallback,
     string CallerObjectId,
     bool? DefaultAgent365ObservabilityEnabled = null,
-    bool? DefaultAzureMonitorExportEnabled = null) : IRequest<SystemConfigDto>;
+    bool? DefaultAzureMonitorExportEnabled = null,
+    bool? DefaultPromptShieldEnabled = null) : IRequest<SystemConfigDto>;

@@ -15,6 +15,7 @@ public class UpdateFeaturesHandlerTests
     private readonly IAgentRepository _agentRepository;
     private readonly IAuditEventRepository _auditEventRepository;
     private readonly IPurviewPolicyClient _purviewPolicyClient;
+    private readonly IPromptShieldClient _promptShieldClient;
     private readonly IUnitOfWork _unitOfWork;
     private readonly UpdateFeaturesHandler _handler;
 
@@ -24,11 +25,14 @@ public class UpdateFeaturesHandlerTests
         _auditEventRepository = Substitute.For<IAuditEventRepository>();
         _purviewPolicyClient = Substitute.For<IPurviewPolicyClient>();
         _purviewPolicyClient.IsEnabled.Returns(true);
+        _promptShieldClient = Substitute.For<IPromptShieldClient>();
+        _promptShieldClient.IsEnabled.Returns(true);
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _handler = new UpdateFeaturesHandler(
             _agentRepository,
             _auditEventRepository,
             _purviewPolicyClient,
+            _promptShieldClient,
             _unitOfWork);
     }
 

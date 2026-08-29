@@ -117,6 +117,16 @@ param agent365ManagerApplicationIds array = []
 @description('Enable the globally configured Microsoft Purview Graph adapter. Keep false until tenant licensing, policies, all three Graph app roles, and a synthetic canary are verified.')
 param purviewEnabled bool = false
 
+@description('Provision and enable Azure AI Content Safety Prompt Shields for synchronous prompt evaluation.')
+param promptShieldEnabled bool = false
+
+@allowed([
+  'F0'
+  'S0'
+])
+@description('Azure AI Content Safety SKU. Use S0 for normal deployments; F0 is development-only and subject to availability.')
+param promptShieldSkuName string = 'S0'
+
 @description('Enable automated Purview collection/DLP policy profile assignment for newly-created blueprints. Requires the reviewed app-only Security & Compliance PowerShell identity.')
 param purviewPolicyProvisioningEnabled bool = false
 
@@ -233,6 +243,7 @@ var names = {
   workerApp: empty(workerContainerAppName) ? 'ca-gateway-worker-${environment}' : workerContainerAppName
   adminUiApp: 'ca-gateway-admin-${environment}'
   adminUiIdentity: 'id-gateway-admin-${environment}'
+  contentSafety: 'cs-${suffix}-${take(uniqueSuffix, 6)}'
 }
 
 var tags = {
@@ -366,6 +377,18 @@ module serviceBus './modules/service-bus.bicep' = {
   }
 }
 
+module contentSafety './modules/content-safety.bicep' = if (promptShieldEnabled) {
+  name: 'deploy-content-safety'
+  params: {
+    accountName: names.contentSafety
+    location: location
+    skuName: promptShieldSkuName
+    tags: union(tags, {
+      workload: 'prompt-protection'
+    })
+  }
+}
+
 // ============================================================================
 // Tier 2 — Depends on Log Analytics
 // ============================================================================
@@ -466,6 +489,8 @@ module apiApp './modules/container-app-api.bicep' = {
     entraIdAudience: entraIdAudience
     agent365ManagerApplicationIds: agent365ManagerApplicationIds
     purviewEnabled: purviewEnabled
+    promptShieldEnabled: promptShieldEnabled
+    promptShieldEndpoint: promptShieldEnabled ? contentSafety!.outputs.endpoint : ''
     preservedConfigurationSecrets: preservedApiConfigurationSecrets
     tags: tags
   }
@@ -557,6 +582,22 @@ module roleAssignments './modules/role-assignments.bicep' = {
     serviceBusNamespaceName: names.serviceBus
     serviceBusQueueName: serviceBus.outputs.queueName
     containerRegistryName: names.acr
+  }
+}
+
+resource deployedContentSafety 'Microsoft.CognitiveServices/accounts@2023-05-01' existing = if (promptShieldEnabled) {
+  name: contentSafety!.outputs.accountName
+}
+
+resource promptShieldCognitiveServicesUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (promptShieldEnabled) {
+  name: guid(deployedContentSafety!.id, names.apiApp, 'Cognitive Services User')
+  scope: deployedContentSafety
+  properties: {
+    principalId: apiApp.outputs.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      'a97b65f3-24c7-4388-baec-2e87135dc908')
   }
 }
 
@@ -696,6 +737,15 @@ output acrLoginServer string = acr.outputs.loginServer
 
 @description('Key Vault URI.')
 output keyVaultUri string = keyVault.outputs.vaultUri
+
+@description('Azure AI Content Safety endpoint when Prompt Shields is enabled.')
+output promptShieldEndpoint string = promptShieldEnabled ? contentSafety!.outputs.endpoint : ''
+
+@description('Azure AI Content Safety resource ID when Prompt Shields is enabled.')
+output promptShieldAccountId string = promptShieldEnabled ? contentSafety!.outputs.accountId : ''
+
+@description('Azure AI Content Safety account name when Prompt Shields is enabled.')
+output promptShieldAccountName string = promptShieldEnabled ? contentSafety!.outputs.accountName : ''
 
 @description('SQL Server FQDN.')
 output sqlServerFqdn string = sqlDb.outputs.serverFqdn

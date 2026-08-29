@@ -5,6 +5,7 @@
   <Project Path="Gateway.Infrastructure/Gateway.Infrastructure.csproj" />
   <Project Path="Gateway.Agent365/Gateway.Agent365.csproj" />
   <Project Path="Gateway.Purview/Gateway.Purview.csproj" />
+  <Project Path="Gateway.ContentSafety/Gateway.ContentSafety.csproj" />
   <Project Path="Gateway.Observability/Gateway.Observability.csproj" />
   <Project Path="Gateway.Api/Gateway.Api.csproj" />
   <Project Path="Gateway.AdminUi/Gateway.AdminUi.csproj" />

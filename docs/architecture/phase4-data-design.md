@@ -40,7 +40,7 @@ model or database.
 | Entity | Purpose | Soft-Delete | Retention | Blob Storage |
 |---|---|---|---|---|
 | `AgentRegistration` | Core aggregate — external agent registration and Agent 365 mapping | Yes | Permanent (soft-deleted) | — |
-| `AgentFeatureConfiguration` | Per-agent feature settings (observability, Purview) | No (cascade with agent) | Follows agent | — |
+| `AgentFeatureConfiguration` | Per-agent feature settings (observability, Prompt Shields, Purview) | No (cascade with agent) | Follows agent | — |
 | `AgentIngressCredential` | Per-registration Gateway API-key verifier metadata; never the clear key | No (cascade with agent) | Follows agent or explicit revocation/expiry policy | — |
 | `ProvisioningJob` | Async provisioning job tracking | No | 365 days | — |
 | `ProvisioningJobStep` | Individual step within a provisioning job | No | Follows job | — |
@@ -48,6 +48,7 @@ model or database.
 | `ActivityReceipt` | Receipt for accepted activities (metadata only) | No | 90 days (configurable) | — |
 | `AiInteractionRecord` | AI interaction metadata + blob reference (no content in DB) | No | 90 days (configurable) | Yes — prompt/response content |
 | `PurviewDecision` | Purview evaluation decision metadata | No | 90 days (configurable) | — |
+| `PromptEvaluationRecord` | Pre-model decision plus salted prompt verifier; never raw prompt content; consumption is an atomic transaction-bound compare-and-set | No (cascade with agent) | No cleanup implemented; receipt validity is bounded by `ExpiresAtUtc` | — |
 | `AuditEvent` | Immutable audit trail (append-only) | No | 365 days (configurable) | — |
 | `OutboxMessage` | Transactional outbox for reliable messaging | No | Target: 3 days; cleanup job not implemented | — |
 | `IdempotencyRecord` | Idempotency-Key deduplication | No | Target: 7 days; cleanup job not implemented | — |
@@ -65,6 +66,7 @@ AgentRegistration (1) ──── (0..1) AgentCredentialReference
 AgentRegistration (1) ──── (0..*) ActivityReceipt
 AgentRegistration (1) ──── (0..*) AiInteractionRecord
 AgentRegistration (1) ──── (0..*) PurviewDecision
+AgentRegistration (1) ──── (0..*) PromptEvaluationRecord
 AgentRegistration (1) ──── (0..*) AuditEvent
 ProvisioningJob   (1) ──── (1..*) ProvisioningJobStep
 AiInteractionRecord (1) ── (0..1) PurviewDecision
@@ -110,6 +112,7 @@ erDiagram
         string ObservabilityMode "Disabled|GatewayOnly|Agent365|Agent365AzureMonitor"
         bool PurviewEnabled
         string PurviewMode "nullable, AuditOnly|Enforce"
+        bool PromptShieldEnabled
         datetime UpdatedAtUtc
     }
 
@@ -208,6 +211,23 @@ erDiagram
         datetime EvaluatedAtUtc
     }
 
+    PromptEvaluationRecord {
+        uuid Id PK "allowed value is also the opaque receipt ID"
+        uuid AgentRegistrationId FK
+        string ExternalInteractionId
+        string TenantUserObjectId "empty only when no enabled control requires user context"
+        binary PromptHashSalt "32 random bytes"
+        binary PromptHash "SHA-256 salted verifier; never raw prompt"
+        string Outcome "Allowed|Blocked"
+        string PromptShieldDecision "Disabled|Allowed|Blocked"
+        string PurviewDecision
+        string CorrelationId
+        datetime CreatedAtUtc
+        datetime ExpiresAtUtc "receipt validity, not deletion time"
+        datetime ConsumedAtUtc "nullable; single-use receipt"
+        binary RowVersion "concurrency token"
+    }
+
     AuditEvent {
         uuid Id PK
         uuid AgentRegistrationId FK "nullable, null for system events"
@@ -256,6 +276,7 @@ erDiagram
         string DefaultObservabilityMode "same compatibility encoding; default Agent365"
         bool DefaultPurviewEnabled
         string DefaultPurviewMode
+        bool DefaultPromptShieldEnabled
         int RetentionDaysActivityReceipts
         int RetentionDaysAuditEvents
         int RetentionDaysIdempotencyRecords
@@ -278,6 +299,7 @@ erDiagram
     AgentRegistration ||--o| AgentCredentialReference : has
     AgentRegistration ||--o{ ActivityReceipt : receives
     AgentRegistration ||--o{ AiInteractionRecord : receives
+    AgentRegistration ||--o{ PromptEvaluationRecord : protects
     AgentRegistration ||--o{ PurviewDecision : evaluated
     AgentRegistration ||--o{ AuditEvent : audited
     AgentRegistration ||--o{ IdempotencyRecord : scopes
@@ -431,6 +453,8 @@ remains open.
 | `AiInteractionRecords` | `IX_ExternalInteractionId` | `AgentRegistrationId, ExternalInteractionId` | Unique | Deduplication |
 | `PurviewDecisions` | `IX_AgentId_EvaluatedAt` | `AgentRegistrationId, EvaluatedAtUtc DESC` | Non-unique | Decision history |
 | `PurviewDecisions` | `IX_InteractionId` | `AiInteractionRecordId` | Non-unique, filtered (`NOT NULL`) | Join to interaction |
+| `PromptEvaluationRecords` | registration/interaction index | `AgentRegistrationId, ExternalInteractionId` | Non-unique | Locate evaluation history without preventing a revised prompt from being re-evaluated under the same interaction ID |
+| `PromptEvaluationRecords` | `IX_ExpiresAtUtc` | `ExpiresAtUtc` | Non-unique | Receipt expiry and future cleanup |
 | `AuditEvents` | `IX_AgentId_OccurredAt` | `AgentRegistrationId, OccurredAtUtc DESC` | Non-unique | Audit history query |
 | `AuditEvents` | `IX_EventType_OccurredAt` | `EventType, OccurredAtUtc DESC` | Non-unique | Filter by event type |
 | `OutboxMessages` | `IX_Status_NextRetry` | `Status, NextRetryAtUtc` | Non-unique, filtered (`Status='Pending'`) | Outbox relay polling |
@@ -456,6 +480,8 @@ remains open.
 | `AuditEvent.PerformedByObjectId` | PII | Stored — audit accountability | Redact for SupportReader |
 | `AgentRegistration.OwnerObjectId` | PII | Stored — ownership tracking | Redact for SupportReader |
 | `PurviewDecision.TenantUserObjectId` | PII | Stored — audit trail | Redact in non-admin contexts |
+| `PromptEvaluationRecord.TenantUserObjectId` | PII | Stored — binds the receipt to accountable user context | Never render in Admin UI or log outside correlation-safe diagnostics |
+| `PromptEvaluationRecord.PromptHashSalt` / `PromptHash` | Confidential | Stored only as a random salt plus SHA-256 verifier | Never return, audit, queue, or log |
 | `ActivityReceipt.*` | Internal | Metadata only — no prompt/response content | Safe to log receipt IDs |
 | `OutboxMessage.Payload` | Internal | JSON message payload — no secrets | Never log payload content |
 | `IdempotencyRecord.ResponseBody` | Internal | Cached response — one-time registration/credential responses are never stored here | Never log |
@@ -545,6 +571,7 @@ configuration alone does not delete SQL rows.
 | `ActivityReceipt` | 90 days | Yes (`retentionDays.activityReceipts`) | Future cleanup job |
 | `AiInteractionRecord` | 90 days | Yes (same as activity receipts) | Future SQL cleanup/blob coordination; Blob lifecycle remains the current orphan/content expiry mechanism |
 | `PurviewDecision` | 90 days | Yes (same as activity receipts) | Future cleanup job |
+| `PromptEvaluationRecord` | No approved row-retention period; receipt expires after the configured short lifetime | No | No automatic cleanup; future cleanup may delete only expired rows under a reviewed policy |
 | `AuditEvent` | 365 days | Yes (`retentionDays.auditEvents`) | Future cleanup job. **Append-only — never updated or deleted before retention expires.** |
 | `OutboxMessage` | 3 days | Yes (`retentionDays.outboxMessages`) | Future cleanup of published messages |
 | `IdempotencyRecord` | 7 days | Yes (`retentionDays.idempotencyRecords`) | Future cleanup by `ExpiresAtUtc` |

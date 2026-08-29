@@ -60,7 +60,7 @@ Current live UI state includes Active create-new registration
 `ff685604-999c-4584-9cec-87ec21f870ee`. Both are visible and Available in Microsoft
 365 Admin Center. The reusable-blueprint registration proves benign Purview
 `AuditLogged` and synthetic prompt `Blocked`; its `downloadText` scope is offline.
-Latest Admin UI tests are 150/150; consult the implementation status for the exact
+Latest Admin UI tests are 151/151; consult the implementation status for the exact
 identity mappings, deployment revisions, and complete release counts.
 
 Historical superseded checkpoint: the first fresh workflow-v3 registration used external ID
@@ -217,6 +217,15 @@ Do not invent these APIs. Build dashboards from agent-list data and health probe
   continuous mode and do not invent client-side admission. In exact-bound mode,
   registration closes before the separate delegated completion window opens.
 - Present Agent 365 observability and the optional Azure Monitor mirror as independent controls. Agent 365 defaults on and Azure Monitor defaults off; do not expose the deprecated `observabilityMode` string as the primary UI model. Gateway/platform diagnostics and Purview remain separate settings. Purview defaults off; if the API returns `UNSUPPORTED_FEATURE_CONFIGURATION`, explain that the deployment-level adapter is not configured and keep the toggle off. Do not imply that signing in as Global Administrator supplies the backend managed identity's Graph permissions or tenant DLP policy.
+- Present Prompt Shields as a third independent protection control, not an
+  observability destination or Purview mode. Registration loads
+  `promptShieldAvailable` from system config, disables an unavailable checkbox, and
+  inherits `defaultPromptShieldEnabled`. Settings likewise cannot enable a default
+  when the deployment provider is absent. Agent detail displays and updates the
+  per-registration value, while the API remains authoritative if deployment state
+  changes after the page loads. Explain that protected clients call the prompt
+  evaluation endpoint before their model and must return the allowed receipt with
+  the exact completed interaction; never imply that the Gateway proxies the model.
 - When Purview is enabled for `CreateNew` blueprint registration, require a
   protection-profile choice. List only `Ready` Gateway-managed profiles from
   `GET /api/v1/purview-policy-profiles`, filtered to the selected AuditOnly/Enforce

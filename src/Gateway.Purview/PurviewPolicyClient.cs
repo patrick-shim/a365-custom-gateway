@@ -40,6 +40,39 @@ public sealed class PurviewPolicyClient : IPurviewPolicyClient
     public bool IsEnabled => _options.Enabled;
     public PurviewMode DefaultMode => Enum.Parse<PurviewMode>(_options.DefaultMode);
 
+    public async Task<PurviewEvaluationResult> EvaluatePromptAsync(
+        PurviewInteraction interaction,
+        CancellationToken cancellationToken)
+    {
+        Validate(interaction);
+        if (!IsEnabled)
+        {
+            throw new PurviewPolicyException(
+                "PURVIEW_NOT_CONFIGURED",
+                "Purview evaluation is not enabled for this Gateway deployment.");
+        }
+
+        _logger.LogInformation(
+            "Evaluating Purview prompt policy for agent registration {AgentRegistrationId}, correlation {CorrelationId}",
+            interaction.AgentRegistrationId,
+            interaction.CorrelationId);
+
+        if (interaction.ExecutionMode == PurviewExecutionMode.EvaluateOffline)
+        {
+            await SubmitContentActivityAsync(interaction, UploadText, sequenceNumber: 0, cancellationToken);
+            return new PurviewEvaluationResult(true, PurviewDecisionType.AuditLogged, "Audit", null);
+        }
+
+        var scopes = await GetProtectionScopesAsync(interaction, forceRefresh: false, cancellationToken);
+        return await EvaluateContentAsync(
+            interaction,
+            UploadText,
+            interaction.PromptContent,
+            sequenceNumber: 0,
+            scopes,
+            cancellationToken);
+    }
+
     public async Task<PurviewEvaluationResult> EvaluateInteractionAsync(
         PurviewInteraction interaction,
         CancellationToken cancellationToken)

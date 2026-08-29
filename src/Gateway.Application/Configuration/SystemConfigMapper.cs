@@ -37,6 +37,7 @@ internal static class SystemConfigMapper
             config.UseGraphAgentRegistration,
             config.UseCliProvisioningFallback,
             destinations.Agent365ObservabilityEnabled,
-            destinations.AzureMonitorExportEnabled);
+            destinations.AzureMonitorExportEnabled,
+            DefaultPromptShieldEnabled: config.DefaultPromptShieldEnabled);
     }
 }

@@ -12,17 +12,20 @@ internal sealed class UpdateSystemConfigHandler : IRequestHandler<UpdateSystemCo
     private readonly ISystemConfigurationRepository _configRepository;
     private readonly IAuditEventRepository _auditEventRepository;
     private readonly IPurviewPolicyClient _purviewPolicyClient;
+    private readonly IPromptShieldClient _promptShieldClient;
     private readonly IUnitOfWork _unitOfWork;
 
     public UpdateSystemConfigHandler(
         ISystemConfigurationRepository configRepository,
         IAuditEventRepository auditEventRepository,
         IPurviewPolicyClient purviewPolicyClient,
+        IPromptShieldClient promptShieldClient,
         IUnitOfWork unitOfWork)
     {
         _configRepository = configRepository;
         _auditEventRepository = auditEventRepository;
         _purviewPolicyClient = purviewPolicyClient;
+        _promptShieldClient = promptShieldClient;
         _unitOfWork = unitOfWork;
     }
 
@@ -77,6 +80,15 @@ internal sealed class UpdateSystemConfigHandler : IRequestHandler<UpdateSystemCo
         config.DefaultPurviewMode = defaultPurviewEnabled
             ? defaultPurviewMode ?? _purviewPolicyClient.DefaultMode.ToString()
             : defaultPurviewMode;
+        var defaultPromptShieldEnabled = request.DefaultPromptShieldEnabled
+            ?? config.DefaultPromptShieldEnabled;
+        if (defaultPromptShieldEnabled && !_promptShieldClient.IsEnabled)
+        {
+            throw new DomainException(
+                "Prompt Shields cannot be enabled because Azure AI Content Safety is not configured for this Gateway deployment.",
+                Gateway.Contracts.ErrorCodes.UNSUPPORTED_FEATURE_CONFIGURATION);
+        }
+        config.DefaultPromptShieldEnabled = defaultPromptShieldEnabled;
         if (request.RetentionDaysActivityReceipts is not null)
             config.RetentionDaysActivityReceipts = request.RetentionDaysActivityReceipts.Value;
         if (request.RetentionDaysAuditEvents is not null)

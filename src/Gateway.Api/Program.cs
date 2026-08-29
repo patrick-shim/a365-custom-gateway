@@ -4,6 +4,7 @@ using Gateway.Api.Authorization;
 using Gateway.Api.Middleware;
 using Gateway.Api.Options;
 using Gateway.Application;
+using Gateway.ContentSafety;
 using Gateway.Infrastructure;
 using Gateway.Infrastructure.Persistence;
 using Gateway.Observability;
@@ -58,6 +59,8 @@ builder.Services.AddInfrastructureServices(builder.Configuration);
 builder.Services.AddAgent365Services(builder.Configuration);
 
 builder.Services.AddPurviewServices(builder.Configuration);
+
+builder.Services.AddPromptShieldServices(builder.Configuration);
 
 builder.Services.AddGatewayObservability(builder.Configuration);
 

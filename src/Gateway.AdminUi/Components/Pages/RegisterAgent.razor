@@ -342,6 +342,25 @@ else
                     </div>
                 </fieldset>
 
+                <fieldset class="feature-group" aria-describedby="prompt-shield-help">
+                    <legend>Prompt Shields</legend>
+                    <p id="prompt-shield-help">Evaluate each prompt for injection and jailbreak attacks before the external agent calls its model.</p>
+                    <div class="form-grid">
+                        <div class="form-field checkbox-field">
+                            <label class="checkbox-label" for="prompt-shield-enabled">
+                                <InputCheckbox id="prompt-shield-enabled"
+                                               @bind-Value="form.PromptShieldEnabled"
+                                               disabled="@(!promptShieldAvailable)" />
+                                <span><strong>Enable Azure AI Prompt Shields</strong><small>Blocked prompts receive an immediate safe client error and no evaluation receipt.</small></span>
+                            </label>
+                            @if (!promptShieldAvailable)
+                            {
+                                <span class="field-help">Azure AI Content Safety is not configured for this Gateway deployment.</span>
+                            }
+                        </div>
+                    </div>
+                </fieldset>
+
                 <fieldset class="feature-group" aria-describedby="purview-help">
                     <legend>Microsoft Purview</legend>
                     <p id="purview-help">Purview policy evaluation is independent of both observability destinations.</p>
@@ -499,6 +518,7 @@ else
     private bool provisioningCapabilityLoadFailed;
     private bool provisioningExecutionEnabled;
     private bool purviewPolicyProvisioningEnabled;
+    private bool promptShieldAvailable;
     private bool submitting;
 
     protected override async Task OnInitializedAsync()
@@ -668,6 +688,8 @@ else
             form.PurviewMode = config.DefaultPurviewMode is "AuditOnly" or "Enforce"
                 ? config.DefaultPurviewMode
                 : "AuditOnly";
+            form.PromptShieldEnabled = config.DefaultPromptShieldEnabled;
+            promptShieldAvailable = config.PromptShieldAvailable;
             provisioningExecutionEnabled = config.ProvisioningExecutionEnabled;
             purviewPolicyProvisioningEnabled = config.PurviewPolicyProvisioningEnabled;
             if (provisioningExecutionEnabled &&
@@ -721,7 +743,8 @@ else
                 form.PurviewEnabled,
                 form.PurviewEnabled ? form.PurviewMode : null,
                 form.Agent365ObservabilityEnabled,
-                form.AzureMonitorExportEnabled);
+                form.AzureMonitorExportEnabled,
+                form.PromptShieldEnabled);
             var request = new RegisterAgentRequest(
                 form.ExternalAgentId.Trim(),
                 form.Name.Trim(),
@@ -920,6 +943,7 @@ else
         public bool Agent365ObservabilityEnabled { get; set; } = true;
         public bool AzureMonitorExportEnabled { get; set; }
         public bool PurviewEnabled { get; set; }
+        public bool PromptShieldEnabled { get; set; }
         public string PurviewMode { get; set; } = "AuditOnly";
         public string PurviewProfileMode { get; set; } = PurviewProfileModeUseExisting;
         public string? PurviewProfileId { get; set; }

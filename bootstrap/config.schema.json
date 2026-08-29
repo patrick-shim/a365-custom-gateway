@@ -14,6 +14,7 @@
     "alertEmail",
     "sql",
     "agent365",
+    "promptShield",
     "purview"
   ],
   "properties": {
@@ -41,6 +42,15 @@
       "properties": {
         "seedBlueprintName": { "type": "string", "minLength": 1, "maxLength": 100 },
         "allowDevelopmentRegistryPreview": { "type": "boolean" }
+      }
+    },
+    "promptShield": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "skuName"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "skuName": { "enum": ["F0", "S0"] }
       }
     },
     "purview": {

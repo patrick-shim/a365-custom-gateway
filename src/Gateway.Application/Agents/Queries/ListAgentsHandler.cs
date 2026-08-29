@@ -52,7 +52,8 @@ internal sealed class ListAgentsHandler : IRequestHandler<ListAgentsQuery, Agent
                         agent.FeatureConfiguration.PurviewEnabled,
                         agent.FeatureConfiguration.PurviewMode?.ToString(),
                         destinations.Agent365ObservabilityEnabled,
-                        destinations.AzureMonitorExportEnabled),
+                        destinations.AzureMonitorExportEnabled,
+                        agent.FeatureConfiguration.PromptShieldEnabled),
                     null,
                     agent.CreatedAtUtc,
                     agent.UpdatedAtUtc);

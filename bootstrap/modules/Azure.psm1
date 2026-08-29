@@ -139,6 +139,9 @@ function Deploy-GatewayCore {
         try { $existingDeployment = Invoke-AzJson -Arguments @('deployment', 'group', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $name) } catch { }
         if ($existingDeployment -and [string]$existingDeployment.properties.provisioningState -eq 'Succeeded') {
             $existingOutputs = $existingDeployment.properties.outputs
+            $promptShieldEndpoint = if ($null -ne $existingOutputs.PSObject.Properties['promptShieldEndpoint']) { [string]$existingOutputs.promptShieldEndpoint.value } else { '' }
+            $promptShieldAccountId = if ($null -ne $existingOutputs.PSObject.Properties['promptShieldAccountId']) { [string]$existingOutputs.promptShieldAccountId.value } else { '' }
+            $promptShieldAccountName = if ($null -ne $existingOutputs.PSObject.Properties['promptShieldAccountName']) { [string]$existingOutputs.promptShieldAccountName.value } else { '' }
             return [ordered]@{
                 deploymentName = $name
                 apiFqdn = [string]$existingOutputs.apiFqdn.value
@@ -152,6 +155,9 @@ function Deploy-GatewayCore {
                 provisioningExecutionEnabled = [bool]$existingOutputs.provisioningExecutionEnabled.value
                 workerProcessingEnabled = [bool]$existingOutputs.workerProcessingEnabled.value
                 registryProvider = [string]$existingOutputs.agent365RegistryProvider.value
+                promptShieldEndpoint = $promptShieldEndpoint
+                promptShieldAccountId = $promptShieldAccountId
+                promptShieldAccountName = $promptShieldAccountName
             }
         }
         $apiExists = $false
@@ -198,6 +204,8 @@ function Deploy-GatewayCore {
         agent365ManagerApplicationsPreflightConfirmed = [bool]($ManagerApplicationIds.Count -gt 0)
         agent365ManagerApplicationIds = @($ManagerApplicationIds)
         purviewEnabled = [bool]$EnablePurview
+        promptShieldEnabled = [bool]$Config.promptShield.enabled
+        promptShieldSkuName = [string]$Config.promptShield.skuName
         purviewPolicyProvisioningEnabled = [bool]($EnablePurview -and $Config.purview.policyProvisioningEnabled -eq $true)
         purviewPolicyProvisioningOrganization = [string]$Config.purview.policyProvisioningOrganization
         purviewPolicyProvisioningApplicationId = [string]$Config.purview.policyProvisioningApplicationId
@@ -227,6 +235,9 @@ function Deploy-GatewayCore {
         provisioningExecutionEnabled = [bool]$outputs.provisioningExecutionEnabled.value
         workerProcessingEnabled = [bool]$outputs.workerProcessingEnabled.value
         registryProvider = [string]$outputs.agent365RegistryProvider.value
+        promptShieldEndpoint = [string]$outputs.promptShieldEndpoint.value
+        promptShieldAccountId = [string]$outputs.promptShieldAccountId.value
+        promptShieldAccountName = [string]$outputs.promptShieldAccountName.value
     }
 }
 

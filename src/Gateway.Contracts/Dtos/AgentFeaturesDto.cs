@@ -5,4 +5,5 @@ public record AgentFeaturesDto(
     bool? PurviewEnabled,
     string? PurviewMode,
     bool? Agent365ObservabilityEnabled = null,
-    bool? AzureMonitorExportEnabled = null);
+    bool? AzureMonitorExportEnabled = null,
+    bool? PromptShieldEnabled = null);

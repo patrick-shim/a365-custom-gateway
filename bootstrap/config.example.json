@@ -15,6 +15,10 @@
     "seedBlueprintName": "A365 Gateway Seed dev",
     "allowDevelopmentRegistryPreview": true
   },
+  "promptShield": {
+    "enabled": true,
+    "skuName": "S0"
+  },
   "purview": {
     "enabled": false,
     "activateGatewayAdapterAfterPolicyReadback": false,

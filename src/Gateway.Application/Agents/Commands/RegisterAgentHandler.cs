@@ -26,6 +26,7 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
     private readonly IPurviewPolicyClient _purviewPolicyClient;
     private readonly IPurviewPolicyProfileRepository _purviewPolicyProfileRepository;
     private readonly IPurviewPolicyProvisioningClient _purviewPolicyProvisioningClient;
+    private readonly IPromptShieldClient _promptShieldClient;
     private readonly IUnitOfWork _unitOfWork;
 
     public RegisterAgentHandler(
@@ -39,6 +40,7 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
         IPurviewPolicyClient purviewPolicyClient,
         IPurviewPolicyProfileRepository purviewPolicyProfileRepository,
         IPurviewPolicyProvisioningClient purviewPolicyProvisioningClient,
+        IPromptShieldClient promptShieldClient,
         IUnitOfWork unitOfWork)
     {
         _agentRepository = agentRepository;
@@ -51,6 +53,7 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
         _purviewPolicyClient = purviewPolicyClient;
         _purviewPolicyProfileRepository = purviewPolicyProfileRepository;
         _purviewPolicyProvisioningClient = purviewPolicyProvisioningClient;
+        _promptShieldClient = promptShieldClient;
         _unitOfWork = unitOfWork;
     }
 
@@ -96,6 +99,7 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
         var purviewEnabled = systemConfig?.DefaultPurviewEnabled ?? false;
         var purviewMode = ParsePurviewMode(systemConfig?.DefaultPurviewMode)
             ?? (purviewEnabled ? _purviewPolicyClient.DefaultMode : null);
+        var promptShieldEnabled = systemConfig?.DefaultPromptShieldEnabled ?? false;
 
         if (request.Features is not null)
         {
@@ -118,6 +122,9 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
 
             if (request.Features.PurviewMode is not null)
                 purviewMode = Enum.Parse<PurviewMode>(request.Features.PurviewMode);
+
+            if (request.Features.PromptShieldEnabled is not null)
+                promptShieldEnabled = request.Features.PromptShieldEnabled.Value;
         }
 
         if (purviewEnabled && !_purviewPolicyClient.IsEnabled)
@@ -129,6 +136,12 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
 
         if (purviewEnabled && purviewMode is null)
             purviewMode = _purviewPolicyClient.DefaultMode;
+        if (promptShieldEnabled && !_promptShieldClient.IsEnabled)
+        {
+            throw new DomainException(
+                "Prompt Shields cannot be enabled because Azure AI Content Safety is not configured for this Gateway deployment.",
+                ErrorCodes.UNSUPPORTED_FEATURE_CONFIGURATION);
+        }
 
         PurviewPolicyProfile? purviewProfile = null;
         if (purviewEnabled && string.Equals(blueprint.Mode, "CreateNew", StringComparison.Ordinal))
@@ -160,6 +173,7 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
             ObservabilityMode = observabilityMode,
             PurviewEnabled = purviewEnabled,
             PurviewMode = purviewMode,
+            PromptShieldEnabled = promptShieldEnabled,
             UpdatedAtUtc = DateTime.UtcNow
         };
 

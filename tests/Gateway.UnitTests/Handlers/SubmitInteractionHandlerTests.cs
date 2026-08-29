@@ -3,6 +3,7 @@ using FluentAssertions;
 using Gateway.Application.Common;
 using Gateway.Application.Exceptions;
 using Gateway.Application.Interactions.Commands;
+using Gateway.Application.Prompts;
 using Gateway.Contracts;
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Responses;
@@ -28,6 +29,7 @@ public class SubmitInteractionHandlerTests
     private readonly IIdempotencyScopeLease _idempotencyScopeLease;
     private readonly IOutboxRepository _outboxRepository;
     private readonly IAuditEventRepository _auditEventRepository;
+    private readonly IPromptEvaluationRepository _promptEvaluationRepository;
     private readonly IUnitOfWork _unitOfWork;
     private readonly SubmitInteractionHandler _handler;
 
@@ -47,6 +49,7 @@ public class SubmitInteractionHandlerTests
             .Returns(Task.FromResult(_idempotencyScopeLease));
         _outboxRepository = Substitute.For<IOutboxRepository>();
         _auditEventRepository = Substitute.For<IAuditEventRepository>();
+        _promptEvaluationRepository = Substitute.For<IPromptEvaluationRepository>();
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _handler = new SubmitInteractionHandler(
             _agentRepository,
@@ -56,6 +59,7 @@ public class SubmitInteractionHandlerTests
             _idempotencyService,
             _outboxRepository,
             _auditEventRepository,
+            _promptEvaluationRepository,
             _unitOfWork,
             NullLogger<SubmitInteractionHandler>.Instance);
     }
@@ -123,7 +127,7 @@ public class SubmitInteractionHandlerTests
         bool expectedAzureMonitor)
     {
         var agent = CreateAgent(mode);
-        var command = CreateCommand(Guid.NewGuid().ToString("D"));
+        var command = WithAllowedReceipt(CreateCommand(Guid.NewGuid().ToString("D")), agent);
         OutboxMessage? queuedMessage = null;
         _agentRepository.GetByIdAsync(command.CallerAgentRegistrationId, Arg.Any<CancellationToken>())
             .Returns(agent);
@@ -279,7 +283,7 @@ public class SubmitInteractionHandlerTests
         agent.BlueprintId = Guid.NewGuid().ToString("D");
         agent.FeatureConfiguration.PurviewEnabled = true;
         agent.FeatureConfiguration.PurviewMode = PurviewMode.Enforce;
-        var command = CreateCommand(Guid.NewGuid().ToString("D"));
+        var command = WithAllowedReceipt(CreateCommand(Guid.NewGuid().ToString("D")), agent);
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>()).Returns(agent);
         _purviewPolicyClient.IsEnabled.Returns(true);
         _purviewPolicyClient.EvaluateInteractionAsync(
@@ -316,7 +320,7 @@ public class SubmitInteractionHandlerTests
         agent.BlueprintId = Guid.NewGuid().ToString("D");
         agent.FeatureConfiguration.PurviewEnabled = true;
         agent.FeatureConfiguration.PurviewMode = PurviewMode.Enforce;
-        var command = CreateCommand(Guid.NewGuid().ToString("D"));
+        var command = WithAllowedReceipt(CreateCommand(Guid.NewGuid().ToString("D")), agent);
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>()).Returns(agent);
         _purviewPolicyClient.IsEnabled.Returns(true);
         _purviewPolicyClient.EvaluateInteractionAsync(
@@ -333,6 +337,34 @@ public class SubmitInteractionHandlerTests
         exception.Which.ErrorCode.Should().Be(ErrorCodes.PURVIEW_DEPENDENCY_UNAVAILABLE);
         await _interactionContentStore.DidNotReceiveWithAnyArgs()
             .StoreAsync(default, default, default!, default!, default!, default!, default);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Handle_ShouldRejectBeforeSideEffects_WhenReceiptWasConsumedConcurrently()
+    {
+        var agent = CreateAgent(ObservabilityMode.Disabled);
+        agent.FeatureConfiguration.PromptShieldEnabled = true;
+        var command = WithAllowedReceipt(CreateCommand(null), agent) with
+        {
+            IdempotencyKey = Guid.NewGuid().ToString("D")
+        };
+        _agentRepository.GetByIdAsync(AgentRegistrationId, Arg.Any<CancellationToken>())
+            .Returns(agent);
+        _promptEvaluationRepository.TryConsumeAsync(
+                command.PromptEvaluationReceiptId!.Value,
+                Arg.Any<DateTime>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        var action = () => _handler.Handle(command, CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<DomainException>();
+        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROMPT_EVALUATION_INVALID);
+        await _interactionContentStore.DidNotReceiveWithAnyArgs()
+            .StoreAsync(default, default, default!, default!, default!, default!, default);
+        await _purviewPolicyClient.DidNotReceiveWithAnyArgs()
+            .EvaluateInteractionAsync(default!, default);
         await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
@@ -377,4 +409,32 @@ public class SubmitInteractionHandlerTests
             Metadata: null,
             CallerAgentRegistrationId: AgentRegistrationId,
             IdempotencyKey: null);
+
+    private SubmitInteractionCommand WithAllowedReceipt(
+        SubmitInteractionCommand command,
+        AgentRegistration agent)
+    {
+        var receiptId = Guid.NewGuid();
+        var (salt, hash) = PromptReceiptSecurity.Create(
+            command.Prompt.ContentType,
+            command.Prompt.Content);
+        _promptEvaluationRepository.GetByIdAsync(receiptId, Arg.Any<CancellationToken>())
+            .Returns(new PromptEvaluationRecord
+            {
+                Id = receiptId,
+                AgentRegistrationId = agent.Id,
+                ExternalInteractionId = command.InteractionId,
+                TenantUserObjectId = command.UserContext?.TenantUserObjectId ?? string.Empty,
+                PromptHashSalt = salt,
+                PromptHash = hash,
+                Outcome = PromptEvaluationOutcome.Allowed,
+                ExpiresAtUtc = DateTime.UtcNow.AddMinutes(5)
+            });
+        _promptEvaluationRepository.TryConsumeAsync(
+                receiptId,
+                Arg.Any<DateTime>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
+        return command with { PromptEvaluationReceiptId = receiptId };
+    }
 }

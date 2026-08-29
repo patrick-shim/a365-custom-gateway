@@ -27,6 +27,7 @@ internal sealed class SystemConfigurationConfiguration : IEntityTypeConfiguratio
             ProvisioningMode = "Automatic",
             DefaultObservabilityMode = "Agent365",
             DefaultPurviewEnabled = false,
+            DefaultPromptShieldEnabled = false,
             RetentionDaysActivityReceipts = 90,
             RetentionDaysAuditEvents = 365,
             RetentionDaysIdempotencyRecords = 7,

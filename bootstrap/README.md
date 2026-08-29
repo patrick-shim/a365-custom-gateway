@@ -28,7 +28,9 @@ An `Apply` run performs these ordered phases:
     Key Vault without rendering or persisting the value;
 10. optionally creates blueprint-scoped Purview collection and inline DLP policy
     objects, using `Application` as the enforcement plane;
-11. deploys the current runtime and Admin UI, sets exact redirect URIs, disables
+11. optionally creates an Azure AI Content Safety account for Prompt Shields and
+    grants the API managed identity only the built-in Cognitive Services User role;
+12. deploys the current runtime and Admin UI, sets exact redirect URIs, disables
     SQL and Key Vault public access, and performs health/private-network/identity/
     permission/provisioning read-back checks.
 
@@ -84,7 +86,18 @@ passwords, app secret values, access tokens, Gateway keys, prompts, or responses
 The bootstrap does not read `.secrets`. Both `.bootstrap/` and local
 `bootstrap/config.json` are excluded from Git and the remote ACR build context.
 
-## Agent 365 and Purview boundaries
+## Agent 365, Prompt Shields, and Purview boundaries
+
+`promptShield.enabled` provisions Azure AI Content Safety in the Gateway region,
+disables local-key authentication, injects only its endpoint into the API, and uses
+the API Container App managed identity for `https://cognitiveservices.azure.com/.default`.
+The runtime calls the GA `2024-09-01` Prompt Shield API. A provider failure is a
+closed decision for registrations that enabled the control. Provisioning the
+resource does not enable Prompt Shields on every registration; the system default
+and per-registration checkbox remain explicit controls.
+Final bootstrap verification reads the exact Content Safety resource back, proves
+local authentication is disabled, and proves the Gateway API managed identity has
+the Cognitive Services User role at that resource scope.
 
 The current direct Agent Registration create API is beta and explicitly unsupported
 for production. Therefore full automatic Gateway registration is enabled only when
@@ -138,5 +151,7 @@ runbooks.
 - [Agent 365 CLI setup reference](https://learn.microsoft.com/microsoft-agent-365/developer/reference/cli/setup)
 - [Agent 365 registration setup](https://learn.microsoft.com/microsoft-agent-365/developer/registration)
 - [Configure Purview for custom AI apps](https://learn.microsoft.com/purview/developer/configurepurview)
+- [Prompt Shields REST API](https://learn.microsoft.com/rest/api/contentsafety/text-operations/shield-prompt?view=rest-contentsafety-2024-09-01)
+- [Cognitive Services User role](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/ai-machine-learning)
 - [Microsoft identity consent model](https://learn.microsoft.com/entra/identity-platform/permissions-consent-overview)
 - [Agent Registration create API (beta limitation)](https://learn.microsoft.com/microsoft-365/copilot/extensibility/api/admin-settings/agent-registration/agentregistration-create)

@@ -53,6 +53,8 @@ tags:
     description: Async operation status tracking
   - name: Audit
     description: Audit events and provisioning history
+  - name: Prompt protection
+    description: Registration-bound pre-model Prompt Shields and Purview evaluation
   - name: System
     description: System configuration and health
   - name: Activities
@@ -1011,12 +1013,74 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /prompts:evaluate:
+    post:
+      operationId: evaluatePrompt
+      summary: Evaluate a prompt before model execution
+      description: |
+        Runs the controls enabled for the authenticated registration before the
+        external client calls its model. Prompt Shields detects prompt-injection
+        attacks. Purview evaluates the prompt against the registration's policy
+        context. The Gateway fails closed when an enabled provider cannot return a
+        trusted result and never persists the raw prompt in the evaluation table.
+
+        HTTP 200 returns an allowed result and a short-lived, single-use receipt.
+        The client must submit that receipt with the same registration, interaction
+        ID, tenant user, content type, and exact prompt when it later calls
+        /ai-interactions. HTTP 403 returns safe RFC 9457 details for a blocked prompt,
+        including a machine-readable reason that the client can display without
+        exposing provider response bodies.
+      tags: [Prompt protection]
+      security:
+        - gatewayAgentApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluatePromptRequest'
+      responses:
+        '200':
+          description: Prompt passed every enabled protection control
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptEvaluationResult'
+        '400':
+          description: Request or idempotency-key validation failed
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Prompt blocked, identity mismatch, or agent disabled
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: Same scoped Idempotency-Key with a different prompt payload
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /ai-interactions:
     post:
       operationId: submitInteraction
       summary: Submit a completed AI interaction
       description: |
-        Accepts a completed prompt/response pair. When Purview AuditOnly is enabled,
+        Accepts a completed prompt/response pair. A registration with Prompt Shields
+        or Purview enabled must first obtain a matching single-use receipt from
+        /prompts:evaluate. When Purview AuditOnly is enabled,
         the Gateway synchronously submits metadata-only content activities before
         persistence. When Purview Enforce is enabled, policy is computed for the
         selected reusable blueprint application and each activity follows its
@@ -1024,8 +1088,9 @@ paths:
         successful submission without a synchronous verdict. A policy block is
         represented by a 202 receipt with status Failed and Purview status Blocked;
         accepted mixed/offline processing returns AuditLogged. This endpoint is not
-        a pre-model gate because model execution has already occurred in the external
-        runtime.
+        the response-side policy path is not a model-call gate because model execution
+        has already occurred in the external runtime. Prompt evaluation is the
+        separate pre-model gate.
 
         When Agent 365 observability or Purview is enabled for the registered agent,
         userContext.tenantUserObjectId must be a non-empty Microsoft Entra object
@@ -1060,7 +1125,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Identity mismatch or agent disabled
+          description: Identity mismatch, agent disabled, or invalid/missing prompt evaluation receipt
           content:
             application/problem+json:
               schema:
@@ -1358,6 +1423,9 @@ components:
           type: boolean
         purviewMode:
           $ref: '#/components/schemas/PurviewMode'
+        promptShieldEnabled:
+          type: boolean
+          description: Runs Azure AI Content Safety Prompt Shields before model execution.
 
     Agent365Info:
       type: object
@@ -1794,6 +1862,8 @@ components:
           type: boolean
         purviewMode:
           $ref: '#/components/schemas/PurviewMode'
+        promptShieldEnabled:
+          type: boolean
 
     UpdateFeaturesResponse:
       type: object
@@ -1958,6 +2028,9 @@ components:
           type: boolean
         defaultPurviewMode:
           $ref: '#/components/schemas/PurviewMode'
+        defaultPromptShieldEnabled:
+          type: boolean
+          description: Default Prompt Shields setting for new registrations.
         retentionDaysActivityReceipts:
           type: integer
         retentionDaysAuditEvents:
@@ -2020,6 +2093,10 @@ components:
             True only when the Gateway worker has the reviewed app-only Security &
             Compliance PowerShell configuration needed to create or extend a
             protection profile for a new blueprint.
+        promptShieldAvailable:
+          type: boolean
+          readOnly: true
+          description: True when this deployment has a configured Prompt Shields provider.
 
     UpdateSystemConfigRequest:
       type: object
@@ -2046,6 +2123,8 @@ components:
           type: boolean
         defaultPurviewMode:
           $ref: '#/components/schemas/PurviewMode'
+        defaultPromptShieldEnabled:
+          type: boolean
         retentionDaysActivityReceipts:
           type: integer
         retentionDaysAuditEvents:
@@ -2250,6 +2329,71 @@ components:
           type: string
           format: uuid
 
+    EvaluatePromptRequest:
+      type: object
+      required: [externalAgentId, interactionId, occurredAtUtc, prompt]
+      properties:
+        externalAgentId:
+          type: string
+        interactionId:
+          type: string
+          minLength: 1
+          maxLength: 256
+        occurredAtUtc:
+          type: string
+          format: date-time
+        userContext:
+          type: object
+          properties:
+            tenantUserObjectId:
+              type: string
+              format: uuid
+        prompt:
+          type: object
+          required: [contentType, content]
+          properties:
+            contentType:
+              type: string
+              enum: [text/plain, text/markdown]
+            content:
+              type: string
+              maxLength: 10000
+
+    PromptEvaluationResult:
+      type: object
+      required: [evaluationId, interactionId, allowed, decision, promptShieldProcessing, purviewProcessing, userMessage, correlationId]
+      properties:
+        evaluationId:
+          type: string
+          format: uuid
+        evaluationReceiptId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Present only when allowed; short-lived and single use.
+        interactionId:
+          type: string
+        allowed:
+          type: boolean
+        decision:
+          type: string
+          enum: [PROMPT_ALLOWED, PROMPT_BLOCKED_BY_PROMPT_SHIELD, PROMPT_BLOCKED_BY_DLP, PROMPT_BLOCKED_BY_MULTIPLE_CONTROLS]
+        promptShieldProcessing:
+          type: string
+          enum: [Disabled, Allowed, Blocked]
+        purviewProcessing:
+          type: string
+          enum: [Allowed, Blocked, AuditLogged, PurviewDisabled]
+        expiresAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        userMessage:
+          type: string
+        correlationId:
+          type: string
+          format: uuid
+
     SubmitInteractionRequest:
       type: object
       required: [externalAgentId, interactionId, occurredAtUtc, prompt, response]
@@ -2314,6 +2458,13 @@ components:
           additionalProperties:
             type: string
             maxLength: 256
+        promptEvaluationReceiptId:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Required when Prompt Shields or Purview is enabled. Must be the unexpired,
+            single-use receipt returned for the exact prompt by /prompts:evaluate.
 
     InteractionReceipt:
       type: object

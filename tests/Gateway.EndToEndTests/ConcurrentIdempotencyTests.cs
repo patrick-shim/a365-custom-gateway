@@ -21,6 +21,8 @@ namespace Gateway.EndToEndTests;
 [Collection(EndToEndTestCollection.Name)]
 public sealed class ConcurrentIdempotencyTests : IDisposable
 {
+    private const string TenantUserObjectId = "2db7287c-9462-404f-810e-17e57377618d";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -49,10 +51,18 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
             $"concurrent-replay-{Guid.NewGuid():N}",
             purviewEnabled: true);
         var idempotencyKey = Guid.NewGuid().ToString("D");
-        var request = CreateInteractionRequest(
+        ConfigureAllowedPurview();
+        var firstClient = CreateGatewayClient(registration.ApiKey);
+        var receiptId = await EvaluatePromptAsync(
+            firstClient,
             registration.ExternalAgentId,
             "interaction-replay",
             "blocked-prompt");
+        var request = CreateInteractionRequest(
+            registration.ExternalAgentId,
+            "interaction-replay",
+            "blocked-prompt",
+            receiptId);
         var storeEntered = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseStore = new TaskCompletionSource<bool>(
@@ -64,10 +74,8 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
             storeEntered,
             releaseStore,
             () => Interlocked.Increment(ref storeCalls));
-        ConfigureAllowedPurview();
-
         var first = SendInteractionAsync(
-            CreateGatewayClient(registration.ApiKey),
+            firstClient,
             idempotencyKey,
             request);
         await storeEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -103,10 +111,18 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
             $"concurrent-conflict-{Guid.NewGuid():N}",
             purviewEnabled: true);
         var idempotencyKey = Guid.NewGuid().ToString("D");
-        var firstRequest = CreateInteractionRequest(
+        ConfigureAllowedPurview();
+        var firstClient = CreateGatewayClient(registration.ApiKey);
+        var receiptId = await EvaluatePromptAsync(
+            firstClient,
             registration.ExternalAgentId,
             "interaction-conflict",
             "blocked-prompt");
+        var firstRequest = CreateInteractionRequest(
+            registration.ExternalAgentId,
+            "interaction-conflict",
+            "blocked-prompt",
+            receiptId);
         var secondRequest = firstRequest with
         {
             Prompt = new ContentDto("text/plain", "different-prompt")
@@ -122,10 +138,8 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
             storeEntered,
             releaseStore,
             () => Interlocked.Increment(ref storeCalls));
-        ConfigureAllowedPurview();
-
         var first = SendInteractionAsync(
-            CreateGatewayClient(registration.ApiKey),
+            firstClient,
             idempotencyKey,
             firstRequest);
         await storeEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -275,6 +289,14 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
                 PurviewDecisionType.Allowed,
                 null,
                 null));
+        _factory.MockPurviewClient.EvaluatePromptAsync(
+                Arg.Any<PurviewInteraction>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new PurviewEvaluationResult(
+                true,
+                PurviewDecisionType.Allowed,
+                null,
+                null));
     }
 
     private HttpClient CreateGatewayClient(string apiKey)
@@ -313,6 +335,30 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
         message.Headers.Add("Idempotency-Key", idempotencyKey);
         message.Content = JsonContent.Create(request, options: JsonOptions);
         return await client.SendAsync(message);
+    }
+
+    private static async Task<Guid> EvaluatePromptAsync(
+        HttpClient client,
+        string externalAgentId,
+        string interactionId,
+        string prompt)
+    {
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/prompts:evaluate");
+        message.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString("D"));
+        message.Content = JsonContent.Create(
+            new EvaluatePromptRequest(
+                externalAgentId,
+                interactionId,
+                DateTime.UtcNow,
+                new UserContextDto(TenantUserObjectId),
+                new ContentDto("text/plain", prompt)),
+            options: JsonOptions);
+        using var response = await client.SendAsync(message);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<PromptEvaluationResultDto>(JsonOptions);
+        return result!.EvaluationReceiptId!.Value;
     }
 
     private async Task<TestRegistration> CreateActiveRegistrationAsync(
@@ -362,17 +408,19 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
     private static SubmitInteractionRequest CreateInteractionRequest(
         string externalAgentId,
         string interactionId,
-        string prompt) =>
+        string prompt,
+        Guid? promptEvaluationReceiptId = null) =>
         new(
             externalAgentId,
             interactionId,
             "concurrent-session",
             DateTime.UtcNow.AddMinutes(-1),
-            new UserContextDto(Guid.NewGuid().ToString("D")),
+            new UserContextDto(TenantUserObjectId),
             new ContentDto("text/plain", prompt),
             new ContentDto("text/plain", "safe-response"),
             null,
-            null);
+            null,
+            promptEvaluationReceiptId);
 
     private sealed record TestRegistration(
         Guid AgentRegistrationId,

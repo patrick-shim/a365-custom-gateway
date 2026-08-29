@@ -2,11 +2,11 @@
 
 ## Current implementation checkpoint
 
-As of 2026-08-28, current source implements workflow v3: five worker stages, a
+As of 2026-08-29, current source implements workflow v3: five worker stages, a
 signed-in Gateway Administrator Registry action through API OBO, then final worker
 connection verification. Development runs the documented continuous mode; staging
 and production retain exact-bound admission windows. The broad Release gate passes
-1,109/1,109 tests and the solution build has zero warnings/errors.
+1,119/1,119 tests and the solution build has zero warnings/errors.
 
 Two development registrations are Active: one created a new reusable blueprint and
 one reused an existing blueprint. Both are visible as Available A365CustomGateway
@@ -71,8 +71,9 @@ Identifiers: UUID (gateway-generated), string (external agent IDs)
 |---|---|---|---|---|---|---|
 | 17 | `POST` | `/agent-activities` | Submit a single activity | Registration-bound Gateway API key | `Idempotency-Key` (required) | — |
 | 18 | `POST` | `/agent-activities:batch` | Submit a batch of activities | Registration-bound Gateway API key | `Idempotency-Key` (required) | — |
-| 19 | `POST` | `/ai-interactions` | Submit a completed AI interaction; optional Purview work is synchronous | Registration-bound Gateway API key | `Idempotency-Key` (required) | — |
-| 20 | `GET` | `/agent-runtime/readiness` | Verify a registration-bound Gateway API key | Registration-bound Gateway API key | — | — |
+| 19 | `POST` | `/prompts:evaluate` | Run configured pre-model Prompt Shields and prompt-only Purview checks | Registration-bound Gateway API key | `Idempotency-Key` (required) | — |
+| 20 | `POST` | `/ai-interactions` | Submit a completed AI interaction; protected registrations require an allowed prompt receipt | Registration-bound Gateway API key | `Idempotency-Key` (required) | — |
+| 21 | `GET` | `/agent-runtime/readiness` | Verify a registration-bound Gateway API key | Registration-bound Gateway API key | — | — |
 
 ---
 
@@ -130,6 +131,7 @@ claims. The clear key never appears in SQL, logs, audit events, or later reads.
 | `PATCH /system/config` | Yes | — | — | — | — |
 | `POST /agent-activities` | — | — | — | — | Yes |
 | `POST /agent-activities:batch` | — | — | — | — | Yes |
+| `POST /prompts:evaluate` | — | — | — | — | Yes |
 | `POST /ai-interactions` | — | — | — | — | Yes |
 | `GET /agent-runtime/readiness` | — | — | — | — | Yes |
 
@@ -1066,7 +1068,44 @@ Actor/user-context validation does not turn the whole batch into an HTTP 400 res
 Supporting A2A export requires a future contract extension for Agent 365's dedicated
 caller-agent identity fields.
 
-### 3.17 Submit Completed AI Interaction
+### 3.17 Evaluate Prompt Before Model Invocation
+
+**Request:** `POST /api/v1/prompts:evaluate`
+
+**Headers:** `Idempotency-Key: 550e8400-e29b-41d4-a716-446655440013`
+
+```json
+{
+  "externalAgentId": "crm-assistant-prod",
+  "interactionId": "interaction-88731",
+  "occurredAtUtc": "2026-08-23T04:46:59Z",
+  "userContext": {
+    "tenantUserObjectId": "00000000-0000-0000-0000-000000000045"
+  },
+  "prompt": {
+    "contentType": "text/plain",
+    "content": "Summarize the customer account."
+  }
+}
+```
+
+HTTP 200 means every enabled control returned a trusted allow. The response contains
+`evaluationReceiptId`, `expiresAtUtc`, `decision`, `promptShieldProcessing`,
+`purviewProcessing`, a safe user message, and a correlation ID. The receipt is
+short-lived and single use. It is bound to the authenticated registration,
+interaction ID, tenant user, content type, and exact prompt through a salted hash.
+The evaluation prompt accepts `text/plain` or `text/markdown` and is limited to
+10,000 characters by the validated Prompt Shields contract.
+
+HTTP 403 means an enabled control blocked the prompt. Problem Details includes one
+of `PROMPT_BLOCKED_BY_PROMPT_SHIELD`, `PROMPT_BLOCKED_BY_DLP`, or
+`PROMPT_BLOCKED_BY_MULTIPLE_CONTROLS`, provider processing labels, evaluation ID,
+and correlation ID; it contains no receipt or raw prompt. HTTP 503
+`PROMPT_EVALUATION_UNAVAILABLE` means an enabled provider did not return a trusted
+decision. The external client must not call its model unless it received HTTP 200
+and a receipt. The Gateway does not proxy or independently prevent the model call.
+
+### 3.18 Submit Completed AI Interaction
 
 **Request:** `POST /api/v1/ai-interactions`
 
@@ -1095,7 +1134,8 @@ caller-agent identity fields.
   },
   "metadata": {
     "locale": "en-US"
-  }
+  },
+  "promptEvaluationReceiptId": "8c64436e-9c79-4e69-9b81-469ae9c4c174"
 }
 ```
 
@@ -1113,6 +1153,7 @@ caller-agent identity fields.
 | `model.provider` | string | No | 1-256 chars |
 | `model.name` | string | No | 1-256 chars |
 | `metadata` | object | No | Max 20 keys |
+| `promptEvaluationReceiptId` | UUID | Conditional | Required when Prompt Shields or Purview is enabled; must be the unexpired, unconsumed receipt for this exact prompt evaluation. |
 
 **Response:** `202 Accepted`
 
@@ -1145,9 +1186,14 @@ A missing, unknown, or untrusted Purview mode/decision returns HTTP 503
 `PURVIEW_DEPENDENCY_UNAVAILABLE` and persists neither interaction content nor a
 receipt.
 
-This route receives a completed prompt/response pair and therefore is not a
-pre-model gate. `/api/v1/ai-interactions:evaluate` is not implemented and must not
-be called or advertised as available.
+This route receives a completed prompt/response pair, so its response-side work is
+not a response-before-release gate. Pre-model evaluation is the separate implemented
+`POST /api/v1/prompts:evaluate` route. Protected interaction ingestion verifies and
+consumes the prompt receipt under the scoped idempotency lease, after replay lookup;
+same-key/same-payload replay succeeds. Receipt consumption uses an atomic SQL
+compare-and-set in the same transaction, so a different idempotency key cannot race
+the same receipt. Missing, expired, consumed, or
+mismatched receipts fail before content persistence or provider/export work.
 
 ---
 
@@ -1173,6 +1219,12 @@ All errors use RFC 9457 Problem Details:
 |---|---|---|---|
 | `VALIDATION_FAILED` | 400 | Request validation failed | Invalid field values, missing required fields |
 | `AUTHENTICATION_REQUIRED` | 401 | No valid bearer token | Missing or expired token |
+| `PROMPT_BLOCKED_BY_PROMPT_SHIELD` | 403 | Prompt-injection/jailbreak signal | Prompt Shields returned `attackDetected=true` |
+| `PROMPT_BLOCKED_BY_DLP` | 403 | Purview DLP block | Prompt-only Purview evaluation returned exact restrict-access block |
+| `PROMPT_BLOCKED_BY_MULTIPLE_CONTROLS` | 403 | Both enabled controls block | Prompt Shields and Purview both block |
+| `PROMPT_EVALUATION_REQUIRED` | 403 | Protected interaction lacks an allow receipt | Prompt Shields or Purview is enabled |
+| `PROMPT_EVALUATION_INVALID` | 403 | Receipt is expired, consumed, or mismatched | Receipt validation fails before side effects |
+| `PROMPT_EVALUATION_UNAVAILABLE` | 503 | No trusted enabled-provider decision | Prompt provider transport/auth/schema/policy failure |
 | `CALLER_NOT_AUTHORIZED` | 403 | Authenticated but lacks required role | Missing app role for endpoint |
 | `AGENT_IDENTITY_MISMATCH` | 403 | externalAgentId does not match authenticated identity | Data-plane identity binding failure |
 | `AGENT_DISABLED` | 403 | Agent is in Disabled status | Data-plane request to disabled agent |

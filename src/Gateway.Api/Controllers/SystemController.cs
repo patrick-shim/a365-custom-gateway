@@ -19,15 +19,18 @@ public class SystemController : ControllerBase
     private readonly ISender _sender;
     private readonly ProvisioningAdmissionGate _provisioningAdmissionGate;
     private readonly IPurviewPolicyProvisioningClient _purviewPolicyProvisioningClient;
+    private readonly IPromptShieldClient _promptShieldClient;
 
     public SystemController(
         ISender sender,
         ProvisioningAdmissionGate provisioningAdmissionGate,
-        IPurviewPolicyProvisioningClient purviewPolicyProvisioningClient)
+        IPurviewPolicyProvisioningClient purviewPolicyProvisioningClient,
+        IPromptShieldClient promptShieldClient)
     {
         _sender = sender;
         _provisioningAdmissionGate = provisioningAdmissionGate;
         _purviewPolicyProvisioningClient = purviewPolicyProvisioningClient;
+        _promptShieldClient = promptShieldClient;
     }
 
     [HttpGet("config")]
@@ -68,7 +71,8 @@ public class SystemController : ControllerBase
             request.UseCliProvisioningFallback,
             User.GetObjectId(),
             request.DefaultAgent365ObservabilityEnabled,
-            request.DefaultAzureMonitorExportEnabled);
+            request.DefaultAzureMonitorExportEnabled,
+            request.DefaultPromptShieldEnabled);
 
         var result = await _sender.Send(command, cancellationToken);
 
@@ -81,6 +85,7 @@ public class SystemController : ControllerBase
             ProvisioningExecutionEnabled = _provisioningAdmissionGate.IsRegistrationOpen,
             AuthorizedRegistrationExternalAgentId =
                 _provisioningAdmissionGate.AuthorizedRegistrationExternalAgentId,
-            PurviewPolicyProvisioningEnabled = _purviewPolicyProvisioningClient.IsEnabled
+            PurviewPolicyProvisioningEnabled = _purviewPolicyProvisioningClient.IsEnabled,
+            PromptShieldAvailable = _promptShieldClient.IsEnabled
         };
 }

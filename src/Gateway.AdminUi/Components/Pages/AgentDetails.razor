@@ -335,6 +335,22 @@ else if (agentResource is not null)
                                 </div>
                             </fieldset>
 
+                            <fieldset class="feature-group" aria-describedby="agent-prompt-shield-help">
+                                <legend>Prompt Shields</legend>
+                                <p id="agent-prompt-shield-help">Evaluate prompts for injection and jailbreak attacks before model invocation.</p>
+                                <div class="form-grid">
+                                    <div class="form-field checkbox-field">
+                                        <label class="checkbox-label" for="feature-prompt-shield-enabled">
+                                            <input id="feature-prompt-shield-enabled"
+                                                   type="checkbox"
+                                                   @bind="featurePromptShieldEnabled"
+                                                   disabled="@(!CanEditFeatures(agent.Status) || featureSaving)" />
+                                            <span><strong>Enable Azure AI Prompt Shields</strong><small>Protected clients must obtain an allowed prompt-evaluation receipt before submitting the interaction.</small></span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </fieldset>
+
                             <fieldset class="feature-group" aria-describedby="agent-purview-help">
                                 <legend>Microsoft Purview</legend>
                                 <p id="agent-purview-help">Purview policy evaluation is independent of both observability destinations.</p>
@@ -386,6 +402,10 @@ else if (agentResource is not null)
                         <div class="detail-item">
                             <span class="detail-label">Azure Monitor activity mirror</span>
                             <span class="detail-value">@FormatEnabled(ResolveAzureMonitorExport(agent.Features))</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Prompt Shields</span>
+                            <span class="detail-value">@(agent.Features?.PromptShieldEnabled == true ? "Enabled" : "Disabled")</span>
                         </div>
                         <div class="detail-item">
                             <span class="detail-label">Purview evaluation</span>
@@ -672,6 +692,7 @@ else if (agentResource is not null)
     private bool featureAgent365ObservabilityEnabled;
     private bool featureAzureMonitorExportEnabled;
     private bool featurePurviewEnabled;
+    private bool featurePromptShieldEnabled;
     private bool isAdministrator;
     private bool canOperate;
     private bool canViewProvisioning;
@@ -857,7 +878,8 @@ else if (agentResource is not null)
                 featurePurviewEnabled,
                 featurePurviewMode,
                 featureAgent365ObservabilityEnabled,
-                featureAzureMonitorExportEnabled);
+                featureAzureMonitorExportEnabled,
+                featurePromptShieldEnabled);
 
             await Api.UpdateAgentFeaturesAsync(
                 AgentId,
@@ -1049,6 +1071,7 @@ else if (agentResource is not null)
         featureAzureMonitorExportEnabled = ResolveAzureMonitorExport(features);
         featurePurviewEnabled = features?.PurviewEnabled ?? false;
         featurePurviewMode = features?.PurviewMode ?? "AuditOnly";
+        featurePromptShieldEnabled = features?.PromptShieldEnabled ?? false;
     }
 
     private static bool ResolveAgent365Observability(AgentFeaturesDto? features) =>

@@ -31,11 +31,14 @@ public class GatewayWebApplicationFactory : WebApplicationFactory<Program>
     public IAgentIdentityBlueprintCatalog MockBlueprintCatalog { get; } =
         Substitute.For<IAgentIdentityBlueprintCatalog>();
     public IPurviewPolicyClient MockPurviewClient { get; } = Substitute.For<IPurviewPolicyClient>();
+    public IPromptShieldClient MockPromptShieldClient { get; } = Substitute.For<IPromptShieldClient>();
     public IObservabilityExporter MockObservabilityExporter { get; } = Substitute.For<IObservabilityExporter>();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         MockPurviewClient.IsEnabled.Returns(true);
+        MockPromptShieldClient.IsEnabled.Returns(true);
+        MockPromptShieldClient.ReceiptLifetime.Returns(TimeSpan.FromMinutes(5));
         builder.UseEnvironment("Testing");
 
         builder.ConfigureAppConfiguration((context, config) =>
@@ -135,6 +138,9 @@ public class GatewayWebApplicationFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<IPurviewPolicyClient>();
             services.AddScoped(_ => MockPurviewClient);
+
+            services.RemoveAll<IPromptShieldClient>();
+            services.AddScoped(_ => MockPromptShieldClient);
 
             services.RemoveAll<IObservabilityExporter>();
             services.AddScoped(_ => MockObservabilityExporter);

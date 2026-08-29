@@ -36,4 +36,5 @@ param agent365ManagerApplicationIds = [
 // Fail-closed runtime baseline. A reviewed deployment/controller invocation must
 // explicitly enable Purview after tenant policy, licensing, and Graph roles pass.
 param purviewEnabled = false
+param promptShieldEnabled = false
 param preservedConfigurationSecrets = {}

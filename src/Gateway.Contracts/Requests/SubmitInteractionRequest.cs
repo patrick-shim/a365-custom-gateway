@@ -11,4 +11,5 @@ public record SubmitInteractionRequest(
     ContentDto Prompt,
     ContentDto Response,
     ModelDto? Model,
-    Dictionary<string, string>? Metadata);
+    Dictionary<string, string>? Metadata,
+    Guid? PromptEvaluationReceiptId = null);

@@ -35,8 +35,18 @@ Center. Current queues are v3 `0/0/9`, retained v2 `0/0/3`, and historical
 
 Blueprint-scoped Purview Enforce is live. Benign content returns `AuditLogged`, a
 synthetic credit-card `uploadText` returns `Blocked`, and `downloadText` is processed
-offline. The exact release gate is 1,109/1,109; authoritative counts and deployment
+offline. The exact release gate is 1,119/1,119; authoritative counts and deployment
 digests belong in `../implementation-status.md`.
+
+Current unreleased source also provisions optional Azure AI Content Safety Prompt
+Shields independently of Agent ID provisioning. Bicep creates one regional
+Content Safety account with local authentication disabled and grants the Gateway
+API managed identity the built-in Cognitive Services User role. It injects only the
+resource endpoint; runtime tokens use
+`https://cognitiveservices.azure.com/.default`. The feature adds no workflow-v3
+stage, Entra blueprint mutation, FIC, child Agent ID role, or Registry action. It is
+source-only until a separately authorized migration/deployment/readback and bounded
+data-plane canary are recorded.
 
 ### Historical superseded checkpoint
 
@@ -341,6 +351,10 @@ Follow the latest deployment checkpoint; do not infer completion from this guide
    failures as inputs.
 4. Treat SQL finalization, resource deletion, retained-message disposition, and
    production rollout as separately reviewed actions.
+5. Before enabling Prompt Shields for a live registration, apply
+   `20260829_prompt_protection.sql`, deploy the API/UI/source image and Content
+   Safety resource, verify the exact API managed-identity role assignment and
+   provider readiness read-only, then run allow/block/receipt-consumption tests.
 
 ## Completion and production gates
 

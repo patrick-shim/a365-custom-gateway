@@ -10,6 +10,8 @@ provide a managed-identity object ID or acquire an Entra token. The Gateway work
 uses managed identity plus one reusable FIC per blueprint to obtain each child Agent
 ID's Agent 365 token. Agent 365 observability defaults on, sanitized Azure Monitor
 mirroring is optional/off, and Purview remains independent per registration.
+Azure AI Content Safety Prompt Shields is an independent, per-registration
+pre-model control when the deployment provisions it.
 
 ## Start here
 
@@ -52,11 +54,15 @@ flowchart LR
     Worker -->|child Agent ID token| A365[Agent 365 observability]
     Worker -->|optional sanitized mirror| Monitor[Azure Monitor]
     API -->|per-registration, fail closed| Purview[Microsoft Purview DLP]
+    API -->|optional pre-model check| Shield[Azure AI Content Safety<br/>Prompt Shields]
 ```
 
 The control plane owns registrations, blueprint selection, feature configuration,
 provisioning status, and credential lifecycle. The data plane accepts bounded
-activity and completed prompt/response submissions. SQL-backed idempotency and rate
+activity, pre-model prompt evaluations, and completed prompt/response submissions.
+An allowed evaluation returns a short-lived, single-use receipt bound to the exact
+registration, interaction, tenant user, content type, and prompt. Protected
+interaction submission requires that receipt. SQL-backed idempotency and rate
 limits bind every request to one registration and key; accepted work enters the
 transactional outbox before Service Bus delivery. Prompt/response content is never
 rendered in the Admin UI and is stored only in the encrypted content store according
@@ -137,6 +143,7 @@ preserves verified completed rows and never repeats a completed Registry boundar
 | `src/Gateway.Domain` / `src/Gateway.Contracts` | Persistence-independent model and public contracts |
 | `src/Gateway.Agent365` | Entra Agent Identity, Registry, token exchange, and OTLP adapters |
 | `src/Gateway.Purview` | Graph v1.0 Purview policy evaluation adapter |
+| `src/Gateway.ContentSafety` | Managed-identity Azure AI Content Safety Prompt Shields adapter |
 | `src/Gateway.Infrastructure` | SQL, locks, idempotency, rate limits, outbox, Service Bus, and Blob storage |
 | `src/Gateway.Provisioning.Worker` | Idempotent workflow stages and data-plane relay |
 | `src/ExternalAgent.Sample` | Minimal external client for bounded ingestion verification |
@@ -185,6 +192,17 @@ The worker preserves existing policy locations, adds the new blueprint applicati
 scope, and requires exact readback before child Agent ID creation. This source is not
 live deployment evidence; see `docs/implementation-status.md` and the Purview
 runbook for the release and app-only RBAC boundary.
+
+Current source also implements an optional **pre-model prompt-protection gate**.
+The Admin UI exposes Prompt Shields independently from Purview. The external client
+first calls `POST /api/v1/prompts:evaluate`; enabled Prompt Shields and prompt-only
+Purview evaluation run fail closed, and a blocked request returns safe RFC 9457
+details the client can display. An allowed request returns a short-lived,
+single-use receipt required by the matching completed interaction. SQL stores only
+a salted prompt hash and decision metadata for the evaluation; raw prompt content
+is not stored in that table or rendered in the Admin UI. The Bicep/bootstrap source
+can create the Content Safety account and grant the API managed identity Cognitive
+Services User. This source has not yet been deployed or live-verified.
 
 Historical v1/v2 and failed v3 attempts remain immutable evidence and must not be
 replayed or deleted. SQL finalization remains unapplied. See the implementation and
@@ -236,7 +254,8 @@ flowchart TD
     Identity --> Images[Build and pin API, worker, and UI images]
     Images --> Data[Private SQL + schema + workload principals]
     Data --> Optional[Optional blueprint-scoped Purview policy]
-    Optional --> Runtime[Deploy current runtime]
+    Optional --> Shield[Optional Azure AI Content Safety Prompt Shields]
+    Shield --> Runtime[Deploy current runtime]
     Runtime --> Verify[Read-only health, network, identity, and permission verification]
     Verify --> Register[Development registration and bounded canary]
 ```
@@ -271,8 +290,11 @@ dotnet run --project src/ExternalAgent.Sample -- `
 
 The client reads the one-time Gateway key from a non-echoing prompt or redirected
 standard input; never place the key in command arguments, environment variables, a
-file, or documentation. It sends one activity (which drives sanitized OTel export)
-and one AI-interaction message, expects HTTP 202 for both, and renders only safe
+file, or documentation. It first evaluates `--message` through every enabled
+pre-model control and prints the safe per-provider result. A blocked prompt exits
+without sending the activity or completed interaction. An allowed prompt supplies
+the returned receipt, sends one activity (which drives sanitized OTel export) and
+one AI-interaction message, expects HTTP 202 for both, and renders only safe
 status/correlation evidence. HTTP 202 proves Gateway ingestion; Agent 365 landing
 still requires the separate documented Defender `CloudAppEvents` verification.
 
@@ -289,9 +311,10 @@ headers, prompts, or responses.
 - Direct Agent 365 Registry creation is a beta, Global-cloud preview and is not
   claimed as production-supported. Development may opt in; staging/production
   remain closed by default.
-- The current completed prompt/response API can enforce inline policy on the prompt
-  and submit the response for offline evaluation. It is not a pre-model or
-  response-before-release gate.
+- The prompt-evaluation endpoint is a pre-model gate only when the external client
+  calls it before model invocation and honors a block. The Gateway does not proxy or
+  enforce the model call itself. The completed interaction path may still submit the
+  response for offline Purview evaluation; it is not a response-before-release gate.
 - Automated Microsoft-resource deletion/reconciliation, production multi-replica
   failover proof, SQL finalization, and full production capacity/backup/incident
   sign-off remain open work.

@@ -102,6 +102,12 @@ param agent365ManagerApplicationIds array = []
 @description('Enable the Microsoft Purview Graph adapter only after its tenant permissions, policy, licensing, and canary prerequisites are verified.')
 param purviewEnabled bool = false
 
+@description('Enable Azure AI Content Safety Prompt Shields for registration-level prompt evaluation.')
+param promptShieldEnabled bool = false
+
+@description('Azure AI Content Safety endpoint used by Prompt Shields.')
+param promptShieldEndpoint string = ''
+
 @secure()
 @description('Existing application-scoped Container Apps secrets to preserve unchanged during a full ARM PUT. Values must come directly from the resource provider listSecrets operation and must never be logged or output.')
 param preservedConfigurationSecrets object = {}
@@ -278,6 +284,18 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'Purview__Enabled'
               value: string(purviewEnabled)
+            }
+            {
+              name: 'PromptShield__Enabled'
+              value: string(promptShieldEnabled)
+            }
+            {
+              name: 'PromptShield__Endpoint'
+              value: promptShieldEndpoint
+            }
+            {
+              name: 'PromptShield__ApiVersion'
+              value: '2024-09-01'
             }
             {
               name: 'OutboxRelay__PollingIntervalSeconds'

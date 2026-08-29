@@ -111,6 +111,9 @@ public sealed class ProblemDetailsMiddleware
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_CATALOG_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_CATALOG_INVALID_RESPONSE => StatusCodes.Status502BadGateway,
                 ErrorCodes.PURVIEW_DEPENDENCY_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
+                ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
+                ErrorCodes.PROMPT_EVALUATION_REQUIRED => StatusCodes.Status403Forbidden,
+                ErrorCodes.PROMPT_EVALUATION_INVALID => StatusCodes.Status403Forbidden,
                 _ => StatusCodes.Status422UnprocessableEntity
             };
 
@@ -123,6 +126,9 @@ public sealed class ProblemDetailsMiddleware
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_CATALOG_INVALID_RESPONSE => "Blueprint Catalog Invalid Response",
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_INCOMPATIBLE => "Blueprint Not Compatible",
                 ErrorCodes.PURVIEW_DEPENDENCY_UNAVAILABLE => "Purview Unavailable",
+                ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE => "Prompt Evaluation Unavailable",
+                ErrorCodes.PROMPT_EVALUATION_REQUIRED => "Prompt Evaluation Required",
+                ErrorCodes.PROMPT_EVALUATION_INVALID => "Prompt Evaluation Invalid",
                 _ => "Domain Error"
             };
 

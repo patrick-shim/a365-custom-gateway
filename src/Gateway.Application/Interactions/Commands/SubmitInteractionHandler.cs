@@ -8,6 +8,7 @@ using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
 using Gateway.Domain.Models;
+using Gateway.Application.Prompts;
 using MediatR;
 using Microsoft.Extensions.Logging;
 
@@ -22,6 +23,7 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
     private readonly IIdempotencyService _idempotencyService;
     private readonly IOutboxRepository _outboxRepository;
     private readonly IAuditEventRepository _auditEventRepository;
+    private readonly IPromptEvaluationRepository _promptEvaluationRepository;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<SubmitInteractionHandler> _logger;
 
@@ -33,6 +35,7 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
         IIdempotencyService idempotencyService,
         IOutboxRepository outboxRepository,
         IAuditEventRepository auditEventRepository,
+        IPromptEvaluationRepository promptEvaluationRepository,
         IUnitOfWork unitOfWork,
         ILogger<SubmitInteractionHandler> logger)
     {
@@ -43,6 +46,7 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
         _idempotencyService = idempotencyService;
         _outboxRepository = outboxRepository;
         _auditEventRepository = auditEventRepository;
+        _promptEvaluationRepository = promptEvaluationRepository;
         _unitOfWork = unitOfWork;
         _logger = logger;
     }
@@ -136,6 +140,43 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
                     }
 
                     return JsonSerializer.Deserialize<InteractionReceiptDto>(existing.ResponseBody)!;
+                }
+            }
+
+            if (agent.FeatureConfiguration.PromptShieldEnabled || agent.FeatureConfiguration.PurviewEnabled)
+            {
+                if (request.PromptEvaluationReceiptId is not { } receiptId || receiptId == Guid.Empty)
+                {
+                    throw new DomainException(
+                        "A successful prompt evaluation receipt is required for this protected registration.",
+                        ErrorCodes.PROMPT_EVALUATION_REQUIRED);
+                }
+
+                var receipt = await _promptEvaluationRepository.GetByIdAsync(receiptId, ct);
+                var now = DateTime.UtcNow;
+                if (receipt is null
+                    || receipt.AgentRegistrationId != agent.Id
+                    || receipt.Outcome != PromptEvaluationOutcome.Allowed
+                    || receipt.ConsumedAtUtc is not null
+                    || receipt.ExpiresAtUtc <= now
+                    || !string.Equals(receipt.ExternalInteractionId, request.InteractionId, StringComparison.Ordinal)
+                    || !string.Equals(receipt.TenantUserObjectId, request.UserContext?.TenantUserObjectId ?? string.Empty, StringComparison.Ordinal)
+                    || !PromptReceiptSecurity.Verify(
+                        receipt.PromptHashSalt,
+                        receipt.PromptHash,
+                        request.Prompt.ContentType,
+                        request.Prompt.Content))
+                {
+                    throw new DomainException(
+                        "The prompt evaluation receipt is missing, expired, consumed, or does not match this interaction.",
+                        ErrorCodes.PROMPT_EVALUATION_INVALID);
+                }
+
+                if (!await _promptEvaluationRepository.TryConsumeAsync(receipt.Id, now, ct))
+                {
+                    throw new DomainException(
+                        "The prompt evaluation receipt is missing, expired, consumed, or does not match this interaction.",
+                        ErrorCodes.PROMPT_EVALUATION_INVALID);
                 }
             }
 

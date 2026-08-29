@@ -56,7 +56,8 @@ public class InteractionsController : ControllerBase
             request.Model,
             request.Metadata,
             User.GetAgentRegistrationId(),
-            normalizedIdempotencyKey);
+            normalizedIdempotencyKey,
+            request.PromptEvaluationReceiptId);
 
         var result = await _sender.Send(command, cancellationToken);
 

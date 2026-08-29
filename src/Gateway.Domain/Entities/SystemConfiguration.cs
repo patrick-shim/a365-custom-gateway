@@ -9,6 +9,7 @@ public class SystemConfiguration
     public string DefaultObservabilityMode { get; set; } = nameof(ObservabilityMode.Agent365);
     public bool DefaultPurviewEnabled { get; set; }
     public string? DefaultPurviewMode { get; set; }
+    public bool DefaultPromptShieldEnabled { get; set; }
     public int RetentionDaysActivityReceipts { get; set; }
     public int RetentionDaysAuditEvents { get; set; }
     public int RetentionDaysIdempotencyRecords { get; set; }

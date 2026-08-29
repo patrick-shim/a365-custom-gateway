@@ -10,4 +10,5 @@ public record UpdateFeaturesCommand(
     string? PurviewMode,
     string CallerObjectId,
     bool? Agent365ObservabilityEnabled = null,
-    bool? AzureMonitorExportEnabled = null) : IRequest<UpdateFeaturesResponse>;
+    bool? AzureMonitorExportEnabled = null,
+    bool? PromptShieldEnabled = null) : IRequest<UpdateFeaturesResponse>;

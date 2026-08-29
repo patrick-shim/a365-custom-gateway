@@ -170,7 +170,8 @@ public class AgentsController : ControllerBase
             request.PurviewMode,
             User.GetObjectId(),
             request.Agent365ObservabilityEnabled,
-            request.AzureMonitorExportEnabled);
+            request.AzureMonitorExportEnabled,
+            request.PromptShieldEnabled);
 
         var result = await _sender.Send(command, cancellationToken);
 

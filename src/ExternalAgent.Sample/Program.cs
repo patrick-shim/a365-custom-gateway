@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 
 if (!Arguments.TryParse(args, out var options, out var argumentError))
 {
@@ -28,16 +29,35 @@ try
         BaseAddress = options.ApiBaseUrl,
         Timeout = TimeSpan.FromSeconds(30)
     };
-    client.DefaultRequestHeaders.Authorization =
-        new AuthenticationHeaderValue("Bearer", gatewayKey);
+
+    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", gatewayKey);
 
     var suffix = Guid.NewGuid().ToString("N");
     var occurredAtUtc = DateTimeOffset.UtcNow;
     var sessionId = $"sample-session-{suffix}";
+    var interactionId = $"sample-interaction-{suffix}";
 
-    await SendAsync(
+    var promptEvaluation = await EvaluatePromptAsync(
         client,
-        "api/v1/agent-activities",
+        options.ExternalAgentId,
+        interactionId,
+        options.TenantUserObjectId,
+        options.Message,
+        occurredAtUtc);
+    if (!promptEvaluation.Allowed)
+    {
+        Console.Error.WriteLine($"[BLOCKED] {promptEvaluation.UserMessage}");
+        Console.Error.WriteLine($"Decision: {promptEvaluation.Decision}; correlation {promptEvaluation.CorrelationId}");
+        return 3;
+    }
+
+    Console.WriteLine(
+        $"[PASS] prompt evaluation: {promptEvaluation.Decision}; " +
+        $"Prompt Shields={promptEvaluation.PromptShieldProcessing}; " +
+        $"Purview={promptEvaluation.PurviewProcessing}; " +
+        $"correlation {promptEvaluation.CorrelationId}");
+
+    await SendAsync(client, "api/v1/agent-activities",
         new
         {
             externalAgentId = options.ExternalAgentId,
@@ -65,7 +85,7 @@ try
         new
         {
             externalAgentId = options.ExternalAgentId,
-            interactionId = $"sample-interaction-{suffix}",
+            interactionId,
             sessionId,
             occurredAtUtc,
             userContext = new { tenantUserObjectId = options.TenantUserObjectId },
@@ -84,18 +104,92 @@ try
             {
                 ["sample"] = "external-agent",
                 ["transport"] = "gateway"
-            }
+            },
+            promptEvaluationReceiptId = promptEvaluation.EvaluationReceiptId
         },
         "message ingestion");
 
     Console.WriteLine("[PASS] The Gateway accepted the sample message and telemetry.");
     return 0;
 }
+catch (InvalidOperationException exception)
+{
+    Console.Error.WriteLine($"[FAILED] {exception.Message}");
+    return 4;
+}
+catch (OperationCanceledException)
+{
+    Console.Error.WriteLine("[FAILED] The Gateway request did not complete within the 30-second client timeout.");
+    return 4;
+}
+catch (Exception)
+{
+    Console.Error.WriteLine("[FAILED] The sample could not complete. No dependency response body was rendered.");
+    return 4;
+}
 finally
 {
     gatewayKey = string.Empty;
     GC.Collect();
 }
+
+static async Task<PromptEvaluation> EvaluatePromptAsync(
+    HttpClient client,
+    string externalAgentId,
+    string interactionId,
+    Guid tenantUserObjectId,
+    string prompt,
+    DateTimeOffset occurredAtUtc)
+{
+    using var request = new HttpRequestMessage(HttpMethod.Post, "api/v1/prompts:evaluate")
+    {
+        Content = JsonContent.Create(new
+        {
+            externalAgentId,
+            interactionId,
+            occurredAtUtc,
+            userContext = new { tenantUserObjectId },
+            prompt = new { contentType = "text/plain", content = prompt }
+        })
+    };
+    request.Headers.TryAddWithoutValidation("Idempotency-Key", Guid.NewGuid().ToString("D"));
+    using var response = await client.SendAsync(request);
+    if (response.StatusCode == HttpStatusCode.OK)
+    {
+        var result = await response.Content.ReadFromJsonAsync<PromptEvaluation>()
+            ?? throw new InvalidOperationException("Prompt evaluation returned an empty response.");
+        if (!result.Allowed || result.EvaluationReceiptId is null || result.EvaluationReceiptId == Guid.Empty)
+            throw new InvalidOperationException("Prompt evaluation returned an invalid allow decision.");
+        return result;
+    }
+
+    if (response.StatusCode == HttpStatusCode.Forbidden)
+    {
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var decision = SafeString(problem, "errorCode") ?? "PROMPT_BLOCKED";
+        var message = SafeString(problem, "detail") ?? "The prompt was blocked by the configured Gateway protection policy.";
+        var correlationId = SafeString(problem, "correlationId") ?? "unavailable";
+        return new PromptEvaluation(
+            null,
+            false,
+            decision,
+            SafeString(problem, "promptShieldProcessing") ?? "Unknown",
+            SafeString(problem, "purviewProcessing") ?? "Unknown",
+            message,
+            correlationId);
+    }
+
+    throw new InvalidOperationException(
+        $"prompt evaluation returned HTTP {(int)response.StatusCode}. " +
+        "The response body was deliberately not rendered.");
+}
+
+static string? SafeString(JsonElement element, string propertyName) =>
+    element.ValueKind == JsonValueKind.Object
+    && element.TryGetProperty(propertyName, out var value)
+    && value.ValueKind == JsonValueKind.String
+        ? value.GetString()
+        : null;
 
 static async Task SendAsync(HttpClient client, string path, object body, string label)
 {
@@ -255,3 +349,12 @@ internal sealed record Arguments(
         return builder.Uri;
     }
 }
+
+internal sealed record PromptEvaluation(
+    Guid? EvaluationReceiptId,
+    bool Allowed,
+    string Decision,
+    string PromptShieldProcessing,
+    string PurviewProcessing,
+    string UserMessage,
+    string CorrelationId);

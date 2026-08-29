@@ -20,6 +20,7 @@
     <ProjectReference Include="..\Gateway.Infrastructure\Gateway.Infrastructure.csproj" />
     <ProjectReference Include="..\Gateway.Agent365\Gateway.Agent365.csproj" />
     <ProjectReference Include="..\Gateway.Purview\Gateway.Purview.csproj" />
+    <ProjectReference Include="..\Gateway.ContentSafety\Gateway.ContentSafety.csproj" />
     <ProjectReference Include="..\Gateway.Observability\Gateway.Observability.csproj" />
   </ItemGroup>
 
