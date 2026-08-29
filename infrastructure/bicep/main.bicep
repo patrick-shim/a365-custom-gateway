@@ -22,6 +22,30 @@ param location string
 @description('Project name used in resource naming.')
 param projectName string = 'a365gw'
 
+@description('Opaque bootstrap-run ownership identifier. The supported bootstrap supplies a random GUID and verifies this value on the deployment and every tagged workload resource before adopting prior work.')
+param deploymentOwnershipId string = ''
+
+@description('Canonical SHA-256 fingerprint of the content-addressed source snapshot accepted by the bootstrap plan. This is provenance metadata, not a credential.')
+param bootstrapSourceFingerprint string = ''
+
+@description('Enable bounded read-only runtime verification of the exact bootstrap database contract.')
+param databaseAttestationEnabled bool = false
+
+@description('Exact current reviewed GatewayDb schema fingerprint from bootstrap initialization.')
+param databaseAttestationExpectedSchemaFingerprint string = ''
+
+@description('Exact Gateway API database principal name.')
+param databaseAttestationApiPrincipalName string = ''
+
+@description('Exact Gateway API managed-identity client ID stored as the database principal SID.')
+param databaseAttestationApiPrincipalClientId string = ''
+
+@description('Exact Gateway worker database principal name.')
+param databaseAttestationWorkerPrincipalName string = ''
+
+@description('Exact Gateway worker managed-identity client ID stored as the database principal SID.')
+param databaseAttestationWorkerPrincipalClientId string = ''
+
 @description('Name of the approved existing VNet-integrated Container Apps environment shared by the API, worker, and Admin UI.')
 @minLength(1)
 param containerAppsEnvironmentName string
@@ -250,6 +274,10 @@ var tags = {
   project: 'a365-gateway'
   environment: environment
   managedBy: 'bicep'
+  projectName: projectName
+  deploymentId: '${projectName}-${environment}'
+  bootstrapOwnershipId: deploymentOwnershipId
+  bootstrapSourceFingerprint: bootstrapSourceFingerprint
 }
 
 var requiredWorkerGraphApplicationPermissions = [
@@ -268,6 +296,9 @@ var requiredApiGraphApplicationPermissions = [
 ]
 
 var legacyWorkerKeyVaultRoleName = 'Key Vault Secrets Officer'
+var purviewCertificateSecretName = empty(purviewPolicyProvisioningCertificateSecretUri)
+  ? ''
+  : last(split(purviewPolicyProvisioningCertificateSecretUri, '/'))
 
 // Fail closed even when main.bicep is invoked outside the guarded deployment
 // scripts. Provisioning becomes effective only for the explicitly acknowledged
@@ -491,6 +522,16 @@ module apiApp './modules/container-app-api.bicep' = {
     purviewEnabled: purviewEnabled
     promptShieldEnabled: promptShieldEnabled
     promptShieldEndpoint: promptShieldEnabled ? contentSafety!.outputs.endpoint : ''
+    databaseAttestationEnabled: databaseAttestationEnabled
+    databaseAttestationDeploymentOwnershipId: databaseAttestationEnabled ? deploymentOwnershipId : ''
+    databaseAttestationAcceptedSourceFingerprint: databaseAttestationEnabled ? bootstrapSourceFingerprint : ''
+    databaseAttestationExpectedSchemaFingerprint: databaseAttestationEnabled ? databaseAttestationExpectedSchemaFingerprint : ''
+    databaseAttestationSqlServerFqdn: databaseAttestationEnabled ? sqlDb.outputs.serverFqdn : ''
+    databaseAttestationDatabaseName: databaseAttestationEnabled ? sqlDb.outputs.databaseName : ''
+    databaseAttestationApiPrincipalName: databaseAttestationEnabled ? databaseAttestationApiPrincipalName : ''
+    databaseAttestationApiPrincipalClientId: databaseAttestationEnabled ? databaseAttestationApiPrincipalClientId : ''
+    databaseAttestationWorkerPrincipalName: databaseAttestationEnabled ? databaseAttestationWorkerPrincipalName : ''
+    databaseAttestationWorkerPrincipalClientId: databaseAttestationEnabled ? databaseAttestationWorkerPrincipalClientId : ''
     preservedConfigurationSecrets: preservedApiConfigurationSecrets
     tags: tags
   }
@@ -578,6 +619,7 @@ module roleAssignments './modules/role-assignments.bicep' = {
     workerCredentialKeyVaultName: names.provisioningKeyVault
     enableWorkerCredentialKeyVaultSecretsOfficer: enableLegacyWorkerCredentialKeyVaultSecretsOfficer
     enableWorkerKeyVaultSecretsUser: purviewEnabled && purviewPolicyProvisioningEnabled
+    workerPurviewCertificateSecretName: purviewCertificateSecretName
     storageAccountName: names.storage
     serviceBusNamespaceName: names.serviceBus
     serviceBusQueueName: serviceBus.outputs.queueName
@@ -626,6 +668,39 @@ module alerts './modules/monitoring-alerts.bicep' = {
 // ============================================================================
 // Outputs (no secrets)
 // ============================================================================
+
+@description('Opaque bootstrap-run ownership identifier echoed for exact recovery binding.')
+output deploymentOwnershipId string = deploymentOwnershipId
+
+@description('Accepted bootstrap source fingerprint echoed for exact deployment recovery.')
+output bootstrapSourceFingerprint string = bootstrapSourceFingerprint
+
+@description('Whether the API runtime is configured for exact read-only bootstrap database attestation.')
+output databaseAttestationEnabled bool = databaseAttestationEnabled
+
+@description('Exact reviewed GatewayDb schema fingerprint supplied to runtime attestation.')
+output databaseAttestationExpectedSchemaFingerprint string = databaseAttestationEnabled ? databaseAttestationExpectedSchemaFingerprint : ''
+
+@description('Exact API database principal name supplied to runtime attestation.')
+output databaseAttestationApiPrincipalName string = databaseAttestationEnabled ? databaseAttestationApiPrincipalName : ''
+
+@description('Exact API database principal client ID supplied to runtime attestation.')
+output databaseAttestationApiPrincipalClientId string = databaseAttestationEnabled ? databaseAttestationApiPrincipalClientId : ''
+
+@description('Exact worker database principal name supplied to runtime attestation.')
+output databaseAttestationWorkerPrincipalName string = databaseAttestationEnabled ? databaseAttestationWorkerPrincipalName : ''
+
+@description('Exact worker database principal client ID supplied to runtime attestation.')
+output databaseAttestationWorkerPrincipalClientId string = databaseAttestationEnabled ? databaseAttestationWorkerPrincipalClientId : ''
+
+@description('Exact database name supplied to runtime attestation.')
+output databaseAttestationDatabaseName string = databaseAttestationEnabled ? sqlDb.outputs.databaseName : ''
+
+@description('Immutable Gateway API image reference supplied by the accepted bootstrap plan.')
+output apiContainerImage string = apiContainerImage
+
+@description('Immutable workflow-v3 worker image reference supplied by the accepted bootstrap plan.')
+output workerContainerImage string = workerContainerImage
 
 @description('FQDN of the Gateway API Container App.')
 output apiFqdn string = apiApp.outputs.fqdn
@@ -735,8 +810,20 @@ output adminUiSignedOutCallbackUri string = adminUiApp.?outputs.signedOutCallbac
 @description('ACR login server URL.')
 output acrLoginServer string = acr.outputs.loginServer
 
+@description('Resource ID of the exact ACR used by the runtime identities.')
+output containerRegistryId string = acr.outputs.registryId
+
 @description('Key Vault URI.')
 output keyVaultUri string = keyVault.outputs.vaultUri
+
+@description('Resource ID of the shared Key Vault used for exact role-assignment verification.')
+output sharedKeyVaultId string = keyVault.outputs.vaultId
+
+@description('Resource ID of the interaction-content Storage Account used by the runtime identities.')
+output storageAccountId string = storage.outputs.storageAccountId
+
+@description('Resource ID of the exact workflow-v3 queue used by the runtime identities.')
+output serviceBusQueueId string = serviceBus.outputs.queueId
 
 @description('Azure AI Content Safety endpoint when Prompt Shields is enabled.')
 output promptShieldEndpoint string = promptShieldEnabled ? contentSafety!.outputs.endpoint : ''

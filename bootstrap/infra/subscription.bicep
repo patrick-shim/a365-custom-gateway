@@ -18,6 +18,11 @@ param environment string
 @description('Short project name used in resource names.')
 param projectName string = 'a365gw'
 
+@description('Random bootstrap-state ownership GUID used to reject adoption of pre-existing resources.')
+@minLength(36)
+@maxLength(36)
+param deploymentOwnershipId string
+
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
@@ -25,20 +30,25 @@ resource resourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' = {
     application: 'a365-custom-gateway'
     environment: environment
     managedBy: 'bootstrap'
+    projectName: projectName
+    deploymentId: '${projectName}-${environment}'
+    bootstrapOwnershipId: deploymentOwnershipId
   }
 }
 
 module foundation './foundation.bicep' = {
-  name: 'bootstrap-foundation-${environment}'
+  name: 'bootstrap-foundation-${projectName}-${environment}'
   scope: resourceGroup
   params: {
     environment: environment
     location: location
     projectName: projectName
+    deploymentOwnershipId: deploymentOwnershipId
   }
 }
 
 output resourceGroupId string = resourceGroup.id
+output deploymentOwnershipId string = deploymentOwnershipId
 output resourceGroupName string = resourceGroup.name
 output containerAppsEnvironmentName string = foundation.outputs.containerAppsEnvironmentName
 output containerAppsEnvironmentId string = foundation.outputs.containerAppsEnvironmentId

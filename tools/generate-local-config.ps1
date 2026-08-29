@@ -21,11 +21,16 @@
     The Azure resource group containing the deployed gateway infrastructure.
     Defaults to 'rg-agent-gateway'.
 
-.EXAMPLE
-    .\generate-local-config.ps1 -Environment dev
+.PARAMETER ReviewedPublicIpv4
+    Exact canonical public IPv4 address reviewed by the developer for the optional
+    local SQL firewall rule. The script never authorizes an IP returned by an
+    unauthenticated discovery service.
 
 .EXAMPLE
-    .\generate-local-config.ps1 -Environment staging -ResourceGroup rg-agent-gateway-staging
+    .\generate-local-config.ps1 -Environment dev -ReviewedPublicIpv4 192.0.2.10
+
+.EXAMPLE
+    .\generate-local-config.ps1 -Environment staging -ResourceGroup rg-agent-gateway-staging -ReviewedPublicIpv4 192.0.2.10
 
 .NOTES
     Requires: Azure CLI (az), an active az login session, and PowerShell 7+.
@@ -39,12 +44,22 @@ param(
     [string]$Environment,
 
     [Parameter()]
-    [string]$ResourceGroup = 'rg-agent-gateway'
+    [string]$ResourceGroup = 'rg-agent-gateway',
+
+    [Parameter(Mandatory)]
+    [string]$ReviewedPublicIpv4
 )
 
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '_common.ps1')
+
+$parsedReviewedPublicIpv4 = $null
+if (-not [Net.IPAddress]::TryParse($ReviewedPublicIpv4, [ref]$parsedReviewedPublicIpv4) -or
+    $parsedReviewedPublicIpv4.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or
+    $parsedReviewedPublicIpv4.ToString() -cne $ReviewedPublicIpv4) {
+    throw 'ReviewedPublicIpv4 must be one canonical IPv4 address explicitly reviewed before this script starts.'
+}
 
 try {
     # ── Step 1: Verify Azure login ──────────────────────────────────────
@@ -207,8 +222,8 @@ try {
     # ── Step 8: Add temporary SQL firewall rule ─────────────────────────
     Write-StepHeader 'Adding SQL firewall rule for local development'
 
-    $publicIp = Get-MyPublicIp
-    Write-Info "Detected public IP: $publicIp"
+    $publicIp = $ReviewedPublicIpv4
+    Write-Info "Using the explicitly reviewed public IPv4 address: $publicIp"
 
     $ruleName = "local-dev-$(Get-CurrentUserUpn)-$(Get-Date -Format 'yyyyMMdd')"
     # Sanitize the rule name: firewall rule names allow alphanumerics, hyphens, and underscores

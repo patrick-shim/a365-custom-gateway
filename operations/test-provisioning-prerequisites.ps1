@@ -25,6 +25,14 @@ param(
     [ValidateSet('dev', 'staging', 'prod')]
     [string]$Environment,
 
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ExpectedSubscriptionId,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ExpectedTenantId,
+
     [Parameter(Mandatory = $false)]
     [string]$ResourceGroup = 'rg-agent-gateway',
 
@@ -97,6 +105,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+$parsedExpectedSubscriptionId = [guid]::Empty
+if (-not [guid]::TryParse($ExpectedSubscriptionId, [ref]$parsedExpectedSubscriptionId) -or
+    $parsedExpectedSubscriptionId -eq [guid]::Empty -or
+    $ExpectedSubscriptionId -cne $parsedExpectedSubscriptionId.ToString('D')) {
+    throw 'ExpectedSubscriptionId must be one canonical lowercase non-empty GUID.'
+}
+$parsedExpectedTenantId = [guid]::Empty
+if (-not [guid]::TryParse($ExpectedTenantId, [ref]$parsedExpectedTenantId) -or
+    $parsedExpectedTenantId -eq [guid]::Empty -or
+    $ExpectedTenantId -cne $parsedExpectedTenantId.ToString('D')) {
+    throw 'ExpectedTenantId must be one canonical lowercase non-empty GUID.'
+}
 
 $MicrosoftGraphAppId = '00000003-0000-0000-c000-000000000000'
 $Agent365ObservabilityAppId = '9b975845-388f-4429-889e-eab1ef63949c'
@@ -223,6 +244,82 @@ function ConvertFrom-AzJsonPreservingStrings {
     }
 }
 
+function Invoke-AzAccountShowRaw {
+    $azCommand = Get-Command az -ErrorAction Stop
+    $azPython = if ($IsWindows -and $azCommand.Source.EndsWith(
+            '.cmd',
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        Join-Path (Split-Path $azCommand.Source -Parent) '..\python.exe'
+    }
+    else {
+        $null
+    }
+    $output = if ($null -ne $azPython -and (Test-Path -LiteralPath $azPython)) {
+        & $azPython -IBm azure.cli account show --output json --only-show-errors 2>$null
+    }
+    else {
+        & az account show --output json --only-show-errors 2>$null
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Unable to recheck the active Azure account and tenant.'
+    }
+    $json = ($output | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($json)) {
+        throw 'The active Azure account recheck returned no JSON.'
+    }
+    try { return ConvertFrom-AzJsonPreservingStrings -RawJson $json }
+    catch { throw 'The active Azure account recheck returned malformed JSON.' }
+}
+
+function Assert-ActiveAzureAccountBoundary {
+    $activeAccount = Invoke-AzAccountShowRaw
+    if ([string]$activeAccount.id -cne $ExpectedSubscriptionId -or
+        [string]$activeAccount.tenantId -cne $ExpectedTenantId -or
+        [string]$activeAccount.state -cne 'Enabled' -or
+        $activeAccount.isDefault -isnot [bool] -or
+        $activeAccount.isDefault -ne $true) {
+        throw 'The active Azure CLI subscription or tenant left the exact expected enabled default-account boundary.'
+    }
+    return $activeAccount
+}
+
+function Test-AzArgumentsTargetAzureResource {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    if ($Arguments.Count -eq 0 -or $Arguments[0] -in @('account', 'ad')) { return $false }
+    if ($Arguments[0] -ne 'rest') { return $true }
+    $urlIndex = [Array]::IndexOf($Arguments, '--url')
+    if ($urlIndex -ge 0 -and $urlIndex + 1 -lt $Arguments.Count) {
+        $uri = $null
+        if ([Uri]::TryCreate([string]$Arguments[$urlIndex + 1], [UriKind]::Absolute, [ref]$uri) -and
+            $uri.Scheme -ceq 'https' -and
+            $uri.Host.Equals('graph.microsoft.com', [StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-SubscriptionPinnedAzArguments {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    if (-not (Test-AzArgumentsTargetAzureResource -Arguments $Arguments)) {
+        return @($Arguments)
+    }
+    $subscriptionIndexes = @(0..($Arguments.Count - 1) | Where-Object { $Arguments[$_] -eq '--subscription' })
+    if ($subscriptionIndexes.Count -gt 1) {
+        throw 'An Azure resource read contained duplicate subscription selectors.'
+    }
+    if ($subscriptionIndexes.Count -eq 1) {
+        $index = $subscriptionIndexes[0]
+        if ($index + 1 -ge $Arguments.Count -or [string]$Arguments[$index + 1] -cne $ExpectedSubscriptionId) {
+            throw 'An Azure resource read attempted to use a subscription outside ExpectedSubscriptionId.'
+        }
+        return @($Arguments)
+    }
+    return @($Arguments + @('--subscription', $ExpectedSubscriptionId))
+}
+
 function Invoke-AzJson {
     param(
         [Parameter(Mandatory = $true)]
@@ -231,6 +328,12 @@ function Invoke-AzJson {
         [Parameter(Mandatory = $true)]
         [string]$FailureMessage
     )
+
+    $isAccountShow = $Arguments.Count -ge 2 -and $Arguments[0] -eq 'account' -and $Arguments[1] -eq 'show'
+    if (-not $isAccountShow) {
+        Assert-ActiveAzureAccountBoundary | Out-Null
+    }
+    $effectiveArguments = @(Get-SubscriptionPinnedAzArguments -Arguments $Arguments)
 
     # The Windows Azure CLI entry point is a .cmd wrapper. Invoke its bundled
     # Python module directly so Graph query-string separators remain part of the
@@ -245,10 +348,10 @@ function Invoke-AzJson {
         $null
     }
     $output = if ($null -ne $azPython -and (Test-Path -LiteralPath $azPython)) {
-        & $azPython -IBm azure.cli @Arguments --output json --only-show-errors 2>$null
+        & $azPython -IBm azure.cli @effectiveArguments --output json --only-show-errors 2>$null
     }
     else {
-        & az @Arguments --output json --only-show-errors 2>$null
+        & az @effectiveArguments --output json --only-show-errors 2>$null
     }
     if ($LASTEXITCODE -ne 0) {
         throw $FailureMessage
@@ -270,21 +373,31 @@ function Invoke-AzJson {
 function Test-ContainerAppExists {
     param([string]$Name)
 
-    & az containerapp show `
-        --name $Name `
-        --resource-group $ResourceGroup `
-        --output none 2>$null
-    return $LASTEXITCODE -eq 0
+    try {
+        Invoke-AzJson -Arguments @(
+            'containerapp', 'show', '--name', $Name, '--resource-group', $ResourceGroup
+        ) -FailureMessage "Unable to inspect Container App '$Name'." | Out-Null
+        return $true
+    }
+    catch {
+        Assert-ActiveAzureAccountBoundary | Out-Null
+        return $false
+    }
 }
 
 function Test-KeyVaultExists {
     param([string]$Name)
 
-    & az keyvault show `
-        --name $Name `
-        --resource-group $ResourceGroup `
-        --output none 2>$null
-    return $LASTEXITCODE -eq 0
+    try {
+        Invoke-AzJson -Arguments @(
+            'keyvault', 'show', '--name', $Name, '--resource-group', $ResourceGroup
+        ) -FailureMessage "Unable to inspect Key Vault '$Name'." | Out-Null
+        return $true
+    }
+    catch {
+        Assert-ActiveAzureAccountBoundary | Out-Null
+        return $false
+    }
 }
 
 function Get-ContainerApp {
@@ -321,6 +434,71 @@ function Get-ContainerEnvironmentEntriesWithPrefix {
     $container = @($ContainerApp.properties.template.containers) | Select-Object -First 1
     return @($container.env |
         Where-Object { $_.name.StartsWith($Prefix, [System.StringComparison]::OrdinalIgnoreCase) })
+}
+
+function Test-DeployedGatewayApiEntraCredentialConfiguration {
+    param(
+        [Parameter(Mandatory = $true)][object]$ContainerApp,
+        [Parameter(Mandatory = $true)][string]$TenantId,
+        [Parameter(Mandatory = $true)][string]$ClientId,
+        [Parameter(Mandatory = $true)][string]$Audience
+    )
+
+    $containers = @($ContainerApp.properties.template.containers)
+    if ($containers.Count -ne 1) {
+        Add-Failure 'The deployed API must contain exactly one container before Entra credential configuration can be verified.'
+        return
+    }
+    $entraEntries = @($containers[0].env | Where-Object {
+        ([string]$_.name).StartsWith('EntraId__', [StringComparison]::OrdinalIgnoreCase)
+    })
+    $expectedSettings = [ordered]@{
+        'EntraId__TenantId' = $TenantId
+        'EntraId__ClientId' = $ClientId
+        'EntraId__Audience' = $Audience
+        'EntraId__ClientCredentials__0__SourceType' = 'SignedAssertionFromManagedIdentity'
+        'EntraId__ClientCredentials__0__TokenExchangeUrl' = $TokenExchangeAudience
+    }
+    $configurationIsExact = $true
+    $duplicateNames = @($entraEntries | Group-Object { ([string]$_.name).ToLowerInvariant() } | Where-Object Count -ne 1)
+    if ($duplicateNames.Count -ne 0) {
+        Add-Failure 'The deployed API contains duplicate Entra environment-setting names.'
+        $configurationIsExact = $false
+    }
+    $dangerousCredentialEntries = @($entraEntries | Where-Object {
+        [string]$_.name -match '(?i)(clientsecret|clientcertificates?|password|certificate)'
+    })
+    if ($dangerousCredentialEntries.Count -ne 0) {
+        Add-Failure 'The deployed API contains a prohibited secret, password, or certificate Entra credential setting.'
+        $configurationIsExact = $false
+    }
+    if ($entraEntries.Count -ne $expectedSettings.Count -or
+        @($entraEntries | Where-Object { -not $expectedSettings.Contains([string]$_.name) }).Count -ne 0) {
+        Add-Failure 'The deployed API Entra environment surface must contain only the exact tenant, client, audience, and index-0 signed-assertion settings.'
+        $configurationIsExact = $false
+    }
+
+    foreach ($expectedSetting in $expectedSettings.GetEnumerator()) {
+        $matches = @($entraEntries | Where-Object { [string]$_.name -ceq $expectedSetting.Key })
+        if ($matches.Count -ne 1) {
+            Add-Failure "The deployed API Entra setting '$($expectedSetting.Key)' is missing, duplicated, or uses noncanonical casing."
+            $configurationIsExact = $false
+            continue
+        }
+        $entry = $matches[0]
+        $secretReference = $entry.PSObject.Properties['secretRef']
+        $valueProperty = $entry.PSObject.Properties['value']
+        if (($null -ne $secretReference -and
+             -not [string]::IsNullOrWhiteSpace([string]$secretReference.Value)) -or
+            $null -eq $valueProperty -or
+            [string]$valueProperty.Value -cne [string]$expectedSetting.Value) {
+            Add-Failure "The deployed API Entra setting '$($expectedSetting.Key)' is secret-backed or does not match its exact reviewed value."
+            $configurationIsExact = $false
+        }
+    }
+    if ($configurationIsExact) {
+        Write-Pass 'The deployed API uses only the exact managed-identity signed-assertion OBO environment boundary.'
+    }
 }
 
 function Test-DeployedManagerApplicationConfiguration {
@@ -846,14 +1024,8 @@ Write-Host 'A365 provisioning deployment preflight (read-only)' -ForegroundColor
 Write-Host "Environment: $Environment | Resource group: $ResourceGroup" -ForegroundColor White
 Write-Host ''
 
-$account = Invoke-AzJson -Arguments @(
-    'account', 'show'
-) -FailureMessage 'Unable to inspect the active Azure account and tenant.'
-$parsedTenantId = [guid]::Empty
-if (-not [guid]::TryParse([string]$account.tenantId, [ref]$parsedTenantId) -or
-    $parsedTenantId -eq [guid]::Empty) {
-    Add-Failure 'The active Azure account does not expose a valid tenant ID.'
-}
+$account = Assert-ActiveAzureAccountBoundary
+$parsedTenantId = $parsedExpectedTenantId
 
 $parsedGatewayApiClientId = [guid]::Empty
 $gatewayApiClientIdIsValid =
@@ -868,8 +1040,9 @@ $credentialVaultUriIsValid =
     $parsedCredentialVaultUri.Scheme -eq [System.Uri]::UriSchemeHttps -and
     $parsedCredentialVaultUri.Host.EndsWith('.vault.azure.net', [System.StringComparison]::OrdinalIgnoreCase)
 
-if (-not $gatewayApiClientIdIsValid -and -not [string]::IsNullOrWhiteSpace($ExpectedGatewayApiApplicationClientId)) {
-    Add-Failure 'The expected Gateway API application client ID is not a valid non-empty GUID.'
+if (-not $gatewayApiClientIdIsValid -or
+    $ExpectedGatewayApiApplicationClientId -cne $parsedGatewayApiClientId.ToString('D')) {
+    Add-Failure 'ExpectedGatewayApiApplicationClientId must be one canonical lowercase non-empty GUID.'
 }
 if (-not $credentialVaultUriIsValid -and -not [string]::IsNullOrWhiteSpace($ExpectedCredentialKeyVaultUri)) {
     Add-Failure 'The expected provisioning credential vault URI is not a valid Azure Key Vault HTTPS URI.'
@@ -960,12 +1133,18 @@ else {
 }
 $adminUiAppName = "ca-gateway-admin-$Environment"
 
-& az servicebus queue show `
-    --resource-group $ResourceGroup `
-    --namespace-name $serviceBusNamespaceName `
-    --name $ExpectedServiceBusQueueName `
-    --output none 2>$null
-if ($LASTEXITCODE -eq 0) {
+$serviceBusQueueExists = $false
+try {
+    Invoke-AzJson -Arguments @(
+        'servicebus', 'queue', 'show',
+        '--resource-group', $ResourceGroup,
+        '--namespace-name', $serviceBusNamespaceName,
+        '--name', $ExpectedServiceBusQueueName
+    ) -FailureMessage "Unable to inspect Service Bus queue '$ExpectedServiceBusQueueName'." | Out-Null
+    $serviceBusQueueExists = $true
+}
+catch { Assert-ActiveAzureAccountBoundary | Out-Null }
+if ($serviceBusQueueExists) {
     Write-Pass "Service Bus queue '$ExpectedServiceBusQueueName' exists."
 }
 elseif ($AllowMissingWorkloads) {
@@ -987,6 +1166,14 @@ $null = Test-AppEnvironment `
     -AppName $adminUiAppName `
     -TargetEnvironmentId $containerAppsEnvironment.id `
     -Required $false
+
+if ($null -ne $apiApp -and $gatewayApiClientIdIsValid) {
+    Test-DeployedGatewayApiEntraCredentialConfiguration `
+        -ContainerApp $apiApp `
+        -TenantId $ExpectedTenantId `
+        -ClientId ($parsedGatewayApiClientId.ToString('D')) `
+        -Audience "api://a365-gateway-$ProjectName-$Environment"
+}
 
 if ($RequireDeployedConfigurationMatch -and $null -ne $apiApp) {
     $deployedRegistrationGate = Get-ContainerEnvironmentValue `

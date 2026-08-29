@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+gateway_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+bootstrap_entry="$gateway_root/bootstrap/bootstrap.ps1"
+
+show_help() {
+  cat <<'EOF'
+A365 Custom Gateway
+
+Usage:
+  ./gateway [command] [options]
+
+Commands:
+  setup       Start the temporary loopback-only Fluent setup UI
+  up          Configure (when needed), plan, confirm, deploy/resume, and verify
+  init        Create a reviewed non-secret configuration interactively
+  doctor      Check local tools, configuration, and Azure sign-in readiness
+  plan        Compile bootstrap Bicep, show operations, and run Azure What-If
+  apply       Apply an accepted, current plan
+  resume      Resume an interrupted accepted plan
+  status      Show checkpoint and truthful readiness status without Azure calls
+  verify      Rerun the read-only deployment verification gate
+  open        Open the recorded verified Admin UI HTTPS endpoint
+  diagnose    Write a sanitized local diagnostic bundle
+
+Common options:
+  --config PATH          Use a specific non-secret configuration file
+  --json                 Emit structured JSON results/events
+  --non-interactive      Refuse interactive authentication or prompts
+  --yes                  Explicitly accept the exact plan for automated plan/up/resume
+  --expected-plan-fingerprint SHA256
+                        Require the fresh plan to match an external approval
+  --event-stream-only    With --json, emit bounded typed progress events only
+  --force                Replace configuration during `init`
+  --open                 Open the Admin UI after successful deployment
+  --no-install           Do not install missing supported prerequisites
+  --diagnostic-path PATH Write the diagnostic bundle to PATH
+  -h, --help             Show this help
+
+There is intentionally no destroy, Registry replay, retained-message, or cleanup command.
+EOF
+}
+
+command_name="${1:-up}"
+if (($# > 0)); then shift; fi
+case "$command_name" in
+  setup)
+    if ! command -v dotnet >/dev/null 2>&1; then
+      printf '.NET 10 SDK is required for the guided setup UI: https://dotnet.microsoft.com/download/dotnet/10.0\n' >&2
+      exit 1
+    fi
+    setup_args=(--repo-root "$gateway_root")
+    while (($# > 0)); do
+      case "$1" in
+        --no-open) setup_args+=(--no-open); shift ;;
+        -h|--help)
+          printf 'Usage: ./gateway setup [--no-open]\n'
+          exit 0
+          ;;
+        *) printf 'Unknown setup option: %s\n' "$1" >&2; exit 2 ;;
+      esac
+    done
+    exec dotnet run --project "$gateway_root/tools/Gateway.Setup/Gateway.Setup.csproj" -- "${setup_args[@]}"
+    ;;
+  up) mode='Up' ;;
+  init) mode='Init' ;;
+  doctor) mode='Doctor' ;;
+  plan) mode='Plan' ;;
+  apply) mode='Apply' ;;
+  resume) mode='Resume' ;;
+  status) mode='Status' ;;
+  verify) mode='Verify' ;;
+  open) mode='Open' ;;
+  diagnose) mode='Diagnose' ;;
+  help|-h|--help) show_help; exit 0 ;;
+  *)
+    printf 'Unknown command: %s\n\n' "$command_name" >&2
+    show_help >&2
+    exit 2
+    ;;
+esac
+
+if ! command -v pwsh >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+PowerShell 7 is required to run the Gateway bootstrap.
+  macOS: brew install powershell
+  Windows: run gateway.cmd (it can install PowerShell with winget)
+  Linux: https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-linux
+EOF
+  exit 1
+fi
+
+pwsh_args=(-NoLogo -NoProfile -File "$bootstrap_entry" -Mode "$mode")
+while (($# > 0)); do
+  case "$1" in
+    --config)
+      (($# >= 2)) || { echo '--config requires a path.' >&2; exit 2; }
+      pwsh_args+=(-Config "$2")
+      shift 2
+      ;;
+    --json)
+      pwsh_args+=(-OutputFormat Json)
+      shift
+      ;;
+    --non-interactive)
+      pwsh_args+=(-NonInteractive)
+      shift
+      ;;
+    --yes)
+      pwsh_args+=(-Yes)
+      shift
+      ;;
+    --expected-plan-fingerprint)
+      (($# >= 2)) || { echo '--expected-plan-fingerprint requires sha256:<64 lowercase hex>.' >&2; exit 2; }
+      pwsh_args+=(-ExpectedPlanFingerprint "$2")
+      shift 2
+      ;;
+    --event-stream-only)
+      pwsh_args+=(-EventStreamOnly)
+      shift
+      ;;
+    --force)
+      pwsh_args+=(-Force)
+      shift
+      ;;
+    --open)
+      pwsh_args+=(-OpenBrowser)
+      shift
+      ;;
+    --no-install)
+      pwsh_args+=('-InstallPrerequisites:$false')
+      shift
+      ;;
+    --diagnostic-path)
+      (($# >= 2)) || { echo '--diagnostic-path requires a path.' >&2; exit 2; }
+      pwsh_args+=(-DiagnosticPath "$2")
+      shift 2
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      printf 'Unknown option: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+exec pwsh "${pwsh_args[@]}"

@@ -25,6 +25,14 @@ public static class DependencyInjection
     {
         services.AddDbContext<GatewayDbContext>(options =>
             options.UseSqlServer(configuration.GetConnectionString("GatewayDb")));
+        services.AddMemoryCache();
+        services
+            .AddOptions<DatabaseAttestationOptions>()
+            .Bind(configuration.GetSection(DatabaseAttestationOptions.SectionName));
+        services.AddSingleton<IValidateOptions<DatabaseAttestationOptions>, DatabaseAttestationOptionsValidator>();
+        services.AddScoped<IDatabaseHealthProbe, DatabaseHealthProbe>();
+        services.AddScoped<IDatabaseBootstrapAttestationProbe, DatabaseBootstrapAttestationProbe>();
+        services.AddScoped<IDatabaseBootstrapAttestationService, DatabaseBootstrapAttestationService>();
 
         services.AddScoped<IAgentRepository, AgentRegistrationRepository>();
         services.AddScoped<IProvisioningJobRepository, ProvisioningJobRepository>();

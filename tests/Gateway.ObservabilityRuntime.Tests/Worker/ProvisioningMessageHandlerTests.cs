@@ -21,6 +21,10 @@ public sealed class ProvisioningMessageHandlerTests
 {
     private const string PlannedRegistryId =
         "12121212-1212-4212-8212-121212121212";
+    private const string ProtectedBlueprintId =
+        "8ab75b14-01f8-4258-893a-f8121b96cb46";
+    private const string PreviouslyAuthorizedBlueprintId =
+        "22222222-2222-4222-8222-222222222222";
 
     [Fact]
     public async Task HandleAsync_ProvisionAgentMalformedPayload_RequestsDeadLetter()
@@ -136,19 +140,16 @@ public sealed class ProvisioningMessageHandlerTests
                 ProvisioningStepType.ResolveBlueprint,
                 new Agent365ProvisioningState
                 {
-                    BlueprintObjectId = "8ab75b14-01f8-4258-893a-f8121b96cb46",
-                    BlueprintClientId = "8ab75b14-01f8-4258-893a-f8121b96cb46"
+                    BlueprintObjectId = ProtectedBlueprintId,
+                    BlueprintClientId = ProtectedBlueprintId
                 },
                 "verified_ResolveBlueprint"));
         fixture.PurviewProvisioning.EnsureProfileAssignmentAsync(
                 Arg.Any<PurviewPolicyProvisioningRequest>(),
                 Arg.Any<CancellationToken>())
-            .Returns(new PurviewPolicyProvisioningResult(
-                "collection-id",
-                "dlp-id",
-                "rule-id",
-                ["8ab75b14-01f8-4258-893a-f8121b96cb46"],
-                DateTimeOffset.UtcNow));
+            .Returns(CreatePurviewResult(
+                ProtectedBlueprintId,
+                mode: "Enforce"));
 
         var result = await fixture.Handler.HandleAsync(
             "ProvisionAgent",
@@ -164,6 +165,253 @@ public sealed class ProvisioningMessageHandlerTests
             job.Steps.OrderBy(step => step.OrderIndex).First().ResultData!)!.State;
         state.PurviewPolicyProfileId.Should().Be(profile.Id);
         state.PurviewPolicyAssignmentVerifiedAtUtc.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task HandleAsync_MalformedPersistedPurviewScope_NeverInvokesProviderOrCompletesResolveStep()
+    {
+        var fixture = new HandlerFixture();
+        var agent = CreateAgent(ObservabilityMode.Agent365);
+        var profile = new PurviewPolicyProfile
+        {
+            Id = Guid.NewGuid(),
+            DisplayName = "Enterprise AI protection",
+            Template = "AllSensitiveInformation",
+            Mode = "Enforce",
+            Status = "Pending",
+            CollectionPolicyName = "collection",
+            DlpPolicyName = "dlp",
+            DlpRuleName = "rule",
+            BlueprintApplicationIdsJson = "{not-an-array"
+        };
+        agent.PurviewPolicyProfileId = profile.Id;
+        var job = CreateCurrentProvisioningJob(agent.Id);
+        fixture.Arrange(agent, job);
+        fixture.PurviewProfiles.GetByIdAsync(profile.Id, Arg.Any<CancellationToken>())
+            .Returns(profile);
+        fixture.PurviewProvisioning.IsEnabled.Returns(true);
+        fixture.ProvisioningClient.ExecuteStepAsync(
+                Arg.Any<Agent365ProvisioningStepRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new Agent365ProvisioningStepResult(
+                ProvisioningStepType.ResolveBlueprint,
+                new Agent365ProvisioningState
+                {
+                    BlueprintObjectId = ProtectedBlueprintId,
+                    BlueprintClientId = ProtectedBlueprintId
+                },
+                "verified_ResolveBlueprint"));
+
+        var result = await fixture.Handler.HandleAsync(
+            "ProvisionAgent",
+            CreateProvisioningPayload(agent.Id, job.Id),
+            CancellationToken.None);
+
+        result.ShouldDeadLetter.Should().BeTrue();
+        result.DeadLetterReason.Should().Be("PURVIEW_POLICY_PERSISTED_SCOPE_INVALID");
+        profile.Status.Should().Be("Failed");
+        profile.LastErrorCode.Should().Be("PURVIEW_POLICY_PERSISTED_SCOPE_INVALID");
+        job.Steps.OrderBy(step => step.OrderIndex).First().Status.Should().Be(StepStatus.Failed);
+        await fixture.PurviewProvisioning.DidNotReceiveWithAnyArgs()
+            .EnsureProfileAssignmentAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task HandleAsync_ProviderReturnsWiderPurviewScope_DoesNotAdoptIt()
+    {
+        var fixture = new HandlerFixture();
+        var agent = CreateAgent(ObservabilityMode.Agent365);
+        var profile = new PurviewPolicyProfile
+        {
+            Id = Guid.NewGuid(),
+            DisplayName = "Enterprise AI protection",
+            Template = "AllSensitiveInformation",
+            Mode = "Enforce",
+            Status = "Pending",
+            CollectionPolicyName = "collection",
+            DlpPolicyName = "dlp",
+            DlpRuleName = "rule"
+        };
+        agent.PurviewPolicyProfileId = profile.Id;
+        var job = CreateCurrentProvisioningJob(agent.Id);
+        fixture.Arrange(agent, job);
+        fixture.PurviewProfiles.GetByIdAsync(profile.Id, Arg.Any<CancellationToken>())
+            .Returns(profile);
+        fixture.PurviewProvisioning.IsEnabled.Returns(true);
+        fixture.ProvisioningClient.ExecuteStepAsync(
+                Arg.Any<Agent365ProvisioningStepRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new Agent365ProvisioningStepResult(
+                ProvisioningStepType.ResolveBlueprint,
+                new Agent365ProvisioningState
+                {
+                    BlueprintObjectId = ProtectedBlueprintId,
+                    BlueprintClientId = ProtectedBlueprintId
+                },
+                "verified_ResolveBlueprint"));
+        fixture.PurviewProvisioning.EnsureProfileAssignmentAsync(
+                Arg.Any<PurviewPolicyProvisioningRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(CreatePurviewResult(
+                ProtectedBlueprintId,
+                "Enforce",
+                blueprintApplicationIds:
+                    [ProtectedBlueprintId, PreviouslyAuthorizedBlueprintId]));
+
+        var result = await fixture.Handler.HandleAsync(
+            "ProvisionAgent",
+            CreateProvisioningPayload(agent.Id, job.Id),
+            CancellationToken.None);
+
+        result.ShouldDeadLetter.Should().BeTrue();
+        result.DeadLetterReason.Should().Be("PURVIEW_POLICY_READBACK_MISMATCH");
+        profile.Status.Should().Be("Failed");
+        profile.BlueprintApplicationIdsJson.Should().Be("[]");
+        job.Steps.OrderBy(step => step.OrderIndex).First().Status.Should().Be(StepStatus.Failed);
+    }
+
+    [Fact]
+    public async Task HandleAsync_ReadyProfile_ExtendsOnlyPersistedAuthorizedScope()
+    {
+        var fixture = new HandlerFixture();
+        var agent = CreateAgent(ObservabilityMode.Agent365);
+        var profile = CreateReadyPurviewProfile([PreviouslyAuthorizedBlueprintId]);
+        agent.PurviewPolicyProfileId = profile.Id;
+        var job = CreateCurrentProvisioningJob(agent.Id);
+        fixture.Arrange(agent, job);
+        fixture.PurviewProfiles.GetByIdAsync(profile.Id, Arg.Any<CancellationToken>())
+            .Returns(profile);
+        fixture.PurviewProvisioning.IsEnabled.Returns(true);
+        fixture.ProvisioningClient.ExecuteStepAsync(
+                Arg.Any<Agent365ProvisioningStepRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new Agent365ProvisioningStepResult(
+                ProvisioningStepType.ResolveBlueprint,
+                new Agent365ProvisioningState
+                {
+                    BlueprintObjectId = ProtectedBlueprintId,
+                    BlueprintClientId = ProtectedBlueprintId
+                },
+                "verified_ResolveBlueprint"));
+        fixture.PurviewProvisioning.EnsureProfileAssignmentAsync(
+                Arg.Any<PurviewPolicyProvisioningRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(CreatePurviewResult(
+                ProtectedBlueprintId,
+                "Enforce",
+                blueprintApplicationIds:
+                    [ProtectedBlueprintId, PreviouslyAuthorizedBlueprintId]));
+
+        var result = await fixture.Handler.HandleAsync(
+            "ProvisionAgent",
+            CreateProvisioningPayload(agent.Id, job.Id),
+            CancellationToken.None);
+
+        result.ShouldDeadLetter.Should().BeFalse();
+        await fixture.PurviewProvisioning.Received(1).EnsureProfileAssignmentAsync(
+            Arg.Is<PurviewPolicyProvisioningRequest>(request =>
+                request.ExpectedPriorBlueprintApplicationIds!.SequenceEqual(
+                    new[] { PreviouslyAuthorizedBlueprintId }) &&
+                request.ExpectedBlueprintApplicationIds!.OrderBy(value => value).SequenceEqual(
+                    new[] { PreviouslyAuthorizedBlueprintId, ProtectedBlueprintId }
+                        .OrderBy(value => value))),
+            Arg.Any<CancellationToken>());
+        JsonSerializer.Deserialize<string[]>(profile.BlueprintApplicationIdsJson)
+            .Should().BeEquivalentTo(
+                [PreviouslyAuthorizedBlueprintId, ProtectedBlueprintId]);
+    }
+
+    [Fact]
+    public async Task HandleAsync_ProtectedFinalStep_RevalidatesPurviewBeforeActivation()
+    {
+        var fixture = new HandlerFixture();
+        var agent = CreateAgent(ObservabilityMode.Agent365);
+        var profile = CreateReadyPurviewProfile();
+        agent.PurviewPolicyProfileId = profile.Id;
+        var job = CreateCurrentProvisioningJob(agent.Id);
+        var steps = job.Steps.OrderBy(step => step.OrderIndex).ToArray();
+        ApplyPurviewToCompletedPrefix(steps, profile, completedCount: 6);
+        fixture.Arrange(agent, job);
+        fixture.PurviewProfiles.GetByIdAsync(profile.Id, Arg.Any<CancellationToken>())
+            .Returns(profile);
+        fixture.PurviewProvisioning.IsEnabled.Returns(true);
+        fixture.ProvisioningClient.ExecuteStepAsync(
+                Arg.Any<Agent365ProvisioningStepRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => CreateSuccessfulStepResult(
+                call.Arg<Agent365ProvisioningStepRequest>()));
+        fixture.PurviewProvisioning.VerifyProfileAssignmentAsync(
+                Arg.Any<PurviewPolicyProvisioningRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(CreatePurviewResult(ProtectedBlueprintId, "Enforce"));
+
+        var result = await fixture.Handler.HandleAsync(
+            "ProvisionAgent",
+            CreateProvisioningPayload(agent.Id, job.Id, expectedStepIndex: 6),
+            CancellationToken.None);
+
+        result.ShouldDeadLetter.Should().BeFalse();
+        job.Status.Should().Be(JobStatus.Completed);
+        agent.Status.Should().Be(AgentStatus.Active);
+        var finalResult = JsonSerializer.Deserialize<Agent365ProvisioningStepResult>(
+            steps[6].ResultData!);
+        finalResult!.State.PurviewPolicyFinalVerifiedAtUtc.Should().NotBeNull();
+        agent.PurviewPolicyAssignmentVerifiedAtUtc.Should().Be(
+            finalResult.State.PurviewPolicyFinalVerifiedAtUtc!.Value.UtcDateTime);
+        await fixture.PurviewProvisioning.Received(1).VerifyProfileAssignmentAsync(
+            Arg.Is<PurviewPolicyProvisioningRequest>(request =>
+                request.ExpectedCollectionPolicyId == "collection-id" &&
+                request.ExpectedDlpPolicyId == "dlp-id" &&
+                request.ExpectedDlpRuleId == "rule-id" &&
+                request.BlueprintApplicationId == ProtectedBlueprintId &&
+                request.ExpectedPriorBlueprintApplicationIds!.SequenceEqual(
+                    new[] { ProtectedBlueprintId }) &&
+                request.ExpectedBlueprintApplicationIds!.SequenceEqual(
+                    new[] { ProtectedBlueprintId })),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task HandleAsync_ProtectedFinalStepWithDrift_NeverCompletesOrActivates()
+    {
+        var fixture = new HandlerFixture();
+        var agent = CreateAgent(ObservabilityMode.Agent365);
+        var profile = CreateReadyPurviewProfile();
+        agent.PurviewPolicyProfileId = profile.Id;
+        var job = CreateCurrentProvisioningJob(agent.Id);
+        var steps = job.Steps.OrderBy(step => step.OrderIndex).ToArray();
+        ApplyPurviewToCompletedPrefix(steps, profile, completedCount: 6);
+        fixture.Arrange(agent, job);
+        fixture.PurviewProfiles.GetByIdAsync(profile.Id, Arg.Any<CancellationToken>())
+            .Returns(profile);
+        fixture.PurviewProvisioning.IsEnabled.Returns(true);
+        fixture.ProvisioningClient.ExecuteStepAsync(
+                Arg.Any<Agent365ProvisioningStepRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => CreateSuccessfulStepResult(
+                call.Arg<Agent365ProvisioningStepRequest>()));
+        fixture.PurviewProvisioning.VerifyProfileAssignmentAsync(
+                Arg.Any<PurviewPolicyProvisioningRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(CreatePurviewResult(
+                ProtectedBlueprintId,
+                "Enforce",
+                hasExtraActions: true));
+
+        var result = await fixture.Handler.HandleAsync(
+            "ProvisionAgent",
+            CreateProvisioningPayload(agent.Id, job.Id, expectedStepIndex: 6),
+            CancellationToken.None);
+
+        result.ShouldDeadLetter.Should().BeTrue();
+        result.DeadLetterReason.Should().Be("PURVIEW_POLICY_READBACK_MISMATCH");
+        steps[6].Status.Should().Be(StepStatus.Failed);
+        job.Status.Should().Be(JobStatus.Failed);
+        job.PercentComplete.Should().BeLessThan(100);
+        agent.Status.Should().NotBe(AgentStatus.Active);
+        profile.Status.Should().Be("Failed");
+        profile.LastErrorCode.Should().Be("PURVIEW_POLICY_READBACK_MISMATCH");
+        steps[6].ResultData.Should().BeNull();
     }
 
     [Fact]
@@ -1458,6 +1706,53 @@ public sealed class ProvisioningMessageHandlerTests
         };
     }
 
+    private static PurviewPolicyProfile CreateReadyPurviewProfile(
+        string[]? blueprintApplicationIds = null) => new()
+        {
+            Id = Guid.NewGuid(),
+            DisplayName = "Enterprise AI protection",
+            Template = "AllSensitiveInformation",
+            Mode = "Enforce",
+            Status = "Ready",
+            CollectionPolicyName = "collection",
+            DlpPolicyName = "dlp",
+            DlpRuleName = "rule",
+            CollectionPolicyId = "collection-id",
+            DlpPolicyId = "dlp-id",
+            DlpRuleId = "rule-id",
+            BlueprintApplicationIdsJson = JsonSerializer.Serialize(
+                blueprintApplicationIds ?? [ProtectedBlueprintId]),
+            VerifiedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+        };
+
+    private static void ApplyPurviewToCompletedPrefix(
+        IReadOnlyList<ProvisioningJobStep> steps,
+        PurviewPolicyProfile profile,
+        int completedCount)
+    {
+        _ = CompletePrefix(steps, completedCount);
+        var verifiedAt = new DateTimeOffset(profile.VerifiedAtUtc!.Value, TimeSpan.Zero);
+        foreach (var step in steps.Take(completedCount))
+        {
+            var persisted = JsonSerializer.Deserialize<Agent365ProvisioningStepResult>(
+                step.ResultData!);
+            persisted.Should().NotBeNull();
+            step.ResultData = JsonSerializer.Serialize(persisted! with
+            {
+                State = persisted.State with
+                {
+                    PurviewPolicyProfileId = profile.Id,
+                    BlueprintObjectId = ProtectedBlueprintId,
+                    BlueprintClientId = ProtectedBlueprintId,
+                    PurviewCollectionPolicyId = profile.CollectionPolicyId,
+                    PurviewDlpPolicyId = profile.DlpPolicyId,
+                    PurviewDlpRuleId = profile.DlpRuleId,
+                    PurviewPolicyAssignmentVerifiedAtUtc = verifiedAt
+                }
+            });
+        }
+    }
+
     private static ProvisioningJob CreateProvisioningJob(
         Guid agentId,
         params ProvisioningStepType[] stepTypes)
@@ -1532,6 +1827,36 @@ public sealed class ProvisioningMessageHandlerTests
             request.StepType,
             CreateSuccessfulState(request.StepType, request.State),
             CompletionEvidence: $"verified_{request.StepType}");
+
+    private static PurviewPolicyProvisioningResult CreatePurviewResult(
+        string blueprintApplicationId,
+        string mode,
+        DateTimeOffset? verifiedAtUtc = null,
+        string collectionPolicyId = "collection-id",
+        string dlpPolicyId = "dlp-id",
+        string dlpRuleId = "rule-id",
+        bool hasExtraActions = false,
+        string[]? blueprintApplicationIds = null) =>
+        new(
+            collectionPolicyId,
+            dlpPolicyId,
+            dlpRuleId,
+            blueprintApplicationIds ?? [blueprintApplicationId],
+            new PurviewPolicyReadbackEvidence(
+                "Enable",
+                ["UploadText", "DownloadText"],
+                ["Application"],
+                ["All"],
+                true,
+                mode == "Enforce" ? "Enable" : "TestWithoutNotifications",
+                ["Application"],
+                ["Credit Card Number"],
+                [new PurviewPolicyRuleActionEvidence("UploadText", "Block")],
+                false,
+                false,
+                false,
+                hasExtraActions),
+            verifiedAtUtc ?? DateTimeOffset.UtcNow);
 
     private static Agent365ProvisioningState CreateSuccessfulState(
         ProvisioningStepType stepType,

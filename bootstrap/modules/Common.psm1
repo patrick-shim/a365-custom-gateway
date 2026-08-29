@@ -1,6 +1,210 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$script:BootstrapStateSchemaVersion = 2
+$script:BootstrapVersion = '2.0.0'
+$script:BootstrapEventWriter = $null
+$script:BootstrapStructuredOutput = $false
+$script:BootstrapExecutionSourceRoot = ''
+$script:BootstrapAzureSubscriptionId = ''
+
+function Clear-BootstrapAzureSubscriptionContext {
+    $script:BootstrapAzureSubscriptionId = ''
+    [Environment]::SetEnvironmentVariable('A365GW_BOOTSTRAP_SUBSCRIPTION_ID', $null, [EnvironmentVariableTarget]::Process)
+}
+
+function Set-BootstrapAzureSubscriptionContext {
+    param([Parameter(Mandatory)][string]$SubscriptionId)
+
+    Assert-GuidValue -Value $SubscriptionId -Label 'Azure subscription context'
+    $canonical = ([guid]$SubscriptionId).ToString('D')
+    if ($SubscriptionId -cne $canonical) {
+        throw 'Azure subscription context must be a canonical lowercase GUID.'
+    }
+    $script:BootstrapAzureSubscriptionId = $canonical
+    # This is a non-secret identifier used only by reviewed child scripts so their
+    # direct Azure CLI calls cannot drift to another default subscription.
+    [Environment]::SetEnvironmentVariable('A365GW_BOOTSTRAP_SUBSCRIPTION_ID', $canonical, [EnvironmentVariableTarget]::Process)
+}
+
+function Set-BootstrapStructuredOutput {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][bool]$Enabled)
+
+    $script:BootstrapStructuredOutput = $Enabled
+}
+
+function Set-BootstrapEventWriter {
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][scriptblock]$Writer)
+
+    $script:BootstrapEventWriter = $Writer
+}
+
+function Write-BootstrapEvent {
+    param(
+        [Parameter(Mandatory)][ValidateSet('Started', 'Completed', 'Failed')][string]$Status,
+        [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9][A-Za-z0-9 .:/()_-]{0,127}$')][string]$StepName,
+        [switch]$Reused,
+        [switch]$Revalidated
+    )
+
+    if ($null -eq $script:BootstrapEventWriter) { return }
+    $event = [ordered]@{
+        event = 'bootstrap.step'
+        status = $Status.ToLowerInvariant()
+        step = $StepName
+        timestampUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        reused = [bool]$Reused
+        revalidated = [bool]$Revalidated
+    }
+    try {
+        & $script:BootstrapEventWriter $event | Out-Null
+    }
+    catch {
+        if (-not $script:BootstrapStructuredOutput) {
+            Write-Warning 'The bootstrap progress event writer failed; deployment state remains authoritative.'
+        }
+    }
+}
+
+function Get-BootstrapSha256 {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Text)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $algorithm.ComputeHash($bytes)
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+    $hex = ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+    return "sha256:$hex"
+}
+
+function ConvertTo-BootstrapCanonicalValue {
+    param(
+        [Parameter()][AllowNull()]$Value,
+        [switch]$IsRoot,
+        [switch]$ExcludeSchemaAnnotation
+    )
+
+    if ($null -eq $Value) { return $null }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        $result = [ordered]@{}
+        [string[]]$keys = @($Value.Keys | ForEach-Object { [string]$_ })
+        [Array]::Sort($keys, [StringComparer]::Ordinal)
+        foreach ($key in $keys) {
+            if ($IsRoot -and $ExcludeSchemaAnnotation -and $key -eq '$schema') { continue }
+            $result[$key] = ConvertTo-BootstrapCanonicalValue -Value $Value[$key] -ExcludeSchemaAnnotation:$ExcludeSchemaAnnotation
+        }
+        return $result
+    }
+
+    if ($Value.GetType() -eq [System.Management.Automation.PSCustomObject]) {
+        $result = [ordered]@{}
+        [string[]]$names = @($Value.PSObject.Properties.Name)
+        [Array]::Sort($names, [StringComparer]::Ordinal)
+        foreach ($name in $names) {
+            if ($IsRoot -and $ExcludeSchemaAnnotation -and $name -eq '$schema') { continue }
+            $result[$name] = ConvertTo-BootstrapCanonicalValue -Value $Value.$name -ExcludeSchemaAnnotation:$ExcludeSchemaAnnotation
+        }
+        return $result
+    }
+
+    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+        [object[]]$items = @($Value | ForEach-Object {
+            ConvertTo-BootstrapCanonicalValue -Value $_ -ExcludeSchemaAnnotation:$ExcludeSchemaAnnotation
+        })
+        return ,$items
+    }
+
+    return $Value
+}
+
+function Get-BootstrapObjectFingerprint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowNull()]$InputObject,
+        [switch]$ExcludeSchemaAnnotation
+    )
+
+    $canonical = ConvertTo-BootstrapCanonicalValue -Value $InputObject -IsRoot -ExcludeSchemaAnnotation:$ExcludeSchemaAnnotation
+    $json = ConvertTo-Json -InputObject $canonical -Depth 100 -Compress
+    return Get-BootstrapSha256 -Text $json
+}
+
+function Get-NormalizedBootstrapConfiguration {
+    param([Parameter(Mandatory)]$Config)
+
+    $normalized = ConvertTo-BootstrapCanonicalValue -Value $Config -IsRoot -ExcludeSchemaAnnotation
+    if ($normalized -isnot [System.Collections.IDictionary]) {
+        throw 'Bootstrap configuration must be a JSON object.'
+    }
+
+    foreach ($name in @('subscriptionId', 'tenantId')) {
+        if ($normalized.Contains($name)) {
+            $parsed = [guid]::Empty
+            if ([guid]::TryParse([string]$normalized[$name], [ref]$parsed)) {
+                $normalized[$name] = $parsed.ToString('D')
+            }
+        }
+    }
+
+    if ($normalized.Contains('purview') -and $normalized['purview'] -is [System.Collections.IDictionary]) {
+        foreach ($entry in ([ordered]@{
+            policyProvisioningEnabled = $false
+            policyProvisioningOrganization = ''
+            policyProvisioningApplicationId = ''
+            policyProvisioningCertificateSecretUri = ''
+        }).GetEnumerator()) {
+            if (-not $normalized['purview'].Contains($entry.Key)) {
+                $normalized['purview'][$entry.Key] = $entry.Value
+            }
+        }
+
+        $applicationId = [string]$normalized['purview']['policyProvisioningApplicationId']
+        if (-not [string]::IsNullOrWhiteSpace($applicationId)) {
+            $parsed = [guid]::Empty
+            if ([guid]::TryParse($applicationId, [ref]$parsed)) {
+                $normalized['purview']['policyProvisioningApplicationId'] = $parsed.ToString('D')
+            }
+        }
+
+        # Defaults were added after the first canonical pass; restore ordinal key order.
+        $normalized['purview'] = ConvertTo-BootstrapCanonicalValue -Value $normalized['purview']
+    }
+
+    if ($normalized.Contains('agent365') -and $normalized['agent365'] -is [System.Collections.IDictionary]) {
+        if (-not $normalized['agent365'].Contains('reviewedManagerApplicationIds')) {
+            $normalized['agent365']['reviewedManagerApplicationIds'] = @()
+        }
+        $normalized['agent365']['reviewedManagerApplicationIds'] = @(
+            $normalized['agent365']['reviewedManagerApplicationIds'] |
+                ForEach-Object {
+                    $parsedManagerId = [guid]::Empty
+                    if ([guid]::TryParse([string]$_, [ref]$parsedManagerId)) { $parsedManagerId.ToString('D') }
+                    else { [string]$_ }
+                } |
+                Sort-Object -Unique
+        )
+        $normalized['agent365'] = ConvertTo-BootstrapCanonicalValue -Value $normalized['agent365']
+    }
+
+    return ConvertTo-BootstrapCanonicalValue -Value $normalized -IsRoot
+}
+
+function Get-BootstrapConfigurationFingerprint {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Config)
+
+    $normalized = Get-NormalizedBootstrapConfiguration -Config $Config
+    $json = ConvertTo-Json -InputObject $normalized -Depth 100 -Compress
+    return Get-BootstrapSha256 -Text $json
+}
+
 function Write-BootstrapStep {
     param([string]$Message)
     Write-Host "`n==> $Message" -ForegroundColor Cyan
@@ -22,6 +226,31 @@ function Invoke-BootstrapCommand {
 
     $resolvedFile = $FilePath
     $effectiveArguments = @($ArgumentList)
+    if ($FilePath -eq 'az' -and -not [string]::IsNullOrWhiteSpace($script:BootstrapAzureSubscriptionId)) {
+        $explicitSubscriptions = [Collections.Generic.List[string]]::new()
+        for ($index = 0; $index -lt $effectiveArguments.Count; $index++) {
+            $argument = [string]$effectiveArguments[$index]
+            if ($argument -ceq '--subscription') {
+                if ($index + 1 -ge $effectiveArguments.Count -or
+                    [string]::IsNullOrWhiteSpace([string]$effectiveArguments[$index + 1])) {
+                    throw 'Azure CLI --subscription requires the exact bootstrap subscription ID.'
+                }
+                $explicitSubscriptions.Add([string]$effectiveArguments[$index + 1])
+            }
+            elseif ($argument.StartsWith('--subscription=', [StringComparison]::Ordinal)) {
+                $explicitSubscriptions.Add($argument.Substring('--subscription='.Length))
+            }
+        }
+        if ($explicitSubscriptions.Count -gt 1) {
+            throw 'Azure CLI arguments contain more than one explicit subscription target.'
+        }
+        if ($explicitSubscriptions.Count -eq 1 -and $explicitSubscriptions[0] -cne $script:BootstrapAzureSubscriptionId) {
+            throw 'Azure CLI arguments do not match the exact bootstrap subscription context.'
+        }
+        if ($explicitSubscriptions.Count -eq 0) {
+            $effectiveArguments += @('--subscription', $script:BootstrapAzureSubscriptionId)
+        }
+    }
     if ($IsWindows -and $FilePath -eq 'az') {
         $azCommand = Get-Command az -ErrorAction Stop
         if ($azCommand.Source.EndsWith('.cmd', [StringComparison]::OrdinalIgnoreCase)) {
@@ -34,10 +263,14 @@ function Invoke-BootstrapCommand {
     }
 
     if ($NoCapture) {
-        & $resolvedFile @effectiveArguments
+        # A no-capture child may still emit dependency bodies, identities, or
+        # credentials on stderr. Progress is represented by trusted bootstrap
+        # events, so never stream an untrusted child directly to either text or
+        # structured UI output.
+        & $resolvedFile @effectiveArguments *> $null
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0 -and -not $AllowFailure) {
-            throw "Command '$FilePath' failed with exit code $exitCode."
+            throw "Command '$FilePath' failed with exit code $exitCode. Provider output was not included at this trust boundary."
         }
         return $exitCode
     }
@@ -45,8 +278,7 @@ function Invoke-BootstrapCommand {
     $output = & $resolvedFile @effectiveArguments 2>&1
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0 -and -not $AllowFailure) {
-        $safeOutput = ($output | Out-String).Trim()
-        throw "Command '$FilePath' failed with exit code $exitCode. $safeOutput"
+        throw "Command '$FilePath' failed with exit code $exitCode. Provider output was suppressed at this trust boundary."
     }
     return ($output | Out-String).Trim()
 }
@@ -73,6 +305,46 @@ function Assert-GuidValue {
     }
 }
 
+function Get-BootstrapImageBuildTag {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+    if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
+        throw 'Image-build ownership ID must be a canonical lowercase GUID from the current bootstrap state.'
+    }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Image-build source fingerprint'
+    $tag = "bootstrap-$($canonicalOwnershipId.Replace('-', ''))-$($SourceFingerprint.Substring(7))"
+    if ($tag.Length -gt 128 -or $tag -cnotmatch '^bootstrap-[0-9a-f]{32}-[0-9a-f]{64}$') {
+        throw 'The deterministic image-build tag could not be derived from the accepted state and source.'
+    }
+    return $tag
+}
+
+function Get-BootstrapImageBuildIntentTag {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter(Mandatory)][string]$IntentId
+    )
+
+    $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+    $canonicalIntentId = ([guid]$IntentId).ToString('D')
+    if ($DeploymentOwnershipId -cne $canonicalOwnershipId -or $IntentId -cne $canonicalIntentId) {
+        throw 'Image-build ownership and intent IDs must be canonical lowercase GUIDs.'
+    }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Image-build source fingerprint'
+    $tag = "bootstrap-$($canonicalOwnershipId.Replace('-', ''))-$($SourceFingerprint.Substring(7, 32))-$($canonicalIntentId.Replace('-', ''))"
+    if ($tag.Length -gt 128 -or $tag -cnotmatch '^bootstrap-[0-9a-f]{32}-[0-9a-f]{32}-[0-9a-f]{32}$') {
+        throw 'The image-build intent tag could not be derived from the accepted state, source, and durable intent.'
+    }
+    return $tag
+}
+
 function Get-RepositoryRoot {
     $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
     if (-not (Test-Path (Join-Path $root 'src/A365Gateway.slnx'))) {
@@ -81,11 +353,300 @@ function Get-RepositoryRoot {
     return $root
 }
 
+function Assert-BootstrapSourcePathIsRegular {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$RelativePath
+    )
+
+    if ([IO.Path]::IsPathRooted($RelativePath) -or
+        @($RelativePath.Replace('\', '/').Split('/') | Where-Object { $_ -eq '..' }).Count -gt 0) {
+        throw 'Bootstrap source discovery returned a path outside the repository boundary.'
+    }
+    $rootFullPath = [IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $candidate = [IO.Path]::GetFullPath((Join-Path $rootFullPath $RelativePath))
+    if (-not $candidate.StartsWith($rootFullPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal)) {
+        throw 'Bootstrap source discovery returned a path outside the repository boundary.'
+    }
+
+    $current = Get-Item -LiteralPath $rootFullPath -Force -ErrorAction Stop
+    if (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Bootstrap source roots must not contain symbolic links or reparse points. Use a regular repository checkout before planning.'
+    }
+    $partial = $rootFullPath
+    foreach ($segment in $RelativePath.Replace('\', '/').Split('/', [StringSplitOptions]::RemoveEmptyEntries)) {
+        $partial = Join-Path $partial $segment
+        if (-not (Test-Path -LiteralPath $partial)) { break }
+        $current = Get-Item -LiteralPath $partial -Force -ErrorAction Stop
+        if (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Bootstrap source must not contain symbolic links or reparse points. Replace the linked deployment input with a regular file or directory before planning.'
+        }
+    }
+    return $true
+}
+
+function Test-BootstrapSourcePathIsSensitive {
+    param([Parameter(Mandatory)][string]$RelativePath)
+
+    $path = $RelativePath.Replace('\', '/')
+    $name = [IO.Path]::GetFileName($path)
+    if ($path -match '(?i)(^|/)(\.azure|\.aws|\.ssh|\.kube|\.docker|\.gnupg)(/|$)' -or
+        $name -match '(?i)^(\.npmrc|\.yarnrc(?:\.yml)?|\.pypirc|\.netrc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|authorized_keys|credentials\.json|secrets\.json|service[-_.]?account.*\.json|accessTokens\.json|azureProfile\.json|tokenCache\.dat)$' -or
+        $name -match '(?i)^(credentials?|secrets?|tokens?|passwords?|apikeys?|private[-_.]?settings)[-_.]?.*\.(json|ya?ml|xml|ini|config|txt)$' -or
+        $name -match '(?i)^appsettings\.(?!json$).+\.json$' -or
+        $name -match '(?i)\.(pfx|p12|pem|key|jks|keystore|kdbx|mobileprovision|suo|user)$') {
+        return $true
+    }
+    return $false
+}
+
+function Get-BootstrapSourceManifest {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Root)
+
+    $root = [IO.Path]::GetFullPath($Root)
+    [string[]]$sourceRoots = @(
+        'bootstrap',
+        'infrastructure',
+        'src',
+        'tools/Gateway.DatabaseMigrator',
+        'tools/Gateway.Setup',
+        'tools/apply-migrations.ps1',
+        'tools/_common.ps1',
+        'tools/configure-workflow-v3-entra.ps1',
+        'operations/test-provisioning-prerequisites.ps1',
+        'gateway',
+        'gateway.cmd',
+        'gateway.ps1',
+        '.dockerignore',
+        'global.json',
+        'nuget.config',
+        'Directory.Build.props',
+        'Directory.Build.targets',
+        'Directory.Packages.props'
+    ) | Sort-Object -Unique
+
+    $relativePaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if ($git -and (Test-Path -LiteralPath (Join-Path $root '.git'))) {
+        foreach ($mode in @('tracked', 'untracked')) {
+            $arguments = if ($mode -eq 'tracked') {
+                @('-C', $root, 'ls-files', '--') + $sourceRoots
+            }
+            else {
+                @('-C', $root, 'ls-files', '--others', '--exclude-standard', '--') + $sourceRoots
+            }
+            $listed = & $git.Source @arguments 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                foreach ($path in @($listed)) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
+                        $null = $relativePaths.Add(([string]$path).Replace('\', '/'))
+                    }
+                }
+            }
+        }
+    }
+
+    if ($relativePaths.Count -eq 0) {
+        foreach ($sourceRoot in $sourceRoots) {
+            $fullSourceRoot = Join-Path $root $sourceRoot
+            if (Test-Path -LiteralPath $fullSourceRoot -PathType Leaf) {
+                $null = $relativePaths.Add($sourceRoot.Replace('\', '/'))
+                continue
+            }
+            if (Test-Path -LiteralPath $fullSourceRoot -PathType Container) {
+                foreach ($file in Get-ChildItem -LiteralPath $fullSourceRoot -File -Recurse) {
+                    $null = $relativePaths.Add([IO.Path]::GetRelativePath($root, $file.FullName).Replace('\', '/'))
+                }
+            }
+        }
+    }
+
+    [string[]]$safeRelativePaths = @($relativePaths | Where-Object {
+        $_ -notmatch '(?i)(^|/)(bin|obj|node_modules|\.bootstrap|\.git)(/|$)' -and
+        $_ -ine 'bootstrap/config.json' -and
+        $_ -notmatch '(?i)(^|/)\.secrets(?:\.|/|$)' -and
+        $_ -notmatch '(?i)(^|/)\.env(?:\.|$)' -and
+        $_ -notmatch '(?i)(^|/)appsettings\.(development|local)\.json$' -and
+        -not (Test-BootstrapSourcePathIsSensitive -RelativePath ([string]$_))
+    })
+    [Array]::Sort($safeRelativePaths, [StringComparer]::Ordinal)
+    if ($safeRelativePaths.Count -eq 0) {
+        throw 'No deployment source files were found for bootstrap plan binding.'
+    }
+
+    return @($safeRelativePaths | ForEach-Object {
+        $relativePath = $_
+        $path = Join-Path $root $relativePath
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+        Assert-BootstrapSourcePathIsRegular -Root $root -RelativePath $relativePath | Out-Null
+        $contentHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        [ordered]@{
+            path = $relativePath
+            sha256 = $contentHash
+        }
+    })
+}
+
+function Get-BootstrapSourceFingerprint {
+    [CmdletBinding()]
+    param([Parameter()][string]$Root = '')
+
+    if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Get-RepositoryRoot }
+    $manifest = @(Get-BootstrapSourceManifest -Root $Root)
+    if ($manifest.Count -eq 0) { throw 'No deployment source files were found for bootstrap plan binding.' }
+    return Get-BootstrapObjectFingerprint -InputObject $manifest
+}
+
+function Get-BootstrapSourceMetadata {
+    param([Parameter()][string]$Root = '')
+    if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Get-RepositoryRoot }
+    $root = [IO.Path]::GetFullPath($Root)
+    $commit = 'unknown'
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if ($git -and (Test-Path -LiteralPath (Join-Path $root '.git'))) {
+        $commitOutput = & $git.Source -C $root rev-parse --verify HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and [string]$commitOutput -match '^[0-9a-fA-F]{40,64}$') {
+            $commit = ([string]$commitOutput).Trim().ToLowerInvariant()
+        }
+    }
+
+    return [ordered]@{
+        repositoryCommit = $commit
+        bootstrapSourceFingerprint = Get-BootstrapSourceFingerprint -Root $root
+    }
+}
+
+function New-BootstrapAcceptedSourceSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$PlanFingerprint,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    Assert-BootstrapFingerprintValue -Value $PlanFingerprint -Label 'PlanFingerprint'
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'SourceFingerprint'
+    $root = Get-RepositoryRoot
+    $currentManifest = @(Get-BootstrapSourceManifest -Root $root)
+    if ((Get-BootstrapObjectFingerprint -InputObject $currentManifest) -cne $SourceFingerprint) {
+        throw 'Bootstrap source changed while the accepted execution snapshot was being prepared.'
+    }
+    $ownershipId = ([guid][string]$State.deploymentOwnershipId).ToString('D')
+    $relative = ".bootstrap/accepted-source/$ownershipId/$($PlanFingerprint.Substring(7))"
+    $destination = [IO.Path]::GetFullPath((Join-Path $root $relative))
+    $acceptedRoot = [IO.Path]::GetFullPath((Join-Path $root '.bootstrap/accepted-source'))
+    if (-not $destination.StartsWith($acceptedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal)) {
+        throw 'Accepted execution snapshot path escaped its managed local boundary.'
+    }
+    if (Test-Path -LiteralPath $destination) {
+        if ((Get-BootstrapSourceFingerprint -Root $destination) -cne $SourceFingerprint) {
+            throw 'An existing accepted execution snapshot does not match the reviewed source fingerprint.'
+        }
+        return $relative
+    }
+
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $destination)) | Out-Null
+    $temporary = "$destination.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        [IO.Directory]::CreateDirectory($temporary) | Out-Null
+        foreach ($entry in $currentManifest) {
+            $source = [IO.Path]::GetFullPath((Join-Path $root ([string]$entry.path)))
+            $target = [IO.Path]::GetFullPath((Join-Path $temporary ([string]$entry.path)))
+            [IO.Directory]::CreateDirectory((Split-Path -Parent $target)) | Out-Null
+            $sourceStream = [IO.File]::Open($source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            try {
+                $targetStream = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                try {
+                    $sourceStream.CopyTo($targetStream)
+                    $targetStream.Flush($true)
+                }
+                finally { $targetStream.Dispose() }
+            }
+            finally { $sourceStream.Dispose() }
+            if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$entry.sha256) {
+                throw 'A deployment source file changed while its accepted execution snapshot was being copied.'
+            }
+            try { [IO.File]::SetAttributes($target, [IO.File]::GetAttributes($target) -bor [IO.FileAttributes]::ReadOnly) } catch { }
+        }
+        if ((Get-BootstrapSourceFingerprint -Root $temporary) -cne $SourceFingerprint) {
+            throw 'The completed accepted execution snapshot does not match the reviewed source fingerprint.'
+        }
+        [IO.Directory]::Move($temporary, $destination)
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary) {
+            Get-ChildItem -LiteralPath $temporary -File -Recurse -Force -ErrorAction SilentlyContinue |
+                ForEach-Object { try { $_.IsReadOnly = $false } catch { } }
+            Remove-Item -LiteralPath $temporary -Recurse -Force
+        }
+    }
+    return $relative
+}
+
+function Resolve-BootstrapAcceptedSourceRoot {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
+
+    if (-not $State.Contains('acceptedPlan') -or $State.acceptedPlan -isnot [System.Collections.IDictionary] -or
+        -not $State.acceptedPlan.Contains('executionSource') -or
+        [string]$State.acceptedPlan.executionSource -cnotmatch '^\.bootstrap/accepted-source/[0-9a-f-]{36}/[0-9a-f]{64}$') {
+        throw 'The accepted plan has no valid content-addressed execution snapshot.'
+    }
+    Assert-BootstrapFingerprintValue -Value ([string]$State.acceptedPlan.planFingerprint) -Label 'Accepted plan fingerprint'
+    Assert-BootstrapFingerprintValue -Value ([string]$State.acceptedPlan.sourceFingerprint) -Label 'Accepted source fingerprint'
+    $canonicalOwnershipId = ([guid][string]$State.deploymentOwnershipId).ToString('D')
+    $expectedRelative = ".bootstrap/accepted-source/$canonicalOwnershipId/$(([string]$State.acceptedPlan.planFingerprint).Substring(7))"
+    if ([string]$State.acceptedPlan.executionSource -cne $expectedRelative) {
+        throw 'The accepted plan execution snapshot is not bound to this exact state ownership and plan fingerprint.'
+    }
+    $root = Get-RepositoryRoot
+    $acceptedRoot = [IO.Path]::GetFullPath((Join-Path $root '.bootstrap/accepted-source'))
+    $snapshot = [IO.Path]::GetFullPath((Join-Path $root ([string]$State.acceptedPlan.executionSource)))
+    if (-not $snapshot.StartsWith($acceptedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal) -or
+        -not (Test-Path -LiteralPath $snapshot -PathType Container) -or
+        (Get-BootstrapSourceFingerprint -Root $snapshot) -cne [string]$State.acceptedPlan.sourceFingerprint) {
+        throw 'The accepted plan execution snapshot is absent, modified, or outside its managed boundary.'
+    }
+    return $snapshot
+}
+
+function Set-BootstrapExecutionSourceRoot {
+    param([Parameter(Mandatory)][string]$Path)
+    $script:BootstrapExecutionSourceRoot = [IO.Path]::GetFullPath($Path)
+}
+
+function Get-BootstrapExecutionSourceRoot {
+    if ([string]::IsNullOrWhiteSpace([string]$script:BootstrapExecutionSourceRoot)) {
+        return Get-RepositoryRoot
+    }
+    return $script:BootstrapExecutionSourceRoot
+}
+
 function Read-BootstrapConfig {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
+
     $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
-    $config = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json -Depth 30
+    $raw = Get-Content -LiteralPath $resolved -Raw
+    try {
+        $config = $raw | ConvertFrom-Json -Depth 30 -ErrorAction Stop
+    }
+    catch {
+        throw "Bootstrap configuration '$resolved' is not valid JSON."
+    }
+
+    $schemaPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../config.schema.json'))
+    if (-not (Test-Path -LiteralPath $schemaPath -PathType Leaf)) {
+        throw "Bootstrap configuration schema is missing at '$schemaPath'."
+    }
+    $schemaErrors = @()
+    $schemaValid = Test-Json -Json $raw -SchemaFile $schemaPath -ErrorVariable +schemaErrors `
+        -ErrorAction SilentlyContinue -WarningAction SilentlyContinue -InformationAction SilentlyContinue
+    if (-not $schemaValid) {
+        throw 'Bootstrap configuration failed JSON Schema validation. Review property names, types, formats, and allowed values against bootstrap/config.schema.json; rejected input values were suppressed.'
+    }
+
     foreach ($entry in ([ordered]@{
         policyProvisioningEnabled = $false
         policyProvisioningOrganization = ''
@@ -96,19 +657,54 @@ function Read-BootstrapConfig {
             $config.purview | Add-Member -MemberType NoteProperty -Name $entry.Key -Value $entry.Value
         }
     }
+    if ($config.agent365.PSObject.Properties.Name -notcontains 'reviewedManagerApplicationIds') {
+        $config.agent365 | Add-Member -MemberType NoteProperty -Name reviewedManagerApplicationIds -Value @()
+    }
     foreach ($name in @('subscriptionId', 'tenantId', 'environment', 'location', 'projectName', 'resourceGroupName', 'alertEmail')) {
         if ([string]::IsNullOrWhiteSpace([string]$config.$name)) { throw "Config property '$name' is required." }
     }
     Assert-GuidValue -Value ([string]$config.subscriptionId) -Label 'subscriptionId'
     Assert-GuidValue -Value ([string]$config.tenantId) -Label 'tenantId'
+    $config.subscriptionId = ([guid][string]$config.subscriptionId).ToString('D')
+    $config.tenantId = ([guid][string]$config.tenantId).ToString('D')
     if ([string]$config.environment -notin @('dev', 'staging', 'prod')) { throw 'environment must be dev, staging, or prod.' }
     if ([string]$config.projectName -notmatch '^[a-z][a-z0-9]{1,7}$') { throw 'projectName must be 2-8 lowercase alphanumeric characters starting with a letter so every generated Key Vault name remains valid.' }
-    if ([string]$config.resourceGroupName -notmatch '^[A-Za-z0-9._()\-]{1,90}$') { throw 'resourceGroupName is invalid.' }
+    if ([string]$config.resourceGroupName -notmatch '^(?=.{1,90}$)[A-Za-z0-9._()\-]*[A-Za-z0-9_()\-]$') { throw 'resourceGroupName is invalid or ends with a period.' }
     if ([string]$config.location -notmatch '^[a-z0-9]+$') { throw 'location must be an Azure region name such as koreacentral.' }
     if ([string]$config.alertEmail -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { throw 'alertEmail must be a valid email address.' }
     if ([string]$config.sql.skuName -notin @('Basic', 'S0', 'S1', 'S2', 'S3', 'P1', 'P2', 'GP_S_Gen5_1', 'GP_S_Gen5_2')) { throw 'sql.skuName is unsupported by the deployment template.' }
     if ([string]$config.sql.skuTier -notin @('Basic', 'Standard', 'Premium', 'GeneralPurpose')) { throw 'sql.skuTier is unsupported by the deployment template.' }
+    $expectedSqlTier = switch -Regex ([string]$config.sql.skuName) {
+        '^Basic$' { 'Basic'; break }
+        '^S[0-3]$' { 'Standard'; break }
+        '^P[12]$' { 'Premium'; break }
+        '^GP_S_Gen5_[12]$' { 'GeneralPurpose'; break }
+        default { $null }
+    }
+    if ([string]$config.sql.skuTier -ne $expectedSqlTier) {
+        throw 'sql.skuName and sql.skuTier must describe the same supported Azure SQL service tier.'
+    }
     if ([string]::IsNullOrWhiteSpace([string]$config.agent365.seedBlueprintName) -or ([string]$config.agent365.seedBlueprintName).Length -gt 100) { throw 'agent365.seedBlueprintName must contain 1-100 characters.' }
+    $reviewedManagerIds = [Collections.Generic.List[string]]::new()
+    $seenManagerIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if (@($config.agent365.reviewedManagerApplicationIds).Count -gt 10) {
+        throw 'agent365.reviewedManagerApplicationIds accepts at most ten independently reviewed Microsoft first-party application IDs.'
+    }
+    foreach ($value in @($config.agent365.reviewedManagerApplicationIds)) {
+        $managerId = [guid]::Empty
+        if (-not [guid]::TryParse([string]$value, [ref]$managerId) -or $managerId -eq [guid]::Empty) {
+            throw 'agent365.reviewedManagerApplicationIds must contain only non-empty GUIDs.'
+        }
+        $normalizedManagerId = $managerId.ToString('D')
+        if (-not $seenManagerIds.Add($normalizedManagerId)) {
+            throw 'agent365.reviewedManagerApplicationIds must not contain duplicates.'
+        }
+        $reviewedManagerIds.Add($normalizedManagerId)
+    }
+    if ($reviewedManagerIds.Count -eq 0) {
+        throw 'agent365.reviewedManagerApplicationIds requires at least one independently reviewed tenant/provider manager application ID; blueprint discovery alone is not authorization.'
+    }
+    $config.agent365.reviewedManagerApplicationIds = @($reviewedManagerIds | Sort-Object)
     if ($config.environment -ne 'dev' -and $config.agent365.allowDevelopmentRegistryPreview -eq $true) {
         throw 'Agent Registration beta preview can be enabled only for the dev environment.'
     }
@@ -127,16 +723,20 @@ function Read-BootstrapConfig {
         if ($config.purview.enabled -ne $true) {
             throw 'Purview policy-profile automation requires purview.enabled=true.'
         }
+        if ($config.purview.activateGatewayAdapterAfterPolicyReadback -ne $true) {
+            throw 'Purview policy-profile automation requires activateGatewayAdapterAfterPolicyReadback=true so the requested worker feature cannot be silently deployed disabled.'
+        }
         if ([string]$config.purview.policyProvisioningOrganization -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$') {
             throw 'purview.policyProvisioningOrganization must be the verified Microsoft 365 organization domain.'
         }
         Assert-GuidValue -Value ([string]$config.purview.policyProvisioningApplicationId) -Label 'purview.policyProvisioningApplicationId'
+        $config.purview.policyProvisioningApplicationId = ([guid][string]$config.purview.policyProvisioningApplicationId).ToString('D')
         $certificateSecretUri = $null
         if (-not [Uri]::TryCreate([string]$config.purview.policyProvisioningCertificateSecretUri, [UriKind]::Absolute, [ref]$certificateSecretUri) -or
             $certificateSecretUri.Scheme -ne 'https' -or
             -not $certificateSecretUri.IsDefaultPort -or
             $certificateSecretUri.Host -notlike '*.vault.azure.net' -or
-            $certificateSecretUri.AbsolutePath -notmatch '^/secrets/[^/]+/?$' -or
+            $certificateSecretUri.AbsolutePath -notmatch '^/secrets/[A-Za-z0-9-]{1,127}$' -or
             -not [string]::IsNullOrEmpty($certificateSecretUri.Query) -or
             -not [string]::IsNullOrEmpty($certificateSecretUri.Fragment)) {
             throw 'purview.policyProvisioningCertificateSecretUri must be a versionless HTTPS Azure Key Vault secret URI.'
@@ -153,9 +753,14 @@ function Get-BootstrapStatePath {
 
 function New-BootstrapState {
     param([Parameter(Mandatory)]$Config)
+
+    $source = Get-BootstrapSourceMetadata
     return [ordered]@{
-        schemaVersion = 1
+        schemaVersion = $script:BootstrapStateSchemaVersion
+        bootstrapVersion = $script:BootstrapVersion
         deploymentKey = "$($Config.subscriptionId)/$($Config.resourceGroupName)/$($Config.environment)"
+        deploymentOwnershipId = [guid]::NewGuid().ToString('D')
+        configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $Config
         createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
         updatedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
         configuration = [ordered]@{
@@ -166,72 +771,486 @@ function New-BootstrapState {
             projectName = [string]$Config.projectName
             resourceGroupName = [string]$Config.resourceGroupName
         }
+        source = [ordered]@{
+            created = $source
+            lastWritten = $source
+        }
         steps = [ordered]@{}
         outputs = [ordered]@{}
+    }
+}
+
+function Test-BootstrapStateHasEvidence {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
+
+    foreach ($name in @('steps', 'outputs')) {
+        if (-not $State.Contains($name) -or $null -eq $State[$name]) { continue }
+        if ($State[$name] -isnot [System.Collections.IDictionary]) { return $true }
+        if ($State[$name].Count -gt 0) { return $true }
+    }
+    return $false
+}
+
+function Assert-BootstrapStateAllowsSourcePlan {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
+
+    if (-not (Test-BootstrapStateHasEvidence -State $State)) { return $true }
+    if (-not $State.Contains('source') -or $State.source -isnot [System.Collections.IDictionary] -or
+        -not $State.source.Contains('lastWritten') -or $State.source.lastWritten -isnot [System.Collections.IDictionary]) {
+        throw 'Existing bootstrap evidence has no source provenance. Preserve it for diagnosis and choose a distinct clean deployment identity.'
+    }
+    $recorded = [string]$State.source.lastWritten.bootstrapSourceFingerprint
+    Assert-BootstrapFingerprintValue -Value $recorded -Label 'Recorded evidence source fingerprint'
+    $current = Get-BootstrapSourceFingerprint
+    if ($recorded -cne $current) {
+        throw 'Bootstrap source changed after durable state evidence was recorded. Clean bootstrap will not mix source generations in one deployment state; restore the exact prior source or choose a distinct project/resource group.'
+    }
+    return $true
+}
+
+function Assert-BootstrapFingerprintValue {
+    param(
+        [Parameter(Mandatory)][string]$Value,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    if ($Value -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        throw "$Label must be a canonical SHA-256 fingerprint."
+    }
+}
+
+function Assert-BootstrapIpv4Value {
+    param(
+        [Parameter(Mandatory)][string]$Value,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    $address = $null
+    if (-not [Net.IPAddress]::TryParse($Value, [ref]$address) -or
+        $address.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or
+        $address.ToString() -cne $Value) {
+        throw "$Label must be one canonical IPv4 address."
     }
 }
 
 function Read-BootstrapState {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Config)
     if (-not (Test-Path -LiteralPath $Path)) { return New-BootstrapState -Config $Config }
-    $state = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 100 -AsHashtable
+
+    try {
+        $state = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 100 -AsHashtable -ErrorAction Stop
+    }
+    catch {
+        throw "Bootstrap state '$Path' is not valid JSON. Preserve it for diagnosis; do not edit it to claim completion."
+    }
+    if ($state -isnot [System.Collections.IDictionary]) {
+        throw "Bootstrap state '$Path' must contain a JSON object."
+    }
+
     $expected = "$($Config.subscriptionId)/$($Config.resourceGroupName)/$($Config.environment)"
-    if ([string]$state.deploymentKey -ne $expected) { throw "State belongs to '$($state.deploymentKey)', not '$expected'." }
+    $recordedDeploymentKey = if ($state.Contains('deploymentKey')) { [string]$state['deploymentKey'] } else { '' }
+    if ($recordedDeploymentKey -ne $expected) { throw "State belongs to '$recordedDeploymentKey', not '$expected'." }
+
+    $schemaVersion = 0
+    $recordedSchemaVersion = if ($state.Contains('schemaVersion')) { [string]$state['schemaVersion'] } else { '' }
+    if (-not [int]::TryParse($recordedSchemaVersion, [ref]$schemaVersion)) {
+        throw "Bootstrap state '$Path' has no supported schema version."
+    }
+    if ($schemaVersion -gt $script:BootstrapStateSchemaVersion) {
+        throw "Bootstrap state schema $schemaVersion is newer than this bootstrap supports ($script:BootstrapStateSchemaVersion). Upgrade the repository before continuing."
+    }
+    if ($schemaVersion -lt 1) {
+        throw "Bootstrap state schema $schemaVersion is unsupported. Preserve the file for diagnosis."
+    }
+
+    if ($schemaVersion -eq 1) {
+        if (Test-BootstrapStateHasEvidence -State $state) {
+            throw 'Legacy bootstrap state contains reusable evidence but no full configuration fingerprint. Refusing to reuse it because a safe configuration match cannot be proven. Preserve the state and use the original configuration/version for review, or choose a distinct deployment identity.'
+        }
+
+        $migrated = New-BootstrapState -Config $Config
+        if ($state.Contains('createdAtUtc') -and -not [string]::IsNullOrWhiteSpace([string]$state['createdAtUtc'])) {
+            $migrated.createdAtUtc = [string]$state['createdAtUtc']
+        }
+        $migrated.migration = [ordered]@{
+            fromSchemaVersion = 1
+            migratedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+            reusedEvidence = $false
+        }
+        return $migrated
+    }
+
+    if ($schemaVersion -ne $script:BootstrapStateSchemaVersion) {
+        throw "Bootstrap state schema $schemaVersion is unsupported by bootstrap $script:BootstrapVersion."
+    }
+    if (-not $state.Contains('bootstrapVersion') -or [string]$state['bootstrapVersion'] -notmatch '^\d+\.\d+\.\d+$') {
+        throw "Bootstrap state '$Path' is missing valid bootstrap version metadata."
+    }
+    if (-not $state.Contains('steps') -or $state['steps'] -isnot [System.Collections.IDictionary] -or
+        -not $state.Contains('outputs') -or $state['outputs'] -isnot [System.Collections.IDictionary]) {
+        throw "Bootstrap state '$Path' has invalid step or output collections."
+    }
+    if (-not $state.Contains('deploymentOwnershipId') -or
+        [string]::IsNullOrWhiteSpace([string]$state['deploymentOwnershipId'])) {
+        if (Test-BootstrapStateHasEvidence -State $state) {
+            throw 'Bootstrap state contains reusable evidence but no deployment ownership identifier. Refusing Entra application adoption; preserve the state for review and use the original bootstrap version.'
+        }
+        return New-BootstrapState -Config $Config
+    }
+    Assert-GuidValue -Value ([string]$state['deploymentOwnershipId']) -Label 'State deploymentOwnershipId'
+    if (-not $state.Contains('source') -or $state['source'] -isnot [System.Collections.IDictionary] -or
+        -not $state['source'].Contains('created') -or $state['source']['created'] -isnot [System.Collections.IDictionary] -or
+        -not $state['source'].Contains('lastWritten') -or $state['source']['lastWritten'] -isnot [System.Collections.IDictionary]) {
+        throw "Bootstrap state '$Path' is missing source metadata."
+    }
+
+    $recordedFingerprint = if ($state.Contains('configurationFingerprint')) { [string]$state['configurationFingerprint'] } else { '' }
+    Assert-BootstrapFingerprintValue -Value $recordedFingerprint -Label 'State configurationFingerprint'
+    $expectedFingerprint = Get-BootstrapConfigurationFingerprint -Config $Config
+    if ($recordedFingerprint -cne $expectedFingerprint) {
+        if (Test-BootstrapStateHasEvidence -State $state) {
+            throw 'Bootstrap configuration changed after state evidence was recorded. Refusing to reuse completed, running, or failed steps. Restore the exact original configuration or choose a distinct deployment identity; do not edit the state file.'
+        }
+        return New-BootstrapState -Config $Config
+    }
+
     return $state
 }
 
 function Save-BootstrapState {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$State, [Parameter(Mandatory)][string]$Path)
-    $State.updatedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
-    $directory = Split-Path -Parent $Path
-    New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    $temporary = "$Path.tmp"
-    $State | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $temporary -Encoding utf8NoBOM
-    Move-Item -LiteralPath $temporary -Destination $Path -Force
+
+    $stateSchemaVersion = if ($State.Contains('schemaVersion')) { [string]$State['schemaVersion'] } else { '' }
+    if ($stateSchemaVersion -notmatch '^\d+$' -or [int]$stateSchemaVersion -ne $script:BootstrapStateSchemaVersion) {
+        throw "Refusing to write bootstrap state schema '$stateSchemaVersion' with bootstrap $script:BootstrapVersion."
+    }
+    $stateConfigurationFingerprint = if ($State.Contains('configurationFingerprint')) { [string]$State['configurationFingerprint'] } else { '' }
+    Assert-BootstrapFingerprintValue -Value $stateConfigurationFingerprint -Label 'State configurationFingerprint'
+    $stateOwnershipId = if ($State.Contains('deploymentOwnershipId')) { [string]$State['deploymentOwnershipId'] } else { '' }
+    Assert-GuidValue -Value $stateOwnershipId -Label 'State deploymentOwnershipId'
+
+    $source = if ($State.Contains('acceptedPlan')) {
+        $acceptedSourceRoot = Resolve-BootstrapAcceptedSourceRoot -State $State
+        Get-BootstrapSourceMetadata -Root $acceptedSourceRoot
+    }
+    else {
+        Get-BootstrapSourceMetadata
+    }
+    if ($State.Contains('acceptedPlan')) {
+        $acceptedPlan = $State['acceptedPlan']
+        if ($acceptedPlan -isnot [System.Collections.IDictionary] -or
+            -not $acceptedPlan.Contains('sourceFingerprint') -or
+            -not $acceptedPlan.Contains('configurationFingerprint') -or
+            [string]$acceptedPlan['sourceFingerprint'] -cne [string]$source.bootstrapSourceFingerprint -or
+            [string]$acceptedPlan['configurationFingerprint'] -cne $stateConfigurationFingerprint) {
+            throw 'Bootstrap source or configuration changed after plan acceptance. No further state transition or mutation is authorized; restore the reviewed bytes and generate a fresh plan.'
+        }
+    }
+    $State['bootstrapVersion'] = $script:BootstrapVersion
+    if (-not $State.Contains('source') -or $State['source'] -isnot [System.Collections.IDictionary]) {
+        $State['source'] = [ordered]@{ created = $source; lastWritten = $source }
+    }
+    else {
+        if (-not $State['source'].Contains('created') -or $State['source']['created'] -isnot [System.Collections.IDictionary]) {
+            $State['source']['created'] = $source
+        }
+        $State['source']['lastWritten'] = $source
+    }
+    $State['updatedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $directory = Split-Path -Parent $fullPath
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+    $temporary = Join-Path $directory ".$([IO.Path]::GetFileName($fullPath)).$PID.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        $json = ConvertTo-Json -InputObject $State -Depth 100
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        }
+        finally {
+            $stream.Dispose()
+        }
+        [IO.File]::Move($temporary, $fullPath, $true)
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
+function Set-BootstrapAcceptedPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$StatePath,
+        [Parameter(Mandatory)][string]$PlanFingerprint,
+        [Parameter()][string]$ConfigurationFingerprint = '',
+        [Parameter()][string]$SourceFingerprint = '',
+        [Parameter(Mandatory)][string]$BootstrapClientIpv4
+    )
+
+    Assert-BootstrapFingerprintValue -Value $PlanFingerprint -Label 'PlanFingerprint'
+    if ([string]::IsNullOrWhiteSpace($ConfigurationFingerprint)) {
+        $ConfigurationFingerprint = if ($State.Contains('configurationFingerprint')) { [string]$State['configurationFingerprint'] } else { '' }
+    }
+    Assert-BootstrapFingerprintValue -Value $ConfigurationFingerprint -Label 'ConfigurationFingerprint'
+    if ($ConfigurationFingerprint -cne [string]$State['configurationFingerprint']) {
+        throw 'The plan configuration fingerprint does not match this bootstrap state.'
+    }
+
+    $currentSourceFingerprint = Get-BootstrapSourceFingerprint
+    if ([string]::IsNullOrWhiteSpace($SourceFingerprint)) { $SourceFingerprint = $currentSourceFingerprint }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'SourceFingerprint'
+    if ($SourceFingerprint -cne $currentSourceFingerprint) {
+        throw 'Bootstrap source changed before plan acceptance. Generate and review a fresh plan.'
+    }
+    Assert-BootstrapIpv4Value -Value $BootstrapClientIpv4 -Label 'SQL bootstrap client IPv4'
+
+    $executionSource = New-BootstrapAcceptedSourceSnapshot `
+        -State $State `
+        -PlanFingerprint $PlanFingerprint `
+        -SourceFingerprint $SourceFingerprint
+    $State['acceptedPlan'] = [ordered]@{
+        planFingerprint = $PlanFingerprint
+        configurationFingerprint = $ConfigurationFingerprint
+        sourceFingerprint = $SourceFingerprint
+        bootstrapClientIpv4 = $BootstrapClientIpv4
+        executionSource = $executionSource
+        bootstrapVersion = $script:BootstrapVersion
+        acceptedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+    }
+    Save-BootstrapState -State $State -Path $StatePath
+    return $State['acceptedPlan']
+}
+
+function Clear-BootstrapAcceptedPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$StatePath
+    )
+
+    if ($State.Contains('acceptedPlan')) {
+        $State.Remove('acceptedPlan')
+    }
+    Save-BootstrapState -State $State -Path $StatePath
+}
+
+function Assert-BootstrapAcceptedPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$PlanFingerprint,
+        [Parameter()][string]$ConfigurationFingerprint = '',
+        [Parameter()][string]$SourceFingerprint = '',
+        [Parameter()][TimeSpan]$MaximumAge = ([TimeSpan]::FromMinutes(60))
+    )
+
+    Assert-BootstrapFingerprintValue -Value $PlanFingerprint -Label 'PlanFingerprint'
+    if ($MaximumAge -le [TimeSpan]::Zero) {
+        throw 'MaximumAge must be greater than zero.'
+    }
+    if (-not $State.Contains('acceptedPlan') -or $State['acceptedPlan'] -isnot [System.Collections.IDictionary]) {
+        throw 'No accepted deployment plan exists for this state. Generate and accept a fresh plan before applying.'
+    }
+    if (-not $State['acceptedPlan'].Contains('bootstrapClientIpv4')) {
+        throw 'The accepted deployment plan predates the reviewed SQL network boundary. Generate and accept a fresh plan before applying.'
+    }
+    Assert-BootstrapIpv4Value -Value ([string]$State['acceptedPlan']['bootstrapClientIpv4']) -Label 'Accepted SQL bootstrap client IPv4'
+    if ([string]::IsNullOrWhiteSpace($ConfigurationFingerprint)) {
+        $ConfigurationFingerprint = if ($State.Contains('configurationFingerprint')) { [string]$State['configurationFingerprint'] } else { '' }
+    }
+    Assert-BootstrapFingerprintValue -Value $ConfigurationFingerprint -Label 'ConfigurationFingerprint'
+    if ($ConfigurationFingerprint -cne [string]$State['configurationFingerprint']) {
+        throw 'The accepted plan configuration fingerprint does not match the current bootstrap state.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($SourceFingerprint)) {
+        $SourceFingerprint = [string]$State['acceptedPlan']['sourceFingerprint']
+    }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'SourceFingerprint'
+
+    if ([string]$State['acceptedPlan']['planFingerprint'] -cne $PlanFingerprint -or
+        [string]$State['acceptedPlan']['configurationFingerprint'] -cne $ConfigurationFingerprint -or
+        [string]$State['acceptedPlan']['sourceFingerprint'] -cne $SourceFingerprint -or
+        [string]$State['acceptedPlan']['bootstrapVersion'] -cne $script:BootstrapVersion) {
+        throw 'The accepted deployment plan is stale or belongs to different configuration/source. Generate and accept a fresh plan before applying.'
+    }
+
+    $executionSourceRoot = Resolve-BootstrapAcceptedSourceRoot -State $State
+    Set-BootstrapExecutionSourceRoot -Path $executionSourceRoot
+
+    $acceptedAt = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParseExact(
+        [string]$State['acceptedPlan']['acceptedAtUtc'],
+        'O',
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$acceptedAt)) {
+        throw 'The accepted deployment plan has invalid acceptance-time metadata. Generate and accept a fresh plan before applying.'
+    }
+    $age = [DateTimeOffset]::UtcNow - $acceptedAt.ToUniversalTime()
+    if ($age -lt [TimeSpan]::FromMinutes(-5) -or $age -gt $MaximumAge) {
+        throw "The accepted deployment plan is outside its $([int][Math]::Ceiling($MaximumAge.TotalMinutes))-minute validity window. Generate and accept a fresh plan before applying."
+    }
+    return $true
 }
 
 function Invoke-BootstrapStateStep {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9][A-Za-z0-9 .:/()_-]{0,127}$')][string]$Name,
         [Parameter(Mandatory)][System.Collections.IDictionary]$State,
         [Parameter(Mandatory)][string]$StatePath,
         [Parameter(Mandatory)][scriptblock]$Action,
         [Parameter()][scriptblock]$Validate,
+        [Parameter()][scriptblock]$Reconcile,
+        [switch]$NoAutomaticReplayAfterStart,
         [switch]$AlwaysRun
     )
     Write-BootstrapStep $Name
+    $stepSourceFingerprint = if ($State.Contains('acceptedPlan') -and
+        $State.acceptedPlan -is [System.Collections.IDictionary] -and
+        $State.acceptedPlan.Contains('sourceFingerprint')) {
+        [string]$State.acceptedPlan.sourceFingerprint
+    }
+    else {
+        (Get-BootstrapSourceFingerprint)
+    }
+    Assert-BootstrapFingerprintValue -Value $stepSourceFingerprint -Label "Bootstrap step '$Name' source fingerprint"
     $existing = $State.steps[$Name]
+    if (-not $AlwaysRun -and $existing -and $existing.status -in @('Running', 'Failed') -and $NoAutomaticReplayAfterStart) {
+        if (-not $Reconcile) {
+            Write-BootstrapEvent -Status Failed -StepName $Name
+            throw "Bootstrap step '$Name' has a prior started outcome and is not safe to replay automatically. State was preserved for exact provider reconciliation."
+        }
+        try {
+            [object[]]$reconciliation = @(& $Reconcile)
+            if ($reconciliation.Count -ne 1 -or $reconciliation[0] -isnot [System.Collections.IDictionary] -or
+                -not $reconciliation[0].Contains('recovered') -or $reconciliation[0].recovered -isnot [bool]) {
+                throw 'Reconciler must return exactly one typed disposition.'
+            }
+            if ($reconciliation[0].recovered -ne $true -or -not $reconciliation[0].Contains('evidence') -or $null -eq $reconciliation[0].evidence) {
+                throw 'Prior outcome remains unresolved.'
+            }
+            $recoveredEvidence = $reconciliation[0].evidence
+            $State.steps[$Name] = [ordered]@{
+                status = 'Completed'
+                startedAtUtc = if ($existing.Contains('startedAtUtc')) { [string]$existing.startedAtUtc } else { [DateTimeOffset]::UtcNow.ToString('O') }
+                completedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+                reconciledAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+                sourceFingerprint = $stepSourceFingerprint
+                evidence = $recoveredEvidence
+            }
+            Save-BootstrapState -State $State -Path $StatePath
+            Write-BootstrapSuccess "$Name recovered by exact provider readback"
+            Write-BootstrapEvent -Status Completed -StepName $Name -Reused -Revalidated
+            return $recoveredEvidence
+        }
+        catch {
+            Write-BootstrapEvent -Status Failed -StepName $Name
+            throw "Bootstrap step '$Name' has a prior started outcome that could not be reconciled exactly. No mutation was repeated; preserve state and follow the recovery guidance."
+        }
+    }
     if (-not $AlwaysRun -and $existing -and $existing.status -eq 'Completed') {
-        if (-not $Validate -or (& $Validate)) {
-            Write-BootstrapSuccess "$Name already complete$(if ($Validate) { ' and revalidated' } else { '' })"
+        if (-not $Validate) {
+            $State.steps[$Name] = [ordered]@{
+                status = 'Failed'
+                startedAtUtc = if ($existing.Contains('startedAtUtc')) { [string]$existing.startedAtUtc } else { '' }
+                completedAtUtc = if ($existing.Contains('completedAtUtc')) { [string]$existing.completedAtUtc } else { '' }
+                failedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+                sourceFingerprint = $stepSourceFingerprint
+                evidence = $existing.evidence
+                message = "Bootstrap step '$Name' failed independent revalidation. Prior evidence was preserved for exact reconciliation."
+            }
+            Save-BootstrapState -State $State -Path $StatePath
+            Write-BootstrapEvent -Status Failed -StepName $Name
+            throw "Completed bootstrap step '$Name' cannot be reused without an independent read-only validator. State was preserved; supply the required validator before resuming."
+        }
+
+        $validationSucceeded = $false
+        try {
+            [object[]]$validationResult = @(& $Validate)
+            if ($validationResult.Count -ne 1 -or $validationResult[0] -isnot [bool]) {
+                throw 'Validator must return exactly one Boolean value.'
+            }
+            $validationSucceeded = [bool]$validationResult[0]
+        }
+        catch {
+            $State.steps[$Name] = [ordered]@{
+                status = 'Failed'
+                startedAtUtc = if ($existing.Contains('startedAtUtc')) { [string]$existing.startedAtUtc } else { '' }
+                completedAtUtc = if ($existing.Contains('completedAtUtc')) { [string]$existing.completedAtUtc } else { '' }
+                failedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+                sourceFingerprint = $stepSourceFingerprint
+                evidence = $existing.evidence
+                message = "Bootstrap step '$Name' failed independent revalidation. Prior evidence was preserved for exact reconciliation."
+            }
+            Save-BootstrapState -State $State -Path $StatePath
+            Write-BootstrapEvent -Status Failed -StepName $Name
+            throw "Completed bootstrap step '$Name' could not be independently revalidated. State was preserved; correct the validation prerequisite before resuming."
+        }
+        if ($validationSucceeded) {
+            Write-BootstrapSuccess "$Name already complete and revalidated"
+            Write-BootstrapEvent -Status Completed -StepName $Name -Reused -Revalidated
             return $existing.evidence
         }
-        Write-Warning "$Name state was stale; running it again."
+        if ($NoAutomaticReplayAfterStart) {
+            $State.steps[$Name] = [ordered]@{
+                status = 'Failed'
+                startedAtUtc = if ($existing.Contains('startedAtUtc')) { [string]$existing.startedAtUtc } else { '' }
+                completedAtUtc = if ($existing.Contains('completedAtUtc')) { [string]$existing.completedAtUtc } else { '' }
+                failedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+                sourceFingerprint = $stepSourceFingerprint
+                evidence = $existing.evidence
+                message = "Bootstrap step '$Name' failed independent revalidation. Prior evidence was preserved for exact reconciliation."
+            }
+            Save-BootstrapState -State $State -Path $StatePath
+            Write-BootstrapEvent -Status Failed -StepName $Name
+            throw "Completed bootstrap step '$Name' no longer matches exact provider readback and is not safe to replay automatically. No mutation was repeated; preserve state and follow the recovery guidance."
+        }
+        if (-not $script:BootstrapStructuredOutput) {
+            Write-Warning "$Name state was stale; running it again."
+        }
     }
 
-    $State.steps[$Name] = [ordered]@{ status = 'Running'; startedAtUtc = [DateTimeOffset]::UtcNow.ToString('O') }
+    Write-BootstrapEvent -Status Started -StepName $Name
+    $priorPartialEvidence = if ($existing -and $existing.Contains('evidence')) { $existing.evidence } else { $null }
+    $State.steps[$Name] = [ordered]@{ status = 'Running'; startedAtUtc = [DateTimeOffset]::UtcNow.ToString('O'); sourceFingerprint = $stepSourceFingerprint }
+    if ($null -ne $priorPartialEvidence) { $State.steps[$Name].evidence = $priorPartialEvidence }
     Save-BootstrapState -State $State -Path $StatePath
     try {
-        $evidence = & $Action
+        [object[]]$actionOutput = @(& $Action)
+        if ($actionOutput.Count -ne 1 -or $null -eq $actionOutput[0]) {
+            throw "Bootstrap step '$Name' did not return exactly one non-null evidence object. Provider output was not persisted; correct the action contract and Resume."
+        }
+        $evidence = $actionOutput[0]
         $State.steps[$Name] = [ordered]@{
             status = 'Completed'
             startedAtUtc = $State.steps[$Name].startedAtUtc
             completedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+            sourceFingerprint = $stepSourceFingerprint
             evidence = $evidence
         }
         Save-BootstrapState -State $State -Path $StatePath
         Write-BootstrapSuccess $Name
+        Write-BootstrapEvent -Status Completed -StepName $Name
         return $evidence
     }
     catch {
+        $partialEvidence = if ($State.steps[$Name].Contains('evidence')) { $State.steps[$Name].evidence } else { $null }
         $State.steps[$Name] = [ordered]@{
             status = 'Failed'
             startedAtUtc = $State.steps[$Name].startedAtUtc
             failedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+            sourceFingerprint = $stepSourceFingerprint
             message = "Bootstrap step '$Name' failed. Review the local terminal output, correct the cause, and run Resume."
         }
+        if ($null -ne $partialEvidence) { $State.steps[$Name].evidence = $partialEvidence }
         Save-BootstrapState -State $State -Path $StatePath
+        Write-BootstrapEvent -Status Failed -StepName $Name
         throw
     }
 }

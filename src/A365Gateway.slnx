@@ -13,4 +13,5 @@
   <Project Path="ExternalAgent.Sample/ExternalAgent.Sample.csproj" />
   <Project Path="../tools/Gateway.DatabaseMigrator/Gateway.DatabaseMigrator.csproj" />
   <Project Path="../tools/Gateway.LiveCanary/Gateway.LiveCanary.csproj" />
+  <Project Path="../tools/Gateway.Setup/Gateway.Setup.csproj" />
 </Solution>

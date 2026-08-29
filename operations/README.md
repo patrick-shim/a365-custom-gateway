@@ -1,9 +1,13 @@
 # Operational scripts
 
 This directory contains reviewed scripts for an existing Gateway environment. It is
-not the day-zero installation entry point; use
+not the day-zero installation entry point; use `../gateway setup` (or
+`../gateway.cmd setup` on Windows) and
 [`../bootstrap/README.md`](../bootstrap/README.md) for a fresh subscription or a
 deleted resource group.
+
+The evidence and authorization checklist for the first disposable live proof is
+[`../docs/operations/clean-subscription-bootstrap-proof.md`](../docs/operations/clean-subscription-bootstrap-proof.md).
 
 | Script | Purpose |
 |---|---|

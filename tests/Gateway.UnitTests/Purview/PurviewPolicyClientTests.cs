@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Azure.Core;
 using FluentAssertions;
@@ -430,6 +431,196 @@ public sealed class PurviewPolicyClientTests
             Calls.Add(call);
             return Task.FromResult(responder(call));
         }
+    }
+}
+
+public sealed class PurviewPolicyProvisioningReadbackTests
+{
+    private const string BlueprintApplicationId =
+        "11111111-1111-4111-8111-111111111111";
+
+    [Fact]
+    public void ParseResult_ExactTypedEvidence_IsAccepted()
+    {
+        var result = PowerShellPurviewPolicyProvisioningClient.ParseResult(
+            CreateOutput(),
+            CreateRequest(),
+            "Credit Card Number");
+
+        result.CollectionPolicyId.Should().Be("collection-id");
+        result.BlueprintApplicationIds.Should().ContainSingle(BlueprintApplicationId);
+        result.Evidence.RuleActions.Should().ContainSingle(action =>
+            action.Setting == "UploadText" && action.Value == "Block");
+    }
+
+    [Fact]
+    public void ParseResult_WrongPersistedProviderId_IsRejected()
+    {
+        var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
+            CreateOutput(collectionPolicyId: "different-collection-id"),
+            CreateRequest(),
+            "Credit Card Number");
+
+        var exception = action.Should().Throw<PurviewPolicyException>();
+        exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
+    }
+
+    [Fact]
+    public void ParseResult_WrongBlueprintApplicationScope_IsRejected()
+    {
+        var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
+            CreateOutput(blueprintApplicationIds:
+                ["22222222-2222-4222-8222-222222222222"]),
+            CreateRequest(),
+            "Credit Card Number");
+
+        var exception = action.Should().Throw<PurviewPolicyException>();
+        exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
+    }
+
+    [Fact]
+    public void ParseResult_ExtraProviderApplicationScope_IsRejected()
+    {
+        var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
+            CreateOutput(blueprintApplicationIds:
+                [BlueprintApplicationId, "22222222-2222-4222-8222-222222222222"]),
+            CreateRequest(),
+            "Credit Card Number");
+
+        var exception = action.Should().Throw<PurviewPolicyException>();
+        exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
+    }
+
+    [Fact]
+    public void ValidateExpectedScope_MissingPriorMemberFromExpectedUnion_IsRejected()
+    {
+        var request = CreateRequest() with
+        {
+            ExpectedPriorBlueprintApplicationIds =
+                ["22222222-2222-4222-8222-222222222222"],
+            ExpectedBlueprintApplicationIds = [BlueprintApplicationId]
+        };
+
+        var action = () =>
+            PowerShellPurviewPolicyProvisioningClient.ValidateExpectedScope(request);
+
+        var exception = action.Should().Throw<PurviewPolicyException>();
+        exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_EXPECTED_SCOPE_INVALID");
+    }
+
+    [Fact]
+    public async Task ReadBoundedAsync_RetainsOnlyTheConfiguredLimitAndReportsTruncation()
+    {
+        using var reader = new StringReader(new string('x', 100));
+
+        var capture = await PowerShellPurviewPolicyProvisioningClient.ReadBoundedAsync(
+            reader,
+            16,
+            CancellationToken.None);
+
+        capture.Text.Should().HaveLength(16);
+        capture.TotalCharacters.Should().Be(100);
+        capture.Truncated.Should().BeTrue();
+    }
+
+    [Fact]
+    public void EnsureCleanupProven_UnprovenCleanupFailsClosed()
+    {
+        var action = () =>
+            PowerShellPurviewPolicyProvisioningClient.EnsureCleanupProven(false);
+
+        var exception = action.Should().Throw<PurviewPolicyException>();
+        exception.Which.FailureCode.Should().Be(
+            "PURVIEW_POLICY_TEMPORARY_FILE_CLEANUP_FAILED");
+        exception.Which.IsTransient.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DeleteDirectoryAndVerifyAsync_RemovesTemporaryMaterialAndProvesAbsence()
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            $"a365gw-purview-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(path);
+        await File.WriteAllTextAsync(Path.Combine(path, "temporary.bin"), "test-only");
+
+        try
+        {
+            var removed = await PowerShellPurviewPolicyProvisioningClient
+                .DeleteDirectoryAndVerifyAsync(path);
+
+            removed.Should().BeTrue();
+            Directory.Exists(path).Should().BeFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void ParseResult_ExtraConditionOrAction_IsRejected(
+        bool hasExtraConditions,
+        bool hasExtraActions)
+    {
+        var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
+            CreateOutput(
+                hasExtraConditions: hasExtraConditions,
+                hasExtraActions: hasExtraActions),
+            CreateRequest(),
+            "Credit Card Number");
+
+        var exception = action.Should().Throw<PurviewPolicyException>();
+        exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
+    }
+
+    private static PurviewPolicyProvisioningRequest CreateRequest() => new(
+        Guid.Parse("33333333-3333-4333-8333-333333333333"),
+        "Enterprise AI protection",
+        "AllSensitiveInformation",
+        "Enforce",
+        "collection",
+        "policy",
+        "rule",
+        BlueprintApplicationId,
+        "Protected blueprint",
+        "collection-id",
+        "policy-id",
+        "rule-id",
+        [],
+        [BlueprintApplicationId]);
+
+    private static string CreateOutput(
+        string collectionPolicyId = "collection-id",
+        string[]? blueprintApplicationIds = null,
+        bool hasExtraConditions = false,
+        bool hasExtraActions = false)
+    {
+        var json = JsonSerializer.Serialize(new
+        {
+            collectionPolicyId,
+            dlpPolicyId = "policy-id",
+            dlpRuleId = "rule-id",
+            blueprintApplicationIds = blueprintApplicationIds ?? [BlueprintApplicationId],
+            collectionMode = "Enable",
+            collectionActivities = new[] { "UploadText", "DownloadText" },
+            collectionEnforcementPlanes = new[] { "Application" },
+            collectionSensitiveTypeIds = new[] { "All" },
+            collectionIngestionEnabled = true,
+            dlpMode = "Enable",
+            dlpEnforcementPlanes = new[] { "Application" },
+            classifierNames = new[] { "Credit Card Number" },
+            ruleActions = new[] { new { setting = "UploadText", value = "Block" } },
+            hasExclusions = false,
+            hasBypass = false,
+            hasExtraConditions,
+            hasExtraActions,
+            verifiedAtUtc = DateTimeOffset.UtcNow
+        });
+        return "A365GW_RESULT:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
     }
 }
 

@@ -38,15 +38,82 @@ function Write-Warn {
     Write-Host "[WARN] $Message" -ForegroundColor Yellow
 }
 
+function Get-A365GatewayBootstrapSubscriptionId {
+    [CmdletBinding()]
+    param([switch]$Required)
+
+    $raw = [Environment]::GetEnvironmentVariable('A365GW_BOOTSTRAP_SUBSCRIPTION_ID')
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        if ($Required) {
+            throw 'A365GW_BOOTSTRAP_SUBSCRIPTION_ID must be set by the verified bootstrap Azure login before this operation.'
+        }
+        return $null
+    }
+
+    $parsed = [guid]::Empty
+    if (-not [guid]::TryParseExact($raw, 'D', [ref]$parsed) -or
+        $parsed -eq [guid]::Empty -or
+        $raw -cne $parsed.ToString('D')) {
+        throw 'A365GW_BOOTSTRAP_SUBSCRIPTION_ID must be one canonical, non-empty lowercase GUID.'
+    }
+
+    return $parsed.ToString('D')
+}
+
+function Add-A365GatewayAzureSubscriptionPin {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [string[]]$Arguments,
+
+        [switch]$Required
+    )
+
+    $subscriptionId = Get-A365GatewayBootstrapSubscriptionId -Required:$Required
+    if ([string]::IsNullOrWhiteSpace($subscriptionId)) {
+        return @($Arguments)
+    }
+
+    $explicitValues = [Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt $Arguments.Count; $index++) {
+        $argument = [string]$Arguments[$index]
+        if ($argument -ceq '--subscription') {
+            if ($index + 1 -ge $Arguments.Count -or
+                [string]::IsNullOrWhiteSpace([string]$Arguments[$index + 1])) {
+                throw 'Azure CLI --subscription requires the exact pinned subscription ID.'
+            }
+            $explicitValues.Add([string]$Arguments[$index + 1])
+        }
+        elseif ($argument.StartsWith('--subscription=', [StringComparison]::Ordinal)) {
+            $explicitValues.Add($argument.Substring('--subscription='.Length))
+        }
+    }
+
+    if ($explicitValues.Count -gt 1) {
+        throw 'Azure CLI arguments contain more than one explicit subscription target.'
+    }
+    if ($explicitValues.Count -eq 1) {
+        if ($explicitValues[0] -cne $subscriptionId) {
+            throw 'Azure CLI arguments do not match the exact bootstrap subscription pin.'
+        }
+        return @($Arguments)
+    }
+
+    return @($Arguments) + @('--subscription', $subscriptionId)
+}
+
 function Invoke-AzCommand {
     param(
         [string[]]$Arguments,
         [string]$ErrorMessage = 'Azure CLI command failed.'
     )
-    $output = & az @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $errorDetail = ($output | Out-String).Trim()
-        throw "$ErrorMessage`nExit code: $LASTEXITCODE`nOutput: $errorDetail"
+
+    $effectiveArguments = Add-A365GatewayAzureSubscriptionPin -Arguments $Arguments
+    $output = & az @effectiveArguments 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "$ErrorMessage Azure CLI category: command failed; exit code: $exitCode. Provider output was suppressed."
     }
     return $output
 }
@@ -59,9 +126,9 @@ function Assert-AzLogin {
     }
     catch {
         Write-Failure 'Not logged in to Azure CLI. Run: az login'
-        throw
+        throw 'Azure CLI authentication verification failed without rendering account or provider details.'
     }
-    Write-Success "Logged in as $($account.user.name) (tenant: $($account.tenantId))"
+    Write-Success 'Azure CLI authentication is available.'
     return $account
 }
 
@@ -101,14 +168,10 @@ function Get-DeploymentOutputs {
             '--query', 'properties.outputs', '-o', 'json'
         ) -ErrorMessage 'Failed to get deployment outputs.' | Out-String)
 
-    return $json | ConvertFrom-Json
-}
-
-function Get-MyPublicIp {
     try {
-        return (Invoke-RestMethod -Uri 'https://api.ipify.org' -TimeoutSec 10).Trim()
+        return $json | ConvertFrom-Json -ErrorAction Stop
     }
     catch {
-        return (Invoke-RestMethod -Uri 'https://ifconfig.me/ip' -TimeoutSec 10).Trim()
+        throw 'Azure deployment outputs were malformed; provider output was suppressed.'
     }
 }

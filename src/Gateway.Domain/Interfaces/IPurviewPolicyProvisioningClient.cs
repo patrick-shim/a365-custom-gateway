@@ -9,4 +9,8 @@ public interface IPurviewPolicyProvisioningClient
     Task<PurviewPolicyProvisioningResult> EnsureProfileAssignmentAsync(
         PurviewPolicyProvisioningRequest request,
         CancellationToken ct);
+
+    Task<PurviewPolicyProvisioningResult> VerifyProfileAssignmentAsync(
+        PurviewPolicyProvisioningRequest request,
+        CancellationToken ct);
 }

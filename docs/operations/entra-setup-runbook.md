@@ -480,14 +480,23 @@ principal's automatic `AgentIdentity.CreateAsManager` permission.
   values in logs. The reviewed Bicep path projects the same indexed
   `Agent365__ManagerApplicationIds__N` values into both API and worker so the catalog,
   registration boundary, and final worker check use one configuration.
+- For clean-subscription bootstrap, put the same independently reviewed set in
+  `agent365.reviewedManagerApplicationIds`. `gateway setup` collects it, and
+  `gateway plan` shows the exact sorted IDs and binds them to the accepted plan
+  fingerprint. Replace the dummy GUID in `bootstrap/config.example.json`; never
+  copy it as an operational value. Bootstrap follows every bounded Graph page and
+  requires exact, order-insensitive equality before runtime deployment. A returned
+  `managerApplications` value is observation, not authorization.
 - Set `agent365ManagerApplicationsPreflightConfirmed=true` only after that independent
-  verification. For a Gateway-created blueprint, the adapter requires exact,
-  order-insensitive equality. For a selected typed blueprint, it requires every
-  configured ID but preserves additional provider-issued first-party managers that
-  may already be present. A missing required ID fails closed.
-- The delegated Agent 365 CLI may perform provider bootstrap in a signed-in
-  administrator workflow, but it is not an unattended managed-identity fallback for
-  the worker.
+  verification. Clean-subscription seed bootstrap requires exact, order-insensitive
+  equality. The existing registration API's selected-blueprint compatibility rule
+  is a separate contract: it requires every configured ID while preserving
+  additional provider-issued first-party managers that may already be present. A
+  missing required ID fails closed in either path.
+- The delegated Agent 365 CLI may still be used as a separate, explicitly reviewed
+  provider workflow, but clean-subscription bootstrap doesn't invoke it. Bootstrap
+  creates its seed with one credential-free Graph v1.0 POST and never treats the CLI
+  as an unattended managed-identity fallback for the worker.
 
 Do not enable workflow-v3 provisioning execution until this prerequisite is
 satisfied. Record the verification source and date in the deployment handoff without

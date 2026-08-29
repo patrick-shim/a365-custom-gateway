@@ -1,0 +1,85 @@
+@page "/setup/welcome"
+@rendermode InteractiveServer
+@inject SetupWizardState State
+@inject IBootstrapConfigLoader ConfigLoader
+@inject SetupActivityTracker Activity
+@inject NavigationManager Navigation
+
+<PageTitle>Welcome · A365 Gateway Setup</PageTitle>
+
+<div class="page-heading">
+    <p class="eyebrow">Step 1 of 6</p>
+    <h1>Bring up the complete Gateway</h1>
+    <p>This guided flow creates public bootstrap configuration and delegates every deployment action to the repository's reviewed, resumable PowerShell engine.</p>
+</div>
+
+<section class="hero-grid">
+    <div class="setup-card hero-card">
+        <span class="hero-badge">@(State.ExistingConfigurationLoaded ? "Existing resumable configuration" : "Cloud-backed development")</span>
+        <h2>@(State.ExistingConfigurationLoaded ? "Resume without changing deployment identity" : "One guided path, one deployment authority")</h2>
+        <p>The API, worker, Admin UI, identities, private dependencies, and policies remain Azure-hosted so managed identity and network boundaries stay truthful.</p>
+        <ul class="check-list">
+            <li>Discovers the existing Azure CLI session without collecting credentials.</li>
+            <li>Writes only ignored, non-secret <code>bootstrap/config.json</code>.</li>
+            <li>Runs Plan first and requires another confirmation before Apply or Resume.</li>
+            <li>Never exposes destroy, Registry replay, or historical-message actions.</li>
+        </ul>
+    </div>
+
+    <aside class="setup-card requirements-card">
+        <h2>Before you begin</h2>
+        <dl>
+            <div><dt>Tenant</dt><dd>An eligible Azure and Microsoft 365 tenant</dd></div>
+            <div><dt>Privileges</dt><dd>Subscription deployment, role assignment, Entra app, and consent authority</dd></div>
+            <div><dt>Tools</dt><dd>PowerShell 7, Git, Azure CLI, and .NET 10</dd></div>
+            <div><dt>Time</dt><dd>Remote image builds and private endpoints can take a while</dd></div>
+        </dl>
+    </aside>
+</section>
+
+@if (State.ExistingConfigurationLoaded)
+{
+    <div class="notice neutral" role="status">
+        <strong>Existing bootstrap/config.json loaded safely.</strong>
+        <span>The wizard imported its supported public fields. It will still run Plan and require a new explicit Resume or Apply confirmation; no prior plan is treated as accepted.</span>
+    </div>
+}
+else if (State.ExistingConfigurationGuidance is not null)
+{
+    <div class="notice error" role="alert">
+        <strong>Existing configuration is protected from overwrite.</strong>
+        <span>@State.ExistingConfigurationGuidance</span>
+    </div>
+    <div class="terminal-fallback">
+        <strong>Review and resume from the terminal</strong>
+        <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Plan -Config ./bootstrap/config.json</code>
+        <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Resume -Config ./bootstrap/config.json</code>
+    </div>
+}
+
+<div class="notice warning" role="note">
+    <strong>Agent 365 Registry is a development preview boundary.</strong>
+    <span>Staging and production remain closed at that boundary. This wizard does not change the repository's one-POST or ambiguity safeguards.</span>
+</div>
+
+<div class="page-actions">
+    <span>@(State.ExistingConfigurationLoaded ? "The existing file remains unchanged until your explicit review." : "Nothing has been written or deployed yet.")</span>
+    <FluentButton Appearance="Appearance.Accent" Disabled="@(State.ExistingConfigurationGuidance is not null)" OnClick="Continue">@(State.ExistingConfigurationLoaded ? "Review existing configuration" : "Start safely")</FluentButton>
+</div>
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        if (!State.ExistingConfigurationChecked)
+        {
+            State.ApplyExistingConfiguration(await ConfigLoader.LoadAsync());
+        }
+    }
+
+    private void Continue()
+    {
+        State.AcceptWelcome();
+        Activity.Touch();
+        Navigation.NavigateTo("/setup/account");
+    }
+}

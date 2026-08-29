@@ -7,8 +7,10 @@ This document validates every Microsoft API, SDK, CLI command, permission, and c
 ## Implementation Boundary
 
 Documentation support is not deployment evidence. Local source implements workflow
-v3. The current broad Release gate passes 1,121/1,121 tests and the solution build
-has zero warnings/errors. Development continuous mode has Active registrations for
+v3. The last live-deployed source checkpoint passed 1,121/1,121 tests and a
+zero-warning/error solution build; the newer local bootstrap and Purview authority
+hardening is awaiting its final complete gate and is not deployed. Development
+continuous mode has Active registrations for
 both create-new and reuse-existing blueprint paths. Both are Available as
 `A365CustomGateway` agents in Microsoft 365 Admin Center; bound ingress returned
 HTTP 202 and Agent 365 OTLP accepted sanitized exports. Blueprint-scoped Purview
@@ -427,10 +429,35 @@ All GA. Use `Azure.Identity` with `DefaultAzureCredential` for all.
 | Azure CLI | https://learn.microsoft.com/cli/azure/install-azure-cli-macos | `brew update && brew install azure-cli` | Current supported macOS installation path | Bootstrap does not install Azure CLI automatically on macOS | Install and verify `az` before `Apply`; bootstrap then pins the exact tenant/subscription and installs/verifies Bicep. |
 | .NET 10 SDK | https://learn.microsoft.com/dotnet/core/install/macos | Microsoft macOS SDK installer matching Arm64 or x64 | .NET 10 is the current repository target | Runtime-only installation is insufficient; architecture must match the Mac | Require `dotnet --version` to begin with `10.` before `Apply`. |
 
-The Agent 365 CLI and optional `ExchangeOnlineManagement` module remain governed by
-their existing validated sections. Bootstrap may install those user-scoped tools
-after the macOS base toolchain is present; it never treats prerequisite installation
-or a successful `Plan` as Azure deployment evidence.
+The optional `ExchangeOnlineManagement` module remains governed by its existing
+validated section. Clean-subscription bootstrap doesn't install or invoke the Agent
+365 CLI; it uses the reviewed Graph v1.0 blueprint contract. It never treats local
+prerequisite installation or a successful `Plan` as Azure deployment evidence.
+
+### 3.7 Interactive bootstrap, ARM preview, and CI federation
+
+| Requirement | Official source | Mechanism/auth mode | Limitation | Gateway decision |
+|---|---|---|---|---|
+| First-run Azure authentication | https://learn.microsoft.com/cli/azure/authenticate-azure-cli-interactively | `az login --tenant` uses an interactive browser/WAM or `--use-device-code`; MFA and tenant policy apply | Username/password automation is not an acceptable replacement for interactive user authentication | The setup wizard discovers accounts after an explicit human sign-in, verifies the exact tenant/subscription, passes the subscription explicitly to subsequent supported Azure CLI/ARM/Graph calls, and never stores an Azure token. CI uses a separate workload identity. |
+| ARM change preview | https://learn.microsoft.com/azure/azure-resource-manager/templates/deploy-what-if | Subscription/resource-group What-If uses the caller's normal ARM authorization and makes no deployment mutation | Unresolved expressions and expansion limits can produce noisy or incomplete predictions; What-If cannot describe imperative Graph, Agent 365, or Purview calls | `gateway plan` reports ARM What-If separately from a reviewed imperative-operation manifest and retains exact post-Apply readbacks. |
+| GitHub Actions workload identity | https://learn.microsoft.com/azure/developer/github/connect-from-azure-openid-connect and https://learn.microsoft.com/entra/workload-id/workload-identity-federation-create-trust | Exact GitHub issuer/subject FIC, one `api://AzureADTokenExchange` audience, `id-token: write`, then `azure/login@v2` | Initial FIC creation and Azure RBAC are privileged human bootstrap actions; standard FIC matching has no wildcard and propagation can delay token exchange | CI federation is an optional post-bootstrap handoff with exact GitHub Environment subjects and reviewed least-scoped roles. It is never silently created from repository metadata. |
+| Agent ID seed setup | https://learn.microsoft.com/graph/api/agentidentityblueprint-post?view=graph-rest-1.0 and https://learn.microsoft.com/entra/agent-id/identity-platform/create-blueprint | One delegated Microsoft Graph v1.0 POST with `OData-Version: 4.0`; bind the signed-in user as owner and required sponsor and include only reviewed first-party `managerApplications` | The caller needs the documented Agent ID permission/role; an unknown POST outcome cannot be safely repeated | The accepted plan binds an ownership/source-derived exact name. Apply rejects a pre-existing collision, creates no password/key/FIC/principal, persists exact readback, and Resume performs GET-only reconciliation of an already-started create. |
+
+The public setup command is therefore "one command" but not "zero authorization."
+It automates discovery, validation, ARM deployment, builds, and readback while
+presenting the documented tenant-consent checkpoints to the appropriate humans.
+The PowerShell state machine remains canonical; Azure Developer CLI, if added later,
+may only be a façade and must not expose an unreviewed destroy path.
+
+Source provenance and the bounded SQL network window are Gateway-owned controls,
+not new Microsoft capability claims. Plan fingerprints its sanitized ARM What-If,
+configuration, operation descriptor, deployment source, and one client IPv4
+corroborated through bounded ipify/AWS Check IP reads. Acceptance creates a
+content-addressed ignored source snapshot; Apply/Resume requires the running
+checkout to match it and executes from those accepted bytes. Durable state cannot
+mix source generations. ARM deployments/resource tags and digest-pinned images
+carry the same ownership/source evidence. SQL public access is enabled only for the
+accepted exact-IP rule and must be restored to `Disabled` with rule absence proven.
 
 ---
 
@@ -515,7 +542,9 @@ current ingress authentication scheme.
 | Agent ID Developer | Signed-in administrator/developer | Delegated portal or CLI blueprint setup; not assigned to the managed identity as a substitute for application permissions | https://learn.microsoft.com/microsoft-agent-365/developer/registration |
 | Agent ID Administrator / Application Administrator | Signed-in administrator | Documented handoff for higher-privilege or S2S grants when using CLI workflows | https://learn.microsoft.com/microsoft-agent-365/developer/reference/cli/setup |
 | Global Administrator | Tenant administrator | OAuth2 permission grants/tenant-wide consent when the documented setup path requires them | Same |
-| Key Vault Secrets User | Gateway managed identity | Read secrets at runtime | https://learn.microsoft.com/azure/key-vault/general/secure-key-vault |
+| Key Vault Secrets User | Admin UI user-assigned identity | Read only the exact Admin UI Entra client-secret resource | https://learn.microsoft.com/azure/key-vault/general/secure-key-vault |
+| Key Vault Secrets User | Gateway worker managed identity, only when protection-profile provisioning is enabled | Read only the exact configured Purview certificate-secret resource; no shared-vault scope | Same |
+| No shared-vault role | Gateway API managed identity | The clean-subscription path grants the API no role on the shared Key Vault | Same |
 | Key Vault Certificates Officer | Explicitly selected platform identity | Manage a separately approved platform certificate flow; workflow v3 Agent ID/OBO credentials use federated assertions instead | Same |
 | Azure Service Bus Data Sender | Gateway API managed identity | Send messages to queues | https://learn.microsoft.com/azure/service-bus-messaging/service-bus-managed-service-identity |
 | Azure Service Bus Data Receiver | Gateway worker managed identity | Receive messages from queues | Same |

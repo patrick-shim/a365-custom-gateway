@@ -26,6 +26,7 @@ public sealed record Agent365ProvisioningState
     public string? PurviewDlpPolicyId { get; init; }
     public string? PurviewDlpRuleId { get; init; }
     public DateTimeOffset? PurviewPolicyAssignmentVerifiedAtUtc { get; init; }
+    public DateTimeOffset? PurviewPolicyFinalVerifiedAtUtc { get; init; }
     public string? PlannedAgent365RegistrationId { get; init; }
     public string? Agent365RegistrationId { get; init; }
     public string? RegistryProvider { get; init; }

@@ -1,0 +1,79 @@
+@page "/setup/finish"
+@rendermode InteractiveServer
+@inject BootstrapExecutionCoordinator Execution
+@inject SetupActivityTracker Activity
+@inject IHostApplicationLifetime Lifetime
+@inject NavigationManager Navigation
+
+<PageTitle>Finish · A365 Gateway Setup</PageTitle>
+
+<div class="finish-hero">
+    <span class="finish-mark" aria-hidden="true">✓</span>
+    <p class="eyebrow">Step 6 of 6</p>
+    <h1>The Gateway foundation is ready</h1>
+    <p>The canonical bootstrap completed successfully. This confirms its configured readbacks—not production support for the beta Agent 365 Registry dependency.</p>
+</div>
+
+<div class="review-grid finish-grid">
+    <section class="setup-card">
+        <div class="card-section">
+            <h2>Open the hosted Admin UI</h2>
+            <p>Sign in with the authorized Gateway Administrator. The portal will guide the delegated Agent 365 action when the deployment mode permits it.</p>
+            @if (snapshot.AdminUiAddress is not null)
+            {
+                <p>Verified endpoint: <code>@snapshot.AdminUiAddress.AbsoluteUri</code></p>
+                <FluentAnchor Appearance="Appearance.Accent" Href="@snapshot.AdminUiAddress.AbsoluteUri" Target="_blank" rel="noopener noreferrer">Open Admin UI</FluentAnchor>
+            }
+            else
+            {
+                <div class="notice neutral"><strong>Use the browser opened by bootstrap</strong><span>The structured stream did not include a safe Admin UI URL. Retrieve it from canonical safe bootstrap state or run Verify.</span></div>
+            }
+        </div>
+    </section>
+    <section class="setup-card">
+        <div class="card-section">
+            <h2>Readiness is layered</h2>
+            <ol class="next-list">
+                <li><strong>Infrastructure</strong><span>Bootstrap resource and identity readbacks passed.</span></li>
+                <li><strong>Control plane</strong><span>Sign in and confirm the deployed portal/API contract.</span></li>
+                <li><strong>Provisioning</strong><span>Create only an authorized development registration.</span></li>
+                <li><strong>Canary</strong><span>Capture bounded data-plane and policy evidence separately.</span></li>
+            </ol>
+        </div>
+    </section>
+</div>
+
+<div class="notice warning" role="note">
+    <strong>Do not use historical failures as new inputs.</strong>
+    <span>Never replay retained queues or repeat an ambiguous Registry create. The deployed API and bootstrap remain authoritative for allowed actions.</span>
+</div>
+
+<div class="terminal-fallback">
+    <strong>Read-only verification</strong>
+    <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Verify -Config ./bootstrap/config.json</code>
+    <span>The local setup server will shut down automatically after two minutes. Configuration and safe bootstrap state remain ignored on this computer.</span>
+</div>
+
+<div class="page-actions">
+    <span>No cloud credentials or tokens were stored by this wizard.</span>
+    <FluentButton Appearance="Appearance.Neutral" OnClick="Close">Close local setup</FluentButton>
+</div>
+
+@code {
+    private BootstrapExecutionSnapshot snapshot = new(null, BootstrapExecutionStatus.NotStarted, [], null, false, null);
+
+    protected override void OnInitialized()
+    {
+        snapshot = Execution.Snapshot();
+        if (snapshot.Command is not (BootstrapCommand.Apply or BootstrapCommand.Resume) ||
+            snapshot.Status != BootstrapExecutionStatus.Succeeded)
+        {
+            Navigation.NavigateTo("/setup/progress");
+            return;
+        }
+
+        Activity.MarkCompleted();
+    }
+
+    private void Close() => Lifetime.StopApplication();
+}

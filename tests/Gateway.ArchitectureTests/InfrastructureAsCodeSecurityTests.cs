@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace Gateway.ArchitectureTests;
@@ -1033,7 +1034,8 @@ public class InfrastructureAsCodeSecurityTests
         roleAssignments.Should().Contain(
             "resource serviceBusQueue 'Microsoft.ServiceBus/namespaces/queues@");
         roleAssignments.Should().Contain("scope: serviceBusQueue");
-        roleAssignments.Should().Contain("workerServiceBusDataSender");
+        roleAssignments.Should().NotContain("workerServiceBusDataSender");
+        roleAssignments.Should().Contain("apiServiceBusDataSender");
         roleAssignments.Should().Contain("serviceBusDataSenderRoleId");
         api.Should().Contain("gateway-provisioning-v3");
         worker.Should().Contain("gateway-provisioning-v3");
@@ -1106,8 +1108,10 @@ public class InfrastructureAsCodeSecurityTests
         preflight.Should().Contain("'AgentRegistration.ReadWrite.All'");
         preflight.Should().Contain("Test-GatewayApiDelegatedRegistryConsent");
         preflight.Should().Contain("consentType");
-        preflight.Should().Contain("& $azPython -IBm azure.cli @Arguments");
+        preflight.Should().Contain("& $azPython -IBm azure.cli @effectiveArguments");
         preflight.Should().Contain("--only-show-errors");
+        preflight.Should().Contain("Assert-ActiveAzureAccountBoundary");
+        preflight.Should().Contain("Get-SubscriptionPinnedAzArguments");
         preflight.Should().Contain("function ConvertFrom-AzJsonPreservingStrings");
         preflight.Should().Contain("ConvertFrom-Json -Depth 100 -DateKind String");
         preflight.Should().Contain("[System.Text.Json.JsonDocument]::Parse");
@@ -1166,8 +1170,11 @@ public class InfrastructureAsCodeSecurityTests
 
         script.Should().Contain("[switch]$AllowLiveDatabase");
         script.Should().Contain("[switch]$TemporarilyEnablePublicNetwork");
-        script.Should().Contain("--enable-public-network false");
-        script.Should().Contain("firewall-rule delete");
+        script.Should().Contain("'--enable-public-network', 'false'");
+        script.Should().Contain("'firewall-rule', 'delete'");
+        script.Should().Contain("Invoke-AzCommand -Arguments @(");
+        script.Should().Contain("'sql', 'server', 'firewall-rule', 'list'");
+        script.Should().Contain("Azure SQL firewall-rule discovery was unavailable; absence was not proven.");
         script.Should().Contain("$publicNetworkPropagationMaximumAttempts = 36");
         script.Should().Contain("$publicNetworkPropagationPollIntervalSeconds = 5");
         script.Should().Contain("function Wait-SqlPublicNetworkAccessState");
@@ -1175,24 +1182,34 @@ public class InfrastructureAsCodeSecurityTests
                 script,
                 @"Wait-SqlPublicNetworkAccessState\s+`",
                 RegexOptions.CultureInvariant)
-            .Count.Should().Be(2);
+            .Count.Should().BeGreaterThanOrEqualTo(2);
         script.Should().Contain("-ExpectedState 'Enabled'");
         script.Should().Contain("-ExpectedState 'Disabled'");
+        script.Should().Contain("$currentState -eq $ExpectedState");
         script.Should().Contain(
-            "$LASTEXITCODE -eq 0 -and $currentState -eq $ExpectedState");
+            "-ErrorMessage 'Azure SQL public-network state polling failed.'");
         script.Should().Contain("if ($attempt -lt $MaximumAttempts)");
         script.Should().Contain("if ($publicNetworkRestoreRequired)");
-        script.Should().Contain("if (-not $publicNetworkRestored)");
-        script.Should().Contain(
-            "Azure SQL public network access was not verified as Disabled after the bounded cleanup wait.");
+        script.Should().Contain("$publicNetworkRestored = Wait-SqlPublicNetworkAccessState");
+        script.Should().Contain("if (-not $publicNetworkRestored) { throw 'restore not proven' }");
+        script.Should().Contain("function Save-SqlNetworkRecoveryRecord");
+        script.Should().Contain("$NetworkOperationId.ToString('D')");
+        script.Should().Contain("$hash.Substring(0, 24)");
+        script.Should().Contain("The safe recovery record was preserved");
+        script.Should().Contain("if ($cleanupFailures.Count -eq 0)");
         var restoreRequired = script.IndexOf(
-            "$publicNetworkRestoreRequired = $true",
+            "$publicNetworkRestoreRequired = $originalPublicNetworkAccess -eq 'Disabled'",
+            StringComparison.Ordinal);
+        var recoveryRecord = script.IndexOf(
+            "Save-SqlNetworkRecoveryRecord -Path $recoveryPath",
             StringComparison.Ordinal);
         var enableMutation = script.IndexOf(
             "'--enable-public-network', 'true'",
             StringComparison.Ordinal);
         restoreRequired.Should().BeGreaterThan(-1);
         restoreRequired.Should().BeLessThan(enableMutation);
+        recoveryRecord.Should().BeGreaterThan(-1);
+        recoveryRecord.Should().BeLessThan(enableMutation);
         script.Should().NotContain("dotnet ef migrations add");
         script.Should().NotContain("dotnet add");
 
@@ -1319,12 +1336,18 @@ public class InfrastructureAsCodeSecurityTests
         var migrator = ReadRepositoryFile("tools", "Gateway.DatabaseMigrator", "Program.cs");
         var dockerIgnore = ReadRepositoryFile(".dockerignore");
 
-        entry.Should().Contain("[ValidateSet('Plan', 'Apply', 'Resume', 'Verify')]");
+        entry.Should().Contain(
+            "[ValidateSet('Init', 'Doctor', 'Plan', 'Apply', 'Resume', 'Status', 'Verify', 'Open', 'Diagnose', 'Up')]");
         entry.Should().Contain("Enter-BootstrapLock");
-        entry.Should().Contain("Recorded resource group");
+        entry.Should().Contain(
+            "Clean bootstrap requires the target resource group to be absent. Refusing to adopt an existing unowned resource group or its deterministic resources.");
         entry.Should().Contain("-AlwaysRun -Action");
         entry.Should().Contain("Agent Registration is development-only");
-        common.Should().Contain("Move-Item -LiteralPath $temporary -Destination $Path -Force");
+        common.Should().Contain("[IO.File]::Move($temporary, $fullPath, $true)");
+        common.Should().Contain("$stream.Flush($true)");
+        common.Should().NotContain("$Path.tmp");
+        common.Should().Contain("configurationFingerprint");
+        common.Should().Contain("Assert-BootstrapAcceptedPlan");
         common.Should().Contain("Another bootstrap process holds");
         common.Should().NotContain("message = $_.Exception.Message");
         common.Should().Contain("Review the local terminal output, correct the cause, and run Resume.");
@@ -1337,6 +1360,12 @@ public class InfrastructureAsCodeSecurityTests
         entra.Should().Contain("AgentRegistration.ReadWrite.All");
         entra.Should().Contain("ProtectionScopes.Compute.User");
         entra.Should().NotContain("Write-Host $secretText");
+        entra.Should().Contain("Get-BootstrapDeterministicRoleAssignmentName");
+        entra.Should().Contain("'role', 'assignment', 'create', '--name', $temporaryRoleAssignmentName");
+        entra.Should().Contain("'role', 'assignment', 'delete', '--ids', $temporaryRoleAssignmentId");
+        entra.Should().Contain("could not be proven removed");
+        entra.Should().NotContain(
+            "'role', 'assignment', 'delete', '--assignee-object-id', $UserObjectId");
         agent365.Should().Contain("applications/microsoft.graph.agentIdentityBlueprint");
         agent365.Should().Contain("managerApplications");
         agent365.Should().NotContain("--show-secret");
@@ -1353,6 +1382,163 @@ public class InfrastructureAsCodeSecurityTests
         migrator.Should().Contain("EnsureCreatedAsync");
         dockerIgnore.Should().Contain(".bootstrap/**");
         dockerIgnore.Should().Contain("bootstrap/config.json");
+    }
+
+    [Fact]
+    public void Bootstrap_StartedExternalMutations_ShouldRequireExactReadbackBeforeReuse()
+    {
+        var entry = ReadRepositoryFile("bootstrap", "bootstrap.ps1");
+        var common = ReadRepositoryFile("bootstrap", "modules", "Common.psm1");
+        var entra = ReadRepositoryFile("bootstrap", "modules", "Entra.psm1");
+        var agent365 = ReadRepositoryFile("bootstrap", "modules", "Agent365.psm1");
+
+        common.Should().Contain("$existing.status -in @('Running', 'Failed')");
+        common.Should().Contain("[switch]$NoAutomaticReplayAfterStart");
+        common.Should().Contain("Reconciler must return exactly one typed disposition.");
+        common.Should().Contain("No mutation was repeated");
+        common.Should().Contain("reconciledAtUtc");
+        common.Should().Contain(
+            "Completed bootstrap step '$Name' no longer matches exact provider readback and is not safe to replay automatically.");
+
+        entry.Should().Contain("function Invoke-GatewayExactReconciliation");
+        entry.Should().Contain("Ensure-GatewayApiApplication");
+        entry.Should().Contain("Ensure-AdminUiApplication");
+        entry.Should().Contain("Ensure-Agent365SeedBlueprint");
+        entry.Should().Contain("Get-GatewayWorkloadIdentityEvidence");
+        entry.Should().Contain("Resolve-AdminUiCredentialAfterStartedOutcome");
+        entra.Should().Contain("Get-AdminUiCredentialEvidenceFromMetadata");
+        entry.Should().Contain("Get-BootstrapPurviewPolicyEvidence");
+        Regex.Matches(entry, "-ReconcileOnly", RegexOptions.CultureInvariant)
+            .Count.Should().BeGreaterThanOrEqualTo(3);
+        Regex.Matches(entry, "-NoAutomaticReplayAfterStart", RegexOptions.CultureInvariant)
+            .Count.Should().BeGreaterThanOrEqualTo(6);
+
+        entra.Should().Contain("[switch]$ReconcileOnly");
+        entra.Should().Contain("read-only reconciliation");
+        agent365.Should().Contain("[switch]$ReconcileOnly");
+        agent365.Should().Contain("must not be repeated automatically");
+    }
+
+    [Fact]
+    public void Bootstrap_AcrBuild_ShouldStageOnlyRegularAllowlistedSource()
+    {
+        var azure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
+        var dockerIgnore = ReadRepositoryFile(".dockerignore");
+
+        azure.Should().Contain("function Get-GatewayAcrBuildSourceFiles");
+        azure.Should().Contain("function New-GatewayAcrBuildContext");
+        azure.Should().Contain("[IO.Directory]::CreateTempSubdirectory('a365gw-acr-build-')");
+        azure.Should().Contain("Assert-BootstrapSourcePathIsRegular");
+        azure.Should().Contain("function Assert-GatewayCredentialFreeNuGetConfig");
+        azure.Should().Contain("[Xml.DtdProcessing]::Prohibit");
+        azure.Should().Contain("$document.XmlResolver = $null");
+        azure.Should().Contain("$sections[0].Name -cne 'packageSources'");
+        azure.Should().Contain("unreviewed-source-host");
+        azure.Should().Contain(
+            "The ACR build refuses NuGet configuration outside the exact credential-free HTTPS source allowlist. No configuration value was rendered.");
+        azure.Should().Contain("'src/Gateway.Api/Dockerfile'");
+        azure.Should().Contain("'src/Gateway.Provisioning.Worker/Dockerfile'");
+        azure.Should().Contain("'src/Gateway.AdminUi/Dockerfile'");
+        azure.Should().Contain("$buildContext = New-GatewayAcrBuildContext");
+        azure.Should().Contain("$buildContext, '--no-wait'");
+        azure.Should().Contain("Remove-Item -LiteralPath $buildContext -Recurse -Force");
+
+        dockerIgnore.Should().Contain("**/.secrets.*");
+        dockerIgnore.Should().Contain("**/.env.*");
+        dockerIgnore.Should().Contain("**/*.pfx");
+        dockerIgnore.Should().Contain("**/*credentials*.json");
+    }
+
+    [Fact]
+    public void Bootstrap_StateTenantObjectsAndPurview_ShouldUseExactOwnedReadback()
+    {
+        var common = ReadRepositoryFile("bootstrap", "modules", "Common.psm1");
+        var entra = ReadRepositoryFile("bootstrap", "modules", "Entra.psm1");
+        var experience = ReadRepositoryFile("bootstrap", "modules", "Experience.psm1");
+        var purview = ReadRepositoryFile("bootstrap", "modules", "Purview.psm1");
+        var sourceGate = ReadRepositoryFile("tools", "Test-BootstrapSource.ps1");
+
+        common.Should().Contain("deploymentOwnershipId = [guid]::NewGuid().ToString('D')");
+        common.Should().Contain("State deploymentOwnershipId");
+        common.Should().Contain("must not contain symbolic links or reparse points");
+        entra.Should().Contain("A365GatewayOwnership:");
+        entra.Should().Contain("Test-ExactStringSet -Actual");
+        entra.Should().Contain("must have exactly the pinned bootstrap operator as owner");
+        experience.Should().Contain("$Evidence.deploymentOwnershipId");
+        experience.Should().Contain("$Evidence.networkRecoveryRecordCleared -ne $true");
+
+        purview.Should().Contain("function Get-BootstrapPurviewPolicyEvidence");
+        purview.Should().Contain("Assert-BootstrapPurviewCollectionObject");
+        purview.Should().Contain("Assert-BootstrapPurviewPolicyObject");
+        purview.Should().Contain("Assert-BootstrapPurviewRuleObject");
+        purview.Should().Contain("exactTypedReadback = $true");
+        purview.Should().Contain("propagationStatus = 'PendingCanaryVerification'");
+        experience.Should().Contain("$Evidence.exactTypedReadback -ne $true");
+
+        sourceGate.Should().Contain("$result.FailedCount -gt 0 -or $failedContainerCount -gt 0");
+        sourceGate.Should().Contain("Bootstrap/runtime Pester failed:");
+    }
+
+    [Fact]
+    public void GatewayLaunchersAndSetupUi_ShouldPreserveArgumentsAndLoopbackSessionBoundary()
+    {
+        var launcher = ReadRepositoryFile("gateway");
+        var windowsLauncher = ReadRepositoryFile("gateway.cmd");
+        var setupProgram = ReadRepositoryFile("tools", "Gateway.Setup", "Program.cs");
+        var setupCommand = ReadRepositoryFile(
+            "tools", "Gateway.Setup", "Services", "BootstrapCommand.cs");
+        var setupLoader = ReadRepositoryFile(
+            "tools", "Gateway.Setup", "Services", "BootstrapConfigLoader.cs");
+
+        launcher.Should().Contain("set -euo pipefail");
+        launcher.Should().Contain("pwsh_args=(");
+        launcher.Should().Contain("exec pwsh \"${pwsh_args[@]}\"");
+        launcher.Should().NotContain("eval ");
+        windowsLauncher.Should().Contain("DisableDelayedExpansion");
+        windowsLauncher.Should().Contain("Values supplied by the caller cross into PowerShell through environment");
+        windowsLauncher.Should().Contain("@p;");
+
+        setupProgram.Should().Contain("SessionNonceGate.Create()");
+        setupProgram.Should().Contain("AddAntiforgery");
+        setupProgram.Should().Contain("app.UseAntiforgery()");
+        setupProgram.Should().Contain("http://127.0.0.1:");
+        setupCommand.Should().Contain("startInfo.ArgumentList.Add(argument)");
+        setupLoader.Should().Contain("bootstrap/config.json is a symbolic link");
+        setupLoader.Should().Contain("It will not overwrite the file");
+    }
+
+    [Fact]
+    public void Bootstrap_ShouldNamespaceTenantObjectsAndKeepOptionalPaidPreviewFeaturesOff()
+    {
+        var azure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
+        var entra = ReadRepositoryFile("bootstrap", "modules", "Entra.psm1");
+        var verification = ReadRepositoryFile("bootstrap", "modules", "Verification.psm1");
+        var subscription = ReadRepositoryFile("bootstrap", "infra", "subscription.bicep");
+        var example = ReadRepositoryFile("bootstrap", "config.example.json");
+
+        entra.Should().Contain(
+            "A365 Gateway API - $($Config.projectName)-$($Config.environment)");
+        entra.Should().Contain(
+            "api://a365-gateway-$($Config.projectName)-$($Config.environment)");
+        entra.Should().Contain(
+            "A365 Gateway Admin UI - $($Config.projectName)-$($Config.environment)");
+        entra.Should().Contain(
+            "a365gw-$($Config.projectName)-api-obo-$($Config.environment)");
+        verification.Should().Contain(
+            "a365gw-$($Config.projectName)-api-obo-$($Config.environment)");
+        subscription.Should().Contain(
+            "name: 'bootstrap-foundation-${projectName}-${environment}'");
+        subscription.Should().Contain("deploymentId: '${projectName}-${environment}'");
+
+        azure.Should().NotContain("$Foundation.keyVaultUri");
+        azure.Should().Contain(
+            "kv-$($Config.projectName)-$($Config.environment).vault.azure.net");
+
+        using var document = JsonDocument.Parse(example);
+        document.RootElement.GetProperty("agent365")
+            .GetProperty("allowDevelopmentRegistryPreview").GetBoolean().Should().BeFalse();
+        document.RootElement.GetProperty("promptShield")
+            .GetProperty("enabled").GetBoolean().Should().BeFalse();
     }
 
     private static string ReadRepositoryFile(params string[] pathSegments)

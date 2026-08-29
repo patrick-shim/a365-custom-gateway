@@ -16,6 +16,16 @@ param environment string
 @description('Project name used by the existing main deployment.')
 param projectName string = 'a365gw'
 
+@description('Random bootstrap-state ownership GUID used for exact deployment and resource adoption checks.')
+@minLength(36)
+@maxLength(36)
+param deploymentOwnershipId string
+
+@description('Canonical SHA-256 fingerprint of the content-addressed source snapshot accepted by the bootstrap plan. This is provenance metadata, not a credential.')
+@minLength(71)
+@maxLength(71)
+param bootstrapSourceFingerprint string
+
 @description('Name of the existing Container Apps environment that hosts the deployed Gateway API (for example, cae-a365gw-dev-vnet).')
 @minLength(1)
 param containerAppsEnvironmentName string
@@ -78,7 +88,11 @@ var tags = {
   project: 'a365-gateway'
   environment: environment
   managedBy: 'bicep'
+  projectName: projectName
+  deploymentId: '${projectName}-${environment}'
   workload: 'admin-ui'
+  bootstrapOwnershipId: deploymentOwnershipId
+  bootstrapSourceFingerprint: bootstrapSourceFingerprint
 }
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' existing = {
@@ -151,3 +165,12 @@ output adminUiSignedOutCallbackUri string = adminUiApp.outputs.signedOutCallback
 
 @description('Principal ID of the Admin UI deployment identity.')
 output adminUiPrincipalId string = adminUiApp.outputs.principalId
+
+@description('Random bootstrap-state ownership GUID echoed for exact recovery binding.')
+output deploymentOwnershipId string = deploymentOwnershipId
+
+@description('Accepted bootstrap source fingerprint echoed for exact deployment recovery.')
+output bootstrapSourceFingerprint string = bootstrapSourceFingerprint
+
+@description('Immutable Admin UI image reference supplied by the accepted bootstrap plan.')
+output adminUiContainerImage string = adminUiContainerImage

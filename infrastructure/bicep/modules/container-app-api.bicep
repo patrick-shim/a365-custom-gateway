@@ -108,6 +108,36 @@ param promptShieldEnabled bool = false
 @description('Azure AI Content Safety endpoint used by Prompt Shields.')
 param promptShieldEndpoint string = ''
 
+@description('Enable the bounded read-only bootstrap database attestation endpoint.')
+param databaseAttestationEnabled bool = false
+
+@description('Exact bootstrap deployment ownership identifier expected in the durable database marker.')
+param databaseAttestationDeploymentOwnershipId string = ''
+
+@description('Exact accepted deployment-source fingerprint expected in the durable database marker.')
+param databaseAttestationAcceptedSourceFingerprint string = ''
+
+@description('Exact current reviewed schema fingerprint captured after bootstrap initialization.')
+param databaseAttestationExpectedSchemaFingerprint string = ''
+
+@description('Exact Azure SQL server FQDN bound into the durable database marker.')
+param databaseAttestationSqlServerFqdn string = ''
+
+@description('Exact database name bound into the durable database marker.')
+param databaseAttestationDatabaseName string = ''
+
+@description('Exact Gateway API database principal name.')
+param databaseAttestationApiPrincipalName string = ''
+
+@description('Exact Gateway API managed-identity client ID stored as the database principal SID.')
+param databaseAttestationApiPrincipalClientId string = ''
+
+@description('Exact Gateway worker database principal name.')
+param databaseAttestationWorkerPrincipalName string = ''
+
+@description('Exact Gateway worker managed-identity client ID stored as the database principal SID.')
+param databaseAttestationWorkerPrincipalClientId string = ''
+
 @secure()
 @description('Existing application-scoped Container Apps secrets to preserve unchanged during a full ARM PUT. Values must come directly from the resource provider listSecrets operation and must never be logged or output.')
 param preservedConfigurationSecrets object = {}
@@ -296,6 +326,46 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'PromptShield__ApiVersion'
               value: '2024-09-01'
+            }
+            {
+              name: 'DatabaseAttestation__Enabled'
+              value: string(databaseAttestationEnabled)
+            }
+            {
+              name: 'DatabaseAttestation__DeploymentOwnershipId'
+              value: databaseAttestationDeploymentOwnershipId
+            }
+            {
+              name: 'DatabaseAttestation__AcceptedSourceFingerprint'
+              value: databaseAttestationAcceptedSourceFingerprint
+            }
+            {
+              name: 'DatabaseAttestation__ExpectedSchemaFingerprint'
+              value: databaseAttestationExpectedSchemaFingerprint
+            }
+            {
+              name: 'DatabaseAttestation__SqlServerFqdn'
+              value: databaseAttestationSqlServerFqdn
+            }
+            {
+              name: 'DatabaseAttestation__DatabaseName'
+              value: databaseAttestationDatabaseName
+            }
+            {
+              name: 'DatabaseAttestation__ApiPrincipalName'
+              value: databaseAttestationApiPrincipalName
+            }
+            {
+              name: 'DatabaseAttestation__ApiPrincipalClientId'
+              value: databaseAttestationApiPrincipalClientId
+            }
+            {
+              name: 'DatabaseAttestation__WorkerPrincipalName'
+              value: databaseAttestationWorkerPrincipalName
+            }
+            {
+              name: 'DatabaseAttestation__WorkerPrincipalClientId'
+              value: databaseAttestationWorkerPrincipalClientId
             }
             {
               name: 'OutboxRelay__PollingIntervalSeconds'

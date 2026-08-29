@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Gateway.UnitTests" />
     <InternalsVisibleTo Include="Gateway.IntegrationTests" />
     <InternalsVisibleTo Include="Gateway.EndToEndTests" />
     <InternalsVisibleTo Include="DynamicProxyGenAssembly2" />

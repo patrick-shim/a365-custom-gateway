@@ -1,0 +1,153 @@
+@page "/setup/profile"
+@rendermode InteractiveServer
+@inject SetupWizardState State
+@inject SetupActivityTracker Activity
+@inject NavigationManager Navigation
+
+<PageTitle>Profile and features · A365 Gateway Setup</PageTitle>
+
+<div class="page-heading">
+    <p class="eyebrow">Step 3 of 6</p>
+    <h1>Choose the deployment profile</h1>
+    <p>Setup fills safe defaults and keeps paid or preview capabilities explicit. You can review every public value before a file is written.</p>
+</div>
+
+@if (State.ExistingConfigurationLoaded)
+{
+    <div class="notice neutral" role="status">
+        <strong>Existing deployment identity is locked for recovery.</strong>
+        <span>Review these imported public values, then create a fresh Plan and explicitly Resume or Apply. Setup will not silently change a configuration that may already own resumable state.</span>
+    </div>
+}
+
+<EditForm Model="State.Form" OnValidSubmit="Continue" class="setup-card form-card">
+    <DataAnnotationsValidator />
+    <ValidationSummary />
+
+    <section class="card-section" aria-labelledby="profile-heading">
+        <div class="section-heading"><div><h2 id="profile-heading">Profile</h2><p>The profile controls environment safety defaults; it does not bypass backend authorization.</p></div></div>
+        <div class="field-grid">
+            <div class="field full">
+                <label for="profile">Deployment profile</label>
+                <select id="profile" class="control" value="@State.Form.Profile" @onchange="ChangeProfile" disabled="@State.ExistingConfigurationLoaded">
+                    @foreach (var profile in Enum.GetValues<DeploymentProfile>())
+                    {
+                        <option value="@profile">@profile.DisplayName()</option>
+                    }
+                </select>
+                <small>@ProfileDescription</small>
+            </div>
+            <div class="field">
+                <label for="project-name">Project name</label>
+                <InputText id="project-name" class="control" @bind-Value="State.Form.ProjectName" @oninput="ProjectNameChanged" autocomplete="off" disabled="@State.ExistingConfigurationLoaded" />
+                <ValidationMessage For="@(() => State.Form.ProjectName)" />
+                <small>2–8 lowercase letters or numbers; starts with a letter.</small>
+            </div>
+            <div class="field">
+                <label for="location">Azure region</label>
+                <InputText id="location" class="control" @bind-Value="State.Form.Location" @oninput="eventArgs => State.Form.Location = eventArgs.Value?.ToString() ?? string.Empty" autocomplete="off" disabled="@State.ExistingConfigurationLoaded" />
+                <ValidationMessage For="@(() => State.Form.Location)" />
+                <small>Use the Azure CLI region name, such as <code>eastus2</code>.</small>
+            </div>
+            <div class="field">
+                <label for="resource-group">Resource group</label>
+                <InputText id="resource-group" class="control" @bind-Value="State.Form.ResourceGroupName" @oninput="eventArgs => State.Form.ResourceGroupName = eventArgs.Value?.ToString() ?? string.Empty" autocomplete="off" disabled="@State.ExistingConfigurationLoaded" />
+                <ValidationMessage For="@(() => State.Form.ResourceGroupName)" />
+            </div>
+            <div class="field">
+                <label for="alert-email">Alert email</label>
+                <InputText id="alert-email" class="control" type="email" @bind-Value="State.Form.AlertEmail" @oninput="eventArgs => State.Form.AlertEmail = eventArgs.Value?.ToString() ?? string.Empty" autocomplete="email" disabled="@State.ExistingConfigurationLoaded" />
+                <ValidationMessage For="@(() => State.Form.AlertEmail)" />
+                <small>Stored only in ignored bootstrap configuration and Azure alert settings.</small>
+            </div>
+            <div class="field">
+                <label for="manager-application-ids">Reviewed Agent 365 manager application IDs</label>
+                <InputTextArea id="manager-application-ids" class="control" rows="3" @bind-Value="State.Form.ReviewedManagerApplicationIds" disabled="@State.ExistingConfigurationLoaded" />
+                <ValidationMessage For="@(() => State.Form.ReviewedManagerApplicationIds)" />
+                <small>Enter 1–10 GUIDs separated by commas or new lines. These grant first-party manager authority: validate them independently for this tenant/provider version using the Entra setup runbook. Setup never authorizes IDs merely because Graph returned them.</small>
+            </div>
+        </div>
+    </section>
+
+    <section class="card-section" aria-labelledby="features-heading">
+        <div class="section-heading"><div><h2 id="features-heading">Optional features</h2><p>Base Gateway infrastructure is always included. Optional controls may require licenses, quota, roles, or interactive consent.</p></div></div>
+        <div class="feature-grid">
+            <label class="feature-card @(State.Form.AllowDevelopmentRegistryPreview ? "selected" : string.Empty)">
+                <InputCheckbox @bind-Value="State.Form.AllowDevelopmentRegistryPreview" disabled="@(State.ExistingConfigurationLoaded || State.Form.Profile != DeploymentProfile.QuickDevelopment)" />
+                <span><strong>Development Registry preview</strong><small>Allows the signed-in Administrator flow only in dev. The beta dependency remains unsupported for production.</small></span>
+            </label>
+            <label class="feature-card @(State.Form.PromptShieldEnabled ? "selected" : string.Empty)">
+                <InputCheckbox @bind-Value="State.Form.PromptShieldEnabled" disabled="@State.ExistingConfigurationLoaded" />
+                <span><strong>Prompt Shields</strong><small>Creates Azure AI Content Safety with local keys disabled and managed-identity access.</small></span>
+            </label>
+            <label class="feature-card @(State.Form.PurviewEnabled ? "selected" : string.Empty)">
+                <InputCheckbox @bind-Value="State.Form.PurviewEnabled" disabled="@State.ExistingConfigurationLoaded" />
+                <span><strong>Microsoft Purview</strong><small>Authors reviewed blueprint-scoped collection/DLP configuration. Readback is not propagation proof.</small></span>
+            </label>
+        </div>
+
+        @if (State.Form.PromptShieldEnabled)
+        {
+            <div class="field compact-field">
+                <label for="prompt-sku">Prompt Shields SKU</label>
+                <InputSelect id="prompt-sku" class="control" @bind-Value="State.Form.PromptShieldSkuName" disabled="@State.ExistingConfigurationLoaded">
+                    <option value="F0">F0 · limited free quota when available</option>
+                    <option value="S0">S0 · paid</option>
+                </InputSelect>
+            </div>
+        }
+
+        @if (State.Form.PurviewEnabled)
+        {
+            <div class="field compact-field">
+                <label for="purview-classifier">Tenant-approved sensitive information type</label>
+                <InputText id="purview-classifier" class="control" @bind-Value="State.Form.PurviewSensitiveInformationType" @oninput="eventArgs => State.Form.PurviewSensitiveInformationType = eventArgs.Value?.ToString() ?? string.Empty" autocomplete="off" disabled="@State.ExistingConfigurationLoaded" />
+                <ValidationMessage For="@(() => State.Form.PurviewSensitiveInformationType)" />
+                <small>Enter the exact reviewed tenant name. Setup never guesses a classifier.</small>
+            </div>
+        }
+    </section>
+
+    <div class="form-footer">
+        <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/account">Back</FluentAnchor>
+        <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent">Review permissions</FluentButton>
+    </div>
+</EditForm>
+
+@code {
+    private string ProfileDescription => State.Form.Profile switch
+    {
+        DeploymentProfile.QuickDevelopment => "Complete development foundation; Registry preview remains off unless you explicitly enable it below.",
+        DeploymentProfile.StagingFoundation => "Staging foundation with Registry creation closed and no production-readiness claim.",
+        DeploymentProfile.ProductionSafeFoundation => "Production-safe foundation only; the beta Registry boundary remains closed.",
+        _ => string.Empty
+    };
+
+    protected override void OnInitialized()
+    {
+        if (State.Form.SubscriptionId == Guid.Empty)
+        {
+            Navigation.NavigateTo("/setup/account");
+        }
+    }
+
+    private void ChangeProfile(ChangeEventArgs args)
+    {
+        if (Enum.TryParse<DeploymentProfile>(args.Value?.ToString(), out var profile))
+        {
+            State.Form.ApplyProfile(profile);
+            Activity.Touch();
+        }
+    }
+
+    private void ProjectNameChanged(ChangeEventArgs args)
+    {
+        State.Form.ApplyProjectName(args.Value?.ToString() ?? string.Empty);
+    }
+
+    private void Continue()
+    {
+        Activity.Touch();
+        Navigation.NavigateTo("/setup/permissions");
+    }
+}

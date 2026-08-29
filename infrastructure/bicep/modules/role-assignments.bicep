@@ -21,6 +21,9 @@ param enableWorkerCredentialKeyVaultSecretsOfficer bool = false
 @description('Grant the worker read-only secret access to the shared Key Vault for certificate-based Purview policy automation.')
 param enableWorkerKeyVaultSecretsUser bool = false
 
+@description('Exact shared-vault secret name containing the Purview automation certificate. Required only when worker certificate access is enabled.')
+param workerPurviewCertificateSecretName string = ''
+
 @description('Name of the Azure Storage Account.')
 param storageAccountName string
 
@@ -53,6 +56,11 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
 }
 
+resource workerPurviewCertificateSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = if (enableWorkerKeyVaultSecretsUser) {
+  parent: keyVault
+  name: workerPurviewCertificateSecretName
+}
+
 resource workerCredentialKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: workerCredentialKeyVaultName
 }
@@ -77,17 +85,6 @@ resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-11-01-pr
 // ============================================================================
 // API Role Assignments
 // ============================================================================
-
-// API -> Key Vault: Key Vault Secrets User
-resource apiKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(subscription().id, apiPrincipalId, keyVault.id, keyVaultSecretsUserRoleId)
-  scope: keyVault
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
-    principalId: apiPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
 
 // API -> Storage: Storage Blob Data Contributor
 resource apiStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -126,10 +123,11 @@ resource apiAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 // Worker Role Assignments
 // ============================================================================
 
-// Worker -> shared Key Vault: read-only certificate retrieval for Purview policy automation.
+// Worker -> one exact shared-vault certificate secret. Vault-wide access would
+// also expose the unrelated Admin UI client credential and is forbidden.
 resource workerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableWorkerKeyVaultSecretsUser) {
-  name: guid(subscription().id, workerPrincipalId, keyVault.id, keyVaultSecretsUserRoleId)
-  scope: keyVault
+  name: guid(subscription().id, workerPrincipalId, workerPurviewCertificateSecret!.id, keyVaultSecretsUserRoleId)
+  scope: workerPurviewCertificateSecret!
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
     principalId: workerPrincipalId
@@ -165,19 +163,6 @@ resource workerServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2
   scope: serviceBusQueue
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', serviceBusDataReceiverRoleId)
-    principalId: workerPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Worker -> Service Bus: Azure Service Bus Data Sender. The workflow-v3 worker
-// persists continuation messages to the SQL outbox and its relay publishes them
-// back to the same isolated queue.
-resource workerServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(subscription().id, workerPrincipalId, serviceBusQueue.id, serviceBusDataSenderRoleId)
-  scope: serviceBusQueue
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', serviceBusDataSenderRoleId)
     principalId: workerPrincipalId
     principalType: 'ServicePrincipal'
   }

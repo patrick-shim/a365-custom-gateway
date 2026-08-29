@@ -124,3 +124,6 @@ output namespaceFqdn string = '${serviceBusNamespace.name}.servicebus.windows.ne
 
 @description('Name of the provisioning queue.')
 output queueName string = provisioningQueue.name
+
+@description('Resource ID of the provisioning queue.')
+output queueId string = provisioningQueue.id

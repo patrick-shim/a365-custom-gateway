@@ -18,6 +18,61 @@ development resource group in this checkpoint, and none of the live identifiers,
 queues, registrations, policies, or retained evidence below were mutated by that
 source work.
 
+## 2026-08-29 local Phase 0–6 bootstrap candidate (unreleased and incomplete)
+
+The working tree now exposes the day-zero path through `./gateway` on macOS/Linux
+and `gateway.cmd` on Windows. `gateway setup` is an ephemeral loopback-only Fluent
+UI and `gateway up` is the terminal workflow; both call the same PowerShell state
+machine. This is local source only. It has not been applied to this development
+resource group or to a disposable subscription.
+
+This checkpoint does **not** complete the original Phase 0–6 plan. Phase 0 remains
+partial pending every-checkpoint interruption proof and a disposable deployment;
+Phase 1 is source-complete but lacks the required platform evidence; Phases 2–4
+retain guided-profile, preflight, and per-error recovery-contract gaps; Phase 5 is
+implemented locally but not deployed/authenticated; and Phase 6 clean-subscription,
+interrupt/Resume, first-registration, and bounded-canary proof has not run. The
+canonical per-phase matrix is in `docs/implementation-status.md`.
+
+Plan now fingerprints the configuration, deployment descriptor, sanitized ARM
+What-If, deployment-affecting source, and one public client IPv4 corroborated by
+bounded ipify and AWS Check IP reads. Acceptance creates an ignored,
+content-addressed source snapshot. Apply/Resume requires the running checkout to
+match that source, validates the snapshot, and executes mutation modules, templates,
+scripts, project inputs, and the allowlisted ACR build context from the accepted
+bytes. Any durable step or output prevents another source generation from being
+mixed into the same state.
+
+Azure operations are pinned to the exact reviewed subscription and authenticated
+tenant. A fresh deployment refuses a pre-existing resource group or same-name
+workload identity. Bootstrap deployments/resources carry the random state ownership
+ID and accepted source fingerprint; API, worker, and Admin UI checkpoints also
+require exact immutable image references before reuse.
+
+Empty-database setup may open only the Plan-disclosed exact caller-IPv4 firewall
+rule. It proves that rule absent after use and restores/proves SQL public access
+`Disabled`; failed cleanup preserves the safe ignored recovery record. The migrator
+accepts only zero user tables and verifies the exact EF schema plus narrowly bounded
+managed-identity database authority.
+
+The Admin UI user-assigned identity receives Key Vault Secrets User only on its
+exact Entra client-secret resource. The worker's optional Purview certificate role
+uses the exact configured certificate-secret scope, not the shared vault, and the
+API has no shared-vault role. Readback rejects wider/extra assignments.
+
+The full post-hardening local gate passes: zero-warning/zero-error Release build;
+**1,279/1,279** direct Release tests (unit 478, Admin UI 155, local Setup 75,
+observability/runtime 149, integration 92, end-to-end 106, architecture 113, and
+security 111); Pester 208 passed, 0 failed, and 1 Windows-only launcher test skipped
+out of 209 discovered; **16** PowerShell files and **2** bootstrap JSON contracts
+parsed; all **23** Bicep templates compiled; `dotnet format --verify-no-changes`
+and `git diff --check` clean; and **58** repository-local links across **55**
+Markdown files with no broken target. A responsive loopback Setup UI check at
+1280x720 and 390x844 showed no horizontal overflow and confirmed that an unsafe
+existing ignored configuration disables Start without overwriting the file. These
+are local source results only; do not substitute them for the live Prompt Shields
+deployment evidence below.
+
 ## 2026-08-29 live Prompt Shields deployment and proof
 
 The external development environment now runs the pre-model prompt-protection
@@ -187,8 +242,9 @@ intent, and one-POST checks.
 
 No historical retry, second Registry POST, retained-artifact mutation, production
 work, destructive cleanup, message disposition, credential disclosure, or SQL
-finalization is implied. Current release counts are recorded only in the
-implementation status after the complete gate is rerun.
+finalization is implied. The current local source totals are recorded in the
+implementation status; the separate live-deployment totals above remain the
+deployed evidence boundary.
 
 Historical note: the first live `OpenDelegatedCompletion` exposed a controller
 `Nullable<Guid>.Value` bug before user action. The fix plus architecture regression
@@ -805,6 +861,15 @@ tenant policy, identity role, certificate, queue, or live registration was chang
 for this checkpoint. Do not treat local tests or Bicep compilation as deployment
 evidence.
 
+The latest local increment also treats the persisted provider IDs and authorized
+blueprint-application set as the only policy authority, rejects extra scope,
+exclusions, bypass, conditions/actions, or unexpected modes, requires proven
+temporary PKCS#12 cleanup, and revalidates the exact collection/DLP/rule contract in
+the final workflow stage before `Active`. This hardened runtime has no deployed
+worker revision or live tenant canary. The earlier live `AuditLogged`/`Blocked`
+evidence below applies to the deployed Graph data-plane adapter, not this unreleased
+provisioning automation.
+
 Before a reviewed development rollout, verify the automation application has
 `Exchange.ManageAsApp` and only the required Purview compliance RBAC, verify its
 certificate secret is versionless and readable by the worker identity, deploy with
@@ -830,9 +895,11 @@ separate authorization entry here.
    reviewed workstreams.
 6. Prove `bootstrap/bootstrap.ps1` in a disposable clean development subscription,
    not this evidence-bearing resource group. Capture its safe state, template
-   outputs, image digests, empty-schema initialization, final preflight, one real
-   registration/data-plane canary, and Purview propagation/verdict before marking
-   clean-subscription recovery live-proven.
+   ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
+   digests, exact Key Vault scopes, temporary SQL-rule cleanup, empty-schema
+   initialization, final preflight, one real registration/data-plane canary, and
+   Purview propagation/verdict before marking clean-subscription recovery
+   live-proven.
 
 ## Historical boundary
 

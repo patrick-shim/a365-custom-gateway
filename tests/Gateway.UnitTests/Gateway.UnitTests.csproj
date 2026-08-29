@@ -29,9 +29,11 @@
     <ProjectReference Include="..\..\src\Gateway.Application\Gateway.Application.csproj" />
     <ProjectReference Include="..\..\src\Gateway.Contracts\Gateway.Contracts.csproj" />
     <ProjectReference Include="..\..\src\Gateway.Domain\Gateway.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Gateway.Infrastructure\Gateway.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Gateway.Observability\Gateway.Observability.csproj" />
     <ProjectReference Include="..\..\src\Gateway.Purview\Gateway.Purview.csproj" />
     <ProjectReference Include="..\..\src\Gateway.ContentSafety\Gateway.ContentSafety.csproj" />
+    <ProjectReference Include="..\..\tools\Gateway.DatabaseMigrator\Gateway.DatabaseMigrator.csproj" />
   </ItemGroup>
 
 </Project>

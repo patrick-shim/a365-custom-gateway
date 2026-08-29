@@ -94,6 +94,11 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
 }
 
+resource adminUiClientSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
+  parent: keyVault
+  name: entraClientSecretName
+}
+
 resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' existing = {
   name: containerRegistryName
 }
@@ -109,8 +114,8 @@ resource deploymentIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@20
 }
 
 resource keyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, deploymentIdentity.id, keyVaultSecretsUserRoleId)
-  scope: keyVault
+  name: guid(adminUiClientSecret.id, deploymentIdentity.id, keyVaultSecretsUserRoleId)
+  scope: adminUiClientSecret
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
     principalId: deploymentIdentity.properties.principalId

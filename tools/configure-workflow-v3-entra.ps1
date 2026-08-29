@@ -41,6 +41,8 @@ param(
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$')]
     [string]$FederatedCredentialName = 'a365gw-api-obo-dev',
 
+    [switch]$RequireNoDestructiveChanges,
+
     [switch]$Apply
 )
 
@@ -73,8 +75,55 @@ function Write-Plan {
     Write-Host "[PLAN] $Message" -ForegroundColor Yellow
 }
 
+function Get-ExactBootstrapSubscriptionPin {
+    $raw = [Environment]::GetEnvironmentVariable('A365GW_BOOTSTRAP_SUBSCRIPTION_ID')
+    $parsed = [guid]::Empty
+    if ([string]::IsNullOrWhiteSpace($raw) -or
+        -not [guid]::TryParseExact($raw, 'D', [ref]$parsed) -or
+        $parsed -eq [guid]::Empty -or
+        $raw -cne $parsed.ToString('D')) {
+        throw 'A365GW_BOOTSTRAP_SUBSCRIPTION_ID must be one canonical, non-empty lowercase GUID established by the verified bootstrap login.'
+    }
+    if ($parsed -ne $ExpectedSubscriptionId) {
+        throw 'The bootstrap subscription environment pin does not match ExpectedSubscriptionId.'
+    }
+    return $parsed.ToString('D')
+}
+
+function Add-ExactSubscriptionPin {
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Arguments)
+
+    $explicitValues = [Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt $Arguments.Count; $index++) {
+        $argument = [string]$Arguments[$index]
+        if ($argument -ceq '--subscription') {
+            if ($index + 1 -ge $Arguments.Count -or
+                [string]::IsNullOrWhiteSpace([string]$Arguments[$index + 1])) {
+                throw 'Azure CLI --subscription requires the exact pinned subscription ID.'
+            }
+            $explicitValues.Add([string]$Arguments[$index + 1])
+        }
+        elseif ($argument.StartsWith('--subscription=', [StringComparison]::Ordinal)) {
+            $explicitValues.Add($argument.Substring('--subscription='.Length))
+        }
+    }
+
+    if ($explicitValues.Count -gt 1) {
+        throw 'Azure CLI arguments contain more than one explicit subscription target.'
+    }
+    if ($explicitValues.Count -eq 1) {
+        if ($explicitValues[0] -cne $script:PinnedSubscriptionId) {
+            throw 'Azure CLI arguments do not match the exact bootstrap subscription pin.'
+        }
+        return @($Arguments)
+    }
+    return @($Arguments) + @('--subscription', $script:PinnedSubscriptionId)
+}
+
 function Invoke-AzJson {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $effectiveArguments = Add-ExactSubscriptionPin -Arguments $Arguments
 
     # The Windows Azure CLI entry point is a .cmd wrapper. PowerShell's legacy
     # native argument marshalling can let URL query separators (`&`) escape into
@@ -91,12 +140,13 @@ function Invoke-AzJson {
     }
 
     $output = if ($null -ne $azPython -and (Test-Path -LiteralPath $azPython)) {
-        & $azPython -IBm azure.cli @Arguments --only-show-errors 2>&1
+        & $azPython -IBm azure.cli @effectiveArguments --only-show-errors 2>&1
     }
     else {
-        & az @Arguments --only-show-errors 2>&1
+        & az @effectiveArguments --only-show-errors 2>&1
     }
-    if ($LASTEXITCODE -ne 0) {
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
         throw "Azure CLI operation failed without rendering its response. Command category: $($Arguments[0..([math]::Min(2, $Arguments.Count - 1))] -join ' ')."
     }
 
@@ -105,12 +155,38 @@ function Invoke-AzJson {
         return $null
     }
 
-    return $text | ConvertFrom-Json -Depth 100
+    try {
+        return $text | ConvertFrom-Json -Depth 100 -ErrorAction Stop
+    }
+    catch {
+        throw 'Azure CLI returned malformed JSON; provider output was suppressed.'
+    }
+}
+
+function Assert-ExpectedAzureContext {
+    $account = Invoke-AzJson -Arguments @(
+        'account', 'show',
+        '--query', '{subscription:id,tenant:tenantId}',
+        '--output', 'json'
+    )
+    $actualSubscription = [guid]::Empty
+    $actualTenant = [guid]::Empty
+    if ($null -eq $account -or
+        -not [guid]::TryParseExact([string]$account.subscription, 'D', [ref]$actualSubscription) -or
+        -not [guid]::TryParseExact([string]$account.tenant, 'D', [ref]$actualTenant)) {
+        throw 'Azure CLI returned malformed account-boundary metadata; provider output was suppressed.'
+    }
+    if ($actualSubscription -ne $ExpectedSubscriptionId -or
+        $actualTenant -ne $ExpectedTenantId) {
+        throw 'The active Azure CLI account does not match the pinned subscription and tenant.'
+    }
+    return $account
 }
 
 function Invoke-AzMutation {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
+    $null = Assert-ExpectedAzureContext
     $null = Invoke-AzJson -Arguments (@($Arguments) + @('--output', 'none'))
 }
 
@@ -164,16 +240,13 @@ function Get-RequiredPermissionObjects {
     return @($resolved)
 }
 
-Write-Stage 'Pinned Azure account'
-$account = Invoke-AzJson -Arguments @(
-    'account', 'show',
-    '--query', '{subscription:id,tenant:tenantId}',
-    '--output', 'json'
-)
-if ([guid]$account.subscription -ne $ExpectedSubscriptionId -or
-    [guid]$account.tenant -ne $ExpectedTenantId) {
-    throw 'The active Azure CLI account does not match the pinned subscription and tenant.'
+if ($ExpectedSubscriptionId -eq [guid]::Empty -or $ExpectedTenantId -eq [guid]::Empty) {
+    throw 'ExpectedSubscriptionId and ExpectedTenantId must both be non-empty GUIDs.'
 }
+$script:PinnedSubscriptionId = Get-ExactBootstrapSubscriptionPin
+
+Write-Stage 'Pinned Azure account'
+$account = Assert-ExpectedAzureContext
 Write-Pass 'Azure subscription and tenant match the pinned development scope.'
 
 Write-Stage 'Resolve exact Gateway API and Microsoft Graph objects'
@@ -201,6 +274,23 @@ $obsoleteRoles = Get-RequiredPermissionObjects `
     -Values $ObsoleteWorkerApplicationRoles `
     -Type Role
 Write-Pass 'Resolved the two documented delegated scopes and two obsolete worker roles by tenant-published IDs.'
+
+# Clean-subscription bootstrap is additive-only. Discover obsolete assignments
+# before any PATCH/POST so it cannot expand authority and only then discover a
+# destructive cleanup requirement. Existing-environment operators may omit this
+# switch and follow the separately reviewed removal plan below.
+$initialWorkerAssignments = Invoke-AzJson -Arguments @(
+    'rest', '--method', 'GET',
+    '--url', "https://graph.microsoft.com/v1.0/servicePrincipals/$($WorkerManagedIdentityPrincipalId.ToString('D'))/appRoleAssignments?`$select=id,resourceId,appRoleId"
+)
+$obsoleteRoleIds = @($obsoleteRoles | ForEach-Object { $_.id.ToString('D') })
+$obsoleteAssignments = @($initialWorkerAssignments.value | Where-Object {
+    $_.resourceId -eq [string]$graphServicePrincipal.id -and
+    $obsoleteRoleIds -contains [string]$_.appRoleId
+})
+if ($RequireNoDestructiveChanges -and $obsoleteAssignments.Count -gt 0) {
+    throw 'Obsolete worker AgentRegistration application roles require the existing-environment Entra runbook; clean bootstrap performs no permission deletion.'
+}
 
 Write-Stage 'Gateway API requested delegated permissions'
 $requiredResourceAccess = @(
@@ -371,15 +461,6 @@ else {
 }
 
 Write-Stage 'Remove obsolete worker app-only Registry permissions'
-$assignments = Invoke-AzJson -Arguments @(
-    'rest', '--method', 'GET',
-    '--url', "https://graph.microsoft.com/v1.0/servicePrincipals/$($WorkerManagedIdentityPrincipalId.ToString('D'))/appRoleAssignments?`$select=id,resourceId,appRoleId"
-)
-$obsoleteRoleIds = @($obsoleteRoles | ForEach-Object { $_.id.ToString('D') })
-$obsoleteAssignments = @($assignments.value | Where-Object {
-    $_.resourceId -eq [string]$graphServicePrincipal.id -and
-    $obsoleteRoleIds -contains [string]$_.appRoleId
-})
 if ($obsoleteAssignments.Count -gt 0) {
     Write-Plan "Remove $($obsoleteAssignments.Count) obsolete worker AgentRegistration application-role assignment(s)."
     if ($Apply) {

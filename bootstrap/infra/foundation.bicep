@@ -16,6 +16,11 @@ param location string
 @maxLength(8)
 param projectName string = 'a365gw'
 
+@description('Random bootstrap-state ownership GUID propagated to every foundation resource tag.')
+@minLength(36)
+@maxLength(36)
+param deploymentOwnershipId string
+
 @description('Address prefix for the dedicated Gateway virtual network.')
 param virtualNetworkAddressPrefix string = '10.42.0.0/16'
 
@@ -31,6 +36,9 @@ var tags = {
   application: 'a365-custom-gateway'
   environment: environment
   managedBy: 'bootstrap'
+  projectName: projectName
+  deploymentId: '${projectName}-${environment}'
+  bootstrapOwnershipId: deploymentOwnershipId
 }
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -120,3 +128,4 @@ output privateEndpointSubnetId string = virtualNetwork.properties.subnets[1].id
 output logAnalyticsWorkspaceName string = logAnalytics.name
 output acrLoginServer string = containerRegistry.outputs.loginServer
 output acrName string = containerRegistry.outputs.registryName
+output deploymentOwnershipId string = deploymentOwnershipId

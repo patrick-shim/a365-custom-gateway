@@ -721,6 +721,27 @@ internal sealed class ProvisioningMessageHandler
                 stateResolution.ErrorSummary!);
         }
 
+        var persistedPurviewError = ValidatePersistedPurviewState(
+            agent,
+            steps,
+            stateResolution.State);
+        if (persistedPurviewError is not null)
+        {
+            await PersistProvisioningFailureAsync(
+                agent,
+                job,
+                steps.FirstOrDefault(step => step.Status != StepStatus.Completed),
+                ErrorCodes.PROVISIONING_STATE_INVALID,
+                persistedPurviewError,
+                requiresManualIntervention: true,
+                message.CorrelationId,
+                ct);
+
+            return MessageHandlingResult.DeadLetter(
+                ErrorCodes.PROVISIONING_STATE_INVALID,
+                persistedPurviewError);
+        }
+
         if (job.Status == JobStatus.Completed)
         {
             if (steps.All(step => step.Status == StepStatus.Completed) &&
@@ -913,12 +934,15 @@ internal sealed class ProvisioningMessageHandler
                 validationError);
         }
 
-        if (currentStep.StepType == ProvisioningStepType.ResolveBlueprint &&
-            agent.PurviewPolicyProfileId is not null)
+        if (agent.PurviewPolicyProfileId is not null &&
+            currentStep.StepType is ProvisioningStepType.ResolveBlueprint or
+                ProvisioningStepType.VerifyAgent365Connection)
         {
             try
             {
-                result = await EnsurePurviewPolicyAssignmentAsync(agent, result, ct);
+                result = currentStep.StepType == ProvisioningStepType.ResolveBlueprint
+                    ? await EnsurePurviewPolicyAssignmentAsync(agent, result, ct)
+                    : await VerifyPurviewPolicyAssignmentAsync(agent, result, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -1406,6 +1430,9 @@ internal sealed class ProvisioningMessageHandler
                Preserves(
                    previous.PurviewPolicyAssignmentVerifiedAtUtc,
                    current.PurviewPolicyAssignmentVerifiedAtUtc) &&
+               Preserves(
+                   previous.PurviewPolicyFinalVerifiedAtUtc,
+                   current.PurviewPolicyFinalVerifiedAtUtc) &&
                Preserves(previous.PlannedAgent365RegistrationId, current.PlannedAgent365RegistrationId) &&
                Preserves(previous.Agent365RegistrationId, current.Agent365RegistrationId) &&
                Preserves(previous.RegistryProvider, current.RegistryProvider) &&
@@ -1433,6 +1460,39 @@ internal sealed class ProvisioningMessageHandler
 
     private static bool HasValue(string? value) => !string.IsNullOrWhiteSpace(value);
 
+    private static string? ValidatePersistedPurviewState(
+        AgentRegistration agent,
+        IReadOnlyList<ProvisioningJobStep> steps,
+        Agent365ProvisioningState state)
+    {
+        if (agent.PurviewPolicyProfileId is null)
+            return null;
+
+        var resolveStep = steps.Single(step =>
+            step.StepType == ProvisioningStepType.ResolveBlueprint);
+        if (resolveStep.Status != StepStatus.Completed)
+            return null;
+
+        if (state.PurviewPolicyProfileId != agent.PurviewPolicyProfileId ||
+            !HasValue(state.PurviewCollectionPolicyId) ||
+            !HasValue(state.PurviewDlpPolicyId) ||
+            !HasValue(state.PurviewDlpRuleId) ||
+            state.PurviewPolicyAssignmentVerifiedAtUtc is null)
+        {
+            return "The protected blueprint prefix is missing exact Purview profile readback evidence.";
+        }
+
+        var finalStep = steps.Single(step =>
+            step.StepType == ProvisioningStepType.VerifyAgent365Connection);
+        if (finalStep.Status == StepStatus.Completed &&
+            state.PurviewPolicyFinalVerifiedAtUtc is null)
+        {
+            return "The protected registration is missing final Purview revalidation evidence.";
+        }
+
+        return null;
+    }
+
     private static bool IsSafeCompletionEvidence(string? evidence) =>
         !string.IsNullOrWhiteSpace(evidence) &&
         evidence.Length <= 64 &&
@@ -1451,6 +1511,7 @@ internal sealed class ProvisioningMessageHandler
         agent.Agent365InstanceId = state.Agent365RegistrationId ?? agent.Agent365InstanceId;
         agent.PurviewPolicyProfileId = state.PurviewPolicyProfileId ?? agent.PurviewPolicyProfileId;
         agent.PurviewPolicyAssignmentVerifiedAtUtc =
+            state.PurviewPolicyFinalVerifiedAtUtc?.UtcDateTime ??
             state.PurviewPolicyAssignmentVerifiedAtUtc?.UtcDateTime ??
             agent.PurviewPolicyAssignmentVerifiedAtUtc;
 
@@ -1503,32 +1564,61 @@ internal sealed class ProvisioningMessageHandler
                 "The resolved blueprint did not provide a valid Application ID.");
         }
 
-        var provisioned = await _purviewPolicyProvisioningClient.EnsureProfileAssignmentAsync(
-            new PurviewPolicyProvisioningRequest(
-                profile.Id,
-                profile.DisplayName,
-                profile.Template,
-                profile.Mode,
-                profile.CollectionPolicyName,
-                profile.DlpPolicyName,
-                profile.DlpRuleName,
-                blueprintApplicationId!,
-                agent.RequestedBlueprintDisplayName ?? agent.Name),
-            ct);
-        if (!provisioned.BlueprintApplicationIds.Contains(
-                blueprintApplicationId,
-                StringComparer.OrdinalIgnoreCase))
+        if (!TryResolveAuthorizedPurviewScope(profile, out var priorApplicationIds, out var scopeError))
         {
+            MarkPurviewProfileFailed(profile, "PURVIEW_POLICY_PERSISTED_SCOPE_INVALID");
+            throw new PurviewPolicyException(
+                "PURVIEW_POLICY_PERSISTED_SCOPE_INVALID",
+                scopeError!);
+        }
+        var expectedApplicationIds = AddBlueprintToAuthorizedScope(
+            priorApplicationIds,
+            blueprintApplicationId!);
+
+        PurviewPolicyProvisioningResult provisioned;
+        try
+        {
+            provisioned = await _purviewPolicyProvisioningClient.EnsureProfileAssignmentAsync(
+                new PurviewPolicyProvisioningRequest(
+                    profile.Id,
+                    profile.DisplayName,
+                    profile.Template,
+                    profile.Mode,
+                    profile.CollectionPolicyName,
+                    profile.DlpPolicyName,
+                    profile.DlpRuleName,
+                    blueprintApplicationId!,
+                    agent.RequestedBlueprintDisplayName ?? agent.Name,
+                    profile.CollectionPolicyId,
+                    profile.DlpPolicyId,
+                    profile.DlpRuleId,
+                    priorApplicationIds,
+                    expectedApplicationIds),
+                ct);
+        }
+        catch (PurviewPolicyException exception) when (!exception.IsTransient)
+        {
+            MarkPurviewProfileFailed(profile, exception.FailureCode);
+            throw;
+        }
+        var readbackError = ValidatePurviewReadback(
+            profile,
+            provisioned,
+            blueprintApplicationId!,
+            expectedApplicationIds,
+            expectedState: null);
+        if (readbackError is not null)
+        {
+            MarkPurviewProfileFailed(profile, "PURVIEW_POLICY_READBACK_MISMATCH");
             throw new PurviewPolicyException(
                 "PURVIEW_POLICY_READBACK_MISMATCH",
-                "Purview did not read back the exact blueprint Application scope.");
+                readbackError);
         }
 
         profile.CollectionPolicyId = provisioned.CollectionPolicyId;
         profile.DlpPolicyId = provisioned.DlpPolicyId;
         profile.DlpRuleId = provisioned.DlpRuleId;
-        profile.BlueprintApplicationIdsJson = JsonSerializer.Serialize(
-            provisioned.BlueprintApplicationIds.Distinct(StringComparer.OrdinalIgnoreCase));
+        profile.BlueprintApplicationIdsJson = JsonSerializer.Serialize(expectedApplicationIds);
         profile.Status = "Ready";
         profile.VerifiedAtUtc = provisioned.VerifiedAtUtc.UtcDateTime;
         profile.LastErrorCode = null;
@@ -1547,6 +1637,317 @@ internal sealed class ProvisioningMessageHandler
             },
             CompletionEvidence = "BlueprintAndPurviewProfileVerified"
         };
+    }
+
+    private async Task<Agent365ProvisioningStepResult> VerifyPurviewPolicyAssignmentAsync(
+        AgentRegistration agent,
+        Agent365ProvisioningStepResult result,
+        CancellationToken ct)
+    {
+        if (!_purviewPolicyProvisioningClient.IsEnabled)
+        {
+            throw new PurviewPolicyException(
+                "PURVIEW_POLICY_PROVISIONING_DISABLED",
+                "Automated Purview policy verification is not configured for this worker.");
+        }
+
+        var profileId = agent.PurviewPolicyProfileId!.Value;
+        await using var profileLease = await _provisioningExecutionLockProvider.AcquireAsync(
+            profileId,
+            ct);
+        var profile = await _purviewPolicyProfileRepository.GetByIdAsync(
+            profileId,
+            ct) ?? throw new PurviewPolicyException(
+                "PURVIEW_POLICY_PROFILE_NOT_FOUND",
+                "The selected Purview policy profile no longer exists.");
+        if (!string.Equals(profile.Status, "Ready", StringComparison.Ordinal) ||
+            result.State.PurviewPolicyProfileId != profile.Id ||
+            !HasValue(profile.CollectionPolicyId) ||
+            !HasValue(profile.DlpPolicyId) ||
+            !HasValue(profile.DlpRuleId) ||
+            !HasValue(result.State.PurviewCollectionPolicyId) ||
+            !HasValue(result.State.PurviewDlpPolicyId) ||
+            !HasValue(result.State.PurviewDlpRuleId) ||
+            result.State.PurviewPolicyAssignmentVerifiedAtUtc is null)
+        {
+            throw new PurviewPolicyException(
+                "PURVIEW_POLICY_STATE_INVALID",
+                "The selected Purview profile lacks a complete verified assignment state.");
+        }
+
+        var blueprintApplicationId = result.State.BlueprintClientId;
+        if (!TryParseNonEmptyGuid(blueprintApplicationId, out _))
+        {
+            throw new PurviewPolicyException(
+                "PURVIEW_POLICY_BLUEPRINT_INVALID",
+                "The final provisioning state did not contain a valid blueprint Application ID.");
+        }
+        if (!TryResolveAuthorizedPurviewScope(profile, out var priorApplicationIds, out var scopeError))
+        {
+            MarkPurviewProfileFailed(profile, "PURVIEW_POLICY_PERSISTED_SCOPE_INVALID");
+            throw new PurviewPolicyException(
+                "PURVIEW_POLICY_PERSISTED_SCOPE_INVALID",
+                scopeError!);
+        }
+        var expectedApplicationIds = AddBlueprintToAuthorizedScope(
+            priorApplicationIds,
+            blueprintApplicationId!);
+
+        PurviewPolicyProvisioningResult provisioned;
+        try
+        {
+            provisioned = await _purviewPolicyProvisioningClient.VerifyProfileAssignmentAsync(
+                new PurviewPolicyProvisioningRequest(
+                    profile.Id,
+                    profile.DisplayName,
+                    profile.Template,
+                    profile.Mode,
+                    profile.CollectionPolicyName,
+                    profile.DlpPolicyName,
+                    profile.DlpRuleName,
+                    blueprintApplicationId!,
+                    agent.RequestedBlueprintDisplayName ?? agent.Name,
+                    result.State.PurviewCollectionPolicyId,
+                    result.State.PurviewDlpPolicyId,
+                    result.State.PurviewDlpRuleId,
+                    priorApplicationIds,
+                    expectedApplicationIds),
+                ct);
+        }
+        catch (PurviewPolicyException exception) when (!exception.IsTransient)
+        {
+            MarkPurviewProfileFailed(profile, exception.FailureCode);
+            throw;
+        }
+        var readbackError = ValidatePurviewReadback(
+            profile,
+            provisioned,
+            blueprintApplicationId!,
+            expectedApplicationIds,
+            result.State);
+        if (readbackError is not null)
+        {
+            MarkPurviewProfileFailed(profile, "PURVIEW_POLICY_READBACK_MISMATCH");
+            throw new PurviewPolicyException(
+                "PURVIEW_POLICY_READBACK_MISMATCH",
+                readbackError);
+        }
+
+        profile.BlueprintApplicationIdsJson = JsonSerializer.Serialize(expectedApplicationIds);
+        profile.VerifiedAtUtc = provisioned.VerifiedAtUtc.UtcDateTime;
+        profile.LastErrorCode = null;
+        profile.UpdatedAtUtc = DateTime.UtcNow;
+        agent.PurviewPolicyAssignmentVerifiedAtUtc = provisioned.VerifiedAtUtc.UtcDateTime;
+
+        return result with
+        {
+            State = result.State with
+            {
+                PurviewPolicyFinalVerifiedAtUtc = provisioned.VerifiedAtUtc
+            },
+            CompletionEvidence = "Agent365ConnectionAndPurviewVerified"
+        };
+    }
+
+    private static string? ValidatePurviewReadback(
+        PurviewPolicyProfile profile,
+        PurviewPolicyProvisioningResult provisioned,
+        string blueprintApplicationId,
+        IReadOnlyList<string> expectedApplicationIds,
+        Agent365ProvisioningState? expectedState)
+    {
+        if (string.IsNullOrWhiteSpace(provisioned.CollectionPolicyId) ||
+            string.IsNullOrWhiteSpace(provisioned.DlpPolicyId) ||
+            string.IsNullOrWhiteSpace(provisioned.DlpRuleId) ||
+            provisioned.VerifiedAtUtc == default ||
+            provisioned.BlueprintApplicationIds.Count(applicationId => string.Equals(
+                applicationId,
+                blueprintApplicationId,
+                StringComparison.OrdinalIgnoreCase)) != 1 ||
+            provisioned.BlueprintApplicationIds.Count !=
+                provisioned.BlueprintApplicationIds.Distinct(
+                    StringComparer.OrdinalIgnoreCase).Count() ||
+            !HasExactGuidSet(provisioned.BlueprintApplicationIds, expectedApplicationIds))
+        {
+            return "Purview did not return complete exact blueprint and provider-ID readback evidence.";
+        }
+
+        if (!MatchesPersistedIdentifier(profile.CollectionPolicyId, provisioned.CollectionPolicyId) ||
+            !MatchesPersistedIdentifier(profile.DlpPolicyId, provisioned.DlpPolicyId) ||
+            !MatchesPersistedIdentifier(profile.DlpRuleId, provisioned.DlpRuleId) ||
+            (expectedState is not null &&
+             (!string.Equals(
+                  expectedState.PurviewCollectionPolicyId,
+                  provisioned.CollectionPolicyId,
+                  StringComparison.Ordinal) ||
+              !string.Equals(
+                  expectedState.PurviewDlpPolicyId,
+                  provisioned.DlpPolicyId,
+                  StringComparison.Ordinal) ||
+              !string.Equals(
+                  expectedState.PurviewDlpRuleId,
+                  provisioned.DlpRuleId,
+                  StringComparison.Ordinal) ||
+              provisioned.VerifiedAtUtc < expectedState.PurviewPolicyAssignmentVerifiedAtUtc)))
+        {
+            return "Purview provider identifiers or verification time do not match the persisted profile state.";
+        }
+
+        var expectedDlpMode = profile.Mode switch
+        {
+            "Enforce" => "Enable",
+            "AuditOnly" => "TestWithoutNotifications",
+            _ => null
+        };
+        var evidence = provisioned.Evidence;
+        if (expectedDlpMode is null ||
+            evidence is null ||
+            !string.Equals(evidence.CollectionMode, "Enable", StringComparison.Ordinal) ||
+            !HasExactSet(evidence.CollectionActivities, "UploadText", "DownloadText") ||
+            !HasExactSet(evidence.CollectionEnforcementPlanes, "Application") ||
+            !HasExactSet(evidence.CollectionSensitiveTypeIds, "All") ||
+            !evidence.CollectionIngestionEnabled ||
+            !string.Equals(evidence.DlpMode, expectedDlpMode, StringComparison.Ordinal) ||
+            !HasExactSet(evidence.DlpEnforcementPlanes, "Application") ||
+            evidence.ClassifierNames.Count != 1 ||
+            evidence.ClassifierNames.Any(string.IsNullOrWhiteSpace) ||
+            evidence.RuleActions.Count != 1 ||
+            !string.Equals(evidence.RuleActions[0].Setting, "UploadText", StringComparison.Ordinal) ||
+            !string.Equals(evidence.RuleActions[0].Value, "Block", StringComparison.Ordinal) ||
+            evidence.HasExclusions ||
+            evidence.HasBypass ||
+            evidence.HasExtraConditions ||
+            evidence.HasExtraActions)
+        {
+            return "Purview typed readback does not match the reviewed Gateway protection template.";
+        }
+
+        return null;
+    }
+
+    private static bool MatchesPersistedIdentifier(string? expected, string actual) =>
+        string.IsNullOrWhiteSpace(expected) ||
+        string.Equals(expected, actual, StringComparison.Ordinal);
+
+    private static bool HasExactSet(IReadOnlyList<string> actual, params string[] expected) =>
+        actual.Count == expected.Length &&
+        actual.OrderBy(value => value, StringComparer.Ordinal).SequenceEqual(
+            expected.OrderBy(value => value, StringComparer.Ordinal),
+            StringComparer.Ordinal);
+
+    private static bool HasExactGuidSet(
+        IReadOnlyList<string> actual,
+        IReadOnlyList<string> expected)
+    {
+        var normalizedActual = new List<string>(actual.Count);
+        foreach (var value in actual)
+        {
+            if (!TryParseNonEmptyGuid(value, out var parsed))
+                return false;
+            normalizedActual.Add(parsed.ToString("D"));
+        }
+
+        return normalizedActual.Count == expected.Count &&
+               normalizedActual.OrderBy(value => value, StringComparer.Ordinal).SequenceEqual(
+                   expected.OrderBy(value => value, StringComparer.Ordinal),
+                   StringComparer.Ordinal);
+    }
+
+    private static bool TryResolveAuthorizedPurviewScope(
+        PurviewPolicyProfile profile,
+        out string[] applicationIds,
+        out string? error)
+    {
+        applicationIds = [];
+        error = null;
+        if (string.IsNullOrWhiteSpace(profile.BlueprintApplicationIdsJson) ||
+            profile.BlueprintApplicationIdsJson.Length > 65536)
+        {
+            error = "The persisted Purview application scope is missing or exceeds the safe limit.";
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(profile.BlueprintApplicationIdsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array ||
+                document.RootElement.GetArrayLength() > 512)
+            {
+                error = "The persisted Purview application scope is not a bounded JSON array.";
+                return false;
+            }
+
+            var values = new List<string>(document.RootElement.GetArrayLength());
+            foreach (var element in document.RootElement.EnumerateArray())
+            {
+                if (element.ValueKind != JsonValueKind.String ||
+                    !TryParseNonEmptyGuid(element.GetString(), out var parsed))
+                {
+                    error = "The persisted Purview application scope contains an invalid Application ID.";
+                    return false;
+                }
+                var canonical = parsed.ToString("D");
+                if (values.Contains(canonical, StringComparer.Ordinal))
+                {
+                    error = "The persisted Purview application scope contains a duplicate Application ID.";
+                    return false;
+                }
+                values.Add(canonical);
+            }
+            applicationIds = values.OrderBy(value => value, StringComparer.Ordinal).ToArray();
+        }
+        catch (JsonException)
+        {
+            error = "The persisted Purview application scope is not valid JSON.";
+            return false;
+        }
+
+        if (string.Equals(profile.Status, "Pending", StringComparison.Ordinal))
+        {
+            if (applicationIds.Length != 0 ||
+                HasValue(profile.CollectionPolicyId) ||
+                HasValue(profile.DlpPolicyId) ||
+                HasValue(profile.DlpRuleId) ||
+                profile.VerifiedAtUtc is not null)
+            {
+                error = "A pending Purview profile contains provider authority that cannot be adopted automatically.";
+                return false;
+            }
+            return true;
+        }
+
+        if (!string.Equals(profile.Status, "Ready", StringComparison.Ordinal) ||
+            applicationIds.Length == 0 ||
+            !HasValue(profile.CollectionPolicyId) ||
+            !HasValue(profile.DlpPolicyId) ||
+            !HasValue(profile.DlpRuleId) ||
+            profile.VerifiedAtUtc is null)
+        {
+            error = "The Purview profile is not a complete Ready profile with persisted scope authority.";
+            return false;
+        }
+        return true;
+    }
+
+    private static string[] AddBlueprintToAuthorizedScope(
+        IReadOnlyList<string> priorApplicationIds,
+        string blueprintApplicationId)
+    {
+        _ = TryParseNonEmptyGuid(blueprintApplicationId, out var parsed);
+        return priorApplicationIds
+            .Append(parsed.ToString("D"))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static void MarkPurviewProfileFailed(
+        PurviewPolicyProfile profile,
+        string errorCode)
+    {
+        profile.Status = "Failed";
+        profile.LastErrorCode = errorCode;
+        profile.UpdatedAtUtc = DateTime.UtcNow;
     }
 
     private async Task FinalizeProvisioningAsync(

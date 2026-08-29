@@ -1,0 +1,529 @@
+@page "/setup"
+@page "/getting-started"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "AllControlPlane")]
+@implements IAsyncDisposable
+@inject IGatewayApiClient Api
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Setup center · A365 Gateway</PageTitle>
+
+<PageHeader Eyebrow="Getting started"
+            Title="Setup center"
+            Description="Confirm what this deployment can prove, complete the first safe registration, and identify evidence that still needs an authorized canary.">
+    <Actions>
+        <span class="last-updated">Checked @FormatTime(lastUpdatedUtc)</span>
+        <FluentButton Appearance="Appearance.Neutral" OnClick="LoadAsync" Disabled="loading">Refresh checks</FluentButton>
+        @if (CanRegisterNow)
+        {
+            <FluentAnchor Appearance="Appearance.Accent" Href="/agents/register">Register agent</FluentAnchor>
+        }
+    </Actions>
+</PageHeader>
+
+@if (loading && !hasLoaded)
+{
+    <section class="card">
+        <LoadingState Label="Checking deployment readiness…"
+                      Detail="Reading Gateway health, your authorized control-plane view, and server-advertised capabilities." />
+    </section>
+}
+else
+{
+    @if (loadError is not null)
+    {
+        <section class="setup-error card">
+            <div class="card-body">
+                <ErrorState Title="Some readiness checks are unavailable"
+                            Message="@PartialErrorMessage"
+                            CorrelationId="@loadError.CorrelationId"
+                            OnRetry="LoadAsync" />
+            </div>
+        </section>
+    }
+
+    <section class="setup-summary card" aria-labelledby="next-safe-action-heading" aria-live="polite">
+        <div class="setup-summary-mark" aria-hidden="true">@NextActionIcon</div>
+        <div>
+            <span class="page-eyebrow">Next safe action</span>
+            <h2 id="next-safe-action-heading">@NextActionTitle</h2>
+            <p>@NextActionDescription</p>
+            <div class="setup-summary-actions">
+                @if (CanRegisterNow && !HasFirstAgentActive)
+                {
+                    <FluentAnchor Appearance="Appearance.Accent" Href="/agents/register">Register the first agent</FluentAnchor>
+                }
+                else if (FirstActiveAgent is { } activeAgent)
+                {
+                    <FluentAnchor Appearance="Appearance.Accent" Href="@($"/agents/{activeAgent.AgentId:D}")">Review an Active registration</FluentAnchor>
+                }
+                <FluentAnchor Appearance="Appearance.Stealth" Href="/agents">Open agent inventory</FluentAnchor>
+            </div>
+        </div>
+    </section>
+
+    <section class="readiness-section" aria-labelledby="readiness-heading">
+        <div class="section-heading">
+            <div>
+                <h2 id="readiness-heading">Deployment readiness</h2>
+                <p>Each milestone names the exact evidence available to this portal. Later milestones are not inferred from earlier ones.</p>
+            </div>
+            <span class="role-chip">Signed in as @CurrentRole</span>
+        </div>
+
+        <ol class="readiness-list">
+            @foreach (var milestone in ReadinessMilestones)
+            {
+                <li class="readiness-card card">
+                    <div class="readiness-index" aria-hidden="true">@milestone.Index</div>
+                    <div class="readiness-copy">
+                        <div class="readiness-title-row">
+                            <div>
+                                <span class="readiness-key">@milestone.Key</span>
+                                <h3>@milestone.Title</h3>
+                            </div>
+                            <span class="readiness-state readiness-state-@milestone.Tone"
+                                  aria-label="@($"{milestone.Title}: {milestone.Status}")">
+                                <span aria-hidden="true"></span>@milestone.Status
+                            </span>
+                        </div>
+                        <p>@milestone.Description</p>
+                        <div class="readiness-evidence">
+                            <strong>Portal evidence</strong>
+                            <span>@milestone.Evidence</span>
+                        </div>
+                    </div>
+                </li>
+            }
+        </ol>
+    </section>
+
+    <div class="setup-columns">
+        <section class="card" aria-labelledby="first-run-heading">
+            <div class="card-header">
+                <div>
+                    <h2 id="first-run-heading">First-run path</h2>
+                    <span class="section-caption">Role-aware, resumable handoffs</span>
+                </div>
+            </div>
+            <ol class="first-run-list">
+                <li>
+                    <span class="first-run-number" aria-hidden="true">1</span>
+                    <div>
+                        <h3>Confirm your signed-in role</h3>
+                        <p>You are signed in as <strong>@CurrentRole</strong>. Portal role checks guide the experience; every API call remains independently authorized.</p>
+                    </div>
+                </li>
+                <li>
+                    <span class="first-run-number" aria-hidden="true">2</span>
+                    <div>
+                        <h3>Review deployment capabilities</h3>
+                        <p>@CapabilityGuidance</p>
+                    </div>
+                </li>
+                <li>
+                    <span class="first-run-number" aria-hidden="true">3</span>
+                    <div>
+                        <h3>Register the external agent</h3>
+                        @if (isAdministrator)
+                        {
+                            <p>Choose a typed Agent 365-compatible reusable blueprint or create a new reusable blueprint. The API rechecks compatibility and registration admission before issuing a one-time Gateway key.</p>
+                        }
+                        else
+                        {
+                            <p>A Gateway Administrator must create the registration. Your role can review the resulting agent within its authorized control-plane view.</p>
+                        }
+                    </div>
+                </li>
+                <li>
+                    <span class="first-run-number" aria-hidden="true">4</span>
+                    <div>
+                        <h3>Follow the seven-step operation</h3>
+                        <p>The worker completes five stages and can pause at 71% for a signed-in Gateway Administrator. A development deployment may initiate that delegated action from the administrator UI; exact-bound deployments require the separately authorized operation window. Neither path bypasses the one-POST Registry boundary.</p>
+                    </div>
+                </li>
+                <li>
+                    <span class="first-run-number" aria-hidden="true">5</span>
+                    <div>
+                        <h3>Deploy the one-time Gateway key</h3>
+                        <p>The clear key appears only in the successful issuance response. Do not put it in a URL, browser storage, logs, or documentation. If it is lost, issue a replacement; the old clear value cannot be recovered.</p>
+                    </div>
+                </li>
+                <li>
+                    <span class="first-run-number" aria-hidden="true">6</span>
+                    <div>
+                        <h3>Run an authorized bounded canary</h3>
+                        <p>Verify the intended data-plane behavior and independently reviewed Microsoft evidence. An HTTP health result, an accepted transport response, or an Active Gateway row is not by itself end-to-end canary proof.</p>
+                    </div>
+                </li>
+            </ol>
+        </section>
+
+        <aside class="setup-aside" aria-label="Deployment capability and evidence guidance">
+            <section class="card" aria-labelledby="capabilities-heading">
+                <div class="card-header">
+                    <div>
+                        <h2 id="capabilities-heading">Server capabilities</h2>
+                        <span class="section-caption">Current API-advertised state</span>
+                    </div>
+                </div>
+                @if (!isAdministrator)
+                {
+                    <div class="card-body">
+                        <div class="subtle-note" role="note">
+                            System capability details are restricted to Gateway Administrators. This portal does not infer them from your role or from an agent row.
+                        </div>
+                    </div>
+                }
+                else if (systemConfig is null)
+                {
+                    <EmptyState Icon="?"
+                                Title="Capabilities unavailable"
+                                Description="The administrator-only system configuration did not return current capability data. Refresh before starting a registration." />
+                }
+                else
+                {
+                    <dl class="capability-list">
+                        <div>
+                            <dt>Registration admission</dt>
+                            <dd><StatusPill Value="@(systemConfig.ProvisioningExecutionEnabled ? "Ready" : "Disabled")" /></dd>
+                            <p>@AdmissionDescription</p>
+                        </div>
+                        <div>
+                            <dt>Purview profile provisioning</dt>
+                            <dd><StatusPill Value="@(systemConfig.PurviewPolicyProvisioningEnabled ? "Ready" : "Unavailable")" /></dd>
+                            <p>
+                                @if (systemConfig.PurviewPolicyProvisioningEnabled)
+                                {
+                                    <span>A Purview-enabled new blueprint still requires a Ready mode-compatible Gateway profile or a reviewed new-profile request. The server revalidates it before child creation.</span>
+                                }
+                                else
+                                {
+                                    <span>New-blueprint Purview profile provisioning is unavailable. The portal will not expose policy internals or offer an unsupported submit path.</span>
+                                }
+                            </p>
+                        </div>
+                        <div>
+                            <dt>Prompt Shields</dt>
+                            <dd><StatusPill Value="@(systemConfig.PromptShieldAvailable ? "Ready" : "Unavailable")" /></dd>
+                            <p>When available and enabled for a registration, the client evaluates the prompt before its model and returns the short-lived allow receipt with the exact interaction. The Gateway does not proxy the model call.</p>
+                        </div>
+                    </dl>
+                }
+            </section>
+
+            <section class="card evidence-boundary" aria-labelledby="evidence-boundary-heading">
+                <div class="card-header"><h2 id="evidence-boundary-heading">Evidence boundary</h2></div>
+                <div class="card-body">
+                    <p><strong>This page reports Gateway state only.</strong></p>
+                    <ul>
+                        <li>Health does not verify Entra, Agent 365, Purview, or Content Safety resources.</li>
+                        <li>Persisted provisioning progress is not independent Microsoft-side proof.</li>
+                        <li>Agent 365 Registry completion uses a preview dependency and must not be presented as supported production readiness.</li>
+                        <li>Canary proof requires reviewed evidence that the current control-plane API does not expose.</li>
+                    </ul>
+                </div>
+            </section>
+        </aside>
+    </div>
+}
+
+@code {
+    private readonly CancellationTokenSource disposeCts = new();
+    private GatewayHealthStatus? health;
+    private GatewayHealthStatus? readiness;
+    private AgentListResponse? agentInventory;
+    private AgentListResponse? activeAgentInventory;
+    private SystemConfigDto? systemConfig;
+    private UiErrorInfo? loadError;
+    private ClaimsPrincipal user = new(new ClaimsIdentity());
+    private bool isAdministrator;
+    private bool loading;
+    private bool hasLoaded;
+    private int failedCheckCount;
+    private DateTime? lastUpdatedUtc;
+
+    private bool InfrastructureReady =>
+        string.Equals(health?.Status, "Healthy", StringComparison.OrdinalIgnoreCase) &&
+        (string.Equals(readiness?.Status, "Healthy", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(readiness?.Status, "Ready", StringComparison.OrdinalIgnoreCase));
+
+    private bool ControlPlaneReady => agentInventory is not null;
+    private bool HasFirstAgentActive => FirstActiveAgent is not null;
+    private AgentSummaryDto? FirstActiveAgent => activeAgentInventory?.Items.FirstOrDefault();
+    private bool CanRegisterNow => isAdministrator && systemConfig?.ProvisioningExecutionEnabled == true;
+
+    private string CurrentRole =>
+        PortalRoles.FirstOrDefault(user.IsInRole)?.Replace("Gateway.", string.Empty) ?? "authenticated user";
+
+    private string PartialErrorMessage => failedCheckCount == 1
+        ? $"One check could not be completed. {loadError?.Message} Available results remain visible below."
+        : $"{failedCheckCount} checks could not be completed. {loadError?.Message} Available results remain visible below.";
+
+    private string NextActionIcon => InfrastructureReady && ControlPlaneReady ? "→" : "!";
+
+    private string NextActionTitle =>
+        !InfrastructureReady
+            ? "Restore the Gateway foundation before onboarding"
+            : !ControlPlaneReady
+                ? "Restore authenticated control-plane access"
+                : isAdministrator && systemConfig is null
+                    ? "Refresh the server capability check"
+                    : isAdministrator && systemConfig?.ProvisioningExecutionEnabled != true
+                        ? "Registration admission is currently closed"
+                        : !HasFirstAgentActive
+                            ? isAdministrator
+                                ? "Register the first external agent"
+                                : "Ask a Gateway Administrator to register the first agent"
+                            : "Capture an authorized end-to-end canary";
+
+    private string NextActionDescription =>
+        !InfrastructureReady
+            ? "The API liveness and database readiness probes do not both pass. Later milestones remain independent and should not be used to override this result."
+            : !ControlPlaneReady
+                ? "The authenticated agent inventory did not return. Sign in again or use the safe correlation shown above when asking an operator for help."
+                : isAdministrator && systemConfig is null
+                    ? "The portal cannot safely decide whether registration is open without the administrator-only capability response."
+                    : isAdministrator && systemConfig?.ProvisioningExecutionEnabled != true
+                        ? "A deployment operator must review the server-owned admission gate. This page cannot open, extend, or infer a registration window."
+                        : !HasFirstAgentActive
+                            ? isAdministrator
+                                ? "Registration will create a Gateway mapping and start provisioning. Microsoft effects remain unproven until the operation reaches its verified terminal state."
+                                : "Only a Gateway Administrator can create the mapping and receive the one-time Gateway key."
+                            : "At least one registration is Gateway-reported Active. Run a separately authorized canary and retain reviewed evidence before calling the deployment end-to-end proven.";
+
+    private string CapabilityGuidance => !isAdministrator
+        ? "Ask a Gateway Administrator to review the current admission and optional protection-provider capabilities; those settings are intentionally not exposed to your role."
+        : systemConfig is null
+            ? "Capability data is unavailable. Refresh rather than assuming registration or an optional protection provider is configured."
+            : "Use only the current server-advertised admission and protection-provider flags below. A disabled capability cannot be enabled by a page-level choice.";
+
+    private string AdmissionDescription => systemConfig?.AuthorizedRegistrationExternalAgentId is not null
+        ? "The current registration window is exact-bound to a server-authorized generated external ID. A later Agent 365 completion window is independently bound to the resulting operation."
+        : systemConfig?.ProvisioningExecutionEnabled == true
+            ? "The server currently accepts a registration without exposing an exact-bound external ID. This does not weaken API authorization or delegated Registry safeguards."
+            : "The server is not accepting a new registration. This portal cannot open or extend the deployment-owned admission gate.";
+
+    private IReadOnlyList<ReadinessMilestone> ReadinessMilestones =>
+    [
+        BuildInfrastructureMilestone(),
+        BuildControlPlaneMilestone(),
+        BuildProvisioningMilestone(),
+        BuildFirstAgentMilestone(),
+        new(
+            5,
+            "CanaryProven",
+            "Canary proven",
+            "Not reported",
+            "neutral",
+            "The implemented control-plane API does not expose complete canary, downstream landing, Admin Center, Purview-verdict, or temporary-key-revocation evidence.",
+            "Not available from this portal. Health, Active state, last-activity timestamps, and accepted transport responses are deliberately not promoted to canary proof.")
+    ];
+
+    private static readonly string[] PortalRoles =
+    [
+        "Gateway.Administrator",
+        "Gateway.Operator",
+        "Gateway.Auditor",
+        "Gateway.SupportReader"
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        user = authenticationState.User;
+        isAdministrator = user.IsInRole("Gateway.Administrator");
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (loading)
+        {
+            return;
+        }
+
+        loading = true;
+        loadError = null;
+        failedCheckCount = 0;
+
+        try
+        {
+            var healthTask = CaptureAsync(() => Api.GetHealthAsync(disposeCts.Token));
+            var readinessTask = CaptureAsync(() => Api.GetReadinessAsync(disposeCts.Token));
+            var inventoryTask = CaptureAsync(() => Api.GetAgentsAsync(
+                new AgentListQuery(Limit: 1),
+                disposeCts.Token));
+            var activeInventoryTask = CaptureAsync(() => Api.GetAgentsAsync(
+                new AgentListQuery(Status: "Active", Limit: 1),
+                disposeCts.Token));
+            var configTask = isAdministrator
+                ? CaptureAsync(() => Api.GetSystemConfigAsync(disposeCts.Token))
+                : Task.FromResult(LoadAttempt<SystemConfigDto>.NoRequest());
+
+            await Task.WhenAll(
+                healthTask,
+                readinessTask,
+                inventoryTask,
+                activeInventoryTask,
+                configTask);
+
+            if (disposeCts.IsCancellationRequested)
+            {
+                return;
+            }
+
+            var healthAttempt = await healthTask;
+            var readinessAttempt = await readinessTask;
+            var inventoryAttempt = await inventoryTask;
+            var activeInventoryAttempt = await activeInventoryTask;
+            var configAttempt = await configTask;
+
+            health = healthAttempt.Value;
+            readiness = readinessAttempt.Value;
+            agentInventory = inventoryAttempt.Value;
+            activeAgentInventory = activeInventoryAttempt.Value;
+            systemConfig = configAttempt.Value;
+
+            var errors = new[]
+            {
+                healthAttempt.Error,
+                readinessAttempt.Error,
+                inventoryAttempt.Error,
+                activeInventoryAttempt.Error,
+                configAttempt.Error
+            }.Where(item => item is not null).Cast<UiErrorInfo>().ToArray();
+
+            failedCheckCount = errors.Length;
+            loadError = errors.FirstOrDefault();
+            lastUpdatedUtc = DateTime.UtcNow;
+            hasLoaded = true;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task<LoadAttempt<T>> CaptureAsync<T>(Func<Task<T>> action)
+        where T : class
+    {
+        try
+        {
+            return LoadAttempt<T>.Succeeded(await action());
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+            return LoadAttempt<T>.NoRequest();
+        }
+        catch (Exception exception)
+        {
+            return LoadAttempt<T>.Failed(UiErrorInfo.FromException(exception));
+        }
+    }
+
+    private ReadinessMilestone BuildInfrastructureMilestone()
+    {
+        var hasEvidence = health is not null || readiness is not null;
+        return new(
+            1,
+            "InfrastructureReady",
+            "Infrastructure ready",
+            InfrastructureReady ? "Ready" : hasEvidence ? "Needs attention" : "Unknown",
+            InfrastructureReady ? "positive" : hasEvidence ? "warning" : "neutral",
+            "The API liveness and database connectivity probes are useful foundation signals. They do not test Entra, Agent 365, Purview, Content Safety, or external-agent traffic.",
+            $"API liveness: {health?.Status ?? "not available"}; database readiness: {readiness?.Status ?? "not available"}.");
+    }
+
+    private ReadinessMilestone BuildControlPlaneMilestone() => new(
+        2,
+        "ControlPlaneReady",
+        "Control plane ready",
+        ControlPlaneReady ? "Ready" : "Unknown",
+        ControlPlaneReady ? "positive" : "neutral",
+        "An authenticated inventory response verifies that your signed-in role can reach that control-plane path. It does not prove every role or mutation path.",
+        agentInventory is null
+            ? "The authenticated agent inventory did not return current data."
+            : $"Authenticated inventory responded; {FormatCount(agentInventory.TotalCount, agentInventory.Items.Count, "registration")} reported.");
+
+    private ReadinessMilestone BuildProvisioningMilestone()
+    {
+        if (!isAdministrator)
+        {
+            return new(
+                3,
+                "ProvisioningReady",
+                "Provisioning ready",
+                "Role restricted",
+                "neutral",
+                "Registration admission is a server decision exposed only to Gateway Administrators. This portal will not infer it for another role.",
+                "Ask a Gateway Administrator to review the current admission and provider capability response.");
+        }
+
+        return new(
+            3,
+            "ProvisioningReady",
+            "Provisioning ready",
+            systemConfig is null
+                ? "Unknown"
+                : systemConfig.ProvisioningExecutionEnabled
+                    ? "Admission open"
+                    : "Admission closed",
+            systemConfig?.ProvisioningExecutionEnabled == true ? "warning" : "neutral",
+            "An open admission flag means the API currently permits a registration. Each provisioning operation must still reach final verification; the flag is not proof of Microsoft resources.",
+            systemConfig is null
+                ? "The administrator-only capability response is unavailable."
+                : AdmissionDescription);
+    }
+
+    private ReadinessMilestone BuildFirstAgentMilestone() => new(
+        4,
+        "FirstAgentActive",
+        "First agent Active",
+        activeAgentInventory is null
+            ? "Unknown"
+            : HasFirstAgentActive
+                ? "Gateway reported"
+                : "Not yet",
+        HasFirstAgentActive ? "warning" : "neutral",
+        "Active means the Gateway persisted completion after its final verification stage. It remains Gateway-reported state, not independent Microsoft Admin Center or data-plane evidence.",
+        activeAgentInventory is null
+            ? "The filtered Active-agent inventory did not return current data."
+            : HasFirstAgentActive
+                ? $"{FormatCount(activeAgentInventory.TotalCount, activeAgentInventory.Items.Count, "Active registration")} reported by the Gateway."
+                : "The Gateway returned no Active registration for this query.");
+
+    private static string FormatCount(int? totalCount, int returnedCount, string noun)
+    {
+        var count = totalCount ?? returnedCount;
+        return count == 1 ? $"1 {noun}" : $"{count} {noun}s";
+    }
+
+    private static string FormatTime(DateTime? value) => value is null
+        ? "not yet"
+        : value.Value.ToLocalTime().ToString("HH:mm");
+
+    public ValueTask DisposeAsync()
+    {
+        disposeCts.Cancel();
+        disposeCts.Dispose();
+        return ValueTask.CompletedTask;
+    }
+
+    private sealed record ReadinessMilestone(
+        int Index,
+        string Key,
+        string Title,
+        string Status,
+        string Tone,
+        string Description,
+        string Evidence);
+
+    private sealed record LoadAttempt<T>(T? Value, UiErrorInfo? Error)
+        where T : class
+    {
+        public static LoadAttempt<T> Succeeded(T value) => new(value, null);
+        public static LoadAttempt<T> Failed(UiErrorInfo error) => new(null, error);
+        public static LoadAttempt<T> NoRequest() => new(null, null);
+    }
+}

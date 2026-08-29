@@ -6,7 +6,7 @@ relevant guide under `docs/agent-guides`, and the latest live evidence in
 
 Last reconciled with the workflow-v3 working tree, continuous development
 deployment, Microsoft 365 Admin Center landing, blueprint-scoped Purview DLP proof,
-the clean-subscription bootstrap source checkpoint, the unreleased Purview
+the local Phase 0–6 clean-subscription bootstrap hardening, the unreleased Purview
 protection-profile source feature, and the live development Prompt Shields
 deployment:
 **2026-08-29**.
@@ -107,6 +107,16 @@ certificate in the designated Key Vault, run the additive migration, build the n
 worker image (which pins ExchangeOnlineManagement 3.10.1), deploy with policy
 provisioning disabled, complete read-only preflight, then authorize one bounded
 development canary separately.
+
+The current local increment hardens that unreleased runtime boundary further. The
+worker treats only the exact persisted provider IDs and the persisted authorized
+blueprint-application set as authority; it rejects extra scope, exclusions, bypass,
+conditions/actions, unexpected policy modes, or incomplete collection/DLP/rule
+readback. Temporary PKCS#12 material must be deleted with absence proven, and the
+final workflow stage revalidates the exact Purview contract before a protected
+registration can become `Active`. These are source and test claims only. No worker
+revision, tenant policy, certificate, role assignment, or canary proves this newer
+behavior in the live development environment.
 
 ## Product outcome
 
@@ -293,26 +303,64 @@ blueprint-principal, child, and Registry identifiers are not interchangeable.
 
 ### Clean-subscription bootstrap source
 
-`bootstrap/bootstrap.ps1` is now the supported first-deployment entry point. Its
-`Plan`, `Apply`, `Resume`, and `Verify` modes persist safe step evidence under the
-ignored `.bootstrap/` directory and reject concurrent runs. The bootstrap creates
-the resource group and VNet-integrated Container Apps foundation, composes the
-reviewed workload Bicep, creates/adopts the API and Admin UI Entra applications,
-creates a typed seed blueprint through the Agent 365 CLI, configures the exact
-workflow-v3 roles/delegated consent/OBO FIC, builds digest-pinned images in ACR,
-adds SQL/Key Vault private endpoints, initializes an empty current-model database,
-creates runtime database principals, optionally authors blueprint-scoped Purview
-policies and provisions managed-identity Prompt Shields, deploys the Admin UI,
-closes public dependency access, and performs the
-read-only provisioning preflight plus health checks.
+The supported public surface is `./gateway` on macOS/Linux and `gateway.cmd` on
+Windows. `gateway setup` hosts a temporary loopback-only Fluent UI; `gateway up`
+provides the terminal path. Both delegate to the canonical
+`bootstrap/bootstrap.ps1` state machine, whose Plan/Apply/Resume/Verify flow covers
+the Azure foundation, Entra applications, typed Agent 365 seed blueprint, exact
+workflow-v3 roles/consent/FIC, digest-pinned ACR images, empty-database
+initialization, Admin UI, optional controls, and fail-closed readback.
 
-Every Apply/Resume rechecks prerequisites and re-pins the exact Azure tenant and
-subscription instead of trusting a prior-process login record; final verification
-also always reruns. `-NonInteractive` refuses any missing Agent 365 blueprint or
-Purview authoring step that would require an interactive login. When safe state
-records a completed foundation but the exact resource group was subsequently
-deleted, bootstrap clears only dependent safe state and rebuilds through the same
-idempotent/adoption paths.
+The original one-command **Phase 0–6 plan is not complete**. A substantial local
+candidate exists, but local source/tests are not release proof and must not be
+reported as completion of the plan. The authoritative phase status is:
+
+| Phase | Current status | Remaining boundary |
+|---|---|---|
+| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. An explicit interruption/resume matrix for every bootstrap checkpoint and the required disposable clean-subscription proof are still absent. |
+| 1 — One cross-platform front door | Source complete; proof incomplete | `gateway`/`gateway.cmd` and the terminal command surface are implemented. The current candidate has not completed Windows, macOS Intel, macOS Arm, and Linux execution evidence. |
+| 2 — Guided configuration | Partial | Quick Development, Staging Foundation, and Production-safe Foundation are implemented. The promised guided Connect Existing and Advanced profiles are not; existing-state import remains recovery-only and refuses unsafe adoption. Simulated Demo was explicitly optional-later and is absent. |
+| 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
+| 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
+| 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
+| 6 — Release-quality proof | Not done | The cross-platform matrix, fresh-checkout disposable Apply, deliberate interruption/Resume, authenticated Admin sign-in, new registration through `Active`, and bounded canary/revocation have not run for this candidate. README/runbook and local gates alone do not satisfy this phase. |
+
+The implemented Plan binds the full non-secret configuration, operation descriptor,
+sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
+client IPv4 into one canonical fingerprint. Plan accepts that IPv4 only when bounded
+requests to ipify and AWS Check IP agree. Acceptance creates a content-addressed
+execution snapshot under ignored `.bootstrap/accepted-source/`. Apply/Resume
+requires the running checkout to match the accepted source, validates the snapshot,
+then loads mutation modules, templates, scripts, project inputs, and ACR context
+from those reviewed bytes.
+
+Any durable step/output prevents a later Plan from mixing a different source
+generation into that deployment state. Each step stores its source fingerprint,
+and reusable checkpoints require independent exact provider readback. Image build
+evidence, resource-group deployments, and API/worker/Admin UI resources bind the
+same accepted fingerprint, deployment-ownership ID, and immutable image references.
+Fresh state rejects a pre-existing resource group or managed identity instead of
+adopting a same-name resource.
+
+Every Apply/Resume rechecks authentication and pins every supported Azure CLI/ARM/
+Graph call to the exact reviewed tenant and subscription instead of trusting a
+mutable CLI default. `-NonInteractive` refuses a missing human Agent 365 or Purview
+authorization handoff. Final verification always reruns; no cached verification is
+accepted as deployed truth.
+
+Database setup opens only one disclosed temporary network window. The firewall
+rule's start/end address must equal the Plan-reviewed/stored IPv4. The exact rule is
+then deleted with absence read back, and SQL public access is restored to `Disabled`
+and read back; an unproven cleanup preserves a safe recovery record and fails the
+step. Initialization accepts only zero user tables, then compares the complete EF
+table/column/index contract and rejects extra programmable objects, principal
+authority, schema/role ownership, or lookalike/partial state.
+
+Key Vault authority is secret-scoped: the Admin UI user-assigned identity receives
+Key Vault Secrets User only on its exact Entra client-secret resource; the worker
+receives that role only on the exact configured Purview certificate-secret resource
+when protection-profile automation is enabled; the API has no shared-vault role.
+Verification proves the expected assignments and rejects wider or extra authority.
 
 The bootstrap has no destroy path and does not read `.secrets`. Generated SQL/app
 credentials remain process-local or are transferred directly to Key Vault; state
@@ -331,32 +379,24 @@ exists. Bootstrap modules, workflows, the database migrator, architecture tests,
 runbooks, and paired Claude/Codex deployment instructions all reference the new
 locations. This was a source-only relocation; no Azure or database state changed.
 
-Source validation currently includes PowerShell parsing, all three new Bicep
-templates, a zero-warning/error solution/DatabaseMigrator build, a successful
-non-mutating `Plan`, the bootstrap architecture regression, and the full 1,121-test
-gate. A complete `Apply` has
-not yet been executed against a disposable clean subscription and is not live
-deployment evidence. The next bootstrap-specific action is that disposable
-development execution followed by a real registration/data-plane/Purview canary;
-record its safe evidence here before describing clean-subscription recovery as
-live-proven.
+The complete post-hardening local gate passes. The Release solution build has zero
+warnings and zero errors. Direct Release tests are **1,279/1,279**: unit 478,
+Admin UI 155, local Setup 75, observability/runtime 149, integration 92,
+end-to-end 106, architecture 113, and security 111. Pester discovered 209 tests:
+208 passed, none failed, and one Windows-only launcher test was skipped on macOS.
+The canonical bootstrap source gate parsed **16** PowerShell files and **2** JSON
+contracts and compiled all **23** Bicep templates. `dotnet format
+--verify-no-changes` and `git diff --check` pass. The repository has **55**
+Markdown files and **58** repository-local links with no broken target.
 
-The current broad workflow-v3 plus bootstrap gate has a zero-warning/zero-error
-Release solution build and **1,121/1,121** passing tests:
-
-- unit **409/409**;
-- Admin UI **151/151**;
-- end-to-end **106/106**;
-- security **111/111**;
-- observability/runtime **144/144**;
-- integration **92/92**; and
-- architecture **108/108**.
-
-Every `tests/**/*.csproj` was run directly in Release with `--no-restore`; invoking
-`dotnet test` against the solution alone runs no test projects. PowerShell parsing
-passed 18/18, `dotnet format --verify-no-changes` passed, all 23/23 Bicep templates compile without diagnostics,
-and all 5/5 parameter files validate. Final diff checks pass;
-line-ending notices are informational. Local success is not deployment evidence.
+The loopback Setup UI was also inspected at 1280x720 and 390x844 with no horizontal
+overflow. When the existing ignored `bootstrap/config.json` could not be safely
+imported, the wizard displayed the protected-file warning, disabled Start, and did
+not overwrite the configuration. No disposable clean-subscription Apply has run,
+no Azure/Entra/SQL/tenant state was changed by this checkpoint, and no new bootstrap
+or runtime Purview behavior is live-proven. The next bootstrap-specific action
+remains a separately authorized disposable development Apply followed by a real
+registration, data-plane, and optional Purview canary.
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
@@ -694,11 +734,15 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    with the unreleased protection-profile rollout or staging/multi-replica/failover
    and production-readiness work. Do not reinterpret offline `downloadText` as an
    inline response gate or use historical failures as retry inputs.
-6. For a new subscription or deleted resource group, start at
+6. For a new clean subscription, start at
    [`../bootstrap/README.md`](../bootstrap/README.md), run `Plan`, then use the
-   resumable `Apply`. Do not substitute the old partial `tools/bootstrap.ps1`.
-   Until one disposable clean-subscription run is captured, distinguish locally
-   validated bootstrap source from a live-proven recovery path.
+   resumable `Apply`. Preserve the exact checkout/source fingerprint and accepted
+   snapshot for Resume; never mix durable state across source generations. Do not
+   substitute the old partial `tools/bootstrap.ps1`. Until one disposable
+   clean-subscription run is captured, distinguish locally validated bootstrap
+   source from a live-proven recovery path. If a completed resource group was
+   deleted, preserve state and use a separately reviewed disaster-recovery decision;
+   bootstrap intentionally refuses automatic tenant-object/credential replay.
 7. After every verified change, update this file and the deployment checkpoint with
    exact tests, digests, revisions, schema/recovery state, all queue/outbox counts,
    safe external identifiers, and the next action. Never record secret material.

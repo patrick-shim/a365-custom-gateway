@@ -15,6 +15,59 @@ pre-model control. It is deployed and live-proven in the external development
 environment; production support remains gated by the preview Agent 365 Registry
 dependency and the production-readiness reviews below.
 
+## Bring up a new Gateway
+
+After cloning the repository, the guided setup is the shortest supported path:
+
+```bash
+./gateway setup
+```
+
+On Windows, run `gateway.cmd setup`. The command opens a temporary Fluent UI on
+`127.0.0.1`, discovers the current Azure CLI subscription, writes only the ignored
+non-secret `bootstrap/config.json`, shows a source-validated Azure What-If plan,
+requires explicit confirmation, and delegates deployment to the same resumable
+bootstrap engine used by automation. The local setup server exits when setup is
+finished or idle. It never asks for or stores cloud credentials. Setup does require
+the exact one-to-ten Agent 365 manager application IDs that the operator has
+independently reviewed; values returned by blueprint discovery are compared with
+that approved set and are never treated as authority by themselves.
+
+Plan shows the exact tenant, subscription, deployment ownership, source fingerprint,
+and SQL bootstrap IPv4 before approval. It corroborates that IPv4 through bounded
+HTTPS requests to both ipify and AWS Check IP; disagreement or a non-canonical IPv4
+stops before any SQL network change. Every Azure CLI/Graph operation during
+execution remains pinned to the reviewed tenant and subscription.
+For the seed blueprint, Plan also states whether the run is a fresh one-POST
+creation, GET-only reconciliation of a previously started outcome, or read-only
+revalidation of completed evidence. That disposition is part of the plan
+fingerprint, so Resume cannot silently authorize a second create.
+
+The terminal-only equivalent is:
+
+```bash
+./gateway doctor
+./gateway up
+```
+
+PowerShell 7, Git, Azure CLI, and the .NET 10 SDK are the base workstation
+requirements; `doctor` reports exact remediation. Docker and the Agent 365 CLI are
+not required on the happy path: image builds run in the deployment's Azure
+Container Registry, and the seed blueprint is created directly through Microsoft
+Graph v1.0 without creating a blueprint credential. Azure, Entra, Agent ID, and
+optional Purview authentication remain in their official signed-in flows.
+
+Automatic prerequisite installation is a local mutation. When it is enabled, the
+bootstrap may install Git, Azure CLI, the .NET 10 SDK, or Bicep where the platform
+supports that path, and install the optional Exchange Online module for Purview.
+Use `--no-install` when those
+workstation changes must be managed separately.
+
+Setup deliberately has no destroy, retained-message, Registry-replay, historical
+cleanup, or SQL-finalization command. Development Registry preview, Prompt Shields,
+Purview, and paid SKU choices are off unless explicitly selected. Staging and
+production keep the beta Registry creation boundary closed.
+
 ## Start here
 
 - [`AGENTS.md`](AGENTS.md): shared safety/resume rules for Codex, Claude, Copilot,
@@ -149,6 +202,7 @@ preserves verified completed rows and never repeats a completed Registry boundar
 | `src/Gateway.Infrastructure` | SQL, locks, idempotency, rate limits, outbox, Service Bus, and Blob storage |
 | `src/Gateway.Provisioning.Worker` | Idempotent workflow stages and data-plane relay |
 | `src/ExternalAgent.Sample` | Minimal external client for bounded ingestion verification |
+| `tools/Gateway.Setup` | Ephemeral loopback-only Fluent UI over the canonical bootstrap engine |
 | `tools/Gateway.LiveCanary` | Disposable managed-identity operator canary; holds a temporary Gateway key only in memory and revokes it in cleanup |
 | `bootstrap` | Clean-subscription prerequisite, identity, infrastructure, build, deploy, and verify orchestration |
 | `infrastructure` | Declarative shared Bicep templates and ordered, reviewed SQL schema phases |
@@ -222,11 +276,13 @@ IDs, and the next safe action.
 dotnet build src/A365Gateway.slnx -c Release
 dotnet test tests/Gateway.UnitTests -c Release
 dotnet test tests/Gateway.AdminUi.Tests -c Release
+dotnet test tests/Gateway.Setup.Tests -c Release
 dotnet test tests/Gateway.ObservabilityRuntime.Tests -c Release
 dotnet test tests/Gateway.IntegrationTests -c Release
 dotnet test tests/Gateway.EndToEndTests -c Release
 dotnet test tests/Gateway.ArchitectureTests -c Release
 dotnet test tests/Gateway.SecurityTests -c Release
+pwsh ./tools/Test-BootstrapSource.ps1 -RunPester -CompileBicep
 dotnet format src/A365Gateway.slnx --verify-no-changes
 ```
 
@@ -235,22 +291,78 @@ forward after source changes.
 
 ## Clean-subscription deployment
 
-Use the repository-root [`bootstrap/`](bootstrap/README.md) entry point for a new
-subscription or a deleted resource group. It installs/checks prerequisites, creates
-the missing Azure foundation, configures Entra and a typed Agent ID seed blueprint,
-builds immutable images, initializes an empty database, deploys the Admin UI, and
+Use the repository-root `gateway` launcher for a new clean subscription. It
+installs/checks supported prerequisites, creates the missing
+Azure foundation, configures Entra and a typed Agent ID seed blueprint, builds
+immutable images, initializes only an empty database, deploys the Admin UI, and
 runs fail-closed read-back verification:
 
-```powershell
-Copy-Item bootstrap/config.example.json bootstrap/config.json
-bootstrap/bootstrap.cmd -Mode Plan -Config bootstrap/config.json
-bootstrap/bootstrap.cmd -Mode Apply -Config bootstrap/config.json -OpenBrowser
+```bash
+./gateway setup          # local guided Fluent UI
+./gateway up             # terminal wizard + plan + apply/resume + verify
+./gateway status         # local checkpoint/readiness view; no Azure calls
+./gateway verify         # authenticated read-only deployed verification
+./gateway diagnose       # sanitized local support bundle
 ```
+
+Windows exposes the same commands through `gateway.cmd`. CI and other controlled
+automation must preserve the machine-readable Plan output, extract its single
+apply-ready top-level `planFingerprint`, submit that exact value for review, and
+carry the approved value into execution. For example (using `jq` in the CI image):
+
+```bash
+plan_artifact="$(mktemp)"
+./gateway plan --json --non-interactive | tee "$plan_artifact"
+plan_fingerprint="$(jq -ser '[.[] | select(.planFingerprint? and .applyReady == true)] | if length == 1 then .[0].planFingerprint else error("expected one apply-ready plan") end' "$plan_artifact")"
+
+# The external approval gate reviews the artifact and returns this exact value.
+: "${APPROVED_PLAN_FINGERPRINT:?external approval did not supply a plan fingerprint}"
+test "$APPROVED_PLAN_FINGERPRINT" = "$plan_fingerprint"
+./gateway up --json --non-interactive --yes \
+  --expected-plan-fingerprint "$APPROVED_PLAN_FINGERPRINT"
+```
+
+Use the same expected-fingerprint option with `resume`. `--yes` by itself approves
+the plan freshly recomputed by that `up` or `resume` invocation; it does not attest
+that an earlier Plan output was externally reviewed. The expected fingerprint is
+what makes a configuration, deployment-source, descriptor, or sanitized What-If
+change fail before mutation.
+
+Accepting Plan also copies the reviewed deployment inputs into an ignored,
+content-addressed source snapshot under `.bootstrap/accepted-source/`. Apply and
+Resume first require the running checkout to have the exact accepted source
+fingerprint, then reopen templates, scripts, project files, and ACR build inputs
+from that snapshot. Once any durable step or output exists, bootstrap refuses to
+mix another source generation into the same deployment state; restore the original
+checkout or choose a distinct project/resource group.
 
 `config.json` is non-secret and should remain local. Runtime bootstrap state is
 under ignored `.bootstrap/`. The tool has no destroy path and does not read
 `.secrets`. Full Registry creation remains development-only because Microsoft's
 direct create API is beta and unsupported for production.
+
+The ignored state also holds a generated, unguessable deployment-ownership ID.
+Bootstrap-created Entra applications carry its exact ownership tag and exactly the
+pinned bootstrap operator as owner. A pre-existing same-name application without
+that state-owned marker is a collision, not an adoption candidate, and stops the
+run fail-closed. Bootstrap-created deployments and resources also carry the exact
+ownership and accepted source fingerprint. API, worker, and Admin UI checkpoints
+must read back those tags plus the requested immutable image digests before reuse.
+
+Empty-database initialization has one bounded network exception: it may temporarily
+enable the SQL server public endpoint and create exactly one deterministic firewall
+rule whose start and end are the Plan-reviewed, fingerprinted, and stored caller
+IPv4. Cleanup deletes that exact rule, reads back its absence, restores public
+access to `Disabled`, and reads that state back. If cleanup cannot be proven,
+bootstrap stops and preserves an ignored safe recovery record under
+`.bootstrap/evidence/`; it does not report the database step complete.
+
+Key Vault access is secret-scoped in this path: the Admin UI user-assigned identity
+gets Key Vault Secrets User only on its exact Entra client-secret resource; when
+Purview protection-profile automation is enabled, the worker gets that role only
+on the configured certificate-secret resource. The API receives no role on the
+shared vault. The stricter runtime Purview authority/readback and final-revalidation
+work in this checkout is local, unreleased source and has no live deployment proof.
 
 ```mermaid
 flowchart TD
@@ -267,10 +379,11 @@ flowchart TD
     Verify --> Register[Development registration and bounded canary]
 ```
 
-The bootstrap is locally source-validated and resumable, but a disposable
-clean-subscription `Apply` has not yet been captured as live evidence. That is the
-next bootstrap proof point; do not infer it from the already-running development
-resource group.
+The bootstrap implementation is locally source-validated and resumable, but a disposable
+clean-subscription `Apply` has not yet been captured as live evidence. Follow the
+[clean-subscription proof runbook](docs/operations/clean-subscription-bootstrap-proof.md)
+for that separately authorized proof; do not infer it from the already-running
+development resource group.
 
 ## Local UI
 

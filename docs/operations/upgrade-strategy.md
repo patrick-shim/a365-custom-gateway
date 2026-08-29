@@ -2,11 +2,12 @@
 
 This runbook covers the deployment and upgrade strategy for the A365 Custom Gateway. It includes container image versioning, blue-green deployments via Container Apps revision management, database migration procedures, rollback processes, canary releases, and version compatibility.
 
-This runbook upgrades an existing evidence-bearing deployment. For a clean
-subscription or deleted resource group, use
-[`../../bootstrap/README.md`](../../bootstrap/README.md) and its resumable bootstrap
-instead. First deployment does not bypass the recovery, retained-message, canary,
-or SQL-finalization controls below.
+This runbook upgrades an existing evidence-bearing deployment. For a new clean
+subscription, use [`../../bootstrap/README.md`](../../bootstrap/README.md) and its
+resumable bootstrap. A deleted completed resource group is not an automatic
+bootstrap replay: preserve state and choose a separately reviewed disaster-recovery
+procedure or a new isolated deployment. First deployment does not bypass the
+recovery, retained-message, canary, or SQL-finalization controls below.
 
 ## Current workflow-v3 boundary (authoritative)
 

@@ -1,0 +1,119 @@
+@page "/setup/account"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject SetupWizardState State
+@inject IAzureAccountDiscovery Discovery
+@inject SetupActivityTracker Activity
+@inject NavigationManager Navigation
+
+<PageTitle>Azure account · A365 Gateway Setup</PageTitle>
+
+<div class="page-heading">
+    <p class="eyebrow">Step 2 of 6</p>
+    <h1>Select the Azure subscription</h1>
+    <p>Setup reads the public subscription inventory from your current Azure CLI session. Authentication stays in Microsoft's CLI and browser experience.</p>
+</div>
+
+<section class="setup-card form-card">
+    <div class="card-section">
+        <div class="section-heading">
+            <div><h2>Current CLI session</h2><p>No password, access token, refresh token, or authorization header is requested or displayed.</p></div>
+            <FluentButton Appearance="Appearance.Neutral" Disabled="@discovering" OnClick="DiscoverAsync">@(discovering ? "Checking…" : "Refresh")</FluentButton>
+        </div>
+
+        @if (discovering)
+        {
+            <div class="loading-row" role="status"><FluentProgressRing /> <span>Reading the bounded Azure subscription inventory…</span></div>
+        }
+        else if (guidance is not null)
+        {
+            <div class="notice warning" role="alert"><strong>Action needed in the terminal</strong><span>@guidance</span></div>
+            <pre class="terminal-command" aria-label="Azure login command"><code>az login</code></pre>
+        }
+        else if (State.Subscriptions.Count > 0)
+        {
+            <div class="field">
+                <label for="subscription">Subscription</label>
+                <select id="subscription" class="control" value="@State.Form.SubscriptionId" @onchange="SelectSubscription" disabled="@State.ExistingConfigurationLoaded">
+                    @foreach (var subscription in State.Subscriptions)
+                    {
+                        <option value="@subscription.SubscriptionId">@subscription.DisplayLabel@(subscription.IsDefault ? " · Current default" : string.Empty)</option>
+                    }
+                </select>
+                <small>@(State.ExistingConfigurationLoaded ? "Locked to the imported deployment target. " : string.Empty)Tenant <code>@State.Form.TenantId</code></small>
+            </div>
+        }
+
+        @if (State.AccountSelectionIssue is not null)
+        {
+            <div class="notice error" role="alert"><strong>Exact deployment target unavailable</strong><span>@State.AccountSelectionIssue</span></div>
+        }
+    </div>
+</section>
+
+<div class="notice neutral" role="note">
+    <strong>Separate administrator handoffs are supported.</strong>
+    <span>If a later consent step needs a different administrator, complete that official browser prompt and return to the same resumable bootstrap run.</span>
+</div>
+
+<div class="page-actions">
+    <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/welcome">Back</FluentAnchor>
+    <FluentButton Appearance="Appearance.Accent" Disabled="@(State.Form.SubscriptionId == Guid.Empty || State.AccountSelectionIssue is not null)" OnClick="Continue">Continue</FluentButton>
+</div>
+
+@code {
+    private readonly CancellationTokenSource disposeCts = new();
+    private bool discovering;
+    private string? guidance;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!State.WelcomeAccepted)
+        {
+            Navigation.NavigateTo("/setup/welcome");
+            return;
+        }
+
+        if (State.Subscriptions.Count == 0)
+        {
+            await DiscoverAsync();
+        }
+    }
+
+    private async Task DiscoverAsync()
+    {
+        discovering = true;
+        guidance = null;
+        Activity.Touch();
+        try
+        {
+            var result = await Discovery.DiscoverAsync(disposeCts.Token);
+            State.SetSubscriptions(result.Subscriptions);
+            guidance = result.Guidance;
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            discovering = false;
+        }
+    }
+
+    private void SelectSubscription(ChangeEventArgs args)
+    {
+        if (Guid.TryParse(args.Value?.ToString(), out var subscriptionId))
+        {
+            State.SelectSubscription(subscriptionId);
+            Activity.Touch();
+        }
+    }
+
+    private void Continue() => Navigation.NavigateTo("/setup/profile");
+
+    public void Dispose()
+    {
+        disposeCts.Cancel();
+        disposeCts.Dispose();
+    }
+}

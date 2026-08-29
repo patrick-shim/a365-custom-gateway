@@ -1,0 +1,177 @@
+@page "/setup/progress"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject SetupWizardState State
+@inject BootstrapExecutionCoordinator Execution
+@inject SetupActivityTracker Activity
+@inject NavigationManager Navigation
+
+<PageTitle>Progress · A365 Gateway Setup</PageTitle>
+
+<div class="page-heading">
+    <p class="eyebrow">Step 5 of 6</p>
+    <h1>@Heading</h1>
+    <p>@Description</p>
+</div>
+
+<section class="setup-card progress-card" aria-live="polite">
+    <div class="progress-header">
+        <div>
+            <span class="run-status @snapshot.Status.ToString().ToLowerInvariant()">@FormatStatus(snapshot.Status)</span>
+            <h2>@(snapshot.Command?.ToString() ?? "Waiting for Plan")</h2>
+        </div>
+        @if (snapshot.Events.LastOrDefault(item => item.ProgressPercent is not null)?.ProgressPercent is { } progress)
+        {
+            <span class="progress-value">@progress%</span>
+        }
+    </div>
+
+    @if (snapshot.Events.LastOrDefault(item => item.ProgressPercent is not null)?.ProgressPercent is { } percent)
+    {
+        <progress class="progress-bar" max="100" value="@percent"><span>@percent%</span></progress>
+    }
+
+    <ol class="event-list" aria-label="Sanitized bootstrap events">
+        @foreach (var item in snapshot.Events)
+        {
+            <li class="event-item @item.Kind.ToString().ToLowerInvariant()">
+                <span class="event-dot" aria-hidden="true"></span>
+                <div>
+                    <strong>@(item.DisplayLabel ?? item.Step ?? FormatKind(item.Kind))</strong>
+                    <p>@item.Message</p>
+                    <time datetime="@item.TimestampUtc.ToString("O")">@item.TimestampUtc.ToLocalTime().ToString("HH:mm:ss")</time>
+                </div>
+            </li>
+        }
+    </ol>
+</section>
+
+@if (snapshot.Command == BootstrapCommand.Plan && snapshot.Status == BootstrapExecutionStatus.Succeeded)
+{
+    <section class="setup-card confirmation-card">
+        <h2>The exact plan fingerprint passed. Choose the resumable mutation command.</h2>
+        <p><strong>Apply</strong> starts a new deployment or continues safe checkpoints. <strong>Resume</strong> explicitly continues previously recorded safe state. Setup supplies the reviewed fingerprint, and the bootstrap stops before mutation if source, configuration, or What-If predictions changed.</p>
+        <label class="confirm-check">
+            <InputCheckbox @bind-Value="mutationConfirmed" />
+            <span><strong>I authorize Azure, Entra, Agent 365, SQL, and optional policy changes bound to this Plan fingerprint.</strong><small>I understand interactive administrator handoffs may appear and no production support claim is created.</small></span>
+        </label>
+        <div class="inline-actions">
+            @if (State.ExistingConfigurationLoaded)
+            {
+                <FluentButton Appearance="Appearance.Accent" Disabled="@(!mutationConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Resume)">Resume existing state</FluentButton>
+                <FluentButton Appearance="Appearance.Neutral" Disabled="@(!mutationConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Apply)">Apply / continue</FluentButton>
+            }
+            else
+            {
+                <FluentButton Appearance="Appearance.Accent" Disabled="@(!mutationConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Apply)">Apply</FluentButton>
+                <FluentButton Appearance="Appearance.Neutral" Disabled="@(!mutationConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Resume)">Resume existing state</FluentButton>
+            }
+        </div>
+    </section>
+}
+else if (snapshot.Command == BootstrapCommand.Plan && snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled)
+{
+    <div class="notice error" role="alert"><strong>Plan did not pass</strong><span>No Apply or Resume action is available. Correct the reported prerequisite/configuration issue, then explicitly run Plan again.</span></div>
+    <div class="page-actions"><FluentAnchor Appearance="Appearance.Accent" Href="/setup/permissions">Return to review</FluentAnchor></div>
+}
+else if (snapshot.Command is BootstrapCommand.Apply or BootstrapCommand.Resume && snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled)
+{
+    <section class="setup-card confirmation-card">
+        <h2>The deployment stopped safely</h2>
+        <p>Do not delete <code>.bootstrap</code> state. Correct the cause, then authorize Resume only if the reviewed fingerprint is still current. The bootstrap stops before mutation on any plan drift; Setup never retries automatically.</p>
+        <label class="confirm-check">
+            <InputCheckbox @bind-Value="resumeConfirmed" />
+            <span><strong>I reviewed the failure and authorize Resume.</strong><small>The bootstrap remains responsible for deciding which checkpoint can safely continue.</small></span>
+        </label>
+        <div class="inline-actions">
+            <FluentButton Appearance="Appearance.Accent" Disabled="@(!resumeConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Resume)">Resume with reviewed fingerprint</FluentButton>
+            <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/permissions">Review a fresh Plan</FluentAnchor>
+        </div>
+    </section>
+}
+else if (snapshot.Command is BootstrapCommand.Apply or BootstrapCommand.Resume && snapshot.Status == BootstrapExecutionStatus.Succeeded)
+{
+    <div class="notice success" role="status"><strong>Deployment completed and verified</strong><span>The bootstrap reported success. Continue to open the hosted Admin UI and review first-run guidance.</span></div>
+    <div class="page-actions"><FluentButton Appearance="Appearance.Accent" OnClick="ContinueToFinish">Continue</FluentButton></div>
+}
+
+<div class="terminal-fallback">
+    <strong>Terminal fallback</strong>
+    <span>If this local UI closes, rerun it or use the same ignored configuration with the canonical commands:</span>
+    <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Plan -Config ./bootstrap/config.json</code>
+    <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Resume -Config ./bootstrap/config.json</code>
+</div>
+
+@code {
+    private BootstrapExecutionSnapshot snapshot = new(null, BootstrapExecutionStatus.NotStarted, [], null, false, null);
+    private bool mutationConfirmed;
+    private bool resumeConfirmed;
+
+    private string Heading => snapshot.IsRunning
+        ? $"Running {snapshot.Command}"
+        : snapshot.Status == BootstrapExecutionStatus.NotStarted
+            ? "No command is running"
+            : $"{snapshot.Command} {FormatStatus(snapshot.Status).ToLowerInvariant()}";
+
+    private string Description => snapshot.IsRunning
+        ? "Structured bootstrap events are streamed through a strict redaction boundary. Keep this page and the launch terminal open."
+        : "No command is retried automatically. Every mutation requires a fresh explicit action.";
+
+    protected override void OnInitialized()
+    {
+        snapshot = Execution.Snapshot();
+        Execution.Changed += HandleChanged;
+        if (!State.ConfigurationWritten && snapshot.Status == BootstrapExecutionStatus.NotStarted)
+        {
+            Navigation.NavigateTo("/setup/permissions");
+        }
+    }
+
+    private void HandleChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            snapshot = Execution.Snapshot();
+            StateHasChanged();
+        });
+    }
+
+    private void StartMutation(BootstrapCommand command)
+    {
+        var confirmed = command == BootstrapCommand.Resume && snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled
+            ? resumeConfirmed
+            : mutationConfirmed;
+        if (Execution.TryStart(command, confirmed))
+        {
+            mutationConfirmed = false;
+            resumeConfirmed = false;
+            Activity.Touch();
+            snapshot = Execution.Snapshot();
+        }
+    }
+
+    private void ContinueToFinish() => Navigation.NavigateTo("/setup/finish");
+
+    private static string FormatStatus(BootstrapExecutionStatus value) => value switch
+    {
+        BootstrapExecutionStatus.NotStarted => "Not started",
+        BootstrapExecutionStatus.Running => "Running",
+        BootstrapExecutionStatus.Succeeded => "Succeeded",
+        BootstrapExecutionStatus.Failed => "Stopped",
+        BootstrapExecutionStatus.Cancelled => "Interrupted",
+        _ => "Unknown"
+    };
+
+    private static string FormatKind(BootstrapProgressKind value) => value switch
+    {
+        BootstrapProgressKind.Information => "Information",
+        BootstrapProgressKind.Step => "Step",
+        BootstrapProgressKind.Success => "Verified event",
+        BootstrapProgressKind.Warning => "Warning",
+        BootstrapProgressKind.Error => "Safe error",
+        BootstrapProgressKind.Withheld => "Redacted output",
+        _ => "Event"
+    };
+
+    public void Dispose() => Execution.Changed -= HandleChanged;
+}

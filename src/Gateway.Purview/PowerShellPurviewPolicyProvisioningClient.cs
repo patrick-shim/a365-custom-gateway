@@ -1,6 +1,9 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using Azure.Identity;
@@ -15,6 +18,8 @@ namespace Gateway.Purview;
 internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicyProvisioningClient
 {
     private const string ResultPrefix = "A365GW_RESULT:";
+    private const int StandardOutputCharacterLimit = 64 * 1024;
+    private const int StandardErrorCharacterLimit = 32 * 1024;
     private readonly PurviewOptions _options;
     private readonly ILogger<PowerShellPurviewPolicyProvisioningClient> _logger;
 
@@ -30,26 +35,43 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
 
     public async Task<PurviewPolicyProvisioningResult> EnsureProfileAssignmentAsync(
         PurviewPolicyProvisioningRequest request,
+        CancellationToken ct) => await ExecuteAsync(request, verifyOnly: false, ct);
+
+    public async Task<PurviewPolicyProvisioningResult> VerifyProfileAssignmentAsync(
+        PurviewPolicyProvisioningRequest request,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(request.ExpectedCollectionPolicyId) ||
+            string.IsNullOrWhiteSpace(request.ExpectedDlpPolicyId) ||
+            string.IsNullOrWhiteSpace(request.ExpectedDlpRuleId))
+        {
+            throw Failure(
+                "PURVIEW_POLICY_EXPECTED_IDS_MISSING",
+                "Read-only Purview verification requires every persisted profile identifier.");
+        }
+
+        return await ExecuteAsync(request, verifyOnly: true, ct);
+    }
+
+    private async Task<PurviewPolicyProvisioningResult> ExecuteAsync(
+        PurviewPolicyProvisioningRequest request,
+        bool verifyOnly,
         CancellationToken ct)
     {
         if (!IsEnabled)
         {
             throw Failure("PURVIEW_POLICY_PROVISIONING_DISABLED", "Purview policy provisioning is not configured.");
         }
+        ValidateExpectedScope(request);
 
         var workingDirectory = Path.Combine(Path.GetTempPath(), $"a365gw-purview-{Guid.NewGuid():N}");
-        if (OperatingSystem.IsWindows())
-            Directory.CreateDirectory(workingDirectory);
-        else
-            Directory.CreateDirectory(
-                workingDirectory,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var inputPath = Path.Combine(workingDirectory, "request.json");
         var certificatePath = Path.Combine(workingDirectory, "automation.pfx");
         var certificatePassword = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
 
         try
         {
+            CreatePrivateWorkingDirectory(workingDirectory);
             byte[]? certificateBytes = null;
             byte[]? exportedCertificate = null;
             try
@@ -64,7 +86,11 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                         throw Failure("PURVIEW_POLICY_CERTIFICATE_INVALID", "The Purview automation certificate has no private key.");
                     exportedCertificate = certificate.Export(X509ContentType.Pkcs12, certificatePassword);
                     await File.WriteAllBytesAsync(certificatePath, exportedCertificate, ct);
-                    if (!OperatingSystem.IsWindows())
+                    if (OperatingSystem.IsWindows())
+                    {
+                        ApplyCurrentUserOnlyFileAcl(certificatePath);
+                    }
+                    else
                     {
                         File.SetUnixFileMode(
                             certificatePath,
@@ -89,10 +115,19 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                     request.Mode,
                     request.BlueprintApplicationId,
                     request.BlueprintDisplayName,
+                    request.ExpectedCollectionPolicyId,
+                    request.ExpectedDlpPolicyId,
+                    request.ExpectedDlpRuleId,
+                    request.ExpectedPriorBlueprintApplicationIds,
+                    request.ExpectedBlueprintApplicationIds,
                     sensitiveInformationType = _options.DefaultSensitiveInformationType
                 }),
                 Encoding.UTF8,
                 ct);
+            if (OperatingSystem.IsWindows())
+                ApplyCurrentUserOnlyFileAcl(inputPath);
+            else
+                File.SetUnixFileMode(inputPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
             var scriptPath = Path.Combine(AppContext.BaseDirectory, "Automation", "Ensure-PurviewPolicyProfile.ps1");
             if (!File.Exists(scriptPath))
@@ -100,7 +135,7 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
 
             using var process = new Process
             {
-                StartInfo = CreateStartInfo(scriptPath, inputPath, certificatePath)
+                StartInfo = CreateStartInfo(scriptPath, inputPath, certificatePath, verifyOnly)
             };
             if (!process.Start())
                 throw Failure("PURVIEW_POLICY_AUTOMATION_START_FAILED", "Purview policy automation could not start.");
@@ -110,12 +145,18 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(_options.PolicyProvisioningTimeoutSeconds));
-            string standardOutput;
-            string standardError;
+            BoundedTextCapture standardOutput;
+            BoundedTextCapture standardError;
             try
             {
-                var outputTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
-                var errorTask = process.StandardError.ReadToEndAsync(timeout.Token);
+                var outputTask = ReadBoundedAsync(
+                    process.StandardOutput,
+                    StandardOutputCharacterLimit,
+                    timeout.Token);
+                var errorTask = ReadBoundedAsync(
+                    process.StandardError,
+                    StandardErrorCharacterLimit,
+                    timeout.Token);
                 await process.WaitForExitAsync(timeout.Token);
                 standardOutput = await outputTask;
                 standardError = await errorTask;
@@ -128,16 +169,34 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                 throw Failure("PURVIEW_POLICY_AUTOMATION_TIMEOUT", "Purview policy automation timed out.", true);
             }
 
+            if (standardOutput.Truncated || standardError.Truncated)
+            {
+                _logger.LogWarning(
+                    "Purview policy automation exceeded a bounded output limit. ExitCode: {ExitCode}; StdoutCharacters: {StdoutCharacters}; StderrCharacters: {StderrCharacters}; StdoutTruncated: {StdoutTruncated}; StderrTruncated: {StderrTruncated}",
+                    process.ExitCode,
+                    standardOutput.TotalCharacters,
+                    standardError.TotalCharacters,
+                    standardOutput.Truncated,
+                    standardError.Truncated);
+                throw Failure(
+                    "PURVIEW_POLICY_AUTOMATION_OUTPUT_LIMIT",
+                    "Purview policy automation exceeded its safe output limit.");
+            }
+
             if (process.ExitCode != 0)
             {
                 _logger.LogWarning(
-                    "Purview policy automation failed. ExitCode: {ExitCode}; DiagnosticLength: {DiagnosticLength}",
+                    "Purview policy automation failed. ExitCode: {ExitCode}; StdoutCharacters: {StdoutCharacters}; StderrCharacters: {StderrCharacters}",
                     process.ExitCode,
-                    standardError.Length);
+                    standardOutput.TotalCharacters,
+                    standardError.TotalCharacters);
                 throw Failure("PURVIEW_POLICY_AUTOMATION_FAILED", "Purview policy automation failed closed.");
             }
 
-            return ParseResult(standardOutput);
+            return ParseResult(
+                standardOutput.Text,
+                request,
+                _options.DefaultSensitiveInformationType);
         }
         catch (PurviewPolicyException)
         {
@@ -158,11 +217,15 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         finally
         {
             certificatePassword = string.Empty;
-            TryDeleteDirectory(workingDirectory);
+            EnsureCleanupProven(await DeleteDirectoryAndVerifyAsync(workingDirectory));
         }
     }
 
-    private ProcessStartInfo CreateStartInfo(string scriptPath, string inputPath, string certificatePath)
+    private ProcessStartInfo CreateStartInfo(
+        string scriptPath,
+        string inputPath,
+        string certificatePath,
+        bool verifyOnly)
     {
         var info = new ProcessStartInfo
         {
@@ -182,6 +245,8 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         AddArgument(info, "-CertificatePath", certificatePath);
         AddArgument(info, "-AutomationApplicationId", _options.PolicyProvisioningApplicationId!);
         AddArgument(info, "-Organization", _options.PolicyProvisioningOrganization!);
+        if (verifyOnly)
+            info.ArgumentList.Add("-VerifyOnly");
         return info;
     }
 
@@ -214,7 +279,10 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         }
     }
 
-    private static PurviewPolicyProvisioningResult ParseResult(string output)
+    internal static PurviewPolicyProvisioningResult ParseResult(
+        string output,
+        PurviewPolicyProvisioningRequest request,
+        string sensitiveInformationType)
     {
         var encoded = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(line => line.Trim())
@@ -226,18 +294,86 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         {
             var json = Encoding.UTF8.GetString(Convert.FromBase64String(encoded[ResultPrefix.Length..]));
             var result = JsonSerializer.Deserialize<AutomationResult>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            var expectedDlpMode = request.Mode switch
+            {
+                "Enforce" => "Enable",
+                "AuditOnly" => "TestWithoutNotifications",
+                _ => throw new JsonException("Unsupported requested policy mode.")
+            };
             if (result is null ||
                 string.IsNullOrWhiteSpace(result.CollectionPolicyId) ||
                 string.IsNullOrWhiteSpace(result.DlpPolicyId) ||
                 string.IsNullOrWhiteSpace(result.DlpRuleId) ||
-                result.VerifiedAtUtc == default)
+                result.BlueprintApplicationIds is null ||
+                result.CollectionActivities is null ||
+                result.CollectionEnforcementPlanes is null ||
+                result.CollectionSensitiveTypeIds is null ||
+                result.DlpEnforcementPlanes is null ||
+                result.ClassifierNames is null ||
+                result.RuleActions is null ||
+                result.VerifiedAtUtc == default ||
+                result.VerifiedAtUtc < DateTimeOffset.UtcNow.AddMinutes(-30) ||
+                result.VerifiedAtUtc > DateTimeOffset.UtcNow.AddMinutes(5))
                 throw new JsonException("Incomplete automation result.");
+
+            if (!MatchesExpectedId(request.ExpectedCollectionPolicyId, result.CollectionPolicyId) ||
+                !MatchesExpectedId(request.ExpectedDlpPolicyId, result.DlpPolicyId) ||
+                !MatchesExpectedId(request.ExpectedDlpRuleId, result.DlpRuleId))
+                throw new JsonException("Provider identifiers do not match persisted profile identifiers.");
+
+            if (result.BlueprintApplicationIds.Length !=
+                    result.BlueprintApplicationIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() ||
+                result.BlueprintApplicationIds.Count(value => string.Equals(
+                    value,
+                    request.BlueprintApplicationId,
+                    StringComparison.OrdinalIgnoreCase)) != 1 ||
+                result.BlueprintApplicationIds.Any(value =>
+                    !Guid.TryParse(value, out var parsed) || parsed == Guid.Empty) ||
+                !ExactGuidSet(
+                    result.BlueprintApplicationIds,
+                    request.ExpectedBlueprintApplicationIds!))
+                throw new JsonException("Blueprint Application scope evidence is invalid.");
+
+            if (!string.Equals(result.CollectionMode, "Enable", StringComparison.Ordinal) ||
+                !ExactSet(result.CollectionActivities, ["UploadText", "DownloadText"]) ||
+                !ExactSet(result.CollectionEnforcementPlanes, ["Application"]) ||
+                !ExactSet(result.CollectionSensitiveTypeIds, ["All"]) ||
+                !result.CollectionIngestionEnabled ||
+                !string.Equals(result.DlpMode, expectedDlpMode, StringComparison.Ordinal) ||
+                !ExactSet(result.DlpEnforcementPlanes, ["Application"]) ||
+                !ExactSet(result.ClassifierNames, [sensitiveInformationType]) ||
+                result.RuleActions.Length != 1 ||
+                result.RuleActions[0] is null ||
+                !string.Equals(result.RuleActions[0].Setting, "UploadText", StringComparison.Ordinal) ||
+                !string.Equals(result.RuleActions[0].Value, "Block", StringComparison.Ordinal) ||
+                result.HasExclusions ||
+                result.HasBypass ||
+                result.HasExtraConditions ||
+                result.HasExtraActions)
+                throw new JsonException("Typed policy evidence does not match the reviewed Gateway template.");
+
+            var evidence = new PurviewPolicyReadbackEvidence(
+                result.CollectionMode,
+                result.CollectionActivities,
+                result.CollectionEnforcementPlanes,
+                result.CollectionSensitiveTypeIds,
+                result.CollectionIngestionEnabled,
+                result.DlpMode,
+                result.DlpEnforcementPlanes,
+                result.ClassifierNames,
+                result.RuleActions.Select(action =>
+                    new PurviewPolicyRuleActionEvidence(action.Setting, action.Value)).ToArray(),
+                result.HasExclusions,
+                result.HasBypass,
+                result.HasExtraConditions,
+                result.HasExtraActions);
 
             return new PurviewPolicyProvisioningResult(
                 result.CollectionPolicyId,
                 result.DlpPolicyId,
                 result.DlpRuleId,
-                result.BlueprintApplicationIds?.Distinct(StringComparer.Ordinal).ToArray() ?? [],
+                result.BlueprintApplicationIds,
+                evidence,
                 result.VerifiedAtUtc);
         }
         catch (Exception exception) when (exception is FormatException or JsonException)
@@ -250,10 +386,158 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         }
     }
 
+    private static bool MatchesExpectedId(string? expected, string actual) =>
+        string.IsNullOrWhiteSpace(expected) ||
+        string.Equals(expected, actual, StringComparison.Ordinal);
+
+    private static bool ExactSet(IReadOnlyList<string> actual, IReadOnlyList<string> expected) =>
+        actual.Count == expected.Count &&
+        actual.OrderBy(value => value, StringComparer.Ordinal).SequenceEqual(
+            expected.OrderBy(value => value, StringComparer.Ordinal),
+            StringComparer.Ordinal);
+
+    private static bool ExactGuidSet(
+        IReadOnlyList<string> actual,
+        IReadOnlyList<string> expected)
+    {
+        var normalizedActual = NormalizeGuidSet(actual);
+        var normalizedExpected = NormalizeGuidSet(expected);
+        return normalizedActual is not null &&
+               normalizedExpected is not null &&
+               normalizedActual.SequenceEqual(normalizedExpected, StringComparer.Ordinal);
+    }
+
+    private static string[]? NormalizeGuidSet(IReadOnlyList<string> values)
+    {
+        if (values.Count > 512)
+            return null;
+        var normalized = new List<string>(values.Count);
+        foreach (var value in values)
+        {
+            if (!Guid.TryParse(value, out var parsed) || parsed == Guid.Empty)
+                return null;
+            var canonical = parsed.ToString("D");
+            if (normalized.Contains(canonical, StringComparer.Ordinal))
+                return null;
+            normalized.Add(canonical);
+        }
+        return normalized.OrderBy(value => value, StringComparer.Ordinal).ToArray();
+    }
+
+    internal static void ValidateExpectedScope(PurviewPolicyProvisioningRequest request)
+    {
+        if (request.ExpectedPriorBlueprintApplicationIds is null ||
+            request.ExpectedBlueprintApplicationIds is null ||
+            !Guid.TryParse(request.BlueprintApplicationId, out var current) ||
+            current == Guid.Empty)
+        {
+            throw Failure(
+                "PURVIEW_POLICY_EXPECTED_SCOPE_INVALID",
+                "Purview policy provisioning requires an exact persisted Application scope.");
+        }
+
+        var prior = NormalizeGuidSet(request.ExpectedPriorBlueprintApplicationIds);
+        var expected = NormalizeGuidSet(request.ExpectedBlueprintApplicationIds);
+        if (prior is null || expected is null)
+        {
+            throw Failure(
+                "PURVIEW_POLICY_EXPECTED_SCOPE_INVALID",
+                "Purview policy provisioning requires a bounded set of unique Application IDs.");
+        }
+
+        var union = prior
+            .Append(current.ToString("D"))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
+        if (!union.SequenceEqual(expected, StringComparer.Ordinal))
+        {
+            throw Failure(
+                "PURVIEW_POLICY_EXPECTED_SCOPE_INVALID",
+                "The expected Purview Application scope is not the exact authorized union.");
+        }
+    }
+
     private static void AddArgument(ProcessStartInfo info, string name, string value)
     {
         info.ArgumentList.Add(name);
         info.ArgumentList.Add(value);
+    }
+
+    private static void CreatePrivateWorkingDirectory(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(
+                path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            return;
+        }
+
+        Directory.CreateDirectory(path);
+        ApplyCurrentUserOnlyDirectoryAcl(path);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void ApplyCurrentUserOnlyDirectoryAcl(string path)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var user = identity.User ?? throw Failure(
+            "PURVIEW_POLICY_TEMPORARY_FILE_PERMISSIONS_FAILED",
+            "The current Windows user could not be resolved for Purview temporary-file protection.");
+        var security = new DirectorySecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(
+            user,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+        new DirectoryInfo(path).SetAccessControl(security);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void ApplyCurrentUserOnlyFileAcl(string path)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var user = identity.User ?? throw Failure(
+            "PURVIEW_POLICY_TEMPORARY_FILE_PERMISSIONS_FAILED",
+            "The current Windows user could not be resolved for Purview temporary-file protection.");
+        var security = new FileSecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(
+            user,
+            FileSystemRights.FullControl,
+            AccessControlType.Allow));
+        new FileInfo(path).SetAccessControl(security);
+    }
+
+    internal static async Task<BoundedTextCapture> ReadBoundedAsync(
+        TextReader reader,
+        int characterLimit,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(characterLimit);
+
+        var retained = new StringBuilder(Math.Min(characterLimit, 4096));
+        var buffer = new char[4096];
+        long totalCharacters = 0;
+        int read;
+        while ((read = await reader.ReadAsync(buffer.AsMemory(), ct)) > 0)
+        {
+            totalCharacters = totalCharacters > long.MaxValue - read
+                ? long.MaxValue
+                : totalCharacters + read;
+            var remaining = characterLimit - retained.Length;
+            if (remaining > 0)
+                retained.Append(buffer, 0, Math.Min(remaining, read));
+        }
+
+        return new BoundedTextCapture(
+            retained.ToString(),
+            totalCharacters,
+            totalCharacters > characterLimit);
     }
 
     private static void TryKill(Process process)
@@ -261,9 +545,67 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
     }
 
-    private static void TryDeleteDirectory(string path)
+    internal static async Task<bool> DeleteDirectoryAndVerifyAsync(string path)
     {
-        try { Directory.Delete(path, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            if (IsPathProvenAbsent(path))
+                return true;
+            try
+            {
+                Directory.Delete(path, recursive: true);
+            }
+            catch (IOException)
+            {
+                // A short bounded retry handles process/file-handle release races.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // The final existence probe below keeps this failure fail-closed.
+            }
+
+            if (IsPathProvenAbsent(path))
+                return true;
+            if (attempt < 2)
+                await Task.Delay(TimeSpan.FromMilliseconds(50 * (attempt + 1)));
+        }
+
+        return false;
+    }
+
+    internal static void EnsureCleanupProven(bool cleanupProven)
+    {
+        if (!cleanupProven)
+        {
+            throw Failure(
+                "PURVIEW_POLICY_TEMPORARY_FILE_CLEANUP_FAILED",
+                "Purview temporary automation material could not be proven removed.");
+        }
+    }
+
+    private static bool IsPathProvenAbsent(string path)
+    {
+        try
+        {
+            _ = File.GetAttributes(path);
+            return false;
+        }
+        catch (FileNotFoundException)
+        {
+            return true;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static PurviewPolicyException Failure(
@@ -272,10 +614,32 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         bool transient = false,
         Exception? exception = null) => new(code, message, transient, exception);
 
+    internal sealed record BoundedTextCapture(
+        string Text,
+        long TotalCharacters,
+        bool Truncated);
+
     private sealed record AutomationResult(
         string CollectionPolicyId,
         string DlpPolicyId,
         string DlpRuleId,
-        string[]? BlueprintApplicationIds,
+        string[] BlueprintApplicationIds,
+        string CollectionMode,
+        string[] CollectionActivities,
+        string[] CollectionEnforcementPlanes,
+        string[] CollectionSensitiveTypeIds,
+        bool CollectionIngestionEnabled,
+        string DlpMode,
+        string[] DlpEnforcementPlanes,
+        string[] ClassifierNames,
+        AutomationRuleAction[] RuleActions,
+        bool HasExclusions,
+        bool HasBypass,
+        bool HasExtraConditions,
+        bool HasExtraActions,
         DateTimeOffset VerifiedAtUtc);
+
+    private sealed record AutomationRuleAction(
+        string Setting,
+        string Value);
 }

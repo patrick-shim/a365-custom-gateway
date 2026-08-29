@@ -1,0 +1,149 @@
+@page "/setup/permissions"
+@rendermode InteractiveServer
+@inject SetupWizardState State
+@inject IBootstrapConfigWriter ConfigWriter
+@inject BootstrapExecutionCoordinator Execution
+@inject SetupActivityTracker Activity
+@inject NavigationManager Navigation
+
+<PageTitle>Permissions and plan · A365 Gateway Setup</PageTitle>
+
+<div class="page-heading">
+    <p class="eyebrow">Step 4 of 6</p>
+    <h1>Review permissions and create the plan</h1>
+    <p>Plan validates source and configuration. It does not authorize Apply, and it does not make the clean-subscription path production-proven.</p>
+</div>
+
+@if (error is not null)
+{
+    <div class="notice error" role="alert"><strong>Configuration was not written</strong><span>@error</span></div>
+}
+
+<div class="review-grid">
+    <section class="setup-card">
+        <div class="card-section">
+            <div class="section-heading"><div><h2>Deployment summary</h2><p>These values are public deployment configuration, not credentials.</p></div></div>
+            <dl class="summary-list">
+                <div><dt>Profile</dt><dd>@State.Form.Profile.DisplayName()</dd></div>
+                <div><dt>Subscription</dt><dd><code>@State.Form.SubscriptionId</code></dd></div>
+                <div><dt>Tenant</dt><dd><code>@State.Form.TenantId</code></dd></div>
+                <div><dt>Environment</dt><dd>@State.Form.Environment</dd></div>
+                <div><dt>Region</dt><dd>@State.Form.Location</dd></div>
+                <div><dt>Resource group</dt><dd>@State.Form.ResourceGroupName</dd></div>
+                <div><dt>Alert email</dt><dd>@State.Form.AlertEmail</dd></div>
+                <div><dt>SQL</dt><dd>Basic / Basic</dd></div>
+                <div><dt>Seed blueprint</dt><dd>@State.Form.SeedBlueprintName</dd></div>
+                <div>
+                    <dt>Reviewed manager authority</dt>
+                    <dd>
+                        @foreach (var managerId in State.Form.GetReviewedManagerApplicationIds())
+                        {
+                            <code>@managerId.ToString("D")</code>
+                        }
+                    </dd>
+                </div>
+                <div><dt>Prompt Shields</dt><dd>@(State.Form.PromptShieldEnabled ? $"Enabled · {State.Form.PromptShieldSkuName}" : "Off")</dd></div>
+                <div><dt>Purview</dt><dd>@(State.Form.PurviewEnabled ? "Policy authoring requested" : "Off")</dd></div>
+                @if (State.Form.PurviewEnabled)
+                {
+                    <div><dt>Purview classifier</dt><dd>@State.Form.PurviewSensitiveInformationType</dd></div>
+                    <div><dt>Purview collection</dt><dd>@State.Form.PurviewCollectionPolicyName</dd></div>
+                    <div><dt>Purview DLP policy</dt><dd>@State.Form.PurviewDlpPolicyName</dd></div>
+                    <div><dt>Purview DLP rule</dt><dd>@State.Form.PurviewDlpRuleName</dd></div>
+                }
+                <div><dt>Registry preview</dt><dd>@(State.Form.AllowDevelopmentRegistryPreview ? "Development opt-in" : "Closed")</dd></div>
+            </dl>
+        </div>
+    </section>
+
+    <section class="setup-card">
+        <div class="card-section">
+            <div class="section-heading"><div><h2>Administrator boundaries</h2><p>The bootstrap fails closed when an authority is unavailable.</p></div></div>
+            <ul class="permission-list">
+                <li><strong>Azure deployment</strong><span>Owner, or Contributor plus User Access Administrator.</span></li>
+                <li><strong>Microsoft Entra</strong><span>Create applications/service principals and grant reviewed admin consent.</span></li>
+                <li><strong>Agent ID</strong><span>Agent ID Developer or equivalent reviewed operations.</span></li>
+                <li><strong>Agent 365 manager authority</strong><span>The exact GUID set above must be independently reviewed; blueprint discovery is verification, not authorization.</span></li>
+                @if (State.Form.PurviewEnabled)
+                {
+                    <li><strong>Microsoft Purview</strong><span>Roles required to author the reviewed collection and DLP policies.</span></li>
+                }
+            </ul>
+        </div>
+    </section>
+</div>
+
+<div class="notice warning" role="note">
+    <strong>Interactive handoffs are intentional.</strong>
+    <span>Azure, tenant consent, Agent 365, and optional Purview may open official sign-in experiences. Setup never captures those credentials.</span>
+</div>
+
+<section class="setup-card confirmation-card">
+    <label class="confirm-check">
+        <InputCheckbox @bind-Value="confirmed" />
+        <span><strong>I reviewed this public configuration and the permission/preview boundaries.</strong><small>I authorize Setup to atomically @(State.ExistingConfigurationLoaded ? "preserve the imported values in" : "write") the ignored <code>bootstrap/config.json</code>, install supported missing local prerequisites when needed, and run the authenticated read-only Azure What-If Plan. This does not authorize cloud mutation.</small></span>
+    </label>
+</section>
+
+<div class="page-actions">
+    <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/profile">Back</FluentAnchor>
+    <FluentButton Appearance="Appearance.Accent" Disabled="@(!confirmed || writing)" OnClick="RunPlanAsync">@(writing ? "Preparing…" : "Write config and run Plan")</FluentButton>
+</div>
+
+@code {
+    private bool confirmed;
+    private bool writing;
+    private string? error;
+
+    protected override void OnInitialized()
+    {
+        if (State.Form.SubscriptionId == Guid.Empty)
+        {
+            Navigation.NavigateTo("/setup/account");
+        }
+    }
+
+    private async Task RunPlanAsync()
+    {
+        if (!confirmed || writing)
+        {
+            return;
+        }
+
+        writing = true;
+        error = null;
+        Activity.Touch();
+        try
+        {
+            var result = await ConfigWriter.WriteAsync(State.Form);
+            State.MarkConfigurationWritten(result.Path);
+            if (!Execution.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true))
+            {
+                error = "Another bootstrap command is already running. Open Progress to follow it.";
+                return;
+            }
+
+            Navigation.NavigateTo("/setup/progress");
+        }
+        catch (ValidationException exception)
+        {
+            error = exception.Message;
+        }
+        catch (ExistingConfigurationChangedException)
+        {
+            error = "bootstrap/config.json changed after Setup reviewed it, or contains unsupported content. It was not overwritten. Restart Setup to review it, or use the canonical terminal Plan/Resume path.";
+        }
+        catch (IOException)
+        {
+            error = "Setup could not atomically write bootstrap/config.json. Check repository permissions and try again.";
+        }
+        catch (UnauthorizedAccessException)
+        {
+            error = "Setup cannot write bootstrap/config.json with the current filesystem permissions.";
+        }
+        finally
+        {
+            writing = false;
+        }
+    }
+}

@@ -1,11 +1,17 @@
 using System.Security.Cryptography;
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Azure.Core;
 using Azure.Identity;
+using Gateway.DatabaseMigrator;
 using Gateway.Infrastructure.Persistence;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 var options = ParseArguments(args);
 var server = Required(options, "server");
@@ -14,6 +20,12 @@ var phase = Required(options, "phase").ToLowerInvariant();
 var repositoryRoot = ResolveRepositoryRoot(ReadOption(options, "repository-root"));
 var principalName = ReadOption(options, "principal-name");
 var principalClientIdValue = ReadOption(options, "principal-client-id");
+var deploymentOwnershipIdValue = ReadOption(options, "deployment-ownership-id");
+var acceptedSourceFingerprint = ReadOption(options, "accepted-source-fingerprint");
+var expectedApiPrincipalName = ReadOption(options, "expected-api-principal-name");
+var expectedApiPrincipalClientIdValue = ReadOption(options, "expected-api-principal-client-id");
+var expectedWorkerPrincipalName = ReadOption(options, "expected-worker-principal-name");
+var expectedWorkerPrincipalClientIdValue = ReadOption(options, "expected-worker-principal-client-id");
 var repeat = int.TryParse(ReadOption(options, "repeat") ?? "1", out var parsedRepeat)
     ? parsedRepeat
     : 0;
@@ -33,6 +45,78 @@ if (string.IsNullOrWhiteSpace(database) ||
 
 if (phase is not ("initialize" or "baseline" or "prepare" or "finalize" or "verify" or "principal"))
     throw new ArgumentException("--phase must be initialize, baseline, prepare, finalize, verify, or principal.");
+
+Guid? deploymentOwnershipId = null;
+if (!string.IsNullOrWhiteSpace(deploymentOwnershipIdValue) ||
+    !string.IsNullOrWhiteSpace(acceptedSourceFingerprint))
+{
+    if (!Guid.TryParseExact(deploymentOwnershipIdValue, "D", out var parsedDeploymentOwnershipId) ||
+        parsedDeploymentOwnershipId == Guid.Empty ||
+        deploymentOwnershipIdValue != parsedDeploymentOwnershipId.ToString("D"))
+    {
+        throw new ArgumentException(
+            "--deployment-ownership-id must be the canonical lowercase non-empty GUID from the accepted bootstrap state.");
+    }
+    if (acceptedSourceFingerprint is null ||
+        !Regex.IsMatch(acceptedSourceFingerprint, "^sha256:[0-9a-f]{64}$", RegexOptions.CultureInvariant))
+    {
+        throw new ArgumentException(
+            "--accepted-source-fingerprint must be the canonical SHA-256 fingerprint from the accepted bootstrap source.");
+    }
+    deploymentOwnershipId = parsedDeploymentOwnershipId;
+}
+if (phase == "initialize" &&
+    (deploymentOwnershipId is null || string.IsNullOrWhiteSpace(acceptedSourceFingerprint)))
+{
+    throw new ArgumentException(
+        "The initialize phase requires --deployment-ownership-id and --accepted-source-fingerprint for durable recovery binding.");
+}
+
+var expectedPrincipalArgumentCount = new[]
+{
+    expectedApiPrincipalName,
+    expectedApiPrincipalClientIdValue,
+    expectedWorkerPrincipalName,
+    expectedWorkerPrincipalClientIdValue
+}.Count(value => !string.IsNullOrWhiteSpace(value));
+if (expectedPrincipalArgumentCount is not (0 or 4))
+{
+    throw new ArgumentException(
+        "The expected API and worker principal names/client IDs must be supplied together.");
+}
+var expectedRuntimePrincipals = new List<ExpectedDatabasePrincipal>();
+if (expectedPrincipalArgumentCount == 4)
+{
+    expectedRuntimePrincipals.Add(ParseExpectedDatabasePrincipal(
+        expectedApiPrincipalName!,
+        expectedApiPrincipalClientIdValue!,
+        "API",
+        expectedDirectPermissionCount: 1));
+    expectedRuntimePrincipals.Add(ParseExpectedDatabasePrincipal(
+        expectedWorkerPrincipalName!,
+        expectedWorkerPrincipalClientIdValue!,
+        "worker",
+        expectedDirectPermissionCount: 0));
+    if (expectedRuntimePrincipals.Select(item => item.Name).Distinct(StringComparer.Ordinal).Count() != 2 ||
+        expectedRuntimePrincipals.Select(item => item.ClientId).Distinct().Count() != 2)
+    {
+        throw new ArgumentException("The expected API and worker database principals must be distinct.");
+    }
+}
+if (deploymentOwnershipId is not null && expectedRuntimePrincipals.Count != 2)
+{
+    throw new ArgumentException(
+        "Bootstrap-bound database work requires both exact expected Gateway runtime principals.");
+}
+
+var requireAllExpectedPrincipalsAfterMutation = false;
+if (ReadOption(options, "require-all-expected-principals-after-mutation") is { } requireAllValue &&
+    (!bool.TryParse(requireAllValue, out requireAllExpectedPrincipalsAfterMutation) ||
+     phase != "principal"))
+{
+    throw new ArgumentException(
+        "--require-all-expected-principals-after-mutation must be a Boolean used only by the final principal phase.");
+}
 
 Guid? principalClientId = null;
 if (phase == "principal")
@@ -106,16 +190,55 @@ await using var connection = new SqlConnection(connectionString)
 await connection.OpenAsync();
 
 RuntimePrincipalEvidence? runtimePrincipalEvidence = null;
+InitializationIntentEvidence? initializationIntentEvidence = null;
+var currentEfModelReady = false;
 if (phase == "initialize")
 {
-    await EnsureEmptyDatabaseInitializedAsync(connection);
+    initializationIntentEvidence = await EnsureEmptyDatabaseInitializedAsync(
+        connection,
+        server,
+        database,
+        deploymentOwnershipId!.Value,
+        acceptedSourceFingerprint!,
+        expectedRuntimePrincipals);
 }
 if (phase == "principal")
 {
-    runtimePrincipalEvidence = await EnsureRuntimePrincipalAsync(
-        connection,
-        principalName!,
-        principalClientId!.Value);
+    var principalLockResource = $"A365Gateway:DatabaseInitialize:{database}";
+    await AcquireDatabaseInitializationLockAsync(connection, principalLockResource);
+    try
+    {
+        if (deploymentOwnershipId is not null && acceptedSourceFingerprint is not null)
+        {
+            await AssertDatabaseInitializationMarkerBindingAsync(
+                connection,
+                server,
+                database,
+                deploymentOwnershipId.Value,
+                acceptedSourceFingerprint);
+        }
+        await AssertCurrentEfModelSchemaAsync(
+            connection,
+            expectedRuntimePrincipals,
+            allowAllRecoverablePrincipalPrefixes: true);
+        runtimePrincipalEvidence = await EnsureRuntimePrincipalAsync(
+            connection,
+            principalName!,
+            principalClientId!.Value,
+            requireViewDefinition: expectedRuntimePrincipals
+                .Single(item => item.Name.Equals(principalName, StringComparison.Ordinal))
+                .ExpectedDirectPermissionCount == 1);
+        await AssertCurrentEfModelSchemaAsync(
+            connection,
+            expectedRuntimePrincipals,
+            allowAllRecoverablePrincipalPrefixes: !requireAllExpectedPrincipalsAfterMutation,
+            requireAllExpectedPrincipals: requireAllExpectedPrincipalsAfterMutation);
+        currentEfModelReady = true;
+    }
+    finally
+    {
+        await ReleaseDatabaseInitializationLockAsync(connection, principalLockResource);
+    }
 }
 
 for (var pass = 1; pass <= repeat; pass++)
@@ -133,10 +256,37 @@ for (var pass = 1; pass <= repeat; pass++)
     }
 }
 
-var verification = await VerifyAsync(connection);
+if (phase is "initialize" or "finalize" or "verify")
+{
+    if (phase is "finalize" or "verify" &&
+        deploymentOwnershipId is not null && acceptedSourceFingerprint is not null)
+    {
+        await AssertDatabaseInitializationMarkerBindingAsync(
+            connection,
+            server,
+            database,
+            deploymentOwnershipId.Value,
+            acceptedSourceFingerprint);
+    }
+    await AssertCurrentEfModelSchemaAsync(
+        connection,
+        expectedRuntimePrincipals,
+        allowAllRecoverablePrincipalPrefixes: phase == "initialize",
+        requireAllExpectedPrincipals: expectedRuntimePrincipals.Count > 0 && phase is "finalize" or "verify");
+    currentEfModelReady = true;
+}
+
+var currentSchemaFingerprint = currentEfModelReady
+    ? await DatabaseSchemaFingerprintReader.ReadFingerprintAsync(connection)
+    : string.Empty;
+var verification = await VerifyAsync(
+    connection,
+    currentEfModelReady,
+    currentSchemaFingerprint);
 var verificationFailed = phase == "baseline"
     ? verification.WorkflowV2Ready || verification.LegacyGlobalIdempotencyUniqueIndexCount != 1
     : !verification.WorkflowV2Ready ||
+      (phase is "initialize" or "principal" or "finalize" or "verify") && !verification.CurrentEfModelReady ||
       (phase == "finalize" && verification.LegacyGlobalIdempotencyUniqueIndexCount != 0);
 if (verificationFailed)
 {
@@ -151,7 +301,8 @@ var evidence = new MigrationEvidence(
     repeat,
     scriptEvidence.Select(item => new MigrationScriptEvidence(item.Name, item.Sha256)).ToArray(),
     verification,
-    runtimePrincipalEvidence);
+    runtimePrincipalEvidence,
+    initializationIntentEvidence);
 
 var evidenceJson = JsonSerializer.Serialize(
     evidence,
@@ -175,7 +326,7 @@ if (bool.TryParse(ReadOption(options, "evidence-stdout") ?? "false", out var evi
 }
 
 Console.WriteLine(
-    $"Schema verification passed (workflow-v2={verification.WorkflowV2Ready}, " +
+    $"Schema verification passed (current-ef-model={verification.CurrentEfModelReady}, workflow-v2={verification.WorkflowV2Ready}, " +
     $"legacy-global-indexes={verification.LegacyGlobalIdempotencyUniqueIndexCount}).");
 
 if (bool.TryParse(ReadOption(options, "stay-alive") ?? "false", out var stayAlive) && stayAlive)
@@ -184,101 +335,1573 @@ if (bool.TryParse(ReadOption(options, "stay-alive") ?? "false", out var stayAliv
     await Task.Delay(Timeout.InfiniteTimeSpan);
 }
 
-static async Task EnsureEmptyDatabaseInitializedAsync(SqlConnection connection)
+static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedAsync(
+    SqlConnection connection,
+    string server,
+    string database,
+    Guid deploymentOwnershipId,
+    string acceptedSourceFingerprint,
+    IReadOnlyCollection<ExpectedDatabasePrincipal> expectedRuntimePrincipals)
 {
-    await using var tableCountCommand = connection.CreateCommand();
-    tableCountCommand.CommandTimeout = 60;
-    tableCountCommand.CommandText = """
+    var lockResource = $"A365Gateway:DatabaseInitialize:{database}";
+    await AcquireDatabaseInitializationLockAsync(connection, lockResource);
+    try
+    {
+        var databaseIdentity = await ReadDatabaseIdentityBindingAsync(connection);
+        var marker = CreateDatabaseInitializationIntent(
+            server,
+            database,
+            deploymentOwnershipId,
+            acceptedSourceFingerprint,
+            databaseIdentity);
+        var expectedMarker = JsonSerializer.Serialize(marker);
+        var tableCount = await GetUserTableCountAsync(connection);
+        var observedMarker = await ReadDatabaseInitializationMarkerAsync(connection);
+        var exactCurrentSchema = false;
+        if (tableCount > 0)
+        {
+            if (observedMarker is not null &&
+                observedMarker.Equals(expectedMarker, StringComparison.Ordinal))
+            {
+                await AssertCurrentEfModelSchemaAsync(
+                    connection,
+                    expectedRuntimePrincipals,
+                    allowAllRecoverablePrincipalPrefixes: true);
+                exactCurrentSchema = true;
+            }
+        }
+
+        var recoveryMode = DatabaseBootstrapRecoveryContract.Classify(
+            tableCount,
+            observedMarker,
+            expectedMarker,
+            exactCurrentSchema);
+
+        if (recoveryMode is DatabaseInitializationRecoveryMode.Fresh or
+            DatabaseInitializationRecoveryMode.ResumeBeforeSchemaMutation)
+        {
+            var pristineSurface = await ReadPristineDatabaseSurfaceAsync(connection);
+            DatabaseBootstrapRecoveryContract.AssertPristine(pristineSurface);
+        }
+
+        if (recoveryMode == DatabaseInitializationRecoveryMode.Fresh)
+        {
+            await WriteDatabaseInitializationMarkerAsync(connection, expectedMarker);
+            observedMarker = await ReadDatabaseInitializationMarkerAsync(connection);
+            if (!string.Equals(observedMarker, expectedMarker, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "The durable database initialization marker was not read back exactly before schema mutation.");
+            }
+        }
+
+        if (recoveryMode is DatabaseInitializationRecoveryMode.Fresh or
+            DatabaseInitializationRecoveryMode.ResumeBeforeSchemaMutation)
+        {
+            var options = new DbContextOptionsBuilder<GatewayDbContext>()
+                .UseSqlServer(connection)
+                .Options;
+            await using var context = new GatewayDbContext(options);
+            if (!await context.Database.EnsureCreatedAsync())
+            {
+                throw new InvalidOperationException(
+                    "The marked zero-table Gateway database was not initialized from the reviewed current EF model.");
+            }
+            await AssertCurrentEfModelSchemaAsync(
+                connection,
+                expectedRuntimePrincipals,
+                allowAllRecoverablePrincipalPrefixes: true);
+        }
+
+        var finalMarker = await ReadDatabaseInitializationMarkerAsync(connection);
+        if (!string.Equals(finalMarker, expectedMarker, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The durable database initialization marker changed before initialization verification completed.");
+        }
+
+        Console.WriteLine(
+            recoveryMode == DatabaseInitializationRecoveryMode.Fresh
+                ? "Initialized the empty Gateway database from the reviewed current EF model."
+                : "Recovered the exactly marked Gateway database initialization without adopting partial state.");
+        return new InitializationIntentEvidence(
+            DatabaseBootstrapRecoveryContract.MarkerName,
+            marker.SchemaVersion,
+            marker.DeploymentOwnershipId,
+            marker.AcceptedSourceFingerprint,
+            marker.Server,
+            marker.Database,
+            marker.DatabaseCollation,
+            marker.CatalogCollation,
+            marker.DatabaseOwnerSidSha256,
+            recoveryMode.ToString(),
+            true);
+    }
+    finally
+    {
+        await ReleaseDatabaseInitializationLockAsync(connection, lockResource);
+    }
+}
+
+static DatabaseInitializationIntent CreateDatabaseInitializationIntent(
+    string server,
+    string database,
+    Guid deploymentOwnershipId,
+    string acceptedSourceFingerprint,
+    DatabaseIdentityBinding databaseIdentity) =>
+    new(
+        1,
+        deploymentOwnershipId.ToString("D"),
+        acceptedSourceFingerprint,
+        server,
+        database,
+        databaseIdentity.Collation,
+        databaseIdentity.CatalogCollation,
+        databaseIdentity.OwnerSidSha256);
+
+static async Task AssertDatabaseInitializationMarkerBindingAsync(
+    SqlConnection connection,
+    string server,
+    string database,
+    Guid deploymentOwnershipId,
+    string acceptedSourceFingerprint)
+{
+    var databaseIdentity = await ReadDatabaseIdentityBindingAsync(connection);
+    var expected = JsonSerializer.Serialize(CreateDatabaseInitializationIntent(
+        server,
+        database,
+        deploymentOwnershipId,
+        acceptedSourceFingerprint,
+        databaseIdentity));
+    var observed = await ReadDatabaseInitializationMarkerAsync(connection);
+    if (!string.Equals(observed, expected, StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException(
+            "The database initialization marker does not match the exact accepted bootstrap deployment before principal mutation.");
+    }
+}
+
+static async Task<DatabaseIdentityBinding> ReadDatabaseIdentityBindingAsync(SqlConnection connection)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = """
+        SELECT collation_name, catalog_collation_type_desc, owner_sid
+        FROM sys.databases
+        WHERE name = DB_NAME();
+        """;
+    await using var reader = await command.ExecuteReaderAsync();
+    if (!await reader.ReadAsync() || reader.IsDBNull(0) || reader.IsDBNull(1) || reader.IsDBNull(2))
+        throw new InvalidOperationException("Azure SQL returned no exact database identity binding.");
+    var binding = new DatabaseIdentityBinding(
+        reader.GetString(0),
+        reader.GetString(1),
+        $"sha256:{Convert.ToHexString(SHA256.HashData(reader.GetFieldValue<byte[]>(2))).ToLowerInvariant()}");
+    if (await reader.ReadAsync())
+        throw new InvalidOperationException("Azure SQL returned duplicate database identity bindings.");
+    if (!binding.Collation.Equals("SQL_Latin1_General_CP1_CI_AS", StringComparison.Ordinal) ||
+        !binding.CatalogCollation.Equals("SQL_Latin1_General_CP1_CI_AS", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("GatewayDb does not use the exact reviewed data and catalog collations.");
+    }
+    return binding;
+}
+
+static async Task<int> GetUserTableCountAsync(SqlConnection connection)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = """
         SELECT COUNT(*)
         FROM sys.tables
         WHERE is_ms_shipped = 0;
         """;
-    var tableCount = Convert.ToInt32(await tableCountCommand.ExecuteScalarAsync());
-    if (tableCount > 0)
-    {
-        Console.WriteLine("Database already contains user tables; skipped initialization and will verify the existing schema.");
-        return;
-    }
+    return Convert.ToInt32(await command.ExecuteScalarAsync());
+}
 
+static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(
+    SqlConnection connection)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = """
+        SELECT
+          (SELECT COUNT(*) FROM sys.tables WHERE is_ms_shipped = 0),
+          (
+              (SELECT COUNT(*) FROM sys.objects
+               WHERE is_ms_shipped = 0
+                 AND type IN (N'V', N'P', N'PC', N'FN', N'IF', N'TF', N'FS', N'FT', N'AF')) +
+              (SELECT COUNT(*) FROM sys.triggers WHERE is_ms_shipped = 0) +
+              (SELECT COUNT(*) FROM sys.synonyms) +
+              (SELECT COUNT(*) FROM sys.sequences) +
+              (SELECT COUNT(*) FROM sys.external_tables) +
+              (SELECT COUNT(*) FROM sys.external_data_sources) +
+              (SELECT COUNT(*) FROM sys.external_file_formats) +
+              (SELECT COUNT(*) FROM sys.database_scoped_credentials) +
+              (SELECT COUNT(*) FROM sys.column_master_keys) +
+              (SELECT COUNT(*) FROM sys.column_encryption_keys) +
+              (SELECT COUNT(*) FROM sys.assemblies WHERE is_user_defined = 1) +
+              (SELECT COUNT(*) FROM sys.types WHERE is_user_defined = 1 OR is_table_type = 1) +
+              (SELECT COUNT(*) FROM sys.partition_functions) +
+              (SELECT COUNT(*) FROM sys.partition_schemes) +
+              (SELECT COUNT(*) FROM sys.fulltext_catalogs) +
+              (SELECT COUNT(*) FROM sys.fulltext_indexes) +
+              (SELECT COUNT(*) FROM sys.xml_schema_collections WHERE xml_collection_id > 1) +
+              (SELECT COUNT(*) FROM sys.database_audit_specifications) +
+              (SELECT COUNT(*) FROM sys.security_policies WHERE is_ms_shipped = 0) +
+              (SELECT COUNT(*) FROM sys.database_firewall_rules) +
+              (SELECT COUNT(*) FROM sys.change_tracking_tables) +
+              (SELECT COUNT(*) FROM sys.periods) +
+              (SELECT COUNT(*) FROM sys.sensitivity_classifications) +
+              (SELECT COUNT(*)
+               FROM sys.extended_properties
+               WHERE NOT
+               (
+                   class = 0 AND major_id = 0 AND minor_id = 0
+                   AND name = @markerName
+               ))
+          ),
+          (
+              SELECT COUNT(*)
+              FROM sys.schemas AS schemas
+              LEFT JOIN sys.database_principals AS principals
+                ON principals.principal_id = schemas.principal_id
+              WHERE schemas.name NOT IN
+                    (
+                        N'dbo', N'guest', N'sys', N'INFORMATION_SCHEMA',
+                        N'db_owner', N'db_accessadmin', N'db_securityadmin', N'db_ddladmin',
+                        N'db_backupoperator', N'db_datareader', N'db_datawriter',
+                        N'db_denydatareader', N'db_denydatawriter'
+                    )
+                 OR principals.name IS NULL
+                 OR principals.name <> schemas.name
+          ),
+          (
+              SELECT COUNT(*)
+              FROM sys.database_principals
+              WHERE principal_id > 4
+                AND is_fixed_role = 0
+          ),
+          (SELECT COUNT(*) FROM sys.database_role_members),
+          (
+              SELECT COUNT(*)
+              FROM sys.database_permissions AS permissions
+              INNER JOIN sys.database_principals AS grantees
+                ON grantees.principal_id = permissions.grantee_principal_id
+              WHERE NOT
+              (
+                  permissions.class = 0
+                  AND permissions.permission_name = N'CONNECT'
+                  AND permissions.state IN (N'G', N'W')
+                  AND grantees.name IN (N'public', N'guest')
+              )
+          ),
+          (
+              SELECT COUNT(*)
+              FROM sys.databases
+              WHERE name = DB_NAME()
+                AND
+                (
+                    state_desc <> N'ONLINE'
+                    OR user_access_desc <> N'MULTI_USER'
+                    OR is_read_only <> 0
+                    OR is_auto_close_on <> 0
+                    OR is_auto_shrink_on <> 0
+                    OR is_in_standby <> 0
+                    OR source_database_id IS NOT NULL
+                    OR containment_desc <> N'NONE'
+                    OR is_trustworthy_on <> 0
+                    OR is_db_chaining_on <> 0
+                    OR collation_name <> N'SQL_Latin1_General_CP1_CI_AS'
+                    OR catalog_collation_type_desc <> N'SQL_Latin1_General_CP1_CI_AS'
+                )
+          ),
+          (
+              SELECT CASE
+                  WHEN COUNT(*) = 1
+                   AND MAX(CASE WHEN databases.owner_sid = dbo_principal.sid THEN 1 ELSE 0 END) = 1
+                  THEN 0 ELSE 1 END
+              FROM sys.databases AS databases
+              LEFT JOIN sys.database_principals AS dbo_principal
+                ON dbo_principal.name = N'dbo'
+              WHERE databases.name = DB_NAME()
+          );
+        """;
+    command.Parameters.AddWithValue("@markerName", DatabaseBootstrapRecoveryContract.MarkerName);
+    await using var reader = await command.ExecuteReaderAsync();
+    if (!await reader.ReadAsync())
+        throw new InvalidOperationException("Azure SQL returned no pristine database-surface row.");
+    var snapshot = new PristineDatabaseSurfaceSnapshot(
+        reader.GetInt32(0),
+        reader.GetInt32(1),
+        reader.GetInt32(2),
+        reader.GetInt32(3),
+        reader.GetInt32(4),
+        reader.GetInt32(5),
+        reader.GetInt32(6),
+        reader.GetInt32(7));
+    if (await reader.ReadAsync())
+        throw new InvalidOperationException("Azure SQL returned duplicate pristine database-surface rows.");
+    return snapshot;
+}
+
+static async Task AcquireDatabaseInitializationLockAsync(
+    SqlConnection connection,
+    string resource)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = """
+        DECLARE @result int;
+        EXEC @result = sys.sp_getapplock
+            @Resource = @resource,
+            @LockMode = N'Exclusive',
+            @LockOwner = N'Session',
+            @LockTimeout = 0,
+            @DbPrincipal = N'public';
+        SELECT @result;
+        """;
+    command.Parameters.AddWithValue("@resource", resource);
+    var result = Convert.ToInt32(await command.ExecuteScalarAsync());
+    if (result < 0)
+    {
+        throw new InvalidOperationException(
+            "Another database initialization session holds the exact Gateway bootstrap lock.");
+    }
+}
+
+static async Task ReleaseDatabaseInitializationLockAsync(
+    SqlConnection connection,
+    string resource)
+{
+    if (connection.State != System.Data.ConnectionState.Open)
+        return;
+
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = """
+        DECLARE @result int;
+        EXEC @result = sys.sp_releaseapplock
+            @Resource = @resource,
+            @LockOwner = N'Session',
+            @DbPrincipal = N'public';
+        SELECT @result;
+        """;
+    command.Parameters.AddWithValue("@resource", resource);
+    var result = Convert.ToInt32(await command.ExecuteScalarAsync());
+    if (result < 0)
+        throw new InvalidOperationException("The Gateway database initialization lock was not released cleanly.");
+}
+
+static async Task<string?> ReadDatabaseInitializationMarkerAsync(SqlConnection connection)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = """
+        SELECT name, CONVERT(nvarchar(4000), value)
+        FROM sys.extended_properties
+        WHERE class = 0
+          AND major_id = 0
+          AND minor_id = 0
+          AND name = @name
+        ORDER BY name;
+        """;
+    command.Parameters.AddWithValue("@name", DatabaseBootstrapRecoveryContract.MarkerName);
+    await using var reader = await command.ExecuteReaderAsync();
+    var matches = new List<(string Name, string Value)>();
+    while (await reader.ReadAsync())
+        matches.Add((reader.GetString(0), reader.GetString(1)));
+    if (matches.Count > 1)
+        throw new InvalidOperationException("Azure SQL returned duplicate database initialization markers.");
+    if (matches.Count == 0)
+        return null;
+    if (!matches[0].Name.Equals(DatabaseBootstrapRecoveryContract.MarkerName, StringComparison.Ordinal))
+        throw new InvalidOperationException("Azure SQL returned a case-conflicting database initialization marker.");
+    return matches[0].Value;
+}
+
+static async Task WriteDatabaseInitializationMarkerAsync(
+    SqlConnection connection,
+    string markerValue)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = """
+        EXEC sys.sp_addextendedproperty
+            @name = @name,
+            @value = @value;
+        """;
+    command.Parameters.AddWithValue("@name", DatabaseBootstrapRecoveryContract.MarkerName);
+    command.Parameters.AddWithValue("@value", markerValue);
+    await command.ExecuteNonQueryAsync();
+}
+
+static async Task AssertCurrentEfModelSchemaAsync(
+    SqlConnection connection,
+    IReadOnlyCollection<ExpectedDatabasePrincipal>? expectedRuntimePrincipals = null,
+    string? recoverableIncompletePrincipalName = null,
+    bool allowAllRecoverablePrincipalPrefixes = false,
+    bool requireAllExpectedPrincipals = false)
+{
+    var databaseCollation = await ReadDatabaseCollationAsync(connection);
     var options = new DbContextOptionsBuilder<GatewayDbContext>()
         .UseSqlServer(connection)
         .Options;
     await using var context = new GatewayDbContext(options);
-    if (!await context.Database.EnsureCreatedAsync())
-        throw new InvalidOperationException("The empty Gateway database was not initialized.");
-    Console.WriteLine("Initialized the empty Gateway database from the reviewed current EF model.");
+    var expected = GetExpectedSchemaContract(context, databaseCollation);
+    var actual = await GetActualSchemaContractAsync(connection);
+    ExactDatabaseSchemaContract.AssertExact(expected, actual);
+    if (expectedRuntimePrincipals is { Count: > 0 })
+    {
+        await AssertExpectedDatabaseAuthorityAsync(
+            connection,
+            expectedRuntimePrincipals,
+            recoverableIncompletePrincipalName,
+            allowAllRecoverablePrincipalPrefixes,
+            requireAllExpectedPrincipals);
+    }
+}
+
+static async Task AssertExpectedDatabaseAuthorityAsync(
+    SqlConnection connection,
+    IReadOnlyCollection<ExpectedDatabasePrincipal> expectedRuntimePrincipals,
+    string? recoverableIncompletePrincipalName,
+    bool allowAllRecoverablePrincipalPrefixes,
+    bool requireAllExpectedPrincipals)
+{
+    var metadataPrincipal = expectedRuntimePrincipals.SingleOrDefault(
+        item => item.ExpectedDirectPermissionCount == 1);
+    if (metadataPrincipal is null ||
+        expectedRuntimePrincipals.Count(item => item.ExpectedDirectPermissionCount == 1) != 1 ||
+        expectedRuntimePrincipals.Any(item => item.ExpectedDirectPermissionCount is < 0 or > 1))
+    {
+        throw new InvalidOperationException(
+            "The reviewed runtime-principal metadata-attestation permission contract is malformed.");
+    }
+    var principals = new Dictionary<string, MutableObservedPrincipal>(StringComparer.Ordinal);
+    await using (var command = connection.CreateCommand())
+    {
+        command.CommandTimeout = 60;
+        command.CommandText = """
+            SELECT principals.principal_id, principals.name, principals.type,
+                   TRY_CONVERT(uniqueidentifier, principals.sid),
+                   (SELECT COUNT(*) FROM sys.database_permissions AS permissions
+                    WHERE permissions.grantee_principal_id = principals.principal_id),
+                   (SELECT COUNT(*) FROM sys.schemas AS schemas
+                    WHERE schemas.principal_id = principals.principal_id),
+                   (SELECT COUNT(*) FROM sys.database_principals AS owned
+                    WHERE owned.owning_principal_id = principals.principal_id)
+            FROM sys.database_principals AS principals
+            WHERE principals.principal_id > 4
+              AND principals.is_fixed_role = 0
+            ORDER BY principals.principal_id;
+            """;
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var name = reader.GetString(1);
+            if (!principals.TryAdd(
+                    name,
+                    new MutableObservedPrincipal(
+                        reader.GetInt32(0),
+                        name,
+                        reader.IsDBNull(3) ? null : reader.GetGuid(3),
+                        reader.GetString(2),
+                        reader.GetInt32(4),
+                        reader.GetInt32(5),
+                        reader.GetInt32(6),
+                        [])))
+            {
+                throw new InvalidOperationException("Azure SQL returned duplicate exact-name database principals.");
+            }
+        }
+    }
+
+    var unexpectedRoleMembershipCount = 0;
+    await using (var command = connection.CreateCommand())
+    {
+        command.CommandTimeout = 60;
+        command.CommandText = """
+            SELECT roles.name, members.name
+            FROM sys.database_role_members AS memberships
+            INNER JOIN sys.database_principals AS roles
+              ON roles.principal_id = memberships.role_principal_id
+            INNER JOIN sys.database_principals AS members
+              ON members.principal_id = memberships.member_principal_id
+            ORDER BY members.name, roles.name;
+            """;
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var memberName = reader.GetString(1);
+            if (!principals.TryGetValue(memberName, out var principal))
+            {
+                unexpectedRoleMembershipCount++;
+                continue;
+            }
+            principal.Roles.Add(reader.GetString(0));
+        }
+    }
+
+    int unexpectedDirectPermissionCount;
+    await using (var command = connection.CreateCommand())
+    {
+        command.CommandTimeout = 60;
+        command.CommandText = """
+            SELECT COUNT(*)
+            FROM sys.database_permissions AS permissions
+            INNER JOIN sys.database_principals AS grantees
+              ON grantees.principal_id = permissions.grantee_principal_id
+            WHERE NOT
+            (
+                (
+                    permissions.class = 0
+                    AND permissions.major_id = 0
+                    AND permissions.minor_id = 0
+                    AND permissions.permission_name = N'CONNECT'
+                    AND permissions.state IN (N'G', N'W')
+                    AND grantees.name IN (N'public', N'guest')
+                )
+                OR
+                (
+                    permissions.class = 0
+                    AND permissions.major_id = 0
+                    AND permissions.minor_id = 0
+                    AND permissions.permission_name = N'VIEW DEFINITION'
+                    AND permissions.state = N'G'
+                    AND grantees.name = @metadataPrincipalName
+                    AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
+                )
+            );
+            """;
+        command.Parameters.AddWithValue("@metadataPrincipalName", metadataPrincipal.Name);
+        unexpectedDirectPermissionCount = Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
+    var observed = principals.Values
+        .Select(item => new ObservedDatabasePrincipal(
+            item.Name,
+            item.ClientId,
+            item.Type,
+            item.Roles,
+            item.DirectPermissionCount,
+            item.OwnedSchemaCount,
+            item.OwnedPrincipalCount))
+        .ToArray();
+    ExactDatabaseAuthorityContract.AssertExactOrRecoverablePrefix(
+        expectedRuntimePrincipals,
+        observed,
+        recoverableIncompletePrincipalName,
+        allowAllRecoverablePrincipalPrefixes,
+        requireAllExpectedPrincipals,
+        unexpectedRoleMembershipCount,
+        unexpectedDirectPermissionCount);
+}
+
+static async Task<string> ReadDatabaseCollationAsync(SqlConnection connection)
+{
+    const string expectedCollation = "SQL_Latin1_General_CP1_CI_AS";
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = "SELECT collation_name FROM sys.databases WHERE name = DB_NAME();";
+    var value = await command.ExecuteScalarAsync();
+    if (value is not string collation || string.IsNullOrWhiteSpace(collation))
+        throw new InvalidOperationException("Azure SQL returned no exact database collation.");
+    if (!collation.Equals(expectedCollation, StringComparison.Ordinal))
+        throw new InvalidOperationException("GatewayDb does not use the exact reviewed SQL collation.");
+    return collation;
+}
+
+static ExactDatabaseSchemaSnapshot GetExpectedSchemaContract(
+    GatewayDbContext context,
+    string databaseCollation)
+{
+    var tables = new HashSet<string>(StringComparer.Ordinal);
+    var columns = new HashSet<string>(StringComparer.Ordinal);
+    var primaryKeys = new HashSet<string>(StringComparer.Ordinal);
+    var uniqueConstraints = new HashSet<string>(StringComparer.Ordinal);
+    var foreignKeys = new HashSet<string>(StringComparer.Ordinal);
+    var checkConstraints = new HashSet<string>(StringComparer.Ordinal);
+    var indexes = new HashSet<string>(StringComparer.Ordinal);
+
+    foreach (var table in context.Model.GetRelationalModel().Tables)
+    {
+        if (table.IsExcludedFromMigrations)
+            continue;
+        var schema = table.Schema ?? "dbo";
+        var tableKey = $"{schema}.{table.Name}";
+        var storeObject = StoreObjectIdentifier.Table(table.Name, schema);
+        var hasLobData = table.Columns.Any(column => IsLargeObjectStoreType(column.StoreType));
+        tables.Add(
+            $"{tableKey}|temporal:0|memory:0|durability:SCHEMA_AND_DATA|" +
+            $"lobspace:{(hasLobData ? "PRIMARY" : "-")}|filestreamspace:-|external:0|filetable:0|" +
+            "node:0|edge:0|ledger:0|lock:TABLE|lockbulk:0|largeout:0|replicated:0|" +
+            "merge:0|syncrepl:0|cdc:0|archive:0|ansinulls:1|replfilter:0");
+
+        foreach (var column in table.Columns)
+        {
+            var mappedProperties = column.PropertyMappings
+                .Select(mapping => mapping.Property)
+                .Distinct()
+                .ToArray();
+            var strategies = mappedProperties
+                .Select(property => property.GetValueGenerationStrategy(storeObject))
+                .Distinct()
+                .ToArray();
+            if (strategies.Length > 1)
+                throw new InvalidOperationException("The EF relational model returned conflicting value-generation strategies for one column.");
+            var identity = strategies.SingleOrDefault() == SqlServerValueGenerationStrategy.IdentityColumn;
+            var identityProperty = identity ? mappedProperties.First() : null;
+            var identitySeed = identity
+                ? Convert.ToString(identityProperty!.GetIdentitySeed(storeObject) ?? 1L, CultureInfo.InvariantCulture)!
+                : "-";
+            var identityIncrement = identity
+                ? Convert.ToString(identityProperty!.GetIdentityIncrement(storeObject) ?? 1, CultureInfo.InvariantCulture)!
+                : "-";
+            var defaultValue = GetExpectedDefaultContract(column);
+            var computedSql = column.ComputedColumnSql is null
+                ? "-"
+                : NormalizeSqlExpression(column.ComputedColumnSql);
+            var storeType = NormalizeStoreType(column.StoreType);
+            var collation = SupportsCollation(storeType)
+                ? column.Collation ?? databaseCollation
+                : "-";
+            columns.Add(
+                $"{tableKey}|{column.Name}|{storeType}|{(column.IsNullable ? 1 : 0)}|" +
+                $"default:{defaultValue}|computed:{computedSql}|stored:{(column.IsStored == true ? 1 : 0)}|" +
+                $"identity:{(identity ? 1 : 0)}:{identitySeed}:{identityIncrement}:nfr:0|rowversion:{(column.IsRowVersion ? 1 : 0)}|" +
+                $"generated:0|sparse:0|columnset:0|filestream:0|collation:{collation}|" +
+                "encrypted:0:-:-|masked:0:-|hidden:0|xml:0:0|rule:0");
+        }
+
+        foreach (var constraint in table.UniqueConstraints)
+        {
+            var clustered = GetExpectedConstraintClustered(constraint);
+            var keyColumns = constraint.Columns
+                .Select(column => $"{column.Name}:A")
+                .ToArray();
+            var value =
+                $"{tableKey}|{constraint.Name}|{string.Join(',', keyColumns)}|" +
+                $"type:{(clustered ? "CLUSTERED" : "NONCLUSTERED")}|space:PRIMARY|" +
+                "disabled:0|hypothetical:0|fill:0|padded:0|ignoredup:0|rowlocks:1|pagelocks:1|seq:0|statsnorecompute:0";
+            if (constraint.GetIsPrimaryKey())
+                primaryKeys.Add(value);
+            else
+                uniqueConstraints.Add(value);
+        }
+
+        foreach (var foreignKey in table.ForeignKeyConstraints)
+        {
+            var principalKey = $"{foreignKey.PrincipalTable.Schema ?? "dbo"}.{foreignKey.PrincipalTable.Name}";
+            foreignKeys.Add(
+                $"{tableKey}|{foreignKey.Name}|{string.Join(',', foreignKey.Columns.Select(column => column.Name))}|" +
+                $"{principalKey}|{string.Join(',', foreignKey.PrincipalColumns.Select(column => column.Name))}|" +
+                $"delete:{NormalizeReferentialAction(foreignKey.OnDeleteAction)}|update:NO_ACTION|disabled:0|untrusted:0");
+        }
+
+        foreach (var checkConstraint in table.CheckConstraints)
+        {
+            checkConstraints.Add(
+                $"{tableKey}|{checkConstraint.Name}|{NormalizeSqlExpression(checkConstraint.Sql)}|disabled:0|untrusted:0");
+        }
+
+        foreach (var index in table.Indexes)
+        {
+            var descending = index.IsDescending ?? Enumerable.Repeat(false, index.Columns.Count).ToArray();
+            if (descending.Count != index.Columns.Count)
+                throw new InvalidOperationException("The EF relational model returned an invalid index sort-order contract.");
+            var keyColumns = index.Columns
+                .Select((column, position) => $"K:{column.Name}:{(descending[position] ? "D" : "A")}")
+                .ToArray();
+            var includedColumns = GetExpectedIncludedIndexColumns(index, storeObject)
+                .Order(StringComparer.Ordinal)
+                .Select(name => $"I:{name}");
+            var clustered = GetExpectedIndexClustered(index);
+            indexes.Add(
+                $"{tableKey}|{index.Name}|unique:{(index.IsUnique ? 1 : 0)}|filter:{NormalizeOptionalSqlExpression(index.Filter)}|" +
+                $"type:{(clustered ? "CLUSTERED" : "NONCLUSTERED")}|space:PRIMARY|disabled:0|hypothetical:0|" +
+                "fill:0|padded:0|ignoredup:0|rowlocks:1|pagelocks:1|seq:0|statsnorecompute:0|" +
+                $"{string.Join(',', keyColumns.Concat(includedColumns))}");
+        }
+    }
+
+    return new ExactDatabaseSchemaSnapshot(
+        tables.Order(StringComparer.Ordinal).ToArray(),
+        columns.Order(StringComparer.Ordinal).ToArray(),
+        primaryKeys.Order(StringComparer.Ordinal).ToArray(),
+        uniqueConstraints.Order(StringComparer.Ordinal).ToArray(),
+        foreignKeys.Order(StringComparer.Ordinal).ToArray(),
+        checkConstraints.Order(StringComparer.Ordinal).ToArray(),
+        indexes.Order(StringComparer.Ordinal).ToArray(),
+        0);
+}
+
+static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync(SqlConnection connection)
+{
+    var tables = new List<string>();
+    await using (var command = connection.CreateCommand())
+    {
+        command.CommandTimeout = 60;
+        command.CommandText = """
+            SELECT schemas.name, tables.name, tables.temporal_type, tables.is_memory_optimized,
+                   tables.durability_desc, lob_space.name, filestream_space.name,
+                   tables.is_external, tables.is_filetable, tables.is_node, tables.is_edge,
+                   tables.ledger_type, tables.lock_escalation_desc, tables.lock_on_bulk_load,
+                   tables.large_value_types_out_of_row, tables.is_replicated,
+                   tables.is_merge_published, tables.is_sync_tran_subscribed,
+                   tables.is_tracked_by_cdc, tables.is_remote_data_archive_enabled,
+                   tables.uses_ansi_nulls, tables.has_replication_filter
+            FROM sys.tables AS tables
+            INNER JOIN sys.schemas AS schemas ON schemas.schema_id = tables.schema_id
+            LEFT JOIN sys.data_spaces AS lob_space
+              ON lob_space.data_space_id = tables.lob_data_space_id
+             AND tables.lob_data_space_id <> 0
+            LEFT JOIN sys.data_spaces AS filestream_space
+              ON filestream_space.data_space_id = tables.filestream_data_space_id
+             AND tables.filestream_data_space_id <> 0
+            WHERE tables.is_ms_shipped = 0
+            ORDER BY schemas.name, tables.name;
+            """;
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            tables.Add(
+                $"{reader.GetString(0)}.{reader.GetString(1)}|temporal:{Convert.ToInt32(reader.GetValue(2))}|" +
+                $"memory:{(reader.GetBoolean(3) ? 1 : 0)}|durability:{reader.GetString(4)}|" +
+                $"lobspace:{(reader.IsDBNull(5) ? "-" : reader.GetString(5))}|" +
+                $"filestreamspace:{(reader.IsDBNull(6) ? "-" : reader.GetString(6))}|" +
+                $"external:{(reader.GetBoolean(7) ? 1 : 0)}|filetable:{(reader.GetBoolean(8) ? 1 : 0)}|" +
+                $"node:{(reader.GetBoolean(9) ? 1 : 0)}|edge:{(reader.GetBoolean(10) ? 1 : 0)}|" +
+                $"ledger:{Convert.ToInt32(reader.GetValue(11))}|lock:{reader.GetString(12)}|lockbulk:{(reader.GetBoolean(13) ? 1 : 0)}|" +
+                $"largeout:{(reader.GetBoolean(14) ? 1 : 0)}|replicated:{(reader.GetBoolean(15) ? 1 : 0)}|" +
+                $"merge:{(reader.GetBoolean(16) ? 1 : 0)}|syncrepl:{(reader.GetBoolean(17) ? 1 : 0)}|" +
+                $"cdc:{(reader.GetBoolean(18) ? 1 : 0)}|archive:{(reader.GetBoolean(19) ? 1 : 0)}|" +
+                $"ansinulls:{(reader.GetBoolean(20) ? 1 : 0)}|replfilter:{(reader.GetBoolean(21) ? 1 : 0)}");
+        }
+    }
+
+    var columns = new List<string>();
+    await using (var command = connection.CreateCommand())
+    {
+        command.CommandTimeout = 60;
+        command.CommandText = """
+            SELECT schemas.name, tables.name, columns.name, types.name,
+                   columns.max_length, columns.precision, columns.scale, columns.is_nullable,
+                   defaults.definition, computed.definition, computed.is_persisted,
+                   columns.is_identity,
+                   CONVERT(nvarchar(100), identities.seed_value),
+                   CONVERT(nvarchar(100), identities.increment_value),
+                   columns.generated_always_type, columns.is_sparse, columns.is_column_set,
+                   columns.is_filestream, columns.collation_name, columns.encryption_type,
+                   columns.encryption_algorithm_name, columns.column_encryption_key_id,
+                   masked.is_masked, masked.masking_function, columns.is_hidden,
+                   columns.xml_collection_id, columns.is_xml_document, columns.rule_object_id,
+                   identities.is_not_for_replication
+            FROM sys.tables AS tables
+            INNER JOIN sys.schemas AS schemas ON schemas.schema_id = tables.schema_id
+            INNER JOIN sys.columns AS columns ON columns.object_id = tables.object_id
+            INNER JOIN sys.types AS types ON types.user_type_id = columns.user_type_id
+            LEFT JOIN sys.default_constraints AS defaults
+                ON defaults.parent_object_id = columns.object_id
+               AND defaults.parent_column_id = columns.column_id
+            LEFT JOIN sys.computed_columns AS computed
+                ON computed.object_id = columns.object_id
+               AND computed.column_id = columns.column_id
+            LEFT JOIN sys.identity_columns AS identities
+                ON identities.object_id = columns.object_id
+               AND identities.column_id = columns.column_id
+            LEFT JOIN sys.masked_columns AS masked
+                ON masked.object_id = columns.object_id
+               AND masked.column_id = columns.column_id
+            WHERE tables.is_ms_shipped = 0
+            ORDER BY schemas.name, tables.name, columns.column_id;
+            """;
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var tableKey = $"{reader.GetString(0)}.{reader.GetString(1)}";
+            var storeType = GetActualStoreType(reader.GetString(3), reader.GetInt16(4), reader.GetByte(5), reader.GetByte(6));
+            var defaultValue = reader.IsDBNull(8)
+                ? "-"
+                : CanonicalizeDefaultExpression(reader.GetString(8), storeType);
+            var computedSql = reader.IsDBNull(9)
+                ? "-"
+                : NormalizeSqlExpression(reader.GetString(9));
+            var identity = reader.GetBoolean(11);
+            var identitySeed = reader.IsDBNull(12) ? "-" : NormalizeNumericMetadata(reader.GetString(12));
+            var identityIncrement = reader.IsDBNull(13) ? "-" : NormalizeNumericMetadata(reader.GetString(13));
+            var rowVersion = storeType == "rowversion";
+            var encryptionType = reader.IsDBNull(19) ? 0 : Convert.ToInt32(reader.GetValue(19));
+            var encryptionAlgorithm = CanonicalizeMetadataValue(reader.IsDBNull(20) ? null : reader.GetString(20));
+            var encryptionKeyId = reader.IsDBNull(21)
+                ? "-"
+                : Convert.ToString(reader.GetValue(21), CultureInfo.InvariantCulture)!;
+            var isMasked = !reader.IsDBNull(22) && reader.GetBoolean(22);
+            var maskingFunction = CanonicalizeMetadataValue(reader.IsDBNull(23) ? null : reader.GetString(23));
+            columns.Add(
+                $"{tableKey}|{reader.GetString(2)}|{storeType}|{(reader.GetBoolean(7) ? 1 : 0)}|" +
+                $"default:{defaultValue}|computed:{computedSql}|stored:{(!reader.IsDBNull(10) && reader.GetBoolean(10) ? 1 : 0)}|" +
+                $"identity:{(identity ? 1 : 0)}:{identitySeed}:{identityIncrement}:nfr:{(!reader.IsDBNull(28) && reader.GetBoolean(28) ? 1 : 0)}|" +
+                $"generated:{reader.GetByte(14)}|sparse:{(reader.GetBoolean(15) ? 1 : 0)}|" +
+                $"columnset:{(reader.GetBoolean(16) ? 1 : 0)}|filestream:{(reader.GetBoolean(17) ? 1 : 0)}|" +
+                $"collation:{(reader.IsDBNull(18) ? "-" : reader.GetString(18))}|" +
+                $"encrypted:{encryptionType}:{encryptionAlgorithm}:{encryptionKeyId}|" +
+                $"masked:{(isMasked ? 1 : 0)}:{maskingFunction}|hidden:{(reader.GetBoolean(24) ? 1 : 0)}|" +
+                $"xml:{Convert.ToInt32(reader.GetValue(25))}:{(reader.GetBoolean(26) ? 1 : 0)}|" +
+                $"rule:{Convert.ToInt32(reader.GetValue(27))}");
+        }
+    }
+
+    var primaryKeys = new List<string>();
+    var uniqueConstraints = new List<string>();
+    await using (var command = connection.CreateCommand())
+    {
+        command.CommandTimeout = 60;
+        command.CommandText = """
+            SELECT schemas.name, tables.name, constraints.name, constraints.type,
+                   columns.name, index_columns.is_descending_key, indexes.type_desc,
+                   data_spaces.name, indexes.is_disabled, indexes.is_hypothetical,
+                   indexes.fill_factor, indexes.is_padded, indexes.ignore_dup_key,
+                   indexes.allow_row_locks, indexes.allow_page_locks,
+                   indexes.optimize_for_sequential_key, CAST(COALESCE(stats.no_recompute, 0) AS bit)
+            FROM sys.key_constraints AS constraints
+            INNER JOIN sys.tables AS tables ON tables.object_id = constraints.parent_object_id
+            INNER JOIN sys.schemas AS schemas ON schemas.schema_id = tables.schema_id
+            INNER JOIN sys.index_columns AS index_columns
+                ON index_columns.object_id = constraints.parent_object_id
+               AND index_columns.index_id = constraints.unique_index_id
+               AND index_columns.key_ordinal > 0
+            INNER JOIN sys.indexes AS indexes
+                ON indexes.object_id = constraints.parent_object_id
+               AND indexes.index_id = constraints.unique_index_id
+            INNER JOIN sys.data_spaces AS data_spaces
+                ON data_spaces.data_space_id = indexes.data_space_id
+            LEFT JOIN sys.stats AS stats
+                ON stats.object_id = indexes.object_id
+               AND stats.stats_id = indexes.index_id
+            INNER JOIN sys.columns AS columns
+                ON columns.object_id = index_columns.object_id
+               AND columns.column_id = index_columns.column_id
+            WHERE tables.is_ms_shipped = 0
+            ORDER BY schemas.name, tables.name, constraints.name, index_columns.key_ordinal;
+            """;
+        await using var reader = await command.ExecuteReaderAsync();
+        var parts = new Dictionary<string, KeyConstraintParts>(StringComparer.Ordinal);
+        while (await reader.ReadAsync())
+        {
+            var key = $"{reader.GetString(0)}.{reader.GetString(1)}|{reader.GetString(2)}";
+            if (!parts.TryGetValue(key, out var part))
+            {
+                part = new KeyConstraintParts(
+                    reader.GetString(3),
+                    reader.GetString(6),
+                    reader.GetString(7),
+                    reader.GetBoolean(8),
+                    reader.GetBoolean(9),
+                    reader.GetByte(10),
+                    reader.GetBoolean(11),
+                    reader.GetBoolean(12),
+                    reader.GetBoolean(13),
+                    reader.GetBoolean(14),
+                    reader.GetBoolean(15),
+                    reader.GetBoolean(16),
+                    []);
+                parts.Add(key, part);
+            }
+            if (!part.Type.Equals(reader.GetString(3), StringComparison.Ordinal) ||
+                !part.IndexType.Equals(reader.GetString(6), StringComparison.Ordinal) ||
+                !part.DataSpace.Equals(reader.GetString(7), StringComparison.Ordinal) ||
+                part.Disabled != reader.GetBoolean(8) ||
+                part.Hypothetical != reader.GetBoolean(9) ||
+                part.FillFactor != reader.GetByte(10) ||
+                part.Padded != reader.GetBoolean(11) ||
+                part.IgnoreDuplicateKey != reader.GetBoolean(12) ||
+                part.AllowRowLocks != reader.GetBoolean(13) ||
+                part.AllowPageLocks != reader.GetBoolean(14) ||
+                part.OptimizeForSequentialKey != reader.GetBoolean(15) ||
+                part.StatisticsNoRecompute != reader.GetBoolean(16))
+                throw new InvalidOperationException("Azure SQL returned inconsistent key-constraint metadata.");
+            part.Columns.Add($"{reader.GetString(4)}:{(reader.GetBoolean(5) ? "D" : "A")}");
+        }
+        foreach (var entry in parts)
+        {
+            var value =
+                $"{entry.Key}|{string.Join(',', entry.Value.Columns)}|" +
+                $"type:{entry.Value.IndexType}|space:{entry.Value.DataSpace}|" +
+                $"disabled:{(entry.Value.Disabled ? 1 : 0)}|hypothetical:{(entry.Value.Hypothetical ? 1 : 0)}|" +
+                $"fill:{entry.Value.FillFactor}|padded:{(entry.Value.Padded ? 1 : 0)}|" +
+                $"ignoredup:{(entry.Value.IgnoreDuplicateKey ? 1 : 0)}|rowlocks:{(entry.Value.AllowRowLocks ? 1 : 0)}|" +
+                $"pagelocks:{(entry.Value.AllowPageLocks ? 1 : 0)}|seq:{(entry.Value.OptimizeForSequentialKey ? 1 : 0)}|" +
+                $"statsnorecompute:{(entry.Value.StatisticsNoRecompute ? 1 : 0)}";
+            if (entry.Value.Type.Equals("PK", StringComparison.Ordinal))
+                primaryKeys.Add(value);
+            else if (entry.Value.Type.Equals("UQ", StringComparison.Ordinal))
+                uniqueConstraints.Add(value);
+            else
+                throw new InvalidOperationException("Azure SQL returned an unsupported key-constraint type.");
+        }
+    }
+
+    var foreignKeys = new List<string>();
+    await using (var command = connection.CreateCommand())
+    {
+        command.CommandTimeout = 60;
+        command.CommandText = """
+            SELECT schemas.name, tables.name, foreign_keys.name,
+                   columns.name, principal_schemas.name, principal_tables.name,
+                   principal_columns.name, foreign_keys.delete_referential_action_desc,
+                   foreign_keys.update_referential_action_desc,
+                   foreign_keys.is_disabled, foreign_keys.is_not_trusted
+            FROM sys.foreign_keys AS foreign_keys
+            INNER JOIN sys.tables AS tables ON tables.object_id = foreign_keys.parent_object_id
+            INNER JOIN sys.schemas AS schemas ON schemas.schema_id = tables.schema_id
+            INNER JOIN sys.tables AS principal_tables ON principal_tables.object_id = foreign_keys.referenced_object_id
+            INNER JOIN sys.schemas AS principal_schemas ON principal_schemas.schema_id = principal_tables.schema_id
+            INNER JOIN sys.foreign_key_columns AS foreign_key_columns
+                ON foreign_key_columns.constraint_object_id = foreign_keys.object_id
+            INNER JOIN sys.columns AS columns
+                ON columns.object_id = foreign_key_columns.parent_object_id
+               AND columns.column_id = foreign_key_columns.parent_column_id
+            INNER JOIN sys.columns AS principal_columns
+                ON principal_columns.object_id = foreign_key_columns.referenced_object_id
+               AND principal_columns.column_id = foreign_key_columns.referenced_column_id
+            WHERE tables.is_ms_shipped = 0
+            ORDER BY schemas.name, tables.name, foreign_keys.name, foreign_key_columns.constraint_column_id;
+            """;
+        await using var reader = await command.ExecuteReaderAsync();
+        var parts = new Dictionary<string, (string Principal, string DeleteAction, string UpdateAction, bool Disabled, bool Untrusted, List<string> Columns, List<string> PrincipalColumns)>(StringComparer.Ordinal);
+        while (await reader.ReadAsync())
+        {
+            var key = $"{reader.GetString(0)}.{reader.GetString(1)}|{reader.GetString(2)}";
+            var principal = $"{reader.GetString(4)}.{reader.GetString(5)}";
+            if (!parts.TryGetValue(key, out var part))
+            {
+                part = (principal, reader.GetString(7), reader.GetString(8), reader.GetBoolean(9), reader.GetBoolean(10), [], []);
+                parts.Add(key, part);
+            }
+            if (!part.Principal.Equals(principal, StringComparison.Ordinal) ||
+                !part.DeleteAction.Equals(reader.GetString(7), StringComparison.Ordinal) ||
+                !part.UpdateAction.Equals(reader.GetString(8), StringComparison.Ordinal) ||
+                part.Disabled != reader.GetBoolean(9) || part.Untrusted != reader.GetBoolean(10))
+            {
+                throw new InvalidOperationException("Azure SQL returned inconsistent foreign-key metadata.");
+            }
+            part.Columns.Add(reader.GetString(3));
+            part.PrincipalColumns.Add(reader.GetString(6));
+        }
+        foreignKeys.AddRange(parts.Select(entry =>
+            $"{entry.Key}|{string.Join(',', entry.Value.Columns)}|{entry.Value.Principal}|" +
+            $"{string.Join(',', entry.Value.PrincipalColumns)}|delete:{entry.Value.DeleteAction}|" +
+            $"update:{entry.Value.UpdateAction}|" +
+            $"disabled:{(entry.Value.Disabled ? 1 : 0)}|untrusted:{(entry.Value.Untrusted ? 1 : 0)}"));
+    }
+
+    var checkConstraints = new List<string>();
+    await using (var command = connection.CreateCommand())
+    {
+        command.CommandTimeout = 60;
+        command.CommandText = """
+            SELECT schemas.name, tables.name, checks.name, checks.definition,
+                   checks.is_disabled, checks.is_not_trusted
+            FROM sys.check_constraints AS checks
+            INNER JOIN sys.tables AS tables ON tables.object_id = checks.parent_object_id
+            INNER JOIN sys.schemas AS schemas ON schemas.schema_id = tables.schema_id
+            WHERE tables.is_ms_shipped = 0
+            ORDER BY schemas.name, tables.name, checks.name;
+            """;
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            checkConstraints.Add(
+                $"{reader.GetString(0)}.{reader.GetString(1)}|{reader.GetString(2)}|" +
+                $"{NormalizeSqlExpression(reader.GetString(3))}|disabled:{(reader.GetBoolean(4) ? 1 : 0)}|" +
+                $"untrusted:{(reader.GetBoolean(5) ? 1 : 0)}");
+        }
+    }
+
+    var indexParts = new Dictionary<string, IndexParts>(StringComparer.Ordinal);
+    await using (var command = connection.CreateCommand())
+    {
+        command.CommandTimeout = 60;
+        command.CommandText = """
+            SELECT schemas.name, tables.name, indexes.name, indexes.is_unique,
+                   columns.name, index_columns.is_included_column,
+                   index_columns.is_descending_key, indexes.filter_definition,
+                   indexes.type_desc, data_spaces.name,
+                   indexes.is_disabled, indexes.is_hypothetical,
+                   indexes.fill_factor, indexes.is_padded, indexes.ignore_dup_key,
+                   indexes.allow_row_locks, indexes.allow_page_locks,
+                   indexes.optimize_for_sequential_key,
+                   CAST(COALESCE(stats.no_recompute, 0) AS bit)
+            FROM sys.indexes AS indexes
+            INNER JOIN sys.tables AS tables ON tables.object_id = indexes.object_id
+            INNER JOIN sys.schemas AS schemas ON schemas.schema_id = tables.schema_id
+            INNER JOIN sys.data_spaces AS data_spaces ON data_spaces.data_space_id = indexes.data_space_id
+            LEFT JOIN sys.stats AS stats
+                ON stats.object_id = indexes.object_id
+               AND stats.stats_id = indexes.index_id
+            INNER JOIN sys.index_columns AS index_columns
+                ON index_columns.object_id = indexes.object_id AND index_columns.index_id = indexes.index_id
+            INNER JOIN sys.columns AS columns
+                ON columns.object_id = index_columns.object_id AND columns.column_id = index_columns.column_id
+            WHERE tables.is_ms_shipped = 0
+              AND indexes.name IS NOT NULL
+              AND indexes.is_primary_key = 0
+              AND indexes.is_unique_constraint = 0
+            ORDER BY schemas.name, tables.name, indexes.name,
+                     index_columns.is_included_column, index_columns.key_ordinal, index_columns.index_column_id;
+            """;
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var key = $"{reader.GetString(0)}.{reader.GetString(1)}|{reader.GetString(2)}";
+            if (!indexParts.TryGetValue(key, out var part))
+            {
+                part = new IndexParts(
+                    reader.GetBoolean(3),
+                    reader.IsDBNull(7) ? null : reader.GetString(7),
+                    reader.GetString(8),
+                    reader.GetString(9),
+                    reader.GetBoolean(10),
+                    reader.GetBoolean(11),
+                    reader.GetByte(12),
+                    reader.GetBoolean(13),
+                    reader.GetBoolean(14),
+                    reader.GetBoolean(15),
+                    reader.GetBoolean(16),
+                    reader.GetBoolean(17),
+                    reader.GetBoolean(18),
+                    [],
+                    []);
+                indexParts.Add(key, part);
+            }
+            var filter = reader.IsDBNull(7) ? null : reader.GetString(7);
+            if (part.Unique != reader.GetBoolean(3) ||
+                !string.Equals(part.Filter, filter, StringComparison.Ordinal) ||
+                !part.IndexType.Equals(reader.GetString(8), StringComparison.Ordinal) ||
+                !part.DataSpace.Equals(reader.GetString(9), StringComparison.Ordinal) ||
+                part.Disabled != reader.GetBoolean(10) ||
+                part.Hypothetical != reader.GetBoolean(11) ||
+                part.FillFactor != reader.GetByte(12) ||
+                part.Padded != reader.GetBoolean(13) ||
+                part.IgnoreDuplicateKey != reader.GetBoolean(14) ||
+                part.AllowRowLocks != reader.GetBoolean(15) ||
+                part.AllowPageLocks != reader.GetBoolean(16) ||
+                part.OptimizeForSequentialKey != reader.GetBoolean(17) ||
+                part.StatisticsNoRecompute != reader.GetBoolean(18))
+                throw new InvalidOperationException("Azure SQL returned inconsistent index metadata.");
+            if (reader.GetBoolean(5))
+                part.Includes.Add(reader.GetString(4));
+            else
+                part.Keys.Add($"{reader.GetString(4)}:{(reader.GetBoolean(6) ? "D" : "A")}");
+        }
+    }
+    var indexes = indexParts.Select(entry =>
+        $"{entry.Key}|unique:{(entry.Value.Unique ? 1 : 0)}|filter:{NormalizeOptionalSqlExpression(entry.Value.Filter)}|" +
+        $"type:{entry.Value.IndexType}|space:{entry.Value.DataSpace}|" +
+        $"disabled:{(entry.Value.Disabled ? 1 : 0)}|hypothetical:{(entry.Value.Hypothetical ? 1 : 0)}|" +
+        $"fill:{entry.Value.FillFactor}|padded:{(entry.Value.Padded ? 1 : 0)}|" +
+        $"ignoredup:{(entry.Value.IgnoreDuplicateKey ? 1 : 0)}|rowlocks:{(entry.Value.AllowRowLocks ? 1 : 0)}|" +
+        $"pagelocks:{(entry.Value.AllowPageLocks ? 1 : 0)}|seq:{(entry.Value.OptimizeForSequentialKey ? 1 : 0)}|" +
+        $"statsnorecompute:{(entry.Value.StatisticsNoRecompute ? 1 : 0)}|" +
+        $"{string.Join(',', entry.Value.Keys.Select(value => $"K:{value}").Concat(entry.Value.Includes.Order(StringComparer.Ordinal).Select(name => $"I:{name}")))}")
+        .ToArray();
+
+    int unexpectedSurfaceCount;
+    await using (var command = connection.CreateCommand())
+    {
+        command.CommandTimeout = 60;
+        command.CommandText = """
+            SELECT
+              (
+                  (SELECT COUNT(*) FROM sys.objects
+                   WHERE is_ms_shipped = 0
+                     AND type IN (N'V', N'P', N'PC', N'FN', N'IF', N'TF', N'FS', N'FT', N'AF')) +
+                  (SELECT COUNT(*) FROM sys.triggers WHERE is_ms_shipped = 0) +
+                  (SELECT COUNT(*) FROM sys.synonyms) +
+                  (SELECT COUNT(*) FROM sys.sequences) +
+                  (SELECT COUNT(*) FROM sys.external_tables) +
+                  (SELECT COUNT(*) FROM sys.external_data_sources) +
+                  (SELECT COUNT(*) FROM sys.external_file_formats) +
+                  (SELECT COUNT(*) FROM sys.database_scoped_credentials) +
+                  (SELECT COUNT(*) FROM sys.column_master_keys) +
+                  (SELECT COUNT(*) FROM sys.column_encryption_keys) +
+                  (SELECT COUNT(*) FROM sys.assemblies WHERE is_user_defined = 1) +
+                  (SELECT COUNT(*) FROM sys.types WHERE is_user_defined = 1 OR is_table_type = 1) +
+                  (SELECT COUNT(*) FROM sys.partition_functions) +
+                  (SELECT COUNT(*) FROM sys.partition_schemes) +
+                  (SELECT COUNT(*) FROM sys.fulltext_catalogs) +
+                  (SELECT COUNT(*) FROM sys.fulltext_indexes) +
+                  (SELECT COUNT(*) FROM sys.xml_schema_collections WHERE xml_collection_id > 1) +
+                  (SELECT COUNT(*) FROM sys.database_audit_specifications) +
+                  (SELECT COUNT(*) FROM sys.security_policies WHERE is_ms_shipped = 0) +
+                  (SELECT COUNT(*) FROM sys.database_firewall_rules) +
+                  (SELECT COUNT(*) FROM sys.change_tracking_tables) +
+                  (SELECT COUNT(*) FROM sys.periods) +
+                  (SELECT COUNT(*) FROM sys.sensitivity_classifications) +
+                  (SELECT COUNT(*)
+                   FROM sys.extended_properties
+                   WHERE NOT
+                   (
+                       class = 0 AND major_id = 0 AND minor_id = 0
+                       AND name = @markerName
+                   )) +
+                  (SELECT COUNT(*)
+                   FROM sys.schemas AS schemas
+                   LEFT JOIN sys.database_principals AS principals
+                     ON principals.principal_id = schemas.principal_id
+                   WHERE schemas.name NOT IN
+                         (
+                             N'dbo', N'guest', N'sys', N'INFORMATION_SCHEMA',
+                             N'db_owner', N'db_accessadmin', N'db_securityadmin', N'db_ddladmin',
+                             N'db_backupoperator', N'db_datareader', N'db_datawriter',
+                             N'db_denydatareader', N'db_denydatawriter'
+                         )
+                      OR principals.name IS NULL
+                      OR principals.name <> schemas.name) +
+                  (SELECT COUNT(*)
+                   FROM sys.partitions AS partitions
+                   INNER JOIN sys.indexes AS indexes
+                     ON indexes.object_id = partitions.object_id
+                    AND indexes.index_id = partitions.index_id
+                   INNER JOIN sys.tables AS tables ON tables.object_id = indexes.object_id
+                   LEFT JOIN sys.data_spaces AS data_spaces
+                     ON data_spaces.data_space_id = indexes.data_space_id
+                   WHERE tables.is_ms_shipped = 0
+                     AND
+                     (
+                         partitions.partition_number <> 1
+                         OR partitions.data_compression_desc <> N'NONE'
+                         OR indexes.type_desc NOT IN (N'HEAP', N'CLUSTERED', N'NONCLUSTERED')
+                         OR data_spaces.name IS NULL
+                         OR data_spaces.name <> N'PRIMARY'
+                     )) +
+                  (SELECT COUNT(*)
+                   FROM sys.databases
+                   WHERE name = DB_NAME()
+                     AND
+                     (
+                         state_desc <> N'ONLINE'
+                         OR user_access_desc <> N'MULTI_USER'
+                         OR is_read_only <> 0
+                         OR is_auto_close_on <> 0
+                         OR is_auto_shrink_on <> 0
+                         OR is_in_standby <> 0
+                         OR source_database_id IS NOT NULL
+                         OR containment_desc <> N'NONE'
+                         OR is_trustworthy_on <> 0
+                         OR is_db_chaining_on <> 0
+                         OR collation_name <> N'SQL_Latin1_General_CP1_CI_AS'
+                         OR catalog_collation_type_desc <> N'SQL_Latin1_General_CP1_CI_AS'
+                     )) +
+                  (SELECT CASE
+                       WHEN COUNT(*) = 1
+                        AND MAX(CASE WHEN databases.owner_sid = dbo_principal.sid THEN 1 ELSE 0 END) = 1
+                       THEN 0 ELSE 1 END
+                   FROM sys.databases AS databases
+                   LEFT JOIN sys.database_principals AS dbo_principal
+                     ON dbo_principal.name = N'dbo'
+                   WHERE databases.name = DB_NAME())
+              );
+            """;
+        command.Parameters.AddWithValue("@markerName", DatabaseBootstrapRecoveryContract.MarkerName);
+        unexpectedSurfaceCount = Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
+    return new ExactDatabaseSchemaSnapshot(
+        tables.Distinct(StringComparer.Ordinal).ToArray(),
+        columns.ToArray(),
+        primaryKeys,
+        uniqueConstraints,
+        foreignKeys,
+        checkConstraints,
+        indexes,
+        unexpectedSurfaceCount);
+}
+
+static IReadOnlyCollection<string> GetExpectedIncludedIndexColumns(
+    ITableIndex index,
+    StoreObjectIdentifier storeObject)
+{
+    var included = new HashSet<string>(StringComparer.Ordinal);
+    foreach (var mappedIndex in index.MappedIndexes)
+    {
+        var propertyNames = mappedIndex.FindAnnotation("SqlServer:Include")?.Value as IEnumerable<string> ?? [];
+        foreach (var propertyName in propertyNames)
+        {
+            var property = mappedIndex.DeclaringEntityType.FindProperty(propertyName) ??
+                throw new InvalidOperationException("The EF included-index property mapping was absent.");
+            var columnName = property.GetColumnName(storeObject) ??
+                throw new InvalidOperationException("The EF included-index column mapping was absent.");
+            included.Add(columnName);
+        }
+    }
+    return included;
+}
+
+static bool GetExpectedConstraintClustered(IUniqueConstraint constraint) =>
+    GetExpectedClusteredAnnotation(
+        constraint.MappedKeys.Cast<IReadOnlyAnnotatable>(),
+        constraint.GetIsPrimaryKey());
+
+static bool GetExpectedIndexClustered(ITableIndex index) =>
+    GetExpectedClusteredAnnotation(index.MappedIndexes.Cast<IReadOnlyAnnotatable>(), defaultValue: false);
+
+static bool GetExpectedClusteredAnnotation(
+    IEnumerable<IReadOnlyAnnotatable> mappedObjects,
+    bool defaultValue)
+{
+    var values = mappedObjects
+        .Select(mapped => mapped.FindAnnotation("SqlServer:Clustered")?.Value)
+        .Where(value => value is not null)
+        .Select(value => value is bool boolean
+            ? boolean
+            : throw new InvalidOperationException("The EF relational model returned malformed clustered-index metadata."))
+        .Distinct()
+        .ToArray();
+    if (values.Length > 1)
+        throw new InvalidOperationException("The EF relational model returned conflicting clustered-index metadata.");
+    return values.SingleOrDefault(defaultValue);
+}
+
+static bool IsLargeObjectStoreType(string storeType)
+{
+    var normalized = NormalizeStoreType(storeType);
+    return normalized is "nvarchar(max)" or "varchar(max)" or "varbinary(max)" or
+        "text" or "ntext" or "image" or "xml" or "geometry" or "geography";
+}
+
+static bool SupportsCollation(string storeType) =>
+    storeType.StartsWith("char(", StringComparison.Ordinal) ||
+    storeType.StartsWith("varchar(", StringComparison.Ordinal) ||
+    storeType.StartsWith("nchar(", StringComparison.Ordinal) ||
+    storeType.StartsWith("nvarchar(", StringComparison.Ordinal) ||
+    storeType is "text" or "ntext";
+
+static string CanonicalizeMetadataValue(string? value) =>
+    string.IsNullOrEmpty(value)
+        ? "-"
+        : Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
+
+static string GetExpectedDefaultContract(IColumn column)
+{
+    if (!string.IsNullOrWhiteSpace(column.DefaultValueSql))
+        return CanonicalizeDefaultExpression(column.DefaultValueSql, NormalizeStoreType(column.StoreType));
+    if (!column.TryGetDefaultValue(out var defaultValue))
+        return "-";
+    if (defaultValue is null || defaultValue == DBNull.Value)
+        return "null";
+    var literal = column.StoreTypeMapping.GenerateSqlLiteral(defaultValue);
+    return CanonicalizeDefaultExpression(literal, NormalizeStoreType(column.StoreType));
+}
+
+static string CanonicalizeDefaultExpression(string expression, string storeType)
+{
+    var normalized = NormalizeSqlExpression(expression);
+    if (storeType == "bit")
+    {
+        var bit = Regex.Match(
+            normalized,
+            @"^(?:convert\(bit,\(?)?([01])\)?\)?$|^cast\(([01])asbit\)$",
+            RegexOptions.CultureInvariant);
+        if (bit.Success)
+        {
+            var value = bit.Groups[1].Success ? bit.Groups[1].Value : bit.Groups[2].Value;
+            return $"literal:bit:{value}";
+        }
+    }
+
+    var stringLiteral = Regex.Match(normalized, @"^n?'((?:''|[^'])*)'$", RegexOptions.CultureInvariant);
+    if (stringLiteral.Success)
+    {
+        var value = stringLiteral.Groups[1].Value.Replace("''", "'", StringComparison.Ordinal);
+        return $"literal:string:{Convert.ToBase64String(Encoding.UTF8.GetBytes(value))}";
+    }
+
+    if (Regex.IsMatch(normalized, @"^[+-]?[0-9]+(?:\.[0-9]+)?$", RegexOptions.CultureInvariant))
+        return $"literal:number:{NormalizeNumericMetadata(normalized)}";
+
+    return $"sql:{normalized}";
+}
+
+static string NormalizeNumericMetadata(string value)
+{
+    if (!decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed))
+        throw new InvalidOperationException("Azure SQL returned malformed numeric schema metadata.");
+    return parsed.ToString("0.############################", CultureInfo.InvariantCulture);
+}
+
+static string NormalizeOptionalSqlExpression(string? expression) =>
+    string.IsNullOrWhiteSpace(expression) ? "-" : NormalizeSqlExpression(expression);
+
+static string NormalizeSqlExpression(string expression)
+{
+    if (string.IsNullOrWhiteSpace(expression))
+        throw new InvalidOperationException("A required relational SQL expression was empty.");
+
+    var builder = new StringBuilder(expression.Length);
+    var inString = false;
+    for (var index = 0; index < expression.Length; index++)
+    {
+        var character = expression[index];
+        if (character == '\'' && inString && index + 1 < expression.Length && expression[index + 1] == '\'')
+        {
+            builder.Append("''");
+            index++;
+            continue;
+        }
+        if (character == '\'')
+        {
+            inString = !inString;
+            builder.Append(character);
+            continue;
+        }
+        if (!inString && char.IsWhiteSpace(character))
+            continue;
+        if (!inString && character is '[' or ']')
+            continue;
+        builder.Append(inString ? character : char.ToLowerInvariant(character));
+    }
+    if (inString)
+        throw new InvalidOperationException("A relational SQL expression contained an unterminated string literal.");
+
+    var normalized = builder.ToString();
+    while (HasOneBalancedOuterParenthesisPair(normalized))
+        normalized = normalized[1..^1];
+    string previous;
+    do
+    {
+        previous = normalized;
+        normalized = Regex.Replace(
+            normalized,
+            @"\(([+-]?[0-9]+(?:\.[0-9]+)?)\)",
+            "$1",
+            RegexOptions.CultureInvariant);
+    }
+    while (!normalized.Equals(previous, StringComparison.Ordinal));
+    return normalized;
+}
+
+static bool HasOneBalancedOuterParenthesisPair(string value)
+{
+    if (value.Length < 2 || value[0] != '(' || value[^1] != ')')
+        return false;
+    var depth = 0;
+    var inString = false;
+    for (var index = 0; index < value.Length; index++)
+    {
+        var character = value[index];
+        if (character == '\'' && inString && index + 1 < value.Length && value[index + 1] == '\'')
+        {
+            index++;
+            continue;
+        }
+        if (character == '\'')
+        {
+            inString = !inString;
+            continue;
+        }
+        if (inString)
+            continue;
+        if (character == '(')
+            depth++;
+        else if (character == ')' && --depth == 0 && index != value.Length - 1)
+            return false;
+        if (depth < 0)
+            return false;
+    }
+    return depth == 0 && !inString;
+}
+
+static string NormalizeReferentialAction(ReferentialAction action) => action switch
+{
+    ReferentialAction.NoAction => "NO_ACTION",
+    ReferentialAction.Cascade => "CASCADE",
+    ReferentialAction.SetNull => "SET_NULL",
+    ReferentialAction.SetDefault => "SET_DEFAULT",
+    ReferentialAction.Restrict => "NO_ACTION",
+    _ => throw new InvalidOperationException("The EF relational model returned an unsupported delete action.")
+};
+
+static string GetActualStoreType(string typeName, short maxLength, byte precision, byte scale)
+{
+    var lower = typeName.ToLowerInvariant();
+    var value = lower switch
+    {
+        "nvarchar" or "nchar" => $"{lower}({(maxLength == -1 ? "max" : (maxLength / 2).ToString())})",
+        "varchar" or "char" or "varbinary" or "binary" => $"{lower}({(maxLength == -1 ? "max" : maxLength.ToString())})",
+        "decimal" or "numeric" => $"{lower}({precision},{scale})",
+        "datetime2" or "datetimeoffset" or "time" => $"{lower}({scale})",
+        "timestamp" => "rowversion",
+        _ => lower
+    };
+    return NormalizeStoreType(value);
+}
+
+static string NormalizeStoreType(string storeType)
+{
+    var normalized = storeType.Replace(" ", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
+    return Regex.Replace(normalized, @"^(datetime2|datetimeoffset|time)\(7\)$", "$1", RegexOptions.CultureInvariant);
 }
 
 static async Task<RuntimePrincipalEvidence> EnsureRuntimePrincipalAsync(
     SqlConnection connection,
     string principalName,
-    Guid principalClientId)
+    Guid principalClientId,
+    bool requireViewDefinition)
 {
-    await using (var lookup = connection.CreateCommand())
+    var principal = await ReadRuntimePrincipalAsync(connection, principalName);
+    if (principal is not null &&
+        (principal.ClientId != principalClientId || !principal.Type.Equals("E", StringComparison.Ordinal)))
     {
-        lookup.CommandTimeout = 60;
-        lookup.CommandText = """
-            SELECT CAST(sid AS uniqueidentifier)
-            FROM sys.database_principals
-            WHERE name = @principalName;
+        throw new InvalidOperationException(
+            $"Database principal {principalName} exists but is not the exact reviewed Microsoft Entra service principal.");
+    }
+
+    var expectedRoles = new[] { "db_datareader", "db_datawriter" };
+    if (principal is null)
+    {
+        var escapedName = principalName.Replace("]", "]]", StringComparison.Ordinal);
+        await using var create = connection.CreateCommand();
+        create.CommandTimeout = 120;
+        create.CommandText = $"""
+            DECLARE @clientId uniqueidentifier = '{principalClientId:D}';
+            DECLARE @sid nvarchar(34) =
+                CONVERT(varchar(34), CONVERT(varbinary(16), @clientId), 1);
+            EXEC(N'CREATE USER [{escapedName}] WITH SID = ' + @sid + N', TYPE = E;');
             """;
-        lookup.Parameters.AddWithValue("@principalName", principalName);
-        var existing = await lookup.ExecuteScalarAsync();
-        if (existing is Guid existingClientId && existingClientId != principalClientId)
+        await create.ExecuteNonQueryAsync();
+        principal = await ReadRuntimePrincipalAsync(connection, principalName);
+        if (principal is null || principal.ClientId != principalClientId ||
+            !principal.Type.Equals("E", StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                $"Database principal {principalName} exists but is bound to a different Microsoft Entra application/client ID.");
-        }
-
-        if (existing is null or DBNull)
-        {
-            var escapedName = principalName.Replace("]", "]]", StringComparison.Ordinal);
-            await using var create = connection.CreateCommand();
-            create.CommandTimeout = 120;
-            create.CommandText = $"""
-                DECLARE @clientId uniqueidentifier = '{principalClientId:D}';
-                DECLARE @sid nvarchar(34) =
-                    CONVERT(varchar(34), CONVERT(varbinary(16), @clientId), 1);
-                EXEC(N'CREATE USER [{escapedName}] WITH SID = ' + @sid + N', TYPE = E;');
-                """;
-            await create.ExecuteNonQueryAsync();
+                $"Database principal {principalName} was not observed with its exact Entra SID and type after creation.");
         }
     }
 
     var escapedPrincipalName = principalName.Replace("]", "]]", StringComparison.Ordinal);
-    foreach (var roleName in new[] { "db_datareader", "db_datawriter" })
+    if (requireViewDefinition)
     {
-        await using var membership = connection.CreateCommand();
-        membership.CommandTimeout = 60;
-        membership.CommandText = """
-            SELECT COUNT(*)
-            FROM sys.database_role_members AS drm
-            INNER JOIN sys.database_principals AS roles
-                ON roles.principal_id = drm.role_principal_id
-            INNER JOIN sys.database_principals AS members
-                ON members.principal_id = drm.member_principal_id
-            WHERE roles.name = @roleName
-              AND members.name = @principalName;
-            """;
-        membership.Parameters.AddWithValue("@roleName", roleName);
-        membership.Parameters.AddWithValue("@principalName", principalName);
-        var membershipCount = Convert.ToInt32(await membership.ExecuteScalarAsync());
-        if (membershipCount == 0)
-        {
-            await using var grant = connection.CreateCommand();
-            grant.CommandTimeout = 60;
-            grant.CommandText = $"ALTER ROLE [{roleName}] ADD MEMBER [{escapedPrincipalName}];";
-            await grant.ExecuteNonQueryAsync();
-        }
+        await using var grantMetadata = connection.CreateCommand();
+        grantMetadata.CommandTimeout = 60;
+        grantMetadata.CommandText = $"GRANT VIEW DEFINITION TO [{escapedPrincipalName}];";
+        await grantMetadata.ExecuteNonQueryAsync();
     }
 
+    var observedBefore = await ReadAndAssertRuntimePrincipalAuthorityAsync(
+        connection,
+        principal,
+        expectedRoles,
+        expectedDirectPermissionCount: requireViewDefinition ? 1 : 0,
+        requireCompleteRoleSet: false);
+    foreach (var roleName in expectedRoles.Except(observedBefore, StringComparer.Ordinal))
+    {
+        await using var grant = connection.CreateCommand();
+        grant.CommandTimeout = 60;
+        grant.CommandText = $"ALTER ROLE [{roleName}] ADD MEMBER [{escapedPrincipalName}];";
+        await grant.ExecuteNonQueryAsync();
+    }
+
+    var observedRoles = await ReadAndAssertRuntimePrincipalAuthorityAsync(
+        connection,
+        principal,
+        expectedRoles,
+        expectedDirectPermissionCount: requireViewDefinition ? 1 : 0,
+        requireCompleteRoleSet: true);
     return new RuntimePrincipalEvidence(
         principalName,
         principalClientId,
-        ["db_datareader", "db_datawriter"]);
+        observedRoles,
+        requireViewDefinition ? ["VIEW DEFINITION"] : []);
 }
 
-static async Task<SchemaVerification> VerifyAsync(SqlConnection connection)
+static async Task<RuntimePrincipalSnapshot?> ReadRuntimePrincipalAsync(
+    SqlConnection connection,
+    string principalName)
+{
+    await using var lookup = connection.CreateCommand();
+    lookup.CommandTimeout = 60;
+    lookup.CommandText = """
+        SELECT principal_id, CAST(sid AS uniqueidentifier), type
+        FROM sys.database_principals
+        WHERE name = @principalName
+        ORDER BY principal_id;
+        """;
+    lookup.Parameters.AddWithValue("@principalName", principalName);
+    await using var reader = await lookup.ExecuteReaderAsync();
+    var matches = new List<RuntimePrincipalSnapshot>();
+    while (await reader.ReadAsync())
+    {
+        matches.Add(new RuntimePrincipalSnapshot(
+            reader.GetInt32(0),
+            reader.GetGuid(1),
+            reader.GetString(2)));
+    }
+    if (matches.Count > 1)
+        throw new InvalidOperationException("Azure SQL returned duplicate exact-name runtime principals.");
+    return matches.Count == 1 ? matches[0] : null;
+}
+
+static async Task<IReadOnlyList<string>> ReadAndAssertRuntimePrincipalAuthorityAsync(
+    SqlConnection connection,
+    RuntimePrincipalSnapshot principal,
+    IReadOnlyCollection<string> expectedRoles,
+    int expectedDirectPermissionCount,
+    bool requireCompleteRoleSet)
+{
+    var roles = new List<string>();
+    await using (var membership = connection.CreateCommand())
+    {
+        membership.CommandTimeout = 60;
+        membership.CommandText = """
+            SELECT roles.name
+            FROM sys.database_role_members AS memberships
+            INNER JOIN sys.database_principals AS roles
+                ON roles.principal_id = memberships.role_principal_id
+            WHERE memberships.member_principal_id = @principalId
+            ORDER BY roles.name;
+            """;
+        membership.Parameters.AddWithValue("@principalId", principal.PrincipalId);
+        await using var reader = await membership.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            roles.Add(reader.GetString(0));
+    }
+
+    await using var authority = connection.CreateCommand();
+    authority.CommandTimeout = 60;
+    authority.CommandText = """
+        SELECT
+          (SELECT COUNT(*) FROM sys.database_permissions WHERE grantee_principal_id = @principalId),
+          (SELECT COUNT(*) FROM sys.schemas WHERE principal_id = @principalId),
+          (SELECT COUNT(*) FROM sys.database_principals WHERE owning_principal_id = @principalId);
+        """;
+    authority.Parameters.AddWithValue("@principalId", principal.PrincipalId);
+    await using var authorityReader = await authority.ExecuteReaderAsync();
+    if (!await authorityReader.ReadAsync())
+        throw new InvalidOperationException("Azure SQL returned no runtime-principal authority row.");
+    var directPermissionCount = authorityReader.GetInt32(0);
+    var ownedSchemaCount = authorityReader.GetInt32(1);
+    var ownedPrincipalCount = authorityReader.GetInt32(2);
+    if (await authorityReader.ReadAsync())
+        throw new InvalidOperationException("Azure SQL returned duplicate runtime-principal authority rows.");
+
+    DatabaseBootstrapContract.AssertRuntimePrincipalAuthority(
+        roles,
+        expectedRoles,
+        directPermissionCount,
+        expectedDirectPermissionCount,
+        ownedSchemaCount,
+        ownedPrincipalCount,
+        requireCompleteRoleSet);
+
+    return roles;
+}
+
+static async Task<SchemaVerification> VerifyAsync(
+    SqlConnection connection,
+    bool currentEfModelReady,
+    string currentSchemaFingerprint)
 {
     const string sql = """
         SELECT
@@ -391,6 +2014,8 @@ static async Task<SchemaVerification> VerifyAsync(SqlConnection connection)
     }
 
     return new SchemaVerification(
+        currentEfModelReady,
+        currentSchemaFingerprint,
         workflowV2Ready,
         legacyGlobalIndexCount,
         publishableOutboxMessageCount,
@@ -435,6 +2060,26 @@ static string? ReadOption(IReadOnlyDictionary<string, string> options, string ke
     return Environment.GetEnvironmentVariable(environmentName);
 }
 
+static ExpectedDatabasePrincipal ParseExpectedDatabasePrincipal(
+    string name,
+    string clientIdValue,
+    string category,
+    int expectedDirectPermissionCount)
+{
+    if (!Regex.IsMatch(name, @"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", RegexOptions.CultureInvariant))
+        throw new ArgumentException($"The expected {category} database principal name is invalid.");
+    if (!Guid.TryParseExact(clientIdValue, "D", out var clientId) ||
+        clientId == Guid.Empty ||
+        !clientIdValue.Equals(clientId.ToString("D"), StringComparison.Ordinal))
+    {
+        throw new ArgumentException(
+            $"The expected {category} database principal client ID must be a canonical lowercase non-empty GUID.");
+    }
+    if (expectedDirectPermissionCount is < 0 or > 1)
+        throw new ArgumentOutOfRangeException(nameof(expectedDirectPermissionCount));
+    return new ExpectedDatabasePrincipal(name, clientId, expectedDirectPermissionCount);
+}
+
 static string ResolveRepositoryRoot(string? explicitRoot)
 {
     var current = new DirectoryInfo(
@@ -451,6 +2096,8 @@ static string ResolveRepositoryRoot(string? explicitRoot)
 internal sealed record ScriptEvidence(string Name, string Sha256, string Sql);
 internal sealed record MigrationScriptEvidence(string Name, string Sha256);
 internal sealed record SchemaVerification(
+    bool CurrentEfModelReady,
+    string CurrentSchemaFingerprint,
     bool WorkflowV2Ready,
     int LegacyGlobalIdempotencyUniqueIndexCount,
     int PublishableOutboxMessageCount,
@@ -466,8 +2113,78 @@ internal sealed record MigrationEvidence(
     int Repeat,
     IReadOnlyList<MigrationScriptEvidence> Scripts,
     SchemaVerification Verification,
-    RuntimePrincipalEvidence? RuntimePrincipal);
+    RuntimePrincipalEvidence? RuntimePrincipal,
+    InitializationIntentEvidence? InitializationIntent);
 internal sealed record RuntimePrincipalEvidence(
     string Name,
     Guid ClientId,
-    IReadOnlyList<string> DatabaseRoles);
+    IReadOnlyList<string> DatabaseRoles,
+    IReadOnlyList<string> DirectPermissions);
+internal sealed record RuntimePrincipalSnapshot(
+    int PrincipalId,
+    Guid ClientId,
+    string Type);
+internal sealed record MutableObservedPrincipal(
+    int PrincipalId,
+    string Name,
+    Guid? ClientId,
+    string Type,
+    int DirectPermissionCount,
+    int OwnedSchemaCount,
+    int OwnedPrincipalCount,
+    List<string> Roles);
+internal sealed record KeyConstraintParts(
+    string Type,
+    string IndexType,
+    string DataSpace,
+    bool Disabled,
+    bool Hypothetical,
+    byte FillFactor,
+    bool Padded,
+    bool IgnoreDuplicateKey,
+    bool AllowRowLocks,
+    bool AllowPageLocks,
+    bool OptimizeForSequentialKey,
+    bool StatisticsNoRecompute,
+    List<string> Columns);
+internal sealed record IndexParts(
+    bool Unique,
+    string? Filter,
+    string IndexType,
+    string DataSpace,
+    bool Disabled,
+    bool Hypothetical,
+    byte FillFactor,
+    bool Padded,
+    bool IgnoreDuplicateKey,
+    bool AllowRowLocks,
+    bool AllowPageLocks,
+    bool OptimizeForSequentialKey,
+    bool StatisticsNoRecompute,
+    List<string> Keys,
+    List<string> Includes);
+internal sealed record DatabaseInitializationIntent(
+    int SchemaVersion,
+    string DeploymentOwnershipId,
+    string AcceptedSourceFingerprint,
+    string Server,
+    string Database,
+    string DatabaseCollation,
+    string CatalogCollation,
+    string DatabaseOwnerSidSha256);
+internal sealed record DatabaseIdentityBinding(
+    string Collation,
+    string CatalogCollation,
+    string OwnerSidSha256);
+internal sealed record InitializationIntentEvidence(
+    string MarkerName,
+    int SchemaVersion,
+    string DeploymentOwnershipId,
+    string AcceptedSourceFingerprint,
+    string Server,
+    string Database,
+    string DatabaseCollation,
+    string CatalogCollation,
+    string DatabaseOwnerSidSha256,
+    string RecoveryMode,
+    bool ExactReadbackVerified);
