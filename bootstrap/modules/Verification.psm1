@@ -427,11 +427,15 @@ function Assert-GatewayExactAzureLocalCredentialControls {
     )
 
     $registryName = ([string]$Runtime.acrLoginServer).Split('.')[0]
+    $subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
+    $registryId = "/subscriptions/$subscriptionId/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.ContainerRegistry/registries/$registryName"
     $registry = Invoke-AzJson -Arguments @(
-        'acr', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $registryName,
-        '--query', '{adminUserEnabled:adminUserEnabled,armAudienceStatus:policies.azureADAuthenticationAsArmPolicy.status,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
+        'resource', 'show', '--subscription', $subscriptionId,
+        '--ids', $registryId, '--api-version', '2023-11-01-preview',
+        '--query', '{id:id,adminUserEnabled:properties.adminUserEnabled,armAudienceStatus:properties.policies.azureADAuthenticationAsArmPolicy.status,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
     )
-    if ($registry.adminUserEnabled -ne $false -or
+    if (-not ([string]$registry.id).Equals($registryId, [StringComparison]::OrdinalIgnoreCase) -or
+        $registry.adminUserEnabled -ne $false -or
         [string]$registry.armAudienceStatus -cne 'enabled' -or
         [string]$registry.ownershipId -cne [string]$Runtime.deploymentOwnershipId -or
         [string]$registry.sourceFingerprint -cne [string]$Runtime.sourceFingerprint) {

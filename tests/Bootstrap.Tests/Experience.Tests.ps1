@@ -4,6 +4,21 @@ Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Entra.psm1') 
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Agent365.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Experience.psm1') -Force
 
+Describe 'ACR ARM-audience authoritative readback boundary' {
+    It 'uses the exact ARM resource API for every bootstrap policy readback' {
+        $experiencePath = (Get-Module Experience).Path
+        $verificationPath = Join-Path (Split-Path $experiencePath -Parent) 'Verification.psm1'
+        $experienceSource = Get-Content -LiteralPath $experiencePath -Raw
+        $verificationSource = Get-Content -LiteralPath $verificationPath -Raw
+        $armReadPattern = "(?s)'resource', 'show'.{0,350}'--api-version', '2023-11-01-preview'.{0,350}properties\.policies\.azureADAuthenticationAsArmPolicy\.status"
+
+        ([regex]::Matches($experienceSource, $armReadPattern)).Count | Should -Be 2
+        ([regex]::Matches($verificationSource, $armReadPattern)).Count | Should -Be 1
+        $experienceSource | Should -Not -Match "(?s)'acr', 'show'.{0,350}azureADAuthenticationAsArmPolicy"
+        $verificationSource | Should -Not -Match "(?s)'acr', 'show'.{0,350}azureADAuthenticationAsArmPolicy"
+    }
+}
+
 Describe 'Plan input stability boundary' {
     InModuleScope Experience {
         BeforeEach {
@@ -144,7 +159,7 @@ Describe 'Workload deployment output mapping' {
                         sourceFingerprint = $script:pullSourceFingerprint
                     }
                 }
-                if ($Arguments[0] -eq 'acr') {
+                if ($Arguments[0] -eq 'resource') {
                     return [pscustomobject]@{
                         id = $script:pullRegistryId
                         name = 'acrsafe'
@@ -173,6 +188,16 @@ Describe 'Workload deployment output mapping' {
                 -Config $config -Evidence $evidence -ExpectedRegistryId $registryId `
                 -DeploymentOwnershipId $ownershipId -SourceFingerprint $sourceFingerprint |
                 Should -BeTrue
+
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'resource' -and
+                [string]$Arguments[1] -ceq 'show' -and
+                [Array]::IndexOf([object[]]$Arguments, '--ids') -ge 0 -and
+                [string]$Arguments[[Array]::IndexOf([object[]]$Arguments, '--ids') + 1] -ceq $script:pullRegistryId -and
+                [Array]::IndexOf([object[]]$Arguments, '--api-version') -ge 0 -and
+                [string]$Arguments[[Array]::IndexOf([object[]]$Arguments, '--api-version') + 1] -ceq '2023-11-01-preview' -and
+                [string]$Arguments[-1] -like '*properties.policies.azureADAuthenticationAsArmPolicy.status*'
+            }
         }
 
         It 'rejects malformed pull-identity IDs, role receipts, and source tags' {

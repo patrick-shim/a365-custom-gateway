@@ -1463,10 +1463,13 @@ function Assert-GatewayRuntimeImagePullIdentityEvidence {
             throw 'mismatch'
         }
 
+        # The typed `az acr show` projection in Azure CLI 2.89.1 omits
+        # azureADAuthenticationAsArmPolicy even when ARM has persisted it. Read the
+        # exact registry resource at the same reviewed API version used by Bicep.
         $registry = Invoke-AzJson -Arguments @(
-            'acr', 'show', '--subscription', $subscriptionId,
-            '--resource-group', [string]$Config.resourceGroupName, '--name', $registryName,
-            '--query', '{id:id,name:name,adminUserEnabled:adminUserEnabled,armAudienceStatus:policies.azureADAuthenticationAsArmPolicy.status,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
+            'resource', 'show', '--subscription', $subscriptionId,
+            '--ids', $registryId, '--api-version', '2023-11-01-preview',
+            '--query', '{id:id,name:name,adminUserEnabled:properties.adminUserEnabled,armAudienceStatus:properties.policies.azureADAuthenticationAsArmPolicy.status,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
         )
         if (-not ([string]$registry.id).Equals($registryId, [StringComparison]::OrdinalIgnoreCase) -or
             [string]$registry.name -cne $registryName -or
@@ -1551,11 +1554,12 @@ function Test-GatewaySubscriptionDeploymentEvidence {
             'monitor', 'log-analytics', 'workspace', 'show', '--resource-group', [string]$Config.resourceGroupName,
             '--workspace-name', [string]$Evidence.logAnalyticsWorkspaceName, '--query', '{name:name,location:location,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
         )
-        $registry = Invoke-AzJson -Arguments @(
-            'acr', 'show', '--resource-group', [string]$Config.resourceGroupName,
-            '--name', [string]$Evidence.acrName, '--query', '{id:id,name:name,loginServer:loginServer,adminUserEnabled:adminUserEnabled,armAudienceStatus:policies.azureADAuthenticationAsArmPolicy.status,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
-        )
         $expectedRegistryId = "/subscriptions/$(([guid][string]$Config.subscriptionId).ToString('D'))/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.ContainerRegistry/registries/$($Evidence.acrName)"
+        $registry = Invoke-AzJson -Arguments @(
+            'resource', 'show', '--subscription', [string]$Config.subscriptionId,
+            '--ids', $expectedRegistryId, '--api-version', '2023-11-01-preview',
+            '--query', '{id:id,name:name,loginServer:properties.loginServer,adminUserEnabled:properties.adminUserEnabled,armAudienceStatus:properties.policies.azureADAuthenticationAsArmPolicy.status,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
+        )
         if ([string]$workspace.name -ne [string]$Evidence.logAnalyticsWorkspaceName -or
             [string]$workspace.location -ne [string]$Config.location -or
             [string]$workspace.ownershipId -cne $canonicalOwnershipId -or

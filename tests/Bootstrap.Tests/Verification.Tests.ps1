@@ -560,6 +560,7 @@ Describe 'Exact Azure local-credential and transport controls' {
         BeforeEach {
             $script:controlConfig = [pscustomobject]@{
                 tenantId = '11111111-1111-4111-8111-111111111111'
+                subscriptionId = '22222222-2222-4222-8222-222222222222'
                 resourceGroupName = 'rg-safe-dev'
                 projectName = 'safe'
                 environment = 'dev'
@@ -576,18 +577,11 @@ Describe 'Exact Azure local-credential and transport controls' {
             $script:acrAdminEnabled = $false
             $script:acrArmAudienceStatus = 'enabled'
             $script:storageSharedKeys = $false
+            $script:controlRegistryId = '/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/rg-safe-dev/providers/Microsoft.ContainerRegistry/registries/acrsafe'
             Mock Invoke-AzTsv { return 'true' }
             Mock Invoke-AzJson {
                 param([string[]]$Arguments)
                 switch ([string]$Arguments[0]) {
-                    'acr' {
-                        return [pscustomobject]@{
-                            adminUserEnabled = $script:acrAdminEnabled
-                            armAudienceStatus = $script:acrArmAudienceStatus
-                            ownershipId = $script:controlRuntime.deploymentOwnershipId
-                            sourceFingerprint = $script:controlRuntime.sourceFingerprint
-                        }
-                    }
                     'storage' {
                         return [pscustomobject]@{
                             httpsOnly = $true; minimumTlsVersion = 'TLS1_2'; allowBlobPublicAccess = $false
@@ -622,6 +616,16 @@ Describe 'Exact Azure local-credential and transport controls' {
                         }
                     }
                     'resource' {
+                        $idsIndex = [Array]::IndexOf([object[]]$Arguments, '--ids')
+                        if ($idsIndex -ge 0 -and [string]$Arguments[$idsIndex + 1] -ceq $script:controlRegistryId) {
+                            return [pscustomobject]@{
+                                id = $script:controlRegistryId
+                                adminUserEnabled = $script:acrAdminEnabled
+                                armAudienceStatus = $script:acrArmAudienceStatus
+                                ownershipId = $script:controlRuntime.deploymentOwnershipId
+                                sourceFingerprint = $script:controlRuntime.sourceFingerprint
+                            }
+                        }
                         return [pscustomobject]@{
                             kind = 'ContentSafety'; disableLocalAuth = $true; publicNetworkAccess = 'Enabled'; defaultAction = 'Allow'
                             ownershipId = $script:controlRuntime.deploymentOwnershipId
@@ -637,6 +641,15 @@ Describe 'Exact Azure local-credential and transport controls' {
             Assert-GatewayExactAzureLocalCredentialControls -Config $script:controlConfig -Runtime $script:controlRuntime |
                 Should -BeTrue
             Should -Invoke Invoke-AzJson -Times 7 -Exactly
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'resource' -and
+                [string]$Arguments[1] -ceq 'show' -and
+                [Array]::IndexOf([object[]]$Arguments, '--ids') -ge 0 -and
+                [string]$Arguments[[Array]::IndexOf([object[]]$Arguments, '--ids') + 1] -ceq $script:controlRegistryId -and
+                [Array]::IndexOf([object[]]$Arguments, '--api-version') -ge 0 -and
+                [string]$Arguments[[Array]::IndexOf([object[]]$Arguments, '--api-version') + 1] -ceq '2023-11-01-preview' -and
+                [string]$Arguments[-1] -like '*properties.policies.azureADAuthenticationAsArmPolicy.status*'
+            }
         }
 
         It 'rejects drift that enables ACR admin credentials' {
