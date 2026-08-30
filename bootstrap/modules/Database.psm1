@@ -1583,10 +1583,16 @@ function Get-GatewayFailedDatabaseRecoveryBoundary {
     $executionStart = [DateTimeOffset]::MinValue
     $executionEnd = [DateTimeOffset]::MinValue
     $administratorRestoredAt = [DateTimeOffset]::MinValue
-    $executionEndTimePresent = -not [string]::IsNullOrWhiteSpace([string]$execution.properties.endTime)
+    $executionEndTime = if ($null -ne $execution -and
+        $null -ne $execution.properties -and
+        $null -ne $execution.properties.PSObject.Properties['endTime']) {
+        [string]$execution.properties.endTime
+    }
+    else { '' }
+    $executionEndTimePresent = -not [string]::IsNullOrWhiteSpace($executionEndTime)
     $executionEndTimeValid = -not $executionEndTimePresent -or
         [DateTimeOffset]::TryParse(
-            [string]$execution.properties.endTime,
+            $executionEndTime,
             [Globalization.CultureInfo]::InvariantCulture,
             [Globalization.DateTimeStyles]::RoundtripKind,
             [ref]$executionEnd)

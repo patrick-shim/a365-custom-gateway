@@ -444,7 +444,7 @@ Describe 'First-class database recovery contract' {
             $execution = [pscustomobject]@{
                 name = $receipt.executionName
                 properties = [pscustomobject]@{
-                    status = 'Failed'; startTime = $start; endTime = $null
+                    status = 'Failed'; startTime = $start
                     template = [pscustomobject]@{ containers = @($container); initContainers = @(); volumes = @() }
                 }
             }
