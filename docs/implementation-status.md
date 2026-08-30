@@ -323,7 +323,7 @@ reported as completion of the plan. The authoritative phase status is:
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. `a365gw6` proved no-resubmit image recovery; `a365gw7` exposed the private-ACR first-pull ordering defect; `a365gw8` exposed incomplete typed ACR policy projection; `a365gw9` exposed a stale scope/audience guard at 6/19; `a365gw10` proved same-source interruption/Resume and a succeeded inert graph; `a365gw11` exposed ARM Boolean casing during step 7; `a365gw12` exposed an invalid expectation for a Bicep-derived output-only database name; `a365gw13` exposed empty-array collapse before a strict `.Count`; `a365gw14` exposed a StrictMode-ambiguous Graph URL before database mutation; `a365gw15` exposed the need for a state-aware 30-resource recovery boundary and an explicitly owned Failure Anomalies rule; and `a365gw16` completed steps 1–10 before exposing comma-parsed principal binding at the step-11 pre-mutation guard. The v2 audience split and bounded interactive-user canary are locally reviewed. A corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. `a365gw6` proved no-resubmit image recovery; `a365gw7` exposed the private-ACR first-pull ordering defect; `a365gw8` exposed incomplete typed ACR policy projection; `a365gw9` exposed a stale scope/audience guard at 6/19; `a365gw10` proved same-source interruption/Resume and a succeeded inert graph; `a365gw11` exposed ARM Boolean casing during step 7; `a365gw12` exposed an invalid expectation for a Bicep-derived output-only database name; `a365gw13` exposed empty-array collapse before a strict `.Count`; `a365gw14` exposed a StrictMode-ambiguous Graph URL before database mutation; `a365gw15` exposed the need for a state-aware 30-resource recovery boundary and an explicitly owned Failure Anomalies rule; `a365gw16` completed steps 1–10 before exposing comma-parsed principal binding at the step-11 pre-mutation guard; and `a365gw17` repeated the exact prefix, proved SQL-network cleanup, and exposed the Defender-managed Event Grid topic omitted from recovery ownership. The v2 audience split and bounded interactive-user canary are locally reviewed. A corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
@@ -1217,6 +1217,71 @@ target subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscripti
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
 Service Bus message data plane was accessed in either subscription.
 
+Fresh generation `a365gw17-dev` then used absent resource group
+`rg-a365-custom-gw-phase6p`, ownership
+`da283279-50ec-489e-ae7f-8b2eff8c52a6`, ACR `acra365gw17dev3ws4cu`, accepted Plan
+`sha256:d1a63ffc5a1c92266b6ae60b74f436bd6369229f8e709e95a534c3726fd90dca`,
+configuration
+`sha256:ca47cb9a2fec5f7aa5985d6b1570ef64251bdb23e65fe5195f0d8e12dd5db3ba`,
+and source
+`sha256:5b8184d3a05f364f98af05c78629a5772e7eafd690c479a11601e752b71e9b7d`,
+only in target subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`.
+Authenticated What-If reported exactly eight `Create` predictions and
+`applyReady=true`. Its sole Apply ran from `2026-08-30T05:10:08Z` through
+`2026-08-30T05:35:04Z` (14:10–14:35 KST); no Resume ran.
+
+Steps 1–10 completed durably. Exact ACR QuickRuns `de1`, `de2`, and `de3` produced
+API, worker, and Admin UI digests
+`sha256:4937e1c0eed1e2c09b26629dad6405632cc83c44e0ba9145a5a6971ee609cd03`,
+`sha256:fbd964a4157149021b29a28db04233f6e6ee5f49720d3efa212ba282b7fbe66e`,
+and
+`sha256:2e0024b8c1f669796a3259dcfee3f6870adf27142cd99eb881a8b21767445671`.
+The source-bound seed blueprint object/application ID is
+`fd5109e3-1a82-4d0a-bac0-0bae894a12f1`; inert API and worker principal object IDs
+are `20d1dc43-132b-4314-8131-e80b41ce353f` and
+`b7b3edbb-5969-47bb-973a-9614285a2c01`. Foundation, inert workload, seed blueprint,
+workflow-v3 Entra, and SQL private-endpoint readbacks succeeded.
+
+Step 11 issued the reviewed temporary SQL public-network enable request, but its
+bounded poll never observed `Enabled` and failed before firewall creation or the
+database-migrator child. Activity Log records one successful SQL server write at
+`2026-08-30T05:31:49Z`, correlation
+`90c2533b-f6ea-4ffd-b4ec-087fd6a59ce2`, and no firewall-rule write. Cleanup readback
+proves `sql-a365gw17-dev` `Ready` with `publicNetworkAccess=Disabled`, no temporary
+firewall rule, network-recovery file, or migration evidence. Sanitized diagnostic
+`.bootstrap/diagnostics/a365gw17-dev-20260830-053545.json` retains the safe failure.
+No database initialization, Admin UI credential, activation, registration,
+Registry action, Gateway key, or canary followed; no message data plane was
+accessed.
+
+Same-source recovery What-If returned exactly eight `Deploy` plus 31 `Ignore` and
+failed closed against the reviewed 30-resource boundary. The extra resource was the
+Defender-for-Storage-managed Event Grid system topic
+`sta365gw17dev3ws4cu-d3d27d40-91b3-4258-baf8-e3ca0856271a`, uniquely source-bound
+to the generation's storage account and carrying one Succeeded, reverse-bound
+`StorageAntimalwareSubscription` child. Microsoft documentation confirms the
+required same-resource-group system topic; its exact generated topic/child names,
+BlockBlob filter, and retry fields remain bounded live-generation evidence, not a
+portable provider guarantee.
+
+Commit `bee437fe1e2a19976565777184f70f2bbf1319ec` adds the exact
+`Microsoft.EventGrid` provider/subscription boundary and a separately fingerprinted
+typed absent/present recovery extension. Provider inventory and What-If must match,
+destination URLs are never projected, and only exact 26/27/30/31 graphs are
+accepted. Independent security review found no remaining actionable issue. Focused
+Experience/Azure/Common tests pass **106/106**, **116/116**, and **67/67**. The
+canonical source gate discovered **491** Pester tests: **490** passed, none failed,
+and one Windows-only launcher test was skipped on macOS; it parsed **19** PowerShell
+files and **2** JSON contracts and compiled all **25** Bicep templates plus **5**
+parameter files. Direct Release tests pass **1,304/1,304**, the Release build has
+zero warnings/errors, and format/diff checks pass. Corrected deployment-affecting
+source is
+`sha256:6cf2268084bc3dbadb692701988a900ea4b7e159bafb9a7a521cde4cfa76241b`.
+Preserve `a365gw17`; edited source must never Resume it. The next live generation is
+reserved as `a365gw18` in absent resource group `rg-a365-custom-gw-phase6q`, only in
+target subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated.
+
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
 architecture regression test covers the operation-ID binding. Focused architecture
@@ -1561,8 +1626,8 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    `a365gw7` at 6/19, `a365gw8` at 3/19, `a365gw9` at 6/19, and `a365gw10` at
    6/19. Preserve `a365gw11`, `a365gw12`, and `a365gw13` with steps 1–6 complete
    and step 7 `Failed` after each inert deployment succeeded. Preserve `a365gw14`,
-   `a365gw15`, and `a365gw16` with steps 1–10 complete and step 11 `Failed` before
-   database mutation. In
+   `a365gw15`, `a365gw16`, and `a365gw17` with steps 1–10 complete and step 11
+   `Failed` before database migration. In
    order, those generations preserve exact
    image-build recovery; the terminal inert-deployment/private-ACR first-pull
    failure; a succeeded
@@ -1586,7 +1651,11 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    its authorized temporary SQL public-network boundary but was interrupted before
    firewall creation or the migrator; cleanup proved the server Disabled with no
    temporary rule, recovery file, or database child. None may consume edited source
-   or a later recovery Plan.
+   or a later recovery Plan. `a365gw17` repeated the exact prefix; its reviewed SQL
+   public-network request never became observable to the bounded poll, and cleanup
+   again proved Disabled with no firewall or migrator. Its same-source recovery
+   What-If then exposed the asynchronously created Defender Storage Event Grid
+   system topic as the sole 31st Ignore resource.
    Commit `bb001483bae0577d7c29a9638c1c7275dae44525` implements and independently
    reviews the bounded, state-aware `Ignore` rule; its GET-only `a365gw10` smoke is
    recovery evidence, not authorization to Resume that frozen source generation.
@@ -1599,8 +1668,10 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    state-aware recovery and owned smart-detector correction is commit
    `7cb433958fe6207ffb067cd4ce9c0340a8aa7df7`. Commit
    `61600ab86c721476d9b7b05121ce6a7d60e4e05a` implements and regression-tests the
-   principal/bootstrap Boolean-array correction. The next live generation is
-   reserved as `a365gw17` in absent resource group `rg-a365-custom-gw-phase6p`, only
+   principal/bootstrap Boolean-array correction. Commit
+   `bee437fe1e2a19976565777184f70f2bbf1319ec` implements the exact typed Defender
+   Storage system-topic recovery boundary. The next live generation is reserved as
+   `a365gw18` in absent resource group `rg-a365-custom-gw-phase6q`, only
    in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,

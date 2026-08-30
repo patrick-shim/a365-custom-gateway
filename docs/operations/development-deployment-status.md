@@ -653,6 +653,79 @@ reserved as `a365gw17` / `rg-a365-custom-gw-phase6p`, only in target subscriptio
 `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated.
 
+Fresh generation `a365gw17-dev` then used absent resource group
+`rg-a365-custom-gw-phase6p`, ownership
+`da283279-50ec-489e-ae7f-8b2eff8c52a6`, and ACR
+`acra365gw17dev3ws4cu`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Its accepted Plan
+`sha256:d1a63ffc5a1c92266b6ae60b74f436bd6369229f8e709e95a534c3726fd90dca`
+bound configuration
+`sha256:ca47cb9a2fec5f7aa5985d6b1570ef64251bdb23e65fe5195f0d8e12dd5db3ba`
+and source
+`sha256:5b8184d3a05f364f98af05c78629a5772e7eafd690c479a11601e752b71e9b7d`.
+Authenticated What-If reported exactly eight `Create` predictions, no other change
+type, and `applyReady=true`. The sole Apply ran from `2026-08-30T05:10:08Z` through
+the failure at `2026-08-30T05:35:04Z` (14:10–14:35 KST); no Resume ran.
+
+Steps 1–10 completed durably. Exact ACR QuickRuns `de1`, `de2`, and `de3` all
+succeeded. The API, worker, and Admin UI image digests are respectively
+`sha256:4937e1c0eed1e2c09b26629dad6405632cc83c44e0ba9145a5a6971ee609cd03`,
+`sha256:fbd964a4157149021b29a28db04233f6e6ee5f49720d3efa212ba282b7fbe66e`,
+and
+`sha256:2e0024b8c1f669796a3259dcfee3f6870adf27142cd99eb881a8b21767445671`.
+The source-bound seed blueprint object/application ID is
+`fd5109e3-1a82-4d0a-bac0-0bae894a12f1`; the inert API and worker principal object
+IDs are `20d1dc43-132b-4314-8131-e80b41ce353f` and
+`b7b3edbb-5969-47bb-973a-9614285a2c01`. Foundation, inert workload, seed blueprint,
+workflow-v3 Entra, and SQL private-endpoint readbacks succeeded.
+
+Step 11 issued the reviewed temporary SQL public-network enable request, then its
+bounded poll never observed `Enabled` and failed safely before firewall creation or
+the database-migrator child. Activity Log records one successful
+`Microsoft.Sql/servers/write` at `2026-08-30T05:31:49Z`, correlation
+`90c2533b-f6ea-4ffd-b4ec-087fd6a59ce2`, and no firewall-rule write. Immediate
+target-only cleanup readback proves `sql-a365gw17-dev` `Ready` with
+`publicNetworkAccess=Disabled`, no `temp-a365gw-migration-*` rule, no network-
+recovery file, and no `GatewayDb-*.json` migration evidence. Sanitized diagnostic
+`.bootstrap/diagnostics/a365gw17-dev-20260830-053545.json` records ten completed
+steps and the fixed failure. No database initialization, Admin UI credential,
+runtime activation, registration, Registry action, Gateway key, or data-plane
+canary followed. No SQL outbox or Service Bus counts were captured; that absence is
+not a zero-count claim, and no Service Bus message data plane was accessed.
+
+The same-source recovery What-If reported exactly eight `Deploy` plus 31 `Ignore`
+predictions and kept `applyReady=false` because the reviewed state-aware boundary
+contained 30 resources. Exact target-only readback identified the sole extra Ignore
+as provider-managed Event Grid system topic
+`sta365gw17dev3ws4cu-d3d27d40-91b3-4258-baf8-e3ca0856271a`, in the same resource
+group and region and uniquely source-bound to storage account
+`sta365gw17dev3ws4cu`. Its one `StorageAntimalwareSubscription` child is Succeeded
+and reverse-bound to that topic. Current Microsoft documentation confirms that
+Defender for Storage on-upload malware scanning automatically creates a required
+same-resource-group Event Grid system topic. The exact generated topic/child names,
+BlockBlob filter, and retry shape are bounded live-generation evidence rather than
+a portable Microsoft naming contract; future provider drift must fail closed.
+
+Commit `bee437fe1e2a19976565777184f70f2bbf1319ec` adds
+`Microsoft.EventGrid` to the exact Doctor/Apply/Resume provider set and pins the
+Event Grid CLI family to the configured subscription. Recovery independently
+inventories zero or one system topic, validates an exact source/type/location/state
+and bounded child contract without projecting destination URLs, fingerprints typed
+absence or presence, requires exact provider/What-If parity, and accepts only the
+exact 26/27/30/31 Ignore graphs. Independent security review found no remaining
+actionable issue. Focused Experience, Azure, and Common tests pass **106/106**,
+**116/116**, and **67/67**. The canonical source gate discovered **491** Pester
+tests: **490** passed, none failed, and one Windows-only launcher test was skipped
+on macOS; it parsed **19** PowerShell files and **2** JSON contracts and compiled
+all **25** Bicep templates plus **5** parameter files. Direct Release tests pass
+**1,304/1,304**, the Release build has zero warnings/errors, and format/diff checks
+pass. Corrected deployment-affecting source is
+`sha256:6cf2268084bc3dbadb692701988a900ea4b7e159bafb9a7a521cde4cfa76241b`.
+Preserve `a365gw17`; edited source must never Resume it. The next live generation is
+reserved as `a365gw18` / `rg-a365-custom-gw-phase6q`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated.
+
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
 Prerequisites, then failed during Azure authentication because the old dispatcher
@@ -1779,12 +1852,12 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw17` / `rg-a365-custom-gw-phase6p`. Preserve `a365gw11`,
+   generation `a365gw18` / `rg-a365-custom-gw-phase6q`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
-   preserve `a365gw14`, `a365gw15`, and `a365gw16` with steps 1–10 complete and
-   step 11 `Failed` before any database mutation. Their succeeded resources and
-   GET-only diagnoses do not authorize Resume after any validator or helper source
-   change. Capture the fresh generation's safe state, template
+   preserve `a365gw14`, `a365gw15`, `a365gw16`, and `a365gw17` with steps 1–10
+   complete and step 11 `Failed` before database migration. Their succeeded
+   resources and GET-only diagnoses do not authorize Resume after any validator or
+   helper source change. Capture the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, temporary SQL-rule cleanup, empty-schema
    initialization, final preflight, authenticated Admin sign-in, one real
