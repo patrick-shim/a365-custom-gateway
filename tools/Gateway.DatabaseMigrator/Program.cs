@@ -762,48 +762,121 @@ static async Task<int> GetUserTableCountAsync(SqlConnection connection)
     return Convert.ToInt32(await command.ExecuteScalarAsync());
 }
 
+static string GetUnexpectedDatabaseSurfaceProjectionSql() =>
+    """
+      (SELECT COUNT(*) FROM sys.objects
+       WHERE is_ms_shipped = 0
+         AND type IN (N'V', N'P', N'PC', N'FN', N'IF', N'TF', N'FS', N'FT', N'AF')) AS programmableObjects,
+      (SELECT COUNT(*) FROM sys.triggers WHERE is_ms_shipped = 0) AS triggers,
+      (SELECT COUNT(*) FROM sys.synonyms) AS synonyms,
+      (SELECT COUNT(*) FROM sys.sequences) AS sequences,
+      (SELECT COUNT(*) FROM sys.external_tables) AS externalTables,
+      (SELECT COUNT(*) FROM sys.external_data_sources) AS externalDataSources,
+      (SELECT COUNT(*) FROM sys.external_file_formats) AS externalFileFormats,
+      (SELECT COUNT(*) FROM sys.database_scoped_credentials) AS databaseScopedCredentials,
+      (SELECT COUNT(*) FROM sys.column_master_keys) AS columnMasterKeys,
+      (SELECT COUNT(*) FROM sys.column_encryption_keys) AS columnEncryptionKeys,
+      (SELECT COUNT(*) FROM sys.assemblies WHERE is_user_defined = 1) AS userAssemblies,
+      (SELECT COUNT(*) FROM sys.types WHERE is_user_defined = 1 OR is_table_type = 1) AS userDefinedOrTableTypes,
+      (SELECT COUNT(*) FROM sys.partition_functions) AS partitionFunctions,
+      (SELECT COUNT(*) FROM sys.partition_schemes) AS partitionSchemes,
+      (SELECT COUNT(*) FROM sys.fulltext_catalogs) AS fullTextCatalogs,
+      (SELECT COUNT(*) FROM sys.fulltext_indexes) AS fullTextIndexes,
+      (SELECT COUNT(*) FROM sys.xml_schema_collections WHERE xml_collection_id > 1) AS userXmlSchemaCollections,
+      (SELECT COUNT(*) FROM sys.database_audit_specifications) AS databaseAuditSpecifications,
+      (SELECT COUNT(*) FROM sys.security_policies WHERE is_ms_shipped = 0) AS securityPolicies,
+      (SELECT COUNT(*) FROM sys.database_firewall_rules) AS databaseFirewallRules,
+      (SELECT COUNT(*) FROM sys.change_tracking_tables) AS changeTrackingTables,
+      (SELECT COUNT(*) FROM sys.periods) AS temporalPeriods,
+      (SELECT COUNT(*) FROM sys.sensitivity_classifications) AS sensitivityClassifications,
+      (SELECT COUNT(*)
+       FROM sys.extended_properties
+       WHERE NOT
+       (
+           class = 0 AND major_id = 0 AND minor_id = 0
+           AND name = @markerName
+       )) AS extendedProperties,
+      (SELECT COUNT(*) FROM sys.objects WHERE is_ms_shipped = 0 AND type = N'V') AS views,
+      (SELECT COUNT(*) FROM sys.objects WHERE is_ms_shipped = 0 AND type = N'P') AS sqlStoredProcedures,
+      (SELECT COUNT(*) FROM sys.objects WHERE is_ms_shipped = 0 AND type = N'PC') AS clrStoredProcedures,
+      (SELECT COUNT(*) FROM sys.objects WHERE is_ms_shipped = 0 AND type = N'FN') AS sqlScalarFunctions,
+      (SELECT COUNT(*) FROM sys.objects WHERE is_ms_shipped = 0 AND type = N'IF') AS sqlInlineTableValuedFunctions,
+      (SELECT COUNT(*) FROM sys.objects WHERE is_ms_shipped = 0 AND type = N'TF') AS sqlTableValuedFunctions,
+      (SELECT COUNT(*) FROM sys.objects WHERE is_ms_shipped = 0 AND type = N'FS') AS clrScalarFunctions,
+      (SELECT COUNT(*) FROM sys.objects WHERE is_ms_shipped = 0 AND type = N'FT') AS clrTableValuedFunctions,
+      (SELECT COUNT(*) FROM sys.objects WHERE is_ms_shipped = 0 AND type = N'AF') AS aggregateFunctions
+    """;
+
+static async Task<UnexpectedDatabaseSurfaceTelemetry> ReadUnexpectedDatabaseSurfaceTelemetryAsync(
+    SqlConnection connection)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = $"SELECT{Environment.NewLine}{GetUnexpectedDatabaseSurfaceProjectionSql()};";
+    command.Parameters.AddWithValue("@markerName", DatabaseBootstrapRecoveryContract.MarkerName);
+    await using var reader = await command.ExecuteReaderAsync();
+    var expectedFieldCount = checked(
+        UnexpectedDatabaseSurfaceTelemetry.ExpectedCategoryCount +
+        UnexpectedDatabaseSurfaceTelemetry.ExpectedProgrammableObjectTypeCount);
+    var expectedFieldNames = UnexpectedDatabaseSurfaceTelemetry.SqlFieldNames;
+    if (expectedFieldNames.Count != expectedFieldCount)
+        throw new InvalidOperationException("The fixed database-surface telemetry field contract is inconsistent.");
+    AssertExactSqlFieldContract(reader, expectedFieldNames, "database-surface");
+    if (!await reader.ReadAsync())
+        throw new InvalidOperationException("Azure SQL returned no database-surface telemetry row.");
+    var telemetry = ReadUnexpectedDatabaseSurfaceTelemetry(reader, startOrdinal: 0);
+    if (await reader.ReadAsync())
+        throw new InvalidOperationException("Azure SQL returned duplicate database-surface telemetry rows.");
+    return telemetry;
+}
+
+static UnexpectedDatabaseSurfaceTelemetry ReadUnexpectedDatabaseSurfaceTelemetry(
+    SqlDataReader reader,
+    int startOrdinal)
+{
+    var categoryCounts = Enumerable
+        .Range(startOrdinal, UnexpectedDatabaseSurfaceTelemetry.ExpectedCategoryCount)
+        .Select(reader.GetInt32)
+        .ToArray();
+    var programmableObjectTypeCounts = Enumerable
+        .Range(
+            checked(startOrdinal + UnexpectedDatabaseSurfaceTelemetry.ExpectedCategoryCount),
+            UnexpectedDatabaseSurfaceTelemetry.ExpectedProgrammableObjectTypeCount)
+        .Select(reader.GetInt32)
+        .ToArray();
+    return UnexpectedDatabaseSurfaceTelemetry.FromOrderedCounts(
+        categoryCounts,
+        programmableObjectTypeCounts);
+}
+
+static void AssertExactSqlFieldContract(
+    SqlDataReader reader,
+    IReadOnlyList<string> expectedFieldNames,
+    string safeContractLabel)
+{
+    if (reader.FieldCount != expectedFieldNames.Count)
+    {
+        throw new InvalidOperationException(
+            $"Azure SQL returned {reader.FieldCount} {safeContractLabel} fields; exactly {expectedFieldNames.Count} are required.");
+    }
+    var unexpectedFieldNameCount = Enumerable.Range(0, expectedFieldNames.Count)
+        .Count(index => !reader.GetName(index).Equals(expectedFieldNames[index], StringComparison.Ordinal));
+    if (unexpectedFieldNameCount != 0)
+    {
+        throw new InvalidOperationException(
+            $"Azure SQL returned {unexpectedFieldNameCount} unexpected {safeContractLabel} field labels.");
+    }
+}
+
 static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(
     SqlConnection connection)
 {
     await using var command = connection.CreateCommand();
     command.CommandTimeout = 60;
-    command.CommandText = """
+    command.CommandText = $"""
         SELECT
-          (SELECT COUNT(*) FROM sys.tables WHERE is_ms_shipped = 0),
-          (
-              (SELECT COUNT(*) FROM sys.objects
-               WHERE is_ms_shipped = 0
-                 AND type IN (N'V', N'P', N'PC', N'FN', N'IF', N'TF', N'FS', N'FT', N'AF')) +
-              (SELECT COUNT(*) FROM sys.triggers WHERE is_ms_shipped = 0) +
-              (SELECT COUNT(*) FROM sys.synonyms) +
-              (SELECT COUNT(*) FROM sys.sequences) +
-              (SELECT COUNT(*) FROM sys.external_tables) +
-              (SELECT COUNT(*) FROM sys.external_data_sources) +
-              (SELECT COUNT(*) FROM sys.external_file_formats) +
-              (SELECT COUNT(*) FROM sys.database_scoped_credentials) +
-              (SELECT COUNT(*) FROM sys.column_master_keys) +
-              (SELECT COUNT(*) FROM sys.column_encryption_keys) +
-              (SELECT COUNT(*) FROM sys.assemblies WHERE is_user_defined = 1) +
-              (SELECT COUNT(*) FROM sys.types WHERE is_user_defined = 1 OR is_table_type = 1) +
-              (SELECT COUNT(*) FROM sys.partition_functions) +
-              (SELECT COUNT(*) FROM sys.partition_schemes) +
-              (SELECT COUNT(*) FROM sys.fulltext_catalogs) +
-              (SELECT COUNT(*) FROM sys.fulltext_indexes) +
-              (SELECT COUNT(*) FROM sys.xml_schema_collections WHERE xml_collection_id > 1) +
-              (SELECT COUNT(*) FROM sys.database_audit_specifications) +
-              (SELECT COUNT(*) FROM sys.security_policies WHERE is_ms_shipped = 0) +
-              (SELECT COUNT(*) FROM sys.database_firewall_rules) +
-              (SELECT COUNT(*) FROM sys.change_tracking_tables) +
-              (SELECT COUNT(*) FROM sys.periods) +
-              (SELECT COUNT(*) FROM sys.sensitivity_classifications) +
-              (SELECT COUNT(*)
-               FROM sys.extended_properties
-               WHERE NOT
-               (
-                   class = 0 AND major_id = 0 AND minor_id = 0
-                   AND name = @markerName
-               ))
-          ),
+        {GetUnexpectedDatabaseSurfaceProjectionSql()},
+          (SELECT COUNT(*) FROM sys.tables WHERE is_ms_shipped = 0) AS userTables,
           (
               SELECT COUNT(*)
               FROM sys.schemas AS schemas
@@ -818,13 +891,13 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
                     )
                  OR principals.name IS NULL
                  OR principals.name <> schemas.name
-          ),
+          ) AS unexpectedSchemas,
           (
               SELECT COUNT(*)
               FROM sys.database_principals
               WHERE principal_id > 4
                 AND is_fixed_role = 0
-          ),
+          ) AS unexpectedPrincipals,
           (
               (
                   SELECT COUNT(*)
@@ -853,68 +926,109 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
                     AND members.name = N'dbo'
                     AND members.principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
               )
-          ),
+          ) AS unexpectedRoleMemberships,
           (
+              SELECT COUNT(*)
+              FROM sys.database_permissions AS permissions
+              INNER JOIN sys.database_principals AS grantees
+                ON grantees.principal_id = permissions.grantee_principal_id
+              WHERE NOT
               (
-                  SELECT COUNT(*)
-                  FROM sys.database_permissions AS permissions
-                  INNER JOIN sys.database_principals AS grantees
-                    ON grantees.principal_id = permissions.grantee_principal_id
-                  WHERE NOT
                   (
+                      permissions.class = 0
+                      AND permissions.permission_name = N'CONNECT'
+                      AND permissions.state IN (N'G', N'W')
+                      AND grantees.name IN (N'public', N'guest')
+                  )
+                  OR
+                  (
+                      permissions.class = 1
+                      AND permissions.minor_id = 0
+                      AND permissions.permission_name = N'SELECT'
+                      AND permissions.state = N'G'
+                      AND grantees.name = N'public'
+                      AND permissions.major_id < 0
+                  )
+                  OR
+                  (
+                      permissions.class = 1
+                      AND permissions.minor_id = 0
+                      AND permissions.permission_name = N'SELECT'
+                      AND permissions.state = N'G'
+                      AND grantees.name = N'public'
+                      AND permissions.major_id > 0
+                      AND EXISTS
                       (
-                          permissions.class = 0
-                          AND permissions.permission_name = N'CONNECT'
-                          AND permissions.state IN (N'G', N'W')
-                          AND grantees.name IN (N'public', N'guest')
-                      )
-                      OR
-                      (
-                          permissions.class = 1
-                          AND permissions.minor_id = 0
-                          AND permissions.permission_name = N'SELECT'
-                          AND permissions.state = N'G'
-                          AND grantees.name = N'public'
-                          AND permissions.major_id < 0
-                      )
-                      OR
-                      (
-                          permissions.class = 1
-                          AND permissions.minor_id = 0
-                          AND permissions.permission_name = N'SELECT'
-                          AND permissions.state = N'G'
-                          AND grantees.name = N'public'
-                          AND permissions.major_id > 0
-                          AND EXISTS
-                          (
-                              SELECT 1
-                              FROM sys.all_objects AS system_objects
-                              WHERE system_objects.object_id = permissions.major_id
-                                AND system_objects.is_ms_shipped = 1
-                          )
+                          SELECT 1
+                          FROM sys.all_objects AS system_objects
+                          WHERE system_objects.object_id = permissions.major_id
+                            AND system_objects.is_ms_shipped = 1
                       )
                   )
-              ) +
-              (
-                  SELECT CASE WHEN COUNT(*) = 2 THEN 0 ELSE 1 END
-                  FROM sys.database_permissions AS baseline_permissions
-                  INNER JOIN sys.database_principals AS baseline_grantees
-                    ON baseline_grantees.principal_id = baseline_permissions.grantee_principal_id
-                  WHERE baseline_permissions.class = 1
-                    AND baseline_permissions.minor_id = 0
-                    AND baseline_permissions.permission_name = N'SELECT'
-                    AND baseline_permissions.state = N'G'
-                    AND baseline_grantees.name = N'public'
-                    AND baseline_permissions.major_id > 0
-                    AND EXISTS
-                    (
-                        SELECT 1
-                        FROM sys.all_objects AS baseline_objects
-                        WHERE baseline_objects.object_id = baseline_permissions.major_id
-                          AND baseline_objects.is_ms_shipped = 1
-                    )
               )
-          ),
+          ) AS rawNonWhitelistedDirectPermissions,
+          (
+              SELECT COUNT(*)
+              FROM sys.database_permissions AS positive_permissions
+              INNER JOIN sys.database_principals AS positive_grantees
+                ON positive_grantees.principal_id = positive_permissions.grantee_principal_id
+              WHERE positive_permissions.class = 1
+                AND positive_permissions.minor_id = 0
+                AND positive_permissions.permission_name = N'SELECT'
+                AND positive_permissions.state = N'G'
+                AND positive_grantees.name = N'public'
+                AND positive_permissions.major_id > 0
+          ) AS positiveIdPublicSelectTargets,
+          (
+              SELECT COUNT(*)
+              FROM sys.database_permissions AS baseline_permissions
+              INNER JOIN sys.database_principals AS baseline_grantees
+                ON baseline_grantees.principal_id = baseline_permissions.grantee_principal_id
+              WHERE baseline_permissions.class = 1
+                AND baseline_permissions.minor_id = 0
+                AND baseline_permissions.permission_name = N'SELECT'
+                AND baseline_permissions.state = N'G'
+                AND baseline_grantees.name = N'public'
+                AND baseline_permissions.major_id > 0
+                AND EXISTS
+                (
+                    SELECT 1
+                    FROM sys.all_objects AS baseline_objects
+                    WHERE baseline_objects.object_id = baseline_permissions.major_id
+                      AND baseline_objects.is_ms_shipped = 1
+                )
+          ) AS positiveIdPublicSelectMsShippedObjectTargets,
+          (
+              SELECT COUNT(*)
+              FROM sys.database_permissions AS correlated_permissions
+              INNER JOIN sys.database_principals AS correlated_grantees
+                ON correlated_grantees.principal_id = correlated_permissions.grantee_principal_id
+              INNER JOIN sys.objects AS correlated_objects
+                ON correlated_objects.object_id = correlated_permissions.major_id
+               AND correlated_objects.is_ms_shipped = 0
+              WHERE correlated_permissions.class = 1
+                AND correlated_permissions.minor_id = 0
+                AND correlated_permissions.permission_name = N'SELECT'
+                AND correlated_permissions.state = N'G'
+                AND correlated_grantees.name = N'public'
+                AND correlated_permissions.major_id > 0
+                AND correlated_objects.type IN (N'V', N'P', N'PC', N'FN', N'IF', N'TF', N'FS', N'FT', N'AF')
+          ) AS positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations,
+          (
+              SELECT COUNT(*)
+              FROM sys.database_permissions AS system_catalog_permissions
+              INNER JOIN sys.database_principals AS system_catalog_grantees
+                ON system_catalog_grantees.principal_id = system_catalog_permissions.grantee_principal_id
+              INNER JOIN sys.system_objects AS system_catalog_objects
+                ON system_catalog_objects.object_id = system_catalog_permissions.major_id
+               AND system_catalog_objects.is_ms_shipped = 1
+              WHERE system_catalog_permissions.class = 1
+                AND system_catalog_permissions.minor_id = 0
+                AND system_catalog_permissions.permission_name = N'SELECT'
+                AND system_catalog_permissions.state = N'G'
+                AND system_catalog_grantees.name = N'public'
+                AND system_catalog_permissions.major_id > 0
+          ) AS positiveIdPublicSelectMsShippedSystemCatalogTargets,
           (
               SELECT COUNT(*)
               FROM sys.databases
@@ -934,7 +1048,7 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
                     OR collation_name <> N'SQL_Latin1_General_CP1_CI_AS'
                     OR catalog_collation_type_desc <> N'SQL_Latin1_General_CP1_CI_AS'
                 )
-          ),
+          ) AS unsafeDatabaseOptions,
           (
               SELECT CASE
                   WHEN COUNT(*) = 1
@@ -944,21 +1058,32 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
               LEFT JOIN sys.database_principals AS dbo_principal
                 ON dbo_principal.name = N'dbo'
               WHERE databases.name = DB_NAME()
-          );
+          ) AS databaseOwnerMismatches;
         """;
     command.Parameters.AddWithValue("@markerName", DatabaseBootstrapRecoveryContract.MarkerName);
     await using var reader = await command.ExecuteReaderAsync();
+    AssertExactSqlFieldContract(
+        reader,
+        PristineDatabaseSurfaceSnapshot.SqlFieldNames,
+        "pristine database-surface");
     if (!await reader.ReadAsync())
         throw new InvalidOperationException("Azure SQL returned no pristine database-surface row.");
+    var catalogSurface = ReadUnexpectedDatabaseSurfaceTelemetry(reader, startOrdinal: 0);
+    var remainingStartOrdinal = UnexpectedDatabaseSurfaceTelemetry.SqlFieldNames.Count;
     var snapshot = new PristineDatabaseSurfaceSnapshot(
-        reader.GetInt32(0),
-        reader.GetInt32(1),
-        reader.GetInt32(2),
-        reader.GetInt32(3),
-        reader.GetInt32(4),
-        reader.GetInt32(5),
-        reader.GetInt32(6),
-        reader.GetInt32(7));
+        reader.GetInt32(remainingStartOrdinal),
+        catalogSurface,
+        reader.GetInt32(remainingStartOrdinal + 1),
+        reader.GetInt32(remainingStartOrdinal + 2),
+        reader.GetInt32(remainingStartOrdinal + 3),
+        DatabaseDirectPermissionTelemetry.FromCounts(
+            reader.GetInt32(remainingStartOrdinal + 4),
+            reader.GetInt32(remainingStartOrdinal + 5),
+            reader.GetInt32(remainingStartOrdinal + 6),
+            reader.GetInt32(remainingStartOrdinal + 7),
+            reader.GetInt32(remainingStartOrdinal + 8)),
+        reader.GetInt32(remainingStartOrdinal + 9),
+        reader.GetInt32(remainingStartOrdinal + 10));
     if (await reader.ReadAsync())
         throw new InvalidOperationException("Azure SQL returned duplicate pristine database-surface rows.");
     return snapshot;
@@ -1788,45 +1913,14 @@ static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync(SqlC
         $"{string.Join(',', entry.Value.Keys.Select(value => $"K:{value}").Concat(entry.Value.Includes.Order(StringComparer.Ordinal).Select(name => $"I:{name}")))}")
         .ToArray();
 
-    int unexpectedSurfaceCount;
+    var catalogSurface = await ReadUnexpectedDatabaseSurfaceTelemetryAsync(connection);
+    int supplementalUnexpectedSurfaceCount;
     await using (var command = connection.CreateCommand())
     {
         command.CommandTimeout = 60;
         command.CommandText = """
             SELECT
               (
-                  (SELECT COUNT(*) FROM sys.objects
-                   WHERE is_ms_shipped = 0
-                     AND type IN (N'V', N'P', N'PC', N'FN', N'IF', N'TF', N'FS', N'FT', N'AF')) +
-                  (SELECT COUNT(*) FROM sys.triggers WHERE is_ms_shipped = 0) +
-                  (SELECT COUNT(*) FROM sys.synonyms) +
-                  (SELECT COUNT(*) FROM sys.sequences) +
-                  (SELECT COUNT(*) FROM sys.external_tables) +
-                  (SELECT COUNT(*) FROM sys.external_data_sources) +
-                  (SELECT COUNT(*) FROM sys.external_file_formats) +
-                  (SELECT COUNT(*) FROM sys.database_scoped_credentials) +
-                  (SELECT COUNT(*) FROM sys.column_master_keys) +
-                  (SELECT COUNT(*) FROM sys.column_encryption_keys) +
-                  (SELECT COUNT(*) FROM sys.assemblies WHERE is_user_defined = 1) +
-                  (SELECT COUNT(*) FROM sys.types WHERE is_user_defined = 1 OR is_table_type = 1) +
-                  (SELECT COUNT(*) FROM sys.partition_functions) +
-                  (SELECT COUNT(*) FROM sys.partition_schemes) +
-                  (SELECT COUNT(*) FROM sys.fulltext_catalogs) +
-                  (SELECT COUNT(*) FROM sys.fulltext_indexes) +
-                  (SELECT COUNT(*) FROM sys.xml_schema_collections WHERE xml_collection_id > 1) +
-                  (SELECT COUNT(*) FROM sys.database_audit_specifications) +
-                  (SELECT COUNT(*) FROM sys.security_policies WHERE is_ms_shipped = 0) +
-                  (SELECT COUNT(*) FROM sys.database_firewall_rules) +
-                  (SELECT COUNT(*) FROM sys.change_tracking_tables) +
-                  (SELECT COUNT(*) FROM sys.periods) +
-                  (SELECT COUNT(*) FROM sys.sensitivity_classifications) +
-                  (SELECT COUNT(*)
-                   FROM sys.extended_properties
-                   WHERE NOT
-                   (
-                       class = 0 AND major_id = 0 AND minor_id = 0
-                       AND name = @markerName
-                   )) +
                   (SELECT COUNT(*)
                    FROM sys.schemas AS schemas
                    LEFT JOIN sys.database_principals AS principals
@@ -1885,9 +1979,10 @@ static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync(SqlC
                    WHERE databases.name = DB_NAME())
               );
             """;
-        command.Parameters.AddWithValue("@markerName", DatabaseBootstrapRecoveryContract.MarkerName);
-        unexpectedSurfaceCount = Convert.ToInt32(await command.ExecuteScalarAsync());
+        supplementalUnexpectedSurfaceCount = Convert.ToInt32(await command.ExecuteScalarAsync());
     }
+    var unexpectedSurfaceCount = checked(
+        catalogSurface.TotalCount + supplementalUnexpectedSurfaceCount);
 
     return new ExactDatabaseSchemaSnapshot(
         tables.Distinct(StringComparer.Ordinal).ToArray(),

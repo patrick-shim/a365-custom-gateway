@@ -89,6 +89,13 @@ completion reaches 85% and emits only final worker verification.
     `POST /contentsafety/text:shieldPrompt?api-version=2024-09-01` returns
     `userPromptAnalysis.attackDetected`; managed identity uses the Cognitive
     Services resource audience and the Cognitive Services User data-plane role.
+13. **Azure SQL catalog and control-plane surfaces are distinct evidence planes.**
+    Database firewall rules and sensitivity classifications have dedicated catalog
+    views, while Azure SQL auditing to Log Analytics also requires an enabled audit
+    policy and creates a `SQLSecurityAuditEvents` diagnostic setting. A diagnostic
+    setting alone is not authority to treat an unknown database catalog row as a
+    reviewed platform baseline. Clean bootstrap therefore reports fixed count-only
+    catalog telemetry and continues to require every unexpected category to be zero.
 
 ### Decision Impact
 
@@ -488,6 +495,15 @@ carry the same ownership/source evidence. Azure SQL public access remains
 `Disabled`, firewall-rule absence is required throughout, and the exact original
 Entra administrator must be restored after the single private Container Apps Job
 execution.
+
+### 3.8 Azure SQL pristine-surface evidence
+
+| Requirement | Official source | Documented evidence | Gateway decision |
+|---|---|---|---|
+| Database-level firewall rules | https://learn.microsoft.com/sql/relational-databases/system-catalog-views/sys-database-firewall-rules-azure-sql-database?view=azuresqldb-current and https://learn.microsoft.com/azure/azure-sql/database/firewall-configure?view=azuresql | `sys.database_firewall_rules` returns database-level firewall settings; server-level rules use the separate `sys.firewall_rules` surface. | Require zero database-level catalog rows plus exact ARM proof that SQL public access is disabled and no server-level rule exists. Do not infer one plane from the other. |
+| Sensitivity classifications | https://learn.microsoft.com/sql/relational-databases/system-catalog-views/sys-sensitivity-classifications-transact-sql?view=sql-server-ver17 | `sys.sensitivity_classifications` returns one row per classified database item. | Require zero rows on a fresh Gateway database. Emit only the integer count, never classification labels, information types, object IDs, or column identities. |
+| Azure SQL auditing | https://learn.microsoft.com/azure/azure-sql/database/auditing-setup?view=azuresql and https://learn.microsoft.com/sql/relational-databases/system-catalog-views/sys-database-audit-specifications-transact-sql?view=sql-server-ver17 | Azure SQL auditing configured for Log Analytics/Event Hubs creates a `SQLSecurityAuditEvents` diagnostic setting; database audit specifications have a separate catalog view. | Require exact server/database audit-policy readback and a zero database-audit-specification count. Treat a diagnostic setting as routing configuration, not by itself as proof that an audit specification explains an unknown catalog object. |
+| Unknown pristine catalog contribution | The catalog sources above, https://learn.microsoft.com/sql/relational-databases/system-catalog-views/sys-system-objects-transact-sql?view=sql-server-ver17, and the existing reviewed `sys.*` catalog contracts | Microsoft documents `sys.system_objects` as the catalog of schema-scoped system objects included with SQL Server, but it does not define a universal aggregate representing an application-empty database. | Keep the aggregate acceptance rule at exactly zero. For diagnosis, project a fixed ordered nonnegative count for every existing predicate, including Boolean/count-only correlations with `sys.system_objects`, derive the total in managed code, and report only hard-coded labels and counts. Never emit or use names, IDs, SIDs, definitions, credential identities, extended-property values, or content. Any future exception requires an exact documented shape/cardinality and identical treatment in pristine and post-schema checks. |
 
 ---
 

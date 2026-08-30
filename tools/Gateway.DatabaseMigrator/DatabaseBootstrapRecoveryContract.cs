@@ -18,6 +18,8 @@ public static class DatabaseBootstrapRecoveryContract
     public static void AssertPristine(PristineDatabaseSurfaceSnapshot surface)
     {
         ArgumentNullException.ThrowIfNull(surface);
+        ArgumentNullException.ThrowIfNull(surface.CatalogSurface);
+        ArgumentNullException.ThrowIfNull(surface.DirectPermissions);
         if (surface.UserTableCount != 0 ||
             surface.UnexpectedObjectCount != 0 ||
             surface.UnexpectedSchemaCount != 0 ||
@@ -30,8 +32,11 @@ public static class DatabaseBootstrapRecoveryContract
             throw new InvalidOperationException(
                 "Clean bootstrap requires a pristine database surface before its durable initialization marker is written; " +
                 $"safe counts were tables={surface.UserTableCount}, objects={surface.UnexpectedObjectCount}, " +
+                $"catalog=[{surface.CatalogSurface.ToSafeSummary()}], " +
+                $"programmableObjectTypes=[{surface.CatalogSurface.ToSafeProgrammableObjectTypeSummary()}], " +
                 $"schemas={surface.UnexpectedSchemaCount}, principals={surface.UnexpectedPrincipalCount}, " +
                 $"roleMemberships={surface.RoleMembershipCount}, directPermissions={surface.UnexpectedDirectPermissionCount}, " +
+                $"directPermissionTelemetry=[{surface.DirectPermissions.ToSafeSummary()}], " +
                 $"options={surface.UnsafeDatabaseOptionCount}, ownerMismatch={surface.DatabaseOwnerMismatchCount}.");
         }
     }
@@ -77,15 +82,271 @@ public static class DatabaseBootstrapRecoveryContract
     }
 }
 
+public sealed record DatabaseSurfaceCategoryCount(string Category, int Count);
+
+/// <summary>
+/// Fixed, identifier-free telemetry for the complete unexpected catalog boundary.
+/// Category labels are source-defined and counts are the only database values retained.
+/// </summary>
+public sealed class UnexpectedDatabaseSurfaceTelemetry
+{
+    private static readonly string[] FixedCategoryNames =
+    [
+        "programmableObjects",
+        "triggers",
+        "synonyms",
+        "sequences",
+        "externalTables",
+        "externalDataSources",
+        "externalFileFormats",
+        "databaseScopedCredentials",
+        "columnMasterKeys",
+        "columnEncryptionKeys",
+        "userAssemblies",
+        "userDefinedOrTableTypes",
+        "partitionFunctions",
+        "partitionSchemes",
+        "fullTextCatalogs",
+        "fullTextIndexes",
+        "userXmlSchemaCollections",
+        "databaseAuditSpecifications",
+        "securityPolicies",
+        "databaseFirewallRules",
+        "changeTrackingTables",
+        "temporalPeriods",
+        "sensitivityClassifications",
+        "extendedProperties"
+    ];
+
+    private static readonly string[] FixedProgrammableObjectTypeNames =
+    [
+        "views",
+        "sqlStoredProcedures",
+        "clrStoredProcedures",
+        "sqlScalarFunctions",
+        "sqlInlineTableValuedFunctions",
+        "sqlTableValuedFunctions",
+        "clrScalarFunctions",
+        "clrTableValuedFunctions",
+        "aggregateFunctions"
+    ];
+
+    private static readonly string[] FixedSqlFieldNames =
+    [
+        .. FixedCategoryNames,
+        .. FixedProgrammableObjectTypeNames
+    ];
+
+    private UnexpectedDatabaseSurfaceTelemetry(
+        IReadOnlyList<DatabaseSurfaceCategoryCount> categories,
+        IReadOnlyList<DatabaseSurfaceCategoryCount> programmableObjectTypes,
+        int totalCount)
+    {
+        Categories = categories;
+        ProgrammableObjectTypes = programmableObjectTypes;
+        TotalCount = totalCount;
+    }
+
+    public static int ExpectedCategoryCount => FixedCategoryNames.Length;
+
+    public static int ExpectedProgrammableObjectTypeCount => FixedProgrammableObjectTypeNames.Length;
+
+    public static IReadOnlyList<string> CategoryNames => Array.AsReadOnly(FixedCategoryNames);
+
+    public static IReadOnlyList<string> ProgrammableObjectTypeNames =>
+        Array.AsReadOnly(FixedProgrammableObjectTypeNames);
+
+    public static IReadOnlyList<string> SqlFieldNames => Array.AsReadOnly(FixedSqlFieldNames);
+
+    public IReadOnlyList<DatabaseSurfaceCategoryCount> Categories { get; }
+
+    public IReadOnlyList<DatabaseSurfaceCategoryCount> ProgrammableObjectTypes { get; }
+
+    public int TotalCount { get; }
+
+    public static UnexpectedDatabaseSurfaceTelemetry FromOrderedCounts(
+        IReadOnlyList<int> categoryCounts,
+        IReadOnlyList<int> programmableObjectTypeCounts)
+    {
+        ArgumentNullException.ThrowIfNull(categoryCounts);
+        ArgumentNullException.ThrowIfNull(programmableObjectTypeCounts);
+        if (categoryCounts.Count != FixedCategoryNames.Length)
+        {
+            throw new InvalidOperationException(
+                $"Azure SQL returned {categoryCounts.Count} catalog counters; exactly {FixedCategoryNames.Length} are required.");
+        }
+        if (programmableObjectTypeCounts.Count != FixedProgrammableObjectTypeNames.Length)
+        {
+            throw new InvalidOperationException(
+                $"Azure SQL returned {programmableObjectTypeCounts.Count} programmable-object type counters; exactly {FixedProgrammableObjectTypeNames.Length} are required.");
+        }
+        if (categoryCounts.Any(count => count < 0) ||
+            programmableObjectTypeCounts.Any(count => count < 0))
+        {
+            throw new InvalidOperationException("Azure SQL returned a negative database-surface counter.");
+        }
+
+        var categories = FixedCategoryNames
+            .Select((name, index) => new DatabaseSurfaceCategoryCount(name, categoryCounts[index]))
+            .ToArray();
+        var programmableObjectTypes = FixedProgrammableObjectTypeNames
+            .Select((name, index) => new DatabaseSurfaceCategoryCount(name, programmableObjectTypeCounts[index]))
+            .ToArray();
+
+        var programmableObjectCount = SumChecked(programmableObjectTypeCounts);
+        if (programmableObjectCount != categories[0].Count)
+        {
+            throw new InvalidOperationException(
+                "Azure SQL returned inconsistent aggregate and typed programmable-object counters.");
+        }
+        return new UnexpectedDatabaseSurfaceTelemetry(
+            Array.AsReadOnly(categories),
+            Array.AsReadOnly(programmableObjectTypes),
+            SumChecked(categoryCounts));
+    }
+
+    public string ToSafeSummary() => FormatSafeCounts(Categories);
+
+    public string ToSafeProgrammableObjectTypeSummary() => FormatSafeCounts(ProgrammableObjectTypes);
+
+    private static int SumChecked(IReadOnlyList<int> counts)
+    {
+        var total = 0;
+        foreach (var count in counts)
+            total = checked(total + count);
+        return total;
+    }
+
+    private static string FormatSafeCounts(IEnumerable<DatabaseSurfaceCategoryCount> counts) =>
+        string.Join(',', counts.Select(item => $"{item.Category}={item.Count}"));
+}
+
+/// <summary>
+/// Fixed, identifier-free telemetry for the Azure SQL permission baseline.
+/// </summary>
+public sealed class DatabaseDirectPermissionTelemetry
+{
+    public const int ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount = 2;
+
+    private DatabaseDirectPermissionTelemetry(
+        int rawNonWhitelistedCount,
+        int positiveIdPublicSelectTargetCount,
+        int positiveIdPublicSelectMsShippedObjectTargetCount,
+        int positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount,
+        int positiveIdPublicSelectMsShippedSystemCatalogTargetCount,
+        int unexpectedCount)
+    {
+        RawNonWhitelistedCount = rawNonWhitelistedCount;
+        PositiveIdPublicSelectTargetCount = positiveIdPublicSelectTargetCount;
+        PositiveIdPublicSelectMsShippedObjectTargetCount = positiveIdPublicSelectMsShippedObjectTargetCount;
+        PositiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount =
+            positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount;
+        PositiveIdPublicSelectMsShippedSystemCatalogTargetCount =
+            positiveIdPublicSelectMsShippedSystemCatalogTargetCount;
+        UnexpectedCount = unexpectedCount;
+    }
+
+    public int RawNonWhitelistedCount { get; }
+
+    public int PositiveIdPublicSelectTargetCount { get; }
+
+    public int PositiveIdPublicSelectMsShippedObjectTargetCount { get; }
+
+    public int PositiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount { get; }
+
+    public int PositiveIdPublicSelectMsShippedSystemCatalogTargetCount { get; }
+
+    public int UnexpectedCount { get; }
+
+    public static DatabaseDirectPermissionTelemetry FromCounts(
+        int rawNonWhitelistedCount,
+        int positiveIdPublicSelectTargetCount,
+        int positiveIdPublicSelectMsShippedObjectTargetCount,
+        int positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount,
+        int positiveIdPublicSelectMsShippedSystemCatalogTargetCount)
+    {
+        if (rawNonWhitelistedCount < 0 ||
+            positiveIdPublicSelectTargetCount < 0 ||
+            positiveIdPublicSelectMsShippedObjectTargetCount < 0 ||
+            positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount < 0 ||
+            positiveIdPublicSelectMsShippedSystemCatalogTargetCount < 0)
+        {
+            throw new InvalidOperationException("Azure SQL returned a negative database-permission counter.");
+        }
+        if (positiveIdPublicSelectMsShippedObjectTargetCount > positiveIdPublicSelectTargetCount)
+        {
+            throw new InvalidOperationException(
+                "Azure SQL returned inconsistent positive-ID public SELECT target or correlation counts.");
+        }
+        var nonMsShippedPositiveIdPublicSelectTargetCount = checked(
+            positiveIdPublicSelectTargetCount - positiveIdPublicSelectMsShippedObjectTargetCount);
+        if (nonMsShippedPositiveIdPublicSelectTargetCount > rawNonWhitelistedCount ||
+            positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount > positiveIdPublicSelectTargetCount ||
+            positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount >
+                nonMsShippedPositiveIdPublicSelectTargetCount ||
+            positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount > rawNonWhitelistedCount ||
+            positiveIdPublicSelectMsShippedSystemCatalogTargetCount > positiveIdPublicSelectTargetCount ||
+            positiveIdPublicSelectMsShippedSystemCatalogTargetCount > positiveIdPublicSelectMsShippedObjectTargetCount)
+        {
+            throw new InvalidOperationException(
+                "Azure SQL returned inconsistent positive-ID public SELECT target or correlation counts.");
+        }
+
+        var baselineMismatch = positiveIdPublicSelectMsShippedObjectTargetCount ==
+            ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount
+            ? 0
+            : 1;
+        return new DatabaseDirectPermissionTelemetry(
+            rawNonWhitelistedCount,
+            positiveIdPublicSelectTargetCount,
+            positiveIdPublicSelectMsShippedObjectTargetCount,
+            positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount,
+            positiveIdPublicSelectMsShippedSystemCatalogTargetCount,
+            checked(rawNonWhitelistedCount + baselineMismatch));
+    }
+
+    public string ToSafeSummary() =>
+        $"rawNonWhitelisted={RawNonWhitelistedCount}," +
+        $"positiveIdPublicSelectTargets={PositiveIdPublicSelectTargetCount}," +
+        $"positiveIdPublicSelectMsShippedObjectTargets={PositiveIdPublicSelectMsShippedObjectTargetCount}," +
+        $"positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations=" +
+        $"{PositiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount}," +
+        $"positiveIdPublicSelectMsShippedSystemCatalogTargets=" +
+        $"{PositiveIdPublicSelectMsShippedSystemCatalogTargetCount}";
+}
+
 public sealed record PristineDatabaseSurfaceSnapshot(
     int UserTableCount,
-    int UnexpectedObjectCount,
+    UnexpectedDatabaseSurfaceTelemetry CatalogSurface,
     int UnexpectedSchemaCount,
     int UnexpectedPrincipalCount,
     int RoleMembershipCount,
-    int UnexpectedDirectPermissionCount,
+    DatabaseDirectPermissionTelemetry DirectPermissions,
     int UnsafeDatabaseOptionCount,
-    int DatabaseOwnerMismatchCount);
+    int DatabaseOwnerMismatchCount)
+{
+    private static readonly string[] FixedSqlFieldNames =
+    [
+        .. UnexpectedDatabaseSurfaceTelemetry.SqlFieldNames,
+        "userTables",
+        "unexpectedSchemas",
+        "unexpectedPrincipals",
+        "unexpectedRoleMemberships",
+        "rawNonWhitelistedDirectPermissions",
+        "positiveIdPublicSelectTargets",
+        "positiveIdPublicSelectMsShippedObjectTargets",
+        "positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations",
+        "positiveIdPublicSelectMsShippedSystemCatalogTargets",
+        "unsafeDatabaseOptions",
+        "databaseOwnerMismatches"
+    ];
+
+    public static IReadOnlyList<string> SqlFieldNames => Array.AsReadOnly(FixedSqlFieldNames);
+
+    public int UnexpectedObjectCount => CatalogSurface.TotalCount;
+
+    public int UnexpectedDirectPermissionCount => DirectPermissions.UnexpectedCount;
+}
 
 public sealed record ExpectedDatabasePrincipal(
     string Name,

@@ -148,8 +148,12 @@ return [ordered]@{
 
     It 'proves the full pristine surface before writing the initialization marker' {
         $source = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/Program.cs') -Raw
+        $contract = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/DatabaseBootstrapRecoveryContract.cs') -Raw
         $pristinePosition = $source.IndexOf('ReadPristineDatabaseSurfaceAsync(connection)', [StringComparison]::Ordinal)
         $writePosition = $source.IndexOf('WriteDatabaseInitializationMarkerAsync(connection, expectedMarker)', [StringComparison]::Ordinal)
+        $pristineMethodStart = $source.IndexOf('static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(', [StringComparison]::Ordinal)
+        $pristineMethodEnd = $source.IndexOf('static async Task AcquireDatabaseInitializationLockAsync(', $pristineMethodStart, [StringComparison]::Ordinal)
+        $pristineSource = $source.Substring($pristineMethodStart, $pristineMethodEnd - $pristineMethodStart)
 
         $pristinePosition | Should -BeGreaterThan -1
         $writePosition | Should -BeGreaterThan $pristinePosition
@@ -162,7 +166,15 @@ return [ordered]@{
         $positiveSystemSelectAllowance = "(?s)permissions\.class\s*=\s*1\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'SELECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'public'\s+AND\s+permissions\.major_id\s*>\s*0\s+AND\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+sys\.all_objects\s+AS\s+system_objects\s+WHERE\s+system_objects\.object_id\s*=\s*permissions\.major_id\s+AND\s+system_objects\.is_ms_shipped\s*=\s*1\s*\)"
         ([regex]::Matches($source, $positiveSystemSelectAllowance)).Count | Should -Be 2
         $boundedPositiveSystemSelectAllowance = "(?s)SELECT\s+CASE\s+WHEN\s+COUNT\(\*\)\s*=\s*2\s+THEN\s+0\s+ELSE\s+1\s+END\s+FROM\s+sys\.database_permissions\s+AS\s+baseline_permissions\s+INNER\s+JOIN\s+sys\.database_principals\s+AS\s+baseline_grantees.*?baseline_grantees\.name\s*=\s*N'public'.*?baseline_permissions\.major_id\s*>\s*0.*?baseline_objects\.object_id\s*=\s*baseline_permissions\.major_id\s+AND\s+baseline_objects\.is_ms_shipped\s*=\s*1"
-        ([regex]::Matches($source, $boundedPositiveSystemSelectAllowance)).Count | Should -Be 2
+        ([regex]::Matches($source, $boundedPositiveSystemSelectAllowance)).Count | Should -Be 1
+        $contract | Should -Match 'ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount\s*=\s*2'
+        $source | Should -Match 'DatabaseDirectPermissionTelemetry\.FromCounts'
+        $pristineSource | Should -Match 'AS positiveIdPublicSelectTargets'
+        $pristineSource | Should -Match 'INNER JOIN sys\.objects AS correlated_objects'
+        $pristineSource | Should -Match "(?s)correlated_objects\.is_ms_shipped\s*=\s*0.*?correlated_objects\.type\s+IN\s*\(N'V', N'P', N'PC', N'FN', N'IF', N'TF', N'FS', N'FT', N'AF'\)"
+        $pristineSource | Should -Match 'INNER JOIN sys\.system_objects AS system_catalog_objects'
+        $pristineSource | Should -Match 'system_catalog_objects\.is_ms_shipped\s*=\s*1'
+        $pristineSource | Should -Not -Match '(?s)FROM\s+sys\.objects\s+AS\s+objects\s+INNER\s+JOIN\s+sys\.system_objects'
         $source | Should -Not -Match 'VIEW ANY COLUMN (MASTER|ENCRYPTION) KEY DEFINITION'
         $source | Should -Match "roles\.name = N'db_owner'\s+AND\s+roles\.is_fixed_role = 1\s+AND\s+members\.name = N'dbo'\s+AND\s+members\.principal_id = DATABASE_PRINCIPAL_ID\(N'dbo'\)"
         $source | Should -Match 'SELECT CASE WHEN COUNT\(\*\) = 1 THEN 0 ELSE 1 END'
@@ -171,6 +183,84 @@ return [ordered]@{
         $source | Should -Match 'builtInDboOwnerMembershipCount != 1'
         $source | Should -Match 'catalog_collation_type_desc'
         $source | Should -Match 'DatabaseOwnerSidSha256'
+    }
+
+    It 'uses one fixed identifier-free catalog telemetry boundary for pristine and exact-schema checks' {
+        $source = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/Program.cs') -Raw
+        $contract = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/DatabaseBootstrapRecoveryContract.cs') -Raw
+
+        $contract | Should -Match 'SumChecked\(categoryCounts\)'
+        $contract | Should -Match 'surface\.UnexpectedObjectCount\s*!=\s*0'
+        $contract | Should -Match 'catalog=\[\{surface\.CatalogSurface\.ToSafeSummary\(\)\}\]'
+        $source | Should -Match 'reader\.GetName\(index\)\.Equals\(expectedFieldNames\[index\], StringComparison\.Ordinal\)'
+
+        $categoryStart = $contract.IndexOf('private static readonly string[] FixedCategoryNames', [StringComparison]::Ordinal)
+        $categoryEnd = $contract.IndexOf('private static readonly string[] FixedProgrammableObjectTypeNames', $categoryStart, [StringComparison]::Ordinal)
+        $categoryStart | Should -BeGreaterOrEqual 0
+        $categoryEnd | Should -BeGreaterThan $categoryStart
+        $categorySource = $contract.Substring($categoryStart, $categoryEnd - $categoryStart)
+        ([regex]::Matches($categorySource, '(?m)^\s*"[A-Za-z][A-Za-z0-9]+",?\s*$')).Count | Should -Be 24
+
+        $typeStart = $categoryEnd
+        $typeEnd = $contract.IndexOf('private static readonly string[] FixedSqlFieldNames', $typeStart, [StringComparison]::Ordinal)
+        $typeEnd | Should -BeGreaterThan $typeStart
+        $typeSource = $contract.Substring($typeStart, $typeEnd - $typeStart)
+        ([regex]::Matches($typeSource, '(?m)^\s*"[A-Za-z][A-Za-z0-9]+",?\s*$')).Count | Should -Be 9
+        $contract | Should -Match '\.\. FixedCategoryNames'
+        $contract | Should -Match '\.\. FixedProgrammableObjectTypeNames'
+
+        $projectionStart = $source.IndexOf('static string GetUnexpectedDatabaseSurfaceProjectionSql()', [StringComparison]::Ordinal)
+        $projectionEnd = $source.IndexOf('static async Task<UnexpectedDatabaseSurfaceTelemetry> ReadUnexpectedDatabaseSurfaceTelemetryAsync(', $projectionStart, [StringComparison]::Ordinal)
+        $projectionStart | Should -BeGreaterOrEqual 0
+        $projectionEnd | Should -BeGreaterThan $projectionStart
+        $projectionSource = $source.Substring($projectionStart, $projectionEnd - $projectionStart)
+        $projectionSource | Should -Not -Match 'sys\.system_objects'
+        $projectionSource | Should -Not -Match '(?im)^\s*SELECT\s+(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?:name|object_id|principal_id|sid)\b'
+        $projectionSource | Should -Not -Match 'Console\.Write'
+
+        $expectedCatalogAliases = @(
+            'programmableObjects', 'triggers', 'synonyms', 'sequences', 'externalTables',
+            'externalDataSources', 'externalFileFormats', 'databaseScopedCredentials', 'columnMasterKeys',
+            'columnEncryptionKeys', 'userAssemblies', 'userDefinedOrTableTypes', 'partitionFunctions',
+            'partitionSchemes', 'fullTextCatalogs', 'fullTextIndexes', 'userXmlSchemaCollections',
+            'databaseAuditSpecifications', 'securityPolicies', 'databaseFirewallRules', 'changeTrackingTables',
+            'temporalPeriods', 'sensitivityClassifications', 'extendedProperties', 'views', 'sqlStoredProcedures',
+            'clrStoredProcedures', 'sqlScalarFunctions', 'sqlInlineTableValuedFunctions',
+            'sqlTableValuedFunctions', 'clrScalarFunctions', 'clrTableValuedFunctions', 'aggregateFunctions'
+        )
+        $catalogAliases = @([regex]::Matches($projectionSource, '\)\s+AS\s+([A-Za-z][A-Za-z0-9]+)') |
+            ForEach-Object { $_.Groups[1].Value })
+        ($catalogAliases -join ',') | Should -Be ($expectedCatalogAliases -join ',')
+
+        $pristineStart = $source.IndexOf('static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(', [StringComparison]::Ordinal)
+        $pristineEnd = $source.IndexOf('static async Task AcquireDatabaseInitializationLockAsync(', $pristineStart, [StringComparison]::Ordinal)
+        $pristineStart | Should -BeGreaterOrEqual 0
+        $pristineEnd | Should -BeGreaterThan $pristineStart
+        $pristineSource = $source.Substring($pristineStart, $pristineEnd - $pristineStart)
+        ([regex]::Matches($pristineSource, 'command\.CommandText\s*=')).Count | Should -Be 1
+        ([regex]::Matches($pristineSource, 'ExecuteReaderAsync\(\)')).Count | Should -Be 1
+        ([regex]::Matches($pristineSource, 'GetUnexpectedDatabaseSurfaceProjectionSql\(\)')).Count | Should -Be 1
+        $pristineSource | Should -Not -Match 'ReadUnexpectedDatabaseSurfaceTelemetryAsync\(connection\)'
+        $pristineSource | Should -Match 'AssertExactSqlFieldContract\(\s*reader,\s*PristineDatabaseSurfaceSnapshot\.SqlFieldNames'
+        $expectedPristineOnlyAliases = @(
+            'userTables', 'unexpectedSchemas', 'unexpectedPrincipals', 'unexpectedRoleMemberships',
+            'rawNonWhitelistedDirectPermissions', 'positiveIdPublicSelectTargets',
+            'positiveIdPublicSelectMsShippedObjectTargets',
+            'positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations',
+            'positiveIdPublicSelectMsShippedSystemCatalogTargets', 'unsafeDatabaseOptions',
+            'databaseOwnerMismatches'
+        )
+        $pristineOnlyAliases = @([regex]::Matches($pristineSource, '\)\s+AS\s+([A-Za-z][A-Za-z0-9]+)') |
+            ForEach-Object { $_.Groups[1].Value })
+        ($pristineOnlyAliases -join ',') | Should -Be ($expectedPristineOnlyAliases -join ',')
+
+        $schemaStart = $source.IndexOf('static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync(', [StringComparison]::Ordinal)
+        $schemaEnd = $source.IndexOf('static IReadOnlyCollection<string> GetExpectedIncludedIndexColumns(', $schemaStart, [StringComparison]::Ordinal)
+        $schemaStart | Should -BeGreaterOrEqual 0
+        $schemaEnd | Should -BeGreaterThan $schemaStart
+        $schemaSource = $source.Substring($schemaStart, $schemaEnd - $schemaStart)
+        ([regex]::Matches($schemaSource, 'ReadUnexpectedDatabaseSurfaceTelemetryAsync\(connection\)')).Count | Should -Be 1
+        $schemaSource | Should -Match 'var unexpectedSurfaceCount\s*=\s*checked\(\s*catalogSurface\.TotalCount\s*\+\s*supplementalUnexpectedSurfaceCount\)'
     }
 
     It 'reconciles exact network recovery before database absence or initial-state rejection' {
