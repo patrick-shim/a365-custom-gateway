@@ -2209,6 +2209,7 @@ static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync(SqlC
                 $"{tableKey}|{reader.GetString(2)}|{storeType}|{(reader.GetBoolean(7) ? 1 : 0)}|" +
                 $"default:{defaultValue}|computed:{computedSql}|stored:{(!reader.IsDBNull(10) && reader.GetBoolean(10) ? 1 : 0)}|" +
                 $"identity:{(identity ? 1 : 0)}:{identitySeed}:{identityIncrement}:nfr:{(!reader.IsDBNull(28) && reader.GetBoolean(28) ? 1 : 0)}|" +
+                $"rowversion:{(rowVersion ? 1 : 0)}|" +
                 $"generated:{reader.GetByte(14)}|sparse:{(reader.GetBoolean(15) ? 1 : 0)}|" +
                 $"columnset:{(reader.GetBoolean(16) ? 1 : 0)}|filestream:{(reader.GetBoolean(17) ? 1 : 0)}|" +
                 $"collation:{(reader.IsDBNull(18) ? "-" : reader.GetString(18))}|" +

@@ -533,6 +533,28 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
     }
 
     [Fact]
+    public void ActualSchemaContract_SerializesDetectedRowVersionMetadata()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "Gateway.DatabaseMigrator",
+            "Program.cs"));
+        var methodBody = Regex.Match(
+            source,
+            @"static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync\([\s\S]*?(?=\nstatic IReadOnlyCollection<string> GetExpectedIncludedIndexColumns)",
+            RegexOptions.CultureInvariant).Value;
+
+        methodBody.Should().NotBeEmpty();
+        methodBody.Should().Contain("var rowVersion = storeType == \"rowversion\";");
+        methodBody.Should().Contain("$\"rowversion:{(rowVersion ? 1 : 0)}|\" +");
+        methodBody.IndexOf("identity:{", StringComparison.Ordinal).Should().BeLessThan(
+            methodBody.IndexOf("rowversion:{", StringComparison.Ordinal));
+        methodBody.IndexOf("rowversion:{", StringComparison.Ordinal).Should().BeLessThan(
+            methodBody.IndexOf("generated:{", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void AuditSpecificationConvergence_IsBoundedAndRevalidatesTheFullSurfaceBeforeMutation()
     {
         var repositoryRoot = FindRepositoryRoot();
