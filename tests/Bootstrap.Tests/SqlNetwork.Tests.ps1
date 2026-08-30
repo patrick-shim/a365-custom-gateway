@@ -71,6 +71,67 @@ Describe 'Azure SQL temporary firewall cleanup proof' {
         $module | Should -Match "'-AcceptedSourceFingerprint'"
     }
 
+    It 'preserves all principal and bootstrap binding flags as independent Booleans' {
+        $path = Join-Path $script:RepositoryRoot 'tools/apply-migrations.ps1'
+        $source = Get-Content -LiteralPath $path -Raw
+        $start = $source.IndexOf('[bool[]]$principalArgumentsProvided = @(', [StringComparison]::Ordinal)
+        $end = $source.IndexOf("if (`$Phase -eq 'Initialize' -and `$NetworkOperationId", $start, [StringComparison]::Ordinal)
+        $start | Should -BeGreaterOrEqual 0
+        $end | Should -BeGreaterThan $start
+        $bindingSource = $source.Substring($start, $end - $start)
+        $runner = [scriptblock]::Create(@"
+param(
+    [string]`$ApiPrincipalName,
+    [guid]`$ApiPrincipalClientId,
+    [string]`$WorkerPrincipalName,
+    [guid]`$WorkerPrincipalClientId,
+    [guid]`$DeploymentOwnershipId,
+    [string]`$AcceptedSourceFingerprint,
+    [string]`$Phase
+)
+Set-StrictMode -Version Latest
+$bindingSource
+return [ordered]@{
+    principalArrayCount = `$principalArgumentsProvided.Count
+    principalProvidedCount = `$principalArgumentCount
+    bootstrapArrayCount = `$bootstrapBindingArgumentsProvided.Count
+    bootstrapProvidedCount = `$bootstrapBindingArgumentCount
+    hasBootstrapDatabaseBinding = `$hasBootstrapDatabaseBinding
+}
+"@)
+        $arguments = @{
+            ApiPrincipalName = 'ca-gateway-api-dev'
+            ApiPrincipalClientId = [guid]'11111111-1111-4111-8111-111111111111'
+            WorkerPrincipalName = 'ca-gateway-worker-dev-v3'
+            WorkerPrincipalClientId = [guid]'22222222-2222-4222-8222-222222222222'
+            DeploymentOwnershipId = [guid]'33333333-3333-4333-8333-333333333333'
+            AcceptedSourceFingerprint = "sha256:$('a' * 64)"
+            Phase = 'Initialize'
+        }
+
+        $result = & $runner @arguments
+
+        $result.principalArrayCount | Should -Be 4
+        $result.principalProvidedCount | Should -Be 4
+        $result.bootstrapArrayCount | Should -Be 2
+        $result.bootstrapProvidedCount | Should -Be 2
+        $result.hasBootstrapDatabaseBinding | Should -BeTrue
+
+        ([regex]::Matches($source, '\$principalArgumentCount -eq 4')).Count | Should -Be 2
+        ([regex]::Matches($source, '\$principalArgumentCount = @\(\$principalArgumentsProvided \| Where-Object \{ \$_ \}\)\.Count')).Count | Should -Be 1
+        ([regex]::Matches($source, '\$bootstrapBindingArgumentCount = @\(\$bootstrapBindingArgumentsProvided \| Where-Object \{ \$_ \}\)\.Count')).Count | Should -Be 1
+        $source | Should -Not -Match '\(\$principalArgumentsProvided \| Where-Object \{ \$_ \}\)\.Count\s+-eq'
+
+        foreach ($missingName in @('ApiPrincipalName', 'ApiPrincipalClientId', 'WorkerPrincipalName', 'WorkerPrincipalClientId')) {
+            $invalid = @{} + $arguments
+            $invalid[$missingName] = if ($missingName.EndsWith('ClientId', [StringComparison]::Ordinal)) { [guid]::Empty } else { '' }
+            { & $runner @invalid } | Should -Throw '*principal names/client IDs must be supplied together*'
+        }
+        $missingSource = @{} + $arguments
+        $missingSource.AcceptedSourceFingerprint = ''
+        { & $runner @missingSource } | Should -Throw '*DeploymentOwnershipId and AcceptedSourceFingerprint must be supplied together*'
+    }
+
     It 'writes and revalidates the durable database marker before EF schema mutation' {
         $source = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/Program.cs') -Raw
         $contract = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/DatabaseBootstrapRecoveryContract.cs') -Raw

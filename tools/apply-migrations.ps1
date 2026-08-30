@@ -217,24 +217,26 @@ if ($DatabaseName.Equals('GatewayDb', [System.StringComparison]::OrdinalIgnoreCa
     throw 'Targeting GatewayDb requires -AllowLiveDatabase after a verified recovery copy exists.'
 }
 
-$principalArgumentsProvided = @(
-    -not [string]::IsNullOrWhiteSpace($ApiPrincipalName),
-    $ApiPrincipalClientId -ne [guid]::Empty,
-    -not [string]::IsNullOrWhiteSpace($WorkerPrincipalName),
-    $WorkerPrincipalClientId -ne [guid]::Empty
+[bool[]]$principalArgumentsProvided = @(
+    (-not [string]::IsNullOrWhiteSpace($ApiPrincipalName))
+    ($ApiPrincipalClientId -ne [guid]::Empty)
+    (-not [string]::IsNullOrWhiteSpace($WorkerPrincipalName))
+    ($WorkerPrincipalClientId -ne [guid]::Empty)
 )
-if (($principalArgumentsProvided | Where-Object { $_ }).Count -notin @(0, 4)) {
+$principalArgumentCount = @($principalArgumentsProvided | Where-Object { $_ }).Count
+if ($principalArgumentCount -notin @(0, 4)) {
     throw 'API and worker principal names/client IDs must be supplied together.'
 }
 
-$bootstrapBindingArgumentsProvided = @(
-    $DeploymentOwnershipId -ne [guid]::Empty,
-    -not [string]::IsNullOrWhiteSpace($AcceptedSourceFingerprint)
+[bool[]]$bootstrapBindingArgumentsProvided = @(
+    ($DeploymentOwnershipId -ne [guid]::Empty)
+    (-not [string]::IsNullOrWhiteSpace($AcceptedSourceFingerprint))
 )
-if (($bootstrapBindingArgumentsProvided | Where-Object { $_ }).Count -notin @(0, 2)) {
+$bootstrapBindingArgumentCount = @($bootstrapBindingArgumentsProvided | Where-Object { $_ }).Count
+if ($bootstrapBindingArgumentCount -notin @(0, 2)) {
     throw 'DeploymentOwnershipId and AcceptedSourceFingerprint must be supplied together.'
 }
-$hasBootstrapDatabaseBinding = ($bootstrapBindingArgumentsProvided | Where-Object { $_ }).Count -eq 2
+$hasBootstrapDatabaseBinding = $bootstrapBindingArgumentCount -eq 2
 if ($Phase -eq 'Initialize' -and -not $hasBootstrapDatabaseBinding) {
     throw 'Initialize requires the exact deployment ownership ID and accepted source fingerprint for durable database recovery.'
 }
@@ -242,7 +244,7 @@ if ($hasBootstrapDatabaseBinding -and $DeploymentOwnershipId -eq [guid]::Empty) 
     throw 'DeploymentOwnershipId must be a non-empty GUID.'
 }
 if ($hasBootstrapDatabaseBinding -and
-    ($principalArgumentsProvided | Where-Object { $_ }).Count -ne 4) {
+    $principalArgumentCount -ne 4) {
     throw 'Bootstrap-bound database work requires the exact API and worker principal contracts.'
 }
 if ($Phase -eq 'Initialize' -and $NetworkOperationId -ne $DeploymentOwnershipId) {
@@ -414,7 +416,7 @@ try {
             '--accepted-source-fingerprint', $AcceptedSourceFingerprint
         )
     }
-    if (($principalArgumentsProvided | Where-Object { $_ }).Count -eq 4) {
+    if ($principalArgumentCount -eq 4) {
         $migrationArguments += @(
             '--expected-api-principal-name', $ApiPrincipalName,
             '--expected-api-principal-client-id', $ApiPrincipalClientId.ToString('D'),
@@ -428,7 +430,7 @@ try {
         throw "The database migration runner failed in phase '$Phase'; exit code: $migrationExitCode. Child provider output was suppressed."
     }
 
-    if (($principalArgumentsProvided | Where-Object { $_ }).Count -eq 4) {
+    if ($principalArgumentCount -eq 4) {
         foreach ($principal in @(
             @{ Name = $ApiPrincipalName; ClientId = $ApiPrincipalClientId; RequireAllAfter = $false },
             @{ Name = $WorkerPrincipalName; ClientId = $WorkerPrincipalClientId; RequireAllAfter = $true }
