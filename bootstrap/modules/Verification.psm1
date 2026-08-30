@@ -40,7 +40,11 @@ function Test-GatewayRecordedDatabaseAttestationBoundary {
         $isRecovery = $Database -is [System.Collections.IDictionary] -and
             $Database.Contains('databaseRecoveryMode') -and
             [string]$Database.databaseRecoveryMode -ceq 'ResumeAfterSchemaCompleted'
-        $expectedJobName = if ($isRecovery) { "job-$($Config.projectName)-db-recover-$($Config.environment)" } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
+        $recoveryAttemptNumber = if ($isRecovery -and $Database.Contains('databaseRecoveryAttemptNumber')) { [int]$Database.databaseRecoveryAttemptNumber } else { 0 }
+        $expectedJobName = if ($isRecovery) {
+            [string](Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $recoveryAttemptNumber).jobName
+        }
+        else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
         $expectedJobId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/jobs/$expectedJobName"
         $intent = $Database.initializationIntent
         if (-not $intent -or
@@ -52,6 +56,7 @@ function Test-GatewayRecordedDatabaseAttestationBoundary {
             $Database.privateNetworkExecutionVerified -ne $true -or
             $Database.legacyPublicBootstrapClientIpv4Unused -ne $true -or
             $Database.originalSqlAdministratorRestored -ne $true -or
+            ($isRecovery -and $recoveryAttemptNumber -notin @(1, 2)) -or
             [string]$Database.originalSqlAdministratorObjectId -cne ([guid][string]$Database.originalSqlAdministratorObjectId).ToString('D') -or
             [string]::IsNullOrWhiteSpace([string]$Database.originalSqlAdministratorLogin) -or
             [string]$Database.databaseBootstrapJobName -cne $expectedJobName -or
@@ -753,12 +758,17 @@ function Test-GatewayBootstrapDeployment {
     )
     $root = Get-BootstrapExecutionSourceRoot
     $isRecovery = $null -ne $DatabaseRecoveryPlan
+    $recoveryAttemptNumber = if ($isRecovery) { Get-GatewayDatabaseRecoveryAttemptNumber -RecoveryPlan $DatabaseRecoveryPlan } else { 0 }
     $databaseJobImage = if ($isRecovery) { [string]$Database.databaseBootstrapJobImage } else { [string]$Images.databaseMigrator }
     if ($isRecovery -and (
         [string]$DatabaseRecoveryPlan.status -cne 'Completed' -or
         [string]$Database.databaseRecoveryPlanFingerprint -cne [string]$DatabaseRecoveryPlan.planFingerprint -or
+        [int]$Database.databaseRecoveryAttemptNumber -ne $recoveryAttemptNumber -or
         [string]$Database.recoverySourceFingerprint -cne [string]$DatabaseRecoveryPlan.correctedSourceFingerprint -or
-        [string]$Database.originalFailedDatabaseBootstrapBoundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint)) {
+        [string]$Database.originalFailedDatabaseBootstrapBoundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint -or
+        ($recoveryAttemptNumber -eq 2 -and (
+            [string]$Database.priorFailedDatabaseRecoveryBoundaryFingerprint -cne [string]$DatabaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint -or
+            [string]$Database.priorFailedDatabaseRecoveryPlanFingerprint -cne [string]$DatabaseRecoveryPlan.previousRecoveryPlanFingerprint)))) {
         throw 'Completed database recovery state does not reconcile to the recorded database evidence.'
     }
     Assert-GatewayRuntimeDeploymentOwnership -Runtime $Runtime -DeploymentOwnershipId $DeploymentOwnershipId | Out-Null
@@ -798,8 +808,11 @@ function Test-GatewayBootstrapDeployment {
         -ApiPrincipal $databaseApiPrincipal -WorkerPrincipal $databaseWorkerPrincipal `
         -ExecutionIntentId ([string]$Database.databaseBootstrapExecutionIntentId) `
         -Recovery:$isRecovery `
+        -RecoveryAttemptNumber $(if ($isRecovery) { $recoveryAttemptNumber } else { 1 }) `
         -RecoverySourceFingerprint $(if ($isRecovery) { [string]$DatabaseRecoveryPlan.correctedSourceFingerprint } else { '' }) `
-        -RecoveryPlanFingerprint $(if ($isRecovery) { [string]$DatabaseRecoveryPlan.planFingerprint } else { '' })
+        -RecoveryPlanFingerprint $(if ($isRecovery) { [string]$DatabaseRecoveryPlan.planFingerprint } else { '' }) `
+        -OriginalFailedBoundaryFingerprint $(if ($isRecovery) { [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint } else { '' }) `
+        -PriorFailedRecoveryBoundaryFingerprint $(if ($isRecovery -and $recoveryAttemptNumber -eq 2) { [string]$DatabaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint } else { '' })
     if (-not ([string]$databaseJob.jobId).Equals([string]$Database.databaseBootstrapJobId, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$databaseJob.jobName -cne [string]$Database.databaseBootstrapJobName -or
         [string]$databaseJob.jobPrincipalId -cne [string]$Database.databaseBootstrapJobPrincipalId) {
@@ -819,7 +832,8 @@ function Test-GatewayBootstrapDeployment {
         -ExpectedPrivateEndpointIpv4Address ([string]$SqlPrivateEndpoint.privateEndpointIpv4Address) `
         -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint ([string]$Images.sourceFingerprint) `
         -ApiPrincipal $databaseApiPrincipal -WorkerPrincipal $databaseWorkerPrincipal `
-        -ExecutionIntentId ([string]$Database.databaseBootstrapExecutionIntentId) -Recovery:$isRecovery
+        -ExecutionIntentId ([string]$Database.databaseBootstrapExecutionIntentId) -Recovery:$isRecovery `
+        -RecoveryAttemptNumber $(if ($isRecovery) { $recoveryAttemptNumber } else { 1 })
     if ($isRecovery) {
         $originalFailure = Get-GatewayFailedDatabaseBootstrapBoundary `
             -Config $Config -Foundation $Foundation -SqlPrivateEndpoint $SqlPrivateEndpoint `
@@ -831,6 +845,18 @@ function Test-GatewayBootstrapDeployment {
             -OriginalAdministratorLogin ([string]$Database.originalSqlAdministratorLogin)
         if ([string]$originalFailure.boundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint) {
             throw 'The original failed database-bootstrap Job/execution/intent evidence changed after recovery.'
+        }
+        if ($recoveryAttemptNumber -eq 2) {
+            $priorFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
+                -Config $Config -Foundation $Foundation -SqlPrivateEndpoint $SqlPrivateEndpoint `
+                -SqlServerFqdn ([string]$Runtime.sqlServerFqdn) `
+                -RecoveryPlan $DatabaseRecoveryPlan.previousRecoveryPlan `
+                -ApiPrincipal $databaseApiPrincipal -WorkerPrincipal $databaseWorkerPrincipal `
+                -OriginalAdministratorObjectId ([string]$Database.originalSqlAdministratorObjectId) `
+                -OriginalAdministratorLogin ([string]$Database.originalSqlAdministratorLogin)
+            if ([string]$priorFailure.boundaryFingerprint -cne [string]$DatabaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint) {
+                throw 'The prior failed recovery Job/execution/intent evidence changed after the successful second attempt.'
+            }
         }
     }
     Test-GatewayGroupDeploymentEvidence `
@@ -900,6 +926,12 @@ function Test-GatewayBootstrapDeployment {
         Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId $originalJobPrincipalId -PrincipalLabel 'Original failed database-bootstrap Job identity' | Out-Null
         Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId $originalJobPrincipalId -SubscriptionId ([guid][string]$Config.subscriptionId).ToString('D') -ExpectedAssignments @() -PrincipalLabel 'Original failed database-bootstrap Job identity' | Out-Null
         Assert-ExactGraphApplicationRoleAssignments -PrincipalId $originalJobPrincipalId -ExpectedRoleValues @() | Out-Null
+        if ($recoveryAttemptNumber -eq 2) {
+            $priorRecoveryJobPrincipalId = [string]$DatabaseRecoveryPlan.priorFailedRecovery.jobPrincipalId
+            Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId $priorRecoveryJobPrincipalId -PrincipalLabel 'Prior failed database recovery Job identity' | Out-Null
+            Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId $priorRecoveryJobPrincipalId -SubscriptionId ([guid][string]$Config.subscriptionId).ToString('D') -ExpectedAssignments @() -PrincipalLabel 'Prior failed database recovery Job identity' | Out-Null
+            Assert-ExactGraphApplicationRoleAssignments -PrincipalId $priorRecoveryJobPrincipalId -ExpectedRoleValues @() | Out-Null
+        }
     }
     $serverName = ([string]$Runtime.sqlServerFqdn).Split('.')[0]
     $sqlPublic = Invoke-AzTsv -Arguments @('sql', 'server', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $serverName, '--query', 'publicNetworkAccess')

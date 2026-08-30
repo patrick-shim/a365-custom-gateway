@@ -1285,8 +1285,8 @@ components:
         performs final connection verification.
 
         VerifyAgent365Connection includes child-Agent-ID token validation for Agent
-        365 observability through the Gateway-worker FIC. Gateway-key readiness is a
-        separate data-plane canary.
+        365 observability through the Gateway-worker FIC. Gateway-key readiness is
+        proven through authorized use and revocation on a real registration.
       required:
         - operationId
         - type

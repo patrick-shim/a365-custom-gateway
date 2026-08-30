@@ -427,7 +427,7 @@ function Get-BootstrapPurviewPolicyEvidence {
                 blueprintApplicationId = $blueprintId
                 enforcementPlane = 'Application'
                 exactTypedReadback = $true
-                propagationStatus = 'PendingCanaryVerification'
+                propagationStatus = 'PendingLiveVerification'
             }
         }
         catch {

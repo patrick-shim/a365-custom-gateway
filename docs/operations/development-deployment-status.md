@@ -2694,9 +2694,9 @@ separate authorization entry here.
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, private database-Job execution and original SQL
    administrator restoration, zero-firewall empty-schema initialization, final
-   preflight, authenticated Admin sign-in, one real
-   registration through `Active`, one bounded data-plane canary, and one Gateway-key
-   revocation before marking the minimal-profile clean-subscription path
+   preflight, authenticated Admin sign-in, one real registration through `Active`,
+   authorized Gateway use, and one Gateway-key revocation before marking the
+   minimal-profile clean-subscription path
    live-proven. Purview and Prompt Shields remain disabled and unclaimed for this
    proof.
 

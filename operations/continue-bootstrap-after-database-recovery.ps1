@@ -1,0 +1,594 @@
+#Requires -Version 7.0
+
+<#
+.SYNOPSIS
+    Continues only bootstrap steps 12-19 after an exact completed database recovery.
+
+.DESCRIPTION
+    This narrow continuation never replans or replays foundation, image, seed,
+    workflow, private-endpoint, or database mutations. It loads corrected recovery
+    modules, pins deployment inputs to the original accepted snapshot, validates
+    completed steps 1-11, and then uses the canonical state-step engine for only
+    steps 12-19. Output is JSON Lines and receipts contain safe identifiers and
+    fingerprints only.
+#>
+
+[CmdletBinding()]
+param(
+    [string]$Config = (Join-Path (Split-Path -Parent $PSScriptRoot) 'bootstrap/config.json'),
+    [switch]$Yes,
+    [string]$ExpectedContinuationFingerprint = '',
+    [switch]$NonInteractive,
+    [ValidateSet('Json')][string]$OutputFormat = 'Json'
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$WarningPreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
+$PSDefaultParameterValues['Write-Host:InformationAction'] = 'Ignore'
+
+$repositoryRoot = Split-Path -Parent $PSScriptRoot
+Import-Module (Join-Path $repositoryRoot 'bootstrap/modules/Common.psm1') -Force -DisableNameChecking
+
+$script:continuationToolPath = $PSCommandPath
+$script:continuationReceipt = $null
+$script:continuationReceiptPath = ''
+$script:continuationState = $null
+$script:continuationStatePath = ''
+
+function Write-ContinuationEvent {
+    param(
+        [Parameter(Mandatory)][string]$Type,
+        [Parameter(Mandatory)][string]$Message,
+        [Parameter()][System.Collections.IDictionary]$Data = [ordered]@{}
+    )
+    [Console]::Out.WriteLine(([ordered]@{
+        schemaVersion = 1
+        timestampUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        type = $Type
+        message = $Message
+        data = $Data
+    } | ConvertTo-Json -Depth 30 -Compress))
+}
+
+function Save-ContinuationReceipt {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Receipt,
+        [Parameter(Mandatory)][string]$Path
+    )
+    $Receipt['updatedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+    $directory = Split-Path -Parent $Path
+    [IO.Directory]::CreateDirectory($directory) | Out-Null
+    $temporary = Join-Path $directory ".continuation-$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        ConvertTo-Json -InputObject (ConvertTo-BootstrapCanonicalValue -Value $Receipt) -Depth 100 |
+            Set-Content -LiteralPath $temporary -Encoding utf8NoBOM
+        if ($IsWindows) {
+            $acl = Get-Acl -LiteralPath $temporary
+            $acl.SetAccessRuleProtection($true, $false)
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.WindowsIdentity]::GetCurrent().Name,
+                'FullControl',
+                'Allow')
+            $acl.SetAccessRule($rule)
+            Set-Acl -LiteralPath $temporary -AclObject $acl
+        }
+        elseif (Get-Command chmod -ErrorAction SilentlyContinue) {
+            & chmod 600 $temporary
+            if ($LASTEXITCODE -ne 0) { throw 'Could not restrict the continuation receipt to the current user.' }
+        }
+        Move-Item -LiteralPath $temporary -Destination $Path -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
+function Read-ContinuationReceipt {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    try {
+        $parameters = @{ AsHashtable = $true; Depth = 100; ErrorAction = 'Stop' }
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+            $parameters['DateKind'] = 'String'
+        }
+        return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json @parameters
+    }
+    catch {
+        throw 'The continuation receipt is malformed. Preserve it for review; do not edit it to claim completion.'
+    }
+}
+
+function Get-ContinuationBoundary {
+    param(
+        [Parameter(Mandatory)]$Configuration,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State
+    )
+    if ([string]$Configuration.purview.enabled -cne 'False' -or
+        [string]$Configuration.purview.activateGatewayAdapterAfterPolicyReadback -cne 'False' -or
+        [string]$Configuration.purview.policyProvisioningEnabled -cne 'False') {
+        throw 'This narrow continuation requires Purview and its policy-provisioning path to be disabled.'
+    }
+    if (-not $State.Contains('databaseRecoveryPlan') -or
+        $State.databaseRecoveryPlan -isnot [System.Collections.IDictionary] -or
+        [string]$State.databaseRecoveryPlan.status -cne 'Completed') {
+        throw 'Continuation requires the final successful database recovery plan to be Completed.'
+    }
+    $recoveryPlan = $State.databaseRecoveryPlan
+    $attemptNumber = Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $recoveryPlan
+    Assert-BootstrapAcceptedDatabaseRecoveryPlan `
+        -State $State -PlanFingerprint ([string]$recoveryPlan.planFingerprint) -AllowCompleted | Out-Null
+    Assert-BootstrapDatabaseRecoveryHistory -State $State -CurrentPlan $recoveryPlan | Out-Null
+
+    $recoverySourceRoot = Resolve-BootstrapDatabaseRecoveryPlanSourceRoot -State $State -Plan $recoveryPlan
+    $originalSourceRoot = Resolve-BootstrapAcceptedSourceRoot -State $State
+    if ([string]$State.acceptedPlan.sourceFingerprint -cne [string]$recoveryPlan.originalSourceFingerprint -or
+        (Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan) -cne
+            (Get-BootstrapObjectFingerprint -InputObject $recoveryPlan.originalAcceptedPlan)) {
+        throw 'The completed recovery no longer preserves the exact original accepted deployment snapshot.'
+    }
+    $databaseStep = $State.steps['Gateway database']
+    if ($databaseStep -isnot [System.Collections.IDictionary] -or
+        [string]$databaseStep.status -cne 'Completed' -or
+        $databaseStep.evidence -isnot [System.Collections.IDictionary] -or
+        [string]$databaseStep.sourceFingerprint -cne [string]$recoveryPlan.correctedSourceFingerprint -or
+        [string]$databaseStep.evidence.databaseRecoveryPlanFingerprint -cne [string]$recoveryPlan.planFingerprint -or
+        [int]$databaseStep.evidence.databaseRecoveryAttemptNumber -ne $attemptNumber -or
+        (Get-BootstrapObjectFingerprint -InputObject $databaseStep.evidence) -cne [string]$recoveryPlan.databaseEvidenceFingerprint) {
+        throw 'The completed Gateway database evidence is not exactly bound to the final successful recovery attempt.'
+    }
+
+    $validatedStepNames = @(
+        'Prerequisites',
+        'Azure authentication',
+        'Azure provider registration',
+        'Azure foundation',
+        'Gateway API identity',
+        'Immutable workload images',
+        'Inert identity deployment',
+        'Agent 365 seed blueprint',
+        'Workflow v3 Entra configuration',
+        'SQL private endpoint',
+        'Gateway database'
+    )
+    $completedBoundary = [Collections.Generic.List[object]]::new()
+    foreach ($name in $validatedStepNames) {
+        $step = $State.steps[$name]
+        $expectedStepSource = if ($name -ceq 'Gateway database') {
+            [string]$recoveryPlan.correctedSourceFingerprint
+        }
+        else { [string]$recoveryPlan.originalSourceFingerprint }
+        if ($step -isnot [System.Collections.IDictionary] -or
+            [string]$step.status -cne 'Completed' -or
+            $step.evidence -isnot [System.Collections.IDictionary] -or
+            [string]$step.sourceFingerprint -cne $expectedStepSource) {
+            throw "Continuation requires completed and evidenced bootstrap step '$name'."
+        }
+        $completedBoundary.Add([ordered]@{
+            name = $name
+            sourceFingerprint = [string]$step.sourceFingerprint
+            evidenceFingerprint = Get-BootstrapObjectFingerprint -InputObject $step.evidence
+        })
+    }
+
+    $continuationStepNames = @(
+        'Admin UI identity',
+        'Admin UI Key Vault credential',
+        'Purview policies',
+        'Gateway runtime deployment',
+        'Admin UI deployment',
+        'Admin UI redirect URIs',
+        'Network hardening',
+        'End-to-end deployment verification'
+    )
+    $toolFingerprint = "sha256:$((Get-FileHash -LiteralPath $script:continuationToolPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+    Assert-BootstrapFingerprintValue -Value $toolFingerprint -Label 'Continuation tool fingerprint'
+    $contract = [ordered]@{
+        schemaVersion = 1
+        operation = 'ContinueBootstrapAfterDatabaseRecovery'
+        subscriptionId = [string]$Configuration.subscriptionId
+        tenantId = [string]$Configuration.tenantId
+        resourceGroupName = [string]$Configuration.resourceGroupName
+        projectName = [string]$Configuration.projectName
+        environment = [string]$Configuration.environment
+        deploymentOwnershipId = ([guid][string]$State.deploymentOwnershipId).ToString('D')
+        configurationFingerprint = [string]$State.configurationFingerprint
+        originalAcceptedPlanFingerprint = [string]$State.acceptedPlan.planFingerprint
+        originalAcceptedPlanRecordFingerprint = Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan
+        originalSourceFingerprint = [string]$recoveryPlan.originalSourceFingerprint
+        originalExecutionSource = [string]$State.acceptedPlan.executionSource
+        recoveryAttemptNumber = $attemptNumber
+        recoveryPlanFingerprint = [string]$recoveryPlan.planFingerprint
+        recoverySourceFingerprint = [string]$recoveryPlan.correctedSourceFingerprint
+        recoveryExecutionSource = [string]$recoveryPlan.executionSource
+        recoveryDatabaseEvidenceFingerprint = [string]$recoveryPlan.databaseEvidenceFingerprint
+        recoveryHistoryFingerprint = if ($attemptNumber -eq 2) { [string](@($State.databaseRecoveryHistory)[0].archiveFingerprint) } else { '' }
+        toolFingerprint = $toolFingerprint
+        validatedSteps = @($completedBoundary)
+        continuationSteps = $continuationStepNames
+        purviewDisabled = $true
+    }
+    return [ordered]@{
+        contract = $contract
+        continuationFingerprint = Get-BootstrapObjectFingerprint -InputObject $contract
+        recoverySourceRoot = $recoverySourceRoot
+        originalSourceRoot = $originalSourceRoot
+        recoveryPlan = $recoveryPlan
+        attemptNumber = $attemptNumber
+        continuationStepNames = $continuationStepNames
+    }
+}
+
+function Assert-ContinuationReceipt {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Receipt,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Boundary
+    )
+    if ([string]$Receipt.schemaVersion -cne '1' -or
+        [string]$Receipt.operation -cne 'ContinueBootstrapAfterDatabaseRecovery' -or
+        [string]$Receipt.continuationFingerprint -cne [string]$Boundary.continuationFingerprint -or
+        $Receipt.acceptedContract -isnot [System.Collections.IDictionary] -or
+        $Receipt.validatedSteps -isnot [System.Collections.IDictionary] -or
+        $Receipt.checkpoints -isnot [System.Collections.IDictionary] -or
+        (Get-BootstrapObjectFingerprint -InputObject $Receipt.acceptedContract) -cne [string]$Receipt.continuationFingerprint -or
+        [string]$Receipt.status -notin @('Accepted', 'Running', 'NeedsAttention', 'Verified')) {
+        throw 'The continuation receipt is not exact, supported, or bound to the current recovered bootstrap.'
+    }
+    return $true
+}
+
+function Assert-VerifiedContinuationState {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Receipt,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string[]]$StepNames
+    )
+    if ($Receipt.result -isnot [System.Collections.IDictionary]) {
+        throw 'The verified continuation receipt has no safe final result.'
+    }
+    foreach ($name in $StepNames) {
+        $step = $State.steps[$name]
+        $checkpoint = $Receipt.checkpoints[$name]
+        if ($step -isnot [System.Collections.IDictionary] -or
+            [string]$step.status -cne 'Completed' -or
+            $step.evidence -isnot [System.Collections.IDictionary] -or
+            $checkpoint -isnot [System.Collections.IDictionary] -or
+            [string]$checkpoint.evidenceFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $step.evidence)) {
+            throw 'The verified continuation receipt no longer matches every completed continuation step.'
+        }
+    }
+    if ($State.outputs.verification -isnot [System.Collections.IDictionary] -or
+        [string]$Receipt.result.verificationFingerprint -cne
+            (Get-BootstrapObjectFingerprint -InputObject $State.outputs.verification) -or
+        (Get-BootstrapObjectFingerprint -InputObject $State.outputs.verification) -cne
+            (Get-BootstrapObjectFingerprint -InputObject $State.steps['End-to-end deployment verification'].evidence)) {
+        throw 'The verified continuation output no longer matches final verification evidence.'
+    }
+    return $true
+}
+
+function Save-ValidationCheckpoint {
+    param([Parameter(Mandatory)][string]$Name)
+    $step = $script:continuationState.steps[$Name]
+    $script:continuationReceipt.validatedSteps[$Name] = [ordered]@{
+        validatedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        evidenceFingerprint = Get-BootstrapObjectFingerprint -InputObject $step.evidence
+    }
+    Save-ContinuationReceipt -Receipt $script:continuationReceipt -Path $script:continuationReceiptPath
+    Write-ContinuationEvent -Type 'StepValidated' -Message "Validated: $Name" -Data ([ordered]@{ step = $Name })
+}
+
+function Assert-CanonicalValidationResult {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)]$Result
+    )
+    if ($Result -isnot [bool] -or $Result -ne $true) {
+        throw "Canonical read-only validation did not accept completed step '$Name'."
+    }
+    return $true
+}
+
+function Invoke-ContinuationStateStep {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][scriptblock]$Action,
+        [Parameter()][scriptblock]$Validate,
+        [Parameter()][scriptblock]$Reconcile,
+        [switch]$NoAutomaticReplayAfterStart,
+        [switch]$AlwaysRun
+    )
+    $parameters = @{
+        Name = $Name
+        State = $script:continuationState
+        StatePath = $script:continuationStatePath
+        Action = $Action
+    }
+    if ($Validate) { $parameters.Validate = $Validate }
+    if ($Reconcile) { $parameters.Reconcile = $Reconcile }
+    if ($NoAutomaticReplayAfterStart) { $parameters.NoAutomaticReplayAfterStart = $true }
+    if ($AlwaysRun) { $parameters.AlwaysRun = $true }
+    $result = Invoke-BootstrapStateStep @parameters
+    $step = $script:continuationState.steps[$Name]
+    $script:continuationReceipt.checkpoints[$Name] = [ordered]@{
+        status = [string]$step.status
+        completedAtUtc = [string]$step.completedAtUtc
+        evidenceFingerprint = Get-BootstrapObjectFingerprint -InputObject $step.evidence
+    }
+    Save-ContinuationReceipt -Receipt $script:continuationReceipt -Path $script:continuationReceiptPath
+    Write-ContinuationEvent -Type 'StepCompleted' -Message "Completed: $Name" -Data ([ordered]@{ step = $Name })
+    return $result
+}
+
+function Invoke-ExactReconciliation {
+    param([Parameter(Mandatory)][scriptblock]$Readback)
+    try {
+        [object[]]$result = @(& $Readback)
+        if ($result.Count -ne 1 -or $result[0] -isnot [System.Collections.IDictionary]) {
+            return [ordered]@{ recovered = $false }
+        }
+        return [ordered]@{ recovered = $true; evidence = $result[0] }
+    }
+    catch { return [ordered]@{ recovered = $false } }
+}
+
+if ($MyInvocation.InvocationName -ceq '.') { return }
+
+$lock = $null
+$boundary = $null
+try {
+    $configuration = Read-BootstrapConfig -Path $Config
+    $statePath = Get-BootstrapStatePath -Config $configuration
+    $state = Read-BootstrapState -Path $statePath -Config $configuration
+    $boundary = Get-ContinuationBoundary -Configuration $configuration -State $state
+    $fingerprint = [string]$boundary.continuationFingerprint
+
+    if (-not $Yes) {
+        Write-ContinuationEvent -Type 'ContinuationReview' -Message 'No mutation performed. Review and authorize this exact recovered-bootstrap continuation fingerprint.' -Data ([ordered]@{
+            continuationFingerprint = $fingerprint
+            recoveryAttemptNumber = [int]$boundary.attemptNumber
+            recoveryPlanFingerprint = [string]$boundary.recoveryPlan.planFingerprint
+            steps = @($boundary.continuationStepNames)
+            mutationAuthorized = $false
+        })
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($ExpectedContinuationFingerprint) -or
+        $ExpectedContinuationFingerprint -cne $fingerprint) {
+        throw 'Continuation --yes requires the exact expected continuation fingerprint from the immediately reviewed JSON result.'
+    }
+
+    $lock = Enter-BootstrapLock -StatePath $statePath
+    $state = Read-BootstrapState -Path $statePath -Config $configuration
+    $boundary = Get-ContinuationBoundary -Configuration $configuration -State $state
+    if ([string]$boundary.continuationFingerprint -cne $ExpectedContinuationFingerprint) {
+        throw 'Recovered bootstrap state changed after continuation review. No mutation was started.'
+    }
+    $fingerprint = [string]$boundary.continuationFingerprint
+    $receiptPath = Join-Path $repositoryRoot ".bootstrap/evidence/$($configuration.resourceGroupName)/continuation/$($fingerprint.Substring(7)).json"
+    $receipt = Read-ContinuationReceipt -Path $receiptPath
+    if ($receipt) {
+        $null = Assert-ContinuationReceipt -Receipt $receipt -Boundary $boundary
+    }
+    else {
+        $receipt = [ordered]@{
+            schemaVersion = 1
+            operation = 'ContinueBootstrapAfterDatabaseRecovery'
+            continuationFingerprint = $fingerprint
+            acceptedContract = ConvertTo-BootstrapCanonicalValue -Value $boundary.contract
+            status = 'Accepted'
+            acceptedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+            validatedSteps = [ordered]@{}
+            checkpoints = [ordered]@{}
+        }
+        Save-ContinuationReceipt -Receipt $receipt -Path $receiptPath
+    }
+    if ([string]$receipt.status -ceq 'Verified') {
+        $null = Assert-VerifiedContinuationState -Receipt $receipt -State $state -StepNames @($boundary.continuationStepNames)
+        Write-ContinuationEvent -Type 'Result' -Message 'This exact recovered-bootstrap continuation is already verified.' -Data ([ordered]@{
+            continuationFingerprint = $fingerprint
+            receiptPath = $receiptPath
+            verified = $true
+        })
+        return
+    }
+    $receipt['status'] = 'Running'
+    $receipt['startedAtUtc'] = if ($receipt.Contains('startedAtUtc')) { [string]$receipt.startedAtUtc } else { [DateTimeOffset]::UtcNow.ToString('O') }
+    Save-ContinuationReceipt -Receipt $receipt -Path $receiptPath
+
+    $script:continuationReceipt = $receipt
+    $script:continuationReceiptPath = $receiptPath
+    $script:continuationState = $state
+    $script:continuationStatePath = $statePath
+
+    $recoverySourceRoot = [string]$boundary.recoverySourceRoot
+    foreach ($module in @('Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'Verification')) {
+        Import-Module (Join-Path $recoverySourceRoot "bootstrap/modules/$module.psm1") -Force -DisableNameChecking
+    }
+    $originalSourceRoot = [string]$boundary.originalSourceRoot
+    Set-BootstrapExecutionSourceRoot -Path $originalSourceRoot
+    if ((Get-BootstrapSourceFingerprint -Root (Get-BootstrapExecutionSourceRoot)) -cne [string]$boundary.contract.originalSourceFingerprint) {
+        throw 'The original accepted deployment snapshot changed before continuation validation.'
+    }
+
+    $ownershipId = [string]$state.deploymentOwnershipId
+    $deploymentSourceFingerprint = [string]$boundary.contract.originalSourceFingerprint
+    $databaseRecoveryPlan = $state.databaseRecoveryPlan
+
+    $null = Assert-BootstrapPrerequisites -Install:$false -RequirePurview:$false
+    Save-ValidationCheckpoint -Name 'Prerequisites'
+
+    $azureIdentity = Connect-BootstrapAzure -Config $configuration -NonInteractive:$NonInteractive
+    $null = Assert-BootstrapAzureContext -Config $configuration
+    $recordedAzureIdentity = $state.steps['Azure authentication'].evidence
+    if ([string]$azureIdentity.subscriptionId -cne [string]$recordedAzureIdentity.subscriptionId -or
+        [string]$azureIdentity.tenantId -cne [string]$recordedAzureIdentity.tenantId -or
+        [string]$azureIdentity.userObjectId -cne [string]$recordedAzureIdentity.userObjectId -or
+        [string]$azureIdentity.userPrincipalName -cne [string]$recordedAzureIdentity.userPrincipalName) {
+        throw 'The current Azure administrator does not match the completed bootstrap authentication boundary.'
+    }
+    Save-ValidationCheckpoint -Name 'Azure authentication'
+
+    $resourceGroupExists = [string](Invoke-AzTsv -Arguments @('group', 'exists', '--name', [string]$configuration.resourceGroupName))
+    if ($resourceGroupExists -cne 'true') { throw 'The exact recovered bootstrap resource group is absent.' }
+    Assert-GatewayResourceGroupRecoveryBoundary -ResourceGroupExists $resourceGroupExists -FoundationStep $state.steps['Azure foundation'] | Out-Null
+
+    $null = Assert-CanonicalValidationResult -Name 'Azure provider registration' -Result (Test-GatewayResourceProviderEvidence)
+    Save-ValidationCheckpoint -Name 'Azure provider registration'
+
+    $foundation = $state.steps['Azure foundation'].evidence
+    $null = Assert-CanonicalValidationResult -Name 'Azure foundation' -Result (Test-GatewaySubscriptionDeploymentEvidence -Config $configuration -Evidence $foundation -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint)
+    Save-ValidationCheckpoint -Name 'Azure foundation'
+
+    $identity = $state.steps['Gateway API identity'].evidence
+    $null = Assert-CanonicalValidationResult -Name 'Gateway API identity' -Result (Test-GatewayApplicationEvidence -Config $configuration -Evidence $identity -ObjectIdProperty 'gatewayApiApplicationObjectId' -ClientIdProperty 'gatewayApiClientId' -ApplicationKind GatewayApi)
+    Save-ValidationCheckpoint -Name 'Gateway API identity'
+
+    $images = $state.steps['Immutable workload images'].evidence
+    $null = Assert-CanonicalValidationResult -Name 'Immutable workload images' -Result (Test-GatewayImmutableImageEvidence -Evidence $images -SourceFingerprint $deploymentSourceFingerprint -DeploymentOwnershipId $ownershipId)
+    Save-ValidationCheckpoint -Name 'Immutable workload images'
+
+    $inert = $state.steps['Inert identity deployment'].evidence
+    $runtimeSupersededInert = $state.steps['Gateway runtime deployment'] -and [string]$state.steps['Gateway runtime deployment'].status -eq 'Completed'
+    $null = Assert-CanonicalValidationResult -Name 'Inert identity deployment' -Result (Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $inert -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -AllowRuntimeSupersession:$runtimeSupersededInert)
+    Save-ValidationCheckpoint -Name 'Inert identity deployment'
+
+    $blueprint = $state.steps['Agent 365 seed blueprint'].evidence
+    $null = Assert-CanonicalValidationResult -Name 'Agent 365 seed blueprint' -Result (Test-GatewayBlueprintEvidence -Config $configuration -Evidence $blueprint -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -SponsorObjectId ([string]$azureIdentity.userObjectId) -GatewayManagedIdentityPrincipalId ([string]$inert.workerPrincipalId))
+    Save-ValidationCheckpoint -Name 'Agent 365 seed blueprint'
+
+    $null = Assert-CanonicalValidationResult -Name 'Workflow v3 Entra configuration' -Result (Test-GatewayWorkflowIdentityEvidence -Config $configuration -Identity $identity -Inert $inert -Evidence $state.steps['Workflow v3 Entra configuration'].evidence)
+    Save-ValidationCheckpoint -Name 'Workflow v3 Entra configuration'
+
+    $sqlPrivateEndpoint = $state.steps['SQL private endpoint'].evidence
+    $null = Assert-CanonicalValidationResult -Name 'SQL private endpoint' -Result (Test-GatewaySqlPrivateEndpointEvidence -Config $configuration -Foundation $foundation -SqlServerFqdn ([string]$inert.sqlServerFqdn) -Evidence $sqlPrivateEndpoint -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint)
+    Save-ValidationCheckpoint -Name 'SQL private endpoint'
+
+    $database = $state.steps['Gateway database'].evidence
+    $null = Assert-CanonicalValidationResult -Name 'Gateway database' -Result (Test-GatewayDatabaseEvidence -Config $configuration -Foundation $foundation -Inert $inert -Evidence $database -StepRecord $state.steps['Gateway database'] -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -DatabaseMigratorImage ([string]$images.databaseMigrator) -DatabaseRecoveryPlan $databaseRecoveryPlan)
+    Save-ValidationCheckpoint -Name 'Gateway database'
+
+    $adminIdentity = Invoke-ContinuationStateStep -Name 'Admin UI identity' -Validate {
+        $expectedAdminUiUrl = if ($state.steps['Admin UI deployment'] -and [string]$state.steps['Admin UI deployment'].status -eq 'Completed') { [string]$state.steps['Admin UI deployment'].evidence.adminUiUrl } else { '' }
+        Test-GatewayApplicationEvidence -Config $configuration -Evidence $state.steps['Admin UI identity'].evidence -ObjectIdProperty 'adminUiApplicationObjectId' -ClientIdProperty 'adminUiClientId' -ApplicationKind AdminUi -ExpectedAdminUiUrl $expectedAdminUiUrl
+    } -Reconcile {
+        Invoke-ExactReconciliation -Readback { Ensure-AdminUiApplication -Config $configuration -Identity $identity -DeploymentOwnershipId $ownershipId -ReconcileOnly }
+    } -NoAutomaticReplayAfterStart -Action {
+        Ensure-AdminUiApplication -Config $configuration -Identity $identity -DeploymentOwnershipId $ownershipId
+    }
+
+    $adminCredential = Invoke-ContinuationStateStep -Name 'Admin UI Key Vault credential' -Validate {
+        Test-GatewayAdminCredentialEvidence -Config $configuration -AdminIdentity $adminIdentity -Inert $inert -Evidence $state.steps['Admin UI Key Vault credential'].evidence
+    } -Reconcile {
+        Invoke-ExactReconciliation -Readback { Resolve-AdminUiCredentialAfterStartedOutcome -Config $configuration -AdminIdentity $adminIdentity -KeyVaultUri ([string]$inert.keyVaultUri) -UserObjectId ([string]$azureIdentity.userObjectId) }
+    } -NoAutomaticReplayAfterStart -Action {
+        New-AdminUiCredentialInKeyVault -Config $configuration -AdminIdentity $adminIdentity -KeyVaultUri ([string]$inert.keyVaultUri) -UserObjectId ([string]$azureIdentity.userObjectId)
+    }
+
+    $purview = Invoke-ContinuationStateStep -Name 'Purview policies' -Validate {
+        Test-GatewayPurviewEvidence -Config $configuration -Blueprint $blueprint -Evidence $state.steps['Purview policies'].evidence -UserPrincipalName ([string]$azureIdentity.userPrincipalName) -NonInteractive:$NonInteractive
+    } -Reconcile {
+        Invoke-ExactReconciliation -Readback {
+            if ($NonInteractive) {
+                throw 'Purview exact reconciliation requires interactive Security & Compliance authentication.'
+            }
+            $connectionId = ''
+            try {
+                $connectionId = Connect-BootstrapPurview -UserPrincipalName ([string]$azureIdentity.userPrincipalName) -TenantId ([string]$configuration.tenantId)
+                Get-BootstrapPurviewPolicyEvidence -Config $configuration -Blueprint $blueprint -MaximumAttempts 1
+            }
+            finally {
+                if (-not [string]::IsNullOrWhiteSpace($connectionId)) { Disconnect-BootstrapPurview -ConnectionId $connectionId }
+            }
+        }
+    } -NoAutomaticReplayAfterStart:($configuration.purview.enabled -eq $true) -Action {
+        $created = @(Ensure-BootstrapPurviewPolicies -Config $configuration -Blueprint $blueprint -UserPrincipalName ([string]$azureIdentity.userPrincipalName) -NonInteractive:$NonInteractive)
+        if ($created.Count -eq 0 -or $created[-1] -isnot [System.Collections.IDictionary]) { throw 'Purview-disabled evidence did not return its canonical safe shape.' }
+        return $created[-1]
+    }
+
+    $developmentPreviewRequested = [string]$configuration.environment -eq 'dev' -and $configuration.agent365.allowDevelopmentRegistryPreview -eq $true
+    $enableProvisioning = $developmentPreviewRequested -and $configuration.purview.policyProvisioningEnabled -ne $true
+    $runtime = Invoke-ContinuationStateStep -Name 'Gateway runtime deployment' -Validate {
+        Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $state.steps['Gateway runtime deployment'].evidence -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database
+    } -Action {
+        $created = Deploy-GatewayCore -Config $configuration -Foundation $foundation -Identity $identity -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -WorkerPrincipalId ([string]$inert.workerPrincipalId) -ManagerApplicationIds @($blueprint.managerApplicationIds) -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -Database $database -EnableWorkerProcessing -EnableProvisioning:$enableProvisioning -EnablePurview:($purview.enabled -eq $true)
+        $null = Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $created -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database
+        return $created
+    }
+
+    $adminUi = Invoke-ContinuationStateStep -Name 'Admin UI deployment' -Validate {
+        Test-GatewayNamedGroupDeployment -Config $configuration -Foundation $foundation -Runtime $runtime -Identity $identity -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentName "a365gw-$($configuration.projectName)-bootstrap-admin-$($configuration.environment)" -Evidence $state.steps['Admin UI deployment'].evidence -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -AdminUiImage ([string]$images.adminUi)
+    } -Reconcile {
+        Invoke-ExactReconciliation -Readback {
+            $recovered = Get-GatewayAdminUiDeploymentEvidence -Config $configuration -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -AdminUiImage ([string]$images.adminUi)
+            $null = Test-GatewayNamedGroupDeployment -Config $configuration -Foundation $foundation -Runtime $runtime -Identity $identity -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentName "a365gw-$($configuration.projectName)-bootstrap-admin-$($configuration.environment)" -Evidence $recovered -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -AdminUiImage ([string]$images.adminUi)
+            return $recovered
+        }
+    } -NoAutomaticReplayAfterStart -Action {
+        $created = Deploy-GatewayAdminUi -Config $configuration -Foundation $foundation -Identity $identity -AdminIdentity $adminIdentity -AdminUiImage ([string]$images.adminUi) -AdminUiSecretUri ([string]$adminCredential.secretUri) -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint
+        $null = Test-GatewayNamedGroupDeployment -Config $configuration -Foundation $foundation -Runtime $runtime -Identity $identity -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentName "a365gw-$($configuration.projectName)-bootstrap-admin-$($configuration.environment)" -Evidence $created -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -AdminUiImage ([string]$images.adminUi)
+        return $created
+    }
+
+    $null = Invoke-ContinuationStateStep -Name 'Admin UI redirect URIs' -Validate {
+        Test-GatewayAdminRedirectEvidence -AdminIdentity $adminIdentity -AdminUi $adminUi
+    } -Action {
+        $created = Set-AdminUiRedirectUris -AdminIdentity $adminIdentity -AdminUiFqdn ([string]$adminUi.adminUiFqdn)
+        $null = Test-GatewayAdminRedirectEvidence -AdminIdentity $adminIdentity -AdminUi $adminUi
+        return $created
+    }
+
+    $null = Invoke-ContinuationStateStep -Name 'Network hardening' -AlwaysRun -Action {
+        Set-GatewayNetworkHardening -Config $configuration
+    }
+
+    $verification = Invoke-ContinuationStateStep -Name 'End-to-end deployment verification' -AlwaysRun -Action {
+        Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId $ownershipId -DatabaseRecoveryPlan $databaseRecoveryPlan -NonInteractive:$NonInteractive
+    }
+
+    $state.outputs['adminUiUrl'] = [string]$adminUi.adminUiUrl
+    $state.outputs['apiUrl'] = "https://$($runtime.apiFqdn)"
+    $state.outputs['seedBlueprint'] = $blueprint
+    $state.outputs['verification'] = $verification
+    Save-BootstrapState -State $state -Path $statePath
+
+    $receipt['status'] = 'Verified'
+    $receipt['verifiedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+    $receipt['result'] = [ordered]@{
+        adminUiUrl = [string]$adminUi.adminUiUrl
+        apiUrl = "https://$($runtime.apiFqdn)"
+        verificationFingerprint = Get-BootstrapObjectFingerprint -InputObject $verification
+        recoveryAttemptNumber = [int]$boundary.attemptNumber
+        recoveryPlanFingerprint = [string]$boundary.recoveryPlan.planFingerprint
+        originalDeploymentSourceFingerprint = $deploymentSourceFingerprint
+        correctedModuleSourceFingerprint = [string]$boundary.contract.recoverySourceFingerprint
+    }
+    Save-ContinuationReceipt -Receipt $receipt -Path $receiptPath
+    Write-ContinuationEvent -Type 'Result' -Message 'Recovered bootstrap continuation completed and final verification passed.' -Data ([ordered]@{
+        continuationFingerprint = $fingerprint
+        adminUiUrl = [string]$adminUi.adminUiUrl
+        apiUrl = "https://$($runtime.apiFqdn)"
+        receiptPath = $receiptPath
+        verified = $true
+    })
+}
+catch {
+    if ($script:continuationReceipt -is [System.Collections.IDictionary] -and
+        -not [string]::IsNullOrWhiteSpace($script:continuationReceiptPath)) {
+        $script:continuationReceipt['status'] = 'NeedsAttention'
+        $script:continuationReceipt['failedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+        Save-ContinuationReceipt -Receipt $script:continuationReceipt -Path $script:continuationReceiptPath
+    }
+    Write-ContinuationEvent -Type 'Error' -Message 'Recovered bootstrap continuation stopped safely; dependency details were withheld and existing state was preserved.' -Data ([ordered]@{
+        resumable = $true
+        continuationFingerprint = if ($null -ne $boundary) { [string]$boundary.continuationFingerprint } else { '' }
+    })
+    exit 1
+}
+finally {
+    Clear-BootstrapAzureSubscriptionContext
+    if ($lock) { $lock.Dispose() }
+}

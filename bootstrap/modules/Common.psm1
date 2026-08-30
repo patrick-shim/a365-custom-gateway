@@ -1118,6 +1118,36 @@ function Resolve-BootstrapAcceptedSourceRoot {
     return $snapshot
 }
 
+function Resolve-BootstrapDatabaseRecoveryPlanSourceRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Plan
+    )
+
+    foreach ($name in @('planFingerprint', 'correctedSourceFingerprint', 'executionSource')) {
+        if (-not $Plan.Contains($name) -or [string]::IsNullOrWhiteSpace([string]$Plan[$name])) {
+            throw 'The accepted database recovery plan is missing its corrected execution-source boundary.'
+        }
+    }
+    Assert-BootstrapFingerprintValue -Value ([string]$Plan.planFingerprint) -Label 'Database recovery plan fingerprint'
+    Assert-BootstrapFingerprintValue -Value ([string]$Plan.correctedSourceFingerprint) -Label 'Database recovery corrected source fingerprint'
+    $canonicalOwnershipId = ([guid][string]$State.deploymentOwnershipId).ToString('D')
+    $expectedRelative = ".bootstrap/accepted-source/$canonicalOwnershipId/$(([string]$Plan.planFingerprint).Substring(7))"
+    if ([string]$Plan.executionSource -cne $expectedRelative) {
+        throw 'The database recovery execution snapshot is not bound to this exact ownership and recovery plan fingerprint.'
+    }
+    $root = Get-RepositoryRoot
+    $acceptedRoot = [IO.Path]::GetFullPath((Join-Path $root '.bootstrap/accepted-source'))
+    $snapshot = [IO.Path]::GetFullPath((Join-Path $root ([string]$Plan.executionSource)))
+    if (-not $snapshot.StartsWith($acceptedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal) -or
+        -not (Test-Path -LiteralPath $snapshot -PathType Container) -or
+        (Get-BootstrapSourceFingerprint -Root $snapshot) -cne [string]$Plan.correctedSourceFingerprint) {
+        throw 'The database recovery execution snapshot is absent, modified, or outside its managed boundary.'
+    }
+    return $snapshot
+}
+
 function Resolve-BootstrapDatabaseRecoverySourceRoot {
     [CmdletBinding()]
     param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
@@ -1126,28 +1156,7 @@ function Resolve-BootstrapDatabaseRecoverySourceRoot {
         $State.databaseRecoveryPlan -isnot [System.Collections.IDictionary]) {
         throw 'No accepted database recovery plan exists for this bootstrap state.'
     }
-    $plan = $State.databaseRecoveryPlan
-    foreach ($name in @('planFingerprint', 'correctedSourceFingerprint', 'executionSource')) {
-        if (-not $plan.Contains($name) -or [string]::IsNullOrWhiteSpace([string]$plan[$name])) {
-            throw 'The accepted database recovery plan is missing its corrected execution-source boundary.'
-        }
-    }
-    Assert-BootstrapFingerprintValue -Value ([string]$plan.planFingerprint) -Label 'Database recovery plan fingerprint'
-    Assert-BootstrapFingerprintValue -Value ([string]$plan.correctedSourceFingerprint) -Label 'Database recovery corrected source fingerprint'
-    $canonicalOwnershipId = ([guid][string]$State.deploymentOwnershipId).ToString('D')
-    $expectedRelative = ".bootstrap/accepted-source/$canonicalOwnershipId/$(([string]$plan.planFingerprint).Substring(7))"
-    if ([string]$plan.executionSource -cne $expectedRelative) {
-        throw 'The database recovery execution snapshot is not bound to this exact ownership and recovery plan fingerprint.'
-    }
-    $root = Get-RepositoryRoot
-    $acceptedRoot = [IO.Path]::GetFullPath((Join-Path $root '.bootstrap/accepted-source'))
-    $snapshot = [IO.Path]::GetFullPath((Join-Path $root ([string]$plan.executionSource)))
-    if (-not $snapshot.StartsWith($acceptedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal) -or
-        -not (Test-Path -LiteralPath $snapshot -PathType Container) -or
-        (Get-BootstrapSourceFingerprint -Root $snapshot) -cne [string]$plan.correctedSourceFingerprint) {
-        throw 'The database recovery execution snapshot is absent, modified, or outside its managed boundary.'
-    }
-    return $snapshot
+    return Resolve-BootstrapDatabaseRecoveryPlanSourceRoot -State $State -Plan $State.databaseRecoveryPlan
 }
 
 function Get-BootstrapEffectiveDeploymentSourceFingerprint {
@@ -1373,6 +1382,7 @@ function Assert-BootstrapStateAllowsSourcePlan {
             $State.databaseRecoveryPlan -is [System.Collections.IDictionary] -and
             [string]$State.databaseRecoveryPlan.status -ceq 'Completed') {
             $recovery = $State.databaseRecoveryPlan
+            Assert-BootstrapDatabaseRecoveryHistory -State $State -CurrentPlan $recovery | Out-Null
             foreach ($name in @('planFingerprint', 'originalSourceFingerprint', 'correctedSourceFingerprint', 'databaseEvidenceFingerprint')) {
                 if (-not $recovery.Contains($name)) {
                     throw 'Completed database recovery metadata is incomplete; preserve it for exact reconciliation.'
@@ -1672,6 +1682,120 @@ function Clear-BootstrapAcceptedPlan {
     Save-BootstrapState -State $State -Path $StatePath
 }
 
+function Get-GatewayDatabaseRecoveryAttemptContract {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [ValidateSet(1, 2)][int]$AttemptNumber = 1
+    )
+
+    $suffix = if ($AttemptNumber -eq 1) { '' } else { '2' }
+    $jobStem = if ($AttemptNumber -eq 1) { 'db-recover' } else { 'db-recov2' }
+    return [ordered]@{
+        attemptNumber = $AttemptNumber
+        jobName = "job-$($Config.projectName)-$jobStem-$($Config.environment)"
+        containerName = "database-recovery$suffix"
+        workloadTag = "database-bootstrap-recovery$suffix"
+        deploymentName = "a365gw-$($Config.projectName)-bootstrap-database-recovery$suffix-$($Config.environment)"
+        whatIfDeploymentName = "a365gw-$($Config.projectName)-bootstrap-database-recovery$suffix-whatif-$($Config.environment)"
+        receiptFileName = "private-database-bootstrap-recovery$suffix-receipt.json"
+        evidenceDirectoryName = "recovery$suffix"
+    }
+}
+
+function Test-BootstrapDatabaseRecoveryFailureReceiptCandidate {
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][System.Collections.IDictionary]$Receipt)
+
+    if ($null -eq $Receipt) { return $false }
+    return -not [string]::IsNullOrWhiteSpace([string]$Receipt.jobStartIntentAtUtc) -and
+        -not [string]::IsNullOrWhiteSpace([string]$Receipt.executionName) -and
+        -not [string]::IsNullOrWhiteSpace([string]$Receipt.administratorRestoredAtUtc) -and
+        [string]::IsNullOrWhiteSpace([string]$Receipt.executionSucceededAtUtc) -and
+        [string]::IsNullOrWhiteSpace([string]$Receipt.evidenceFingerprint) -and
+        [string]::IsNullOrWhiteSpace([string]$Receipt.evidenceRecoveredAtUtc) -and
+        [string]::IsNullOrWhiteSpace([string]$Receipt.completedAtUtc)
+}
+
+function Test-BootstrapDatabaseRecoveryRequiresNarrowContinuation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string[]]$ContinuationStepNames
+    )
+
+    if (-not $State.Contains('databaseRecoveryPlan') -or
+        $State.databaseRecoveryPlan -isnot [System.Collections.IDictionary] -or
+        [string]$State.databaseRecoveryPlan.status -cne 'Completed') {
+        return $false
+    }
+    if ($ContinuationStepNames.Count -eq 0) {
+        throw 'The recovered-bootstrap continuation step boundary is empty.'
+    }
+    foreach ($name in $ContinuationStepNames) {
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            throw 'The recovered-bootstrap continuation contains an empty step name.'
+        }
+    }
+    # A completed database recovery permanently changes the accepted-source boundary.
+    # Even after all continuation steps are marked Completed, only the narrow
+    # continuation may reconcile/finalize its receipt after an interruption.
+    return $true
+}
+
+function Get-BootstrapDatabaseRecoveryAttemptNumber {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Plan)
+
+    $attemptNumber = if ($Plan.Contains('attemptNumber')) { [int]$Plan.attemptNumber } else { 1 }
+    if ($attemptNumber -notin @(1, 2)) {
+        throw 'Database recovery is capped at exactly two independently planned attempts.'
+    }
+    return $attemptNumber
+}
+
+function Assert-BootstrapDatabaseRecoveryHistory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$CurrentPlan
+    )
+
+    $attemptNumber = Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $CurrentPlan
+    if ($attemptNumber -eq 1) {
+        if ($State.Contains('databaseRecoveryHistory') -and @($State.databaseRecoveryHistory).Count -ne 0) {
+            throw 'A first database recovery attempt cannot coexist with prior recovery history.'
+        }
+        return $true
+    }
+    if (-not $State.Contains('databaseRecoveryHistory') -or @($State.databaseRecoveryHistory).Count -ne 1) {
+        throw 'The second database recovery attempt requires exactly one immutable failed-attempt history record.'
+    }
+    $history = @($State.databaseRecoveryHistory)[0]
+    if ($history -isnot [System.Collections.IDictionary] -or
+        [int]$history.schemaVersion -ne 1 -or [int]$history.attemptNumber -ne 1 -or
+        [string]$history.status -cne 'Failed' -or $history.manualOnly -ne $false -or
+        $history.archivedPlan -isnot [System.Collections.IDictionary] -or
+        $history.failedRecovery -isnot [System.Collections.IDictionary]) {
+        throw 'The database recovery history record is malformed.'
+    }
+    $historyCore = [ordered]@{}
+    foreach ($key in $history.Keys) {
+        if ([string]$key -cne 'archiveFingerprint') { $historyCore[[string]$key] = $history[$key] }
+    }
+    Assert-BootstrapFingerprintValue -Value ([string]$history.archiveFingerprint) -Label 'Database recovery history archive fingerprint'
+    if ((Get-BootstrapObjectFingerprint -InputObject $historyCore) -cne [string]$history.archiveFingerprint -or
+        [string]$history.planFingerprint -cne [string]$history.archivedPlan.planFingerprint -or
+        [string]$history.failureBoundaryFingerprint -cne [string]$history.failedRecovery.boundaryFingerprint -or
+        [string]$CurrentPlan.previousRecoveryPlanFingerprint -cne [string]$history.planFingerprint -or
+        [string]$CurrentPlan.priorFailedRecovery.boundaryFingerprint -cne [string]$history.failureBoundaryFingerprint -or
+        (Get-BootstrapObjectFingerprint -InputObject $CurrentPlan.previousRecoveryPlan) -cne
+            (Get-BootstrapObjectFingerprint -InputObject $history.archivedPlan)) {
+        throw 'The database recovery history or second-attempt prior-failure binding changed after acceptance.'
+    }
+    $null = Resolve-BootstrapDatabaseRecoveryPlanSourceRoot -State $State -Plan $history.archivedPlan
+    return $true
+}
+
 function Set-BootstrapAcceptedDatabaseRecoveryPlan {
     [CmdletBinding()]
     param(
@@ -1680,7 +1804,8 @@ function Set-BootstrapAcceptedDatabaseRecoveryPlan {
         [Parameter(Mandatory)][System.Collections.IDictionary]$Plan
     )
 
-    if ($State.Contains('databaseRecoveryPlan')) {
+    if ($State.Contains('databaseRecoveryPlan') -or
+        ($State.Contains('databaseRecoveryHistory') -and @($State.databaseRecoveryHistory).Count -ne 0)) {
         throw 'A database recovery plan already exists for this deployment. Recovery is run-once and cannot be replaced.'
     }
     if (-not $State.Contains('acceptedPlan') -or $State.acceptedPlan -isnot [System.Collections.IDictionary]) {
@@ -1726,6 +1851,108 @@ function Set-BootstrapAcceptedDatabaseRecoveryPlan {
     return $State.databaseRecoveryPlan
 }
 
+function Set-BootstrapAcceptedDatabaseRecoveryContinuationPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$StatePath,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Plan,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$FailedRecovery
+    )
+
+    if (-not $State.Contains('databaseRecoveryPlan') -or
+        $State.databaseRecoveryPlan -isnot [System.Collections.IDictionary]) {
+        throw 'Database recovery continuation requires the preserved first recovery plan.'
+    }
+    $priorPlan = $State.databaseRecoveryPlan
+    if ((Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $priorPlan) -ne 1 -or
+        [string]$priorPlan.status -cne 'Running' -or
+        ($State.Contains('databaseRecoveryHistory') -and @($State.databaseRecoveryHistory).Count -ne 0)) {
+        throw 'Database recovery continuation is allowed only from the sole Running first attempt with no prior history.'
+    }
+    $null = Resolve-BootstrapDatabaseRecoveryPlanSourceRoot -State $State -Plan $priorPlan
+    foreach ($name in @(
+        'schemaVersion', 'attemptNumber', 'planFingerprint', 'configurationFingerprint', 'deploymentOwnershipId',
+        'originalSourceFingerprint', 'correctedSourceFingerprint', 'originalAcceptedPlan', 'failedJob',
+        'previousRecoveryPlanFingerprint', 'previousRecoveryPlan', 'priorFailedRecovery',
+        'correctedImage', 'recoveryJob', 'whatIf'
+    )) {
+        if (-not $Plan.Contains($name)) { throw "The second database recovery plan is missing '$name'." }
+    }
+    if ([int]$Plan.schemaVersion -ne 2 -or [int]$Plan.attemptNumber -ne 2 -or
+        [string]$Plan.configurationFingerprint -cne [string]$State.configurationFingerprint -or
+        [string]$Plan.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D') -or
+        [string]$Plan.originalSourceFingerprint -cne [string]$priorPlan.originalSourceFingerprint -or
+        [string]$Plan.previousRecoveryPlanFingerprint -cne [string]$priorPlan.planFingerprint -or
+        [string]$Plan.priorFailedRecovery.boundaryFingerprint -cne [string]$FailedRecovery.boundaryFingerprint -or
+        [string]$FailedRecovery.recoveryPlanFingerprint -cne [string]$priorPlan.planFingerprint -or
+        [string]$FailedRecovery.recoverySourceFingerprint -cne [string]$priorPlan.correctedSourceFingerprint -or
+        (Get-BootstrapObjectFingerprint -InputObject $Plan.previousRecoveryPlan) -cne
+            (Get-BootstrapObjectFingerprint -InputObject $priorPlan)) {
+        throw 'The second database recovery plan does not preserve the exact original and prior failed-recovery boundaries.'
+    }
+    foreach ($fingerprint in @('planFingerprint', 'configurationFingerprint', 'originalSourceFingerprint', 'correctedSourceFingerprint', 'previousRecoveryPlanFingerprint')) {
+        Assert-BootstrapFingerprintValue -Value ([string]$Plan[$fingerprint]) -Label "Database recovery continuation $fingerprint"
+    }
+    $currentSource = Get-BootstrapSourceFingerprint
+    if ([string]$Plan.correctedSourceFingerprint -cne $currentSource -or
+        [string]$Plan.correctedSourceFingerprint -ceq [string]$Plan.originalSourceFingerprint -or
+        [string]$Plan.correctedSourceFingerprint -ceq [string]$priorPlan.correctedSourceFingerprint) {
+        throw 'The second database recovery attempt requires a newly reviewed corrected source distinct from both earlier source generations.'
+    }
+    $executionSource = New-BootstrapAcceptedSourceSnapshot `
+        -State $State -PlanFingerprint ([string]$Plan.planFingerprint) -SourceFingerprint $currentSource
+    $failedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+    $archivedPlan = ConvertTo-BootstrapCanonicalValue -Value $priorPlan
+    $historyCore = [ordered]@{
+        schemaVersion = 1
+        attemptNumber = 1
+        status = 'Failed'
+        manualOnly = $false
+        planFingerprint = [string]$priorPlan.planFingerprint
+        failureBoundaryFingerprint = [string]$FailedRecovery.boundaryFingerprint
+        failedAtUtc = $failedAtUtc
+        failedRecovery = ConvertTo-BootstrapCanonicalValue -Value $FailedRecovery
+        archivedPlan = $archivedPlan
+    }
+    $history = ConvertTo-BootstrapCanonicalValue -Value $historyCore
+    $history['archiveFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $historyCore
+    $accepted = ConvertTo-BootstrapCanonicalValue -Value $Plan
+    $accepted['status'] = 'Accepted'
+    $accepted['executionSource'] = $executionSource
+    $accepted['acceptedAtUtc'] = $failedAtUtc
+    $accepted['databaseEvidenceFingerprint'] = ''
+    $accepted['completedAtUtc'] = ''
+    $State['databaseRecoveryHistory'] = @($history)
+    $State['databaseRecoveryPlan'] = $accepted
+    Save-BootstrapState -State $State -Path $StatePath
+    return $State.databaseRecoveryPlan
+}
+
+function Set-BootstrapFailedDatabaseRecoveryPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$StatePath,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$FailedRecovery
+    )
+
+    if (-not $State.Contains('databaseRecoveryPlan') -or
+        $State.databaseRecoveryPlan -isnot [System.Collections.IDictionary] -or
+        (Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $State.databaseRecoveryPlan) -ne 2 -or
+        [string]$State.databaseRecoveryPlan.status -cne 'Running' -or
+        [string]$FailedRecovery.recoveryPlanFingerprint -cne [string]$State.databaseRecoveryPlan.planFingerprint) {
+        throw 'Only the exact Running second database recovery attempt may be marked manual-only.'
+    }
+    Assert-BootstrapDatabaseRecoveryHistory -State $State -CurrentPlan $State.databaseRecoveryPlan | Out-Null
+    $State.databaseRecoveryPlan.status = 'Failed'
+    $State.databaseRecoveryPlan.manualOnly = $true
+    $State.databaseRecoveryPlan.failedRecovery = ConvertTo-BootstrapCanonicalValue -Value $FailedRecovery
+    $State.databaseRecoveryPlan.failedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+    Save-BootstrapState -State $State -Path $StatePath
+    return $State.databaseRecoveryPlan
+}
+
 function Assert-BootstrapAcceptedDatabaseRecoveryPlan {
     [CmdletBinding()]
     param(
@@ -1741,6 +1968,7 @@ function Assert-BootstrapAcceptedDatabaseRecoveryPlan {
         throw 'No accepted database recovery plan exists for this deployment.'
     }
     $plan = $State.databaseRecoveryPlan
+    $attemptNumber = Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $plan
     $activePlanMatchesOriginal = [string]$State.acceptedPlan.sourceFingerprint -ceq [string]$plan.originalSourceFingerprint -and
         [string]$State.acceptedPlan.planFingerprint -ceq [string]$plan.originalAcceptedPlan.planFingerprint -and
         [string]$State.acceptedPlan.executionSource -ceq [string]$plan.originalAcceptedPlan.executionSource
@@ -1754,6 +1982,15 @@ function Assert-BootstrapAcceptedDatabaseRecoveryPlan {
         [string]$plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) {
         throw 'The accepted database recovery plan no longer matches its original or corrected source boundary.'
     }
+    if ([string]$plan.recoveryJob.recoveryMode -cne 'ResumeAfterSchemaCompleted' -or
+        [int]$plan.recoveryJob.replicaRetryLimit -ne 0 -or [int]$plan.recoveryJob.maximumExecutions -ne 1 -or
+        ($attemptNumber -eq 2 -and (
+            [int]$plan.schemaVersion -ne 2 -or [int]$plan.attemptNumber -ne 2 -or
+            $plan.previousRecoveryPlan -isnot [System.Collections.IDictionary] -or
+            $plan.priorFailedRecovery -isnot [System.Collections.IDictionary]))) {
+        throw 'The accepted database recovery plan is outside its bounded attempt, mode, or execution contract.'
+    }
+    Assert-BootstrapDatabaseRecoveryHistory -State $State -CurrentPlan $plan | Out-Null
     $validStatuses = if ($AllowCompleted) { @('Accepted', 'Running', 'Completed') } else { @('Accepted', 'Running') }
     if ([string]$plan.status -cnotin $validStatuses) {
         throw 'The database recovery plan is not in an executable state. Recovery is run-once.'
@@ -1782,9 +2019,14 @@ function Complete-BootstrapDatabaseRecoveryPlan {
     )
 
     Assert-BootstrapAcceptedDatabaseRecoveryPlan -State $State -PlanFingerprint $PlanFingerprint | Out-Null
+    $attemptNumber = Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $State.databaseRecoveryPlan
     if ([string]$DatabaseEvidence.databaseRecoveryPlanFingerprint -cne $PlanFingerprint -or
         [string]$DatabaseEvidence.acceptedSourceFingerprint -cne [string]$State.databaseRecoveryPlan.originalSourceFingerprint -or
         [string]$DatabaseEvidence.recoverySourceFingerprint -cne [string]$State.databaseRecoveryPlan.correctedSourceFingerprint -or
+        [int]$DatabaseEvidence.databaseRecoveryAttemptNumber -ne $attemptNumber -or
+        ($attemptNumber -eq 2 -and (
+            [string]$DatabaseEvidence.priorFailedDatabaseRecoveryBoundaryFingerprint -cne [string]$State.databaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint -or
+            [string]$DatabaseEvidence.priorFailedDatabaseRecoveryPlanFingerprint -cne [string]$State.databaseRecoveryPlan.previousRecoveryPlanFingerprint)) -or
         [string]$DatabaseEvidence.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D')) {
         throw 'Recovered database evidence does not match the exact accepted recovery plan.'
     }

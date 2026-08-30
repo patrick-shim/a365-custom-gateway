@@ -677,7 +677,7 @@ function Get-GatewayPlanDescriptor {
             'NotChecked: tenant Agent 365 licensing/eligibility and interactive Conditional Access; the imperative requirements step fails closed.',
             'NotChecked: Purview propagation or synthetic verdict behavior; policy readback is configuration evidence only.',
             $(if ($Config.purview.policyProvisioningEnabled -eq $true) { 'NotChecked: the Microsoft 365 automation application certificate binding and Security & Compliance RBAC; bootstrap verifies only enabled Key Vault secret metadata and keeps profile-dependent provisioning admission closed.' } else { 'Purview protection-profile automation authority is not requested.' }),
-            'NotChecked: an authenticated browser session, first Active agent, downstream Agent 365 landing, or a bounded data-plane canary.',
+            'NotChecked: an authenticated browser session, first Active agent, or downstream Agent 365 landing.',
             'The ARM What-If below covers the subscription foundation only; Entra, Graph, Agent 365, SQL initialization, and Purview are listed separately in the imperative manifest.'
         )
         previewWarning = if ($registryPreview) { 'Development explicitly enables the beta, Global-cloud-only Agent 365 Registry dependency; this is not production support.' } else { 'Registry creation remains closed because the current beta dependency is unsupported for production.' }
@@ -2136,6 +2136,9 @@ function Invoke-GatewayDatabaseRecoveryWhatIf {
         [Parameter(Mandatory)][string]$RecoverySourceFingerprint,
         [Parameter(Mandatory)][string]$RecoveryPlanFingerprint,
         [Parameter(Mandatory)][string]$RecoveryExecutionIntentId,
+        [ValidateSet(1, 2)][int]$RecoveryAttemptNumber = 1,
+        [Parameter(Mandatory)][string]$OriginalFailedDatabaseBoundaryFingerprint,
+        [Parameter()][string]$PriorFailedRecoveryBoundaryFingerprint = '',
         [Parameter(Mandatory)]$ApiPrincipal,
         [Parameter(Mandatory)]$WorkerPrincipal
     )
@@ -2150,9 +2153,14 @@ function Invoke-GatewayDatabaseRecoveryWhatIf {
     foreach ($fingerprint in @($OriginalAcceptedSourceFingerprint, $RecoverySourceFingerprint, $RecoveryPlanFingerprint)) {
         Assert-BootstrapFingerprintValue -Value $fingerprint -Label 'Database recovery What-If fingerprint'
     }
+    Assert-BootstrapFingerprintValue -Value $OriginalFailedDatabaseBoundaryFingerprint -Label 'Original failed database boundary fingerprint'
+    if ($RecoveryAttemptNumber -eq 2) {
+        Assert-BootstrapFingerprintValue -Value $PriorFailedRecoveryBoundaryFingerprint -Label 'Prior failed recovery boundary fingerprint'
+    }
     Assert-BootstrapIpv4Value -Value $ExpectedPrivateEndpointIpv4Address -Label 'Database recovery private endpoint IPv4 address'
-    $jobName = "job-$($Config.projectName)-db-recover-$($Config.environment)"
-    $deploymentName = "a365gw-$($Config.projectName)-bootstrap-database-recovery-whatif-$($Config.environment)"
+    $recoveryContract = Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $RecoveryAttemptNumber
+    $jobName = [string]$recoveryContract.jobName
+    $deploymentName = [string]$recoveryContract.whatIfDeploymentName
     $result = Invoke-AzJson -Arguments @(
         'deployment', 'group', 'what-if',
         '--resource-group', [string]$Config.resourceGroupName,
@@ -2173,6 +2181,9 @@ function Invoke-GatewayDatabaseRecoveryWhatIf {
         "recoverySourceFingerprint=$RecoverySourceFingerprint",
         "recoveryPlanFingerprint=$RecoveryPlanFingerprint",
         "recoveryExecutionIntentId=$canonicalIntentId",
+        "recoveryAttemptNumber=$RecoveryAttemptNumber",
+        "originalFailedDatabaseBoundaryFingerprint=$OriginalFailedDatabaseBoundaryFingerprint",
+        "priorFailedRecoveryBoundaryFingerprint=$PriorFailedRecoveryBoundaryFingerprint",
         "apiDatabasePrincipalName=$($ApiPrincipal.displayName)",
         "apiDatabasePrincipalClientId=$(([guid][string]$ApiPrincipal.clientId).ToString('D'))",
         "workerDatabasePrincipalName=$($WorkerPrincipal.displayName)",
@@ -2385,7 +2396,6 @@ function Get-GatewayBootstrapStatus {
             ProvisioningReady = [bool]$provisioningReady
             ProvisioningAdmission = if ($provisioningReady) { 'OpenDevelopmentPreview' } else { 'ClosedOrNotVerified' }
             FirstAgentActive = 'NotVerifiedByBootstrap'
-            CanaryProven = 'NotVerifiedByBootstrap'
         }
         endpoints = [ordered]@{ adminUi = $adminUiUrl; api = $apiUrl }
         steps = @($stepRows)
@@ -2407,7 +2417,7 @@ function Show-GatewayBootstrapStatus {
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$Status.nextStep)) { Write-Host "Next: $($Status.nextStep)" }
     if (-not [string]::IsNullOrWhiteSpace([string]$Status.endpoints.adminUi)) { Write-Host "Admin UI: $($Status.endpoints.adminUi)" }
-    Write-Host 'FirstAgentActive and CanaryProven require separate authorized evidence; bootstrap does not infer them.' -ForegroundColor DarkGray
+    Write-Host 'FirstAgentActive requires separate authorized evidence; bootstrap does not infer it.' -ForegroundColor DarkGray
 }
 
 function Open-GatewayAdminUi {
@@ -3554,7 +3564,9 @@ function Test-GatewayDatabaseEvidence {
 
     try {
         $isRecovery = $null -ne $DatabaseRecoveryPlan
-        $expectedJobName = if ($isRecovery) { "job-$($Config.projectName)-db-recover-$($Config.environment)" } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
+        $recoveryAttemptNumber = if ($isRecovery) { Get-GatewayDatabaseRecoveryAttemptNumber -RecoveryPlan $DatabaseRecoveryPlan } else { 0 }
+        $recoveryContract = if ($isRecovery) { Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $recoveryAttemptNumber } else { $null }
+        $expectedJobName = if ($isRecovery) { [string]$recoveryContract.jobName } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
         $expectedJobImage = if ($isRecovery) { [string]$Evidence.databaseBootstrapJobImage } else { $DatabaseMigratorImage }
         $expectedExecutionPattern = "^$([regex]::Escape($expectedJobName))-[a-z0-9]{5,16}$"
         $privateEndpointAddressTuple = Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple `
@@ -3599,9 +3611,13 @@ function Test-GatewayDatabaseEvidence {
         if ($isRecovery -and (
             [string]$DatabaseRecoveryPlan.status -cne 'Completed' -or
             [string]$Evidence.databaseRecoveryMode -cne 'ResumeAfterSchemaCompleted' -or
+            [int]$Evidence.databaseRecoveryAttemptNumber -ne $recoveryAttemptNumber -or
             [string]$Evidence.databaseRecoveryPlanFingerprint -cne [string]$DatabaseRecoveryPlan.planFingerprint -or
             [string]$Evidence.recoverySourceFingerprint -cne [string]$DatabaseRecoveryPlan.correctedSourceFingerprint -or
-            [string]$Evidence.originalFailedDatabaseBootstrapBoundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint)) {
+            [string]$Evidence.originalFailedDatabaseBootstrapBoundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint -or
+            ($recoveryAttemptNumber -eq 2 -and (
+                [string]$Evidence.priorFailedDatabaseRecoveryBoundaryFingerprint -cne [string]$DatabaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint -or
+                [string]$Evidence.priorFailedDatabaseRecoveryPlanFingerprint -cne [string]$DatabaseRecoveryPlan.previousRecoveryPlanFingerprint)))) {
             throw 'mismatch'
         }
 
@@ -3631,8 +3647,11 @@ function Test-GatewayDatabaseEvidence {
             -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
             -ExecutionIntentId ([string]$Evidence.databaseBootstrapExecutionIntentId) `
             -Recovery:$isRecovery `
+            -RecoveryAttemptNumber $(if ($isRecovery) { $recoveryAttemptNumber } else { 1 }) `
             -RecoverySourceFingerprint $(if ($isRecovery) { [string]$DatabaseRecoveryPlan.correctedSourceFingerprint } else { '' }) `
-            -RecoveryPlanFingerprint $(if ($isRecovery) { [string]$DatabaseRecoveryPlan.planFingerprint } else { '' })
+            -RecoveryPlanFingerprint $(if ($isRecovery) { [string]$DatabaseRecoveryPlan.planFingerprint } else { '' }) `
+            -OriginalFailedBoundaryFingerprint $(if ($isRecovery) { [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint } else { '' }) `
+            -PriorFailedRecoveryBoundaryFingerprint $(if ($isRecovery -and $recoveryAttemptNumber -eq 2) { [string]$DatabaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint } else { '' })
         if ([string]$job.jobId -cne [string]$Evidence.databaseBootstrapJobId -or
             [string]$job.jobPrincipalId -cne [string]$Evidence.databaseBootstrapJobPrincipalId) { throw 'mismatch' }
         $executions = @(Get-GatewayDatabaseBootstrapExecutions -Config $Config -JobName ([string]$Evidence.databaseBootstrapJobName))
@@ -3646,7 +3665,8 @@ function Test-GatewayDatabaseEvidence {
             -ExpectedPrivateEndpointIpv4Address ([string]$privateEndpointAddressTuple.privateEndpointIpv4Address) `
             -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
             -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
-            -ExecutionIntentId ([string]$Evidence.databaseBootstrapExecutionIntentId) -Recovery:$isRecovery
+            -ExecutionIntentId ([string]$Evidence.databaseBootstrapExecutionIntentId) -Recovery:$isRecovery `
+            -RecoveryAttemptNumber $(if ($isRecovery) { $recoveryAttemptNumber } else { 1 })
 
         $ready = Invoke-WebRequest -Uri "https://$($Inert.apiFqdn)/health/ready" -Method Get -TimeoutSec 30 -SkipHttpErrorCheck
         if ([int]$ready.StatusCode -lt 200 -or [int]$ready.StatusCode -ge 300) { throw 'mismatch' }
@@ -3654,11 +3674,11 @@ function Test-GatewayDatabaseEvidence {
         $root = Get-RepositoryRoot
         $evidenceRoot = [IO.Path]::GetFullPath((Join-Path $root '.bootstrap/evidence'))
         $databaseEvidenceRoot = [IO.Path]::GetFullPath((Join-Path $evidenceRoot "$($Config.resourceGroupName)/database"))
-        $expectedDirectory = if ($isRecovery) { [IO.Path]::GetFullPath((Join-Path $databaseEvidenceRoot 'recovery')) } else { $databaseEvidenceRoot }
+        $expectedDirectory = if ($isRecovery) { [IO.Path]::GetFullPath((Join-Path $databaseEvidenceRoot ([string]$recoveryContract.evidenceDirectoryName))) } else { $databaseEvidenceRoot }
         if (-not $expectedDirectory.StartsWith($evidenceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
             [IO.Path]::GetFullPath([string]$Evidence.evidenceDirectory) -ne $expectedDirectory) { throw 'mismatch' }
         if (Test-Path -LiteralPath (Join-Path $databaseEvidenceRoot 'GatewayDb-network-recovery.json')) { throw 'mismatch' }
-        $receiptPath = [IO.Path]::GetFullPath((Join-Path $databaseEvidenceRoot $(if ($isRecovery) { 'private-database-bootstrap-recovery-receipt.json' } else { 'private-database-bootstrap-receipt.json' })))
+        $receiptPath = [IO.Path]::GetFullPath((Join-Path $databaseEvidenceRoot $(if ($isRecovery) { [string]$recoveryContract.receiptFileName } else { 'private-database-bootstrap-receipt.json' })))
         if ([IO.Path]::GetFullPath([string]$Evidence.databaseBootstrapCompletionReceipt) -ne $receiptPath) { throw 'mismatch' }
         $receipt = Read-GatewayPrivateDatabaseBootstrapRecord -Path $receiptPath
         if ($isRecovery) {
@@ -3668,6 +3688,8 @@ function Test-GatewayDatabaseEvidence {
                 -OriginalSourceFingerprint $SourceFingerprint -RecoverySourceFingerprint ([string]$DatabaseRecoveryPlan.correctedSourceFingerprint) `
                 -RecoveryPlanFingerprint ([string]$DatabaseRecoveryPlan.planFingerprint) -FailedJob $DatabaseRecoveryPlan.failedJob `
                 -ExpectedExecutionIntentId ([string]$DatabaseRecoveryPlan.recoveryJob.executionIntentId) `
+                -RecoveryAttemptNumber $recoveryAttemptNumber `
+                -PriorFailedRecovery $(if ($recoveryAttemptNumber -eq 2) { $DatabaseRecoveryPlan.priorFailedRecovery } else { $null }) `
                 -OriginalAdministratorObjectId ([string]$Evidence.originalSqlAdministratorObjectId) `
                 -OriginalAdministratorLogin ([string]$Evidence.originalSqlAdministratorLogin) `
                 -SqlPrivateEndpoint $privateEndpointAddressTuple | Out-Null
@@ -3697,6 +3719,17 @@ function Test-GatewayDatabaseEvidence {
                 -OriginalAdministratorLogin ([string]$Evidence.originalSqlAdministratorLogin)
             if ([string]$originalFailure.boundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint) {
                 throw 'mismatch'
+            }
+            if ($recoveryAttemptNumber -eq 2) {
+                $priorFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
+                    -Config $Config -Foundation $Foundation -SqlPrivateEndpoint $privateEndpointAddressTuple `
+                    -SqlServerFqdn ([string]$Evidence.server) -RecoveryPlan $DatabaseRecoveryPlan.previousRecoveryPlan `
+                    -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+                    -OriginalAdministratorObjectId ([string]$Evidence.originalSqlAdministratorObjectId) `
+                    -OriginalAdministratorLogin ([string]$Evidence.originalSqlAdministratorLogin)
+                if ([string]$priorFailure.boundaryFingerprint -cne [string]$DatabaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint) {
+                    throw 'mismatch'
+                }
             }
         }
         $executionStarted = [DateTimeOffset]::ParseExact(

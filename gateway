@@ -21,6 +21,8 @@ Commands:
   resume      Resume an interrupted accepted plan
   recover-database
               Run the reviewed, one-time recovery for an eligible failed database bootstrap
+  continue-bootstrap
+              Continue only pending steps after an exact completed database recovery
   upgrade-admin-ui
               Build and promote only the Admin UI of a completed bootstrap deployment
   status      Show checkpoint and truthful readiness status without Azure calls
@@ -77,6 +79,37 @@ check_setup_prerequisites() {
 
 command_name="${1:-up}"
 if (($# > 0)); then shift; fi
+if [[ "$command_name" == 'continue-bootstrap' ]]; then
+  continuation_entry="$gateway_root/operations/continue-bootstrap-after-database-recovery.ps1"
+  continuation_args=(-NoLogo -NoProfile -File "$continuation_entry")
+  while (($# > 0)); do
+    case "$1" in
+      --config)
+        (($# >= 2)) || { echo '--config requires a path.' >&2; exit 2; }
+        continuation_args+=(-Config "$2")
+        shift 2
+        ;;
+      --yes) continuation_args+=(-Yes); shift ;;
+      --non-interactive) continuation_args+=(-NonInteractive); shift ;;
+      --expected-continuation-fingerprint)
+        (($# >= 2)) || { echo '--expected-continuation-fingerprint requires sha256:<64 lowercase hex>.' >&2; exit 2; }
+        continuation_args+=(-ExpectedContinuationFingerprint "$2")
+        shift 2
+        ;;
+      --json) shift ;;
+      -h|--help)
+        printf 'Usage: ./gateway continue-bootstrap --config PATH [--yes --expected-continuation-fingerprint SHA256] [--non-interactive]\n'
+        exit 0
+        ;;
+      *) printf 'Unknown continue-bootstrap option: %s\n' "$1" >&2; exit 2 ;;
+    esac
+  done
+  if ! command -v pwsh >/dev/null 2>&1; then
+    printf 'PowerShell 7 is required to continue the recovered bootstrap.\n' >&2
+    exit 1
+  fi
+  exec pwsh "${continuation_args[@]}"
+fi
 if [[ "$command_name" == 'upgrade-admin-ui' ]]; then
   upgrade_entry="$gateway_root/operations/upgrade-bootstrap-admin-ui.ps1"
   upgrade_args=(-NoLogo -NoProfile -File "$upgrade_entry")

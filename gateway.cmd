@@ -14,6 +14,7 @@ if /I "%COMMAND%"=="plan" set "GATEWAY_MODE=Plan"
 if /I "%COMMAND%"=="apply" set "GATEWAY_MODE=Apply"
 if /I "%COMMAND%"=="resume" set "GATEWAY_MODE=Resume"
 if /I "%COMMAND%"=="recover-database" set "GATEWAY_MODE=RecoverDatabase"
+if /I "%COMMAND%"=="continue-bootstrap" set "GATEWAY_MODE=ContinueBootstrap"
 if /I "%COMMAND%"=="upgrade-admin-ui" set "GATEWAY_MODE=UpgradeAdminUi"
 if /I "%COMMAND%"=="status" set "GATEWAY_MODE=Status"
 if /I "%COMMAND%"=="verify" set "GATEWAY_MODE=Verify"
@@ -23,6 +24,7 @@ if /I "%COMMAND%"=="help" goto help
 if /I "%COMMAND%"=="-h" goto help
 if /I "%COMMAND%"=="--help" goto help
 if /I "%GATEWAY_MODE%"=="Setup" goto parse_setup
+if /I "%GATEWAY_MODE%"=="ContinueBootstrap" goto parse_continuation
 if /I "%GATEWAY_MODE%"=="UpgradeAdminUi" goto parse_upgrade
 if defined GATEWAY_MODE goto parse
 
@@ -316,6 +318,81 @@ if errorlevel 1 exit /b %errorlevel%
 "%GATEWAY_PWSH%" -NoLogo -NoProfile -Command "$ErrorActionPreference='Stop'; try { $p=@{}; if($env:GATEWAY_CONFIG_SET -eq '1'){$p.Config=$env:GATEWAY_CONFIG}; if($env:GATEWAY_NONINTERACTIVE -eq '1'){$p.NonInteractive=$true}; if($env:GATEWAY_YES -eq '1'){$p.Yes=$true}; & (Join-Path $env:GATEWAY_ROOT 'operations\upgrade-bootstrap-admin-ui.ps1') @p; exit 0 } catch { [Console]::Error.WriteLine('Gateway Admin UI upgrade could not complete safely. Dependency details were withheld.'); exit 1 }"
 exit /b %errorlevel%
 
+:parse_continuation
+set "GATEWAY_ROOT=%~dp0"
+set "GATEWAY_CONFIG_SET=0"
+set "GATEWAY_NONINTERACTIVE=0"
+set "GATEWAY_YES=0"
+set "GATEWAY_EXPECTED_CONTINUATION_SET=0"
+
+:parse_continuation_next
+if "%~1"=="" goto run_continuation
+if /I "%~1"=="--config" goto continuation_option_config
+if /I "%~1"=="-Config" goto continuation_option_config
+if /I "%~1"=="--yes" (
+  set "GATEWAY_YES=1"
+  shift
+  goto parse_continuation_next
+)
+if /I "%~1"=="-Yes" (
+  set "GATEWAY_YES=1"
+  shift
+  goto parse_continuation_next
+)
+if /I "%~1"=="--non-interactive" (
+  set "GATEWAY_NONINTERACTIVE=1"
+  shift
+  goto parse_continuation_next
+)
+if /I "%~1"=="-NonInteractive" (
+  set "GATEWAY_NONINTERACTIVE=1"
+  shift
+  goto parse_continuation_next
+)
+if /I "%~1"=="--expected-continuation-fingerprint" goto continuation_option_expected
+if /I "%~1"=="-ExpectedContinuationFingerprint" goto continuation_option_expected
+if /I "%~1"=="--json" (
+  shift
+  goto parse_continuation_next
+)
+if /I "%~1"=="-h" goto help_continuation
+if /I "%~1"=="--help" goto help_continuation
+echo Unknown continue-bootstrap option. Run gateway.cmd continue-bootstrap --help. 1>&2
+exit /b 2
+
+:continuation_option_config
+if "%~2"=="" (
+  echo --config requires a path. 1>&2
+  exit /b 2
+)
+set "GATEWAY_CONFIG=%~2"
+set "GATEWAY_CONFIG_SET=1"
+shift
+shift
+goto parse_continuation_next
+
+:continuation_option_expected
+if "%~2"=="" (
+  echo --expected-continuation-fingerprint requires sha256:^<64 lowercase hex^>. 1>&2
+  exit /b 2
+)
+set "GATEWAY_EXPECTED_CONTINUATION=%~2"
+set "GATEWAY_EXPECTED_CONTINUATION_SET=1"
+shift
+shift
+goto parse_continuation_next
+
+:run_continuation
+set "GATEWAY_NO_INSTALL=1"
+call :find_pwsh
+if errorlevel 1 exit /b %errorlevel%
+"%GATEWAY_PWSH%" -NoLogo -NoProfile -Command "$ErrorActionPreference='Stop'; try { $p=@{}; if($env:GATEWAY_CONFIG_SET -eq '1'){$p.Config=$env:GATEWAY_CONFIG}; if($env:GATEWAY_NONINTERACTIVE -eq '1'){$p.NonInteractive=$true}; if($env:GATEWAY_YES -eq '1'){$p.Yes=$true}; if($env:GATEWAY_EXPECTED_CONTINUATION_SET -eq '1'){$p.ExpectedContinuationFingerprint=$env:GATEWAY_EXPECTED_CONTINUATION}; & (Join-Path $env:GATEWAY_ROOT 'operations\continue-bootstrap-after-database-recovery.ps1') @p; exit 0 } catch { [Console]::Error.WriteLine('Recovered Gateway bootstrap continuation could not complete safely. Dependency details were withheld.'); exit 1 }"
+exit /b %errorlevel%
+
+:help_continuation
+echo Usage: gateway.cmd continue-bootstrap --config PATH [--yes --expected-continuation-fingerprint SHA256] [--non-interactive]
+exit /b 0
+
 :help_upgrade
 echo Usage: gateway.cmd upgrade-admin-ui --config PATH --yes [--non-interactive]
 exit /b 0
@@ -346,6 +423,8 @@ echo   apply       Apply an accepted current plan
 echo   resume      Resume an interrupted accepted plan
 echo   recover-database
 echo               Run the reviewed one-time recovery for an eligible failed database bootstrap
+echo   continue-bootstrap
+echo               Continue only pending steps after an exact completed database recovery
 echo   upgrade-admin-ui
 echo               Build and promote only the Admin UI of a completed bootstrap deployment
 echo   status      Show checkpoint and truthful readiness status

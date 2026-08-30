@@ -64,7 +64,7 @@
 
 .PARAMETER WorkerProcessingEnabled
     Enables Service Bus processing on the current workflow worker. Defaults false
-    for inert-first deployment; the bounded canary controller owns activation.
+    for inert-first deployment; the reviewed activation workflow enables it.
 
 .PARAMETER EnableLegacyWorkerCredentialKeyVaultSecretsOfficer
     Explicitly retains the legacy worker Key Vault Secrets Officer role. Workflow

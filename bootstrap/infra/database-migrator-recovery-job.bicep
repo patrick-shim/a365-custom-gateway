@@ -67,6 +67,22 @@ param recoveryPlanFingerprint string
 @maxLength(36)
 param recoveryExecutionIntentId string
 
+@description('One-based bounded database recovery attempt. Exactly two independently planned attempts are supported.')
+@allowed([
+  1
+  2
+])
+param recoveryAttemptNumber int = 1
+
+@description('Exact boundary fingerprint of the original failed database initialization Job and execution.')
+@minLength(71)
+@maxLength(71)
+param originalFailedDatabaseBoundaryFingerprint string
+
+@description('Exact prior failed recovery boundary for attempt two; empty only for the first recovery attempt.')
+@maxLength(71)
+param priorFailedRecoveryBoundaryFingerprint string = ''
+
 @description('Exact Azure SQL contained-principal name for the Gateway API managed identity.')
 @minLength(1)
 @maxLength(128)
@@ -92,11 +108,13 @@ param workerDatabasePrincipalClientId string
 @maxValue(3600)
 param replicaTimeoutSeconds int = 1800
 
-var jobName = 'job-${projectName}-db-recover-${environment}'
-var containerName = 'database-recovery'
+var recoveryAttemptSuffix = recoveryAttemptNumber == 1 ? '' : '2'
+var recoveryJobStem = recoveryAttemptNumber == 1 ? 'db-recover' : 'db-recov2'
+var jobName = 'job-${projectName}-${recoveryJobStem}-${environment}'
+var containerName = 'database-recovery${recoveryAttemptSuffix}'
 var databaseName = 'GatewayDb'
 var databaseRecoveryJobImage = '${acrLoginServer}/gateway-db-migrator@${databaseMigratorImageDigest}'
-var tags = {
+var tags = union({
   application: 'a365-custom-gateway'
   environment: environment
   managedBy: 'bootstrap'
@@ -106,8 +124,12 @@ var tags = {
   bootstrapSourceFingerprint: originalAcceptedSourceFingerprint
   recoverySourceFingerprint: recoverySourceFingerprint
   recoveryPlanFingerprint: recoveryPlanFingerprint
-  workload: 'database-bootstrap-recovery'
-}
+  workload: 'database-bootstrap-recovery${recoveryAttemptSuffix}'
+  recoveryAttempt: string(recoveryAttemptNumber)
+  originalFailedDatabaseBoundaryFingerprint: originalFailedDatabaseBoundaryFingerprint
+}, recoveryAttemptNumber == 2 ? {
+  priorFailedRecoveryBoundaryFingerprint: priorFailedRecoveryBoundaryFingerprint
+} : {})
 
 // This is a distinct, dormant recovery surface. Deploying or updating it does
 // not start the migrator and cannot replay the retained failed bootstrap job.
@@ -216,3 +238,6 @@ output originalAcceptedSourceFingerprint string = originalAcceptedSourceFingerpr
 output recoverySourceFingerprint string = recoverySourceFingerprint
 output recoveryPlanFingerprint string = recoveryPlanFingerprint
 output recoveryExecutionIntentId string = recoveryExecutionIntentId
+output recoveryAttemptNumber int = recoveryAttemptNumber
+output originalFailedDatabaseBoundaryFingerprint string = originalFailedDatabaseBoundaryFingerprint
+output priorFailedRecoveryBoundaryFingerprint string = priorFailedRecoveryBoundaryFingerprint

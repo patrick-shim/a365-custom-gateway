@@ -112,12 +112,27 @@ function Get-GatewayDatabaseRecoveryPlan {
         ($databaseStep.Contains('evidence') -and $null -ne $databaseStep.evidence)) {
         throw 'Database recovery is allowed only for the exact failed Gateway database step before any completed database evidence was recorded.'
     }
+    $previousRecoveryPlan = $null
+    $priorFailedRecovery = $null
+    $attemptNumber = 1
+    if ($State.Contains('databaseRecoveryPlan')) {
+        if ($State.databaseRecoveryPlan -isnot [System.Collections.IDictionary] -or
+            (Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $State.databaseRecoveryPlan) -ne 1 -or
+            [string]$State.databaseRecoveryPlan.status -cne 'Running') {
+            throw 'Only the exact terminally failed first database recovery attempt may produce a continuation plan.'
+        }
+        Assert-BootstrapDatabaseRecoveryHistory -State $State -CurrentPlan $State.databaseRecoveryPlan | Out-Null
+        $null = Resolve-BootstrapDatabaseRecoveryPlanSourceRoot -State $State -Plan $State.databaseRecoveryPlan
+        $previousRecoveryPlan = ConvertTo-BootstrapCanonicalValue -Value $State.databaseRecoveryPlan
+        $attemptNumber = 2
+    }
     $originalSourceFingerprint = [string]$State.acceptedPlan.sourceFingerprint
     $correctedSourceFingerprint = Get-BootstrapSourceFingerprint
     Assert-BootstrapFingerprintValue -Value $originalSourceFingerprint -Label 'Original accepted source fingerprint'
     Assert-BootstrapFingerprintValue -Value $correctedSourceFingerprint -Label 'Corrected recovery source fingerprint'
-    if ($correctedSourceFingerprint -ceq $originalSourceFingerprint) {
-        throw 'Database recovery requires a corrected source generation distinct from the failed accepted source.'
+    if ($correctedSourceFingerprint -ceq $originalSourceFingerprint -or
+        ($attemptNumber -eq 2 -and $correctedSourceFingerprint -ceq [string]$previousRecoveryPlan.correctedSourceFingerprint)) {
+        throw 'Database recovery requires a newly corrected source generation distinct from every failed source generation.'
     }
     $null = Resolve-BootstrapAcceptedSourceRoot -State $State
     $configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $Configuration
@@ -141,12 +156,22 @@ function Get-GatewayDatabaseRecoveryPlan {
         -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
         -OriginalAdministratorObjectId ([string]$identity.userObjectId) `
         -OriginalAdministratorLogin ([string]$identity.userPrincipalName)
-    $imageIntentId = Get-BootstrapDeterministicGuid -Material "$ownershipId|$originalSourceFingerprint|$correctedSourceFingerprint|$($failedJob.boundaryFingerprint)|database-recovery-image"
-    $executionIntentId = Get-BootstrapDeterministicGuid -Material "$ownershipId|$originalSourceFingerprint|$correctedSourceFingerprint|$($failedJob.boundaryFingerprint)|database-recovery-execution"
+    if ($attemptNumber -eq 2) {
+        $priorFailedRecovery = Get-GatewayFailedDatabaseRecoveryBoundary `
+            -Config $Configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+            -SqlServerFqdn ([string]$inert.sqlServerFqdn) -RecoveryPlan $previousRecoveryPlan `
+            -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+            -OriginalAdministratorObjectId ([string]$identity.userObjectId) `
+            -OriginalAdministratorLogin ([string]$identity.userPrincipalName)
+    }
+    $priorBoundaryMaterial = if ($null -ne $priorFailedRecovery) { "|$($priorFailedRecovery.boundaryFingerprint)" } else { '' }
+    $imageIntentId = Get-BootstrapDeterministicGuid -Material "$ownershipId|$originalSourceFingerprint|$correctedSourceFingerprint|$($failedJob.boundaryFingerprint)$priorBoundaryMaterial|database-recovery-image-attempt-$attemptNumber"
+    $executionIntentId = Get-BootstrapDeterministicGuid -Material "$ownershipId|$originalSourceFingerprint|$correctedSourceFingerprint|$($failedJob.boundaryFingerprint)$priorBoundaryMaterial|database-recovery-execution-attempt-$attemptNumber"
     $imageTag = Get-BootstrapImageBuildIntentTag -DeploymentOwnershipId $ownershipId -SourceFingerprint $correctedSourceFingerprint -IntentId $imageIntentId
-    $jobName = "job-$($Configuration.projectName)-db-recover-$($Configuration.environment)"
+    $recoveryContract = Get-GatewayDatabaseRecoveryAttemptContract -Config $Configuration -AttemptNumber $attemptNumber
+    $jobName = [string]$recoveryContract.jobName
     $planCore = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = if ($attemptNumber -eq 2) { 2 } else { 1 }
         configurationFingerprint = $configurationFingerprint
         deploymentOwnershipId = $ownershipId
         originalSourceFingerprint = $originalSourceFingerprint
@@ -173,6 +198,12 @@ function Get-GatewayDatabaseRecoveryPlan {
             resourceId = ("/subscriptions/$($Configuration.subscriptionId)/resourceGroups/$($Configuration.resourceGroupName)/providers/Microsoft.App/jobs/$jobName").ToLowerInvariant()
         }
     }
+    if ($attemptNumber -eq 2) {
+        $planCore.Insert(1, 'attemptNumber', 2)
+        $planCore.Insert(8, 'previousRecoveryPlanFingerprint', [string]$previousRecoveryPlan.planFingerprint)
+        $planCore.Insert(9, 'previousRecoveryPlan', $previousRecoveryPlan)
+        $planCore.Insert(10, 'priorFailedRecovery', $priorFailedRecovery)
+    }
     $planFingerprint = Get-BootstrapObjectFingerprint -InputObject $planCore
     $originalDigest = ([string]$images.databaseMigrator).Split('@')[-1]
     $whatIf = Invoke-GatewayDatabaseRecoveryWhatIf `
@@ -182,7 +213,10 @@ function Get-GatewayDatabaseRecoveryPlan {
         -DatabaseMigratorImageDigest $originalDigest -DeploymentOwnershipId $ownershipId `
         -OriginalAcceptedSourceFingerprint $originalSourceFingerprint `
         -RecoverySourceFingerprint $correctedSourceFingerprint -RecoveryPlanFingerprint $planFingerprint `
-        -RecoveryExecutionIntentId $executionIntentId -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal
+        -RecoveryExecutionIntentId $executionIntentId -RecoveryAttemptNumber $attemptNumber `
+        -OriginalFailedDatabaseBoundaryFingerprint ([string]$failedJob.boundaryFingerprint) `
+        -PriorFailedRecoveryBoundaryFingerprint $(if ($null -ne $priorFailedRecovery) { [string]$priorFailedRecovery.boundaryFingerprint } else { '' }) `
+        -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal
     $plan = ConvertTo-BootstrapCanonicalValue -Value $planCore
     $plan['planFingerprint'] = $planFingerprint
     $plan['whatIf'] = $whatIf
@@ -593,7 +627,7 @@ try {
             [string]$state.databaseRecoveryPlan.status -ceq 'Completed') {
             Assert-BootstrapAcceptedDatabaseRecoveryPlan `
                 -State $state -PlanFingerprint ([string]$state.databaseRecoveryPlan.planFingerprint) -AllowCompleted | Out-Null
-            Write-GatewayExperienceEvent -Type Result -Message 'Database recovery is already complete and reconciled. Run gateway resume with a freshly reviewed normal plan to continue the remaining deployment steps.' -Data ([ordered]@{
+            Write-GatewayExperienceEvent -Type Result -Message 'Database recovery is already complete and reconciled. Run gateway continue-bootstrap to execute only the remaining deployment steps.' -Data ([ordered]@{
                 step = 'Gateway database'; index = 11; total = $stepNames.Count
                 recoveryPlanFingerprint = [string]$state.databaseRecoveryPlan.planFingerprint
                 recovered = $true; runOnce = $true
@@ -601,13 +635,68 @@ try {
             return
         }
 
-        $plan = if ($state.Contains('databaseRecoveryPlan')) {
+        if ($state.Contains('databaseRecoveryPlan') -and
+            $state.databaseRecoveryPlan -is [System.Collections.IDictionary] -and
+            [string]$state.databaseRecoveryPlan.status -ceq 'Failed') {
+            throw 'Both bounded database recovery attempts are exhausted. The second failure is manual-only; no Job will be updated, restarted, deleted, or replaced.'
+        }
+        $currentRecoveryAttempt = if ($state.Contains('databaseRecoveryPlan') -and $state.databaseRecoveryPlan -is [System.Collections.IDictionary]) {
+            Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $state.databaseRecoveryPlan
+        } else { 0 }
+        if ($currentRecoveryAttempt -eq 2 -and [string]$state.databaseRecoveryPlan.status -ceq 'Running') {
+            $foundationForReconcile = $state.steps['Azure foundation'].evidence
+            $identityForReconcile = $state.steps['Gateway API identity'].evidence
+            $inertForReconcile = $state.steps['Inert identity deployment'].evidence
+            $sqlPrivateEndpointForReconcile = $state.steps['SQL private endpoint'].evidence
+            $apiForReconcile = Get-ManagedIdentityClientId -PrincipalObjectId ([string]$inertForReconcile.apiPrincipalId)
+            $workerForReconcile = Get-ManagedIdentityClientId -PrincipalObjectId ([string]$inertForReconcile.workerPrincipalId)
+            $secondContract = Get-GatewayDatabaseRecoveryAttemptContract -Config $configuration -AttemptNumber 2
+            $secondReceiptPath = Join-Path (Get-RepositoryRoot) ".bootstrap/evidence/$($configuration.resourceGroupName)/database/$($secondContract.receiptFileName)"
+            $secondReceipt = Read-GatewayPrivateDatabaseBootstrapRecord -Path $secondReceiptPath
+            $hasExactFailureCandidate = Test-BootstrapDatabaseRecoveryFailureReceiptCandidate -Receipt $secondReceipt
+            if ($hasExactFailureCandidate) {
+                $secondFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
+                    -Config $configuration -Foundation $foundationForReconcile -SqlPrivateEndpoint $sqlPrivateEndpointForReconcile `
+                    -SqlServerFqdn ([string]$inertForReconcile.sqlServerFqdn) -RecoveryPlan $state.databaseRecoveryPlan `
+                    -ApiPrincipal $apiForReconcile -WorkerPrincipal $workerForReconcile `
+                    -OriginalAdministratorObjectId ([string]$identityForReconcile.userObjectId) `
+                    -OriginalAdministratorLogin ([string]$identityForReconcile.userPrincipalName) -ReturnNullUnlessFailed
+                if ($null -ne $secondFailure) {
+                    $null = Set-BootstrapFailedDatabaseRecoveryPlan -State $state -StatePath $statePath -FailedRecovery $secondFailure
+                    throw 'The second and final database recovery execution failed with the original SQL administrator restored and no accepted evidence. Recovery is now manual-only; no third attempt is authorized.'
+                }
+            }
+        }
+        $attemptOneFailedRecovery = $null
+        if ($currentRecoveryAttempt -eq 1 -and [string]$state.databaseRecoveryPlan.status -ceq 'Running') {
+            $attemptOneContract = Get-GatewayDatabaseRecoveryAttemptContract -Config $configuration -AttemptNumber 1
+            $attemptOneReceiptPath = Join-Path (Get-RepositoryRoot) ".bootstrap/evidence/$($configuration.resourceGroupName)/database/$($attemptOneContract.receiptFileName)"
+            $attemptOneReceipt = Read-GatewayPrivateDatabaseBootstrapRecord -Path $attemptOneReceiptPath
+            if (Test-BootstrapDatabaseRecoveryFailureReceiptCandidate -Receipt $attemptOneReceipt) {
+                $foundationForFailure = $state.steps['Azure foundation'].evidence
+                $identityForFailure = $state.steps['Gateway API identity'].evidence
+                $inertForFailure = $state.steps['Inert identity deployment'].evidence
+                $sqlPrivateEndpointForFailure = $state.steps['SQL private endpoint'].evidence
+                $apiForFailure = Get-ManagedIdentityClientId -PrincipalObjectId ([string]$inertForFailure.apiPrincipalId)
+                $workerForFailure = Get-ManagedIdentityClientId -PrincipalObjectId ([string]$inertForFailure.workerPrincipalId)
+                $attemptOneFailedRecovery = Get-GatewayFailedDatabaseRecoveryBoundary `
+                    -Config $configuration -Foundation $foundationForFailure -SqlPrivateEndpoint $sqlPrivateEndpointForFailure `
+                    -SqlServerFqdn ([string]$inertForFailure.sqlServerFqdn) -RecoveryPlan $state.databaseRecoveryPlan `
+                    -ApiPrincipal $apiForFailure -WorkerPrincipal $workerForFailure `
+                    -OriginalAdministratorObjectId ([string]$identityForFailure.userObjectId) `
+                    -OriginalAdministratorLogin ([string]$identityForFailure.userPrincipalName) -ReturnNullUnlessFailed
+            }
+        }
+        $plan = if (-not $state.Contains('databaseRecoveryPlan')) {
+            Get-GatewayDatabaseRecoveryPlan -Configuration $configuration -State $state
+        }
+        elseif ($currentRecoveryAttempt -eq 1 -and $null -ne $attemptOneFailedRecovery) {
+            Get-GatewayDatabaseRecoveryPlan -Configuration $configuration -State $state
+        }
+        else {
             Assert-BootstrapAcceptedDatabaseRecoveryPlan `
                 -State $state -PlanFingerprint ([string]$state.databaseRecoveryPlan.planFingerprint) | Out-Null
             $state.databaseRecoveryPlan
-        }
-        else {
-            Get-GatewayDatabaseRecoveryPlan -Configuration $configuration -State $state
         }
         $planFingerprint = [string]$plan.planFingerprint
         Write-GatewayExperienceEvent -Type Info -Message "Database recovery dry plan is apply-ready. recoveryPlanFingerprint: $planFingerprint" -Data ([ordered]@{
@@ -618,6 +707,7 @@ try {
             originalFailedJob = [string]$plan.failedJob.jobName
             originalFailedExecution = [string]$plan.failedJob.executionName
             recoveryJob = [string]$plan.recoveryJob.name
+            recoveryAttempt = if ($plan.Contains('attemptNumber')) { [int]$plan.attemptNumber } else { 1 }
             recoveryMode = 'ResumeAfterSchemaCompleted'
             retryLimit = 0; maximumExecutions = 1; applyReady = $true
         }) -OutputFormat $OutputFormat
@@ -639,8 +729,28 @@ try {
         if ($ExpectedPlanFingerprint -cne $planFingerprint) {
             throw 'Expected database recovery plan fingerprint mismatch. No mutation was authorized.'
         }
+        $planAttemptNumber = if ($plan.Contains('attemptNumber')) { [int]$plan.attemptNumber } else { 1 }
         if (-not $state.Contains('databaseRecoveryPlan')) {
             $plan = Set-BootstrapAcceptedDatabaseRecoveryPlan -State $state -StatePath $statePath -Plan $plan
+        }
+        elseif ($planAttemptNumber -eq 2 -and $currentRecoveryAttempt -eq 1) {
+            $foundationForTransition = $state.steps['Azure foundation'].evidence
+            $identityForTransition = $state.steps['Gateway API identity'].evidence
+            $inertForTransition = $state.steps['Inert identity deployment'].evidence
+            $sqlPrivateEndpointForTransition = $state.steps['SQL private endpoint'].evidence
+            $apiForTransition = Get-ManagedIdentityClientId -PrincipalObjectId ([string]$inertForTransition.apiPrincipalId)
+            $workerForTransition = Get-ManagedIdentityClientId -PrincipalObjectId ([string]$inertForTransition.workerPrincipalId)
+            $livePriorFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
+                -Config $configuration -Foundation $foundationForTransition -SqlPrivateEndpoint $sqlPrivateEndpointForTransition `
+                -SqlServerFqdn ([string]$inertForTransition.sqlServerFqdn) -RecoveryPlan $state.databaseRecoveryPlan `
+                -ApiPrincipal $apiForTransition -WorkerPrincipal $workerForTransition `
+                -OriginalAdministratorObjectId ([string]$identityForTransition.userObjectId) `
+                -OriginalAdministratorLogin ([string]$identityForTransition.userPrincipalName)
+            if ([string]$livePriorFailure.boundaryFingerprint -cne [string]$plan.priorFailedRecovery.boundaryFingerprint) {
+                throw 'The first recovery failure changed after dry-plan review. No continuation was accepted or started.'
+            }
+            $plan = Set-BootstrapAcceptedDatabaseRecoveryContinuationPlan `
+                -State $state -StatePath $statePath -Plan $plan -FailedRecovery $livePriorFailure
         }
         Assert-BootstrapAcceptedDatabaseRecoveryPlan -State $state -PlanFingerprint $planFingerprint | Out-Null
         $recoverySourceRoot = Resolve-BootstrapDatabaseRecoverySourceRoot -State $state
@@ -668,6 +778,17 @@ try {
         if ([string]$liveFailedJob.boundaryFingerprint -cne [string]$plan.failedJob.boundaryFingerprint) {
             throw 'The original failed database Job changed after plan review. No recovery mutation was started.'
         }
+        if ($planAttemptNumber -eq 2) {
+            $livePriorFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
+                -Config $configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+                -SqlServerFqdn ([string]$inert.sqlServerFqdn) -RecoveryPlan $plan.previousRecoveryPlan `
+                -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+                -OriginalAdministratorObjectId ([string]$identity.userObjectId) `
+                -OriginalAdministratorLogin ([string]$identity.userPrincipalName)
+            if ([string]$livePriorFailure.boundaryFingerprint -cne [string]$plan.priorFailedRecovery.boundaryFingerprint) {
+                throw 'The first recovery failure changed after continuation acceptance. No second Job mutation was started.'
+            }
+        }
 
         $null = Start-BootstrapDatabaseRecoveryPlan -State $state -StatePath $statePath -PlanFingerprint $planFingerprint
         $recoveryImage = Build-GatewayDatabaseRecoveryImage `
@@ -681,7 +802,8 @@ try {
                 $state.databaseRecoveryPlan.correctedImage = ConvertTo-BootstrapCanonicalValue -Value $imageEvidence
                 Save-BootstrapState -State $state -Path $statePath
             }
-        $recoveryReceiptPath = Join-Path (Get-RepositoryRoot) ".bootstrap/evidence/$($configuration.resourceGroupName)/database/private-database-bootstrap-recovery-receipt.json"
+        $recoveryContract = Get-GatewayDatabaseRecoveryAttemptContract -Config $configuration -AttemptNumber $planAttemptNumber
+        $recoveryReceiptPath = Join-Path (Get-RepositoryRoot) ".bootstrap/evidence/$($configuration.resourceGroupName)/database/$($recoveryContract.receiptFileName)"
         if (-not (Test-Path -LiteralPath $recoveryReceiptPath)) {
             $applyWhatIf = Invoke-GatewayDatabaseRecoveryWhatIf `
                 -Config $configuration -Foundation $foundation -RepositoryRoot $recoverySourceRoot `
@@ -693,24 +815,52 @@ try {
                 -RecoverySourceFingerprint ([string]$plan.correctedSourceFingerprint) `
                 -RecoveryPlanFingerprint $planFingerprint `
                 -RecoveryExecutionIntentId ([string]$plan.recoveryJob.executionIntentId) `
+                -RecoveryAttemptNumber $planAttemptNumber `
+                -OriginalFailedDatabaseBoundaryFingerprint ([string]$plan.failedJob.boundaryFingerprint) `
+                -PriorFailedRecoveryBoundaryFingerprint $(if ($planAttemptNumber -eq 2) { [string]$plan.priorFailedRecovery.boundaryFingerprint } else { '' }) `
                 -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal
             if ([string]$applyWhatIf.changeFingerprint -cne [string]$plan.whatIf.changeFingerprint) {
                 throw 'Database recovery What-If changed after the corrected immutable image was built. No Job deployment or start was attempted.'
             }
         }
-        $database = Initialize-GatewayDatabase `
-            -Config $configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
-            -SqlServerFqdn ([string]$inert.sqlServerFqdn) `
-            -ApiPrincipalId ([string]$inert.apiPrincipalId) -WorkerPrincipalId ([string]$inert.workerPrincipalId) `
-            -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
-            -DatabaseMigratorImage ([string]$recoveryImage.image) `
-            -OriginalEntraAdministratorObjectId ([string]$identity.userObjectId) `
-            -OriginalEntraAdministratorLogin ([string]$identity.userPrincipalName) `
-            -BootstrapClientIpv4 ([string]$state.acceptedPlan.bootstrapClientIpv4) `
-            -RecoveryPlan $state.databaseRecoveryPlan
+        $database = $null
+        $databaseFailure = $null
+        try {
+            $database = Initialize-GatewayDatabase `
+                -Config $configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+                -SqlServerFqdn ([string]$inert.sqlServerFqdn) `
+                -ApiPrincipalId ([string]$inert.apiPrincipalId) -WorkerPrincipalId ([string]$inert.workerPrincipalId) `
+                -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+                -DatabaseMigratorImage ([string]$recoveryImage.image) `
+                -OriginalEntraAdministratorObjectId ([string]$identity.userObjectId) `
+                -OriginalEntraAdministratorLogin ([string]$identity.userPrincipalName) `
+                -BootstrapClientIpv4 ([string]$state.acceptedPlan.bootstrapClientIpv4) `
+                -RecoveryPlan $state.databaseRecoveryPlan
+        }
+        catch { $databaseFailure = $_ }
+        if ($null -ne $databaseFailure) {
+            if ($planAttemptNumber -eq 2) {
+                $finalFailedRecovery = $null
+                try {
+                    $finalFailedRecovery = Get-GatewayFailedDatabaseRecoveryBoundary `
+                        -Config $configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+                        -SqlServerFqdn ([string]$inert.sqlServerFqdn) -RecoveryPlan $state.databaseRecoveryPlan `
+                        -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+                        -OriginalAdministratorObjectId ([string]$identity.userObjectId) `
+                        -OriginalAdministratorLogin ([string]$identity.userPrincipalName) -ReturnNullUnlessFailed
+                }
+                catch { $finalFailedRecovery = $null }
+                if ($null -ne $finalFailedRecovery) {
+                    $null = Set-BootstrapFailedDatabaseRecoveryPlan `
+                        -State $state -StatePath $statePath -FailedRecovery $finalFailedRecovery
+                    throw 'The second and final database recovery execution failed with the original SQL administrator restored and no accepted evidence. Recovery is manual-only; no third attempt is authorized.'
+                }
+            }
+            throw $databaseFailure
+        }
         $null = Complete-BootstrapDatabaseRecoveryPlan `
             -State $state -StatePath $statePath -PlanFingerprint $planFingerprint -DatabaseEvidence $database
-        Write-GatewayExperienceEvent -Type Result -Message 'Database recovery completed with exactly one separate recovery Job execution; the original failed Job remains preserved. Run gateway resume to continue the remaining deployment steps.' -Data ([ordered]@{
+        Write-GatewayExperienceEvent -Type Result -Message 'Database recovery completed with exactly one separate recovery Job execution; the original failed Job remains preserved. Run gateway continue-bootstrap to execute only the remaining deployment steps.' -Data ([ordered]@{
             step = 'Gateway database'; index = 11; total = $stepNames.Count
             recoveryPlanFingerprint = $planFingerprint; recovered = $true; runOnce = $true
             recoveryJob = [string]$database.databaseBootstrapJobName
@@ -718,6 +868,19 @@ try {
             originalAdministratorRestored = [bool]$database.originalSqlAdministratorRestored
         }) -OutputFormat $OutputFormat
         return
+    }
+
+    $continuationStepNames = @($stepNames | Select-Object -Skip 11)
+    if ($Mode -in @('Plan', 'Apply', 'Up', 'Resume') -and
+        (Test-BootstrapDatabaseRecoveryRequiresNarrowContinuation -State $state -ContinuationStepNames $continuationStepNames)) {
+        Write-GatewayExperienceEvent -Type Warning -Message 'Normal plan/apply/up/resume is permanently blocked after completed database recovery because it would bypass or replace the preserved recovery boundary. Run gateway continue-bootstrap instead.' -Data ([ordered]@{
+            step = 'Recovered bootstrap continuation'
+            index = 12
+            total = $stepNames.Count
+            resumable = $true
+            requiredCommand = 'gateway continue-bootstrap'
+        }) -OutputFormat $OutputFormat
+        throw 'Completed database recovery requires the narrow continue-bootstrap command for continuation and final reconciliation.'
     }
 
     if ($Mode -in @('Plan', 'Up', 'Resume')) {
@@ -1142,7 +1305,7 @@ try {
         statePath = $statePath
         readiness = if ($provisioningAdmissionReady) { @('InfrastructureReady', 'ControlPlaneReady', 'ProvisioningReady') } else { @('InfrastructureReady', 'ControlPlaneReady') }
         provisioningAdmission = if ($provisioningAdmissionReady) { 'OpenDevelopmentPreview' } else { [string]$verification.registrationMode }
-        notProven = @('FirstAgentActive', 'CanaryProven')
+        notProven = @('FirstAgentActive')
     }) -OutputFormat $OutputFormat
 
     if (-not $provisioningAdmissionReady) {

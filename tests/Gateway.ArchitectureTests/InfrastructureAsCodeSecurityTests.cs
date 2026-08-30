@@ -1567,7 +1567,7 @@ public class InfrastructureAsCodeSecurityTests
         var dockerIgnore = ReadRepositoryFile(".dockerignore");
 
         entry.Should().Contain(
-            "[ValidateSet('Init', 'Doctor', 'Plan', 'Apply', 'Resume', 'Status', 'Verify', 'Open', 'Diagnose', 'Up')]");
+            "[ValidateSet('Init', 'Doctor', 'Plan', 'Apply', 'Resume', 'Status', 'Verify', 'Open', 'Diagnose', 'Up', 'RecoverDatabase')]");
         entry.Should().Contain("Enter-BootstrapLock");
         entry.Should().Contain(
             "Clean bootstrap requires the target resource group to be absent. Refusing to adopt an existing unowned resource group or its deterministic resources.");
@@ -1705,7 +1705,7 @@ public class InfrastructureAsCodeSecurityTests
         purview.Should().Contain("Assert-BootstrapPurviewPolicyObject");
         purview.Should().Contain("Assert-BootstrapPurviewRuleObject");
         purview.Should().Contain("exactTypedReadback = $true");
-        purview.Should().Contain("propagationStatus = 'PendingCanaryVerification'");
+        purview.Should().Contain("propagationStatus = 'PendingLiveVerification'");
         experience.Should().Contain("$Evidence.exactTypedReadback -ne $true");
 
         sourceGate.Should().Contain("$result.FailedCount -gt 0 -or $failedContainerCount -gt 0");

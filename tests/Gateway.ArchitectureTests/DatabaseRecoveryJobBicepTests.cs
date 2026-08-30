@@ -17,7 +17,9 @@ public class DatabaseRecoveryJobBicepTests
     {
         var source = ReadRecoveryJobSource();
 
-        source.Should().Contain("var jobName = 'job-${projectName}-db-recover-${environment}'");
+        source.Should().Contain("var recoveryAttemptSuffix = recoveryAttemptNumber == 1 ? '' : '2'");
+        source.Should().Contain("var recoveryJobStem = recoveryAttemptNumber == 1 ? 'db-recover' : 'db-recov2'");
+        source.Should().Contain("var jobName = 'job-${projectName}-${recoveryJobStem}-${environment}'");
         source.Should().Contain("resource databaseRecoveryJob 'Microsoft.App/jobs@2025-01-01'");
         source.Should().Contain("triggerType: 'Manual'");
         source.Should().Contain("replicaRetryLimit: 0");
@@ -28,6 +30,9 @@ public class DatabaseRecoveryJobBicepTests
         source.Should().NotContain("scheduleTriggerConfig:");
         source.Should().NotContain("eventTriggerConfig:");
         source.Should().NotContain("cronExpression:");
+        source.Should().Contain("param recoveryAttemptNumber int = 1");
+        source.Should().Contain("param originalFailedDatabaseBoundaryFingerprint string");
+        source.Should().Contain("param priorFailedRecoveryBoundaryFingerprint string = ''");
     }
 
     [Fact]
@@ -62,6 +67,9 @@ public class DatabaseRecoveryJobBicepTests
         source.Should().Contain("bootstrapSourceFingerprint: originalAcceptedSourceFingerprint");
         source.Should().Contain("recoverySourceFingerprint: recoverySourceFingerprint");
         source.Should().Contain("recoveryPlanFingerprint: recoveryPlanFingerprint");
+        source.Should().Contain("recoveryAttempt: string(recoveryAttemptNumber)");
+        source.Should().Contain("originalFailedDatabaseBoundaryFingerprint: originalFailedDatabaseBoundaryFingerprint");
+        source.Should().Contain("priorFailedRecoveryBoundaryFingerprint: priorFailedRecoveryBoundaryFingerprint");
         Regex.Matches(source, "'--accepted-source-fingerprint'", RegexOptions.CultureInvariant)
             .Count.Should().Be(1);
         source.Should().NotContain("'--accepted-source-fingerprint'\n            recoverySourceFingerprint");
@@ -104,6 +112,9 @@ public class DatabaseRecoveryJobBicepTests
         source.Should().Contain("output recoverySourceFingerprint string = recoverySourceFingerprint");
         source.Should().Contain("output recoveryPlanFingerprint string = recoveryPlanFingerprint");
         source.Should().Contain("output recoveryExecutionIntentId string = recoveryExecutionIntentId");
+        source.Should().Contain("output recoveryAttemptNumber int = recoveryAttemptNumber");
+        source.Should().Contain("output originalFailedDatabaseBoundaryFingerprint string = originalFailedDatabaseBoundaryFingerprint");
+        source.Should().Contain("output priorFailedRecoveryBoundaryFingerprint string = priorFailedRecoveryBoundaryFingerprint");
         source.Should().NotContain("output sql");
         source.Should().NotContain("output apiDatabasePrincipal");
         source.Should().NotContain("output workerDatabasePrincipal");
