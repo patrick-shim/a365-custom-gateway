@@ -323,7 +323,7 @@ reported as completion of the plan. The authoritative phase status is:
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. `a365gw6` proved no-resubmit image recovery; `a365gw7` exposed the private-ACR first-pull ordering defect; `a365gw8` exposed incomplete typed ACR policy projection; `a365gw9` exposed a stale scope/audience guard at 6/19; `a365gw10` proved same-source interruption/Resume and a succeeded inert graph; `a365gw11` exposed ARM Boolean casing during step 7; and `a365gw12` accepted an exact eight-Create Plan and completed steps 1–6, but failed closed at step 7 because the strict validator expected an ARM top-level parameter for a database name that Bicep derives internally and exposes only as an output. The v2 audience split and bounded interactive-user canary are locally reviewed. A corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. `a365gw6` proved no-resubmit image recovery; `a365gw7` exposed the private-ACR first-pull ordering defect; `a365gw8` exposed incomplete typed ACR policy projection; `a365gw9` exposed a stale scope/audience guard at 6/19; `a365gw10` proved same-source interruption/Resume and a succeeded inert graph; `a365gw11` exposed ARM Boolean casing during step 7; `a365gw12` exposed an invalid expectation for a Bicep-derived output-only database name; and `a365gw13` accepted an exact eight-Create Plan and completed steps 1–6, but failed closed at step 7 because an empty manager-ID array collapsed to null before a strict `.Count` check. The v2 audience split and bounded interactive-user canary are locally reviewed. A corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
@@ -952,6 +952,70 @@ subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
 Service Bus message data plane was accessed in either subscription.
 
+Fresh generation `a365gw13-dev` used absent resource group
+`rg-a365-custom-gw-phase6l`, ownership
+`123aedd4-c7c8-43ac-9be2-83e93c9b5dd1`, and ACR
+`acra365gw13devgb7yh4`, again only in the target subscription. Its accepted Plan
+`sha256:196d1b7de0bc02e9a9d4ff93471dd0696364fe5cf1d9c9998a57baa142f401e6`
+bound configuration
+`sha256:064fe82443341bf8f76c1a89be56e832ee2b3bc41d0748268f50f11fd75dd474`
+and source
+`sha256:5f154f039dfbd7814f49aa6024ebadfcc9d40bcf3e9713f1fc02ef61bcf943b8`.
+Authenticated What-If again reported exactly eight `Create` predictions and zero
+other changes. The accepted minimal profile was `dev`, Registry preview enabled,
+exactly one reviewed manager application, Prompt Shields disabled, and Purview
+disabled. The accepted Apply window was `2026-08-30T02:00:29Z` through
+`2026-08-30T02:19:16Z` (11:00–11:19 KST).
+
+Apply completed durable steps 1–6. API, worker, and Admin UI ACR `QuickRun`s
+completed with respective digests
+`sha256:830347df6d1018735a04d851e862c00514433bfdbd303a6119585883b2e582b2`,
+`sha256:b8a4d8ff401992310f10f766ac31200c439d6d86ab509108984ccba72e26f527`,
+and
+`sha256:851e692413a0896e13485d4133b8f695a0b3680671ad1f0cc752aa6dcd915592`.
+Foundation deployment `a365gw-a365gw13-bootstrap-foundation-dev`, inert deployment
+`a365gw-a365gw13-bootstrap-inert-dev`, every nested deployment, and both Container
+Apps reached `Succeeded`.
+
+Step 7 failed closed because PowerShell pipeline assignment collapsed the inert
+`else { @() }` result for `expectedManagerIds` to null. The sequence equality check
+was null-tolerant, but the later strict `.Count` environment loop raised
+`PropertyNotFoundException`. Exact target-only GET proved ARM carried an empty
+array parameter, Bicep emitted zero manager-ID environment entries, both apps were
+digest-pinned and secret-free, and the corrected database-name contract passed.
+State records exactly steps 1–6 completed, step 7 `Failed`, no promoted outputs,
+and no step 8 or later state. No seed blueprint or later mutation followed.
+Message-count and SQL outbox evidence was not captured: SQL initialization never
+started and no Service Bus message data plane was accessed. That absence is not a
+zero-count claim.
+
+Three independent read-only audits reproduced the exact exception and agreed that
+same-source Resume would GET-adopt the succeeded deployment and fail the same
+validator. A StrictMode GET-only run with only outer array capture corrected passed
+the complete live a365gw13 validator. Preserve `a365gw13` state, snapshot, graph,
+identities, and images; never reconstruct acceptance or Resume it. The bounded
+source audit also found the identical singleton collapse in the later Admin UI
+delegated-scope revalidator and final Verify. The Entra typed-array boundary and
+join-only empty/singleton sites remain safe.
+
+Commit `c92757080b1465ca0e140919038ba0176a5e0eb1` applies outer array capture to
+exactly those three direct-`.Count` assignments, preserving manager-ID sequence
+equality and exact one-grant/resource/`AllPrincipals`/`access_as_user` checks.
+Independent review approved the correction and proved its AST regressions fail
+against the pre-fix assignments. Focused Experience and Verification tests pass
+**119/119**. The canonical source gate discovered **452** Pester tests: **451**
+passed, none failed, and one Windows-only launcher test was skipped on macOS; it
+parsed **19** PowerShell files and **2** JSON contracts and compiled all **25**
+Bicep templates plus **5** parameter files. Direct Release tests pass
+**1,304/1,304**, the Release build has zero warnings/errors, and format/diff checks
+pass. The corrected deployment-affecting source fingerprint is
+`sha256:f0d03d165f7a4c71664eba46ad8c33ad562968e124ea293ccea07e7217eb2307`.
+The next live generation is reserved as `a365gw14` in absent resource group
+`rg-a365-custom-gw-phase6m`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
+Service Bus message data plane was accessed in either subscription.
+
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
 architecture regression test covers the operation-ID binding. Focused architecture
@@ -1294,9 +1358,9 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    snapshot for Resume; never mix durable state across source generations. Do not
    substitute the old partial `tools/bootstrap.ps1`. Preserve `a365gw6` and
    `a365gw7` at 6/19, `a365gw8` at 3/19, `a365gw9` at 6/19, and `a365gw10` at
-   6/19. Preserve both `a365gw11` and `a365gw12` with steps 1–6 complete and step
-   7 `Failed` after each inert deployment succeeded. In order, those generations
-   preserve exact
+   6/19. Preserve `a365gw11`, `a365gw12`, and `a365gw13` with steps 1–6 complete
+   and step 7 `Failed` after each inert deployment succeeded. In order, those
+   generations preserve exact
    image-build recovery; the terminal inert-deployment/private-ACR first-pull
    failure; a succeeded
    dedicated-pull foundation stopped by incomplete typed ACR policy readback; a
@@ -1305,15 +1369,19 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    `Ignore` contract. `a365gw11` preserves a succeeded inert graph whose immediate
    validator rejected ARM Boolean casing; `a365gw12` preserves the next succeeded
    inert graph whose validator dereferenced a Bicep-derived, output-only database
-   name as though it were a top-level ARM parameter. Neither reached step 8. None
-   may consume edited source or its later recovery Plan.
+   name as though it were a top-level ARM parameter; and `a365gw13` preserves the
+   next succeeded inert graph whose validator collapsed its empty expected-manager
+   array to null before a strict `.Count`. None reached step 8. None may consume
+   edited source or its later recovery Plan.
    Commit `bb001483bae0577d7c29a9638c1c7275dae44525` implements and independently
    reviews the bounded, state-aware `Ignore` rule; its GET-only `a365gw10` smoke is
    recovery evidence, not authorization to Resume that frozen source generation.
    Commit `15f5ee268f59fbc20de1b59734d5fd70d08e73b7` implements and independently
-   reviews the derived database-name readback correction. The next live generation
-   is reserved as `a365gw13` in absent resource group
-   `rg-a365-custom-gw-phase6l`, only in target subscription
+   reviews the derived database-name readback correction. Commit
+   `c92757080b1465ca0e140919038ba0176a5e0eb1` implements and independently
+   reviews the strict array-cardinality correction. The next live generation is
+   reserved as `a365gw14` in absent resource group
+   `rg-a365-custom-gw-phase6m`, only in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof

@@ -390,6 +390,74 @@ in the target subscription. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
 Service Bus message data plane was accessed in either subscription.
 
+Fresh generation `a365gw13-dev` then used absent resource group
+`rg-a365-custom-gw-phase6l`, ownership
+`123aedd4-c7c8-43ac-9be2-83e93c9b5dd1`, and ACR
+`acra365gw13devgb7yh4`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Its accepted Plan
+`sha256:196d1b7de0bc02e9a9d4ff93471dd0696364fe5cf1d9c9998a57baa142f401e6`
+bound configuration
+`sha256:064fe82443341bf8f76c1a89be56e832ee2b3bc41d0748268f50f11fd75dd474`
+and source
+`sha256:5f154f039dfbd7814f49aa6024ebadfcc9d40bcf3e9713f1fc02ef61bcf943b8`.
+Authenticated What-If reported exactly eight `Create` predictions and zero other
+changes, all in that target subscription. The accepted minimal profile was `dev`,
+Registry preview enabled, exactly one reviewed manager application, Prompt Shields
+disabled, and Purview disabled. The accepted Apply window was
+`2026-08-30T02:00:29Z` through `2026-08-30T02:19:16Z` (11:00–11:19 KST).
+
+Apply completed durable steps 1–6. API, worker, and Admin UI ACR `QuickRun`s
+reached `Succeeded` with respective digests
+`sha256:830347df6d1018735a04d851e862c00514433bfdbd303a6119585883b2e582b2`,
+`sha256:b8a4d8ff401992310f10f766ac31200c439d6d86ab509108984ccba72e26f527`,
+and
+`sha256:851e692413a0896e13485d4133b8f695a0b3680671ad1f0cc752aa6dcd915592`.
+Foundation deployment `a365gw-a365gw13-bootstrap-foundation-dev`, inert deployment
+`a365gw-a365gw13-bootstrap-inert-dev`, every observed nested deployment, and both
+Container Apps reached `Succeeded`.
+
+Step 7 failed closed because PowerShell pipeline assignment collapsed the inert
+empty `expectedManagerIds` array to null. Its sequence comparison was null-tolerant,
+but the subsequent strict `.Count` environment loop raised
+`PropertyNotFoundException`. Exact target-only GET proved ARM carried an empty
+array parameter, Bicep emitted no manager-ID environment entries, both apps were
+digest-pinned and secret-free, and the corrected database-name contract passed.
+State records exactly steps 1–6 `Completed`, step 7 `Failed`, no promoted outputs,
+and no step 8 or later record. No seed blueprint, workflow identity, SQL
+initialization, Admin UI identity/credential, runtime activation, registration,
+canary, Gateway key, Registry action, or later phase followed.
+Message-count and SQL outbox evidence was not captured: SQL initialization never
+started and no Service Bus message data plane was accessed. That absence is not a
+zero-count claim.
+
+Three independent read-only audits reproduced the exception and agreed that an
+unchanged-source Resume would GET-adopt the succeeded deployment and fail the same
+validator. A StrictMode GET-only run with only the outer array capture corrected
+passed the complete live `a365gw13` validator. Preserve `a365gw13` state, accepted
+snapshot, graph, identities, and images; never reconstruct acceptance or Resume it.
+The bounded source audit found the same singleton collapse in the later Admin UI
+delegated-scope revalidator and final Verify; its typed-array and join-only sites
+remain safe.
+
+Commit `c92757080b1465ca0e140919038ba0176a5e0eb1` applies outer array capture to
+exactly those three direct-`.Count` assignments while retaining exact manager-ID
+sequence and one-grant/resource/`AllPrincipals`/`access_as_user` requirements.
+Independent review approved the correction and proved its AST regressions fail
+against the pre-fix assignments. Focused Experience and Verification tests pass
+**119/119**. The canonical source gate discovered **452** Pester tests: **451**
+passed, none failed, and one Windows-only launcher test was skipped on macOS; it
+parsed **19** PowerShell files and **2** JSON contracts and compiled all **25**
+Bicep templates plus **5** parameter files. Direct Release tests pass
+**1,304/1,304** with the established per-project totals, the Release build has zero
+warnings/errors, and format/diff checks pass. The corrected deployment-affecting
+source fingerprint is
+`sha256:f0d03d165f7a4c71664eba46ad8c33ad562968e124ea293ccea07e7217eb2307`.
+The next live generation is reserved as `a365gw14` in absent resource group
+`rg-a365-custom-gw-phase6m`, only in target
+subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
+Service Bus message data plane was accessed in either subscription.
+
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
 Prerequisites, then failed during Azure authentication because the old dispatcher
@@ -1516,16 +1584,18 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw13` / `rg-a365-custom-gw-phase6l`. Preserve both `a365gw11`
-   and `a365gw12` with steps 1–6 complete and step 7 `Failed`; their succeeded
-   inert graphs and GET-only diagnoses do not authorize Resume after either
+   generation `a365gw14` / `rg-a365-custom-gw-phase6m`. Preserve `a365gw11`,
+   `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`; their
+   succeeded inert graphs and GET-only diagnoses do not authorize Resume after any
    validator source change. Capture
    the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, temporary SQL-rule cleanup, empty-schema
-   initialization, final preflight, one real registration/data-plane canary, and
-   Purview propagation/verdict before marking clean-subscription recovery
-   live-proven.
+   initialization, final preflight, authenticated Admin sign-in, one real
+   registration through `Active`, one bounded data-plane canary, and one Gateway-key
+   revocation before marking the minimal-profile clean-subscription path
+   live-proven. Purview and Prompt Shields remain disabled and unclaimed for this
+   proof.
 
 ## Historical boundary
 
