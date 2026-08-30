@@ -10,7 +10,7 @@
 
 <PageHeader Eyebrow="Getting started"
             Title="Setup center"
-            Description="Confirm what this deployment can prove, complete the first safe registration, and identify evidence that still needs an authorized canary.">
+            Description="Confirm deployment readiness and complete the first safe registration through Active state.">
     <Actions>
         <span class="last-updated">Checked @FormatTime(lastUpdatedUtc)</span>
         <FluentButton Appearance="Appearance.Neutral" OnClick="LoadAsync" Disabled="loading">Refresh checks</FluentButton>
@@ -152,8 +152,8 @@ else
                 <li>
                     <span class="first-run-number" aria-hidden="true">6</span>
                     <div>
-                        <h3>Run an authorized bounded canary</h3>
-                        <p>Verify the intended data-plane behavior and independently reviewed Microsoft evidence. An HTTP health result, an accepted transport response, or an Active Gateway row is not by itself end-to-end canary proof.</p>
+                        <h3>Finish when the first agent is Active</h3>
+                        <p><strong>FirstAgentActive</strong> is the final setup milestone. Active means the Gateway persisted completion after final verification; it does not turn the beta Agent 365 Registry dependency into supported production readiness.</p>
                     </div>
                 </li>
             </ol>
@@ -220,7 +220,7 @@ else
                         <li>Health does not verify Entra, Agent 365, Purview, or Content Safety resources.</li>
                         <li>Persisted provisioning progress is not independent Microsoft-side proof.</li>
                         <li>Agent 365 Registry completion uses a preview dependency and must not be presented as supported production readiness.</li>
-                        <li>Canary proof requires reviewed evidence that the current control-plane API does not expose.</li>
+                        <li>FirstAgentActive is the final setup milestone; broader production-readiness reviews remain separate.</li>
                     </ul>
                 </div>
             </section>
@@ -260,7 +260,11 @@ else
         ? $"One check could not be completed. {loadError?.Message} Available results remain visible below."
         : $"{failedCheckCount} checks could not be completed. {loadError?.Message} Available results remain visible below.";
 
-    private string NextActionIcon => InfrastructureReady && ControlPlaneReady ? "→" : "!";
+    private string NextActionIcon => !InfrastructureReady || !ControlPlaneReady
+        ? "!"
+        : HasFirstAgentActive
+            ? "✓"
+            : "→";
 
     private string NextActionTitle =>
         !InfrastructureReady
@@ -275,7 +279,7 @@ else
                             ? isAdministrator
                                 ? "Register the first external agent"
                                 : "Ask a Gateway Administrator to register the first agent"
-                            : "Capture an authorized end-to-end canary";
+                            : "Gateway setup is complete";
 
     private string NextActionDescription =>
         !InfrastructureReady
@@ -290,7 +294,7 @@ else
                             ? isAdministrator
                                 ? "Registration will create a Gateway mapping and start provisioning. Microsoft effects remain unproven until the operation reaches its verified terminal state."
                                 : "Only a Gateway Administrator can create the mapping and receive the one-time Gateway key."
-                            : "At least one registration is Gateway-reported Active. Run a separately authorized canary and retain reviewed evidence before calling the deployment end-to-end proven.";
+                            : "At least one registration is Gateway-reported Active, so the final setup milestone is complete. Active remains Gateway state and is not a claim of supported production readiness for the beta Registry dependency.";
 
     private string CapabilityGuidance => !isAdministrator
         ? "Ask a Gateway Administrator to review the current admission and optional protection-provider capabilities; those settings are intentionally not exposed to your role."
@@ -309,15 +313,7 @@ else
         BuildInfrastructureMilestone(),
         BuildControlPlaneMilestone(),
         BuildProvisioningMilestone(),
-        BuildFirstAgentMilestone(),
-        new(
-            5,
-            "CanaryProven",
-            "Canary proven",
-            "Not reported",
-            "neutral",
-            "The implemented control-plane API does not expose complete canary, downstream landing, Admin Center, Purview-verdict, or temporary-key-revocation evidence.",
-            "Not available from this portal. Health, Active state, last-activity timestamps, and accepted transport responses are deliberately not promoted to canary proof.")
+        BuildFirstAgentMilestone()
     ];
 
     private static readonly string[] PortalRoles =
@@ -483,10 +479,10 @@ else
         activeAgentInventory is null
             ? "Unknown"
             : HasFirstAgentActive
-                ? "Gateway reported"
+                ? "Complete"
                 : "Not yet",
-        HasFirstAgentActive ? "warning" : "neutral",
-        "Active means the Gateway persisted completion after its final verification stage. It remains Gateway-reported state, not independent Microsoft Admin Center or data-plane evidence.",
+        HasFirstAgentActive ? "positive" : "neutral",
+        "Active means the Gateway persisted completion after its final verification stage. It is the final setup milestone, while supported production readiness remains a separate review.",
         activeAgentInventory is null
             ? "The filtered Active-agent inventory did not return current data."
             : HasFirstAgentActive

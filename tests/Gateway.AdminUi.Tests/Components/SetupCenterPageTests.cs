@@ -54,7 +54,8 @@ public sealed class SetupCenterPageTests : BunitContext
             cut.Markup.Should().Contain("ControlPlaneReady");
             cut.Markup.Should().Contain("ProvisioningReady");
             cut.Markup.Should().Contain("FirstAgentActive");
-            cut.Markup.Should().Contain("CanaryProven");
+            cut.Markup.Should().NotContain("CanaryProven");
+            cut.FindAll(".readiness-card").Should().HaveCount(4);
             cut.Markup.Should().Contain("Admission open");
             cut.FindAll("[href='/agents/register']").Should().NotBeEmpty();
         });
@@ -82,7 +83,7 @@ public sealed class SetupCenterPageTests : BunitContext
     }
 
     [Fact]
-    public void ActiveGatewayRow_NeverPromotesCanaryToProven()
+    public void ActiveGatewayRow_CompletesTheFinalSetupMilestone()
     {
         var auth = AddAuthorization();
         auth.SetAuthorized("Operator user");
@@ -100,11 +101,14 @@ public sealed class SetupCenterPageTests : BunitContext
 
         cut.WaitForAssertion(() =>
         {
-            cut.Markup.Should().Contain("Gateway reported");
-            var canaryCard = cut.FindAll(".readiness-card")
-                .Single(element => element.TextContent.Contains("CanaryProven", StringComparison.Ordinal));
-            canaryCard.QuerySelector(".readiness-state")!.TextContent.Should().Be("Not reported");
-            canaryCard.TextContent.Should().Contain("not promoted to canary proof");
+            cut.Find("#next-safe-action-heading").TextContent.Should().Be("Gateway setup is complete");
+            var firstAgentCard = cut.FindAll(".readiness-card")
+                .Single(element => element.TextContent.Contains("FirstAgentActive", StringComparison.Ordinal));
+            firstAgentCard.QuerySelector(".readiness-state")!.TextContent.Should().Be("Complete");
+            firstAgentCard.QuerySelector(".readiness-state-positive").Should().NotBeNull();
+            firstAgentCard.TextContent.Should().Contain("final setup milestone");
+            cut.Markup.Should().Contain("Finish when the first agent is Active");
+            cut.Markup.Should().NotContain("CanaryProven");
         });
     }
 

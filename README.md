@@ -56,6 +56,10 @@ To use the deployed Gateway:
 3. save the one-time Gateway key when it is shown, then give the external agent its
    generated external ID, Gateway API URL, and that key.
 
+`FirstAgentActive` is the final setup milestone. There is no additional current
+canary step or canary release gate. Active remains Gateway-reported state and does
+not make the beta Agent 365 Registry dependency production-supported.
+
 Quick Development can explicitly enable the Registry beta needed to take a demo
 registration through `Active`. Staging and production keep that preview boundary
 closed. Prompt Shields, Purview, and paid SKU choices remain opt-in.
@@ -93,7 +97,7 @@ command.
 - [`docs/operations/entra-setup-runbook.md`](docs/operations/entra-setup-runbook.md):
   Entra roles, delegated scopes, OBO FIC, consent, and verification.
 - [`docs/operations/upgrade-strategy.md`](docs/operations/upgrade-strategy.md): SQL,
-  inert deployment, canary, and recovery sequence.
+  inert deployment, verification, and recovery sequence.
 - [`bootstrap/README.md`](bootstrap/README.md): clean-subscription, resumable first
   deployment of the complete Gateway foundation and workloads.
 
@@ -214,10 +218,10 @@ preserves verified completed rows and never repeats a completed Registry boundar
 | `src/Gateway.Provisioning.Worker` | Idempotent workflow stages and data-plane relay |
 | `src/ExternalAgent.Sample` | Minimal external client for bounded ingestion verification |
 | `tools/Gateway.Setup` | Ephemeral loopback-only Fluent UI over the canonical bootstrap engine |
-| `tools/Gateway.LiveCanary` | Disposable user or managed-identity canary; holds a temporary Gateway key only in memory, supports exact revoke-only recovery, and revokes it in cleanup |
+| `tools/Gateway.LiveCanary` | Retained historical verification utility; not part of current setup or release completion |
 | `bootstrap` | Clean-subscription prerequisite, identity, infrastructure, build, deploy, and verify orchestration |
 | `infrastructure` | Declarative shared Bicep templates and ordered, reviewed SQL schema phases |
-| `operations` | Existing-environment deployment, preflight, canary, and recovery scripts |
+| `operations` | Existing-environment deployment, preflight, recovery, and retained historical verification scripts |
 | `tools` | Developer utilities and the database migrator used by bootstrap and operations |
 | `tests` | Unit, UI, E2E, security, runtime, integration, and architecture gates |
 
@@ -237,11 +241,11 @@ The continuous development path is **Active end to end** for both blueprint mode
 
 Both agents are visible and Available in Microsoft 365 Admin Center on platform
 `A365CustomGateway`. Gateway activity and interaction requests return HTTP 202, the
-v3 queue drains to zero active/scheduled, and the earlier live canary separately
-proves two-stage child-token exchange and Agent 365 OTLP HTTP 200. Current queue
+v3 queue drains to zero active/scheduled, and retained historical verification
+evidence separately proves two-stage child-token exchange and Agent 365 OTLP HTTP 200. Current queue
 counts are v3 `0/0/10`, retained v2 `0/0/3`, and historical `0/0/2`; all DLQ entries
 remain immutable evidence. The latest exact SQL snapshot predates the two continuous
-canaries and is not represented as a current database count.
+registrations and is not represented as a current database count.
 
 Purview DLP is now proven against the reusable blueprint boundary. The policy uses
 `EnforcementPlanes Application` with the blueprint client ID as
@@ -386,7 +390,7 @@ flowchart TD
     Optional --> Shield[Optional Azure AI Content Safety Prompt Shields]
     Shield --> Runtime[Deploy current runtime]
     Runtime --> Verify[Read-only health, network, identity, and permission verification]
-    Verify --> Register[Development registration and bounded canary]
+    Verify --> Register[First registration reaches Active]
 ```
 
 The bootstrap implementation is locally source-validated and resumable, but a disposable

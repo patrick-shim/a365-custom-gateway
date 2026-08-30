@@ -26,9 +26,9 @@ The compatibility-aware Admin UI and workflow-v3 API/worker are live continuousl
 development. Staging and production remain closed by default. The last independently
 captured authenticated typed-catalog inventory contained 12 rows: 7 compatible/
 selectable and 5 incompatible/disabled; a later user-run create-new flow was reported
-successful, so recapture the catalog before treating those counts as current. Three bounded v2
-canaries remain manual evidence and the v2 queue is zero active, zero scheduled,
-and DLQ3:
+successful, so recapture the catalog before treating those counts as current. Three
+historical-only bounded v2 canaries remain manual evidence and the v2 queue is zero
+active, zero scheduled, and DLQ3:
 
 1. The incompatible `pat-blueprint` operation failed GET-only at
    `ResolveBlueprint` and made no Microsoft mutation.
@@ -60,7 +60,7 @@ Current live UI state includes Active create-new registration
 `ff685604-999c-4584-9cec-87ec21f870ee`. Both are visible and Available in Microsoft
 365 Admin Center. The reusable-blueprint registration proves benign Purview
 `AuditLogged` and synthetic prompt `Blocked`; its `downloadText` scope is offline.
-Latest Admin UI tests are 151/151; consult the implementation status for the exact
+Latest Admin UI tests are 155/155; consult the implementation status for the exact
 identity mappings, deployment revisions, and complete release counts.
 
 Historical superseded checkpoint: the first fresh workflow-v3 registration used external ID
@@ -78,7 +78,7 @@ In that historical attempt the user reached and exercised the exact completion a
 POST responses exposed production scope-claim mapping and Graph string-ID validation
 defects; both are fixed. The later create outcome is ambiguous and must never be
 repeated. Its reconciliation-only resume path is superseded by the distinct Active
-canary above.
+registration above.
 
 UI copy must describe Gateway-reported state and must not promise successful
 Microsoft-side provisioning until the provisioning guide's definition of done is
@@ -196,6 +196,12 @@ Do not invent these APIs. Build dashboards from agent-list data and health probe
   nonterminal at 71% and polling stops with an Administrator action card. Completion
   success resumes polling at 85% for final verification. A display group or action
   must never alter the persisted sequence or imply a Microsoft effect completed.
+- Setup Center has four readiness milestones and ends at `FirstAgentActive`. Do not
+  add a current `CanaryProven` milestone, canary step, temporary-key canary, or
+  canary release gate. Active is the final setup milestone, while persisted Gateway
+  state remains distinct from independent Microsoft evidence and supported
+  production readiness for the beta Registry dependency. Retained canary records
+  are historical evidence only and must not become current UI actions.
 - The Registry action must be busy/double-invocation guarded and available only when
   the API returns the exact required action. Continuous development may invoke it
   once automatically for an authenticated Administrator; exact-bound deployments
