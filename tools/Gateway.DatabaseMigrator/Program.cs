@@ -26,6 +26,7 @@ var expectedApiPrincipalName = ReadOption(options, "expected-api-principal-name"
 var expectedApiPrincipalClientIdValue = ReadOption(options, "expected-api-principal-client-id");
 var expectedWorkerPrincipalName = ReadOption(options, "expected-worker-principal-name");
 var expectedWorkerPrincipalClientIdValue = ReadOption(options, "expected-worker-principal-client-id");
+var expectedPrivateEndpointIpValue = ReadOption(options, "expected-private-endpoint-ip");
 var executionIntentIdValue = ReadOptionWithExactEnvironmentAgreement(
     options,
     "execution-intent-id");
@@ -174,6 +175,19 @@ var stayAliveRequested = bool.TryParse(
 if (phase == "bootstrap" && stayAliveRequested)
     throw new ArgumentException("The one-shot bootstrap phase does not allow --stay-alive true.");
 
+System.Net.IPAddress? expectedPrivateEndpointIp = null;
+if (phase == "bootstrap")
+{
+    expectedPrivateEndpointIp =
+        SqlPrivateEndpointDnsConvergence.ParseCanonicalPrivateIpv4(expectedPrivateEndpointIpValue);
+}
+else if (options.ContainsKey("expected-private-endpoint-ip") ||
+         !string.IsNullOrWhiteSpace(expectedPrivateEndpointIpValue))
+{
+    throw new ArgumentException(
+        "--expected-private-endpoint-ip is allowed only for the bootstrap phase.");
+}
+
 var scripts = phase switch
 {
     "prepare" => new[]
@@ -208,6 +222,13 @@ if (phase == "bootstrap" && string.IsNullOrWhiteSpace(managedIdentityEndpoint))
 {
     throw new InvalidOperationException(
         "The bootstrap phase requires the Container Apps managed-identity endpoint and never falls back to Azure CLI credentials.");
+}
+if (phase == "bootstrap")
+{
+    await SqlPrivateEndpointDnsConvergence.WaitForExactResolutionAsync(
+        server,
+        expectedPrivateEndpointIp!,
+        CancellationToken.None);
 }
 TokenCredential credential = string.IsNullOrWhiteSpace(managedIdentityEndpoint)
     ? new AzureCliCredential()

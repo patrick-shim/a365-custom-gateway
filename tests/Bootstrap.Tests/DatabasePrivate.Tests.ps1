@@ -1,5 +1,6 @@
 $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Common.psm1') -Force
+Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Azure.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Database.psm1') -Force
 
 Describe 'Private database bootstrap recovery and evidence contract' {
@@ -10,6 +11,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                     [Parameter(Mandatory)]$Config,
                     [Parameter(Mandatory)]$Foundation,
                     [Parameter(Mandatory)][string]$SqlServerFqdn,
+                    [Parameter(Mandatory)][string]$ExpectedPrivateEndpointIpv4Address,
                     [Parameter(Mandatory)][string]$JobImage,
                     [Parameter(Mandatory)][string]$DeploymentOwnershipId,
                     [Parameter(Mandatory)][string]$SourceFingerprint,
@@ -23,6 +25,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             $jobName = "job-$($Config.projectName)-db-init-$($Config.environment)"
             $arguments = @(Get-GatewayDatabaseBootstrapJobArguments `
                 -SqlServerFqdn $SqlServerFqdn `
+                -ExpectedPrivateEndpointIpv4Address $ExpectedPrivateEndpointIpv4Address `
                 -DeploymentOwnershipId $DeploymentOwnershipId `
                 -SourceFingerprint $SourceFingerprint `
                 -ApiPrincipal $ApiPrincipal `
@@ -114,6 +117,16 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             $script:jobPrincipalId = '55555555-5555-4555-8555-555555555555'
             $script:apiPrincipalId = '66666666-6666-4666-8666-666666666666'
             $script:workerPrincipalId = '77777777-7777-4777-8777-777777777777'
+            $script:privateEndpointIpv4Address = '10.42.1.4'
+            $script:privateEndpointNetworkInterfaceId = "/subscriptions/$($script:config.subscriptionId)/resourcegroups/$($script:config.resourceGroupName)/providers/microsoft.network/networkinterfaces/pe-sql-gateway-dev.nic.12121212-1212-4212-8212-121212121212"
+            $script:privateDnsARecordSetId = "/subscriptions/$($script:config.subscriptionId)/resourcegroups/$($script:config.resourceGroupName)/providers/microsoft.network/privatednszones/privatelink.database.windows.net/a/sql-gateway-dev"
+            $script:sqlPrivateEndpoint = [ordered]@{
+                privateEndpointNetworkInterfaceId = $script:privateEndpointNetworkInterfaceId
+                privateEndpointIpv4Address = $script:privateEndpointIpv4Address
+                privateDnsARecordSetId = $script:privateDnsARecordSetId
+                privateDnsARecordName = 'sql-gateway-dev'
+                privateDnsARecordIpv4Address = $script:privateEndpointIpv4Address
+            }
             $script:api = [pscustomobject]@{
                 objectId = $script:apiPrincipalId
                 clientId = '88888888-8888-4888-8888-888888888888'
@@ -125,7 +138,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 displayName = 'ca-gateway-worker-dev-v3'
             }
             $script:receipt = [ordered]@{
-                schemaVersion = 1
+                schemaVersion = 2
                 subscriptionId = $script:config.subscriptionId
                 tenantId = $script:config.tenantId
                 resourceGroupName = $script:config.resourceGroupName
@@ -136,6 +149,11 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 jobDeploymentName = 'a365gw-gateway-bootstrap-database-job-dev'
                 jobName = $script:jobName
                 jobImage = $script:jobImage
+                privateEndpointNetworkInterfaceId = $script:privateEndpointNetworkInterfaceId
+                privateEndpointIpv4Address = $script:privateEndpointIpv4Address
+                privateDnsARecordSetId = $script:privateDnsARecordSetId
+                privateDnsARecordName = 'sql-gateway-dev'
+                privateDnsARecordIpv4Address = $script:privateEndpointIpv4Address
                 originalAdministratorObjectId = $script:originalAdministratorObjectId
                 originalAdministratorLogin = $script:originalAdministratorLogin
                 jobPrincipalId = $script:jobPrincipalId
@@ -165,7 +183,8 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 -DeploymentOwnershipId $script:ownershipId `
                 -SourceFingerprint $script:sourceFingerprint `
                 -OriginalAdministratorObjectId $script:originalAdministratorObjectId `
-                -OriginalAdministratorLogin $script:originalAdministratorLogin
+                -OriginalAdministratorLogin $script:originalAdministratorLogin `
+                -SqlPrivateEndpoint $script:sqlPrivateEndpoint
 
             $result | Should -BeTrue
 
@@ -179,7 +198,8 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 -DeploymentOwnershipId $script:ownershipId `
                 -SourceFingerprint $script:sourceFingerprint `
                 -OriginalAdministratorObjectId $script:originalAdministratorObjectId `
-                -OriginalAdministratorLogin $script:originalAdministratorLogin } |
+                -OriginalAdministratorLogin $script:originalAdministratorLogin `
+                -SqlPrivateEndpoint $script:sqlPrivateEndpoint } |
                 Should -Throw '*does not match the exact subscription, database, source, job, or original administrator boundary*'
         }
 
@@ -200,7 +220,22 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 -DeploymentOwnershipId $script:ownershipId `
                 -SourceFingerprint $script:sourceFingerprint `
                 -OriginalAdministratorObjectId $script:originalAdministratorObjectId `
-                -OriginalAdministratorLogin $script:originalAdministratorLogin } |
+                -OriginalAdministratorLogin $script:originalAdministratorLogin `
+                -SqlPrivateEndpoint $script:sqlPrivateEndpoint } |
+                Should -Throw '*does not match the exact subscription, database, source, job, or original administrator boundary*'
+        }
+
+        It 'rejects a recovery receipt whose persisted private-endpoint tuple drifts' {
+            $script:receipt.privateEndpointIpv4Address = '10.42.1.5'
+
+            { Assert-GatewayPrivateDatabaseBootstrapRecord `
+                -Record $script:receipt -Config $script:config `
+                -SqlServerFqdn $script:sqlServerFqdn -JobName $script:jobName `
+                -JobImage $script:jobImage -DeploymentOwnershipId $script:ownershipId `
+                -SourceFingerprint $script:sourceFingerprint `
+                -OriginalAdministratorObjectId $script:originalAdministratorObjectId `
+                -OriginalAdministratorLogin $script:originalAdministratorLogin `
+                -SqlPrivateEndpoint $script:sqlPrivateEndpoint } |
                 Should -Throw '*does not match the exact subscription, database, source, job, or original administrator boundary*'
         }
 
@@ -265,12 +300,14 @@ Describe 'Private database bootstrap recovery and evidence contract' {
         It 'builds the exact immutable database-migrator bootstrap argument sequence' {
             $actual = @(Get-GatewayDatabaseBootstrapJobArguments `
                 -SqlServerFqdn $script:sqlServerFqdn `
+                -ExpectedPrivateEndpointIpv4Address $script:privateEndpointIpv4Address `
                 -DeploymentOwnershipId $script:ownershipId `
                 -SourceFingerprint $script:sourceFingerprint `
                 -ApiPrincipal $script:api `
                 -WorkerPrincipal $script:worker)
             $expected = @(
                 '--server', 'sql-gateway-dev.database.windows.net',
+                '--expected-private-endpoint-ip', '10.42.1.4',
                 '--database', 'GatewayDb',
                 '--phase', 'bootstrap',
                 '--repeat', '1',
@@ -284,7 +321,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 '--evidence-stdout', 'true'
             )
 
-            $actual.Count | Should -Be 24
+            $actual.Count | Should -Be 26
             ($actual -join "`n") | Should -BeExactly ($expected -join "`n")
         }
 
@@ -326,6 +363,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 $script:jobFixture = & $script:newTestGatewayDatabaseBootstrapJob `
                     -Config $script:config -Foundation $foundation `
                     -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
+                    -ExpectedPrivateEndpointIpv4Address $script:privateEndpointIpv4Address `
                     -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
                     -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
                     -JobPrincipalId $script:jobPrincipalId -ExecutionIntentId $script:executionIntentId `
@@ -334,6 +372,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 $result = Get-GatewayDatabaseBootstrapJobEvidence `
                     -Config $script:config -Foundation $foundation `
                     -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
+                    -ExpectedPrivateEndpointIpv4Address $script:privateEndpointIpv4Address `
                     -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
                     -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
                     -ExecutionIntentId $script:executionIntentId
@@ -352,6 +391,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             $script:jobFixture = & $script:newTestGatewayDatabaseBootstrapJob `
                 -Config $script:config -Foundation $foundation `
                 -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
+                -ExpectedPrivateEndpointIpv4Address $script:privateEndpointIpv4Address `
                 -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
                 -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
                 -JobPrincipalId $script:jobPrincipalId -ExecutionIntentId $script:executionIntentId
@@ -360,6 +400,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 Get-GatewayDatabaseBootstrapJobEvidence `
                     -Config $script:config -Foundation $foundation `
                     -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
+                    -ExpectedPrivateEndpointIpv4Address $script:privateEndpointIpv4Address `
                     -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
                     -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
                     -ExecutionIntentId $script:executionIntentId
@@ -412,6 +453,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                         acrLoginServer = [pscustomobject]@{ value = $script:foundation.acrLoginServer }
                         imagePullIdentityResourceId = [pscustomobject]@{ value = $script:foundation.runtimeImagePullIdentityId }
                         sqlServerFqdn = [pscustomobject]@{ value = $script:sqlServerFqdn }
+                        expectedPrivateEndpointIp = [pscustomobject]@{ value = $script:privateEndpointIpv4Address }
                         deploymentOwnershipId = [pscustomobject]@{ value = $script:ownershipId }
                         bootstrapSourceFingerprint = [pscustomobject]@{ value = $script:sourceFingerprint }
                         apiDatabasePrincipalName = [pscustomobject]@{ value = $script:api.displayName }
@@ -437,6 +479,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             $result = Deploy-GatewayDatabaseBootstrapJob `
                 -Config $script:config -Foundation $script:foundation `
                 -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
+                -ExpectedPrivateEndpointIpv4Address $script:privateEndpointIpv4Address `
                 -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
                 -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
                 -ExecutionIntentId $script:executionIntentId -FreshIntent:$true
@@ -447,10 +490,14 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 [string]$Arguments[2] -ceq 'create' -and
                 @($Arguments | Where-Object {
                     [string]$_ -ceq "executionIntentId=$($script:executionIntentId)"
+                }).Count -eq 1 -and
+                @($Arguments | Where-Object {
+                    [string]$_ -ceq "expectedPrivateEndpointIp=$($script:privateEndpointIpv4Address)"
                 }).Count -eq 1
             }
             Should -Invoke Get-GatewayDatabaseBootstrapJobEvidence -Times 1 -Exactly -ParameterFilter {
-                $ExecutionIntentId -ceq $script:executionIntentId
+                $ExecutionIntentId -ceq $script:executionIntentId -and
+                    $ExpectedPrivateEndpointIpv4Address -ceq $script:privateEndpointIpv4Address
             }
         }
 
@@ -473,6 +520,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                         acrLoginServer = [pscustomobject]@{ value = $script:foundation.acrLoginServer }
                         imagePullIdentityResourceId = [pscustomobject]@{ value = $script:foundation.runtimeImagePullIdentityId }
                         sqlServerFqdn = [pscustomobject]@{ value = $script:sqlServerFqdn }
+                        expectedPrivateEndpointIp = [pscustomobject]@{ value = $script:privateEndpointIpv4Address }
                         deploymentOwnershipId = [pscustomobject]@{ value = $script:ownershipId }
                         bootstrapSourceFingerprint = [pscustomobject]@{ value = $script:sourceFingerprint }
                         apiDatabasePrincipalName = [pscustomobject]@{ value = $script:api.displayName }
@@ -499,6 +547,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             $null = Deploy-GatewayDatabaseBootstrapJob `
                 -Config $script:config -Foundation $script:foundation `
                 -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
+                -ExpectedPrivateEndpointIpv4Address $script:privateEndpointIpv4Address `
                 -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
                 -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
                 -ExecutionIntentId $script:executionIntentId -FreshIntent:$true
@@ -510,7 +559,8 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 [string]$Arguments[0] -ceq 'deployment' -and [string]$Arguments[2] -ceq 'show'
             }
             Should -Invoke Get-GatewayDatabaseBootstrapJobEvidence -Times 1 -Exactly -ParameterFilter {
-                $ExecutionIntentId -ceq $script:executionIntentId
+                $ExecutionIntentId -ceq $script:executionIntentId -and
+                    $ExpectedPrivateEndpointIpv4Address -ceq $script:privateEndpointIpv4Address
             }
         }
 
@@ -553,15 +603,29 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             $boundary = $source.Substring($boundaryStart)
             $zeroRead = $boundary.IndexOf('$preStartExecutions = @(Get-GatewayDatabaseBootstrapExecutions', [StringComparison]::Ordinal)
             $zeroGuard = $boundary.IndexOf('$preStartExecutions.Count -ne 0', [StringComparison]::Ordinal)
+            $addressReadiness = $boundary.IndexOf('$preAdministratorAddressTuple = Get-GatewaySqlPrivateEndpointReadyAddressEvidence', [StringComparison]::Ordinal)
+            $addressGuard = $boundary.IndexOf('The persisted SQL private-endpoint NIC and private-DNS A-record tuple changed', [StringComparison]::Ordinal)
             $swapIntent = $boundary.IndexOf('$receipt.administratorSwapIntentAtUtc =', [StringComparison]::Ordinal)
             $elevation = $boundary.IndexOf('Set-GatewaySqlEntraAdministratorExact', [StringComparison]::Ordinal)
             $startIntent = $boundary.IndexOf('$receipt.jobStartIntentAtUtc =', [StringComparison]::Ordinal)
             $start = $boundary.IndexOf('Start-GatewayDatabaseBootstrapExecution -Config $Config -JobName $jobName', [StringComparison]::Ordinal)
-            foreach ($index in @($zeroRead, $zeroGuard, $swapIntent, $elevation, $startIntent, $start)) {
+            ([regex]::Matches(
+                $source,
+                [regex]::Escape('Start-GatewayDatabaseBootstrapExecution -Config $Config -JobName $jobName'),
+                [Text.RegularExpressions.RegexOptions]::CultureInvariant)).Count | Should -Be 1
+            foreach ($index in @($zeroRead, $zeroGuard, $addressReadiness, $addressGuard, $swapIntent, $elevation, $startIntent, $start)) {
                 $index | Should -BeGreaterOrEqual 0
             }
             $zeroRead | Should -BeLessThan $zeroGuard
-            $zeroGuard | Should -BeLessThan $swapIntent
+            $zeroGuard | Should -BeLessThan $addressReadiness
+            $addressReadiness | Should -BeLessThan $addressGuard
+            $addressGuard | Should -BeLessThan $swapIntent
+            foreach ($propertyName in @(
+                'privateEndpointNetworkInterfaceId', 'privateEndpointIpv4Address',
+                'privateDnsARecordSetId', 'privateDnsARecordName', 'privateDnsARecordIpv4Address'
+            )) {
+                $boundary | Should -Match ([regex]::Escape("'$propertyName'"))
+            }
             $swapIntent | Should -BeLessThan $elevation
             $elevation | Should -BeLessThan $startIntent
             $startIntent | Should -BeLessThan $start
@@ -630,6 +694,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
         It 'validates the exact successful execution with empty or omitted secretRef and no replacement surfaces' {
             $script:expectedExecutionArguments = @(Get-GatewayDatabaseBootstrapJobArguments `
                 -SqlServerFqdn $script:sqlServerFqdn `
+                -ExpectedPrivateEndpointIpv4Address $script:privateEndpointIpv4Address `
                 -DeploymentOwnershipId $script:ownershipId `
                 -SourceFingerprint $script:sourceFingerprint `
                 -ApiPrincipal $script:api `
@@ -672,6 +737,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                     -Config $script:config -JobName $script:jobName `
                     -ExecutionName "$($script:jobName)-abc12" `
                     -JobImage $script:jobImage -SqlServerFqdn $script:sqlServerFqdn `
+                    -ExpectedPrivateEndpointIpv4Address $script:privateEndpointIpv4Address `
                     -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
                     -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
                     -ExecutionIntentId $script:executionIntentId
@@ -686,6 +752,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
         It 'rejects an execution with an init container, volume, mount, or intent drift' {
             $script:expectedExecutionArguments = @(Get-GatewayDatabaseBootstrapJobArguments `
                 -SqlServerFqdn $script:sqlServerFqdn `
+                -ExpectedPrivateEndpointIpv4Address $script:privateEndpointIpv4Address `
                 -DeploymentOwnershipId $script:ownershipId `
                 -SourceFingerprint $script:sourceFingerprint `
                 -ApiPrincipal $script:api `
@@ -725,6 +792,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                     -Config $script:config -JobName $script:jobName `
                     -ExecutionName "$($script:jobName)-abc12" `
                     -JobImage $script:jobImage -SqlServerFqdn $script:sqlServerFqdn `
+                    -ExpectedPrivateEndpointIpv4Address $script:privateEndpointIpv4Address `
                     -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
                     -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
                     -ExecutionIntentId $script:executionIntentId
@@ -814,6 +882,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             { Initialize-GatewayDatabase `
                 -Config $script:config `
                 -Foundation $script:foundation `
+                -SqlPrivateEndpoint $script:sqlPrivateEndpoint `
                 -SqlServerFqdn $script:sqlServerFqdn `
                 -ApiPrincipalId $script:apiPrincipalId `
                 -WorkerPrincipalId $script:workerPrincipalId `
@@ -829,6 +898,88 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 $ObjectId -ceq $script:originalAdministratorObjectId -and
                     $Login -ceq $script:originalAdministratorLogin
             }
+        }
+
+        It 'refuses SQL administrator elevation and the sole Job start when the persisted NIC and A-record tuple changed' {
+            $script:testRepositoryRoot = $TestDrive
+            $script:receipt.administratorSwapIntentAtUtc = ''
+            $script:receipt.administratorSwappedAtUtc = ''
+            $script:receipt.jobStartIntentAtUtc = ''
+            $receiptPath = Join-Path $script:testRepositoryRoot ".bootstrap/evidence/$($script:config.resourceGroupName)/database/private-database-bootstrap-receipt.json"
+            Save-GatewayPrivateDatabaseBootstrapRecord -Record $script:receipt -Path $receiptPath
+            $script:foundation = [pscustomobject]@{
+                acrLoginServer = 'gatewayacr.azurecr.io'
+                deploymentOwnershipId = $script:ownershipId
+                sourceFingerprint = $script:sourceFingerprint
+                resourceGroupName = $script:config.resourceGroupName
+                containerAppsEnvironmentId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.App/managedEnvironments/cae-gateway-dev"
+                runtimeImagePullIdentityId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-pull-dev"
+                privateEndpointSubnetId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.Network/virtualNetworks/vnet-gateway-dev/subnets/snet-private-endpoints"
+            }
+
+            Mock Get-RepositoryRoot { return $script:testRepositoryRoot }
+            Mock Get-BootstrapExecutionSourceRoot { return $script:testRepositoryRoot }
+            Mock Get-BootstrapSourceFingerprint { return $script:sourceFingerprint }
+            Mock Get-ManagedIdentityClientId {
+                if ($PrincipalObjectId -ceq $script:apiPrincipalId) { return $script:api }
+                if ($PrincipalObjectId -ceq $script:workerPrincipalId) { return $script:worker }
+                throw 'Unexpected managed identity lookup.'
+            }
+            Mock Invoke-AzTsv { return 'Disabled' }
+            Mock Invoke-AzJson { return @() }
+            Mock Deploy-GatewayDatabaseBootstrapJob {
+                return [ordered]@{
+                    jobId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.App/jobs/$($script:jobName)"
+                    jobName = $script:jobName
+                    jobPrincipalId = $script:jobPrincipalId
+                    jobImage = $script:jobImage
+                    containerName = 'database-bootstrap'
+                    executionIntentId = $script:executionIntentId
+                }
+            }
+            Mock Get-GatewayDatabaseBootstrapJobEvidence {
+                return [ordered]@{
+                    jobId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.App/jobs/$($script:jobName)"
+                    jobName = $script:jobName
+                    jobPrincipalId = $script:jobPrincipalId
+                    jobImage = $script:jobImage
+                    containerName = 'database-bootstrap'
+                    executionIntentId = $script:executionIntentId
+                }
+            }
+            Mock Get-GatewayDatabaseBootstrapExecutions { return @() }
+            Mock Get-GatewaySqlPrivateEndpointReadyAddressEvidence {
+                $changed = [ordered]@{}
+                foreach ($entry in $script:sqlPrivateEndpoint.GetEnumerator()) { $changed[$entry.Key] = $entry.Value }
+                $changed.privateEndpointIpv4Address = '10.42.1.5'
+                $changed.privateDnsARecordIpv4Address = '10.42.1.5'
+                return $changed
+            }
+            Mock Get-GatewaySqlEntraAdministrator {
+                return [ordered]@{
+                    administratorType = 'ActiveDirectory'
+                    login = $script:originalAdministratorLogin
+                    objectId = $script:originalAdministratorObjectId
+                    tenantId = $script:config.tenantId
+                }
+            }
+            Mock Set-GatewaySqlEntraAdministratorExact { }
+            Mock Start-GatewayDatabaseBootstrapExecution { }
+
+            { Initialize-GatewayDatabase `
+                -Config $script:config -Foundation $script:foundation `
+                -SqlPrivateEndpoint $script:sqlPrivateEndpoint `
+                -SqlServerFqdn $script:sqlServerFqdn `
+                -ApiPrincipalId $script:apiPrincipalId -WorkerPrincipalId $script:workerPrincipalId `
+                -DeploymentOwnershipId $script:ownershipId -DatabaseMigratorImage $script:jobImage `
+                -OriginalEntraAdministratorObjectId $script:originalAdministratorObjectId `
+                -OriginalEntraAdministratorLogin $script:originalAdministratorLogin `
+                -BootstrapClientIpv4 '10.20.30.40' } |
+                Should -Throw '*persisted SQL private-endpoint NIC and private-DNS A-record tuple changed*'
+
+            Should -Invoke Get-GatewaySqlPrivateEndpointReadyAddressEvidence -Times 1 -Exactly
+            Should -Invoke Set-GatewaySqlEntraAdministratorExact -Times 0 -Exactly
+            Should -Invoke Start-GatewayDatabaseBootstrapExecution -Times 0 -Exactly
         }
 
         It 'never starts the job again when durable start intent has an ambiguous zero-execution outcome' {
@@ -878,6 +1029,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             { Initialize-GatewayDatabase `
                 -Config $script:config `
                 -Foundation $script:foundation `
+                -SqlPrivateEndpoint $script:sqlPrivateEndpoint `
                 -SqlServerFqdn $script:sqlServerFqdn `
                 -ApiPrincipalId $script:apiPrincipalId `
                 -WorkerPrincipalId $script:workerPrincipalId `
@@ -890,7 +1042,8 @@ Describe 'Private database bootstrap recovery and evidence contract' {
 
             Should -Invoke Get-GatewayDatabaseBootstrapExecutionsBounded -Times 1 -Exactly
             Should -Invoke Deploy-GatewayDatabaseBootstrapJob -Times 1 -Exactly -ParameterFilter {
-                -not $FreshIntent -and $ExecutionIntentId -ceq $script:executionIntentId
+                -not $FreshIntent -and $ExecutionIntentId -ceq $script:executionIntentId -and
+                    $ExpectedPrivateEndpointIpv4Address -ceq $script:privateEndpointIpv4Address
             }
             Should -Invoke Invoke-AzJson -Times 0 -Exactly -ParameterFilter {
                 $Arguments.Count -ge 3 -and

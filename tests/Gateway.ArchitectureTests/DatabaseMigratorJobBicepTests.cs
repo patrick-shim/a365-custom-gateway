@@ -21,6 +21,7 @@ public class DatabaseMigratorJobBicepTests
         source.Should().NotContain("Microsoft.App/jobs@2025-01-01-preview");
         source.Should().Contain("triggerType: 'Manual'");
         source.Should().Contain("replicaRetryLimit: 0");
+        source.Should().Contain("param replicaTimeoutSeconds int = 1800");
         source.Should().Contain("parallelism: 1");
         source.Should().Contain("replicaCompletionCount: 1");
         source.Should().Contain("@minValue(300)");
@@ -29,6 +30,8 @@ public class DatabaseMigratorJobBicepTests
         source.Should().NotContain("eventTriggerConfig:");
         source.Should().NotContain("cronExpression:");
         source.Should().NotContain("scale:");
+        Regex.Matches(source, "resource databaseBootstrapJob", RegexOptions.CultureInvariant)
+            .Count.Should().Be(1);
     }
 
     [Fact]
@@ -94,11 +97,40 @@ public class DatabaseMigratorJobBicepTests
         source.Should().Contain("'--database'\n            databaseName");
         source.Should().Contain("'--deployment-ownership-id'\n            deploymentOwnershipId");
         source.Should().Contain("'--accepted-source-fingerprint'\n            bootstrapSourceFingerprint");
+        source.Should().MatchRegex(
+            @"@minLength\(7\)\s+@maxLength\(15\)\s+param expectedPrivateEndpointIp string");
+        source.Should().Contain("'--expected-private-endpoint-ip'\n            expectedPrivateEndpointIp");
         source.Should().Contain("'--expected-api-principal-name'\n            apiDatabasePrincipalName");
         source.Should().Contain("'--expected-api-principal-client-id'\n            apiDatabasePrincipalClientId");
         source.Should().Contain("'--expected-worker-principal-name'\n            workerDatabasePrincipalName");
         source.Should().Contain("'--expected-worker-principal-client-id'\n            workerDatabasePrincipalClientId");
         source.Should().Contain("'--evidence-stdout'\n            'true'");
+    }
+
+    [Fact]
+    public void DatabaseBootstrapJob_ShouldLeaveBoundedMarginForExactPrivateDnsConvergence()
+    {
+        var jobSource = ReadJobSource();
+        var convergenceSource = File.ReadAllText(Path.Combine(
+            RepositoryRoot,
+            "tools",
+            "Gateway.DatabaseMigrator",
+            "SqlPrivateEndpointDnsConvergence.cs"));
+
+        var timeoutSeconds = ParseRequiredInteger(
+            jobSource,
+            @"param\s+replicaTimeoutSeconds\s+int\s*=\s*(\d+)");
+        var maximumAttempts = ParseRequiredInteger(
+            convergenceSource,
+            @"DefaultMaximumAttempts\s*=\s*(\d+)");
+        var retryDelaySeconds = ParseRequiredInteger(
+            convergenceSource,
+            @"DefaultRetryDelay\s*=\s*TimeSpan\.FromSeconds\((\d+)\)");
+        var maximumDnsDelaySeconds = checked((maximumAttempts - 1) * retryDelaySeconds);
+
+        maximumDnsDelaySeconds.Should().BeGreaterThanOrEqualTo(600);
+        maximumDnsDelaySeconds.Should().BeLessThanOrEqualTo(timeoutSeconds - 600);
+        jobSource.Should().Contain("replicaRetryLimit: 0");
     }
 
     [Fact]
@@ -124,6 +156,13 @@ public class DatabaseMigratorJobBicepTests
             "bootstrap",
             "infra",
             "database-migrator-job.bicep"));
+
+    private static int ParseRequiredInteger(string source, string pattern)
+    {
+        var match = Regex.Match(source, pattern, RegexOptions.CultureInvariant);
+        match.Success.Should().BeTrue($"source should contain numeric contract {pattern}");
+        return int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+    }
 
     private static string FindRepositoryRoot()
     {

@@ -244,12 +244,18 @@ function Assert-GatewayPrivateDatabaseBootstrapRecord {
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
         [Parameter(Mandatory)][string]$OriginalAdministratorObjectId,
-        [Parameter(Mandatory)][string]$OriginalAdministratorLogin
+        [Parameter(Mandatory)][string]$OriginalAdministratorLogin,
+        [Parameter(Mandatory)]$SqlPrivateEndpoint
     )
+
+    $addressTuple = Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple `
+        -Config $Config -SqlServerFqdn $SqlServerFqdn -Evidence $SqlPrivateEndpoint
 
     $expectedKeys = @(
         'schemaVersion', 'subscriptionId', 'tenantId', 'resourceGroupName', 'server', 'database',
         'deploymentOwnershipId', 'acceptedSourceFingerprint', 'jobDeploymentName', 'jobName', 'jobImage',
+        'privateEndpointNetworkInterfaceId', 'privateEndpointIpv4Address', 'privateDnsARecordSetId',
+        'privateDnsARecordName', 'privateDnsARecordIpv4Address',
         'originalAdministratorObjectId', 'originalAdministratorLogin', 'jobPrincipalId', 'executionIntentId',
         'deploymentIntentAtUtc', 'deploymentVerifiedAtUtc', 'administratorSwapIntentAtUtc',
         'administratorSwappedAtUtc', 'jobStartIntentAtUtc', 'executionName', 'executionStartedAtUtc',
@@ -258,7 +264,7 @@ function Assert-GatewayPrivateDatabaseBootstrapRecord {
     )
     $actualKeys = @($Record.Keys | ForEach-Object { [string]$_ } | Sort-Object)
     if (($actualKeys -join '|') -cne (($expectedKeys | Sort-Object) -join '|') -or
-        [int]$Record.schemaVersion -ne 1 -or
+        [int]$Record.schemaVersion -ne 2 -or
         [string]$Record.subscriptionId -cne ([guid][string]$Config.subscriptionId).ToString('D') -or
         [string]$Record.tenantId -cne ([guid][string]$Config.tenantId).ToString('D') -or
         [string]$Record.resourceGroupName -cne [string]$Config.resourceGroupName -or
@@ -269,6 +275,11 @@ function Assert-GatewayPrivateDatabaseBootstrapRecord {
         [string]$Record.jobDeploymentName -cne "a365gw-$($Config.projectName)-bootstrap-database-job-$($Config.environment)" -or
         [string]$Record.jobName -cne $JobName -or
         [string]$Record.jobImage -cne $JobImage -or
+        [string]$Record.privateEndpointNetworkInterfaceId -cne [string]$addressTuple.privateEndpointNetworkInterfaceId -or
+        [string]$Record.privateEndpointIpv4Address -cne [string]$addressTuple.privateEndpointIpv4Address -or
+        [string]$Record.privateDnsARecordSetId -cne [string]$addressTuple.privateDnsARecordSetId -or
+        [string]$Record.privateDnsARecordName -cne [string]$addressTuple.privateDnsARecordName -or
+        [string]$Record.privateDnsARecordIpv4Address -cne [string]$addressTuple.privateDnsARecordIpv4Address -or
         [string]$Record.originalAdministratorObjectId -cne ([guid]$OriginalAdministratorObjectId).ToString('D') -or
         [string]$Record.originalAdministratorLogin -cne $OriginalAdministratorLogin -or
         [string]$Record.executionIntentId -cne ([guid][string]$Record.executionIntentId).ToString('D') -or
@@ -304,6 +315,53 @@ function Assert-GatewayPrivateDatabaseBootstrapRecord {
         Assert-BootstrapFingerprintValue -Value ([string]$Record.evidenceFingerprint) -Label 'Private database-bootstrap evidence fingerprint'
     }
     return $true
+}
+
+function Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$SqlServerFqdn,
+        [Parameter(Mandatory)]$Evidence
+    )
+
+    $serverName = $SqlServerFqdn.Split('.')[0]
+    if ($SqlServerFqdn -cne "$serverName.database.windows.net" -or
+        $serverName -cne "sql-$($Config.projectName)-$($Config.environment)") {
+        throw 'The SQL private-endpoint address evidence server boundary is malformed.'
+    }
+    $providerPrefix = ("/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers").ToLowerInvariant()
+    $nicPrefix = "$providerPrefix/microsoft.network/networkinterfaces/pe-$serverName.nic."
+    $nicId = [string]$Evidence.privateEndpointNetworkInterfaceId
+    if ($nicId -cne $nicId.ToLowerInvariant() -or
+        -not $nicId.StartsWith($nicPrefix, [StringComparison]::Ordinal)) {
+        throw 'The SQL private-endpoint address evidence NIC boundary is malformed.'
+    }
+    $nicGuidText = $nicId.Substring($nicPrefix.Length)
+    $nicGuid = [guid]::Empty
+    if (-not [guid]::TryParse($nicGuidText, [ref]$nicGuid) -or $nicGuid -eq [guid]::Empty -or
+        $nicGuidText -cne $nicGuid.ToString('D')) {
+        throw 'The SQL private-endpoint address evidence NIC suffix is malformed.'
+    }
+    $expectedRecordSetId = "$providerPrefix/microsoft.network/privatednszones/privatelink.database.windows.net/a/$serverName"
+    if ([string]$Evidence.privateDnsARecordSetId -cne $expectedRecordSetId -or
+        [string]$Evidence.privateDnsARecordName -cne $serverName) {
+        throw 'The SQL private-endpoint address evidence A-record boundary is malformed.'
+    }
+    $privateEndpointIpv4Address = [string]$Evidence.privateEndpointIpv4Address
+    $privateDnsARecordIpv4Address = [string]$Evidence.privateDnsARecordIpv4Address
+    Assert-BootstrapIpv4Value -Value $privateEndpointIpv4Address -Label 'Expected SQL private-endpoint IPv4 address'
+    Assert-BootstrapIpv4Value -Value $privateDnsARecordIpv4Address -Label 'Expected SQL private DNS A-record IPv4 address'
+    if ($privateEndpointIpv4Address -cne $privateDnsARecordIpv4Address) {
+        throw 'The SQL private-endpoint address evidence does not bind the A-record to the sole NIC IPv4 address.'
+    }
+    return [ordered]@{
+        privateEndpointNetworkInterfaceId = $nicId
+        privateEndpointIpv4Address = $privateEndpointIpv4Address
+        privateDnsARecordSetId = $expectedRecordSetId
+        privateDnsARecordName = $serverName
+        privateDnsARecordIpv4Address = $privateDnsARecordIpv4Address
+    }
 }
 
 function Get-GatewaySqlEntraAdministrator {
@@ -397,14 +455,18 @@ function Get-GatewayDatabaseBootstrapJobArguments {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$SqlServerFqdn,
+        [Parameter(Mandatory)][string]$ExpectedPrivateEndpointIpv4Address,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
         [Parameter(Mandatory)]$ApiPrincipal,
         [Parameter(Mandatory)]$WorkerPrincipal
     )
 
+    Assert-BootstrapIpv4Value -Value $ExpectedPrivateEndpointIpv4Address -Label 'Expected SQL private-endpoint IPv4 address'
+
     $arguments = @(
         '--server', $SqlServerFqdn,
+        '--expected-private-endpoint-ip', $ExpectedPrivateEndpointIpv4Address,
         '--database', 'GatewayDb',
         '--phase', 'bootstrap',
         '--repeat', '1',
@@ -426,6 +488,7 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$Foundation,
         [Parameter(Mandatory)][string]$SqlServerFqdn,
+        [Parameter(Mandatory)][string]$ExpectedPrivateEndpointIpv4Address,
         [Parameter(Mandatory)][string]$JobImage,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
@@ -449,6 +512,7 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
     $expectedJobId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/jobs/$jobName"
     $expectedArguments = @(Get-GatewayDatabaseBootstrapJobArguments `
         -SqlServerFqdn $SqlServerFqdn `
+        -ExpectedPrivateEndpointIpv4Address $ExpectedPrivateEndpointIpv4Address `
         -DeploymentOwnershipId $DeploymentOwnershipId `
         -SourceFingerprint $SourceFingerprint `
         -ApiPrincipal $ApiPrincipal `
@@ -542,6 +606,7 @@ function Deploy-GatewayDatabaseBootstrapJob {
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$Foundation,
         [Parameter(Mandatory)][string]$SqlServerFqdn,
+        [Parameter(Mandatory)][string]$ExpectedPrivateEndpointIpv4Address,
         [Parameter(Mandatory)][string]$JobImage,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
@@ -550,6 +615,8 @@ function Deploy-GatewayDatabaseBootstrapJob {
         [Parameter(Mandatory)][string]$ExecutionIntentId,
         [Parameter(Mandatory)][bool]$FreshIntent
     )
+
+    Assert-BootstrapIpv4Value -Value $ExpectedPrivateEndpointIpv4Address -Label 'Expected SQL private-endpoint IPv4 address'
 
     Assert-GuidValue -Value $ExecutionIntentId -Label 'Database-bootstrap execution intent identifier'
     $canonicalExecutionIntentId = ([guid]$ExecutionIntentId).ToString('D')
@@ -602,6 +669,7 @@ function Deploy-GatewayDatabaseBootstrapJob {
             "acrLoginServer=$($Foundation.acrLoginServer)",
             "imagePullIdentityResourceId=$($Foundation.runtimeImagePullIdentityId)",
             "sqlServerFqdn=$SqlServerFqdn",
+            "expectedPrivateEndpointIp=$ExpectedPrivateEndpointIpv4Address",
             "deploymentOwnershipId=$(([guid]$DeploymentOwnershipId).ToString('D'))",
             "bootstrapSourceFingerprint=$SourceFingerprint",
             "apiDatabasePrincipalName=$($ApiPrincipal.displayName)",
@@ -628,6 +696,7 @@ function Deploy-GatewayDatabaseBootstrapJob {
         [string]$deployment.properties.parameters.acrLoginServer.value -cne [string]$Foundation.acrLoginServer -or
         -not ([string]$deployment.properties.parameters.imagePullIdentityResourceId.value).Equals([string]$Foundation.runtimeImagePullIdentityId, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$deployment.properties.parameters.sqlServerFqdn.value -cne $SqlServerFqdn -or
+        [string]$deployment.properties.parameters.expectedPrivateEndpointIp.value -cne $ExpectedPrivateEndpointIpv4Address -or
         [string]$deployment.properties.parameters.deploymentOwnershipId.value -cne ([guid]$DeploymentOwnershipId).ToString('D') -or
         [string]$deployment.properties.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
         [string]$deployment.properties.parameters.apiDatabasePrincipalName.value -cne [string]$ApiPrincipal.displayName -or
@@ -642,6 +711,7 @@ function Deploy-GatewayDatabaseBootstrapJob {
         -Config $Config `
         -Foundation $Foundation `
         -SqlServerFqdn $SqlServerFqdn `
+        -ExpectedPrivateEndpointIpv4Address $ExpectedPrivateEndpointIpv4Address `
         -JobImage $JobImage `
         -DeploymentOwnershipId $DeploymentOwnershipId `
         -SourceFingerprint $SourceFingerprint `
@@ -843,6 +913,7 @@ function Get-GatewayDatabaseBootstrapExecutionEvidence {
         [Parameter(Mandatory)][string]$ExecutionName,
         [Parameter(Mandatory)][string]$JobImage,
         [Parameter(Mandatory)][string]$SqlServerFqdn,
+        [Parameter(Mandatory)][string]$ExpectedPrivateEndpointIpv4Address,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
         [Parameter(Mandatory)]$ApiPrincipal,
@@ -887,6 +958,7 @@ function Get-GatewayDatabaseBootstrapExecutionEvidence {
     })
     $expectedArguments = @(Get-GatewayDatabaseBootstrapJobArguments `
         -SqlServerFqdn $SqlServerFqdn -DeploymentOwnershipId $DeploymentOwnershipId `
+        -ExpectedPrivateEndpointIpv4Address $ExpectedPrivateEndpointIpv4Address `
         -SourceFingerprint $SourceFingerprint -ApiPrincipal $ApiPrincipal -WorkerPrincipal $WorkerPrincipal)
     $executionStart = [DateTimeOffset]::MinValue
     $executionEnd = [DateTimeOffset]::MinValue
@@ -1070,6 +1142,7 @@ function Initialize-GatewayDatabase {
     param(
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)]$SqlPrivateEndpoint,
         [Parameter(Mandatory)][string]$SqlServerFqdn,
         [Parameter(Mandatory)][string]$ApiPrincipalId,
         [Parameter(Mandatory)][string]$WorkerPrincipalId,
@@ -1102,6 +1175,8 @@ function Initialize-GatewayDatabase {
         $serverName -cne "sql-$($Config.projectName)-$($Config.environment)") {
         throw 'The private database-bootstrap SQL server does not match the deterministic deployment server.'
     }
+    $privateEndpointAddressTuple = Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple `
+        -Config $Config -SqlServerFqdn $SqlServerFqdn -Evidence $SqlPrivateEndpoint
     $publicRecoveryPath = Join-Path $evidenceDirectory 'GatewayDb-network-recovery.json'
     $jobName = "job-$($Config.projectName)-db-init-$($Config.environment)"
     $receiptPath = Join-Path $evidenceDirectory 'private-database-bootstrap-receipt.json'
@@ -1113,7 +1188,8 @@ function Initialize-GatewayDatabase {
             -JobName $jobName -JobImage $DatabaseMigratorImage `
             -DeploymentOwnershipId $canonicalOwnershipId -SourceFingerprint $acceptedSourceFingerprint `
             -OriginalAdministratorObjectId $canonicalOriginalAdministratorObjectId `
-            -OriginalAdministratorLogin $OriginalEntraAdministratorLogin | Out-Null
+            -OriginalAdministratorLogin $OriginalEntraAdministratorLogin `
+            -SqlPrivateEndpoint $privateEndpointAddressTuple | Out-Null
     }
 
     $preparationFailure = $null
@@ -1171,7 +1247,7 @@ function Initialize-GatewayDatabase {
             throw 'The singular Azure SQL Entra administrator does not exactly match the authenticated bootstrap administrator before private initialization.'
         }
         $receipt = [ordered]@{
-            schemaVersion = 1
+            schemaVersion = 2
             subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
             tenantId = ([guid][string]$Config.tenantId).ToString('D')
             resourceGroupName = [string]$Config.resourceGroupName
@@ -1182,6 +1258,11 @@ function Initialize-GatewayDatabase {
             jobDeploymentName = "a365gw-$($Config.projectName)-bootstrap-database-job-$($Config.environment)"
             jobName = $jobName
             jobImage = $DatabaseMigratorImage
+            privateEndpointNetworkInterfaceId = [string]$privateEndpointAddressTuple.privateEndpointNetworkInterfaceId
+            privateEndpointIpv4Address = [string]$privateEndpointAddressTuple.privateEndpointIpv4Address
+            privateDnsARecordSetId = [string]$privateEndpointAddressTuple.privateDnsARecordSetId
+            privateDnsARecordName = [string]$privateEndpointAddressTuple.privateDnsARecordName
+            privateDnsARecordIpv4Address = [string]$privateEndpointAddressTuple.privateDnsARecordIpv4Address
             originalAdministratorObjectId = $canonicalOriginalAdministratorObjectId
             originalAdministratorLogin = $OriginalEntraAdministratorLogin
             jobPrincipalId = ''
@@ -1206,10 +1287,12 @@ function Initialize-GatewayDatabase {
         -JobName $jobName -JobImage $DatabaseMigratorImage `
         -DeploymentOwnershipId $canonicalOwnershipId -SourceFingerprint $acceptedSourceFingerprint `
         -OriginalAdministratorObjectId $canonicalOriginalAdministratorObjectId `
-        -OriginalAdministratorLogin $OriginalEntraAdministratorLogin | Out-Null
+        -OriginalAdministratorLogin $OriginalEntraAdministratorLogin `
+        -SqlPrivateEndpoint $privateEndpointAddressTuple | Out-Null
 
     $jobEvidence = Deploy-GatewayDatabaseBootstrapJob `
         -Config $Config -Foundation $Foundation -SqlServerFqdn $SqlServerFqdn `
+        -ExpectedPrivateEndpointIpv4Address ([string]$privateEndpointAddressTuple.privateEndpointIpv4Address) `
         -JobImage $DatabaseMigratorImage -DeploymentOwnershipId $canonicalOwnershipId `
         -SourceFingerprint $acceptedSourceFingerprint -ApiPrincipal $api -WorkerPrincipal $worker `
         -ExecutionIntentId ([string]$receipt.executionIntentId) `
@@ -1285,6 +1368,7 @@ function Initialize-GatewayDatabase {
             else {
                 $preStartJobEvidence = Get-GatewayDatabaseBootstrapJobEvidence `
                     -Config $Config -Foundation $Foundation -SqlServerFqdn $SqlServerFqdn `
+                    -ExpectedPrivateEndpointIpv4Address ([string]$privateEndpointAddressTuple.privateEndpointIpv4Address) `
                     -JobImage $DatabaseMigratorImage -DeploymentOwnershipId $canonicalOwnershipId `
                     -SourceFingerprint $acceptedSourceFingerprint -ApiPrincipal $api -WorkerPrincipal $worker `
                     -ExecutionIntentId ([string]$receipt.executionIntentId)
@@ -1295,6 +1379,17 @@ function Initialize-GatewayDatabase {
                 $preStartExecutions = @(Get-GatewayDatabaseBootstrapExecutions -Config $Config -JobName $jobName)
                 if ($preStartExecutions.Count -ne 0) {
                     throw 'The database-bootstrap execution set changed immediately before the SQL administrator boundary.'
+                }
+                $preAdministratorAddressTuple = Get-GatewaySqlPrivateEndpointReadyAddressEvidence `
+                    -Config $Config -Foundation $Foundation -SqlServerFqdn $SqlServerFqdn
+                foreach ($propertyName in @(
+                    'privateEndpointNetworkInterfaceId', 'privateEndpointIpv4Address',
+                    'privateDnsARecordSetId', 'privateDnsARecordName', 'privateDnsARecordIpv4Address'
+                )) {
+                    if ([string]$preAdministratorAddressTuple[$propertyName] -cne
+                        [string]$privateEndpointAddressTuple[$propertyName]) {
+                        throw 'The persisted SQL private-endpoint NIC and private-DNS A-record tuple changed immediately before the SQL administrator boundary.'
+                    }
                 }
                 $currentAdministrator = Get-GatewaySqlEntraAdministrator -Config $Config -ServerName $serverName
                 if ([string]$currentAdministrator.objectId -cne $canonicalOriginalAdministratorObjectId -or
@@ -1391,6 +1486,7 @@ function Initialize-GatewayDatabase {
         $executionEvidence = Get-GatewayDatabaseBootstrapExecutionEvidence `
             -Config $Config -JobName $jobName -ExecutionName $executionName `
             -JobImage $DatabaseMigratorImage -SqlServerFqdn $SqlServerFqdn `
+            -ExpectedPrivateEndpointIpv4Address ([string]$privateEndpointAddressTuple.privateEndpointIpv4Address) `
             -DeploymentOwnershipId $canonicalOwnershipId -SourceFingerprint $acceptedSourceFingerprint `
             -ApiPrincipal $api -WorkerPrincipal $worker `
             -ExecutionIntentId ([string]$receipt.executionIntentId)
@@ -1563,6 +1659,11 @@ function Initialize-GatewayDatabase {
         databaseBootstrapExecutionIntentId = [string]$receipt.executionIntentId
         databaseBootstrapEvidenceFingerprint = [string]$receipt.evidenceFingerprint
         databaseBootstrapCompletionReceipt = $receiptPath
+        privateEndpointNetworkInterfaceId = [string]$privateEndpointAddressTuple.privateEndpointNetworkInterfaceId
+        privateEndpointIpv4Address = [string]$privateEndpointAddressTuple.privateEndpointIpv4Address
+        privateDnsARecordSetId = [string]$privateEndpointAddressTuple.privateDnsARecordSetId
+        privateDnsARecordName = [string]$privateEndpointAddressTuple.privateDnsARecordName
+        privateDnsARecordIpv4Address = [string]$privateEndpointAddressTuple.privateDnsARecordIpv4Address
         originalSqlAdministratorObjectId = $canonicalOriginalAdministratorObjectId
         originalSqlAdministratorLogin = $OriginalEntraAdministratorLogin
         originalSqlAdministratorRestored = $true

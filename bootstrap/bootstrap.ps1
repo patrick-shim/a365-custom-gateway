@@ -768,6 +768,7 @@ try {
         Initialize-GatewayDatabase `
             -Config $configuration `
             -Foundation $foundation `
+            -SqlPrivateEndpoint $sqlPrivateEndpoint `
             -SqlServerFqdn ([string]$inert.sqlServerFqdn) `
             -ApiPrincipalId ([string]$inert.apiPrincipalId) `
             -WorkerPrincipalId ([string]$inert.workerPrincipalId) `

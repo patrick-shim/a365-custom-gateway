@@ -37,6 +37,11 @@ param imagePullIdentityResourceId string
 @minLength(1)
 param sqlServerFqdn string
 
+@description('Canonical IPv4 address of the sole SQL private-endpoint NIC and exact private-DNS A-record target.')
+@minLength(7)
+@maxLength(15)
+param expectedPrivateEndpointIp string
+
 @description('Random bootstrap-state ownership GUID propagated to the job and the database initialization marker.')
 @minLength(36)
 @maxLength(36)
@@ -147,6 +152,8 @@ resource databaseBootstrapJob 'Microsoft.App/jobs@2025-01-01' = {
           args: [
             '--server'
             sqlServerFqdn
+            '--expected-private-endpoint-ip'
+            expectedPrivateEndpointIp
             '--database'
             databaseName
             '--phase'

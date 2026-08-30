@@ -2501,6 +2501,124 @@ function Build-GatewayImages {
     return $result
 }
 
+function Get-GatewaySqlPrivateEndpointAddressSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)][string]$SqlServerFqdn
+    )
+
+    $serverName = $SqlServerFqdn.Split('.')[0]
+    if ($SqlServerFqdn -cne "$serverName.database.windows.net" -or
+        $serverName -cne "sql-$($Config.projectName)-$($Config.environment)") {
+        throw 'The SQL private-endpoint address boundary does not match the deterministic logical server.'
+    }
+
+    $providerPrefix = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers"
+    $privateEndpointId = "$providerPrefix/Microsoft.Network/privateEndpoints/pe-$serverName"
+    $zoneId = "$providerPrefix/Microsoft.Network/privateDnsZones/privatelink.database.windows.net"
+    $recordSetId = "$zoneId/A/$serverName"
+    $privateEndpoint = Invoke-AzJson -Arguments @(
+        'network', 'private-endpoint', 'show', '--ids', $privateEndpointId,
+        '--query', '{id:id,name:name,location:location,provisioningState:provisioningState,subnet:subnet,networkInterfaces:networkInterfaces}'
+    )
+    $networkInterfaces = @($privateEndpoint.networkInterfaces)
+    if (-not ([string]$privateEndpoint.id).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$privateEndpoint.name -cne "pe-$serverName" -or
+        -not ([string]$privateEndpoint.location).Equals([string]$Config.location, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$privateEndpoint.provisioningState -cne 'Succeeded' -or
+        -not ([string]$privateEndpoint.subnet.id).Equals([string]$Foundation.privateEndpointSubnetId, [StringComparison]::OrdinalIgnoreCase) -or
+        $networkInterfaces.Count -ne 1) {
+        throw 'The SQL private endpoint does not expose one exact ready network interface.'
+    }
+
+    $nicId = ConvertTo-GatewayCanonicalArmResourceId `
+        -ResourceId ([string]$networkInterfaces[0].id) `
+        -Config $Config `
+        -Label 'SQL private-endpoint network interface'
+    $nicPrefix = ("$providerPrefix/Microsoft.Network/networkInterfaces/pe-$serverName.nic.").ToLowerInvariant()
+    if (-not $nicId.StartsWith($nicPrefix, [StringComparison]::Ordinal)) {
+        throw 'The SQL private-endpoint network-interface name is not reverse-bound to the exact endpoint.'
+    }
+    $nicGuidText = $nicId.Substring($nicPrefix.Length)
+    $nicGuid = [guid]::Empty
+    if (-not [guid]::TryParse($nicGuidText, [ref]$nicGuid) -or $nicGuid -eq [guid]::Empty -or
+        $nicGuidText -cne $nicGuid.ToString('D')) {
+        throw 'The SQL private-endpoint network-interface suffix is not one canonical GUID.'
+    }
+
+    $nic = Invoke-AzJson -Arguments @(
+        'resource', 'show', '--ids', $nicId, '--api-version', '2023-11-01',
+        '--query', '{id:id,type:type,name:name,location:location,properties:properties}'
+    )
+    $ipConfigurations = @($nic.properties.ipConfigurations)
+    if (-not ([string]$nic.id).Equals($nicId, [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([string]$nic.type).Equals('Microsoft.Network/networkInterfaces', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$nic.name -cne "pe-$serverName.nic.$nicGuidText" -or
+        -not ([string]$nic.location).Equals([string]$Config.location, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$nic.properties.provisioningState -cne 'Succeeded' -or
+        -not ([string]$nic.properties.privateEndpoint.id).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase) -or
+        $ipConfigurations.Count -ne 1 -or
+        -not ([string]$ipConfigurations[0].properties.subnet.id).Equals([string]$Foundation.privateEndpointSubnetId, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The SQL private-endpoint network interface does not exactly reverse-bind to the endpoint and foundation subnet.'
+    }
+    $privateEndpointIpv4Address = [string]$ipConfigurations[0].properties.privateIPAddress
+    Assert-BootstrapIpv4Value -Value $privateEndpointIpv4Address -Label 'SQL private-endpoint network-interface IPv4 address'
+
+    $recordSet = Invoke-AzJson -Arguments @(
+        'network', 'private-dns', 'record-set', 'a', 'show',
+        '--resource-group', [string]$Config.resourceGroupName,
+        '--zone-name', 'privatelink.database.windows.net',
+        '--name', $serverName,
+        '--query', '{id:id,name:name,fqdn:fqdn,aRecords:aRecords}'
+    )
+    $aRecords = @($recordSet.aRecords)
+    if (-not ([string]$recordSet.id).Equals($recordSetId, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$recordSet.name -cne $serverName -or
+        [string]$recordSet.fqdn -cne "$serverName.privatelink.database.windows.net." -or
+        $aRecords.Count -ne 1) {
+        throw 'The SQL private DNS record set is absent, ambiguous, or outside the exact server boundary.'
+    }
+    $privateDnsARecordIpv4Address = [string]$aRecords[0].ipv4Address
+    Assert-BootstrapIpv4Value -Value $privateDnsARecordIpv4Address -Label 'SQL private DNS A-record IPv4 address'
+    if ($privateDnsARecordIpv4Address -cne $privateEndpointIpv4Address) {
+        throw 'The SQL private DNS A-record set does not equal the sole private-endpoint network-interface IPv4 address.'
+    }
+
+    return [ordered]@{
+        privateEndpointNetworkInterfaceId = $nicId
+        privateEndpointIpv4Address = $privateEndpointIpv4Address
+        privateDnsARecordSetId = $recordSetId.ToLowerInvariant()
+        privateDnsARecordName = $serverName
+        privateDnsARecordIpv4Address = $privateDnsARecordIpv4Address
+    }
+}
+
+function Get-GatewaySqlPrivateEndpointReadyAddressEvidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)][string]$SqlServerFqdn,
+        [ValidateRange(1, 241)][int]$MaximumAttempts = 121,
+        [ValidateRange(0, 30)][int]$PollIntervalSeconds = 5
+    )
+
+    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
+        try {
+            return Get-GatewaySqlPrivateEndpointAddressSnapshot `
+                -Config $Config -Foundation $Foundation -SqlServerFqdn $SqlServerFqdn
+        }
+        catch {
+            if ($attempt -eq $MaximumAttempts) {
+                throw 'The exact SQL private-endpoint NIC and private-DNS A-record tuple did not converge within the bounded management-plane readiness window.'
+            }
+            if ($PollIntervalSeconds -gt 0) { Start-Sleep -Seconds $PollIntervalSeconds }
+        }
+    }
+}
+
 function Deploy-SqlPrivateEndpoint {
     param(
         [Parameter(Mandatory)]$Config,
@@ -2529,6 +2647,8 @@ function Deploy-SqlPrivateEndpoint {
         [string]$outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint) {
         throw 'SQL private-endpoint deployment did not echo the exact ownership/source boundary.'
     }
+    $addressEvidence = Get-GatewaySqlPrivateEndpointReadyAddressEvidence `
+        -Config $Config -Foundation $Foundation -SqlServerFqdn $SqlServerFqdn
     return [ordered]@{
         deploymentName = $deploymentName
         deploymentOwnershipId = $canonicalOwnershipId
@@ -2540,6 +2660,11 @@ function Deploy-SqlPrivateEndpoint {
         sqlServerId = [string]$outputs.sqlServerId.value
         privateEndpointSubnetId = [string]$outputs.privateEndpointSubnetId.value
         virtualNetworkId = [string]$outputs.virtualNetworkId.value
+        privateEndpointNetworkInterfaceId = [string]$addressEvidence.privateEndpointNetworkInterfaceId
+        privateEndpointIpv4Address = [string]$addressEvidence.privateEndpointIpv4Address
+        privateDnsARecordSetId = [string]$addressEvidence.privateDnsARecordSetId
+        privateDnsARecordName = [string]$addressEvidence.privateDnsARecordName
+        privateDnsARecordIpv4Address = [string]$addressEvidence.privateDnsARecordIpv4Address
     }
 }
 

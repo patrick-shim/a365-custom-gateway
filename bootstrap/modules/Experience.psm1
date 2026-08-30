@@ -3436,6 +3436,8 @@ function Test-GatewayDatabaseEvidence {
     )
 
     try {
+        $privateEndpointAddressTuple = Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple `
+            -Config $Config -SqlServerFqdn ([string]$Inert.sqlServerFqdn) -Evidence $Evidence
         if (-not $Evidence -or
             [string]$Evidence.database -ne 'GatewayDb' -or
             [string]$Evidence.server -ne [string]$Inert.sqlServerFqdn -or
@@ -3493,6 +3495,7 @@ function Test-GatewayDatabaseEvidence {
         $workerPrincipal = [ordered]@{ displayName = [string]$Evidence.workerPrincipalName; clientId = [string]$Evidence.workerPrincipalClientId }
         $job = Get-GatewayDatabaseBootstrapJobEvidence `
             -Config $Config -Foundation $Foundation -SqlServerFqdn ([string]$Evidence.server) `
+            -ExpectedPrivateEndpointIpv4Address ([string]$privateEndpointAddressTuple.privateEndpointIpv4Address) `
             -JobImage $DatabaseMigratorImage `
             -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
             -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
@@ -3507,6 +3510,7 @@ function Test-GatewayDatabaseEvidence {
             -Config $Config -JobName ([string]$Evidence.databaseBootstrapJobName) `
             -ExecutionName ([string]$Evidence.databaseBootstrapExecutionName) `
             -JobImage $DatabaseMigratorImage -SqlServerFqdn ([string]$Evidence.server) `
+            -ExpectedPrivateEndpointIpv4Address ([string]$privateEndpointAddressTuple.privateEndpointIpv4Address) `
             -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
             -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
             -ExecutionIntentId ([string]$Evidence.databaseBootstrapExecutionIntentId)
@@ -3529,7 +3533,8 @@ function Test-GatewayDatabaseEvidence {
             -JobImage ([string]$Evidence.databaseBootstrapJobImage) `
             -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
             -OriginalAdministratorObjectId ([string]$Evidence.originalSqlAdministratorObjectId) `
-            -OriginalAdministratorLogin ([string]$Evidence.originalSqlAdministratorLogin) | Out-Null
+            -OriginalAdministratorLogin ([string]$Evidence.originalSqlAdministratorLogin) `
+            -SqlPrivateEndpoint $privateEndpointAddressTuple | Out-Null
         if ([string]::IsNullOrWhiteSpace([string]$receipt.completedAtUtc) -or
             [string]$receipt.executionName -cne [string]$Evidence.databaseBootstrapExecutionName -or
             [string]$receipt.executionIntentId -cne [string]$Evidence.databaseBootstrapExecutionIntentId -or
@@ -3776,6 +3781,7 @@ function Test-GatewaySqlPrivateEndpointEvidence {
         $zoneId = "$resourceGroupScope/providers/Microsoft.Network/privateDnsZones/privatelink.database.windows.net"
         $linkId = "$zoneId/virtualNetworkLinks/link-$($Config.projectName)-$($Config.environment)-sql"
         $zoneGroupId = "$privateEndpointId/privateDnsZoneGroups/sqlDnsGroup"
+        $recordSetId = "$zoneId/A/$serverName"
         $deploymentName = "a365gw-$($Config.projectName)-bootstrap-sql-private-$($Config.environment)"
         foreach ($property in @(
             [ordered]@{ name = 'deploymentName'; expected = $deploymentName },
@@ -3787,10 +3793,16 @@ function Test-GatewaySqlPrivateEndpointEvidence {
             [ordered]@{ name = 'privateDnsZoneGroupId'; expected = $zoneGroupId },
             [ordered]@{ name = 'sqlServerId'; expected = $serverId },
             [ordered]@{ name = 'privateEndpointSubnetId'; expected = [string]$Foundation.privateEndpointSubnetId },
-            [ordered]@{ name = 'virtualNetworkId'; expected = [string]$Foundation.virtualNetworkId }
+            [ordered]@{ name = 'virtualNetworkId'; expected = [string]$Foundation.virtualNetworkId },
+            [ordered]@{ name = 'privateDnsARecordSetId'; expected = $recordSetId },
+            [ordered]@{ name = 'privateDnsARecordName'; expected = $serverName }
         )) {
             if (-not ([string]$Evidence[$property.name]).Equals([string]$property.expected, [StringComparison]::OrdinalIgnoreCase)) { throw 'mismatch' }
         }
+        Assert-BootstrapIpv4Value -Value ([string]$Evidence.privateEndpointIpv4Address) -Label 'Persisted SQL private-endpoint IPv4 address'
+        Assert-BootstrapIpv4Value -Value ([string]$Evidence.privateDnsARecordIpv4Address) -Label 'Persisted SQL private DNS A-record IPv4 address'
+        if ([string]$Evidence.privateEndpointIpv4Address -cne [string]$Evidence.privateDnsARecordIpv4Address -or
+            [string]::IsNullOrWhiteSpace([string]$Evidence.privateEndpointNetworkInterfaceId)) { throw 'mismatch' }
 
         $validationStage = 'ARM deployment readback'
         $deployment = Invoke-AzJson -Arguments @(
@@ -3866,6 +3878,16 @@ function Test-GatewaySqlPrivateEndpointEvidence {
         if ($serverConnections.Count -ne 1 -or
             -not ([string]$serverConnections[0].privateEndpointId).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase) -or
             [string]$serverConnections[0].status -cne 'Approved') { throw 'mismatch' }
+        $validationStage = 'private endpoint NIC and private DNS A-record convergence readback'
+        $addressEvidence = Get-GatewaySqlPrivateEndpointReadyAddressEvidence `
+            -Config $Config -Foundation $Foundation -SqlServerFqdn $SqlServerFqdn
+        foreach ($propertyName in @(
+            'privateEndpointNetworkInterfaceId', 'privateEndpointIpv4Address',
+            'privateDnsARecordSetId', 'privateDnsARecordName', 'privateDnsARecordIpv4Address'
+        )) {
+            if (-not ([string]$addressEvidence[$propertyName]).Equals(
+                    [string]$Evidence[$propertyName], [StringComparison]::OrdinalIgnoreCase)) { throw 'mismatch' }
+        }
         return $true
     }
     catch {

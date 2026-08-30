@@ -19,6 +19,7 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
     private const string SourceFingerprint =
         "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private const string ExecutionIntentId = "44444444-4444-4444-8444-444444444444";
+    private const string ExpectedPrivateEndpointIp = "10.42.2.4";
 
     [Fact]
     public async Task Bootstrap_RequiresExactDeploymentAndSourceBinding()
@@ -174,6 +175,43 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
     }
 
     [Fact]
+    public async Task Bootstrap_RequiresExpectedPrivateEndpointIp()
+    {
+        var arguments = CreateBoundBootstrapArguments()[..^2];
+        var action = () => InvokeMigratorAsync(arguments);
+
+        await action.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("--expected-private-endpoint-ip must be one canonical private IPv4 address*");
+    }
+
+    [Theory]
+    [InlineData("203.0.113.7")]
+    [InlineData("::1")]
+    [InlineData("10.42.2.004")]
+    public async Task Bootstrap_RejectsUnsafeExpectedPrivateEndpointIp(string value)
+    {
+        var arguments = CreateBoundBootstrapArguments();
+        arguments[^1] = value;
+        var action = () => InvokeMigratorAsync(arguments);
+
+        await action.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("--expected-private-endpoint-ip must be one canonical private IPv4 address*");
+    }
+
+    [Fact]
+    public async Task NonBootstrapPhase_RejectsExpectedPrivateEndpointIp()
+    {
+        var action = () => InvokeMigratorAsync(
+            "--server", "sql-test.database.windows.net",
+            "--database", "GatewayDb",
+            "--phase", "verify",
+            "--expected-private-endpoint-ip", ExpectedPrivateEndpointIp);
+
+        await action.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("--expected-private-endpoint-ip is allowed only for the bootstrap phase.");
+    }
+
+    [Fact]
     public void Bootstrap_UsesOneLockAndEmitsOneThreeRecordChunkedPayload()
     {
         var source = File.ReadAllText(Path.Combine(
@@ -213,6 +251,14 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
         source.Should().Contain("string? ExecutionIntentId");
         source.Should().Contain("phase == \"bootstrap\" && string.IsNullOrWhiteSpace(managedIdentityEndpoint)");
         source.Should().Contain("never falls back to Azure CLI credentials");
+        var dnsConvergence = source.IndexOf(
+            "SqlPrivateEndpointDnsConvergence.WaitForExactResolutionAsync",
+            StringComparison.Ordinal);
+        var tokenAcquisition = source.IndexOf("credential.GetTokenAsync", StringComparison.Ordinal);
+        var sqlOpen = source.IndexOf("connection.OpenAsync", StringComparison.Ordinal);
+        dnsConvergence.Should().BeGreaterThanOrEqualTo(0);
+        dnsConvergence.Should().BeLessThan(tokenAcquisition);
+        tokenAcquisition.Should().BeLessThan(sqlOpen);
     }
 
     [Fact]
@@ -290,7 +336,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
         "--expected-api-principal-name", "ca-gateway-api-dev",
         "--expected-api-principal-client-id", "22222222-2222-4222-8222-222222222222",
         "--expected-worker-principal-name", "ca-gateway-worker-dev-v3",
-        "--expected-worker-principal-client-id", "33333333-3333-4333-8333-333333333333"
+        "--expected-worker-principal-client-id", "33333333-3333-4333-8333-333333333333",
+        "--expected-private-endpoint-ip", ExpectedPrivateEndpointIp
     ];
 
     private static async Task InvokeMigratorAsync(params string[] arguments)

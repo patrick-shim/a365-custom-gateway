@@ -1077,6 +1077,109 @@ remaining blocker. This is source validation, not Azure proof. Run only a new
 `a365gw25` / `rg-a365-custom-gw-phase6x` Plan; never Resume or second-start
 `a365gw24`.
 
+Generation `a365gw25` accepted Plan
+`sha256:2193fa33509251fb398ece9dc69a6f1a04ac5e56c7a1fad3553a6d2e671b7a60`
+for `rg-a365-custom-gw-phase6x`, deployment ownership
+`38508b4a-40eb-40da-8752-a27c6980e615`, configuration
+`sha256:976822c58eef06cb1cff5741b7917c58f8f7cf884f7676bdb485023a2701f5a3`,
+and source
+`sha256:190e74df2839d9e8078a7a704ae4af513bbdecd3673db64992be279cf70e52d7`
+from clean commit `2e66273384fdb4b576ca18eb19cade43552dcabc`. Apply completed
+steps 1–10; step 11 `Gateway database` became terminal `Failed`, all eight later
+steps remained `Pending`, no output was recorded, and progress remained 10/19
+(52%). Foundation deployment `a365gw-a365gw25-bootstrap-foundation-dev`, inert
+deployment `a365gw-a365gw25-bootstrap-inert-dev`, SQL-private deployment
+`a365gw-a365gw25-bootstrap-sql-private-dev`, and database-Job deployment
+`a365gw-a365gw25-bootstrap-database-job-dev` reached their durable verified
+checkpoints. The database-Job deployment correlation was
+`fc364be9-9d2b-4a66-b471-74966c39a766`.
+
+The exact immutable image digests were API
+`sha256:5ff7b54d48908a2ba49290c036d071a2edf0851e7b8635dd716df8bed2c51cb6`,
+worker
+`sha256:c1bda7d1855bde36a2c28b43f3c0e96a649a30d740d8591810e686148e25d2d7`,
+Admin UI
+`sha256:a84cf38810a718b47b98a758a52490e475e5abc1375dee4b98458c21c2c949a8`,
+and database migrator
+`sha256:3783eb38a5bf6463d2a091c3d0a0bf9bec860eb86cb341ab0a398a1f054ee17a`.
+The source-bound seed blueprint object/application ID is
+`0e0a2037-78c3-4ad4-bdc0-c26d8801f12e`, with the signed-in administrator as sole
+owner/sponsor, the exact accepted provider manager, and no credential. Gateway API
+application object/client/service-principal IDs are
+`55bdaea0-6f89-4db5-bf5f-e9ce2583ce4a`,
+`e89da6a3-aa3d-49f8-b6ec-1f7d8c791e69`, and
+`62b2d783-70b1-4a99-9249-7e1458e70d94`.
+
+Step 11 deployed manual Job `job-a365gw25-db-init-dev`, system principal
+`ee83216d-f4a5-4ed3-ab23-1c1e02c1665f`, and execution intent
+`b2eb0aff-fd26-4b0e-9a1b-d51562e563ed`. Its sole no-override start used
+correlation `ea506920-2770-4301-ab9a-c66901210eda` and created exactly one
+execution, `job-a365gw25-db-init-dev-9clnwoc`, and replica
+`job-a365gw25-db-init-dev-9clnwoc-cwjpg`. The execution reached terminal `Failed`
+with no reported `endTime`. Exact safe console evidence records SQL error 47073 at
+`Program.cs` line 233, `connection.OpenAsync()`, before every initialize/bootstrap
+branch and every SQL statement. It therefore created no durable initialization
+marker, EF schema, runtime principal, successful evidence record, or completion
+receipt.
+
+This is a private-endpoint DNS-readiness race, not another catalog acceptance
+result. The control-plane SQL private-endpoint validator did not require the
+private-endpoint NIC and private-DNS A record, then in-container resolver
+convergence, before authorizing the one Job start. The connection followed the
+public-routing boundary and SQL correctly denied it because public access remained
+disabled. `a365gw24` remains the catalog-baseline checkpoint; `a365gw25` is the
+separate DNS-readiness checkpoint. Neither permits relaxation of the exact
+zero-object pristine rule.
+
+The SQL-administrator swap and restoration used correlations
+`e29b299d-07f1-4a5d-8fb7-fef6108eae2a` and
+`e7fdb10d-2d67-4d30-ac64-84a1c0bdd050`. The receipt records restoration at
+`2026-08-30T14:47:10.7369950+00:00`. Exact post-failure readback proved SQL
+`Ready`, public network access `Disabled`, zero server firewall rules, zero
+sensitivity classifications, both server/database auditing policies `Disabled`
+with no Azure Monitor audit target, disabled threat policy, and the exact original
+administrator restored: `admin@diax48836189.onmicrosoft.com`, object ID/SID
+`2db7287c-9462-404f-810e-17e57377618d`, tenant
+`ff8b1e46-ff0f-4bc2-ab02-caf2b92da496`. API admission, delegated action,
+continuous access, and database attestation remained false. Worker processing,
+provisioning execution, outbox relay, and Direct Registry preview remained false,
+with Registry provider `Disabled`. No Admin UI identity/credential, runtime/Admin
+deployment, registration, Registry action, Gateway key, canary, or Service Bus
+data-plane access followed.
+
+Preserve the immutable accepted snapshot, state, receipt, diagnostic, execution,
+replica, and all created resources at
+`.bootstrap/accepted-source/38508b4a-40eb-40da-8752-a27c6980e615/2193fa33509251fb398ece9dc69a6f1a04ac5e56c7a1fad3553a6d2e671b7a60`,
+`.bootstrap/state/6f6ae863-dcb7-456f-a7f0-d6f9887cfb76-rg-a365-custom-gw-phase6x-dev.json`,
+`.bootstrap/evidence/rg-a365-custom-gw-phase6x/database/private-database-bootstrap-receipt.json`,
+and `.bootstrap/diagnostics/a365gw25-step11.json`. Never Resume or second-start
+`a365gw25`, and never mix its accepted snapshot with edited source. After a
+separately reviewed DNS-readiness fix, the next isolated generation is `a365gw26`
+/ `rg-a365-custom-gw-phase6y`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated.
+
+The corrected local generation now makes private-DNS readiness a separately
+persisted and revalidated authority. It derives exactly one private-endpoint NIC,
+one canonical private IPv4 address, and one exact A-record set containing only that
+address; binds the resulting five-field tuple into the schema-v2 database recovery
+receipt; and re-reads it immediately before temporary SQL-administrator elevation.
+The immutable Job arguments carry the exact expected address. The bootstrap-only
+migrator gate then waits for at most ten minutes until in-container DNS resolves the
+SQL server FQDN to exactly that one RFC1918 address, before it requests a token or
+opens SQL. This adds no SQL, migration, Job-start, or mutation retry. Manual trigger,
+single execution, and `replicaRetryLimit: 0` remain exact.
+
+The Release build is zero-warning/zero-error and all **1,439/1,439** direct Release
+tests pass: unit 565, Admin UI 155, local Setup 118, observability/runtime 149,
+integration 92, end-to-end 106, architecture 121, and security 133. The canonical
+source gate discovers **527** Pester tests: **526** pass, none fail, and one
+Windows-only launcher test is skipped on macOS. It parses **19** PowerShell files
+and **2** JSON contracts; all **26** Bicep templates and **5** parameter files
+compile. Format and diff checks pass. Independent integration and security reviews
+found no concrete blocker. This is source validation only. Run a fresh `a365gw26` /
+`rg-a365-custom-gw-phase6y` Plan; never Resume or second-start `a365gw25`.
+
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
@@ -2208,7 +2311,7 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw25` / `rg-a365-custom-gw-phase6x`. Preserve `a365gw11`,
+   generation `a365gw26` / `rg-a365-custom-gw-phase6y`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
    preserve `a365gw14`, `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with
    steps 1–10 complete and step 11 `Failed` before database migration. Their succeeded
@@ -2229,7 +2332,13 @@ separate authorization entry here.
    execution/replica, safe pristine counts `0/1/0/0/0/2/0/0`, no marker/schema/
    runtime-principal mutation, SQL `Ready`, public access `Disabled`, and exact
    original-administrator restoration. Never Resume or second-start it, and never
-   relax the zero-object gate from its aggregate alone. None may
+   relax the zero-object gate from its aggregate alone. Preserve `a365gw25` with
+   steps 1–10 complete, step 11 terminal `Failed`, exactly one failed Job
+   execution/replica, SQL error 47073 at `connection.OpenAsync()` before any SQL
+   statement, no marker/schema/runtime-principal mutation, exact original-
+   administrator restoration, SQL `Ready`, public access `Disabled`, zero firewall
+   rules, and every later step pending with the API/worker inert. Never Resume or
+   second-start it. None may
    consume edited source. Capture the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, private database-Job execution and original SQL

@@ -286,6 +286,11 @@ Describe 'Current private-runtime database attestation boundary' {
                 databaseBootstrapExecutionName = 'job-safe-db-init-dev-abcde'
                 databaseBootstrapExecutionIntentId = '88888888-8888-4888-8888-888888888888'
                 databaseBootstrapEvidenceFingerprint = "sha256:$('d' * 64)"
+                privateEndpointNetworkInterfaceId = '/subscriptions/99999999-9999-4999-8999-999999999999/resourcegroups/rg-safe-dev/providers/microsoft.network/networkinterfaces/pe-sql-safe-dev.nic.aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+                privateEndpointIpv4Address = '10.42.1.4'
+                privateDnsARecordSetId = '/subscriptions/99999999-9999-4999-8999-999999999999/resourcegroups/rg-safe-dev/providers/microsoft.network/privatednszones/privatelink.database.windows.net/a/sql-safe-dev'
+                privateDnsARecordName = 'sql-safe-dev'
+                privateDnsARecordIpv4Address = '10.42.1.4'
                 server = $script:runtime.sqlServerFqdn
                 database = 'GatewayDb'
                 schemaFingerprint = $script:schemaFingerprint
