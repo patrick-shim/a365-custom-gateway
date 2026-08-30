@@ -157,6 +157,8 @@ return [ordered]@{
         $source | Should -Match 'FROM sys\.synonyms'
         $source | Should -Match 'FROM sys\.sequences'
         $source | Should -Match 'FROM sys\.database_role_members'
+        $systemSelectAllowance = "permissions\.class\s*=\s*1\s+AND\s+permissions\.major_id\s*<\s*0\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'SELECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'public'"
+        ([regex]::Matches($source, $systemSelectAllowance)).Count | Should -Be 2
         $source | Should -Match 'catalog_collation_type_desc'
         $source | Should -Match 'DatabaseOwnerSidSha256'
     }

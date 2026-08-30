@@ -28,7 +28,11 @@ public static class DatabaseBootstrapRecoveryContract
             surface.DatabaseOwnerMismatchCount != 0)
         {
             throw new InvalidOperationException(
-                "Clean bootstrap requires a pristine database surface before its durable initialization marker is written; unreviewed objects, schemas, authority, options, or ownership were found.");
+                "Clean bootstrap requires a pristine database surface before its durable initialization marker is written; " +
+                $"safe counts were tables={surface.UserTableCount}, objects={surface.UnexpectedObjectCount}, " +
+                $"schemas={surface.UnexpectedSchemaCount}, principals={surface.UnexpectedPrincipalCount}, " +
+                $"roleMemberships={surface.RoleMembershipCount}, directPermissions={surface.UnexpectedDirectPermissionCount}, " +
+                $"options={surface.UnsafeDatabaseOptionCount}, ownerMismatch={surface.DatabaseOwnerMismatchCount}.");
         }
     }
 

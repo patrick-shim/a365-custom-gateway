@@ -317,13 +317,13 @@ reported as completion of the plan. The authoritative phase status is:
 
 | Phase | Current status | Remaining boundary |
 |---|---|---|
-| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. `a365gw20` proves a deliberate interruption after Prerequisites and exact-fingerprint Resume; `a365gw21` proves exact dormant-Job validation plus bounded recovery and exact SQL-administrator restoration after Azure rejected an incomplete start override. An every-checkpoint interruption matrix and a completed disposable clean-subscription proof are still absent. |
+| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. `a365gw20` proves deliberate interruption/Resume; `a365gw21` proves bounded recovery from a rejected start override; and `a365gw22` proves the corrected no-override start emitted exactly one private execution and restored the original SQL administrator after a pre-schema failure. An every-checkpoint interruption matrix and a completed disposable clean-subscription proof are still absent. |
 | 1 — One cross-platform front door | Source complete; proof incomplete | `gateway`/`gateway.cmd` and the terminal command surface are implemented. The current candidate has not completed Windows, macOS Intel, macOS Arm, and Linux execution evidence. |
 | 2 — Guided configuration | Partial | Quick Development, Staging Foundation, and Production-safe Foundation are implemented. The promised guided Connect Existing and Advanced profiles are not; existing-state import remains recovery-only and refuses unsafe adoption. Simulated Demo was explicitly optional-later and is absent. |
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. Generations `a365gw6` through `a365gw20` exposed and bounded the image, identity, ARM-readback, recovery-graph, PowerShell, provider-managed-resource, SQL-policy, and Job-readback defects recorded below. `a365gw21` then completed steps 1–10 and deployed/validated the exact dormant Job; Azure rejected the environment-only start override because any override replaces the full Job template. It created zero executions and changed no schema, and the exact original SQL administrator was restored. The working-tree correction binds the safe intent into the deployed template and uses the documented no-override start. A fresh `a365gw22` Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. Generations `a365gw6` through `a365gw21` exposed and bounded the earlier image, identity, ARM-readback, recovery-graph, PowerShell, provider-managed-resource, SQL-policy, Job-readback, and Job-start defects recorded below. `a365gw22` then completed steps 1–10 and proved the corrected exact no-override Job start, but the single execution stopped before schema mutation because the pristine check rejected documented Azure SQL `public SELECT` grants on Microsoft system objects. The source correction allows only that narrow platform category in both authority checks and reports all eight safe failure counts. A fresh `a365gw23` Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, and deployment-affecting source into one canonical
@@ -1422,6 +1422,47 @@ generation is `a365gw22` in resource group
 `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
 
+Generation `a365gw22` accepted Plan
+`sha256:bd92daffac04d6893f324ae1210dc515386f985e382bab11afd716f2e60287a2`
+for `rg-a365-custom-gw-phase6u`, deployment ownership
+`5d06c708-bfa2-4de5-9dcf-8f8333331cbd`, configuration
+`sha256:7d77f82c524c8acae9bfe7fcde17996b53166a4011d7b6dc7f06000714d2aa7b`,
+and source
+`sha256:fa41c0bd77faf530036c0d6b996b9f76531605ec8b1f3875e10abb1133a013fc`.
+What-If contained exactly eight Creates and no Deletes. Apply completed steps 1–10,
+including the foundation, four immutable image builds, inert deployment, seed
+blueprint, workflow-v3 Entra configuration, and SQL private endpoint.
+
+Step 11 deployed and exactly validated dormant manual Job
+`job-a365gw22-db-init-dev`, whose digest-pinned template contained sole execution
+intent `5e7e4c4c-ab17-4e3d-9f29-16b00570f5c9`. The corrected no-override start
+succeeded in the Activity Log under correlation
+`c3ac32e2-2aa1-40e5-a89b-285882a045d` and created exactly one execution,
+`job-a365gw22-db-init-dev-rjc977j`. That execution failed before writing the durable
+initialization marker, creating EF schema, or adding runtime principals because the
+pristine-surface query treated documented platform-owned `public SELECT` grants on
+negative-ID Microsoft system objects as unexpected customer authority. Bounded
+recovery restored original SQL administrator
+`2db7287c-9462-404f-810e-17e57377618d` exactly and re-proved SQL public access
+`Disabled`. Preserve the terminal execution, receipt, and immutable state; never
+Resume or second-start `a365gw22`.
+
+Current Microsoft documentation defines negative `sys.database_permissions`
+object IDs as system objects and documents default `public SELECT` permissions on
+system tables. The source correction permits only `public`, object-class, negative
+major-ID, object-level, ordinary-Grant `SELECT` rows in both the initial pristine
+check and the post-schema authority check. Positive/user object IDs, column grants,
+other grantees, other permissions, and delegated/denied states remain rejected. A
+failure now reports the eight safe aggregate counts without names, SIDs, content,
+or credentials. The zero-warning/zero-error Release build and all **1,326/1,326**
+direct Release tests pass: unit 496, Admin UI 155, local Setup 75,
+observability/runtime 149, integration 92, end-to-end 106, architecture 120, and
+security 133. The canonical source gate discovers **516** Pester tests: **515**
+pass, none fail, and one Windows-only launcher test is skipped on macOS. Format and
+diff checks pass, and two independent read-only reviews found no remaining concrete
+blocker. This correction is source-only until a new isolated `a365gw23` Plan is
+accepted.
+
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
@@ -1775,7 +1816,10 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    SQL-administrator mutation, Job execution, or schema initialization. Preserve
    `a365gw21` with steps 1–10 complete, step 11 durably `Running`, one failed start
    intent, zero Job executions, no schema change, and exact manual restoration of
-   the original SQL administrator. In
+   the original SQL administrator. Preserve `a365gw22` with steps 1–10 complete,
+   step 11 `Failed`, one successful no-override start, one terminal failed Job
+   execution, no initialization marker/schema/runtime-principal change, and exact
+   restoration of the original SQL administrator. In
    order, those generations preserve exact
    image-build recovery; the terminal inert-deployment/private-ACR first-pull
    failure; a succeeded
@@ -1814,7 +1858,10 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    Job deployment; Azure's display-form region and provider-null optional arrays
    stopped its strict validator before any SQL mutation. `a365gw21` proved the
    normalized validator and pre-start recovery path, then exposed Azure's documented
-   full-template replacement semantics for any start override. None of these
+   full-template replacement semantics for any start override. `a365gw22` proved
+   the no-override start and one-execution boundary, then exposed that documented
+   platform-owned public system-table permissions are not customer contamination.
+   None of these
    generations may consume edited source or modified accepted snapshots.
    Commit `bb001483bae0577d7c29a9638c1c7275dae44525` implements and independently
    reviews the bounded, state-aware `Ignore` rule; its GET-only `a365gw10` smoke is
@@ -1832,7 +1879,7 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    `bee437fe1e2a19976565777184f70f2bbf1319ec` implements the exact typed Defender
    Storage system-topic recovery boundary. Commit `dc25132` contains the independently
    reviewed Container Apps Job readback normalization. The next live generation is
-   `a365gw22` in resource group `rg-a365-custom-gw-phase6u`, only in target subscription
+   `a365gw23` in resource group `rg-a365-custom-gw-phase6v`, only in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof

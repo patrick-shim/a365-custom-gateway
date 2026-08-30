@@ -17,9 +17,12 @@ dependency and the production-readiness reviews below.
 
 ## Bring up a new Gateway
 
-After cloning the repository, the guided setup is the shortest supported path:
+The guided setup is the shortest supported path:
 
 ```bash
+git clone https://github.com/patrick-shim/a365-custom-gateway.git
+cd a365-custom-gateway
+az login
 ./gateway setup
 ```
 
@@ -349,13 +352,12 @@ run fail-closed. Bootstrap-created deployments and resources also carry the exac
 ownership and accepted source fingerprint. API, worker, and Admin UI checkpoints
 must read back those tags plus the requested immutable image digests before reuse.
 
-Empty-database initialization has one bounded network exception: it may temporarily
-enable the SQL server public endpoint and create exactly one deterministic firewall
-rule whose start and end are the Plan-reviewed, fingerprinted, and stored caller
-IPv4. Cleanup deletes that exact rule, reads back its absence, restores public
-access to `Disabled`, and reads that state back. If cleanup cannot be proven,
-bootstrap stops and preserves an ignored safe recovery record under
-`.bootstrap/evidence/`; it does not report the database step complete.
+Empty-database initialization runs as one digest-pinned private Container Apps Job.
+The SQL public endpoint remains `Disabled`; the bootstrap never creates a public
+firewall exception on the supported path. It validates the dormant Job and zero
+prior executions before a single start, temporarily makes only that Job identity the
+SQL Entra administrator, and restores the exact original administrator afterward.
+Any ambiguous or failed start is preserved for review and is never emitted again.
 
 Key Vault access is secret-scoped in this path: the Admin UI user-assigned identity
 gets Key Vault Secrets User only on its exact Entra client-secret resource; when
@@ -403,7 +405,7 @@ public external ID and the accountable tenant user's object ID:
 
 ```powershell
 dotnet run --project src/ExternalAgent.Sample -- `
-  --api-base-url https://ca-gateway-api-dev.mangodune-074310c6.koreacentral.azurecontainerapps.io/ `
+  --api-base-url https://<verified-api-url>/ `
   --external-agent-id agent-example `
   --tenant-user-object-id 00000000-0000-0000-0000-000000000000
 ```

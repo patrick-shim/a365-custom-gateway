@@ -833,10 +833,21 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
                 ON grantees.principal_id = permissions.grantee_principal_id
               WHERE NOT
               (
-                  permissions.class = 0
-                  AND permissions.permission_name = N'CONNECT'
-                  AND permissions.state IN (N'G', N'W')
-                  AND grantees.name IN (N'public', N'guest')
+                  (
+                      permissions.class = 0
+                      AND permissions.permission_name = N'CONNECT'
+                      AND permissions.state IN (N'G', N'W')
+                      AND grantees.name IN (N'public', N'guest')
+                  )
+                  OR
+                  (
+                      permissions.class = 1
+                      AND permissions.major_id < 0
+                      AND permissions.minor_id = 0
+                      AND permissions.permission_name = N'SELECT'
+                      AND permissions.state = N'G'
+                      AND grantees.name = N'public'
+                  )
               )
           ),
           (
@@ -1104,6 +1115,15 @@ static async Task AssertExpectedDatabaseAuthorityAsync(
                     AND permissions.permission_name = N'CONNECT'
                     AND permissions.state IN (N'G', N'W')
                     AND grantees.name IN (N'public', N'guest')
+                )
+                OR
+                (
+                    permissions.class = 1
+                    AND permissions.major_id < 0
+                    AND permissions.minor_id = 0
+                    AND permissions.permission_name = N'SELECT'
+                    AND permissions.state = N'G'
+                    AND grantees.name = N'public'
                 )
                 OR
                 (

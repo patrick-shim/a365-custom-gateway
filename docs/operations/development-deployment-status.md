@@ -866,6 +866,38 @@ live generation is `a365gw22` /
 `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
 
+Generation `a365gw22` accepted Plan
+`sha256:bd92daffac04d6893f324ae1210dc515386f985e382bab11afd716f2e60287a2`
+for `rg-a365-custom-gw-phase6u`, deployment ownership
+`5d06c708-bfa2-4de5-9dcf-8f8333331cbd`, configuration
+`sha256:7d77f82c524c8acae9bfe7fcde17996b53166a4011d7b6dc7f06000714d2aa7b`,
+and source
+`sha256:fa41c0bd77faf530036c0d6b996b9f76531605ec8b1f3875e10abb1133a013fc`.
+What-If contained eight Creates and no Deletes. Apply completed steps 1–10.
+
+Step 11 deployed exact dormant Job `job-a365gw22-db-init-dev` with sole template
+intent `5e7e4c4c-ab17-4e3d-9f29-16b00570f5c9`. Activity Log correlation
+`c3ac32e2-2aa1-40e5-a89b-285882a045d` proves the corrected no-override start
+succeeded and created exactly one execution,
+`job-a365gw22-db-init-dev-rjc977j`. That execution failed before the durable marker,
+schema, or runtime-principal mutations because the pristine query rejected
+documented Azure SQL `public SELECT` permission rows on Microsoft system objects.
+The exact original SQL administrator
+`2db7287c-9462-404f-810e-17e57377618d` was restored and public network access
+re-proved `Disabled`. Preserve the failed execution and immutable state; never
+Resume or second-start it.
+
+The source correction allows only ordinary `public SELECT` grants on object-class,
+negative-major-ID, object-level Microsoft system objects in both whole-database
+permission checks. All user-object, column, alternate-grantee, alternate-permission,
+delegated, and denied authority remains rejected. Failure evidence now includes the
+eight safe aggregate counts. The Release build has zero warnings/errors; all
+**1,326/1,326** direct Release tests pass, and the canonical source gate has
+**515/516** passing Pester tests with only its Windows-only macOS skip. Format and
+diff checks pass; two independent read-only reviews report no remaining concrete
+blocker. This is source-only until a new isolated `a365gw23` /
+`rg-a365-custom-gw-phase6v` Plan is recorded.
+
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
@@ -1997,7 +2029,7 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw22` / `rg-a365-custom-gw-phase6u`. Preserve `a365gw11`,
+   generation `a365gw23` / `rg-a365-custom-gw-phase6v`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
    preserve `a365gw14`, `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with
    steps 1–10 complete and step 11 `Failed` before database migration. Their succeeded
@@ -2006,7 +2038,10 @@ separate authorization entry here.
    with no exact ARM deployment/resource group, preserve `a365gw20` after dormant
    Job deployment but before any SQL mutation or Job execution, and preserve
    `a365gw21` with its failed durable start intent, zero executions, exact manual SQL
-   administrator restoration, and immutable `Running` step-11 state. None may
+   administrator restoration, and immutable `Running` step-11 state. Preserve
+   `a365gw22` with one successful no-override start, one terminal failed execution,
+   no marker/schema/runtime-principal mutation, exact SQL-administrator restoration,
+   and immutable `Failed` step-11 state. None may
    consume edited source. Capture the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, private database-Job execution and original SQL

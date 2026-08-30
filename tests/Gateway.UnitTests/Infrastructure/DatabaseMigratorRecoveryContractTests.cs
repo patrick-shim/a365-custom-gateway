@@ -98,7 +98,24 @@ public sealed class DatabaseMigratorRecoveryContractTests
         var action = () => DatabaseBootstrapRecoveryContract.AssertPristine(surface);
 
         action.Should().Throw<InvalidOperationException>()
-            .WithMessage("*requires a pristine database surface*");
+            .WithMessage(
+                "*requires a pristine database surface*" +
+                "tables=*, objects=*, schemas=*, principals=*, roleMemberships=*, " +
+                "directPermissions=*, options=*, ownerMismatch=*.");
+    }
+
+    [Fact]
+    public void Initialization_FailureReportsEverySafeCountInOrder()
+    {
+        var surface = new PristineDatabaseSurfaceSnapshot(1, 2, 3, 4, 5, 6, 7, 8);
+
+        var action = () => DatabaseBootstrapRecoveryContract.AssertPristine(surface);
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage(
+                "Clean bootstrap requires a pristine database surface before its durable initialization marker is written; " +
+                "safe counts were tables=1, objects=2, schemas=3, principals=4, roleMemberships=5, " +
+                "directPermissions=6, options=7, ownerMismatch=8.");
     }
 
     public static IEnumerable<object[]> SchemaDriftCases()
