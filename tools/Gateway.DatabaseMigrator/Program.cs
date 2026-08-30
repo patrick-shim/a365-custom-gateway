@@ -1981,7 +1981,8 @@ static ExactDatabaseSchemaSnapshot GetExpectedSchemaContract(
     var checkConstraints = new HashSet<string>(StringComparer.Ordinal);
     var indexes = new HashSet<string>(StringComparer.Ordinal);
 
-    foreach (var table in context.Model.GetRelationalModel().Tables)
+    var designTimeModel = context.GetService<IDesignTimeModel>().Model;
+    foreach (var table in designTimeModel.GetRelationalModel().Tables)
     {
         if (table.IsExcludedFromMigrations)
             continue;

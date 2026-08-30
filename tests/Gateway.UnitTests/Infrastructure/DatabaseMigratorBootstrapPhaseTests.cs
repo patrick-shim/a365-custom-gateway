@@ -6,6 +6,10 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using Gateway.DatabaseMigrator;
+using Gateway.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace Gateway.UnitTests.Infrastructure;
 
@@ -372,6 +376,47 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
         source.Should().Contain("AS dboConnectExact");
         source.Should().Contain("HASHBYTES(N'SHA2_256', CONVERT(varbinary(max), name))");
         source.Should().Contain("^sha256:[0-9a-f]{64}$");
+    }
+
+    [Fact]
+    public void ExpectedSchemaContract_UsesDesignTimeModelForMigrationMetadata()
+    {
+        using var connection = new Microsoft.Data.SqlClient.SqlConnection(
+            "Server=tcp:127.0.0.1,1;Database=GatewayDb;Integrated Security=True;" +
+            "Encrypt=False;Connect Timeout=1");
+        var options = new DbContextOptionsBuilder<GatewayDbContext>()
+            .UseSqlServer(connection)
+            .Options;
+        using var context = new GatewayDbContext(options);
+
+        connection.State.Should().Be(System.Data.ConnectionState.Closed);
+        var tables = context
+            .GetService<IDesignTimeModel>()
+            .Model
+            .GetRelationalModel()
+            .Tables
+            .ToArray();
+        var excludedFromMigrations = () => tables
+            .Select(table => table.IsExcludedFromMigrations)
+            .ToArray();
+
+        tables.Should().NotBeEmpty();
+        excludedFromMigrations.Should().NotThrow();
+        connection.State.Should().Be(System.Data.ConnectionState.Closed);
+
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "Gateway.DatabaseMigrator",
+            "Program.cs"));
+        var methodBody = Regex.Match(
+            source,
+            @"static ExactDatabaseSchemaSnapshot GetExpectedSchemaContract\([\s\S]*?(?=\nstatic async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync)",
+            RegexOptions.CultureInvariant).Value;
+
+        methodBody.Should().NotBeEmpty();
+        methodBody.Should().Contain("context.GetService<IDesignTimeModel>().Model");
+        methodBody.Should().NotContain("context.Model");
     }
 
     [Fact]

@@ -317,13 +317,13 @@ reported as completion of the plan. The authoritative phase status is:
 
 | Phase | Current status | Remaining boundary |
 |---|---|---|
-| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. `a365gw20` proves deliberate interruption/Resume; `a365gw21` proves bounded recovery from a rejected start override; `a365gw22` proves the corrected no-override start emitted exactly one private execution; `a365gw23` proves exact recovery after the pristine check reported the remaining built-in Azure SQL baseline; `a365gw24` exposed the remaining catalog-class diagnostic boundary; `a365gw25` exposed the private-endpoint DNS-readiness race before the migrator opened SQL; `a365gw26` proved the DNS correction before rejecting one unclassified permission; `a365gw27` used five one-shot read-only diagnostic Jobs to derive and pass its exact local inert Azure SQL profile; and fresh `a365gw28` reproduced that profile only after its initial check exposed a transient audit-specification readiness race. Dedicated fail-closed, bounded read-only convergence is now implemented and locally proven under the existing SQL initialization lock; an every-checkpoint interruption matrix and completed disposable clean-subscription proof are still absent. |
+| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. `a365gw20` proves deliberate interruption/Resume; `a365gw21` proves bounded recovery from a rejected start override; `a365gw22` proves the corrected no-override start emitted exactly one private execution; `a365gw23` proves exact recovery after the pristine check reported the remaining built-in Azure SQL baseline; `a365gw24` exposed the remaining catalog-class diagnostic boundary; `a365gw25` exposed the private-endpoint DNS-readiness race before the migrator opened SQL; `a365gw26` proved the DNS correction before rejecting one unclassified permission; `a365gw27` derived and passed its exact local inert Azure SQL profile; `a365gw28` exposed the transient audit-readiness race; and `a365gw29` live-proved bounded convergence before exposing the EF Core 10 design-time-model requirement in post-create verification. The exact design-time-model correction is implemented and locally gated; an every-checkpoint interruption matrix and completed disposable clean-subscription proof are still absent. |
 | 1 — One cross-platform front door | Source complete; proof incomplete | `gateway`/`gateway.cmd` and the terminal command surface are implemented. The current candidate has not completed Windows, macOS Intel, macOS Arm, and Linux execution evidence. |
 | 2 — Guided configuration | Partial | Quick Development, Staging Foundation, and Production-safe Foundation are implemented. The promised guided Connect Existing and Advanced profiles are not; existing-state import remains recovery-only and refuses unsafe adoption. Simulated Demo was explicitly optional-later and is absent. |
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. Generations `a365gw6` through `a365gw26` exposed and bounded the earlier image, identity, ARM-readback, recovery-graph, PowerShell, provider-managed-resource, SQL-policy, Job-readback, Job-start, DNS, and pristine-database defects recorded below. `a365gw27` completed steps 1–10, preserved its single timed-out step-11 execution, and used five distinct one-shot diagnostic Jobs to identify and pass its exact read-only pristine profile. `a365gw28` also completed steps 1–10; its sole step-11 execution safely rejected one transient audit-specification mismatch before mutation, and a separate one-shot diagnostic then reproduced the exact `a365gw27` profile without mutation. The bounded convergence correction passes focused/full .NET, Release, and canonical Bootstrap Pester gates but is not live-proven. A fresh `a365gw29` Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. Generations `a365gw6` through `a365gw26` exposed and bounded the earlier image, identity, ARM-readback, recovery-graph, PowerShell, provider-managed-resource, SQL-policy, Job-readback, Job-start, DNS, and pristine-database defects recorded below. `a365gw27` identified and passed its pristine profile; `a365gw28` exposed its readiness race; and `a365gw29` completed steps 1–10, converged, wrote the marker, created schema, then failed post-create exact-schema verification before runtime-principal/evidence creation. The exact two-line design-time-model fix now passes focused, full .NET, Release, and canonical Bootstrap gates but is not live-proven. A fresh `a365gw30` Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, and deployment-affecting source into one canonical
@@ -1971,8 +1971,59 @@ full .NET **1,482/1,482** with zero failed or skipped
 (608 + 155 + 118 + 149 + 92 + 106 + 121 + 133). The full canonical Bootstrap
 Pester gate completed in **192.48s**: **466** total/discovered, **465** passed,
 zero failed, **1** skipped, and zero inconclusive/not-run. This is local source
-proof, not live convergence evidence. The next deployment action is a fresh isolated `a365gw29`
-Plan/Apply only in target subscription; never Resume `a365gw28` from edited source.
+proof, not live convergence evidence. At that checkpoint, the next deployment was
+a fresh isolated `a365gw29` Plan/Apply only in target subscription; `a365gw28`
+remained frozen.
+
+Generation `a365gw29` then accepted Plan
+`sha256:8a0e75f6d2a0f5c827f01c6de81645efcbcb05e87bf0a797222593e00a13ea7c`
+for `rg-a365-custom-gw-phase7b`, ownership
+`b70e4fe6-2552-4471-bc71-599e261f1392`, configuration
+`sha256:b619288f28a6a8ac9bb98e7a53b35cd745a8db94a86a2e64ed726850d9ee0e1e`,
+and source
+`sha256:cb65d3627d0ca8f20b21447075d2ec1ba29cf12ec0647ae6d4a6cd1284e24cdc`
+from commit `454432a590b91ef1d04f057c9d52624b49e87d19`. What-If contained
+exactly eight Creates and zero Deletes in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`; Apply completed steps 1–10.
+
+Step 11 deployed retry-disabled Job `job-a365gw29-db-init-dev`, principal
+`bcf6412d-6f15-49e9-99c3-40657873119f`, with intent
+`5eba41af-155d-4d43-93b8-f2cbe7f39302`. Its sole execution
+`job-a365gw29-db-init-dev-filge13` reached the bounded audit convergence, passed
+the complete pristine assertion, wrote the initialization marker, and created the
+schema. Post-create exact-schema verification then threw the EF Core 10 runtime-
+model error requiring `DbContext.GetService<IDesignTimeModel>().Model` in
+`Program.cs` `GetExpectedSchemaContract` / `IsTableExcludedFromMigrations`. The
+execution is terminal `Failed` and must never be replayed. Failure occurred before
+runtime-principal creation or completion evidence; every later Apply step remained
+pending and the API/worker stayed inert.
+
+The exact original SQL administrator
+`admin@diax48836189.onmicrosoft.com`, object/SID
+`2db7287c-9462-404f-810e-17e57377618d`, tenant
+`ff8b1e46-ff0f-4bc2-ab02-caf2b92da496`, was restored at
+`2026-08-30T18:57:23.6352380Z`. No Admin UI identity/credential, runtime
+activation, registration, Registry action, Gateway key, canary, or Service Bus
+data-plane action followed. Preserve the accepted snapshot, state, receipt,
+execution, marker/schema, and resources; never Resume `a365gw29` or second-start
+its Job.
+
+Corrected local source makes the exact two-line production change in
+`GetExpectedSchemaContract`: relational enumeration is now rooted at
+`context.GetService<IDesignTimeModel>().Model`. The closed-connection regression
+directly enumerates the design-time model's `Tables` and
+`IsExcludedFromMigrations` values and structurally forbids `context.Model` in that
+path. Independent review found no blocker and confirmed that adjacent collation,
+check-constraint, identity, and index metadata remain correct.
+
+Focused regression **1/1** and the full phase class **31/31** pass. The full Release
+solution builds with zero warnings/errors. Full .NET passes **1,483/1,483** with
+zero failed or skipped (609 + 155 + 118 + 149 + 92 + 106 + 121 + 133). Canonical
+Bootstrap Pester completed **466** total: **465** passed, zero failed, **1** skipped,
+and zero inconclusive/not run in **188.92s**. This is local source proof, not live
+post-create verification. The next action is to commit the frozen fix and then run
+only a fresh isolated `a365gw30` Plan/Apply in target subscription; never Resume
+`a365gw29`.
 
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
@@ -2420,6 +2471,12 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    Both returned before database mutation and restored the exact original
    administrator; every later step remained pending and the API/worker remained
    inert. Never Resume `a365gw28` or second-start either Job.
+   Preserve `a365gw29` with steps 1–10 complete and its sole retry-disabled step-11
+   execution terminal `Failed` after audit convergence, marker write, and schema
+   creation. Its EF Core 10 post-create exact-schema check failed before runtime-
+   principal/evidence creation; the exact original administrator was restored and
+   every later step remained pending/inert. Never Resume `a365gw29` or second-start
+   its Job.
    None of these
    generations may consume edited source or modified accepted snapshots.
    Commit `bb001483bae0577d7c29a9638c1c7275dae44525` implements and independently
@@ -2441,9 +2498,13 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    pristine-profile convergence fix is implemented and passes the frozen-source
    local gates recorded above, including canonical Bootstrap Pester **465/466**
    with zero failed, one skipped, and zero inconclusive/not-run in **192.48s**.
-   The next live action is a fresh `a365gw29` absent-resource-group Plan/Apply only
-   in target subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one
-   disposable run completes
+   `a365gw29` live-proved that convergence and exposed the EF Core 10 design-time-
+   model defect recorded above. Its exact two-line correction and frozen-source
+   gates now pass, including full .NET **1,483/1,483**, zero-warning/error Release,
+   and canonical Bootstrap Pester **465/466** with one skip in **188.92s**. Commit
+   that frozen fix, then run only a fresh absent-resource-group `a365gw30`
+   Plan/Apply in target subscription
+   `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof
    from a completed bootstrap. If a completed resource group was

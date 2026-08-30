@@ -1404,10 +1404,66 @@ and full solution Release with zero warnings/errors, and full .NET
 (608 + 155 + 118 + 149 + 92 + 106 + 121 + 133). The full canonical Bootstrap
 Pester gate completed in **192.48s**: **466** total/discovered, **465** passed,
 zero failed, **1** skipped, and zero inconclusive/not-run. The correction is locally
-proven but not live-proven.
-The next live action is a fresh `a365gw29` Plan/Apply only in target subscription
-`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. No action in protected subscription
-`95bedc30-f6ac-481b-a3a6-588d2883c216` is authorized.
+proven but was not yet live-proven. At that checkpoint, the next live action was a
+fresh `a365gw29` Plan/Apply only in target subscription.
+
+Generation `a365gw29` accepted Plan
+`sha256:8a0e75f6d2a0f5c827f01c6de81645efcbcb05e87bf0a797222593e00a13ea7c`
+for `rg-a365-custom-gw-phase7b`, ownership
+`b70e4fe6-2552-4471-bc71-599e261f1392`, configuration
+`sha256:b619288f28a6a8ac9bb98e7a53b35cd745a8db94a86a2e64ed726850d9ee0e1e`,
+and source
+`sha256:cb65d3627d0ca8f20b21447075d2ec1ba29cf12ec0647ae6d4a6cd1284e24cdc`
+at commit `454432a590b91ef1d04f057c9d52624b49e87d19`. What-If reported
+exactly eight Creates and zero Deletes in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`; Apply completed steps 1–10.
+API, worker, Admin UI, and database-migrator digests were respectively
+`sha256:50f1835878eaee71d8fb8734517b317db27495342d15f174c60da1d9316c75cc`,
+`sha256:af8fcba90f84885436cbfd128292465eb6f1cbf19b81ef33e0d872ea0e7e78f1`,
+`sha256:3842b0ca04aceefe9746856a38b3f7c487d3e9c1a294d0906944a236c0970a04`,
+and `sha256:505112d7ed7788abe0bd9749ae85fd6705a1cbbfc4c81fc47741171e6a58b896`.
+
+Retry-disabled Job `job-a365gw29-db-init-dev`, principal
+`bcf6412d-6f15-49e9-99c3-40657873119f`, and intent
+`5eba41af-155d-4d43-93b8-f2cbe7f39302` started exactly once as execution
+`job-a365gw29-db-init-dev-filge13`. Audit readiness converged, the complete
+pristine assertion passed, the initialization marker was written, and schema was
+created. The post-create exact-schema verification then threw the EF Core 10
+runtime-model error requiring `DbContext.GetService<IDesignTimeModel>().Model` in
+`Program.cs` `GetExpectedSchemaContract` / `IsTableExcludedFromMigrations`. The
+execution is terminal `Failed` and must never be replayed. It failed before
+runtime-principal creation or completion evidence; later steps stayed pending and
+the API/worker stayed inert.
+
+Readback restored exact original administrator
+`admin@diax48836189.onmicrosoft.com`, object/SID
+`2db7287c-9462-404f-810e-17e57377618d`, tenant
+`ff8b1e46-ff0f-4bc2-ab02-caf2b92da496`, at
+`2026-08-30T18:57:23.6352380Z`. No Admin UI identity/credential, runtime
+activation, registration, Registry action, Gateway key, canary, or Service Bus
+data-plane action occurred. Preserve
+`.bootstrap/accepted-source/b70e4fe6-2552-4471-bc71-599e261f1392/8a0e75f6d2a0f5c827f01c6de81645efcbcb05e87bf0a797222593e00a13ea7c`,
+`.bootstrap/state/6f6ae863-dcb7-456f-a7f0-d6f9887cfb76-rg-a365-custom-gw-phase7b-dev.json`,
+`.bootstrap/evidence/rg-a365-custom-gw-phase7b/database/`, the marker/schema, and
+the sole execution. Never Resume `a365gw29` or second-start its Job.
+
+The implemented correction changes exactly two production lines:
+`GetExpectedSchemaContract` now roots relational enumeration at
+`context.GetService<IDesignTimeModel>().Model`. Its closed-connection regression
+directly enumerates design-time `Tables` / `IsExcludedFromMigrations` and
+structurally forbids `context.Model`. Independent review found no blocker and
+confirmed adjacent collation, check-constraint, identity, and index metadata are
+correct.
+
+Focused regression **1/1** and the complete phase class **31/31** pass. Full
+solution Release builds with zero warnings/errors. Full .NET passes
+**1,483/1,483**, zero failed/skipped
+(609 + 155 + 118 + 149 + 92 + 106 + 121 + 133). Full canonical Bootstrap Pester
+completed **466** total: **465** passed, zero failed, **1** skipped, and zero
+inconclusive/not run in **188.92s**. This is local proof, not live post-create
+verification. Commit the frozen fix, then run only a fresh isolated `a365gw30`
+Plan/Apply in target subscription. Never Resume `a365gw29`. No action in protected
+subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` is authorized.
 
 
 The first target-subscription Apply attempt used the earlier source generation
@@ -2539,12 +2595,9 @@ separate authorization entry here.
    policy and do not infer response-side inline enforcement from that result.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
-6. Continue the disposable clean-development-subscription proof with the implemented
-   bounded read-only convergence source. Its focused/full .NET, Release, and
-   canonical Bootstrap Pester gates pass; Pester completed in **192.48s** with
-   **466** total/discovered, **465** passed, zero failed, **1** skipped, and zero
-   inconclusive/not-run. The next live action
-   is a fresh isolated `a365gw29` Plan/Apply only in target subscription
+6. Continue the disposable clean-development-subscription proof by committing the
+   frozen, fully gated two-line EF Core 10 design-time-model fix. Then run only a
+   fresh isolated `a365gw30` Plan/Apply in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
    preserve `a365gw14`, `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with
@@ -2588,7 +2641,12 @@ separate authorization entry here.
    read-only diagnostic execution terminal `Succeeded` after reproducing the exact
    `a365gw27` profile. Both restored the exact original administrator and made no
    database mutation; later steps remain pending and the API/worker remain inert.
-   Never Resume `a365gw28` or second-start either Job. None may
+   Never Resume `a365gw28` or second-start either Job. Preserve `a365gw29` with
+   steps 1–10 complete and its sole retry-disabled execution terminal `Failed`
+   after convergence, marker write, and schema creation. Post-create exact-schema
+   verification failed before runtime-principal/evidence creation; the exact
+   original administrator was restored and later steps remain pending/inert. Never
+   Resume `a365gw29` or second-start its Job. None may
    consume edited source. Capture the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, private database-Job execution and original SQL
