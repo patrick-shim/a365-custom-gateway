@@ -231,15 +231,7 @@ else if (options.ContainsKey("expected-private-endpoint-ip") ||
 
 var scripts = phase switch
 {
-    "prepare" => new[]
-    {
-        "20260824_agent_identity_workflow_v2.sql",
-        "20260825_agent_ingress_credentials.sql",
-        "20260825_scoped_idempotency.sql",
-        "20260825_ingress_rate_limit_buckets.sql",
-        "20260829_purview_policy_profiles.sql",
-        "20260829_prompt_protection.sql"
-    },
+    "prepare" or "bootstrap" => GetPrepareScriptNames(),
     "finalize" => new[] { "20260825_scoped_idempotency_finalize.sql" },
     _ => Array.Empty<string>()
 };
@@ -343,6 +335,7 @@ if (phase == "bootstrap")
         deploymentOwnershipId!.Value,
         acceptedSourceFingerprint!,
         expectedRuntimePrincipals,
+        scriptEvidence,
         requiredRecoveryMode);
 }
 if (phase == "principal")
@@ -384,19 +377,9 @@ if (phase == "principal")
     }
 }
 
-for (var pass = 1; pass <= repeat; pass++)
+if (phase != "bootstrap")
 {
-    foreach (var script in scriptEvidence)
-    {
-        foreach (var batch in SplitSqlBatches(script.Sql))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandTimeout = 300;
-            command.CommandText = batch;
-            await command.ExecuteNonQueryAsync();
-        }
-        Console.WriteLine($"Applied {script.Name} (pass {pass}/{repeat}).");
-    }
+    await ApplyMigrationScriptsAsync(connection, scriptEvidence, repeat);
 }
 
 if (phase is "initialize" or "finalize" or "verify")
@@ -504,6 +487,7 @@ static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
     Guid deploymentOwnershipId,
     string acceptedSourceFingerprint,
     IReadOnlyCollection<ExpectedDatabasePrincipal> expectedRuntimePrincipals,
+    IReadOnlyList<ScriptEvidence> prepareScripts,
     DatabaseInitializationRecoveryMode? requiredRecoveryMode)
 {
     if (expectedRuntimePrincipals.Count != 2 ||
@@ -513,12 +497,18 @@ static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
         throw new InvalidOperationException(
             "The combined bootstrap phase requires the exact reviewed API and worker database-principal contract.");
     }
+    if (!prepareScripts.Select(item => item.Name).SequenceEqual(
+            GetPrepareScriptNames(),
+            StringComparer.Ordinal))
+    {
+        throw new InvalidOperationException(
+            "The combined bootstrap phase requires the exact reviewed prepare-script allowlist.");
+    }
 
     var apiPrincipal = expectedRuntimePrincipals.Single(
         item => item.ExpectedDirectPermissionCount == 1);
     var workerPrincipal = expectedRuntimePrincipals.Single(
         item => item.ExpectedDirectPermissionCount == 0);
-    var evidence = new List<MigrationEvidence>(capacity: 3);
     var lockResource = $"A365Gateway:DatabaseInitialize:{database}";
     await AcquireDatabaseInitializationLockAsync(connection, lockResource);
     try
@@ -535,14 +525,6 @@ static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
             connection,
             expectedRuntimePrincipals,
             allowAllRecoverablePrincipalPrefixes: true);
-        evidence.Add(await CreateVerifiedMigrationEvidenceAsync(
-            connection,
-            server,
-            database,
-            "initialize",
-            executionIntentId,
-            runtimePrincipalEvidence: null,
-            initializationIntentEvidence: initializationIntent));
 
         await AssertDatabaseInitializationMarkerBindingAsync(
             connection,
@@ -563,14 +545,6 @@ static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
             connection,
             expectedRuntimePrincipals,
             allowAllRecoverablePrincipalPrefixes: true);
-        evidence.Add(await CreateVerifiedMigrationEvidenceAsync(
-            connection,
-            server,
-            database,
-            "principal",
-            executionIntentId,
-            apiPrincipalEvidence,
-            initializationIntentEvidence: null));
 
         await AssertDatabaseInitializationMarkerBindingAsync(
             connection,
@@ -591,16 +565,70 @@ static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
             connection,
             expectedRuntimePrincipals,
             requireAllExpectedPrincipals: true);
-        evidence.Add(await CreateVerifiedMigrationEvidenceAsync(
+
+        await AssertDatabaseInitializationMarkerBindingAsync(
             connection,
             server,
             database,
-            "principal",
-            executionIntentId,
-            workerPrincipalEvidence,
-            initializationIntentEvidence: null));
+            deploymentOwnershipId,
+            acceptedSourceFingerprint);
+        await ApplyMigrationScriptsAsync(connection, prepareScripts, repeat: 1);
+        await AssertExpectedDatabaseAuthorityAsync(
+            connection,
+            expectedRuntimePrincipals,
+            recoverableIncompletePrincipalName: null,
+            allowAllRecoverablePrincipalPrefixes: false,
+            requireAllExpectedPrincipals: true);
 
-        return evidence;
+        var currentSchemaFingerprint =
+            await DatabaseSchemaFingerprintReader.ReadFingerprintAsync(connection);
+        var finalVerification = await VerifyAsync(
+            connection,
+            currentEfModelReady: true,
+            currentSchemaFingerprint);
+        AssertVerificationReachedRequiredState("bootstrap", finalVerification);
+        var verifiedAtUtc = DateTimeOffset.UtcNow;
+        var appliedScripts = prepareScripts
+            .Select(item => new MigrationScriptEvidence(item.Name, item.Sha256))
+            .ToArray();
+        var canonicalExecutionIntentId = executionIntentId.ToString("D");
+
+        return
+        [
+            new MigrationEvidence(
+                verifiedAtUtc,
+                server,
+                database,
+                "initialize",
+                1,
+                appliedScripts,
+                finalVerification,
+                RuntimePrincipal: null,
+                InitializationIntent: initializationIntent,
+                ExecutionIntentId: canonicalExecutionIntentId),
+            new MigrationEvidence(
+                verifiedAtUtc,
+                server,
+                database,
+                "principal",
+                1,
+                appliedScripts,
+                finalVerification,
+                RuntimePrincipal: apiPrincipalEvidence,
+                InitializationIntent: null,
+                ExecutionIntentId: canonicalExecutionIntentId),
+            new MigrationEvidence(
+                verifiedAtUtc,
+                server,
+                database,
+                "principal",
+                1,
+                appliedScripts,
+                finalVerification,
+                RuntimePrincipal: workerPrincipalEvidence,
+                InitializationIntent: null,
+                ExecutionIntentId: canonicalExecutionIntentId)
+        ];
     }
     finally
     {
@@ -608,32 +636,25 @@ static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
     }
 }
 
-static async Task<MigrationEvidence> CreateVerifiedMigrationEvidenceAsync(
+static async Task ApplyMigrationScriptsAsync(
     SqlConnection connection,
-    string server,
-    string database,
-    string phase,
-    Guid executionIntentId,
-    RuntimePrincipalEvidence? runtimePrincipalEvidence,
-    InitializationIntentEvidence? initializationIntentEvidence)
+    IReadOnlyList<ScriptEvidence> scripts,
+    int repeat)
 {
-    var currentSchemaFingerprint = await DatabaseSchemaFingerprintReader.ReadFingerprintAsync(connection);
-    var verification = await VerifyAsync(
-        connection,
-        currentEfModelReady: true,
-        currentSchemaFingerprint);
-    AssertVerificationReachedRequiredState(phase, verification);
-    return new MigrationEvidence(
-        DateTimeOffset.UtcNow,
-        server,
-        database,
-        phase,
-        1,
-        Array.Empty<MigrationScriptEvidence>(),
-        verification,
-        runtimePrincipalEvidence,
-        initializationIntentEvidence,
-        executionIntentId.ToString("D"));
+    for (var pass = 1; pass <= repeat; pass++)
+    {
+        foreach (var script in scripts)
+        {
+            foreach (var batch in SplitSqlBatches(script.Sql))
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandTimeout = 300;
+                command.CommandText = batch;
+                await command.ExecuteNonQueryAsync();
+            }
+            Console.WriteLine($"Applied {script.Name} (pass {pass}/{repeat}).");
+        }
+    }
 }
 
 static void AssertVerificationReachedRequiredState(
@@ -643,7 +664,7 @@ static void AssertVerificationReachedRequiredState(
     var verificationFailed = phase == "baseline"
         ? verification.WorkflowV2Ready || verification.LegacyGlobalIdempotencyUniqueIndexCount != 1
         : !verification.WorkflowV2Ready ||
-          (phase is "initialize" or "principal" or "finalize" or "verify") && !verification.CurrentEfModelReady ||
+          (phase is "initialize" or "bootstrap" or "principal" or "finalize" or "verify") && !verification.CurrentEfModelReady ||
           (phase == "finalize" && verification.LegacyGlobalIdempotencyUniqueIndexCount != 0);
     if (verificationFailed)
     {
@@ -3121,6 +3142,16 @@ static IEnumerable<string> SplitSqlBatches(string sql)
         .Split(sql, @"^\s*GO\s*(?:--.*)?$", RegexOptions.Multiline | RegexOptions.IgnoreCase)
         .Where(batch => !string.IsNullOrWhiteSpace(batch));
 }
+
+static string[] GetPrepareScriptNames() =>
+[
+    "20260824_agent_identity_workflow_v2.sql",
+    "20260825_agent_ingress_credentials.sql",
+    "20260825_scoped_idempotency.sql",
+    "20260825_ingress_rate_limit_buckets.sql",
+    "20260829_purview_policy_profiles.sql",
+    "20260829_prompt_protection.sql"
+];
 
 static string Required(IReadOnlyDictionary<string, string> options, string key) =>
     ReadOption(options, key) is { Length: > 0 } value

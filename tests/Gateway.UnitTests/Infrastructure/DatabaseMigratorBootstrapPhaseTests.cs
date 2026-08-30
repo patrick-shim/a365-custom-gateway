@@ -346,7 +346,7 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             "Program.cs"));
         var bootstrapBody = Regex.Match(
             source,
-            @"static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync\([\s\S]*?(?=\nstatic async Task<MigrationEvidence>)",
+            @"static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync\([\s\S]*?(?=\nstatic async Task ApplyMigrationScriptsAsync)",
             RegexOptions.CultureInvariant).Value;
 
         bootstrapBody.Should().NotBeEmpty();
@@ -358,10 +358,13 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             .Count.Should().Be(1);
         Regex.Matches(bootstrapBody, "EnsureRuntimePrincipalAsync", RegexOptions.CultureInvariant)
             .Count.Should().Be(2);
-        Regex.Matches(bootstrapBody, "evidence.Add", RegexOptions.CultureInvariant)
+        Regex.Matches(bootstrapBody, "new MigrationEvidence\\(", RegexOptions.CultureInvariant)
             .Count.Should().Be(3);
-        Regex.Matches(bootstrapBody, "executionIntentId", RegexOptions.CultureInvariant)
-            .Count.Should().Be(4);
+        Regex.Matches(
+                bootstrapBody,
+                "ExecutionIntentId: canonicalExecutionIntentId",
+                RegexOptions.CultureInvariant)
+            .Count.Should().Be(3);
         bootstrapBody.Should().Contain("\"initialize\"");
         Regex.Matches(bootstrapBody, "\"principal\"", RegexOptions.CultureInvariant)
             .Count.Should().Be(2);
@@ -384,6 +387,75 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
         dnsConvergence.Should().BeGreaterThanOrEqualTo(0);
         dnsConvergence.Should().BeLessThan(tokenAcquisition);
         tokenAcquisition.Should().BeLessThan(sqlOpen);
+    }
+
+    [Fact]
+    public void Bootstrap_AppliesExactReviewedPrepareScriptsBeforeFinalAttestation()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "Gateway.DatabaseMigrator",
+            "Program.cs"));
+        var prepareScriptBody = Regex.Match(
+            source,
+            @"static string\[\] GetPrepareScriptNames\(\) =>\s*\[(?<scripts>[\s\S]*?)\];",
+            RegexOptions.CultureInvariant).Groups["scripts"].Value;
+        var prepareScriptNames = Regex.Matches(
+                prepareScriptBody,
+                "\\\"(?<name>[^\\\"]+\\.sql)\\\"",
+                RegexOptions.CultureInvariant)
+            .Select(match => match.Groups["name"].Value)
+            .ToArray();
+
+        prepareScriptNames.Should().Equal(
+            "20260824_agent_identity_workflow_v2.sql",
+            "20260825_agent_ingress_credentials.sql",
+            "20260825_scoped_idempotency.sql",
+            "20260825_ingress_rate_limit_buckets.sql",
+            "20260829_purview_policy_profiles.sql",
+            "20260829_prompt_protection.sql");
+        source.Should().Contain("\"prepare\" or \"bootstrap\" => GetPrepareScriptNames()");
+        source.Should().Contain("OBJECT_ID(N'dbo.IngressRateLimitBuckets', N'U') IS NOT NULL");
+
+        var bootstrapBody = Regex.Match(
+            source,
+            @"static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync\([\s\S]*?(?=\nstatic async Task ApplyMigrationScriptsAsync)",
+            RegexOptions.CultureInvariant).Value;
+        bootstrapBody.Should().NotBeEmpty();
+        var initialize = bootstrapBody.IndexOf(
+            "EnsureEmptyDatabaseInitializedUnderLockAsync",
+            StringComparison.Ordinal);
+        var lastPrincipal = bootstrapBody.LastIndexOf(
+            "EnsureRuntimePrincipalAsync",
+            StringComparison.Ordinal);
+        var applyPrepare = bootstrapBody.IndexOf(
+            "ApplyMigrationScriptsAsync(connection, prepareScripts, repeat: 1)",
+            StringComparison.Ordinal);
+        var fingerprint = bootstrapBody.IndexOf(
+            "DatabaseSchemaFingerprintReader.ReadFingerprintAsync(connection)",
+            StringComparison.Ordinal);
+        var finalVerification = bootstrapBody.IndexOf(
+            "var finalVerification = await VerifyAsync",
+            StringComparison.Ordinal);
+        var finalGate = bootstrapBody.IndexOf(
+            "AssertVerificationReachedRequiredState(\"bootstrap\", finalVerification)",
+            StringComparison.Ordinal);
+        var firstEvidence = bootstrapBody.IndexOf(
+            "new MigrationEvidence(",
+            StringComparison.Ordinal);
+
+        initialize.Should().BeGreaterThanOrEqualTo(0);
+        initialize.Should().BeLessThan(lastPrincipal);
+        lastPrincipal.Should().BeLessThan(applyPrepare);
+        applyPrepare.Should().BeLessThan(fingerprint);
+        fingerprint.Should().BeLessThan(finalVerification);
+        finalVerification.Should().BeLessThan(finalGate);
+        finalGate.Should().BeLessThan(firstEvidence);
+        Regex.Matches(bootstrapBody, "appliedScripts", RegexOptions.CultureInvariant)
+            .Count.Should().Be(4);
+        Regex.Matches(bootstrapBody, "finalVerification", RegexOptions.CultureInvariant)
+            .Count.Should().Be(5);
     }
 
     [Fact]
@@ -414,6 +486,20 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             StringComparison.Ordinal));
         classificationGate.Should().BeLessThan(initializationBody.IndexOf(
             "context.Database.EnsureCreatedAsync()",
+            StringComparison.Ordinal));
+        var bootstrapBody = Regex.Match(
+            source,
+            @"static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync\([\s\S]*?(?=\nstatic async Task ApplyMigrationScriptsAsync)",
+            RegexOptions.CultureInvariant).Value;
+        var guardedInitialization = bootstrapBody.IndexOf(
+            "EnsureEmptyDatabaseInitializedUnderLockAsync",
+            StringComparison.Ordinal);
+        guardedInitialization.Should().BeGreaterThanOrEqualTo(0);
+        guardedInitialization.Should().BeLessThan(bootstrapBody.IndexOf(
+            "EnsureRuntimePrincipalAsync",
+            StringComparison.Ordinal));
+        guardedInitialization.Should().BeLessThan(bootstrapBody.IndexOf(
+            "ApplyMigrationScriptsAsync(connection, prepareScripts, repeat: 1)",
             StringComparison.Ordinal));
         source.Should().Contain(
             "no schema, seed, or principal mutation was attempted");
