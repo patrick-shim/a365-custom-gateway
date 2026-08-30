@@ -859,7 +859,13 @@ function Test-GatewayBootstrapDeployment {
         throw 'Admin UI Entra redirect/logout URIs do not match the deployed HTTPS endpoint.'
     }
     $allAdminGrants = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId%20eq%20'$($AdminIdentity.adminUiServicePrincipalId)'&`$select=id,resourceId,consentType,scope")
-    $adminGrantScopes = if ($allAdminGrants.Count -eq 1) { @(([string]$allAdminGrants[0].scope).Split(' ', [StringSplitOptions]::RemoveEmptyEntries -bor [StringSplitOptions]::TrimEntries)) } else { @() }
+    $adminGrantScopes = @(
+        if ($allAdminGrants.Count -eq 1) {
+            ([string]$allAdminGrants[0].scope).Split(
+                ' ',
+                [StringSplitOptions]::RemoveEmptyEntries -bor [StringSplitOptions]::TrimEntries)
+        }
+    )
     if ($allAdminGrants.Count -ne 1 -or
         -not ([string]$allAdminGrants[0].resourceId).Equals([string]$Identity.gatewayApiServicePrincipalId, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$allAdminGrants[0].consentType -cne 'AllPrincipals' -or

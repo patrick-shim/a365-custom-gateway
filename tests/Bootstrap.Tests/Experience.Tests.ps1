@@ -12,6 +12,68 @@ Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Experience.ps
     }
 }
 
+Describe 'Experience strict-mode array cardinality boundaries' {
+    BeforeAll {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            (Get-Module Experience).Path, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $groupFunction = $ast.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Test-GatewayGroupDeploymentEvidence'
+        }, $true)
+        $applicationFunction = $ast.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Test-GatewayApplicationEvidence'
+        }, $true)
+        $script:managerAssignment = $groupFunction.Body.Find({ param($node)
+            $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                [string]$node.Left -ceq '$expectedManagerIds'
+        }, $true).Extent.Text
+        $script:grantAssignment = $applicationFunction.Body.Find({ param($node)
+            $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                [string]$node.Left -ceq '$grantScopes'
+        }, $true).Extent.Text
+        $script:grantValidation = @($applicationFunction.Body.FindAll({ param($node)
+            $node -is [Management.Automation.Language.IfStatementAst] -and
+                $node.Extent.Text.Contains('$grantScopes.Count', [StringComparison]::Ordinal)
+        }, $true) | Sort-Object { $_.Extent.Text.Length })[0].Extent.Text
+    }
+
+    It 'preserves inert zero and runtime one manager IDs as arrays under StrictMode' {
+        $runner = [scriptblock]::Create("param(`$isRuntime,`$Config); Set-StrictMode -Version Latest; $script:managerAssignment; return ,`$expectedManagerIds")
+        $managerId = '66666666-6666-4666-8666-666666666666'
+        $config = [pscustomobject]@{ agent365 = [pscustomobject]@{ reviewedManagerApplicationIds = @($managerId) } }
+        $inert = & $runner $false $config
+        $runtime = & $runner $true $config
+        $inert -is [array] | Should -BeTrue
+        $inert.Count | Should -Be 0
+        $runtime -is [array] | Should -BeTrue
+        $runtime.Count | Should -Be 1
+        $runtime[0] | Should -BeExactly $managerId
+    }
+
+    It 'preserves exact delegated-scope cardinality and rejects missing or extra scopes' {
+        $countRunner = [scriptblock]::Create("param(`$grants); Set-StrictMode -Version Latest; $script:grantAssignment; return ,`$grantScopes")
+        $validationRunner = [scriptblock]::Create("param(`$grants,`$gatewayPrincipals); Set-StrictMode -Version Latest; $script:grantAssignment; $script:grantValidation; return `$true")
+        $resourceId = '77777777-7777-4777-8777-777777777777'
+        $principal = @([pscustomobject]@{ id = $resourceId })
+        $zero = & $countRunner -grants @()
+        $valid = @([pscustomobject]@{ resourceId = $resourceId; consentType = 'AllPrincipals'; scope = 'access_as_user' })
+        $one = & $countRunner -grants $valid
+        $zero -is [array] | Should -BeTrue
+        $zero.Count | Should -Be 0
+        $one -is [array] | Should -BeTrue
+        $one.Count | Should -Be 1
+        & $validationRunner -grants $valid -gatewayPrincipals $principal | Should -BeTrue
+        foreach ($scope in @('', 'access_as_user unexpected')) {
+            $invalid = @([pscustomobject]@{ resourceId = $resourceId; consentType = 'AllPrincipals'; scope = $scope })
+            { & $validationRunner -grants $invalid -gatewayPrincipals $principal } | Should -Throw '*mismatch*'
+        }
+    }
+}
+
 Describe 'ACR ARM-audience authoritative readback boundary' {
     It 'uses the exact ARM resource API for every bootstrap policy readback' {
         $experiencePath = (Get-Module Experience).Path

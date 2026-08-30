@@ -2161,10 +2161,13 @@ function Test-GatewayGroupDeploymentEvidence {
             [string]$worker.properties.template.containers[0].image -cne $WorkerImage) { throw 'mismatch' }
 
         if ($isRuntime -or -not $AllowRuntimeSupersession) {
-            $expectedManagerIds = if ($isRuntime) {
-                @($Config.agent365.reviewedManagerApplicationIds | ForEach-Object { ([guid][string]$_).ToString('D') } | Sort-Object -Unique)
-            }
-            else { @() }
+            $expectedManagerIds = @(
+                if ($isRuntime) {
+                    $Config.agent365.reviewedManagerApplicationIds |
+                        ForEach-Object { ([guid][string]$_).ToString('D') } |
+                        Sort-Object -Unique
+                }
+            )
             $deploymentManagerIds = @($deployment.parameters.agent365ManagerApplicationIds.value | ForEach-Object { ([guid][string]$_).ToString('D') })
             if (($deploymentManagerIds -join '|') -cne ($expectedManagerIds -join '|')) { throw 'mismatch' }
 
@@ -2557,10 +2560,13 @@ function Test-GatewayApplicationEvidence {
             if ($gatewayPrincipals.Count -ne 1 -or
                 [string]$gatewayPrincipals[0].appId -ne [string]$Evidence.gatewayApiClientId) { throw 'mismatch' }
             $grants = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId%20eq%20'$($Evidence.adminUiServicePrincipalId)'&`$select=id,resourceId,consentType,scope")
-            $grantScopes = if ($grants.Count -eq 1) {
-                @(([string]$grants[0].scope).Split(' ', [StringSplitOptions]::RemoveEmptyEntries -bor [StringSplitOptions]::TrimEntries))
-            }
-            else { @() }
+            $grantScopes = @(
+                if ($grants.Count -eq 1) {
+                    ([string]$grants[0].scope).Split(
+                        ' ',
+                        [StringSplitOptions]::RemoveEmptyEntries -bor [StringSplitOptions]::TrimEntries)
+                }
+            )
             if ($grants.Count -ne 1 -or
                 [string]$grants[0].resourceId -ne [string]$gatewayPrincipals[0].id -or
                 [string]$grants[0].consentType -cne 'AllPrincipals' -or

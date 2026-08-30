@@ -3,6 +3,47 @@ Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Common.psm1')
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Entra.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Verification.psm1') -Force
 
+Describe 'Final verification strict-mode delegated-scope cardinality' {
+    BeforeAll {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            (Get-Module Verification).Path, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $function = $ast.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Test-GatewayBootstrapDeployment'
+        }, $true)
+        $script:finalGrantAssignment = $function.Body.Find({ param($node)
+            $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                [string]$node.Left -ceq '$adminGrantScopes'
+        }, $true).Extent.Text
+        $script:finalGrantValidation = $function.Body.Find({ param($node)
+            $node -is [Management.Automation.Language.IfStatementAst] -and
+                $node.Extent.Text.Contains('$adminGrantScopes.Count', [StringComparison]::Ordinal)
+        }, $true).Extent.Text
+    }
+
+    It 'preserves exact final scope cardinality and rejects missing or extra scopes' {
+        $countRunner = [scriptblock]::Create("param(`$allAdminGrants); Set-StrictMode -Version Latest; $script:finalGrantAssignment; return ,`$adminGrantScopes")
+        $validationRunner = [scriptblock]::Create("param(`$allAdminGrants,`$Identity); Set-StrictMode -Version Latest; $script:finalGrantAssignment; $script:finalGrantValidation; return `$true")
+        $resourceId = '77777777-7777-4777-8777-777777777777'
+        $identity = [pscustomobject]@{ gatewayApiServicePrincipalId = $resourceId }
+        $zero = & $countRunner -allAdminGrants @()
+        $valid = @([pscustomobject]@{ resourceId = $resourceId; consentType = 'AllPrincipals'; scope = 'access_as_user' })
+        $one = & $countRunner -allAdminGrants $valid
+        $zero -is [array] | Should -BeTrue
+        $zero.Count | Should -Be 0
+        $one -is [array] | Should -BeTrue
+        $one.Count | Should -Be 1
+        & $validationRunner -allAdminGrants $valid -Identity $identity | Should -BeTrue
+        foreach ($scope in @('', 'access_as_user unexpected')) {
+            $invalid = @([pscustomobject]@{ resourceId = $resourceId; consentType = 'AllPrincipals'; scope = $scope })
+            { & $validationRunner -allAdminGrants $invalid -Identity $identity } | Should -Throw '*exactly one tenant-wide access_as_user*'
+        }
+    }
+}
+
 Describe 'Final Entra and runtime admission boundaries' {
     InModuleScope Verification {
         BeforeEach {
