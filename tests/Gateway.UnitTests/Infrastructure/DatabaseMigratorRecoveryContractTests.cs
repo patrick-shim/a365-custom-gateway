@@ -855,14 +855,14 @@ public sealed class DatabaseMigratorRecoveryContractTests
     }
 
     [Fact]
-    public void RuntimeAuthority_AllowsApiMetadataGrantCrashOnlyDuringRecovery()
+    public void RuntimeAuthority_AllowsOnlyTheApiConnectPrefixDuringViewDefinitionGrantRecovery()
     {
         var observed = new[]
         {
             CreateExactObservedPrincipals()[0] with
             {
                 Roles = [],
-                DirectPermissionCount = 0
+                DirectPermissionCount = 1
             }
         };
 
@@ -885,6 +885,59 @@ public sealed class DatabaseMigratorRecoveryContractTests
 
         recovery.Should().NotThrow();
         completion.Should().Throw<InvalidOperationException>();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3)]
+    public void RuntimeAuthority_RejectsAnyOtherApiPermissionCountDuringRecovery(int directPermissionCount)
+    {
+        var observed = new[]
+        {
+            CreateExactObservedPrincipals()[0] with
+            {
+                Roles = [],
+                DirectPermissionCount = directPermissionCount
+            }
+        };
+
+        var action = () => ExactDatabaseAuthorityContract.AssertExactOrRecoverablePrefix(
+            CreateExpectedPrincipals(),
+            observed,
+            recoverableIncompletePrincipalName: observed[0].Name,
+            allowAllRecoverablePrefixes: false,
+            requireAllExpectedPrincipals: false,
+            unexpectedRoleMembershipCount: 0,
+            unexpectedDirectPermissionCount: 0);
+
+        action.Should().Throw<InvalidOperationException>();
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void RuntimeAuthority_RejectsPermissionSubstitutionEvenWhenTheCountLooksValid(
+        int directPermissionCount)
+    {
+        var observed = new[]
+        {
+            CreateExactObservedPrincipals()[0] with
+            {
+                Roles = [],
+                DirectPermissionCount = directPermissionCount
+            }
+        };
+
+        var action = () => ExactDatabaseAuthorityContract.AssertExactOrRecoverablePrefix(
+            CreateExpectedPrincipals(),
+            observed,
+            recoverableIncompletePrincipalName: observed[0].Name,
+            allowAllRecoverablePrefixes: false,
+            requireAllExpectedPrincipals: false,
+            unexpectedRoleMembershipCount: 0,
+            unexpectedDirectPermissionCount: 1);
+
+        action.Should().Throw<InvalidOperationException>();
     }
 
     [Fact]
@@ -914,7 +967,7 @@ public sealed class DatabaseMigratorRecoveryContractTests
         yield return [exact.Select((item, index) => index == 0 ? item with { Type = "S" } : item).ToArray(), false, 0, 0];
         yield return [exact.Select((item, index) => index == 0 ? item with { Roles = ["db_owner"] } : item).ToArray(), false, 0, 0];
         yield return [exact.Select((item, index) => index == 0 ? item with { Roles = ["db_datareader"] } : item).ToArray(), false, 0, 0];
-        yield return [exact.Select((item, index) => index == 0 ? item with { DirectPermissionCount = 2 } : item).ToArray(), false, 0, 0];
+        yield return [exact.Select((item, index) => index == 0 ? item with { DirectPermissionCount = 3 } : item).ToArray(), false, 0, 0];
         yield return [exact.Select((item, index) => index == 0 ? item with { OwnedSchemaCount = 1 } : item).ToArray(), false, 0, 0];
         yield return [exact.Take(1).ToArray(), true, 0, 0];
         yield return [exact, false, 1, 0];
@@ -1063,8 +1116,8 @@ public sealed class DatabaseMigratorRecoveryContractTests
 
     private static ExpectedDatabasePrincipal[] CreateExpectedPrincipals() =>
     [
-        new("ca-gateway-api-dev", Guid.Parse("11111111-1111-4111-8111-111111111111"), 1),
-        new("ca-gateway-worker-dev-v3", Guid.Parse("22222222-2222-4222-8222-222222222222"), 0)
+        new("ca-gateway-api-dev", Guid.Parse("11111111-1111-4111-8111-111111111111"), 2),
+        new("ca-gateway-worker-dev-v3", Guid.Parse("22222222-2222-4222-8222-222222222222"), 1)
     ];
 
     private static ObservedDatabasePrincipal[] CreateExactObservedPrincipals() =>

@@ -459,6 +459,58 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
     }
 
     [Fact]
+    public void RuntimePrincipalPermissions_AreBoundToExactConnectAndApiViewDefinitionTuples()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "Gateway.DatabaseMigrator",
+            "Program.cs"));
+        var runtimeAuthorityBody = Regex.Match(
+            source,
+            @"static async Task<IReadOnlyList<string>> ReadAndAssertRuntimePrincipalAuthorityAsync\([\s\S]*?(?=\nstatic async Task<SchemaVerification> VerifyAsync)",
+            RegexOptions.CultureInvariant).Value;
+        var permissionTelemetryCte = Regex.Match(
+            source,
+            @"static string GetDatabasePermissionTelemetryCteSql\(\) =>[\s\S]*?(?=\nstatic string GetDatabasePermissionTelemetryProjectionSql)",
+            RegexOptions.CultureInvariant).Value;
+
+        runtimeAuthorityBody.Should().NotBeEmpty();
+        runtimeAuthorityBody.Should().Contain(
+            "WHERE permissions.grantee_principal_id = @principalId");
+        runtimeAuthorityBody.Should().Contain(
+            "SELECT permissions.state, CAST(permissions.class AS int), permissions.major_id,");
+        runtimeAuthorityBody.Should().Contain(
+            "permissions.minor_id, permissions.permission_name, grantors.name");
+        runtimeAuthorityBody.Should().Contain(
+            "DatabaseBootstrapContract.AssertRuntimePrincipalAuthority");
+        runtimeAuthorityBody.Should().NotContain(
+            "SELECT COUNT(*) FROM sys.database_permissions WHERE grantee_principal_id = @principalId");
+        runtimeAuthorityBody.Should().NotContain(
+            "SELECT permissions.state, permissions.class, permissions.major_id,");
+
+        source.Should().Contain(
+            "[\"G|0|0|0|CONNECT|dbo\", \"G|0|0|0|VIEW DEFINITION|dbo\"]");
+        source.Should().Contain(
+            ": [\"G|0|0|0|CONNECT|dbo\"]");
+        permissionTelemetryCte.Should().NotBeEmpty();
+        permissionTelemetryCte.Should().Contain(
+            "grantees.name IN (@runtimePrincipalName1, @runtimePrincipalName2)");
+        permissionTelemetryCte.Should().MatchRegex(
+            @"permissions\.class = 0\s+AND permissions\.major_id = 0\s+AND permissions\.minor_id = 0\s+AND permissions\.permission_name = N'CONNECT'\s+AND permissions\.state = N'G'\s+AND grantees\.name IN \(@runtimePrincipalName1, @runtimePrincipalName2\)\s+AND permissions\.grantor_principal_id = DATABASE_PRINCIPAL_ID\(N'dbo'\)");
+        Regex.Matches(
+                source,
+                @"AddWithValue\(\s*""@runtimePrincipalName1""",
+                RegexOptions.CultureInvariant)
+            .Count.Should().Be(2);
+        Regex.Matches(
+                source,
+                @"AddWithValue\(\s*""@runtimePrincipalName2""",
+                RegexOptions.CultureInvariant)
+            .Count.Should().Be(2);
+    }
+
+    [Fact]
     public void RequiredRecoveryMode_IsEnforcedImmediatelyAfterClassificationAndBeforeMutation()
     {
         var source = File.ReadAllText(Path.Combine(
