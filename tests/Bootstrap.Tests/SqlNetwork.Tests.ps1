@@ -318,10 +318,13 @@ return [ordered]@{
 
         $permissionProjectionMatches = [regex]::Matches(
             $permissionProjectionSource,
-            '(?m)^\s*\(SELECT COUNT\(\*\) FROM databasePermissionTelemetry WHERE [^\r\n]+\) AS ([A-Za-z][A-Za-z0-9]+),?\s*$')
+            '(?m)^\s*COUNT\(CASE WHEN [^\r\n]+ THEN 1 END\) AS ([A-Za-z][A-Za-z0-9]+),?\s*$')
         $permissionProjectionAliases = @($permissionProjectionMatches | ForEach-Object { $_.Groups[1].Value })
         $permissionProjectionMatches.Count | Should -Be $expectedPermissionAliases.Count
         ($permissionProjectionAliases -join ',') | Should -Be ($expectedPermissionAliases -join ',')
+        $permissionProjectionSource | Should -Not -Match 'SELECT COUNT\(\*\) FROM databasePermissionTelemetry'
+        $permissionProjectionSource | Should -Not -Match '(?i)\b(?:SUM|COALESCE|COUNT_BIG)\s*\('
+        $permissionProjectionSource | Should -Not -Match '(?i)\b(?:DISTINCT|ELSE|GROUP\s+BY|HAVING|UNION)\b'
         $permissionProjectionSource | Should -Not -Match '(?i)\b(?:name|object_id|principal_id|sid|permission_name|major_id|minor_id|grantor_principal_id)\b'
         $permissionProjectionSource | Should -Not -Match 'Console\.Write'
 
@@ -406,6 +409,7 @@ return [ordered]@{
         ([regex]::Matches($pristineSource, 'GetUnexpectedDatabaseSurfaceProjectionSql\(\)')).Count | Should -Be 1
         ([regex]::Matches($pristineSource, 'GetDatabasePermissionTelemetryCteSql\(\)')).Count | Should -Be 1
         ([regex]::Matches($pristineSource, 'GetDatabasePermissionTelemetryProjectionSql\(\)')).Count | Should -Be 1
+        ([regex]::Matches($pristineSource, 'FROM databasePermissionTelemetry;')).Count | Should -Be 1
         $pristineSource | Should -Not -Match 'ReadUnexpectedDatabaseSurfaceTelemetryAsync\(connection\)'
         $pristineSource | Should -Not -Match 'ExecuteScalarAsync\('
         $pristineSource | Should -Match 'AssertExactSqlFieldContract\(\s*reader,\s*PristineDatabaseSurfaceSnapshot\.SqlFieldNames'
@@ -439,6 +443,7 @@ return [ordered]@{
         ([regex]::Matches($postSchemaPermissionSource, 'reader\.ReadAsync\(\)')).Count | Should -Be 2
         ([regex]::Matches($postSchemaPermissionSource, 'GetDatabasePermissionTelemetryCteSql\(\)')).Count | Should -Be 1
         ([regex]::Matches($postSchemaPermissionSource, 'GetDatabasePermissionTelemetryProjectionSql\(\)')).Count | Should -Be 1
+        ([regex]::Matches($postSchemaPermissionSource, 'FROM databasePermissionTelemetry;')).Count | Should -Be 1
         $postSchemaPermissionSource | Should -Match 'AssertExactSqlFieldContract\(\s*reader,\s*DatabaseDirectPermissionTelemetry\.SqlFieldNames'
         $postSchemaPermissionSource | Should -Match 'DatabaseDirectPermissionTelemetry\.FromOrderedCounts\(permissionCounts\)\.UnexpectedCount'
         $postSchemaPermissionSource | Should -Not -Match 'ExecuteScalarAsync\('

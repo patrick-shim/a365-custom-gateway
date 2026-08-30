@@ -33,6 +33,15 @@ var executionIntentIdValue = ReadOptionWithExactEnvironmentAgreement(
 var repeat = int.TryParse(ReadOption(options, "repeat") ?? "1", out var parsedRepeat)
     ? parsedRepeat
     : 0;
+var pristineDiagnosticOnlyEnvironmentValue =
+    Environment.GetEnvironmentVariable("DATABASE_MIGRATOR_PRISTINE_DIAGNOSTIC_ONLY");
+if (!string.IsNullOrWhiteSpace(pristineDiagnosticOnlyEnvironmentValue))
+{
+    throw new ArgumentException(
+        "DATABASE_MIGRATOR_PRISTINE_DIAGNOSTIC_ONLY is forbidden; diagnostic mode requires the explicit command-line option.");
+}
+var pristineDiagnosticOnly =
+    options.TryGetValue("pristine-diagnostic-only", out var pristineDiagnosticOnlyValue);
 
 if (!server.EndsWith(".database.windows.net", StringComparison.OrdinalIgnoreCase) ||
     server.Any(char.IsWhiteSpace))
@@ -51,6 +60,14 @@ if (phase is not ("initialize" or "bootstrap" or "baseline" or "prepare" or "fin
 {
     throw new ArgumentException(
         "--phase must be initialize, bootstrap, baseline, prepare, finalize, verify, or principal.");
+}
+
+if (pristineDiagnosticOnly &&
+    (phase != "bootstrap" ||
+     !pristineDiagnosticOnlyValue!.Equals("true", StringComparison.Ordinal)))
+{
+    throw new ArgumentException(
+        "--pristine-diagnostic-only must be the exact value true and is allowed only for the bootstrap phase.");
 }
 
 Guid? executionIntentId = null;
@@ -252,6 +269,24 @@ await using var connection = new SqlConnection(connectionString)
     AccessToken = accessToken.Token
 };
 await connection.OpenAsync();
+
+if (pristineDiagnosticOnly)
+{
+    var diagnosticLockResource = $"A365Gateway:DatabaseInitialize:{database}";
+    await AcquireDatabaseInitializationLockAsync(connection, diagnosticLockResource);
+    try
+    {
+        var pristineSurface = await ReadPristineDatabaseSurfaceAsync(connection);
+        DatabaseBootstrapRecoveryContract.AssertPristine(pristineSurface);
+        Console.WriteLine(
+            "Pristine database diagnostic passed the exact count-only contract; no database mutation was attempted.");
+    }
+    finally
+    {
+        await ReleaseDatabaseInitializationLockAsync(connection, diagnosticLockResource);
+    }
+    return;
+}
 
 RuntimePrincipalEvidence? runtimePrincipalEvidence = null;
 InitializationIntentEvidence? initializationIntentEvidence = null;
@@ -1109,87 +1144,87 @@ static string GetDatabasePermissionTelemetryCteSql() =>
 
 static string GetDatabasePermissionTelemetryProjectionSql() =>
     """
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1) AS rawNonWhitelistedDirectPermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_positive_id_public_select = 1) AS positiveIdPublicSelectTargets,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_positive_ms_shipped_object = 1) AS positiveIdPublicSelectMsShippedObjectTargets,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_positive_non_ms_shipped_programmable_object = 1) AS positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_origin_bucket = 1) AS positiveIdPublicSelectMsShippedSystemCatalogTargets,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_origin_bucket = 2) AS positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargets,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_origin_bucket = 3) AS positiveIdPublicSelectNonMsShippedOrUnresolvedTargets,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_class_bucket = 1) AS rawClassDatabasePermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_class_bucket = 2) AS rawClassObjectOrColumnPermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_class_bucket = 3) AS rawClassOtherPermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_state_bucket = 1) AS rawStateGrantPermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_state_bucket = 2) AS rawStateGrantWithGrantOptionPermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_state_bucket = 3) AS rawStateDenyPermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_state_bucket = 4) AS rawStateRevokePermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_state_bucket = 5) AS rawStateOtherPermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 1) AS rawGranteePublicPermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 2) AS rawGranteeGuestPermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 3) AS rawGranteeDboPermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 4) AS rawGranteeFixedRolePermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 5) AS rawGranteeOtherPermissions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 1) AS rawPermissionNameConnect,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 2) AS rawPermissionNameSelect,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 3) AS rawPermissionNameViewDefinition,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 4) AS rawPermissionNameViewAnyColumnMasterKeyDefinition,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 5) AS rawPermissionNameViewAnyColumnEncryptionKeyDefinition,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 6) AS rawPermissionNameOther,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 1) AS rawAddressDatabase,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 2) AS rawAddressNegativeObject,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 3) AS rawAddressZeroObject,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 4) AS rawAddressPositiveObject,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 5) AS rawAddressColumn,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 6) AS rawAddressOther,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantor_bucket = 1) AS rawGrantorDbo,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantor_bucket = 2) AS rawGrantorOther,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 1) AS positiveIdPublicSelectTypeAggregateFunctions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 2) AS positiveIdPublicSelectTypeCheckConstraints,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 3) AS positiveIdPublicSelectTypeDefaultConstraints,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 4) AS positiveIdPublicSelectTypeEdgeConstraints,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 5) AS positiveIdPublicSelectTypeExternalTables,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 6) AS positiveIdPublicSelectTypeForeignKeys,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 7) AS positiveIdPublicSelectTypeSqlScalarFunctions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 8) AS positiveIdPublicSelectTypeClrScalarFunctions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 9) AS positiveIdPublicSelectTypeClrTableValuedFunctions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 10) AS positiveIdPublicSelectTypeSqlInlineTableValuedFunctions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 11) AS positiveIdPublicSelectTypeInternalTables,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 12) AS positiveIdPublicSelectTypeSqlStoredProcedures,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 13) AS positiveIdPublicSelectTypeClrStoredProcedures,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 14) AS positiveIdPublicSelectTypePlanGuides,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 15) AS positiveIdPublicSelectTypePrimaryKeys,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 16) AS positiveIdPublicSelectTypeRules,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 17) AS positiveIdPublicSelectTypeReplicationFilterProcedures,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 18) AS positiveIdPublicSelectTypeSystemTables,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 19) AS positiveIdPublicSelectTypeSynonyms,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 20) AS positiveIdPublicSelectTypeSequences,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 21) AS positiveIdPublicSelectTypeServiceQueues,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 22) AS positiveIdPublicSelectTypeStatisticsTrees,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 23) AS positiveIdPublicSelectTypeClrDmlTriggers,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 24) AS positiveIdPublicSelectTypeSqlTableValuedFunctions,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 25) AS positiveIdPublicSelectTypeSqlDmlTriggers,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 26) AS positiveIdPublicSelectTypeTableTypes,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 27) AS positiveIdPublicSelectTypeUserTables,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 28) AS positiveIdPublicSelectTypeUniqueConstraints,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 29) AS positiveIdPublicSelectTypeViews,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 30) AS positiveIdPublicSelectTypeExtendedStoredProcedures,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 31) AS positiveIdPublicSelectTypeOtherOrUnresolved,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_schema_bucket = 1) AS positiveIdPublicSelectSchemaSys,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_schema_bucket = 2) AS positiveIdPublicSelectSchemaDbo,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_schema_bucket = 3) AS positiveIdPublicSelectSchemaOtherOrUnresolved,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_parent_bucket = 1) AS positiveIdPublicSelectParentless,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_parent_bucket = 2) AS positiveIdPublicSelectParented,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_parent_bucket = 3) AS positiveIdPublicSelectParentUnresolved,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_views = 1) AS positiveIdPublicSelectInViews,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_procedures = 1) AS positiveIdPublicSelectInProcedures,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_sql_modules = 1) AS positiveIdPublicSelectInSqlModules,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_tables = 1) AS positiveIdPublicSelectInTables,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_internal_tables = 1) AS positiveIdPublicSelectInInternalTables,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_sequences = 1) AS positiveIdPublicSelectInSequences,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_synonyms = 1) AS positiveIdPublicSelectInSynonyms,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_triggers = 1) AS positiveIdPublicSelectInTriggers,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE has_positive_target_specialized_catalog_membership = 1) AS positiveIdPublicSelectWithSpecializedCatalogMembership,
-      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_positive_id_public_select = 1 AND has_positive_target_specialized_catalog_membership = 0) AS positiveIdPublicSelectWithoutSpecializedCatalogMembership
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 THEN 1 END) AS rawNonWhitelistedDirectPermissions,
+      COUNT(CASE WHEN is_positive_id_public_select = 1 THEN 1 END) AS positiveIdPublicSelectTargets,
+      COUNT(CASE WHEN is_positive_ms_shipped_object = 1 THEN 1 END) AS positiveIdPublicSelectMsShippedObjectTargets,
+      COUNT(CASE WHEN is_positive_non_ms_shipped_programmable_object = 1 THEN 1 END) AS positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations,
+      COUNT(CASE WHEN positive_target_origin_bucket = 1 THEN 1 END) AS positiveIdPublicSelectMsShippedSystemCatalogTargets,
+      COUNT(CASE WHEN positive_target_origin_bucket = 2 THEN 1 END) AS positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargets,
+      COUNT(CASE WHEN positive_target_origin_bucket = 3 THEN 1 END) AS positiveIdPublicSelectNonMsShippedOrUnresolvedTargets,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_class_bucket = 1 THEN 1 END) AS rawClassDatabasePermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_class_bucket = 2 THEN 1 END) AS rawClassObjectOrColumnPermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_class_bucket = 3 THEN 1 END) AS rawClassOtherPermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_state_bucket = 1 THEN 1 END) AS rawStateGrantPermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_state_bucket = 2 THEN 1 END) AS rawStateGrantWithGrantOptionPermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_state_bucket = 3 THEN 1 END) AS rawStateDenyPermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_state_bucket = 4 THEN 1 END) AS rawStateRevokePermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_state_bucket = 5 THEN 1 END) AS rawStateOtherPermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 1 THEN 1 END) AS rawGranteePublicPermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 2 THEN 1 END) AS rawGranteeGuestPermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 3 THEN 1 END) AS rawGranteeDboPermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 4 THEN 1 END) AS rawGranteeFixedRolePermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 5 THEN 1 END) AS rawGranteeOtherPermissions,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 1 THEN 1 END) AS rawPermissionNameConnect,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 2 THEN 1 END) AS rawPermissionNameSelect,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 3 THEN 1 END) AS rawPermissionNameViewDefinition,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 4 THEN 1 END) AS rawPermissionNameViewAnyColumnMasterKeyDefinition,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 5 THEN 1 END) AS rawPermissionNameViewAnyColumnEncryptionKeyDefinition,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 6 THEN 1 END) AS rawPermissionNameOther,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_address_bucket = 1 THEN 1 END) AS rawAddressDatabase,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_address_bucket = 2 THEN 1 END) AS rawAddressNegativeObject,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_address_bucket = 3 THEN 1 END) AS rawAddressZeroObject,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_address_bucket = 4 THEN 1 END) AS rawAddressPositiveObject,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_address_bucket = 5 THEN 1 END) AS rawAddressColumn,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_address_bucket = 6 THEN 1 END) AS rawAddressOther,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_grantor_bucket = 1 THEN 1 END) AS rawGrantorDbo,
+      COUNT(CASE WHEN is_raw_non_whitelisted = 1 AND raw_grantor_bucket = 2 THEN 1 END) AS rawGrantorOther,
+      COUNT(CASE WHEN positive_target_type_bucket = 1 THEN 1 END) AS positiveIdPublicSelectTypeAggregateFunctions,
+      COUNT(CASE WHEN positive_target_type_bucket = 2 THEN 1 END) AS positiveIdPublicSelectTypeCheckConstraints,
+      COUNT(CASE WHEN positive_target_type_bucket = 3 THEN 1 END) AS positiveIdPublicSelectTypeDefaultConstraints,
+      COUNT(CASE WHEN positive_target_type_bucket = 4 THEN 1 END) AS positiveIdPublicSelectTypeEdgeConstraints,
+      COUNT(CASE WHEN positive_target_type_bucket = 5 THEN 1 END) AS positiveIdPublicSelectTypeExternalTables,
+      COUNT(CASE WHEN positive_target_type_bucket = 6 THEN 1 END) AS positiveIdPublicSelectTypeForeignKeys,
+      COUNT(CASE WHEN positive_target_type_bucket = 7 THEN 1 END) AS positiveIdPublicSelectTypeSqlScalarFunctions,
+      COUNT(CASE WHEN positive_target_type_bucket = 8 THEN 1 END) AS positiveIdPublicSelectTypeClrScalarFunctions,
+      COUNT(CASE WHEN positive_target_type_bucket = 9 THEN 1 END) AS positiveIdPublicSelectTypeClrTableValuedFunctions,
+      COUNT(CASE WHEN positive_target_type_bucket = 10 THEN 1 END) AS positiveIdPublicSelectTypeSqlInlineTableValuedFunctions,
+      COUNT(CASE WHEN positive_target_type_bucket = 11 THEN 1 END) AS positiveIdPublicSelectTypeInternalTables,
+      COUNT(CASE WHEN positive_target_type_bucket = 12 THEN 1 END) AS positiveIdPublicSelectTypeSqlStoredProcedures,
+      COUNT(CASE WHEN positive_target_type_bucket = 13 THEN 1 END) AS positiveIdPublicSelectTypeClrStoredProcedures,
+      COUNT(CASE WHEN positive_target_type_bucket = 14 THEN 1 END) AS positiveIdPublicSelectTypePlanGuides,
+      COUNT(CASE WHEN positive_target_type_bucket = 15 THEN 1 END) AS positiveIdPublicSelectTypePrimaryKeys,
+      COUNT(CASE WHEN positive_target_type_bucket = 16 THEN 1 END) AS positiveIdPublicSelectTypeRules,
+      COUNT(CASE WHEN positive_target_type_bucket = 17 THEN 1 END) AS positiveIdPublicSelectTypeReplicationFilterProcedures,
+      COUNT(CASE WHEN positive_target_type_bucket = 18 THEN 1 END) AS positiveIdPublicSelectTypeSystemTables,
+      COUNT(CASE WHEN positive_target_type_bucket = 19 THEN 1 END) AS positiveIdPublicSelectTypeSynonyms,
+      COUNT(CASE WHEN positive_target_type_bucket = 20 THEN 1 END) AS positiveIdPublicSelectTypeSequences,
+      COUNT(CASE WHEN positive_target_type_bucket = 21 THEN 1 END) AS positiveIdPublicSelectTypeServiceQueues,
+      COUNT(CASE WHEN positive_target_type_bucket = 22 THEN 1 END) AS positiveIdPublicSelectTypeStatisticsTrees,
+      COUNT(CASE WHEN positive_target_type_bucket = 23 THEN 1 END) AS positiveIdPublicSelectTypeClrDmlTriggers,
+      COUNT(CASE WHEN positive_target_type_bucket = 24 THEN 1 END) AS positiveIdPublicSelectTypeSqlTableValuedFunctions,
+      COUNT(CASE WHEN positive_target_type_bucket = 25 THEN 1 END) AS positiveIdPublicSelectTypeSqlDmlTriggers,
+      COUNT(CASE WHEN positive_target_type_bucket = 26 THEN 1 END) AS positiveIdPublicSelectTypeTableTypes,
+      COUNT(CASE WHEN positive_target_type_bucket = 27 THEN 1 END) AS positiveIdPublicSelectTypeUserTables,
+      COUNT(CASE WHEN positive_target_type_bucket = 28 THEN 1 END) AS positiveIdPublicSelectTypeUniqueConstraints,
+      COUNT(CASE WHEN positive_target_type_bucket = 29 THEN 1 END) AS positiveIdPublicSelectTypeViews,
+      COUNT(CASE WHEN positive_target_type_bucket = 30 THEN 1 END) AS positiveIdPublicSelectTypeExtendedStoredProcedures,
+      COUNT(CASE WHEN positive_target_type_bucket = 31 THEN 1 END) AS positiveIdPublicSelectTypeOtherOrUnresolved,
+      COUNT(CASE WHEN positive_target_schema_bucket = 1 THEN 1 END) AS positiveIdPublicSelectSchemaSys,
+      COUNT(CASE WHEN positive_target_schema_bucket = 2 THEN 1 END) AS positiveIdPublicSelectSchemaDbo,
+      COUNT(CASE WHEN positive_target_schema_bucket = 3 THEN 1 END) AS positiveIdPublicSelectSchemaOtherOrUnresolved,
+      COUNT(CASE WHEN positive_target_parent_bucket = 1 THEN 1 END) AS positiveIdPublicSelectParentless,
+      COUNT(CASE WHEN positive_target_parent_bucket = 2 THEN 1 END) AS positiveIdPublicSelectParented,
+      COUNT(CASE WHEN positive_target_parent_bucket = 3 THEN 1 END) AS positiveIdPublicSelectParentUnresolved,
+      COUNT(CASE WHEN positive_target_in_views = 1 THEN 1 END) AS positiveIdPublicSelectInViews,
+      COUNT(CASE WHEN positive_target_in_procedures = 1 THEN 1 END) AS positiveIdPublicSelectInProcedures,
+      COUNT(CASE WHEN positive_target_in_sql_modules = 1 THEN 1 END) AS positiveIdPublicSelectInSqlModules,
+      COUNT(CASE WHEN positive_target_in_tables = 1 THEN 1 END) AS positiveIdPublicSelectInTables,
+      COUNT(CASE WHEN positive_target_in_internal_tables = 1 THEN 1 END) AS positiveIdPublicSelectInInternalTables,
+      COUNT(CASE WHEN positive_target_in_sequences = 1 THEN 1 END) AS positiveIdPublicSelectInSequences,
+      COUNT(CASE WHEN positive_target_in_synonyms = 1 THEN 1 END) AS positiveIdPublicSelectInSynonyms,
+      COUNT(CASE WHEN positive_target_in_triggers = 1 THEN 1 END) AS positiveIdPublicSelectInTriggers,
+      COUNT(CASE WHEN has_positive_target_specialized_catalog_membership = 1 THEN 1 END) AS positiveIdPublicSelectWithSpecializedCatalogMembership,
+      COUNT(CASE WHEN is_positive_id_public_select = 1 AND has_positive_target_specialized_catalog_membership = 0 THEN 1 END) AS positiveIdPublicSelectWithoutSpecializedCatalogMembership
     """;
 
 static async Task<UnexpectedDatabaseSurfaceTelemetry> ReadUnexpectedDatabaseSurfaceTelemetryAsync(
@@ -1343,7 +1378,8 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
               LEFT JOIN sys.database_principals AS dbo_principal
                 ON dbo_principal.name = N'dbo'
               WHERE databases.name = DB_NAME()
-          ) AS databaseOwnerMismatches;
+          ) AS databaseOwnerMismatches
+        FROM databasePermissionTelemetry;
         """;
     command.Parameters.AddWithValue("@markerName", DatabaseBootstrapRecoveryContract.MarkerName);
     command.Parameters.AddWithValue("@allowMetadataPrincipalViewDefinition", 0);
@@ -1598,7 +1634,8 @@ static async Task AssertExpectedDatabaseAuthorityAsync(
         command.CommandText = $"""
             {GetDatabasePermissionTelemetryCteSql()}
             SELECT
-            {GetDatabasePermissionTelemetryProjectionSql()};
+            {GetDatabasePermissionTelemetryProjectionSql()}
+            FROM databasePermissionTelemetry;
             """;
         command.Parameters.AddWithValue("@allowMetadataPrincipalViewDefinition", 1);
         command.Parameters.AddWithValue("@metadataPrincipalName", metadataPrincipal.Name);

@@ -175,6 +175,67 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
     }
 
     [Fact]
+    public async Task Bootstrap_AcceptsExactPristineDiagnosticOnlyModeBeforeManagedIdentityAuthentication()
+    {
+        var action = () => InvokeMigratorAsync(
+            CreateBoundBootstrapArguments()
+                .Concat(["--pristine-diagnostic-only", "true"])
+                .ToArray());
+
+        await action.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*requires the Container Apps managed-identity endpoint*");
+    }
+
+    [Theory]
+    [InlineData("false")]
+    [InlineData("True")]
+    [InlineData("1")]
+    public async Task Bootstrap_RejectsNonExactPristineDiagnosticOnlyValues(string value)
+    {
+        var action = () => InvokeMigratorAsync(
+            CreateBoundBootstrapArguments()
+                .Concat(["--pristine-diagnostic-only", value])
+                .ToArray());
+
+        await action.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*--pristine-diagnostic-only must be the exact value true*");
+    }
+
+    [Fact]
+    public async Task NonBootstrapPhase_RejectsPristineDiagnosticOnlyMode()
+    {
+        var action = () => InvokeMigratorAsync(
+            "--server", "sql-test.database.windows.net",
+            "--database", "GatewayDb",
+            "--phase", "verify",
+            "--pristine-diagnostic-only", "true");
+
+        await action.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*allowed only for the bootstrap phase*");
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    public async Task Bootstrap_RejectsAmbientPristineDiagnosticOnlyMode(string value)
+    {
+        const string variableName = "DATABASE_MIGRATOR_PRISTINE_DIAGNOSTIC_ONLY";
+        var priorValue = Environment.GetEnvironmentVariable(variableName);
+        try
+        {
+            Environment.SetEnvironmentVariable(variableName, value);
+            var action = () => InvokeMigratorAsync(CreateBoundBootstrapArguments());
+
+            await action.Should().ThrowAsync<ArgumentException>()
+                .WithMessage("*is forbidden; diagnostic mode requires the explicit command-line option*");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variableName, priorValue);
+        }
+    }
+
+    [Fact]
     public async Task Bootstrap_RequiresExpectedPrivateEndpointIp()
     {
         var arguments = CreateBoundBootstrapArguments()[..^2];
@@ -259,6 +320,45 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
         dnsConvergence.Should().BeGreaterThanOrEqualTo(0);
         dnsConvergence.Should().BeLessThan(tokenAcquisition);
         tokenAcquisition.Should().BeLessThan(sqlOpen);
+    }
+
+    [Fact]
+    public void PristineDiagnosticOnlyMode_ReadsUnderTheInitializationLockAndReturnsBeforeMutation()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "Gateway.DatabaseMigrator",
+            "Program.cs"));
+        source.Should().Contain(
+            "options.TryGetValue(\"pristine-diagnostic-only\", out var pristineDiagnosticOnlyValue)");
+        source.Should().Contain(
+            "DATABASE_MIGRATOR_PRISTINE_DIAGNOSTIC_ONLY is forbidden");
+        var diagnosticStart = source.IndexOf(
+            "if (pristineDiagnosticOnly)\n{",
+            StringComparison.Ordinal);
+        var normalBootstrapStart = source.IndexOf(
+            "RuntimePrincipalEvidence? runtimePrincipalEvidence",
+            StringComparison.Ordinal);
+
+        diagnosticStart.Should().BeGreaterThanOrEqualTo(0);
+        normalBootstrapStart.Should().BeGreaterThan(diagnosticStart);
+        var diagnosticBody = source.Substring(
+            diagnosticStart,
+            normalBootstrapStart - diagnosticStart);
+        Regex.Matches(diagnosticBody, "AcquireDatabaseInitializationLockAsync", RegexOptions.CultureInvariant)
+            .Count.Should().Be(1);
+        Regex.Matches(diagnosticBody, "ReadPristineDatabaseSurfaceAsync", RegexOptions.CultureInvariant)
+            .Count.Should().Be(1);
+        Regex.Matches(diagnosticBody, "DatabaseBootstrapRecoveryContract.AssertPristine", RegexOptions.CultureInvariant)
+            .Count.Should().Be(1);
+        Regex.Matches(diagnosticBody, "ReleaseDatabaseInitializationLockAsync", RegexOptions.CultureInvariant)
+            .Count.Should().Be(1);
+        Regex.Matches(diagnosticBody, "return;", RegexOptions.CultureInvariant)
+            .Count.Should().Be(1);
+        diagnosticBody.Should().NotContain("EnsureEmptyDatabaseInitialized");
+        diagnosticBody.Should().NotContain("BootstrapDatabaseAsync");
+        diagnosticBody.Should().NotContain("EnsureRuntimePrincipalAsync");
     }
 
     [Fact]
