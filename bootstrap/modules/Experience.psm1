@@ -1860,6 +1860,34 @@ function Get-GatewayOptionalObjectProperty {
     return $null
 }
 
+function Assert-GatewayDatabaseAttestationDeploymentContract {
+    param(
+        [Parameter(Mandatory)]$Parameters,
+        [Parameter(Mandatory)]$Outputs,
+        [Parameter(Mandatory)]$Evidence,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ExpectedValues
+    )
+    foreach ($entry in $ExpectedValues.GetEnumerator()) {
+        $name = [string]$entry.Key
+        $expectedValue = [string]$entry.Value
+        if ($name -cne 'databaseAttestationDatabaseName') {
+            $parameterProperty = Get-GatewayOptionalObjectProperty -Object $Parameters -Name $name
+            if ($null -eq $parameterProperty) { throw 'mismatch' }
+            $parameterValue = Get-GatewayOptionalObjectProperty -Object $parameterProperty -Name 'value'
+            if ($null -eq $parameterValue -or [string]$parameterValue -cne $expectedValue) { throw 'mismatch' }
+        }
+
+        $outputProperty = Get-GatewayOptionalObjectProperty -Object $Outputs -Name $name
+        $evidenceValue = Get-GatewayOptionalObjectProperty -Object $Evidence -Name $name
+        if ($null -eq $outputProperty -or $null -eq $evidenceValue) { throw 'mismatch' }
+        $outputValue = Get-GatewayOptionalObjectProperty -Object $outputProperty -Name 'value'
+        if ($null -eq $outputValue -or
+            [string]$outputValue -cne $expectedValue -or
+            [string]$evidenceValue -cne $expectedValue) { throw 'mismatch' }
+    }
+    return $true
+}
+
 function Test-GatewayContainerAppLocationEquivalent {
     param(
         [Parameter(Mandatory)][AllowNull()][AllowEmptyString()][string]$ActualLocation,
@@ -2084,16 +2112,6 @@ function Test-GatewayGroupDeploymentEvidence {
         foreach ($property in @('provisioningExecutionEnabled', 'workerProcessingEnabled')) {
             if ([bool]$deployment.outputs.$property.value -ne [bool]$Evidence.$property) { throw 'mismatch' }
         }
-        foreach ($property in @(
-            'databaseAttestationExpectedSchemaFingerprint',
-            'databaseAttestationApiPrincipalName',
-            'databaseAttestationApiPrincipalClientId',
-            'databaseAttestationWorkerPrincipalName',
-            'databaseAttestationWorkerPrincipalClientId',
-            'databaseAttestationDatabaseName'
-        )) {
-            if ([string]$deployment.outputs.$property.value -cne [string]$Evidence.$property) { throw 'mismatch' }
-        }
         $expectedDatabaseValues = if ($isRuntime) {
             [ordered]@{
                 databaseAttestationExpectedSchemaFingerprint = [string]$Database.schemaFingerprint
@@ -2114,14 +2132,11 @@ function Test-GatewayGroupDeploymentEvidence {
                 databaseAttestationDatabaseName = ''
             }
         }
-        foreach ($entry in $expectedDatabaseValues.GetEnumerator()) {
-            $parameterProperty = Get-GatewayOptionalObjectProperty -Object $deployment.parameters -Name ([string]$entry.Key)
-            $outputProperty = Get-GatewayOptionalObjectProperty -Object $deployment.outputs -Name ([string]$entry.Key)
-            $evidenceValue = Get-GatewayOptionalObjectProperty -Object $Evidence -Name ([string]$entry.Key)
-            if ([string]$parameterProperty.value -cne [string]$entry.Value -or
-                [string]$outputProperty.value -cne [string]$entry.Value -or
-                [string]$evidenceValue -cne [string]$entry.Value) { throw 'mismatch' }
-        }
+        Assert-GatewayDatabaseAttestationDeploymentContract `
+            -Parameters $deployment.parameters `
+            -Outputs $deployment.outputs `
+            -Evidence $Evidence `
+            -ExpectedValues $expectedDatabaseValues | Out-Null
         $expectedPreview = $isRuntime -and [string]$Config.environment -eq 'dev' -and
             $Config.agent365.allowDevelopmentRegistryPreview -eq $true -and
             $Config.purview.policyProvisioningEnabled -ne $true

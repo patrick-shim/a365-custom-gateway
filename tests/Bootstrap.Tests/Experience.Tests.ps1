@@ -307,6 +307,120 @@ Describe 'Workload deployment output mapping' {
     }
 }
 
+Describe 'Database attestation deployment readback boundary' {
+    InModuleScope Experience {
+        BeforeEach {
+            $script:attestationExpected = [ordered]@{
+                databaseAttestationExpectedSchemaFingerprint = ''
+                databaseAttestationApiPrincipalName = ''
+                databaseAttestationApiPrincipalClientId = ''
+                databaseAttestationWorkerPrincipalName = ''
+                databaseAttestationWorkerPrincipalClientId = ''
+                databaseAttestationDatabaseName = ''
+            }
+            $script:attestationParameters = [ordered]@{}
+            $script:attestationOutputs = [ordered]@{}
+            $script:attestationEvidence = [ordered]@{}
+            foreach ($entry in $script:attestationExpected.GetEnumerator()) {
+                $script:attestationOutputs[$entry.Key] = [pscustomobject]@{ value = [string]$entry.Value }
+                $script:attestationEvidence[$entry.Key] = [string]$entry.Value
+                if ([string]$entry.Key -cne 'databaseAttestationDatabaseName') {
+                    $script:attestationParameters[$entry.Key] = [pscustomobject]@{ value = [string]$entry.Value }
+                }
+            }
+        }
+
+        It 'accepts the exact <Mode> contract when the top-level derived database-name parameter is absent under StrictMode' -TestCases @(
+            @{ Mode = 'inert'; DatabaseName = '' }
+            @{ Mode = 'runtime'; DatabaseName = 'GatewayDb' }
+        ) {
+            param([string]$Mode, [string]$DatabaseName)
+            Set-StrictMode -Version Latest
+            $script:attestationExpected.databaseAttestationDatabaseName = $DatabaseName
+            $script:attestationOutputs.databaseAttestationDatabaseName.value = $DatabaseName
+            $script:attestationEvidence.databaseAttestationDatabaseName = $DatabaseName
+
+            Assert-GatewayDatabaseAttestationDeploymentContract `
+                -Parameters $script:attestationParameters `
+                -Outputs $script:attestationOutputs `
+                -Evidence $script:attestationEvidence `
+                -ExpectedValues $script:attestationExpected |
+                Should -BeTrue
+
+            $script:attestationParameters.Contains('databaseAttestationDatabaseName') | Should -BeFalse
+        }
+
+        It 'rejects a missing or wrong derived database-name output' -TestCases @(
+            @{ Mutation = 'Missing' }
+            @{ Mutation = 'Wrong' }
+        ) {
+            param([string]$Mutation)
+            if ($Mutation -eq 'Missing') {
+                $script:attestationOutputs.Remove('databaseAttestationDatabaseName')
+            }
+            else {
+                $script:attestationOutputs.databaseAttestationDatabaseName.value = 'GatewayDb'
+            }
+
+            { Assert-GatewayDatabaseAttestationDeploymentContract `
+                -Parameters $script:attestationParameters `
+                -Outputs $script:attestationOutputs `
+                -Evidence $script:attestationEvidence `
+                -ExpectedValues $script:attestationExpected } |
+                Should -Throw '*mismatch*'
+        }
+
+        It 'rejects missing or wrong derived database-name evidence' -TestCases @(
+            @{ Mutation = 'Missing' }
+            @{ Mutation = 'Wrong' }
+        ) {
+            param([string]$Mutation)
+            if ($Mutation -eq 'Missing') {
+                $script:attestationEvidence.Remove('databaseAttestationDatabaseName')
+            }
+            else {
+                $script:attestationEvidence.databaseAttestationDatabaseName = 'GatewayDb'
+            }
+
+            { Assert-GatewayDatabaseAttestationDeploymentContract `
+                -Parameters $script:attestationParameters `
+                -Outputs $script:attestationOutputs `
+                -Evidence $script:attestationEvidence `
+                -ExpectedValues $script:attestationExpected } |
+                Should -Throw '*mismatch*'
+        }
+
+        It 'still rejects a <Mutation> top-level <Field> parameter' -TestCases @(
+            foreach ($field in @(
+                'databaseAttestationExpectedSchemaFingerprint',
+                'databaseAttestationApiPrincipalName',
+                'databaseAttestationApiPrincipalClientId',
+                'databaseAttestationWorkerPrincipalName',
+                'databaseAttestationWorkerPrincipalClientId'
+            )) {
+                foreach ($mutation in @('Missing', 'Wrong')) {
+                    @{ Field = $field; Mutation = $mutation }
+                }
+            }
+        ) {
+            param([string]$Field, [string]$Mutation)
+            if ($Mutation -eq 'Missing') {
+                $script:attestationParameters.Remove($Field)
+            }
+            else {
+                $script:attestationParameters[$Field].value = 'unexpected'
+            }
+
+            { Assert-GatewayDatabaseAttestationDeploymentContract `
+                -Parameters $script:attestationParameters `
+                -Outputs $script:attestationOutputs `
+                -Evidence $script:attestationEvidence `
+                -ExpectedValues $script:attestationExpected } |
+                Should -Throw '*mismatch*'
+        }
+    }
+}
+
 Describe 'Plan-time Agent ID blueprint collision boundary' {
     InModuleScope Experience {
         BeforeEach {
