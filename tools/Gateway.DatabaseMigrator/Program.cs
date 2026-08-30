@@ -279,6 +279,10 @@ if (pristineDiagnosticOnly)
         var platformDiagnostic = await ReadAzureSqlPristinePlatformDiagnosticAsync(connection);
         Console.WriteLine(
             $"Pristine Azure SQL platform diagnostic=[{platformDiagnostic.ToSafeSummary()}].");
+        var auditSpecificationNameFingerprint =
+            await ReadSingleAuditSpecificationNameFingerprintAsync(connection);
+        Console.WriteLine(
+            $"Pristine Azure SQL audit-specification name fingerprint={auditSpecificationNameFingerprint}.");
         var pristineSurface = await ReadPristineDatabaseSurfaceAsync(connection);
         DatabaseBootstrapRecoveryContract.AssertPristine(pristineSurface);
         Console.WriteLine(
@@ -1517,6 +1521,32 @@ static async Task<AzureSqlPristinePlatformDiagnostic> ReadAzureSqlPristinePlatfo
     if (await reader.ReadAsync())
         throw new InvalidOperationException("Azure SQL returned duplicate pristine-platform diagnostic rows.");
     return AzureSqlPristinePlatformDiagnostic.FromOrderedCounts(counts);
+}
+
+static async Task<string> ReadSingleAuditSpecificationNameFingerprintAsync(SqlConnection connection)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = """
+        SELECT
+          CONVERT(varchar(64),
+              HASHBYTES(N'SHA2_256', CONVERT(varbinary(max), name)),
+              2) AS auditSpecificationNameSha256
+        FROM sys.database_audit_specifications;
+        """;
+    await using var reader = await command.ExecuteReaderAsync();
+    AssertExactSqlFieldContract(
+        reader,
+        ["auditSpecificationNameSha256"],
+        "Azure SQL audit-specification fingerprint");
+    if (!await reader.ReadAsync() || reader.IsDBNull(0))
+        throw new InvalidOperationException("Azure SQL returned no audit-specification name fingerprint.");
+    var fingerprint = $"sha256:{reader.GetString(0).ToLowerInvariant()}";
+    if (!Regex.IsMatch(fingerprint, "^sha256:[0-9a-f]{64}$", RegexOptions.CultureInvariant))
+        throw new InvalidOperationException("Azure SQL returned a malformed audit-specification name fingerprint.");
+    if (await reader.ReadAsync())
+        throw new InvalidOperationException("Azure SQL returned more than one audit-specification name fingerprint.");
+    return fingerprint;
 }
 
 static async Task AcquireDatabaseInitializationLockAsync(

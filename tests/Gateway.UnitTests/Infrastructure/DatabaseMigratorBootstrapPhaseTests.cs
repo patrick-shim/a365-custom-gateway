@@ -350,6 +350,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             .Count.Should().Be(1);
         Regex.Matches(diagnosticBody, "ReadAzureSqlPristinePlatformDiagnosticAsync", RegexOptions.CultureInvariant)
             .Count.Should().Be(1);
+        Regex.Matches(diagnosticBody, "ReadSingleAuditSpecificationNameFingerprintAsync", RegexOptions.CultureInvariant)
+            .Count.Should().Be(1);
         Regex.Matches(diagnosticBody, "ReadPristineDatabaseSurfaceAsync", RegexOptions.CultureInvariant)
             .Count.Should().Be(1);
         Regex.Matches(diagnosticBody, "DatabaseBootstrapRecoveryContract.AssertPristine", RegexOptions.CultureInvariant)
@@ -365,6 +367,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
         source.Should().Contain("N'SqlDbAuditing_ServerAuditSpec'");
         source.Should().Contain("N'SqlDbAuditing_AuditSpec'");
         source.Should().Contain("AS dboConnectExact");
+        source.Should().Contain("HASHBYTES(N'SHA2_256', CONVERT(varbinary(max), name))");
+        source.Should().Contain("^sha256:[0-9a-f]{64}$");
     }
 
     [Fact]
