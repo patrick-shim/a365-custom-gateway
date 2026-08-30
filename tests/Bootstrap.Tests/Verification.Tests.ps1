@@ -1257,8 +1257,8 @@ Describe 'Purview worker deployment truth' {
             $script:vaultScope = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.KeyVault/vaults/kv-safe-dev'
             $script:certificateScope = "$script:vaultScope/secrets/automation-certificate"
             $script:environment = @(
-                [pscustomobject]@{ name = 'Purview__Enabled'; value = 'true' },
-                [pscustomobject]@{ name = 'Purview__PolicyProvisioningEnabled'; value = 'true' },
+                [pscustomobject]@{ name = 'Purview__Enabled'; value = 'True' },
+                [pscustomobject]@{ name = 'Purview__PolicyProvisioningEnabled'; value = 'True' },
                 [pscustomobject]@{ name = 'Purview__PolicyProvisioningOrganization'; value = 'contoso.onmicrosoft.com' },
                 [pscustomobject]@{ name = 'Purview__PolicyProvisioningApplicationId'; value = '33333333-3333-4333-8333-333333333333' },
                 [pscustomobject]@{ name = 'Purview__PolicyProvisioningCertificateSecretUri'; value = 'https://kv-safe-dev.vault.azure.net/secrets/automation-certificate' }
@@ -1330,7 +1330,7 @@ Describe 'Purview worker deployment truth' {
         }
 
         It 'rejects a policy feature silently deployed disabled' {
-            ($script:environment | Where-Object name -eq 'Purview__PolicyProvisioningEnabled').value = 'false'
+            ($script:environment | Where-Object name -eq 'Purview__PolicyProvisioningEnabled').value = 'False'
 
             { Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime } |
                 Should -Throw "*Purview__PolicyProvisioningEnabled*"
@@ -1375,8 +1375,8 @@ Describe 'Purview worker deployment truth' {
             $script:config.purview.policyProvisioningCertificateSecretUri = ''
             foreach ($entry in $script:environment) {
                 switch ($entry.name) {
-                    'Purview__Enabled' { $entry.value = 'false' }
-                    'Purview__PolicyProvisioningEnabled' { $entry.value = 'false' }
+                    'Purview__Enabled' { $entry.value = 'False' }
+                    'Purview__PolicyProvisioningEnabled' { $entry.value = 'False' }
                     'Purview__PolicyProvisioningOrganization' { $entry.value = '' }
                     'Purview__PolicyProvisioningApplicationId' { $entry.value = '' }
                     'Purview__PolicyProvisioningCertificateSecretUri' { $entry.value = '' }

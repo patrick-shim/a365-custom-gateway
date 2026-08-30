@@ -1552,6 +1552,77 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 Should -Throw '*missing, duplicate, or unreviewed name*'
         }
 
+        It 'matches ARM TitleCase for every Bicep string(bool) inert environment value' {
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'containerapp') {
+                    return [pscustomobject]@{
+                        id = $script:coreFoundation.containerAppsEnvironmentId
+                        ownershipId = $script:coreOwnershipId
+                        sourceFingerprint = $script:coreSourceFingerprint
+                        defaultDomain = 'safe.azurecontainerapps.io'
+                    }
+                }
+                if ([string]$Arguments[0] -ceq 'monitor') {
+                    return [pscustomobject]@{
+                        ownershipId = $script:coreOwnershipId
+                        sourceFingerprint = $script:coreSourceFingerprint
+                        connectionString = 'InstrumentationKey=reviewed-test-value'
+                    }
+                }
+                if ([string]$Arguments[0] -ceq 'resource') {
+                    return @('stsafedevabc123')
+                }
+                throw 'Unexpected inert environment discovery command.'
+            }
+
+            $contracts = Get-GatewayInertPartialEnvironmentContract -Roles @('Api', 'Worker') `
+                -Config $script:coreConfig -Foundation $script:coreFoundation -Identity $script:coreIdentity `
+                -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint
+            $booleanValues = [ordered]@{
+                Api = [ordered]@{
+                    'Provisioning__ExecutionEnabled' = 'False'
+                    'Provisioning__RequireExactAdmissionBinding' = 'True'
+                    'Provisioning__AllowContinuousDevelopmentAccess' = 'False'
+                    'Agent365__DelegatedRegistry__Enabled' = 'False'
+                    'Agent365__DelegatedRegistry__RequireExactActionBinding' = 'True'
+                    'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = 'False'
+                    'Purview__Enabled' = 'False'
+                    'PromptShield__Enabled' = 'False'
+                    'DatabaseAttestation__Enabled' = 'False'
+                }
+                Worker = [ordered]@{
+                    'ProvisioningWorker__ProcessingEnabled' = 'False'
+                    'ProvisioningWorker__ProvisioningExecutionEnabled' = 'False'
+                    'Agent365__DirectRegistryPreviewEnabled' = 'False'
+                    'Purview__Enabled' = 'False'
+                    'Purview__PolicyProvisioningEnabled' = 'False'
+                }
+            }
+
+            foreach ($role in @('Api', 'Worker')) {
+                foreach ($entry in $booleanValues[$role].GetEnumerator()) {
+                    [string]$contracts[$role][$entry.Key] | Should -BeExactly ([string]$entry.Value)
+
+                    $expected = [ordered]@{}
+                    foreach ($contractEntry in $contracts[$role].GetEnumerator()) {
+                        if ([string]$contractEntry.Key -cne '__recoveryApiFqdn') {
+                            $expected[$contractEntry.Key] = $contractEntry.Value
+                        }
+                    }
+                    $actual = @($expected.GetEnumerator() | ForEach-Object {
+                        [pscustomobject]@{ name = [string]$_.Key; value = [string]$_.Value }
+                    })
+                    @($actual | Where-Object { [string]$_.name -ceq [string]$entry.Key })[0].value =
+                        ([string]$entry.Value).ToLowerInvariant()
+                    { Assert-GatewayExactPartialEnvironmentSubset -Entries $actual `
+                            -ExpectedValues $expected -RequireComplete } |
+                        Should -Throw '*exact inert plain-value contract*'
+                }
+            }
+            [string]$contracts.Worker['OutboxRelay__Enabled'] | Should -BeExactly 'false'
+        }
+
         It 'rejects partial Container App mismatch <Mutation>' -ForEach @(
             @{ Mutation = 'source' },
             @{ Mutation = 'extraIdentity' },

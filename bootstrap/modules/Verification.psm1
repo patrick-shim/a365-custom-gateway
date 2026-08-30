@@ -534,8 +534,8 @@ function Assert-GatewayPurviewWorkerDeploymentConfiguration {
     }
 
     $expectedEnvironment = [ordered]@{
-        'Purview__Enabled' = ([bool]$Config.purview.activateGatewayAdapterAfterPolicyReadback).ToString().ToLowerInvariant()
-        'Purview__PolicyProvisioningEnabled' = ([bool]$Config.purview.policyProvisioningEnabled).ToString().ToLowerInvariant()
+        'Purview__Enabled' = ConvertTo-GatewayArmBooleanText -Value ([bool]$Config.purview.activateGatewayAdapterAfterPolicyReadback)
+        'Purview__PolicyProvisioningEnabled' = ConvertTo-GatewayArmBooleanText -Value ([bool]$Config.purview.policyProvisioningEnabled)
         'Purview__PolicyProvisioningOrganization' = [string]$Config.purview.policyProvisioningOrganization
         'Purview__PolicyProvisioningApplicationId' = [string]$Config.purview.policyProvisioningApplicationId
         'Purview__PolicyProvisioningCertificateSecretUri' = [string]$Config.purview.policyProvisioningCertificateSecretUri

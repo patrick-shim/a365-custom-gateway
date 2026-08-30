@@ -151,6 +151,39 @@ Describe 'Bootstrap JSON Schema configuration validation' {
 }
 
 Describe 'Canonical bootstrap fingerprints' {
+    It 'projects booleans with the exact casing ARM persists for Bicep string(bool)' {
+        (ConvertTo-GatewayArmBooleanText -Value $false) | Should -BeExactly 'False'
+        (ConvertTo-GatewayArmBooleanText -Value $true) | Should -BeExactly 'True'
+
+        $contract = Get-GatewayArmBooleanEnvironmentContract `
+            -RuntimeEnabled $false `
+            -RegistryPreviewEnabled $false `
+            -PurviewEnabled $false `
+            -PurviewPolicyProvisioningEnabled $false `
+            -PromptShieldEnabled $true
+        $contract.Api.Count | Should -Be 9
+        $contract.Worker.Count | Should -Be 5
+        $contract.Api['Provisioning__RequireExactAdmissionBinding'] | Should -BeExactly 'True'
+        $contract.Api['PromptShield__Enabled'] | Should -BeExactly 'True'
+        $contract.Worker['ProvisioningWorker__ProcessingEnabled'] | Should -BeExactly 'False'
+        @($contract.Api.Values + $contract.Worker.Values | Where-Object { $_ -cnotin @('True', 'False') }).Count | Should -Be 0
+
+        $runtimeContract = Get-GatewayArmBooleanEnvironmentContract `
+            -RuntimeEnabled $true `
+            -RegistryPreviewEnabled $true `
+            -PurviewEnabled $true `
+            -PurviewPolicyProvisioningEnabled $true `
+            -PromptShieldEnabled $false
+        $runtimeContract.Api['Provisioning__ExecutionEnabled'] | Should -BeExactly 'True'
+        $runtimeContract.Api['Provisioning__RequireExactAdmissionBinding'] | Should -BeExactly 'False'
+        $runtimeContract.Api['Purview__Enabled'] | Should -BeExactly 'True'
+        $runtimeContract.Api['DatabaseAttestation__Enabled'] | Should -BeExactly 'True'
+        $runtimeContract.Worker['ProvisioningWorker__ProcessingEnabled'] | Should -BeExactly 'True'
+        $runtimeContract.Worker['Purview__PolicyProvisioningEnabled'] | Should -BeExactly 'True'
+        @($runtimeContract.Api.Values + $runtimeContract.Worker.Values |
+            Where-Object { $_ -cnotin @('True', 'False') }).Count | Should -Be 0
+    }
+
     It 'is independent of JSON property order and the schema annotation' {
         $config = New-TestBootstrapConfig
         $reordered = [ordered]@{}

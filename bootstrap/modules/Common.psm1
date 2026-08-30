@@ -103,6 +103,55 @@ function Get-BootstrapSha256 {
     return "sha256:$hex"
 }
 
+function ConvertTo-GatewayArmBooleanText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][bool]$Value)
+
+    # The reviewed Bicep string(bool) deployments are persisted and read back by
+    # ARM as invariant .NET Boolean text. Exact Container App validation therefore
+    # requires ordinal `True` / `False` casing rather than JSON-style lowercase.
+    return $Value.ToString()
+}
+
+function Get-GatewayArmBooleanEnvironmentContract {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][bool]$RuntimeEnabled,
+        [Parameter(Mandatory)][bool]$RegistryPreviewEnabled,
+        [Parameter(Mandatory)][bool]$PurviewEnabled,
+        [Parameter(Mandatory)][bool]$PurviewPolicyProvisioningEnabled,
+        [Parameter(Mandatory)][bool]$PromptShieldEnabled
+    )
+
+    $runtimeText = ConvertTo-GatewayArmBooleanText -Value $RuntimeEnabled
+    $previewText = ConvertTo-GatewayArmBooleanText -Value $RegistryPreviewEnabled
+    $closedBindingText = ConvertTo-GatewayArmBooleanText -Value (-not $RegistryPreviewEnabled)
+    $purviewText = ConvertTo-GatewayArmBooleanText -Value $PurviewEnabled
+    $policyText = ConvertTo-GatewayArmBooleanText -Value $PurviewPolicyProvisioningEnabled
+    $promptShieldText = ConvertTo-GatewayArmBooleanText -Value $PromptShieldEnabled
+
+    return [ordered]@{
+        Api = [ordered]@{
+            'Provisioning__ExecutionEnabled' = $previewText
+            'Provisioning__RequireExactAdmissionBinding' = $closedBindingText
+            'Provisioning__AllowContinuousDevelopmentAccess' = $previewText
+            'Agent365__DelegatedRegistry__Enabled' = $previewText
+            'Agent365__DelegatedRegistry__RequireExactActionBinding' = $closedBindingText
+            'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = $previewText
+            'Purview__Enabled' = $purviewText
+            'PromptShield__Enabled' = $promptShieldText
+            'DatabaseAttestation__Enabled' = $runtimeText
+        }
+        Worker = [ordered]@{
+            'ProvisioningWorker__ProcessingEnabled' = $runtimeText
+            'ProvisioningWorker__ProvisioningExecutionEnabled' = $previewText
+            'Agent365__DirectRegistryPreviewEnabled' = $previewText
+            'Purview__Enabled' = $purviewText
+            'Purview__PolicyProvisioningEnabled' = $policyText
+        }
+    }
+}
+
 function ConvertTo-BootstrapCanonicalValue {
     param(
         [Parameter()][AllowNull()]$Value,

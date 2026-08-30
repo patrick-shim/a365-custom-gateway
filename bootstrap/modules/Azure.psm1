@@ -713,6 +713,12 @@ function Get-GatewayInertPartialEnvironmentContract {
     $sqlConnection = "Server=tcp:sql-$($Config.projectName)-$($Config.environment).database.windows.net,1433;Database=GatewayDb;Authentication=Active Directory Managed Identity;Encrypt=True;TrustServerCertificate=False;"
     $serviceBusNamespace = "sb-$($Config.projectName)-$($Config.environment).servicebus.windows.net"
     $apiFqdn = "ca-gateway-api-$($Config.environment).$($environment.defaultDomain)"
+    $booleanEnvironment = Get-GatewayArmBooleanEnvironmentContract `
+        -RuntimeEnabled $false `
+        -RegistryPreviewEnabled $false `
+        -PurviewEnabled $false `
+        -PurviewPolicyProvisioningEnabled $false `
+        -PromptShieldEnabled ([bool]$Config.promptShield.enabled)
     $contracts = [ordered]@{}
     if ($Roles -contains 'Worker') {
         $contracts.Worker = [ordered]@{
@@ -731,12 +737,12 @@ function Get-GatewayInertPartialEnvironmentContract {
             'Agent365__ProvisioningManagedIdentityPrincipalId' = ''
             'ProvisioningWorker__QueueName' = 'gateway-provisioning-v3'
             'ProvisioningWorker__MaxConcurrentCalls' = '5'
-            'ProvisioningWorker__ProcessingEnabled' = 'false'
-            'ProvisioningWorker__ProvisioningExecutionEnabled' = 'false'
+            'ProvisioningWorker__ProcessingEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProcessingEnabled']
+            'ProvisioningWorker__ProvisioningExecutionEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProvisioningExecutionEnabled']
             'Agent365__RegistryProvider' = 'Disabled'
-            'Agent365__DirectRegistryPreviewEnabled' = 'false'
-            'Purview__Enabled' = 'false'
-            'Purview__PolicyProvisioningEnabled' = 'false'
+            'Agent365__DirectRegistryPreviewEnabled' = $booleanEnvironment.Worker['Agent365__DirectRegistryPreviewEnabled']
+            'Purview__Enabled' = $booleanEnvironment.Worker['Purview__Enabled']
+            'Purview__PolicyProvisioningEnabled' = $booleanEnvironment.Worker['Purview__PolicyProvisioningEnabled']
             'Purview__PolicyProvisioningOrganization' = [string]$Config.purview.policyProvisioningOrganization
             'Purview__PolicyProvisioningApplicationId' = [string]$Config.purview.policyProvisioningApplicationId
             'Purview__PolicyProvisioningCertificateSecretUri' = [string]$Config.purview.policyProvisioningCertificateSecretUri
@@ -773,9 +779,9 @@ function Get-GatewayInertPartialEnvironmentContract {
         'ConnectionStrings__GatewayDb' = $sqlConnection
         'ServiceBus__FullyQualifiedNamespace' = $serviceBusNamespace
         'ServiceBus__QueueName' = 'gateway-provisioning-v3'
-        'Provisioning__ExecutionEnabled' = 'false'
-        'Provisioning__RequireExactAdmissionBinding' = 'true'
-        'Provisioning__AllowContinuousDevelopmentAccess' = 'false'
+        'Provisioning__ExecutionEnabled' = $booleanEnvironment.Api['Provisioning__ExecutionEnabled']
+        'Provisioning__RequireExactAdmissionBinding' = $booleanEnvironment.Api['Provisioning__RequireExactAdmissionBinding']
+        'Provisioning__AllowContinuousDevelopmentAccess' = $booleanEnvironment.Api['Provisioning__AllowContinuousDevelopmentAccess']
         'BlobStorage__ServiceUri' = "https://$storageName.blob.core.windows.net/"
         'BlobStorage__ContainerName' = 'a365-gateway-interactions'
         'Observability__ApplicationInsightsConnectionString' = [string]$appInsights.connectionString
@@ -786,16 +792,16 @@ function Get-GatewayInertPartialEnvironmentContract {
         'EntraId__ClientCredentials__0__TokenExchangeUrl' = 'api://AzureADTokenExchange'
         'KeyVault__VaultUri' = "https://kv-$($Config.projectName)-$($Config.environment).vault.azure.net/"
         'Agent365__TenantId' = [string]$Config.tenantId
-        'Agent365__DelegatedRegistry__Enabled' = 'false'
-        'Agent365__DelegatedRegistry__RequireExactActionBinding' = 'true'
-        'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = 'false'
+        'Agent365__DelegatedRegistry__Enabled' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__Enabled']
+        'Agent365__DelegatedRegistry__RequireExactActionBinding' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__RequireExactActionBinding']
+        'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess']
         'Agent365__DelegatedRegistry__Scopes__0' = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All'
         'Agent365__DelegatedRegistry__Scopes__1' = 'https://graph.microsoft.com/AgentRegistration.Read.All'
-        'Purview__Enabled' = 'false'
-        'PromptShield__Enabled' = ([bool]$Config.promptShield.enabled).ToString().ToLowerInvariant()
+        'Purview__Enabled' = $booleanEnvironment.Api['Purview__Enabled']
+        'PromptShield__Enabled' = $booleanEnvironment.Api['PromptShield__Enabled']
         'PromptShield__Endpoint' = $promptShieldEndpoint
         'PromptShield__ApiVersion' = '2024-09-01'
-        'DatabaseAttestation__Enabled' = 'false'
+        'DatabaseAttestation__Enabled' = $booleanEnvironment.Api['DatabaseAttestation__Enabled']
         'DatabaseAttestation__DeploymentOwnershipId' = ''
         'DatabaseAttestation__AcceptedSourceFingerprint' = ''
         'DatabaseAttestation__ExpectedSchemaFingerprint' = ''

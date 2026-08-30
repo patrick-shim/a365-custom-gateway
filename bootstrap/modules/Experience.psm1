@@ -2164,19 +2164,20 @@ function Test-GatewayGroupDeploymentEvidence {
             $sqlConnection = "Server=tcp:$($Evidence.sqlServerFqdn),1433;Database=GatewayDb;Authentication=Active Directory Managed Identity;Encrypt=True;TrustServerCertificate=False;"
             $serviceBusNamespace = "sb-$($Config.projectName)-$($Config.environment).servicebus.windows.net"
             $provisioningVaultUri = "https://kv-$($Config.projectName)-$($Config.environment)-prov.vault.azure.net/"
-            $expectedPreviewText = ([bool]$expectedPreview).ToString().ToLowerInvariant()
-            $expectedClosedBindingText = (-not [bool]$expectedPreview).ToString().ToLowerInvariant()
             $expectedPurviewEnabled = [bool]($isRuntime -and $Config.purview.enabled -eq $true -and $Config.purview.activateGatewayAdapterAfterPolicyReadback -eq $true)
-            $expectedPurviewText = $expectedPurviewEnabled.ToString().ToLowerInvariant()
-            $expectedPolicyProvisioningText = ([bool]($expectedPurviewEnabled -and $Config.purview.policyProvisioningEnabled -eq $true)).ToString().ToLowerInvariant()
-            $expectedPromptShieldText = ([bool]$Config.promptShield.enabled).ToString().ToLowerInvariant()
+            $booleanEnvironment = Get-GatewayArmBooleanEnvironmentContract `
+                -RuntimeEnabled ([bool]$isRuntime) `
+                -RegistryPreviewEnabled ([bool]$expectedPreview) `
+                -PurviewEnabled $expectedPurviewEnabled `
+                -PurviewPolicyProvisioningEnabled ([bool]($expectedPurviewEnabled -and $Config.purview.policyProvisioningEnabled -eq $true)) `
+                -PromptShieldEnabled ([bool]$Config.promptShield.enabled)
             $apiEnvironment = [ordered]@{
                 'ConnectionStrings__GatewayDb' = $sqlConnection
                 'ServiceBus__FullyQualifiedNamespace' = $serviceBusNamespace
                 'ServiceBus__QueueName' = [string]$Evidence.serviceBusQueueName
-                'Provisioning__ExecutionEnabled' = $expectedPreviewText
-                'Provisioning__RequireExactAdmissionBinding' = $expectedClosedBindingText
-                'Provisioning__AllowContinuousDevelopmentAccess' = $expectedPreviewText
+                'Provisioning__ExecutionEnabled' = $booleanEnvironment.Api['Provisioning__ExecutionEnabled']
+                'Provisioning__RequireExactAdmissionBinding' = $booleanEnvironment.Api['Provisioning__RequireExactAdmissionBinding']
+                'Provisioning__AllowContinuousDevelopmentAccess' = $booleanEnvironment.Api['Provisioning__AllowContinuousDevelopmentAccess']
                 'BlobStorage__ServiceUri' = "https://$storageName.blob.core.windows.net/"
                 'BlobStorage__ContainerName' = 'a365-gateway-interactions'
                 'Observability__ApplicationInsightsConnectionString' = $appInsightsConnectionString
@@ -2187,16 +2188,16 @@ function Test-GatewayGroupDeploymentEvidence {
                 'EntraId__ClientCredentials__0__TokenExchangeUrl' = 'api://AzureADTokenExchange'
                 'KeyVault__VaultUri' = [string]$Evidence.keyVaultUri
                 'Agent365__TenantId' = [string]$Config.tenantId
-                'Agent365__DelegatedRegistry__Enabled' = $expectedPreviewText
-                'Agent365__DelegatedRegistry__RequireExactActionBinding' = $expectedClosedBindingText
-                'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = $expectedPreviewText
+                'Agent365__DelegatedRegistry__Enabled' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__Enabled']
+                'Agent365__DelegatedRegistry__RequireExactActionBinding' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__RequireExactActionBinding']
+                'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess']
                 'Agent365__DelegatedRegistry__Scopes__0' = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All'
                 'Agent365__DelegatedRegistry__Scopes__1' = 'https://graph.microsoft.com/AgentRegistration.Read.All'
-                'Purview__Enabled' = $expectedPurviewText
-                'PromptShield__Enabled' = $expectedPromptShieldText
+                'Purview__Enabled' = $booleanEnvironment.Api['Purview__Enabled']
+                'PromptShield__Enabled' = $booleanEnvironment.Api['PromptShield__Enabled']
                 'PromptShield__Endpoint' = $(if ($Config.promptShield.enabled -eq $true) { [string]$Evidence.promptShieldEndpoint } else { '' })
                 'PromptShield__ApiVersion' = '2024-09-01'
-                'DatabaseAttestation__Enabled' = ([bool]$isRuntime).ToString().ToLowerInvariant()
+                'DatabaseAttestation__Enabled' = $booleanEnvironment.Api['DatabaseAttestation__Enabled']
                 'DatabaseAttestation__DeploymentOwnershipId' = $(if ($isRuntime) { $canonicalOwnershipId } else { '' })
                 'DatabaseAttestation__AcceptedSourceFingerprint' = $(if ($isRuntime) { $SourceFingerprint } else { '' })
                 'DatabaseAttestation__ExpectedSchemaFingerprint' = $(if ($isRuntime) { [string]$Database.schemaFingerprint } else { '' })
@@ -2226,12 +2227,12 @@ function Test-GatewayGroupDeploymentEvidence {
                 'Agent365__ProvisioningManagedIdentityPrincipalId' = $(if ($isRuntime) { [string]$Evidence.workerPrincipalId } else { '' })
                 'ProvisioningWorker__QueueName' = [string]$Evidence.serviceBusQueueName
                 'ProvisioningWorker__MaxConcurrentCalls' = $(if ($expectedPreview) { '1' } else { '5' })
-                'ProvisioningWorker__ProcessingEnabled' = ([bool]$isRuntime).ToString().ToLowerInvariant()
-                'ProvisioningWorker__ProvisioningExecutionEnabled' = $expectedPreviewText
+                'ProvisioningWorker__ProcessingEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProcessingEnabled']
+                'ProvisioningWorker__ProvisioningExecutionEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProvisioningExecutionEnabled']
                 'Agent365__RegistryProvider' = $(if ($expectedPreview) { 'DirectRegistryPreview' } else { 'Disabled' })
-                'Agent365__DirectRegistryPreviewEnabled' = $expectedPreviewText
-                'Purview__Enabled' = $expectedPurviewText
-                'Purview__PolicyProvisioningEnabled' = $expectedPolicyProvisioningText
+                'Agent365__DirectRegistryPreviewEnabled' = $booleanEnvironment.Worker['Agent365__DirectRegistryPreviewEnabled']
+                'Purview__Enabled' = $booleanEnvironment.Worker['Purview__Enabled']
+                'Purview__PolicyProvisioningEnabled' = $booleanEnvironment.Worker['Purview__PolicyProvisioningEnabled']
                 'Purview__PolicyProvisioningOrganization' = [string]$Config.purview.policyProvisioningOrganization
                 'Purview__PolicyProvisioningApplicationId' = [string]$Config.purview.policyProvisioningApplicationId
                 'Purview__PolicyProvisioningCertificateSecretUri' = [string]$Config.purview.policyProvisioningCertificateSecretUri
