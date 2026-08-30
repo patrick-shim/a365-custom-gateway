@@ -26,6 +26,11 @@ param deploymentOwnershipId string
 @maxLength(71)
 param bootstrapSourceFingerprint string
 
+@description('Optional canonical SHA-256 fingerprint of a separately accepted Admin UI-only upgrade. When set, it is applied only to Admin UI resources and does not replace the original bootstrap source provenance.')
+@minLength(0)
+@maxLength(71)
+param adminUiUpgradeSourceFingerprint string = ''
+
 @description('Name of the existing Container Apps environment that hosts the deployed Gateway API (for example, cae-a365gw-dev-vnet).')
 @minLength(1)
 param containerAppsEnvironmentName string
@@ -95,6 +100,10 @@ var tags = {
   bootstrapSourceFingerprint: bootstrapSourceFingerprint
 }
 
+var adminUiTags = union(tags, empty(adminUiUpgradeSourceFingerprint) ? {} : {
+  adminUiUpgradeSourceFingerprint: adminUiUpgradeSourceFingerprint
+})
+
 resource acr 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' existing = {
   name: names.acr
 }
@@ -144,7 +153,7 @@ module adminUiApp './modules/container-app-admin-ui.bicep' = {
     memory: adminUiMemory
     minReplicas: adminUiMinReplicas
     maxReplicas: adminUiMaxReplicas
-    tags: tags
+    tags: adminUiTags
   }
   dependsOn: [
     keyVaultPrivateEndpoint
@@ -174,3 +183,6 @@ output bootstrapSourceFingerprint string = bootstrapSourceFingerprint
 
 @description('Immutable Admin UI image reference supplied by the accepted bootstrap plan.')
 output adminUiContainerImage string = adminUiContainerImage
+
+@description('Separate Admin UI-only upgrade source fingerprint, or an empty string for the original bootstrap deployment.')
+output adminUiUpgradeSourceFingerprint string = adminUiUpgradeSourceFingerprint

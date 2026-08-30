@@ -133,6 +133,8 @@ render those credentials. A cached sign-in is required for non-interactive use.
 | `gateway up` | Configure if needed, plan, confirm, apply/resume, verify, and optionally open the portal. |
 | `gateway apply` | Apply one still-current accepted plan. |
 | `gateway resume` | Re-plan, confirm, and resume independently revalidated checkpoints. |
+| `gateway recover-database` | Run the separately reviewed one-time recovery for the exact eligible failed database bootstrap. |
+| `gateway upgrade-admin-ui` | Promote only the Admin UI in an already completed and verified bootstrap deployment. |
 | `gateway status` | Show local checkpoint and layered readiness status without Azure calls. |
 | `gateway verify` | Rerun authenticated, read-only deployment verification. |
 | `gateway open` | Open only a recorded, verified HTTPS Admin UI endpoint. |
@@ -152,6 +154,35 @@ identity.
 The first live disposable execution must follow the
 [`clean-subscription bootstrap proof`](../docs/operations/clean-subscription-bootstrap-proof.md)
 runbook; local success alone is not deployment evidence.
+
+### Promote only the Admin UI
+
+After the same bootstrap deployment has completed `Resume` and `Verify` (including
+an exact completed database-recovery receipt when one exists), promote the current
+Admin UI source without replaying the full bootstrap:
+
+```bash
+./gateway upgrade-admin-ui --config bootstrap/config.json --yes
+```
+
+On Windows, use `gateway.cmd upgrade-admin-ui` with the same options. This is a
+separate, narrow operation—not a bootstrap mode. It requires the exact existing
+tenant, subscription, resource group, project, environment, ownership ID, accepted
+bootstrap plan, and current verification evidence. It records a separate accepted
+upgrade-plan fingerprint under ignored
+`.bootstrap/evidence/<resource-group>/admin-ui-upgrade/`; it never rewrites the
+accepted bootstrap plan.
+
+The command captures the API and workflow-v3 worker digest/configuration plus every
+Service Bus queue count, runs Admin UI-only ARM What-If, and rejects Create, Delete,
+or any resource outside the existing Admin UI app, identity, and two exact role
+assignments. It disables private-endpoint redeployment, remotely builds only
+`gateway-admin`, deploys the immutable digest incrementally in the same resource
+group, and verifies one ready revision, managed-identity ACR pull, RBAC-only
+versionless Key Vault access, health, and the Entra sign-in redirect. It finishes
+only when the API, worker, queue counts, ownership, and original accepted bootstrap
+plan are unchanged. The receipt records the prior Admin UI digest as the rollback
+boundary; rollback remains a separately reviewed operation.
 
 For controlled automation, separate review from authorization. Preserve the JSON
 Lines Plan result, extract the one top-level object whose `applyReady` is `true`,
@@ -334,7 +365,7 @@ The bootstrap does not read `.secrets`. Both `.bootstrap/` and local
 | Entra applications/service principals | Tenant authority to create the project-scoped applications and service principals | Every Apply |
 | Delegated Graph consent | Privileged Role Administrator or another tenant role authorized to grant the exact reviewed scopes | Every Apply |
 | Agent ID | Agent ID Developer or a role containing the required blueprint/identity operations | Every Apply |
-| Agent 365 service | Eligible tenant, licensing, and current service availability | Blueprint setup and real canary |
+| Agent 365 service | Eligible tenant, licensing, and current service availability | Blueprint setup and the first real registration reaching Gateway-reported `Active` |
 | Purview | Eligible licensing plus the documented collection/DLP authoring roles | Only when Purview is enabled |
 | Prompt Shields | Supported Azure AI Content Safety region, SKU, and quota | Only when Prompt Shields is enabled |
 
@@ -342,8 +373,8 @@ The bootstrap does not read `.secrets`. Both `.bootstrap/` and local
 selected provider state, and some role assignments when the caller may read them.
 It cannot prove every quota, regional data-plane SKU, Conditional Access handoff,
 Agent 365 license, Purview propagation/verdict, signed-in Admin UI route, first
-Active agent, or data-plane canary. Those remain visibly `NotChecked` until their
-own later evidence exists.
+Active agent, or bounded data-plane behavior. Those remain visibly `NotChecked`
+until their own later evidence exists.
 
 The guided profiles are defaults, not authorization shortcuts:
 
@@ -379,10 +410,10 @@ bootstrap never invents a classifier or overwrites an incompatible existing poli
 Policy creation/read-back proves configuration, not propagation or a block verdict.
 The Gateway adapter remains off unless
 `purview.activateGatewayAdapterAfterPolicyReadback` is also explicitly true; that
-switch is an operator acknowledgement, not synthetic-canary evidence.
-After the first real registration, use the documented bounded data-plane canary and
-confirm both benign and synthetic-sensitive behavior before treating new-tenant DLP
-as live proof.
+switch is an operator acknowledgement, not synthetic-verdict evidence.
+After the first real registration, capture bounded benign and authorized
+synthetic-sensitive requests and confirm both results before treating new-tenant
+DLP as live proof. There is no current canary release gate after `FirstAgentActive`.
 
 The optional Admin UI protection-profile workflow is configured separately with
 `purview.policyProvisioningEnabled`. Keep it `false` unless a certificate-authenticated
@@ -421,10 +452,11 @@ the exact prerequisites and read-back checks in
 
 The bootstrap composes declarative assets under [`../infrastructure/`](../infrastructure/README.md),
 operational scripts under [`../operations/`](../operations/README.md), and shared
-utilities under `../tools/`. It does not replace the upgrade, incident, or canary
-runbooks. These are source-reviewed behaviors; a disposable clean-subscription
-Apply and canary still must be captured before this bootstrap path is called
-live-proven.
+utilities under `../tools/`. It does not replace upgrade or incident runbooks.
+Historical canary artifacts remain immutable evidence only and must not be replayed.
+These are source-reviewed behaviors; a disposable clean-subscription Apply, Verify,
+and one registration reaching Gateway-reported `Active` must be captured before
+this bootstrap path is called live-proven.
 
 ## Official capability references
 

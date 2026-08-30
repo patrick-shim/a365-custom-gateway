@@ -21,6 +21,8 @@ Commands:
   resume      Resume an interrupted accepted plan
   recover-database
               Run the reviewed, one-time recovery for an eligible failed database bootstrap
+  upgrade-admin-ui
+              Build and promote only the Admin UI of a completed bootstrap deployment
   status      Show checkpoint and truthful readiness status without Azure calls
   verify      Rerun the read-only deployment verification gate
   open        Open the recorded verified Admin UI HTTPS endpoint
@@ -75,6 +77,31 @@ check_setup_prerequisites() {
 
 command_name="${1:-up}"
 if (($# > 0)); then shift; fi
+if [[ "$command_name" == 'upgrade-admin-ui' ]]; then
+  upgrade_entry="$gateway_root/operations/upgrade-bootstrap-admin-ui.ps1"
+  upgrade_args=(-NoLogo -NoProfile -File "$upgrade_entry")
+  while (($# > 0)); do
+    case "$1" in
+      --config)
+        (($# >= 2)) || { echo '--config requires a path.' >&2; exit 2; }
+        upgrade_args+=(-Config "$2")
+        shift 2
+        ;;
+      --yes) upgrade_args+=(-Yes); shift ;;
+      --non-interactive) upgrade_args+=(-NonInteractive); shift ;;
+      -h|--help)
+        printf 'Usage: ./gateway upgrade-admin-ui --config PATH --yes [--non-interactive]\n'
+        exit 0
+        ;;
+      *) printf 'Unknown upgrade-admin-ui option: %s\n' "$1" >&2; exit 2 ;;
+    esac
+  done
+  if ! command -v pwsh >/dev/null 2>&1; then
+    printf 'PowerShell 7 is required to run the Admin UI upgrade.\n' >&2
+    exit 1
+  fi
+  exec pwsh "${upgrade_args[@]}"
+fi
 case "$command_name" in
   setup)
     setup_args=(--repo-root "$gateway_root")
