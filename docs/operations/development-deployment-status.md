@@ -326,12 +326,69 @@ and compiled all **25** Bicep templates plus **5** parameter files. Direct Relea
 tests remain **1,304/1,304**, the Release build has zero warnings/errors, and
 format/diff checks pass.
 
-The next live generation is reserved as `a365gw12` in absent resource group
+That checkpoint reserved the next live generation as `a365gw12` in absent resource group
 `rg-a365-custom-gw-phase6k`, only in target subscription
 `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated; none of
 its queues or messages were accessed. No target Service Bus message was read,
 received, peeked, replayed, or settled.
+
+Fresh generation `a365gw12-dev` then used absent resource group
+`rg-a365-custom-gw-phase6k`, ownership
+`0262fab5-5488-49be-bcb5-8ab4ccff83ab`, and ACR
+`acra365gw12devzrlb27`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Its accepted Plan
+`sha256:1d38f7e591db817c9746d75c29f6ffa84ac484aa59249d595687a4efbe8cc2f8`
+bound configuration
+`sha256:ae68bb54439fa05f85d420b36f196086899f27ff78cae0d66fd0cf18d8b2a36d`
+and source
+`sha256:e7572f92d7bc1e0e2310936868beb39242e9061b0c095ebe37eb4938022f97dc`.
+Authenticated What-If reported exactly eight `Create` predictions and zero other
+changes, all in that target subscription. The accepted Apply window was
+`2026-08-30T01:22:42Z` through `2026-08-30T01:40:45Z` (10:22–10:40 KST). An
+external JSON-lines renderer failed while the one bootstrap process continued; no
+second Apply or Resume was issued.
+
+Apply completed steps 1–6. API, worker, and Admin UI ACR `QuickRun`s `de1`, `de2`,
+and `de3` reached `Succeeded` with respective digests
+`sha256:a49cfd13ddb53fdc412f7564b79f1135dd3a15362d2ab2bd9d1f4f695b70a78f`,
+`sha256:c132903c613bf2fc7d731a10bb88644821f2606bc2c69a1598bec9df640c966d`,
+and
+`sha256:40b3ebc0f6ed216a40eb50af47ba978720e87b843d9791ca8c377220be395277`.
+Foundation deployment `a365gw-a365gw12-bootstrap-foundation-dev`, inert deployment
+`a365gw-a365gw12-bootstrap-inert-dev`, and every observed nested deployment reached
+`Succeeded`.
+
+Step 7 failed closed during strict readback because the accepted validator treated
+`databaseAttestationDatabaseName` as a top-level ARM parameter. Bicep derives that
+value internally and exposes only an output. Exact target-only GET proved the
+deployment `Succeeded`, the top-level parameter absent, and the output present and
+empty as required for inert mode. Under module StrictMode the optional-property
+lookup returned null and its `.value` dereference raised a masked
+`PropertyNotFoundException`. State contains exactly steps 1–6 `Completed`, step 7
+`Failed`, and no step 8 or later record. No seed blueprint, workflow identity, SQL
+initialization, Admin UI identity/credential, runtime activation, registration,
+canary, Gateway key, Registry action, or later phase followed.
+
+Independent read-only recovery reviews agreed that unchanged-source Resume would
+GET-adopt the existing succeeded deployment and fail the same validator again;
+edited source cannot reuse the accepted fingerprint. Preserve `a365gw12` state,
+snapshot, graph, identities, and images and never Resume it. Commit
+`15f5ee268f59fbc20de1b59734d5fd70d08e73b7` preserves parameter/output/evidence
+validation for all five caller-supplied database-attestation values and validates
+the derived database name across output/evidence only, with exact empty inert and
+`GatewayDb` runtime expectations. Independent review approved the fix. The focused
+Experience suite passes **73/73**. The canonical source gate discovered **449**
+Pester tests: **448** passed, none failed, and one Windows-only launcher test was
+skipped on macOS; it parsed **19** PowerShell files and **2** JSON contracts and
+compiled **25** Bicep templates plus **5** parameter files. Direct Release tests
+pass **1,304/1,304** (unit 479, Admin UI 155, Setup 75, observability/runtime 149,
+integration 92, end-to-end 106, architecture 115, security 133); the Release build
+has zero warnings/errors, and format/diff checks pass. The next live generation is
+reserved as `a365gw13` in absent resource group `rg-a365-custom-gw-phase6l`, only
+in the target subscription. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
+Service Bus message data plane was accessed in either subscription.
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
@@ -1459,9 +1516,10 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw12` / `rg-a365-custom-gw-phase6k`. Preserve `a365gw11` with
-   steps 1–6 complete and step 7 `Failed`; its succeeded inert graph and GET-only
-   diagnosis do not authorize Resume after the validator source change. Capture
+   generation `a365gw13` / `rg-a365-custom-gw-phase6l`. Preserve both `a365gw11`
+   and `a365gw12` with steps 1–6 complete and step 7 `Failed`; their succeeded
+   inert graphs and GET-only diagnoses do not authorize Resume after either
+   validator source change. Capture
    the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, temporary SQL-rule cleanup, empty-schema
