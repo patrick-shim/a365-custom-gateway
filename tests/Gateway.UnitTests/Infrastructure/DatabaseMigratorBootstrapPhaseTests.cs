@@ -498,6 +498,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             "grantees.name IN (@runtimePrincipalName1, @runtimePrincipalName2)");
         permissionTelemetryCte.Should().MatchRegex(
             @"permissions\.class = 0\s+AND permissions\.major_id = 0\s+AND permissions\.minor_id = 0\s+AND permissions\.permission_name = N'CONNECT'\s+AND permissions\.state = N'G'\s+AND grantees\.name IN \(@runtimePrincipalName1, @runtimePrincipalName2\)\s+AND permissions\.grantor_principal_id = DATABASE_PRINCIPAL_ID\(N'dbo'\)");
+        permissionTelemetryCte.Should().MatchRegex(
+            @"permissions\.permission_name = N'VIEW DEFINITION'[\s\S]*permissions\.state = N'G'[\s\S]*grantees\.name = @metadataPrincipalName[\s\S]*permissions\.grantor_principal_id = DATABASE_PRINCIPAL_ID\(N'dbo'\)[\s\S]*EXISTS\s*\(\s*SELECT 1\s+FROM sys\.database_permissions AS required_connect\s+WHERE required_connect\.grantee_principal_id = permissions\.grantee_principal_id\s+AND required_connect\.class = 0\s+AND required_connect\.major_id = 0\s+AND required_connect\.minor_id = 0\s+AND required_connect\.permission_name = N'CONNECT'\s+AND required_connect\.state = N'G'\s+AND required_connect\.grantor_principal_id = DATABASE_PRINCIPAL_ID\(N'dbo'\)\s*\)");
         Regex.Matches(
                 source,
                 @"AddWithValue\(\s*""@runtimePrincipalName1""",
