@@ -317,13 +317,13 @@ reported as completion of the plan. The authoritative phase status is:
 
 | Phase | Current status | Remaining boundary |
 |---|---|---|
-| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. `a365gw20` proves deliberate interruption/Resume; `a365gw21` proves bounded recovery from a rejected start override; and `a365gw22` proves the corrected no-override start emitted exactly one private execution and restored the original SQL administrator after a pre-schema failure. An every-checkpoint interruption matrix and a completed disposable clean-subscription proof are still absent. |
+| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. `a365gw20` proves deliberate interruption/Resume; `a365gw21` proves bounded recovery from a rejected start override; `a365gw22` proves the corrected no-override start emitted exactly one private execution; and `a365gw23` proves exact recovery after the pristine check reported the remaining built-in Azure SQL baseline. An every-checkpoint interruption matrix and a completed disposable clean-subscription proof are still absent. |
 | 1 — One cross-platform front door | Source complete; proof incomplete | `gateway`/`gateway.cmd` and the terminal command surface are implemented. The current candidate has not completed Windows, macOS Intel, macOS Arm, and Linux execution evidence. |
 | 2 — Guided configuration | Partial | Quick Development, Staging Foundation, and Production-safe Foundation are implemented. The promised guided Connect Existing and Advanced profiles are not; existing-state import remains recovery-only and refuses unsafe adoption. Simulated Demo was explicitly optional-later and is absent. |
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. Generations `a365gw6` through `a365gw21` exposed and bounded the earlier image, identity, ARM-readback, recovery-graph, PowerShell, provider-managed-resource, SQL-policy, Job-readback, and Job-start defects recorded below. `a365gw22` then completed steps 1–10 and proved the corrected exact no-override Job start, but the single execution stopped before schema mutation because the pristine check rejected documented Azure SQL `public SELECT` grants on Microsoft system objects. The source correction allows only that narrow platform category in both authority checks and reports all eight safe failure counts. A fresh `a365gw23` Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. Generations `a365gw6` through `a365gw22` exposed and bounded the earlier image, identity, ARM-readback, recovery-graph, PowerShell, provider-managed-resource, SQL-policy, Job-readback, Job-start, and first pristine-database defects recorded below. `a365gw23` completed steps 1–10 and repeated the exact one-execution boundary, then stopped before schema mutation with safe counts that identified one built-in `dbo`/`db_owner` membership and two positive-ID Microsoft-shipped `public SELECT` grants. The category-bounded correction is locally verified only. A fresh `a365gw24` Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, and deployment-affecting source into one canonical
@@ -1463,6 +1463,66 @@ diff checks pass, and two independent read-only reviews found no remaining concr
 blocker. This correction is source-only until a new isolated `a365gw23` Plan is
 accepted.
 
+Generation `a365gw23` accepted Plan
+`sha256:8789e71289f08196f3e751810cc3c197779af7318b49fd08ffe4e5395c00e823`
+for `rg-a365-custom-gw-phase6v`, deployment ownership
+`27e3cef7-e35e-49a4-9a27-9751f3a9d654`, configuration
+`sha256:4863446527e0149b011d7a789675018eacd80cf56ffb20ff3e0bde84b1c2bee8`,
+and source
+`sha256:f7d652137f5e379d882fc536a5629bd543f5bcad238ddb8d88a6814c586cab5a`
+from clean commit `cb64626553a8fb22da726855d53cd9d994109550`. What-If contained exactly eight
+Creates and no Deletes. Apply completed steps 1–10.
+
+Step 11 deployed exact dormant Job `job-a365gw23-db-init-dev` through deployment
+`a365gw-a365gw23-bootstrap-database-job-dev`, bound to database-migrator image
+`sha256:dacb0f5786528f314e6bd051545d8391fb7c9b17c1a682bf34b1f92c4832a3bf`
+and execution intent `9911f8f4-7e34-414a-b710-6e597016ec99`. Its one start
+created exactly one execution, `job-a365gw23-db-init-dev-24nd3ir`, at
+`2026-08-30T11:17:59Z`. The execution is terminal `Failed`; Azure reported no
+`endTime`, and exact replica `job-a365gw23-db-init-dev-24nd3ir-8sv54` is
+`NotRunning`. Step 11 became terminal `Failed` at
+`2026-08-30T11:18:58.1988660Z`.
+
+The migrator stopped at the pristine-surface assertion before marker, schema, or
+runtime-principal mutation. Its eight safe aggregate counts were exactly `tables=0`,
+`objects=0`, `schemas=0`, `principals=0`, `roleMemberships=1`,
+`directPermissions=2`, `options=0`, and `ownerMismatch=0`. Read-only recovery
+reported SQL `Ready`, public network access `Disabled`, and restored the original
+SQL administrator at `2026-08-30T11:18:58.1872620Z`: login
+`admin@diax48836189.onmicrosoft.com`, object ID/SID
+`2db7287c-9462-404f-810e-17e57377618d`, tenant
+`ff8b1e46-ff0f-4bc2-ab02-caf2b92da496`.
+
+Preserve the frozen accepted-source snapshot, terminal execution, replica, state,
+receipt, and diagnostic. The exact local paths are
+`.bootstrap/accepted-source/27e3cef7-e35e-49a4-9a27-9751f3a9d654/8789e71289f08196f3e751810cc3c197779af7318b49fd08ffe4e5395c00e823`,
+`.bootstrap/state/6f6ae863-dcb7-456f-a7f0-d6f9887cfb76-rg-a365-custom-gw-phase6v-dev.json`,
+`.bootstrap/evidence/rg-a365-custom-gw-phase6v/database/private-database-bootstrap-receipt.json`,
+and `.bootstrap/diagnostics/a365gw23-step11.json`. Do not Resume or issue a second
+Job start for `a365gw23`; the correction below is edited source and requires a new
+isolated Plan.
+
+The current source correction remains local and unproved in Azure. It continues to
+allow ordinary `public SELECT` grants on documented negative-ID system objects and
+admits positive-ID rows only when they are object-level ordinary Grants to `public`,
+resolve through `sys.all_objects` to `is_ms_shipped = 1`, and total exactly two. It
+also requires exactly one built-in `dbo` membership in the fixed `db_owner` role;
+any missing, duplicate, or additional membership remains unexpected. The two
+Always Encrypted metadata permissions, `VIEW ANY COLUMN MASTER KEY DEFINITION` and
+`VIEW ANY COLUMN ENCRYPTION KEY DEFINITION`, are explicitly excluded rather than
+inferred from the aggregate count. User objects, column grants, other grantees,
+other permissions or states, and any additional authority remain rejected. The
+zero-warning/zero-error Release build and all **1,326/1,326** direct Release tests
+pass: unit 496, Admin UI 155, local Setup 75, observability/runtime 149,
+integration 92, end-to-end 106, architecture 120, and security 133. The canonical
+source gate discovers **516** Pester tests: **515** pass, none fail, and one
+Windows-only launcher test is skipped on macOS. Format and diff checks pass, and
+independent read-only review found no remaining source/test blocker. This is source
+validation only, not live proof. The next isolated generation is `a365gw24` /
+`rg-a365-custom-gw-phase6w`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`; protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
+
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
@@ -1819,7 +1879,11 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    the original SQL administrator. Preserve `a365gw22` with steps 1–10 complete,
    step 11 `Failed`, one successful no-override start, one terminal failed Job
    execution, no initialization marker/schema/runtime-principal change, and exact
-   restoration of the original SQL administrator. In
+   restoration of the original SQL administrator. Preserve `a365gw23` with steps
+   1–10 complete, step 11 terminal `Failed`, exactly one terminal failed Job
+   execution with no reported `endTime`, its exact `NotRunning` replica, safe
+   pristine counts `0/0/0/0/1/2/0/0`, SQL `Ready`, public access `Disabled`, and
+   exact original-administrator restoration. Never Resume or second-start it. In
    order, those generations preserve exact
    image-build recovery; the terminal inert-deployment/private-ACR first-pull
    failure; a succeeded
@@ -1861,6 +1925,10 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    full-template replacement semantics for any start override. `a365gw22` proved
    the no-override start and one-execution boundary, then exposed that documented
    platform-owned public system-table permissions are not customer contamination.
+   `a365gw23` repeated the private one-execution boundary and exposed the built-in
+   `dbo`/`db_owner` row plus exactly two positive-ID Microsoft-shipped public
+   `SELECT` grants. The bounded correction is local-only; a fresh `a365gw24`
+   Apply/Verify remains absent.
    None of these
    generations may consume edited source or modified accepted snapshots.
    Commit `bb001483bae0577d7c29a9638c1c7275dae44525` implements and independently
@@ -1879,7 +1947,7 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    `bee437fe1e2a19976565777184f70f2bbf1319ec` implements the exact typed Defender
    Storage system-topic recovery boundary. Commit `dc25132` contains the independently
    reviewed Container Apps Job readback normalization. The next live generation is
-   `a365gw23` in resource group `rg-a365-custom-gw-phase6v`, only in target subscription
+   `a365gw24` in resource group `rg-a365-custom-gw-phase6w`, only in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof

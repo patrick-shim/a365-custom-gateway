@@ -157,8 +157,18 @@ return [ordered]@{
         $source | Should -Match 'FROM sys\.synonyms'
         $source | Should -Match 'FROM sys\.sequences'
         $source | Should -Match 'FROM sys\.database_role_members'
-        $systemSelectAllowance = "permissions\.class\s*=\s*1\s+AND\s+permissions\.major_id\s*<\s*0\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'SELECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'public'"
-        ([regex]::Matches($source, $systemSelectAllowance)).Count | Should -Be 2
+        $negativeSystemSelectAllowance = "permissions\.class\s*=\s*1\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'SELECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'public'\s+AND\s+permissions\.major_id\s*<\s*0"
+        ([regex]::Matches($source, $negativeSystemSelectAllowance)).Count | Should -Be 2
+        $positiveSystemSelectAllowance = "(?s)permissions\.class\s*=\s*1\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'SELECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'public'\s+AND\s+permissions\.major_id\s*>\s*0\s+AND\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+sys\.all_objects\s+AS\s+system_objects\s+WHERE\s+system_objects\.object_id\s*=\s*permissions\.major_id\s+AND\s+system_objects\.is_ms_shipped\s*=\s*1\s*\)"
+        ([regex]::Matches($source, $positiveSystemSelectAllowance)).Count | Should -Be 2
+        $boundedPositiveSystemSelectAllowance = "(?s)SELECT\s+CASE\s+WHEN\s+COUNT\(\*\)\s*=\s*2\s+THEN\s+0\s+ELSE\s+1\s+END\s+FROM\s+sys\.database_permissions\s+AS\s+baseline_permissions\s+INNER\s+JOIN\s+sys\.database_principals\s+AS\s+baseline_grantees.*?baseline_grantees\.name\s*=\s*N'public'.*?baseline_permissions\.major_id\s*>\s*0.*?baseline_objects\.object_id\s*=\s*baseline_permissions\.major_id\s+AND\s+baseline_objects\.is_ms_shipped\s*=\s*1"
+        ([regex]::Matches($source, $boundedPositiveSystemSelectAllowance)).Count | Should -Be 2
+        $source | Should -Not -Match 'VIEW ANY COLUMN (MASTER|ENCRYPTION) KEY DEFINITION'
+        $source | Should -Match "roles\.name = N'db_owner'\s+AND\s+roles\.is_fixed_role = 1\s+AND\s+members\.name = N'dbo'\s+AND\s+members\.principal_id = DATABASE_PRINCIPAL_ID\(N'dbo'\)"
+        $source | Should -Match 'SELECT CASE WHEN COUNT\(\*\) = 1 THEN 0 ELSE 1 END'
+        $source | Should -Match 'roleName\.Equals\("db_owner", StringComparison\.Ordinal\)'
+        $source | Should -Match 'memberName\.Equals\("dbo", StringComparison\.Ordinal\)'
+        $source | Should -Match 'builtInDboOwnerMembershipCount != 1'
         $source | Should -Match 'catalog_collation_type_desc'
         $source | Should -Match 'DatabaseOwnerSidSha256'
     }

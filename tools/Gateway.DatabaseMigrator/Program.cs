@@ -825,29 +825,94 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
               WHERE principal_id > 4
                 AND is_fixed_role = 0
           ),
-          (SELECT COUNT(*) FROM sys.database_role_members),
           (
-              SELECT COUNT(*)
-              FROM sys.database_permissions AS permissions
-              INNER JOIN sys.database_principals AS grantees
-                ON grantees.principal_id = permissions.grantee_principal_id
-              WHERE NOT
               (
+                  SELECT COUNT(*)
+                  FROM sys.database_role_members AS memberships
+                  INNER JOIN sys.database_principals AS roles
+                    ON roles.principal_id = memberships.role_principal_id
+                  INNER JOIN sys.database_principals AS members
+                    ON members.principal_id = memberships.member_principal_id
+                  WHERE NOT
                   (
-                      permissions.class = 0
-                      AND permissions.permission_name = N'CONNECT'
-                      AND permissions.state IN (N'G', N'W')
-                      AND grantees.name IN (N'public', N'guest')
+                      roles.name = N'db_owner'
+                      AND roles.is_fixed_role = 1
+                      AND members.name = N'dbo'
+                      AND members.principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
                   )
-                  OR
+              ) +
+              (
+                  SELECT CASE WHEN COUNT(*) = 1 THEN 0 ELSE 1 END
+                  FROM sys.database_role_members AS memberships
+                  INNER JOIN sys.database_principals AS roles
+                    ON roles.principal_id = memberships.role_principal_id
+                  INNER JOIN sys.database_principals AS members
+                    ON members.principal_id = memberships.member_principal_id
+                  WHERE roles.name = N'db_owner'
+                    AND roles.is_fixed_role = 1
+                    AND members.name = N'dbo'
+                    AND members.principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
+              )
+          ),
+          (
+              (
+                  SELECT COUNT(*)
+                  FROM sys.database_permissions AS permissions
+                  INNER JOIN sys.database_principals AS grantees
+                    ON grantees.principal_id = permissions.grantee_principal_id
+                  WHERE NOT
                   (
-                      permissions.class = 1
-                      AND permissions.major_id < 0
-                      AND permissions.minor_id = 0
-                      AND permissions.permission_name = N'SELECT'
-                      AND permissions.state = N'G'
-                      AND grantees.name = N'public'
+                      (
+                          permissions.class = 0
+                          AND permissions.permission_name = N'CONNECT'
+                          AND permissions.state IN (N'G', N'W')
+                          AND grantees.name IN (N'public', N'guest')
+                      )
+                      OR
+                      (
+                          permissions.class = 1
+                          AND permissions.minor_id = 0
+                          AND permissions.permission_name = N'SELECT'
+                          AND permissions.state = N'G'
+                          AND grantees.name = N'public'
+                          AND permissions.major_id < 0
+                      )
+                      OR
+                      (
+                          permissions.class = 1
+                          AND permissions.minor_id = 0
+                          AND permissions.permission_name = N'SELECT'
+                          AND permissions.state = N'G'
+                          AND grantees.name = N'public'
+                          AND permissions.major_id > 0
+                          AND EXISTS
+                          (
+                              SELECT 1
+                              FROM sys.all_objects AS system_objects
+                              WHERE system_objects.object_id = permissions.major_id
+                                AND system_objects.is_ms_shipped = 1
+                          )
+                      )
                   )
+              ) +
+              (
+                  SELECT CASE WHEN COUNT(*) = 2 THEN 0 ELSE 1 END
+                  FROM sys.database_permissions AS baseline_permissions
+                  INNER JOIN sys.database_principals AS baseline_grantees
+                    ON baseline_grantees.principal_id = baseline_permissions.grantee_principal_id
+                  WHERE baseline_permissions.class = 1
+                    AND baseline_permissions.minor_id = 0
+                    AND baseline_permissions.permission_name = N'SELECT'
+                    AND baseline_permissions.state = N'G'
+                    AND baseline_grantees.name = N'public'
+                    AND baseline_permissions.major_id > 0
+                    AND EXISTS
+                    (
+                        SELECT 1
+                        FROM sys.all_objects AS baseline_objects
+                        WHERE baseline_objects.object_id = baseline_permissions.major_id
+                          AND baseline_objects.is_ms_shipped = 1
+                    )
               )
           ),
           (
@@ -1072,11 +1137,13 @@ static async Task AssertExpectedDatabaseAuthorityAsync(
     }
 
     var unexpectedRoleMembershipCount = 0;
+    var builtInDboOwnerMembershipCount = 0;
     await using (var command = connection.CreateCommand())
     {
         command.CommandTimeout = 60;
         command.CommandText = """
-            SELECT roles.name, members.name
+            SELECT roles.name, members.name, roles.is_fixed_role,
+                   members.principal_id, DATABASE_PRINCIPAL_ID(N'dbo')
             FROM sys.database_role_members AS memberships
             INNER JOIN sys.database_principals AS roles
               ON roles.principal_id = memberships.role_principal_id
@@ -1087,14 +1154,27 @@ static async Task AssertExpectedDatabaseAuthorityAsync(
         await using var reader = await command.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
+            var roleName = reader.GetString(0);
             var memberName = reader.GetString(1);
+            if (roleName.Equals("db_owner", StringComparison.Ordinal) &&
+                memberName.Equals("dbo", StringComparison.Ordinal) &&
+                reader.GetBoolean(2) &&
+                reader.GetInt32(3) == reader.GetInt32(4))
+            {
+                builtInDboOwnerMembershipCount++;
+                continue;
+            }
             if (!principals.TryGetValue(memberName, out var principal))
             {
                 unexpectedRoleMembershipCount++;
                 continue;
             }
-            principal.Roles.Add(reader.GetString(0));
+            principal.Roles.Add(roleName);
         }
+    }
+    if (builtInDboOwnerMembershipCount != 1)
+    {
+        unexpectedRoleMembershipCount++;
     }
 
     int unexpectedDirectPermissionCount;
@@ -1102,39 +1182,77 @@ static async Task AssertExpectedDatabaseAuthorityAsync(
     {
         command.CommandTimeout = 60;
         command.CommandText = """
-            SELECT COUNT(*)
-            FROM sys.database_permissions AS permissions
-            INNER JOIN sys.database_principals AS grantees
-              ON grantees.principal_id = permissions.grantee_principal_id
-            WHERE NOT
+            SELECT
             (
+                SELECT COUNT(*)
+                FROM sys.database_permissions AS permissions
+                INNER JOIN sys.database_principals AS grantees
+                  ON grantees.principal_id = permissions.grantee_principal_id
+                WHERE NOT
                 (
-                    permissions.class = 0
-                    AND permissions.major_id = 0
-                    AND permissions.minor_id = 0
-                    AND permissions.permission_name = N'CONNECT'
-                    AND permissions.state IN (N'G', N'W')
-                    AND grantees.name IN (N'public', N'guest')
+                    (
+                        permissions.class = 0
+                        AND permissions.major_id = 0
+                        AND permissions.minor_id = 0
+                        AND permissions.permission_name = N'CONNECT'
+                        AND permissions.state IN (N'G', N'W')
+                        AND grantees.name IN (N'public', N'guest')
+                    )
+                    OR
+                    (
+                        permissions.class = 1
+                        AND permissions.minor_id = 0
+                        AND permissions.permission_name = N'SELECT'
+                        AND permissions.state = N'G'
+                        AND grantees.name = N'public'
+                        AND permissions.major_id < 0
+                    )
+                    OR
+                    (
+                        permissions.class = 1
+                        AND permissions.minor_id = 0
+                        AND permissions.permission_name = N'SELECT'
+                        AND permissions.state = N'G'
+                        AND grantees.name = N'public'
+                        AND permissions.major_id > 0
+                        AND EXISTS
+                        (
+                            SELECT 1
+                            FROM sys.all_objects AS system_objects
+                            WHERE system_objects.object_id = permissions.major_id
+                              AND system_objects.is_ms_shipped = 1
+                        )
+                    )
+                    OR
+                    (
+                        permissions.class = 0
+                        AND permissions.major_id = 0
+                        AND permissions.minor_id = 0
+                        AND permissions.permission_name = N'VIEW DEFINITION'
+                        AND permissions.state = N'G'
+                        AND grantees.name = @metadataPrincipalName
+                        AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
+                    )
                 )
-                OR
-                (
-                    permissions.class = 1
-                    AND permissions.major_id < 0
-                    AND permissions.minor_id = 0
-                    AND permissions.permission_name = N'SELECT'
-                    AND permissions.state = N'G'
-                    AND grantees.name = N'public'
-                )
-                OR
-                (
-                    permissions.class = 0
-                    AND permissions.major_id = 0
-                    AND permissions.minor_id = 0
-                    AND permissions.permission_name = N'VIEW DEFINITION'
-                    AND permissions.state = N'G'
-                    AND grantees.name = @metadataPrincipalName
-                    AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
-                )
+            ) +
+            (
+                SELECT CASE WHEN COUNT(*) = 2 THEN 0 ELSE 1 END
+                FROM sys.database_permissions AS baseline_permissions
+                INNER JOIN sys.database_principals AS baseline_grantees
+                  ON baseline_grantees.principal_id = baseline_permissions.grantee_principal_id
+                WHERE baseline_permissions.class = 1
+                  AND baseline_permissions.minor_id = 0
+                  AND baseline_permissions.permission_name = N'SELECT'
+                  AND baseline_permissions.state = N'G'
+                  AND baseline_grantees.name = N'public'
+                  AND baseline_permissions.major_id > 0
+                  AND EXISTS
+                  (
+                      SELECT 1
+                      FROM sys.all_objects AS baseline_objects
+                      WHERE baseline_objects.object_id = baseline_permissions.major_id
+                        AND baseline_objects.is_ms_shipped = 1
+                  )
             );
             """;
         command.Parameters.AddWithValue("@metadataPrincipalName", metadataPrincipal.Name);

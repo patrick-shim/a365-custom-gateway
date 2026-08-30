@@ -898,6 +898,66 @@ diff checks pass; two independent read-only reviews report no remaining concrete
 blocker. This is source-only until a new isolated `a365gw23` /
 `rg-a365-custom-gw-phase6v` Plan is recorded.
 
+Generation `a365gw23` accepted Plan
+`sha256:8789e71289f08196f3e751810cc3c197779af7318b49fd08ffe4e5395c00e823`
+for `rg-a365-custom-gw-phase6v`, deployment ownership
+`27e3cef7-e35e-49a4-9a27-9751f3a9d654`, configuration
+`sha256:4863446527e0149b011d7a789675018eacd80cf56ffb20ff3e0bde84b1c2bee8`,
+and source
+`sha256:f7d652137f5e379d882fc536a5629bd543f5bcad238ddb8d88a6814c586cab5a`
+from clean commit `cb64626553a8fb22da726855d53cd9d994109550`. What-If contained exactly eight
+Creates and no Deletes. Apply completed steps 1–10.
+
+Step 11 deployed exact dormant Job `job-a365gw23-db-init-dev` through deployment
+`a365gw-a365gw23-bootstrap-database-job-dev`, bound to database-migrator image
+`sha256:dacb0f5786528f314e6bd051545d8391fb7c9b17c1a682bf34b1f92c4832a3bf`
+and execution intent `9911f8f4-7e34-414a-b710-6e597016ec99`. Its one start
+created exactly one execution, `job-a365gw23-db-init-dev-24nd3ir`, at
+`2026-08-30T11:17:59Z`. The execution is terminal `Failed`; Azure reported no
+`endTime`, and exact replica `job-a365gw23-db-init-dev-24nd3ir-8sv54` is
+`NotRunning`. Step 11 became terminal `Failed` at
+`2026-08-30T11:18:58.1988660Z`.
+
+The migrator stopped at the pristine-surface assertion before marker, schema, or
+runtime-principal mutation. Its eight safe aggregate counts were exactly `tables=0`,
+`objects=0`, `schemas=0`, `principals=0`, `roleMemberships=1`,
+`directPermissions=2`, `options=0`, and `ownerMismatch=0`. Read-only recovery
+reported SQL `Ready`, public network access `Disabled`, and restored the original
+SQL administrator at `2026-08-30T11:18:58.1872620Z`: login
+`admin@diax48836189.onmicrosoft.com`, object ID/SID
+`2db7287c-9462-404f-810e-17e57377618d`, tenant
+`ff8b1e46-ff0f-4bc2-ab02-caf2b92da496`.
+
+Preserve the frozen accepted-source snapshot, terminal execution, replica, state,
+receipt, and diagnostic. The exact local paths are
+`.bootstrap/accepted-source/27e3cef7-e35e-49a4-9a27-9751f3a9d654/8789e71289f08196f3e751810cc3c197779af7318b49fd08ffe4e5395c00e823`,
+`.bootstrap/state/6f6ae863-dcb7-456f-a7f0-d6f9887cfb76-rg-a365-custom-gw-phase6v-dev.json`,
+`.bootstrap/evidence/rg-a365-custom-gw-phase6v/database/private-database-bootstrap-receipt.json`,
+and `.bootstrap/diagnostics/a365gw23-step11.json`. Do not Resume or issue a second
+Job start for `a365gw23`; the correction below is edited source and requires a new
+isolated Plan.
+
+The current source correction remains local and unproved in Azure. It continues to
+allow ordinary `public SELECT` grants on documented negative-ID system objects and
+admits positive-ID rows only when they are object-level ordinary Grants to `public`,
+resolve through `sys.all_objects` to `is_ms_shipped = 1`, and total exactly two. It
+also requires exactly one built-in `dbo` membership in the fixed `db_owner` role;
+any missing, duplicate, or additional membership remains unexpected. The two
+Always Encrypted metadata permissions, `VIEW ANY COLUMN MASTER KEY DEFINITION` and
+`VIEW ANY COLUMN ENCRYPTION KEY DEFINITION`, are explicitly excluded rather than
+inferred from the aggregate count. User objects, column grants, other grantees,
+other permissions or states, and any additional authority remain rejected. The
+zero-warning/zero-error Release build and all **1,326/1,326** direct Release tests
+pass: unit 496, Admin UI 155, local Setup 75, observability/runtime 149,
+integration 92, end-to-end 106, architecture 120, and security 133. The canonical
+source gate discovers **516** Pester tests: **515** pass, none fail, and one
+Windows-only launcher test is skipped on macOS. Format and diff checks pass, and
+independent read-only review found no remaining source/test blocker. This is source
+validation only, not live proof. The next isolated generation is `a365gw24` /
+`rg-a365-custom-gw-phase6w`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`; protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
+
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
@@ -2029,7 +2089,7 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw23` / `rg-a365-custom-gw-phase6v`. Preserve `a365gw11`,
+   generation `a365gw24` / `rg-a365-custom-gw-phase6w`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
    preserve `a365gw14`, `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with
    steps 1–10 complete and step 11 `Failed` before database migration. Their succeeded
@@ -2041,7 +2101,11 @@ separate authorization entry here.
    administrator restoration, and immutable `Running` step-11 state. Preserve
    `a365gw22` with one successful no-override start, one terminal failed execution,
    no marker/schema/runtime-principal mutation, exact SQL-administrator restoration,
-   and immutable `Failed` step-11 state. None may
+   and immutable `Failed` step-11 state. Preserve `a365gw23` with steps 1–10
+   complete, step 11 terminal `Failed`, exactly one terminal failed Job execution
+   with no reported `endTime`, its exact `NotRunning` replica, safe pristine counts
+   `0/0/0/0/1/2/0/0`, SQL `Ready`, public access `Disabled`, and exact original-
+   administrator restoration. Never Resume or second-start it. None may
    consume edited source. Capture the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, private database-Job execution and original SQL
