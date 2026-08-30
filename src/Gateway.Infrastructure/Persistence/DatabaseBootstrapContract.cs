@@ -36,8 +36,8 @@ public static class DatabaseBootstrapContract
     public static void AssertRuntimePrincipalAuthority(
         IReadOnlyCollection<string> observedRoles,
         IReadOnlyCollection<string> expectedRoles,
-        int observedDirectPermissionCount,
-        int expectedDirectPermissionCount,
+        IReadOnlyCollection<string> observedDirectPermissions,
+        IReadOnlyCollection<string> expectedDirectPermissions,
         int ownedSchemaCount,
         int ownedPrincipalCount,
         bool requireCompleteRoleSet)
@@ -47,7 +47,7 @@ public static class DatabaseBootstrapContract
         if (observed.Length != observed.Distinct(StringComparer.Ordinal).Count() ||
             observed.Except(expected, StringComparer.Ordinal).Any() ||
             (requireCompleteRoleSet && !observed.SequenceEqual(expected, StringComparer.Ordinal)) ||
-            observedDirectPermissionCount != expectedDirectPermissionCount ||
+            !ExactSet(expectedDirectPermissions, observedDirectPermissions) ||
             ownedSchemaCount != 0 || ownedPrincipalCount != 0)
         {
             throw new InvalidOperationException(

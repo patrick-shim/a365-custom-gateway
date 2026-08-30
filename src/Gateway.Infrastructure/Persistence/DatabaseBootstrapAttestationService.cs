@@ -76,6 +76,7 @@ internal sealed class DatabaseBootstrapAttestationProbe(GatewayDbContext dbConte
 {
     private const string MarkerName = "A365GatewayBootstrapInitializationIntent";
     private const string ExpectedCollation = "SQL_Latin1_General_CP1_CI_AS";
+    private const string ExpectedConnectPermission = "G|0|0|0|CONNECT|dbo";
     private const string ExpectedApiDirectPermission = "G|0|0|0|VIEW DEFINITION|dbo";
 
     public async Task<bool> AttestAsync(
@@ -199,10 +200,10 @@ internal sealed class DatabaseBootstrapAttestationProbe(GatewayDbContext dbConte
         {
             [options.ApiPrincipalName] = new(
                 Guid.ParseExact(options.ApiPrincipalClientId, "D"),
-                [ExpectedApiDirectPermission]),
+                [ExpectedConnectPermission, ExpectedApiDirectPermission]),
             [options.WorkerPrincipalName] = new(
                 Guid.ParseExact(options.WorkerPrincipalClientId, "D"),
-                [])
+                [ExpectedConnectPermission])
         };
         var observed = new Dictionary<string, ObservedPrincipal>(StringComparer.Ordinal);
         await using (var command = connection.CreateCommand())
@@ -245,11 +246,13 @@ internal sealed class DatabaseBootstrapAttestationProbe(GatewayDbContext dbConte
             return false;
         }
 
+        var builtInDboOwnerMembershipCount = 0;
         await using (var command = connection.CreateCommand())
         {
             command.CommandTimeout = 30;
             command.CommandText = """
-                SELECT roles.name, members.name
+                SELECT roles.name, members.name, roles.is_fixed_role,
+                       members.principal_id, DATABASE_PRINCIPAL_ID(N'dbo')
                 FROM sys.database_role_members AS memberships
                 INNER JOIN sys.database_principals AS roles
                   ON roles.principal_id = memberships.role_principal_id
@@ -260,17 +263,27 @@ internal sealed class DatabaseBootstrapAttestationProbe(GatewayDbContext dbConte
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
+                if (reader.GetString(0).Equals("db_owner", StringComparison.Ordinal) &&
+                    reader.GetString(1).Equals("dbo", StringComparison.Ordinal) &&
+                    reader.GetBoolean(2) &&
+                    reader.GetInt32(3) == reader.GetInt32(4))
+                {
+                    builtInDboOwnerMembershipCount++;
+                    continue;
+                }
                 if (!observed.TryGetValue(reader.GetString(1), out var principal))
                     return false;
                 principal.Roles.Add(reader.GetString(0));
             }
         }
+        if (builtInDboOwnerMembershipCount != 1)
+            return false;
 
         await using (var command = connection.CreateCommand())
         {
             command.CommandTimeout = 30;
             command.CommandText = """
-                SELECT grantees.name, permissions.state, permissions.class,
+                SELECT grantees.name, permissions.state, CAST(permissions.class AS int),
                        permissions.major_id, permissions.minor_id,
                        permissions.permission_name, grantors.name
                 FROM sys.database_permissions AS permissions
@@ -281,9 +294,49 @@ internal sealed class DatabaseBootstrapAttestationProbe(GatewayDbContext dbConte
                 WHERE NOT
                 (
                     permissions.class = 0
+                    AND permissions.major_id = 0
+                    AND permissions.minor_id = 0
                     AND permissions.permission_name = N'CONNECT'
                     AND permissions.state IN (N'G', N'W')
                     AND grantees.name IN (N'public', N'guest')
+                )
+                AND NOT
+                (
+                    permissions.class = 0
+                    AND permissions.major_id = 0
+                    AND permissions.minor_id = 0
+                    AND permissions.permission_name = N'CONNECT'
+                    AND permissions.state = N'G'
+                    AND grantees.name = N'dbo'
+                    AND grantors.name = N'dbo'
+                )
+                AND NOT
+                (
+                    permissions.class = 1
+                    AND permissions.minor_id = 0
+                    AND permissions.permission_name = N'SELECT'
+                    AND permissions.state = N'G'
+                    AND grantees.name = N'public'
+                    AND permissions.major_id < 0
+                )
+                AND NOT
+                (
+                    permissions.class = 1
+                    AND permissions.minor_id = 0
+                    AND permissions.permission_name = N'SELECT'
+                    AND permissions.state = N'G'
+                    AND grantees.name = N'public'
+                    AND permissions.major_id = OBJECT_ID(N'sys.database_firewall_rules')
+                    AND grantors.name = N'sys'
+                    AND EXISTS
+                    (
+                        SELECT 1
+                        FROM sys.all_objects AS allowed_shipped_objects
+                        WHERE allowed_shipped_objects.object_id = permissions.major_id
+                          AND allowed_shipped_objects.is_ms_shipped = 1
+                          AND allowed_shipped_objects.schema_id = SCHEMA_ID(N'sys')
+                          AND allowed_shipped_objects.type = N'V'
+                    )
                 )
                 ORDER BY grantees.name, permissions.class, permissions.major_id,
                          permissions.minor_id, permissions.permission_name;

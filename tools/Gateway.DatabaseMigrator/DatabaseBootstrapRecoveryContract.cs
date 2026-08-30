@@ -885,8 +885,8 @@ public static class ExactDatabaseAuthorityContract
             var directPermissionsAreExact =
                 principal.DirectPermissionCount == expectedPrincipal.ExpectedDirectPermissionCount;
             var directPermissionsAreRecoverablePrefix = recoverablePrefixAllowed &&
-                expectedPrincipal.ExpectedDirectPermissionCount == 1 &&
-                principal.DirectPermissionCount == 0;
+                expectedPrincipal.ExpectedDirectPermissionCount == 2 &&
+                principal.DirectPermissionCount == 1;
             if (principal.ClientId != expectedPrincipal.ClientId ||
                 !principal.Type.Equals("E", StringComparison.Ordinal) ||
                 (!directPermissionsAreExact && !directPermissionsAreRecoverablePrefix) ||

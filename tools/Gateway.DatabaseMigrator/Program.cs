@@ -157,12 +157,12 @@ if (expectedPrincipalArgumentCount == 4)
         expectedApiPrincipalName!,
         expectedApiPrincipalClientIdValue!,
         "API",
-        expectedDirectPermissionCount: 1));
+        expectedDirectPermissionCount: 2));
     expectedRuntimePrincipals.Add(ParseExpectedDatabasePrincipal(
         expectedWorkerPrincipalName!,
         expectedWorkerPrincipalClientIdValue!,
         "worker",
-        expectedDirectPermissionCount: 0));
+        expectedDirectPermissionCount: 1));
     if (expectedRuntimePrincipals.Select(item => item.Name).Distinct(StringComparer.Ordinal).Count() != 2 ||
         expectedRuntimePrincipals.Select(item => item.ClientId).Distinct().Count() != 2)
     {
@@ -363,7 +363,7 @@ if (phase == "principal")
             principalClientId!.Value,
             requireViewDefinition: expectedRuntimePrincipals
                 .Single(item => item.Name.Equals(principalName, StringComparison.Ordinal))
-                .ExpectedDirectPermissionCount == 1);
+                .ExpectedDirectPermissionCount == 2);
         await AssertCurrentEfModelSchemaAsync(
             connection,
             expectedRuntimePrincipals,
@@ -491,8 +491,8 @@ static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
     DatabaseInitializationRecoveryMode? requiredRecoveryMode)
 {
     if (expectedRuntimePrincipals.Count != 2 ||
-        expectedRuntimePrincipals.Count(item => item.ExpectedDirectPermissionCount == 1) != 1 ||
-        expectedRuntimePrincipals.Count(item => item.ExpectedDirectPermissionCount == 0) != 1)
+        expectedRuntimePrincipals.Count(item => item.ExpectedDirectPermissionCount == 2) != 1 ||
+        expectedRuntimePrincipals.Count(item => item.ExpectedDirectPermissionCount == 1) != 1)
     {
         throw new InvalidOperationException(
             "The combined bootstrap phase requires the exact reviewed API and worker database-principal contract.");
@@ -506,9 +506,9 @@ static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
     }
 
     var apiPrincipal = expectedRuntimePrincipals.Single(
-        item => item.ExpectedDirectPermissionCount == 1);
+        item => item.ExpectedDirectPermissionCount == 2);
     var workerPrincipal = expectedRuntimePrincipals.Single(
-        item => item.ExpectedDirectPermissionCount == 0);
+        item => item.ExpectedDirectPermissionCount == 1);
     var lockResource = $"A365Gateway:DatabaseInitialize:{database}";
     await AcquireDatabaseInitializationLockAsync(connection, lockResource);
     try
@@ -1188,6 +1188,16 @@ static string GetDatabasePermissionTelemetryCteSql() =>
                         )
                         OR
                         (
+                            permissions.class = 0
+                            AND permissions.major_id = 0
+                            AND permissions.minor_id = 0
+                            AND permissions.permission_name = N'CONNECT'
+                            AND permissions.state = N'G'
+                            AND grantees.name IN (@runtimePrincipalName1, @runtimePrincipalName2)
+                            AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
+                        )
+                        OR
+                        (
                             permissions.class = 1
                             AND permissions.minor_id = 0
                             AND permissions.permission_name = N'SELECT'
@@ -1224,6 +1234,18 @@ static string GetDatabasePermissionTelemetryCteSql() =>
                             AND permissions.state = N'G'
                             AND grantees.name = @metadataPrincipalName
                             AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
+                            AND EXISTS
+                            (
+                                SELECT 1
+                                FROM sys.database_permissions AS required_connect
+                                WHERE required_connect.grantee_principal_id = permissions.grantee_principal_id
+                                  AND required_connect.class = 0
+                                  AND required_connect.major_id = 0
+                                  AND required_connect.minor_id = 0
+                                  AND required_connect.permission_name = N'CONNECT'
+                                  AND required_connect.state = N'G'
+                                  AND required_connect.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
+                            )
                         )
                     )
                     THEN 1 ELSE 0
@@ -1495,6 +1517,8 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
     command.Parameters.AddWithValue("@markerName", DatabaseBootstrapRecoveryContract.MarkerName);
     command.Parameters.AddWithValue("@allowMetadataPrincipalViewDefinition", 0);
     command.Parameters.AddWithValue("@metadataPrincipalName", string.Empty);
+    command.Parameters.AddWithValue("@runtimePrincipalName1", string.Empty);
+    command.Parameters.AddWithValue("@runtimePrincipalName2", string.Empty);
     await using var reader = await command.ExecuteReaderAsync();
     AssertExactSqlFieldContract(
         reader,
@@ -1877,10 +1901,11 @@ static async Task AssertExpectedDatabaseAuthorityAsync(
     bool requireAllExpectedPrincipals)
 {
     var metadataPrincipal = expectedRuntimePrincipals.SingleOrDefault(
-        item => item.ExpectedDirectPermissionCount == 1);
+        item => item.ExpectedDirectPermissionCount == 2);
     if (metadataPrincipal is null ||
+        expectedRuntimePrincipals.Count(item => item.ExpectedDirectPermissionCount == 2) != 1 ||
         expectedRuntimePrincipals.Count(item => item.ExpectedDirectPermissionCount == 1) != 1 ||
-        expectedRuntimePrincipals.Any(item => item.ExpectedDirectPermissionCount is < 0 or > 1))
+        expectedRuntimePrincipals.Any(item => item.ExpectedDirectPermissionCount is < 1 or > 2))
     {
         throw new InvalidOperationException(
             "The reviewed runtime-principal metadata-attestation permission contract is malformed.");
@@ -1977,6 +2002,10 @@ static async Task AssertExpectedDatabaseAuthorityAsync(
             """;
         command.Parameters.AddWithValue("@allowMetadataPrincipalViewDefinition", 1);
         command.Parameters.AddWithValue("@metadataPrincipalName", metadataPrincipal.Name);
+        command.Parameters.AddWithValue("@runtimePrincipalName1", metadataPrincipal.Name);
+        command.Parameters.AddWithValue(
+            "@runtimePrincipalName2",
+            expectedRuntimePrincipals.Single(item => item.ExpectedDirectPermissionCount == 1).Name);
         await using var reader = await command.ExecuteReaderAsync();
         AssertExactSqlFieldContract(
             reader,
@@ -2892,7 +2921,9 @@ static async Task<RuntimePrincipalEvidence> EnsureRuntimePrincipalAsync(
         connection,
         principal,
         expectedRoles,
-        expectedDirectPermissionCount: requireViewDefinition ? 1 : 0,
+        expectedDirectPermissions: requireViewDefinition
+            ? ["G|0|0|0|CONNECT|dbo", "G|0|0|0|VIEW DEFINITION|dbo"]
+            : ["G|0|0|0|CONNECT|dbo"],
         requireCompleteRoleSet: false);
     foreach (var roleName in expectedRoles.Except(observedBefore, StringComparer.Ordinal))
     {
@@ -2906,12 +2937,16 @@ static async Task<RuntimePrincipalEvidence> EnsureRuntimePrincipalAsync(
         connection,
         principal,
         expectedRoles,
-        expectedDirectPermissionCount: requireViewDefinition ? 1 : 0,
+        expectedDirectPermissions: requireViewDefinition
+            ? ["G|0|0|0|CONNECT|dbo", "G|0|0|0|VIEW DEFINITION|dbo"]
+            : ["G|0|0|0|CONNECT|dbo"],
         requireCompleteRoleSet: true);
     return new RuntimePrincipalEvidence(
         principalName,
         principalClientId,
         observedRoles,
+        // The receipt records only explicit grants emitted by this migrator. The exact
+        // CREATE USER CONNECT tuple is independently required by the catalog guard above.
         requireViewDefinition ? ["VIEW DEFINITION"] : []);
 }
 
@@ -2946,7 +2981,7 @@ static async Task<IReadOnlyList<string>> ReadAndAssertRuntimePrincipalAuthorityA
     SqlConnection connection,
     RuntimePrincipalSnapshot principal,
     IReadOnlyCollection<string> expectedRoles,
-    int expectedDirectPermissionCount,
+    IReadOnlyCollection<string> expectedDirectPermissions,
     bool requireCompleteRoleSet)
 {
     var roles = new List<string>();
@@ -2967,11 +3002,34 @@ static async Task<IReadOnlyList<string>> ReadAndAssertRuntimePrincipalAuthorityA
             roles.Add(reader.GetString(0));
     }
 
+    var directPermissions = new List<string>();
+    await using (var permissions = connection.CreateCommand())
+    {
+        permissions.CommandTimeout = 60;
+        permissions.CommandText = """
+            SELECT permissions.state, CAST(permissions.class AS int), permissions.major_id,
+                   permissions.minor_id, permissions.permission_name, grantors.name
+            FROM sys.database_permissions AS permissions
+            INNER JOIN sys.database_principals AS grantors
+              ON grantors.principal_id = permissions.grantor_principal_id
+            WHERE permissions.grantee_principal_id = @principalId
+            ORDER BY permissions.state, permissions.class, permissions.major_id,
+                     permissions.minor_id, permissions.permission_name, grantors.name;
+            """;
+        permissions.Parameters.AddWithValue("@principalId", principal.PrincipalId);
+        await using var reader = await permissions.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            directPermissions.Add(
+                $"{reader.GetString(0)}|{reader.GetInt32(1)}|{reader.GetInt32(2)}|" +
+                $"{reader.GetInt32(3)}|{reader.GetString(4)}|{reader.GetString(5)}");
+        }
+    }
+
     await using var authority = connection.CreateCommand();
     authority.CommandTimeout = 60;
     authority.CommandText = """
         SELECT
-          (SELECT COUNT(*) FROM sys.database_permissions WHERE grantee_principal_id = @principalId),
           (SELECT COUNT(*) FROM sys.schemas WHERE principal_id = @principalId),
           (SELECT COUNT(*) FROM sys.database_principals WHERE owning_principal_id = @principalId);
         """;
@@ -2979,17 +3037,16 @@ static async Task<IReadOnlyList<string>> ReadAndAssertRuntimePrincipalAuthorityA
     await using var authorityReader = await authority.ExecuteReaderAsync();
     if (!await authorityReader.ReadAsync())
         throw new InvalidOperationException("Azure SQL returned no runtime-principal authority row.");
-    var directPermissionCount = authorityReader.GetInt32(0);
-    var ownedSchemaCount = authorityReader.GetInt32(1);
-    var ownedPrincipalCount = authorityReader.GetInt32(2);
+    var ownedSchemaCount = authorityReader.GetInt32(0);
+    var ownedPrincipalCount = authorityReader.GetInt32(1);
     if (await authorityReader.ReadAsync())
         throw new InvalidOperationException("Azure SQL returned duplicate runtime-principal authority rows.");
 
     DatabaseBootstrapContract.AssertRuntimePrincipalAuthority(
         roles,
         expectedRoles,
-        directPermissionCount,
-        expectedDirectPermissionCount,
+        directPermissions,
+        expectedDirectPermissions,
         ownedSchemaCount,
         ownedPrincipalCount,
         requireCompleteRoleSet);
@@ -3206,7 +3263,7 @@ static ExpectedDatabasePrincipal ParseExpectedDatabasePrincipal(
         throw new ArgumentException(
             $"The expected {category} database principal client ID must be a canonical lowercase non-empty GUID.");
     }
-    if (expectedDirectPermissionCount is < 0 or > 1)
+    if (expectedDirectPermissionCount is < 1 or > 2)
         throw new ArgumentOutOfRangeException(nameof(expectedDirectPermissionCount));
     return new ExpectedDatabasePrincipal(name, clientId, expectedDirectPermissionCount);
 }
