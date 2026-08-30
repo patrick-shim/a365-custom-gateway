@@ -107,7 +107,7 @@ Describe 'First-class database recovery contract' {
         if ($initializeEnd -lt 0) { $initializeEnd = $database.Length }
         $initialize = $database.Substring($initializeStart, $initializeEnd - $initializeStart)
 
-        $initialize | Should -Match 'executionIntentId\s*=\s*if \(\$isRecovery\) \{ \$recoveryExecutionIntentId \} else \{ \[guid\]::NewGuid\(\)\.ToString\(''D''\) \}'
+        $initialize | Should -Match 'executionIntentId\s*=\s*if \(\$isResumeAfterSchema\) \{ \$recoveryExecutionIntentId \} else \{ \[guid\]::NewGuid\(\)\.ToString\(''D''\) \}'
         $initialize | Should -Not -Match 'executionIntentId\s*=\s*\[guid\]::NewGuid'
         $database | Should -Match 'function Assert-GatewayPrivateDatabaseRecoveryRecord[\s\S]+\[Parameter\(Mandatory\)\]\[string\]\$ExpectedExecutionIntentId'
         ([regex]::Matches($database, '-ExpectedExecutionIntentId \$recoveryExecutionIntentId')).Count | Should -Be 2

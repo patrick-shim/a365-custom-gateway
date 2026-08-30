@@ -134,6 +134,7 @@ render those credentials. A cached sign-in is required for non-interactive use.
 | `gateway apply` | Apply one still-current accepted plan. |
 | `gateway resume` | Re-plan, confirm, and resume independently revalidated checkpoints. |
 | `gateway recover-database` | Run the separately reviewed one-time recovery for the exact eligible failed database bootstrap. |
+| `gateway repair-database --yes` | Run one new one-shot repair Job after both automatic database recoveries are terminal `Failed`/`manualOnly`; there is no Plan or What-If mode. |
 | `gateway upgrade-admin-ui` | Promote only the Admin UI in an already completed and verified bootstrap deployment. |
 | `gateway status` | Show local checkpoint and layered readiness status without Azure calls. |
 | `gateway verify` | Rerun authenticated, read-only deployment verification. |

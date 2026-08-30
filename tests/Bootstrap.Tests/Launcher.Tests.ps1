@@ -70,6 +70,34 @@ printf '%s\n' "$@" > "$GATEWAY_TEST_MARKER"
         }
     }
 
+    It 'routes the one-shot manual database repair command and explicit authorization to PowerShell' {
+        $pwshStub = Join-Path $TestDrive 'pwsh'
+        $marker = Join-Path $TestDrive 'repair-pwsh-arguments.txt'
+        @'
+#!/bin/sh
+printf '%s\n' "$@" > "$GATEWAY_TEST_MARKER"
+'@ | Set-Content -LiteralPath $pwshStub -Encoding utf8NoBOM
+        & chmod 700 $pwshStub
+
+        $originalPath = $env:PATH
+        $originalMarker = $env:GATEWAY_TEST_MARKER
+        try {
+            $env:PATH = "$TestDrive$([IO.Path]::PathSeparator)$originalPath"
+            $env:GATEWAY_TEST_MARKER = $marker
+            & bash (Join-Path $repositoryRoot 'gateway') repair-database --config bootstrap/config.json --yes
+
+            $LASTEXITCODE | Should -Be 0
+            $arguments = @(Get-Content -LiteralPath $marker)
+            $arguments | Should -Contain '-Mode'
+            $arguments | Should -Contain 'RepairDatabase'
+            $arguments | Should -Contain '-Yes'
+        }
+        finally {
+            $env:PATH = $originalPath
+            $env:GATEWAY_TEST_MARKER = $originalMarker
+        }
+    }
+
     It 'routes the narrow recovered-bootstrap continuation and exact fingerprint' {
         $pwshStub = Join-Path $TestDrive 'pwsh'
         $marker = Join-Path $TestDrive 'continuation-pwsh-arguments.txt'
@@ -265,6 +293,7 @@ Describe 'Cross-platform guided setup prerequisite contract' {
         $launcher | Should -Match 'Setup requires the \.NET 10 SDK'
         $launcher | Should -Match 'Setup requires Azure CLI'
         $launcher | Should -Match 'if /I "%COMMAND%"=="recover-database" set "GATEWAY_MODE=RecoverDatabase"'
+        $launcher | Should -Match 'if /I "%COMMAND%"=="repair-database" set "GATEWAY_MODE=RepairDatabase"'
         $launcher | Should -Match 'if /I "%COMMAND%"=="continue-bootstrap" set "GATEWAY_MODE=ContinueBootstrap"'
         $launcher | Should -Match 'operations\\continue-bootstrap-after-database-recovery\.ps1'
     }

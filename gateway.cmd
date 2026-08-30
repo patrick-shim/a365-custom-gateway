@@ -14,6 +14,7 @@ if /I "%COMMAND%"=="plan" set "GATEWAY_MODE=Plan"
 if /I "%COMMAND%"=="apply" set "GATEWAY_MODE=Apply"
 if /I "%COMMAND%"=="resume" set "GATEWAY_MODE=Resume"
 if /I "%COMMAND%"=="recover-database" set "GATEWAY_MODE=RecoverDatabase"
+if /I "%COMMAND%"=="repair-database" set "GATEWAY_MODE=RepairDatabase"
 if /I "%COMMAND%"=="continue-bootstrap" set "GATEWAY_MODE=ContinueBootstrap"
 if /I "%COMMAND%"=="upgrade-admin-ui" set "GATEWAY_MODE=UpgradeAdminUi"
 if /I "%COMMAND%"=="status" set "GATEWAY_MODE=Status"
@@ -423,6 +424,8 @@ echo   apply       Apply an accepted current plan
 echo   resume      Resume an interrupted accepted plan
 echo   recover-database
 echo               Run the reviewed one-time recovery for an eligible failed database bootstrap
+echo   repair-database
+echo               Run the one-shot manual repair after both automatic database recoveries failed
 echo   continue-bootstrap
 echo               Continue only pending steps after an exact completed database recovery
 echo   upgrade-admin-ui

@@ -844,6 +844,171 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             Should -Invoke Invoke-AzJson -Times 2 -Exactly
         }
 
+        It 'restores the exact original administrator and never repeats the manual repair start after log recovery fails and resumes' {
+            $script:testRepositoryRoot = Join-Path $TestDrive 'manual-repair-resume'
+            [IO.Directory]::CreateDirectory($script:testRepositoryRoot) | Out-Null
+            $script:repairJobName = 'job-gateway-db-repair-dev'
+            $script:repairSourceFingerprint = $script:sourceFingerprint
+            $script:originalSourceFingerprint = "sha256:$('c' * 64)"
+            $script:repairPlanFingerprint = "sha256:$('d' * 64)"
+            $script:exhaustedRecoveryPlanFingerprint = "sha256:$('e' * 64)"
+            $script:imageIntentId = '12121212-1212-4212-8212-121212121212'
+            $script:repairExecutionIntentId = '13131313-1313-4313-8313-131313131313'
+            $script:originalBoundary = "sha256:$('1' * 64)"
+            $script:firstBoundary = "sha256:$('2' * 64)"
+            $script:secondBoundary = "sha256:$('3' * 64)"
+            $script:manualRepairPlan = [ordered]@{
+                status = 'Running'
+                planFingerprint = $script:repairPlanFingerprint
+                deploymentOwnershipId = $script:ownershipId
+                originalSourceFingerprint = $script:originalSourceFingerprint
+                repairSourceFingerprint = $script:repairSourceFingerprint
+                exhaustedRecoveryPlanFingerprint = $script:exhaustedRecoveryPlanFingerprint
+                exhaustedRecoveryPlan = [ordered]@{
+                    planFingerprint = $script:exhaustedRecoveryPlanFingerprint
+                    previousRecoveryPlan = [ordered]@{ planFingerprint = "sha256:$('f' * 64)" }
+                }
+                originalFailedJob = [ordered]@{
+                    jobName = 'job-gateway-db-init-dev'; executionName = 'job-gateway-db-init-dev-old01'
+                    executionIntentId = '14141414-1414-4414-8414-141414141414'
+                    jobImage = "gatewayacr.azurecr.io/gateway-db-migrator@sha256:$('9' * 64)"
+                    boundaryFingerprint = $script:originalBoundary
+                }
+                firstFailedRecovery = [ordered]@{
+                    jobName = 'job-gateway-db-recover-dev'; executionName = 'job-gateway-db-recover-dev-old01'
+                    executionIntentId = '15151515-1515-4515-8515-151515151515'
+                    recoveryPlanFingerprint = "sha256:$('f' * 64)"; recoverySourceFingerprint = "sha256:$('4' * 64)"
+                    boundaryFingerprint = $script:firstBoundary
+                }
+                secondFailedRecovery = [ordered]@{
+                    jobName = 'job-gateway-db-recov2-dev'; executionName = 'job-gateway-db-recov2-dev-old01'
+                    executionIntentId = '16161616-1616-4616-8616-161616161616'
+                    recoveryPlanFingerprint = $script:exhaustedRecoveryPlanFingerprint; recoverySourceFingerprint = "sha256:$('5' * 64)"
+                    boundaryFingerprint = $script:secondBoundary
+                }
+                correctedImage = [ordered]@{
+                    state = 'DigestCheckpointed'; component = 'databaseMigratorRecovery'
+                    sourceFingerprint = $script:repairSourceFingerprint
+                    deploymentOwnershipId = $script:ownershipId
+                    recoveryPlanFingerprint = $script:repairPlanFingerprint
+                    intentId = $script:imageIntentId; image = $script:jobImage
+                }
+                repairJob = [ordered]@{
+                    name = $script:repairJobName; executionIntentId = $script:repairExecutionIntentId
+                    imageIntentId = $script:imageIntentId; repairMode = 'ResumeAfterSchemaCompleted'
+                    replicaRetryLimit = 0; maximumExecutions = 1
+                }
+            }
+            $script:foundation = [pscustomobject]@{
+                acrLoginServer = 'gatewayacr.azurecr.io'
+                deploymentOwnershipId = $script:ownershipId
+                sourceFingerprint = $script:originalSourceFingerprint
+                resourceGroupName = $script:config.resourceGroupName
+                containerAppsEnvironmentId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.App/managedEnvironments/cae-gateway-dev"
+                runtimeImagePullIdentityId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-pull-dev"
+                privateEndpointSubnetId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.Network/virtualNetworks/vnet-gateway-dev/subnets/snet-private-endpoints"
+            }
+            $script:currentAdministratorObjectId = $script:originalAdministratorObjectId
+            $script:currentAdministratorLogin = $script:originalAdministratorLogin
+            $script:manualStartCount = 0
+            $script:failedRecoveryReadCount = 0
+            $script:executionStartUtc = [DateTimeOffset]::UtcNow.ToString('O')
+            $script:executionEndUtc = [DateTimeOffset]::UtcNow.AddMinutes(1).ToString('O')
+            $script:execution = [pscustomobject]@{ name = "$($script:repairJobName)-abc12"; status = 'Succeeded' }
+            $script:jobEvidence = [ordered]@{
+                jobId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.App/jobs/$($script:repairJobName)"
+                jobName = $script:repairJobName; jobPrincipalId = $script:jobPrincipalId
+                jobImage = $script:jobImage; containerName = 'database-manual-repair'
+                executionIntentId = $script:repairExecutionIntentId
+            }
+
+            Mock Get-RepositoryRoot { $script:testRepositoryRoot }
+            Mock Get-BootstrapExecutionSourceRoot { $script:testRepositoryRoot }
+            Mock Get-BootstrapSourceFingerprint { $script:repairSourceFingerprint }
+            Mock Get-ManagedIdentityClientId {
+                if ($PrincipalObjectId -ceq $script:apiPrincipalId) { return $script:api }
+                if ($PrincipalObjectId -ceq $script:workerPrincipalId) { return $script:worker }
+                throw 'Unexpected managed identity lookup.'
+            }
+            Mock Invoke-AzTsv {
+                if ($Arguments -contains 'ad-only-auth') { return 'true' }
+                return 'Disabled'
+            }
+            Mock Invoke-AzJson { return @() }
+            Mock Get-GatewayFailedDatabaseBootstrapBoundary {
+                return [ordered]@{ boundaryFingerprint = $script:originalBoundary }
+            }
+            Mock Get-GatewayFailedDatabaseRecoveryBoundary {
+                $script:failedRecoveryReadCount++
+                if (($script:failedRecoveryReadCount % 2) -eq 1) {
+                    return [ordered]@{ boundaryFingerprint = $script:firstBoundary }
+                }
+                return [ordered]@{ boundaryFingerprint = $script:secondBoundary }
+            }
+            Mock Assert-GatewayPrivateDatabaseManualRepairRecord { $true }
+            Mock Get-GatewaySqlEntraAdministrator {
+                return [ordered]@{
+                    administratorType = 'ActiveDirectory'; login = $script:currentAdministratorLogin
+                    objectId = $script:currentAdministratorObjectId; tenantId = $script:config.tenantId
+                }
+            }
+            Mock Set-GatewaySqlEntraAdministratorExact {
+                $script:currentAdministratorObjectId = $ObjectId
+                $script:currentAdministratorLogin = $Login
+            }
+            Mock Deploy-GatewayDatabaseBootstrapJob { $script:jobEvidence }
+            Mock Get-GatewayDatabaseBootstrapJobEvidence { $script:jobEvidence }
+            Mock Get-GatewayDatabaseBootstrapExecutions { return @() }
+            Mock Get-GatewaySqlPrivateEndpointReadyAddressEvidence { $script:sqlPrivateEndpoint }
+            Mock Start-GatewayDatabaseBootstrapExecution {
+                $script:manualStartCount++
+                return [pscustomobject]@{ name = "$($script:repairJobName)-abc12" }
+            }
+            Mock Get-GatewayDatabaseBootstrapExecutionsBounded { return @($script:execution) }
+            Mock Wait-GatewayDatabaseBootstrapExecution {
+                return [pscustomobject]@{ name = "$($script:repairJobName)-abc12"; properties = [pscustomobject]@{ status = 'Succeeded' } }
+            }
+            Mock Get-GatewayDatabaseBootstrapExecutionEvidence {
+                return [ordered]@{ startTimeUtc = $script:executionStartUtc; endTimeUtc = $script:executionEndUtc }
+            }
+            Mock Get-GatewayDatabaseBootstrapEvidenceFromLogs { throw 'simulated manual repair log evidence failure' }
+            Mock Complete-GatewayDatabaseBootstrapExecutionRecoveryWindow { $true }
+            Mock Start-Sleep { }
+
+            $invoke = {
+                Initialize-GatewayDatabase `
+                    -Config $script:config -Foundation $script:foundation `
+                    -SqlPrivateEndpoint $script:sqlPrivateEndpoint -SqlServerFqdn $script:sqlServerFqdn `
+                    -ApiPrincipalId $script:apiPrincipalId -WorkerPrincipalId $script:workerPrincipalId `
+                    -DeploymentOwnershipId $script:ownershipId -DatabaseMigratorImage $script:jobImage `
+                    -OriginalEntraAdministratorObjectId $script:originalAdministratorObjectId `
+                    -OriginalEntraAdministratorLogin $script:originalAdministratorLogin `
+                    -BootstrapClientIpv4 '10.20.30.40' -ManualRepairPlan $script:manualRepairPlan
+            }
+
+            $invoke | Should -Throw '*simulated manual repair log evidence failure*'
+            $script:currentAdministratorObjectId | Should -BeExactly $script:originalAdministratorObjectId
+            $script:currentAdministratorLogin | Should -BeExactly $script:originalAdministratorLogin
+            $invoke | Should -Throw '*simulated manual repair log evidence failure*'
+            $script:currentAdministratorObjectId | Should -BeExactly $script:originalAdministratorObjectId
+            $script:currentAdministratorLogin | Should -BeExactly $script:originalAdministratorLogin
+            $script:manualStartCount | Should -Be 1
+
+            Should -Invoke Start-GatewayDatabaseBootstrapExecution -Times 1 -Exactly -ParameterFilter {
+                $ManualRepair -and $JobName -ceq $script:repairJobName
+            }
+            Should -Invoke Get-GatewaySqlPrivateEndpointReadyAddressEvidence -Times 1 -Exactly
+            Should -Invoke Set-GatewaySqlEntraAdministratorExact -Times 1 -Exactly -ParameterFilter {
+                $ObjectId -ceq $script:originalAdministratorObjectId -and $Login -ceq $script:originalAdministratorLogin
+            }
+            Should -Invoke Invoke-AzTsv -Times 0 -Exactly -ParameterFilter {
+                @($Arguments | Where-Object { [string]$_ -in @('create', 'update', 'delete') }).Count -gt 0
+            }
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly -ParameterFilter {
+                @($Arguments | Where-Object { [string]$_ -in @('create', 'update', 'delete') }).Count -gt 0
+            }
+        }
+
         It 'settles a previously started execution before restoring SQL admin after a Resume preparation failure' {
             $script:testRepositoryRoot = $TestDrive
             $script:receipt.executionName = "$($script:jobName)-abc12"

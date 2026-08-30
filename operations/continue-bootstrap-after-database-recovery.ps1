@@ -111,18 +111,30 @@ function Get-ContinuationBoundary {
         [string]$Configuration.purview.policyProvisioningEnabled -cne 'False') {
         throw 'This narrow continuation requires Purview and its policy-provisioning path to be disabled.'
     }
-    if (-not $State.Contains('databaseRecoveryPlan') -or
-        $State.databaseRecoveryPlan -isnot [System.Collections.IDictionary] -or
-        [string]$State.databaseRecoveryPlan.status -cne 'Completed') {
-        throw 'Continuation requires the final successful database recovery plan to be Completed.'
+    $automaticCompleted = $State.Contains('databaseRecoveryPlan') -and
+        $State.databaseRecoveryPlan -is [System.Collections.IDictionary] -and
+        [string]$State.databaseRecoveryPlan.status -ceq 'Completed'
+    $manualCompleted = $State.Contains('manualDatabaseRepairPlan') -and
+        $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
+        [string]$State.manualDatabaseRepairPlan.status -ceq 'Completed'
+    if ($automaticCompleted -eq $manualCompleted) {
+        throw 'Continuation requires exactly one completed automatic recovery or completed manual database repair boundary.'
     }
-    $recoveryPlan = $State.databaseRecoveryPlan
-    $attemptNumber = Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $recoveryPlan
-    Assert-BootstrapAcceptedDatabaseRecoveryPlan `
-        -State $State -PlanFingerprint ([string]$recoveryPlan.planFingerprint) -AllowCompleted | Out-Null
-    Assert-BootstrapDatabaseRecoveryHistory -State $State -CurrentPlan $recoveryPlan | Out-Null
-
-    $recoverySourceRoot = Resolve-BootstrapDatabaseRecoveryPlanSourceRoot -State $State -Plan $recoveryPlan
+    $completionMode = if ($manualCompleted) { 'ManualDatabaseRepair' } else { 'AutomaticDatabaseRecovery' }
+    $recoveryPlan = if ($manualCompleted) { $State.manualDatabaseRepairPlan } else { $State.databaseRecoveryPlan }
+    $attemptNumber = if ($manualCompleted) { 0 } else { Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $recoveryPlan }
+    if ($manualCompleted) {
+        Assert-BootstrapManualDatabaseRepairPrerequisite -State $State | Out-Null
+        Assert-BootstrapAcceptedManualDatabaseRepairPlan `
+            -State $State -PlanFingerprint ([string]$recoveryPlan.planFingerprint) -AllowCompleted | Out-Null
+        $recoverySourceRoot = Resolve-BootstrapManualDatabaseRepairPlanSourceRoot -State $State -Plan $recoveryPlan
+    }
+    else {
+        Assert-BootstrapAcceptedDatabaseRecoveryPlan `
+            -State $State -PlanFingerprint ([string]$recoveryPlan.planFingerprint) -AllowCompleted | Out-Null
+        Assert-BootstrapDatabaseRecoveryHistory -State $State -CurrentPlan $recoveryPlan | Out-Null
+        $recoverySourceRoot = Resolve-BootstrapDatabaseRecoveryPlanSourceRoot -State $State -Plan $recoveryPlan
+    }
     $originalSourceRoot = Resolve-BootstrapAcceptedSourceRoot -State $State
     if ([string]$State.acceptedPlan.sourceFingerprint -cne [string]$recoveryPlan.originalSourceFingerprint -or
         (Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan) -cne
@@ -130,12 +142,29 @@ function Get-ContinuationBoundary {
         throw 'The completed recovery no longer preserves the exact original accepted deployment snapshot.'
     }
     $databaseStep = $State.steps['Gateway database']
+    $databaseEvidenceExact = if ($manualCompleted) {
+        [string]$databaseStep.completionMode -ceq 'ManualDatabaseRepair' -and
+        $recoveryPlan.correctedImage -is [System.Collections.IDictionary] -and
+        [string]$recoveryPlan.correctedImage.state -ceq 'DigestCheckpointed' -and
+        [string]$recoveryPlan.correctedImage.sourceFingerprint -ceq [string]$recoveryPlan.repairSourceFingerprint -and
+        [string]$recoveryPlan.correctedImage.deploymentOwnershipId -ceq ([guid][string]$State.deploymentOwnershipId).ToString('D') -and
+        [string]$recoveryPlan.correctedImage.recoveryPlanFingerprint -ceq [string]$recoveryPlan.planFingerprint -and
+        [string]$recoveryPlan.correctedImage.intentId -ceq [string]$recoveryPlan.repairJob.imageIntentId -and
+        [string]$databaseStep.evidence.databaseBootstrapJobImage -ceq [string]$recoveryPlan.correctedImage.image -and
+        [string]$databaseStep.evidence.manualDatabaseRepairPlanFingerprint -ceq [string]$recoveryPlan.planFingerprint -and
+        [string]$databaseStep.evidence.manualDatabaseRepairSourceFingerprint -ceq [string]$recoveryPlan.repairSourceFingerprint -and
+        [string]$databaseStep.evidence.exhaustedDatabaseRecoveryPlanFingerprint -ceq [string]$recoveryPlan.exhaustedRecoveryPlanFingerprint
+    }
+    else {
+        [string]$databaseStep.evidence.databaseRecoveryPlanFingerprint -ceq [string]$recoveryPlan.planFingerprint -and
+        [int]$databaseStep.evidence.databaseRecoveryAttemptNumber -eq $attemptNumber
+    }
+    $completionSourceFingerprint = if ($manualCompleted) { [string]$recoveryPlan.repairSourceFingerprint } else { [string]$recoveryPlan.correctedSourceFingerprint }
     if ($databaseStep -isnot [System.Collections.IDictionary] -or
         [string]$databaseStep.status -cne 'Completed' -or
         $databaseStep.evidence -isnot [System.Collections.IDictionary] -or
-        [string]$databaseStep.sourceFingerprint -cne [string]$recoveryPlan.correctedSourceFingerprint -or
-        [string]$databaseStep.evidence.databaseRecoveryPlanFingerprint -cne [string]$recoveryPlan.planFingerprint -or
-        [int]$databaseStep.evidence.databaseRecoveryAttemptNumber -ne $attemptNumber -or
+        [string]$databaseStep.sourceFingerprint -cne $completionSourceFingerprint -or
+        -not $databaseEvidenceExact -or
         (Get-BootstrapObjectFingerprint -InputObject $databaseStep.evidence) -cne [string]$recoveryPlan.databaseEvidenceFingerprint) {
         throw 'The completed Gateway database evidence is not exactly bound to the final successful recovery attempt.'
     }
@@ -157,7 +186,7 @@ function Get-ContinuationBoundary {
     foreach ($name in $validatedStepNames) {
         $step = $State.steps[$name]
         $expectedStepSource = if ($name -ceq 'Gateway database') {
-            [string]$recoveryPlan.correctedSourceFingerprint
+            $completionSourceFingerprint
         }
         else { [string]$recoveryPlan.originalSourceFingerprint }
         if ($step -isnot [System.Collections.IDictionary] -or
@@ -199,12 +228,16 @@ function Get-ContinuationBoundary {
         originalAcceptedPlanRecordFingerprint = Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan
         originalSourceFingerprint = [string]$recoveryPlan.originalSourceFingerprint
         originalExecutionSource = [string]$State.acceptedPlan.executionSource
+        databaseCompletionMode = $completionMode
         recoveryAttemptNumber = $attemptNumber
         recoveryPlanFingerprint = [string]$recoveryPlan.planFingerprint
-        recoverySourceFingerprint = [string]$recoveryPlan.correctedSourceFingerprint
+        recoverySourceFingerprint = $completionSourceFingerprint
         recoveryExecutionSource = [string]$recoveryPlan.executionSource
         recoveryDatabaseEvidenceFingerprint = [string]$recoveryPlan.databaseEvidenceFingerprint
-        recoveryHistoryFingerprint = if ($attemptNumber -eq 2) { [string](@($State.databaseRecoveryHistory)[0].archiveFingerprint) } else { '' }
+        recoveryHistoryFingerprint = if ($manualCompleted) { [string]$recoveryPlan.exhaustedRecoveryPlanFingerprint } elseif ($attemptNumber -eq 2) { [string](@($State.databaseRecoveryHistory)[0].archiveFingerprint) } else { '' }
+        manualDatabaseRepairPlanFingerprint = if ($manualCompleted) { [string]$recoveryPlan.planFingerprint } else { '' }
+        manualDatabaseRepairSourceFingerprint = if ($manualCompleted) { [string]$recoveryPlan.repairSourceFingerprint } else { '' }
+        exhaustedRecoveryPlanFingerprint = if ($manualCompleted) { [string]$recoveryPlan.exhaustedRecoveryPlanFingerprint } else { '' }
         toolFingerprint = $toolFingerprint
         validatedSteps = @($completedBoundary)
         continuationSteps = $continuationStepNames
@@ -216,6 +249,7 @@ function Get-ContinuationBoundary {
         recoverySourceRoot = $recoverySourceRoot
         originalSourceRoot = $originalSourceRoot
         recoveryPlan = $recoveryPlan
+        manualDatabaseRepairPlan = if ($manualCompleted) { $recoveryPlan } else { $null }
         attemptNumber = $attemptNumber
         continuationStepNames = $continuationStepNames
     }
@@ -415,7 +449,8 @@ try {
 
     $ownershipId = [string]$state.deploymentOwnershipId
     $deploymentSourceFingerprint = [string]$boundary.contract.originalSourceFingerprint
-    $databaseRecoveryPlan = $state.databaseRecoveryPlan
+    $databaseRecoveryPlan = if ([string]$boundary.contract.databaseCompletionMode -ceq 'AutomaticDatabaseRecovery') { $state.databaseRecoveryPlan } else { $null }
+    $manualDatabaseRepairPlan = if ([string]$boundary.contract.databaseCompletionMode -ceq 'ManualDatabaseRepair') { $state.manualDatabaseRepairPlan } else { $null }
 
     $null = Assert-BootstrapPrerequisites -Install:$false -RequirePurview:$false
     Save-ValidationCheckpoint -Name 'Prerequisites'
@@ -467,7 +502,7 @@ try {
     Save-ValidationCheckpoint -Name 'SQL private endpoint'
 
     $database = $state.steps['Gateway database'].evidence
-    $null = Assert-CanonicalValidationResult -Name 'Gateway database' -Result (Test-GatewayDatabaseEvidence -Config $configuration -Foundation $foundation -Inert $inert -Evidence $database -StepRecord $state.steps['Gateway database'] -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -DatabaseMigratorImage ([string]$images.databaseMigrator) -DatabaseRecoveryPlan $databaseRecoveryPlan)
+    $null = Assert-CanonicalValidationResult -Name 'Gateway database' -Result (Test-GatewayDatabaseEvidence -Config $configuration -Foundation $foundation -Inert $inert -Evidence $database -StepRecord $state.steps['Gateway database'] -DeploymentOwnershipId $ownershipId -SourceFingerprint $deploymentSourceFingerprint -DatabaseMigratorImage ([string]$images.databaseMigrator) -DatabaseRecoveryPlan $databaseRecoveryPlan -ManualDatabaseRepairPlan $manualDatabaseRepairPlan)
     Save-ValidationCheckpoint -Name 'Gateway database'
 
     $adminIdentity = Invoke-ContinuationStateStep -Name 'Admin UI identity' -Validate {
@@ -546,7 +581,7 @@ try {
     }
 
     $verification = Invoke-ContinuationStateStep -Name 'End-to-end deployment verification' -AlwaysRun -Action {
-        Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId $ownershipId -DatabaseRecoveryPlan $databaseRecoveryPlan -NonInteractive:$NonInteractive
+        Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId $ownershipId -DatabaseRecoveryPlan $databaseRecoveryPlan -ManualDatabaseRepairPlan $manualDatabaseRepairPlan -NonInteractive:$NonInteractive
     }
 
     $state.outputs['adminUiUrl'] = [string]$adminUi.adminUiUrl

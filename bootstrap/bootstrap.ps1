@@ -29,7 +29,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Init', 'Doctor', 'Plan', 'Apply', 'Resume', 'Status', 'Verify', 'Open', 'Diagnose', 'Up', 'RecoverDatabase')]
+    [ValidateSet('Init', 'Doctor', 'Plan', 'Apply', 'Resume', 'Status', 'Verify', 'Open', 'Diagnose', 'Up', 'RecoverDatabase', 'RepairDatabase')]
     [string]$Mode = 'Plan',
 
     [string]$Config = (Join-Path $PSScriptRoot 'config.json'),
@@ -220,6 +220,98 @@ function Get-GatewayDatabaseRecoveryPlan {
     $plan = ConvertTo-BootstrapCanonicalValue -Value $planCore
     $plan['planFingerprint'] = $planFingerprint
     $plan['whatIf'] = $whatIf
+    return $plan
+}
+
+function Get-GatewayManualDatabaseRepairPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Configuration,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State
+    )
+
+    Assert-BootstrapManualDatabaseRepairPrerequisite -State $State | Out-Null
+    if ($State.Contains('manualDatabaseRepairPlan')) {
+        throw 'The one-shot manual database repair plan already exists and cannot be replaced.'
+    }
+    $recovery = $State.databaseRecoveryPlan
+    $originalSourceFingerprint = [string]$State.acceptedPlan.sourceFingerprint
+    $repairSourceFingerprint = Get-BootstrapSourceFingerprint
+    Assert-BootstrapFingerprintValue -Value $originalSourceFingerprint -Label 'Original accepted source fingerprint'
+    Assert-BootstrapFingerprintValue -Value $repairSourceFingerprint -Label 'Manual database repair source fingerprint'
+    $null = Resolve-BootstrapAcceptedSourceRoot -State $State
+    $foundation = $State.steps['Azure foundation'].evidence
+    $identity = $State.steps['Gateway API identity'].evidence
+    $images = $State.steps['Immutable workload images'].evidence
+    $inert = $State.steps['Inert identity deployment'].evidence
+    $sqlPrivateEndpoint = $State.steps['SQL private endpoint'].evidence
+    foreach ($required in @($foundation, $identity, $images, $inert, $sqlPrivateEndpoint)) {
+        if ($required -isnot [System.Collections.IDictionary]) {
+            throw 'Manual database repair requires completed foundation, identity, image, inert-runtime, and SQL private-endpoint evidence.'
+        }
+    }
+    $apiPrincipal = Get-ManagedIdentityClientId -PrincipalObjectId ([string]$inert.apiPrincipalId)
+    $workerPrincipal = Get-ManagedIdentityClientId -PrincipalObjectId ([string]$inert.workerPrincipalId)
+    $originalFailure = Get-GatewayFailedDatabaseBootstrapBoundary `
+        -Config $Configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+        -SqlServerFqdn ([string]$inert.sqlServerFqdn) -OriginalJobImage ([string]$images.databaseMigrator) `
+        -DeploymentOwnershipId ([string]$State.deploymentOwnershipId) `
+        -OriginalSourceFingerprint $originalSourceFingerprint -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+        -OriginalAdministratorObjectId ([string]$identity.userObjectId) `
+        -OriginalAdministratorLogin ([string]$identity.userPrincipalName)
+    $firstFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
+        -Config $Configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+        -SqlServerFqdn ([string]$inert.sqlServerFqdn) -RecoveryPlan $recovery.previousRecoveryPlan `
+        -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+        -OriginalAdministratorObjectId ([string]$identity.userObjectId) `
+        -OriginalAdministratorLogin ([string]$identity.userPrincipalName)
+    $secondFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
+        -Config $Configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+        -SqlServerFqdn ([string]$inert.sqlServerFqdn) -RecoveryPlan $recovery `
+        -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+        -OriginalAdministratorObjectId ([string]$identity.userObjectId) `
+        -OriginalAdministratorLogin ([string]$identity.userPrincipalName)
+    if ([string]$originalFailure.boundaryFingerprint -cne [string]$recovery.failedJob.boundaryFingerprint -or
+        [string]$firstFailure.boundaryFingerprint -cne [string]$recovery.priorFailedRecovery.boundaryFingerprint -or
+        [string]$secondFailure.boundaryFingerprint -cne [string]$recovery.failedRecovery.boundaryFingerprint) {
+        throw 'The live original/attempt-one/attempt-two failure chain no longer matches the terminal automatic recovery state.'
+    }
+    $ownershipId = ([guid][string]$State.deploymentOwnershipId).ToString('D')
+    $boundaryMaterial = "$($originalFailure.boundaryFingerprint)|$($firstFailure.boundaryFingerprint)|$($secondFailure.boundaryFingerprint)"
+    $imageIntentId = Get-BootstrapDeterministicGuid -Material "$ownershipId|$repairSourceFingerprint|$boundaryMaterial|manual-database-repair-image"
+    $executionIntentId = Get-BootstrapDeterministicGuid -Material "$ownershipId|$repairSourceFingerprint|$boundaryMaterial|manual-database-repair-execution"
+    $contract = Get-GatewayManualDatabaseRepairContract -Config $Configuration
+    $planCore = [ordered]@{
+        schemaVersion = 1
+        configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $Configuration
+        deploymentOwnershipId = $ownershipId
+        originalSourceFingerprint = $originalSourceFingerprint
+        repairSourceFingerprint = $repairSourceFingerprint
+        originalAcceptedPlan = ConvertTo-BootstrapCanonicalValue -Value $State.acceptedPlan
+        exhaustedRecoveryPlanFingerprint = [string]$recovery.planFingerprint
+        exhaustedRecoveryPlan = ConvertTo-BootstrapCanonicalValue -Value $recovery
+        originalFailedJob = $originalFailure
+        firstFailedRecovery = $firstFailure
+        secondFailedRecovery = $secondFailure
+        correctedImage = [ordered]@{
+            component = 'databaseMigratorRecovery'
+            repository = 'gateway-db-migrator'
+            dockerfile = 'tools/Gateway.DatabaseMigrator/Dockerfile'
+            intentId = $imageIntentId
+            tag = Get-BootstrapImageBuildIntentTag -DeploymentOwnershipId $ownershipId -SourceFingerprint $repairSourceFingerprint -IntentId $imageIntentId
+            state = 'Planned'
+        }
+        repairJob = [ordered]@{
+            name = [string]$contract.jobName
+            executionIntentId = $executionIntentId
+            imageIntentId = $imageIntentId
+            repairMode = 'ResumeAfterSchemaCompleted'
+            replicaRetryLimit = 0
+            maximumExecutions = 1
+        }
+    }
+    $plan = ConvertTo-BootstrapCanonicalValue -Value $planCore
+    $plan['planFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $planCore
     return $plan
 }
 
@@ -617,6 +709,141 @@ try {
         }) -OutputFormat Json
     }
 
+    if ($Mode -eq 'RepairDatabase') {
+        if ($EventStreamOnly) { throw 'RepairDatabase does not support EventStreamOnly.' }
+        if (-not $Yes) { throw 'RepairDatabase is a direct one-shot operation and requires --yes. It has no Plan or What-If mode.' }
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedPlanFingerprint)) {
+            throw 'RepairDatabase does not accept an expected Plan fingerprint because it has no Plan or What-If mode.'
+        }
+        Assert-GatewayPlanPrerequisites -Install:$InstallPrerequisites | Out-Null
+        $null = Connect-BootstrapAzure -Config $configuration -NonInteractive:$NonInteractive
+        Assert-BootstrapManualDatabaseRepairPrerequisite -State $state | Out-Null
+
+        if ($state.Contains('manualDatabaseRepairPlan') -and
+            $state.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
+            [string]$state.manualDatabaseRepairPlan.status -ceq 'Completed') {
+            Assert-BootstrapAcceptedManualDatabaseRepairPlan `
+                -State $state -PlanFingerprint ([string]$state.manualDatabaseRepairPlan.planFingerprint) -AllowCompleted | Out-Null
+            Write-GatewayExperienceEvent -Type Result -Message 'The one-shot manual database repair is already complete. The two automatic recovery failures remain preserved; run gateway continue-bootstrap.' -Data ([ordered]@{
+                step = 'Gateway database'; index = 11; total = $stepNames.Count
+                manualDatabaseRepairPlanFingerprint = [string]$state.manualDatabaseRepairPlan.planFingerprint
+                repaired = $true; runOnce = $true
+            }) -OutputFormat $OutputFormat
+            return
+        }
+        if ($state.Contains('manualDatabaseRepairPlan') -and
+            $state.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
+            [string]$state.manualDatabaseRepairPlan.status -ceq 'Failed') {
+            throw 'The one authorized manual database repair execution failed. It is preserved and cannot be replaced, restarted, or deleted.'
+        }
+
+        $plan = if ($state.Contains('manualDatabaseRepairPlan')) {
+            Assert-BootstrapAcceptedManualDatabaseRepairPlan `
+                -State $state -PlanFingerprint ([string]$state.manualDatabaseRepairPlan.planFingerprint) | Out-Null
+            $state.manualDatabaseRepairPlan
+        }
+        else {
+            $candidate = Get-GatewayManualDatabaseRepairPlan -Configuration $configuration -State $state
+            Set-BootstrapAcceptedManualDatabaseRepairPlan -State $state -StatePath $statePath -Plan $candidate
+        }
+        $planFingerprint = [string]$plan.planFingerprint
+        Assert-BootstrapAcceptedManualDatabaseRepairPlan -State $state -PlanFingerprint $planFingerprint | Out-Null
+        $repairSourceRoot = Resolve-BootstrapManualDatabaseRepairPlanSourceRoot -State $state -Plan $state.manualDatabaseRepairPlan
+        Set-BootstrapExecutionSourceRoot -Path $repairSourceRoot
+        foreach ($module in @('Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'Verification')) {
+            Import-Module (Join-Path $repairSourceRoot "bootstrap/modules/$module.psm1") -Force -DisableNameChecking
+        }
+        Set-BootstrapExecutionSourceRoot -Path $repairSourceRoot
+
+        $foundation = $state.steps['Azure foundation'].evidence
+        $identity = $state.steps['Gateway API identity'].evidence
+        $inert = $state.steps['Inert identity deployment'].evidence
+        $sqlPrivateEndpoint = $state.steps['SQL private endpoint'].evidence
+        $apiPrincipal = Get-ManagedIdentityClientId -PrincipalObjectId ([string]$inert.apiPrincipalId)
+        $workerPrincipal = Get-ManagedIdentityClientId -PrincipalObjectId ([string]$inert.workerPrincipalId)
+        $liveOriginalFailure = Get-GatewayFailedDatabaseBootstrapBoundary `
+            -Config $configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+            -SqlServerFqdn ([string]$inert.sqlServerFqdn) -OriginalJobImage ([string]$plan.originalFailedJob.jobImage) `
+            -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+            -OriginalSourceFingerprint ([string]$plan.originalSourceFingerprint) `
+            -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+            -OriginalAdministratorObjectId ([string]$identity.userObjectId) `
+            -OriginalAdministratorLogin ([string]$identity.userPrincipalName)
+        $liveFirstFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
+            -Config $configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+            -SqlServerFqdn ([string]$inert.sqlServerFqdn) -RecoveryPlan $plan.exhaustedRecoveryPlan.previousRecoveryPlan `
+            -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+            -OriginalAdministratorObjectId ([string]$identity.userObjectId) `
+            -OriginalAdministratorLogin ([string]$identity.userPrincipalName)
+        $liveSecondFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
+            -Config $configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+            -SqlServerFqdn ([string]$inert.sqlServerFqdn) -RecoveryPlan $plan.exhaustedRecoveryPlan `
+            -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+            -OriginalAdministratorObjectId ([string]$identity.userObjectId) `
+            -OriginalAdministratorLogin ([string]$identity.userPrincipalName)
+        if ([string]$liveOriginalFailure.boundaryFingerprint -cne [string]$plan.originalFailedJob.boundaryFingerprint -or
+            [string]$liveFirstFailure.boundaryFingerprint -cne [string]$plan.firstFailedRecovery.boundaryFingerprint -or
+            [string]$liveSecondFailure.boundaryFingerprint -cne [string]$plan.secondFailedRecovery.boundaryFingerprint) {
+            throw 'The exact original/attempt-one/attempt-two failure chain changed after manual repair acceptance. No repair mutation was started.'
+        }
+
+        $null = Start-BootstrapManualDatabaseRepairPlan -State $state -StatePath $statePath -PlanFingerprint $planFingerprint
+        $repairImage = Build-GatewayDatabaseRecoveryImage `
+            -Config $configuration -AcrLoginServer ([string]$foundation.acrLoginServer) `
+            -SourceFingerprint ([string]$plan.repairSourceFingerprint) `
+            -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+            -RecoveryPlanFingerprint $planFingerprint `
+            -BuildIntent $state.manualDatabaseRepairPlan.correctedImage `
+            -Checkpoint {
+                param($imageEvidence)
+                $state.manualDatabaseRepairPlan.correctedImage = ConvertTo-BootstrapCanonicalValue -Value $imageEvidence
+                Save-BootstrapState -State $state -Path $statePath
+            }
+        $database = $null
+        $databaseFailure = $null
+        try {
+            $database = Initialize-GatewayDatabase `
+                -Config $configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+                -SqlServerFqdn ([string]$inert.sqlServerFqdn) `
+                -ApiPrincipalId ([string]$inert.apiPrincipalId) -WorkerPrincipalId ([string]$inert.workerPrincipalId) `
+                -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+                -DatabaseMigratorImage ([string]$repairImage.image) `
+                -OriginalEntraAdministratorObjectId ([string]$identity.userObjectId) `
+                -OriginalEntraAdministratorLogin ([string]$identity.userPrincipalName) `
+                -BootstrapClientIpv4 ([string]$state.acceptedPlan.bootstrapClientIpv4) `
+                -ManualRepairPlan $state.manualDatabaseRepairPlan
+        }
+        catch { $databaseFailure = $_ }
+        if ($null -ne $databaseFailure) {
+            $failedRepair = $null
+            try {
+                $failedRepair = Get-GatewayFailedManualDatabaseRepairBoundary `
+                    -Config $configuration -Foundation $foundation -SqlPrivateEndpoint $sqlPrivateEndpoint `
+                    -SqlServerFqdn ([string]$inert.sqlServerFqdn) -ManualRepairPlan $state.manualDatabaseRepairPlan `
+                    -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+                    -OriginalAdministratorObjectId ([string]$identity.userObjectId) `
+                    -OriginalAdministratorLogin ([string]$identity.userPrincipalName) -ReturnNullUnlessFailed
+            }
+            catch { $failedRepair = $null }
+            if ($null -ne $failedRepair) {
+                $null = Set-BootstrapFailedManualDatabaseRepairPlan `
+                    -State $state -StatePath $statePath -FailedRepair $failedRepair
+                throw 'The sole manual database repair execution failed with the original SQL administrator restored. No replacement, restart, or deletion is authorized.'
+            }
+            throw $databaseFailure
+        }
+        $null = Complete-BootstrapManualDatabaseRepairPlan `
+            -State $state -StatePath $statePath -PlanFingerprint $planFingerprint -DatabaseEvidence $database
+        Write-GatewayExperienceEvent -Type Result -Message 'Manual database repair completed through one new one-shot Job. The original and both recovery Jobs remain preserved. Run gateway continue-bootstrap.' -Data ([ordered]@{
+            step = 'Gateway database'; index = 11; total = $stepNames.Count
+            manualDatabaseRepairPlanFingerprint = $planFingerprint; repaired = $true; runOnce = $true
+            repairJob = [string]$database.databaseBootstrapJobName
+            repairExecution = [string]$database.databaseBootstrapExecutionName
+            originalAdministratorRestored = [bool]$database.originalSqlAdministratorRestored
+        }) -OutputFormat $OutputFormat
+        return
+    }
+
     if ($Mode -eq 'RecoverDatabase') {
         if ($EventStreamOnly) { throw 'RecoverDatabase does not support EventStreamOnly.' }
         Assert-GatewayPlanPrerequisites -Install:$InstallPrerequisites | Out-Null
@@ -1007,9 +1234,9 @@ try {
         $images = Get-Evidence 'Immutable workload images'
         $adminIdentity = Get-Evidence 'Admin UI identity'
         $adminCredential = Get-Evidence 'Admin UI Key Vault credential'
-        $verifyDatabaseRecoveryPlan = if ($state.Contains('databaseRecoveryPlan')) { $state.databaseRecoveryPlan } else { $null }
+        $verifyDatabaseValidationPlans = Get-BootstrapCompletedDatabaseValidationPlans -State $state
         $verification = Invoke-GatewayStateStep -Name 'End-to-end deployment verification' -AlwaysRun -Action {
-            Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -DatabaseRecoveryPlan $verifyDatabaseRecoveryPlan -NonInteractive:$NonInteractive
+            Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -DatabaseRecoveryPlan $verifyDatabaseValidationPlans.databaseRecoveryPlan -ManualDatabaseRepairPlan $verifyDatabaseValidationPlans.manualDatabaseRepairPlan -NonInteractive:$NonInteractive
         }
         Save-Output -Name 'verification' -Value $verification
         Write-GatewayExperienceEvent -Type Result -Message "Verification passed. Admin UI: $($adminUi.adminUiUrl)" -Data ([ordered]@{
@@ -1163,9 +1390,11 @@ try {
         return $created
     }
 
-    $databaseRecoveryPlan = if ($state.Contains('databaseRecoveryPlan')) { $state.databaseRecoveryPlan } else { $null }
+    $databaseValidationPlans = Get-BootstrapCompletedDatabaseValidationPlans -State $state
+    $databaseRecoveryPlan = $databaseValidationPlans.databaseRecoveryPlan
+    $manualDatabaseRepairPlan = $databaseValidationPlans.manualDatabaseRepairPlan
     $database = Invoke-GatewayStateStep -Name 'Gateway database' -Validate {
-        Test-GatewayDatabaseEvidence -Config $configuration -Foundation $foundation -Inert $inert -Evidence $state.steps['Gateway database'].evidence -StepRecord $state.steps['Gateway database'] -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -DatabaseMigratorImage ([string]$images.databaseMigrator) -DatabaseRecoveryPlan $databaseRecoveryPlan
+        Test-GatewayDatabaseEvidence -Config $configuration -Foundation $foundation -Inert $inert -Evidence $state.steps['Gateway database'].evidence -StepRecord $state.steps['Gateway database'] -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -DatabaseMigratorImage ([string]$images.databaseMigrator) -DatabaseRecoveryPlan $databaseRecoveryPlan -ManualDatabaseRepairPlan $manualDatabaseRepairPlan
     } -Action {
         Initialize-GatewayDatabase `
             -Config $configuration `
@@ -1276,7 +1505,7 @@ try {
     } | Out-Null
 
     $verification = Invoke-GatewayStateStep -Name 'End-to-end deployment verification' -AlwaysRun -Action {
-        Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -DatabaseRecoveryPlan $databaseRecoveryPlan -NonInteractive:$NonInteractive
+        Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -DatabaseRecoveryPlan $databaseRecoveryPlan -ManualDatabaseRepairPlan $manualDatabaseRepairPlan -NonInteractive:$NonInteractive
     }
 
     Save-Output -Name 'adminUiUrl' -Value ([string]$adminUi.adminUiUrl)

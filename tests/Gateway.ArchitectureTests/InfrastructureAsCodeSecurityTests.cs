@@ -1567,7 +1567,7 @@ public class InfrastructureAsCodeSecurityTests
         var dockerIgnore = ReadRepositoryFile(".dockerignore");
 
         entry.Should().Contain(
-            "[ValidateSet('Init', 'Doctor', 'Plan', 'Apply', 'Resume', 'Status', 'Verify', 'Open', 'Diagnose', 'Up', 'RecoverDatabase')]");
+            "[ValidateSet('Init', 'Doctor', 'Plan', 'Apply', 'Resume', 'Status', 'Verify', 'Open', 'Diagnose', 'Up', 'RecoverDatabase', 'RepairDatabase')]");
         entry.Should().Contain("Enter-BootstrapLock");
         entry.Should().Contain(
             "Clean bootstrap requires the target resource group to be absent. Refusing to adopt an existing unowned resource group or its deterministic resources.");

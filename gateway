@@ -21,6 +21,8 @@ Commands:
   resume      Resume an interrupted accepted plan
   recover-database
               Run the reviewed, one-time recovery for an eligible failed database bootstrap
+  repair-database
+              Run the one-shot manual repair after both automatic database recoveries failed
   continue-bootstrap
               Continue only pending steps after an exact completed database recovery
   upgrade-admin-ui
@@ -158,6 +160,7 @@ case "$command_name" in
   apply) mode='Apply' ;;
   resume) mode='Resume' ;;
   recover-database) mode='RecoverDatabase' ;;
+  repair-database) mode='RepairDatabase' ;;
   status) mode='Status' ;;
   verify) mode='Verify' ;;
   open) mode='Open' ;;

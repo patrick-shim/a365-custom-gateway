@@ -464,6 +464,120 @@ function Get-GatewayDatabaseRecoveryAttemptNumber {
     return $attemptNumber
 }
 
+function Assert-GatewayPrivateDatabaseManualRepairRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Record,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$SqlServerFqdn,
+        [Parameter(Mandatory)][string]$JobImage,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ManualRepairPlan,
+        [Parameter(Mandatory)][string]$OriginalAdministratorObjectId,
+        [Parameter(Mandatory)][string]$OriginalAdministratorLogin,
+        [Parameter(Mandatory)]$SqlPrivateEndpoint
+    )
+
+    $contract = Get-GatewayManualDatabaseRepairContract -Config $Config
+    $addressTuple = Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple `
+        -Config $Config -SqlServerFqdn $SqlServerFqdn -Evidence $SqlPrivateEndpoint
+    $originalFailure = $ManualRepairPlan.originalFailedJob
+    $firstFailure = $ManualRepairPlan.firstFailedRecovery
+    $secondFailure = $ManualRepairPlan.secondFailedRecovery
+    $expectedKeys = @(
+        'schemaVersion', 'subscriptionId', 'tenantId', 'resourceGroupName', 'server', 'database',
+        'deploymentOwnershipId', 'acceptedSourceFingerprint',
+        'manualDatabaseRepairSourceFingerprint', 'manualDatabaseRepairPlanFingerprint',
+        'exhaustedRecoveryPlanFingerprint',
+        'originalFailedJobName', 'originalFailedExecutionName', 'originalFailedExecutionIntentId',
+        'originalFailedBoundaryFingerprint',
+        'firstFailedRecoveryJobName', 'firstFailedRecoveryExecutionName', 'firstFailedRecoveryExecutionIntentId',
+        'firstFailedRecoveryPlanFingerprint', 'firstFailedRecoverySourceFingerprint', 'firstFailedRecoveryBoundaryFingerprint',
+        'secondFailedRecoveryJobName', 'secondFailedRecoveryExecutionName', 'secondFailedRecoveryExecutionIntentId',
+        'secondFailedRecoveryPlanFingerprint', 'secondFailedRecoverySourceFingerprint', 'secondFailedRecoveryBoundaryFingerprint',
+        'jobDeploymentName', 'jobName', 'jobImage',
+        'privateEndpointNetworkInterfaceId', 'privateEndpointIpv4Address', 'privateDnsARecordSetId',
+        'privateDnsARecordName', 'privateDnsARecordIpv4Address',
+        'originalAdministratorObjectId', 'originalAdministratorLogin', 'jobPrincipalId', 'executionIntentId',
+        'deploymentIntentAtUtc', 'deploymentVerifiedAtUtc', 'administratorSwapIntentAtUtc',
+        'administratorSwappedAtUtc', 'jobStartIntentAtUtc', 'executionName', 'executionStartedAtUtc',
+        'executionSucceededAtUtc', 'evidenceFingerprint', 'evidenceRecoveredAtUtc',
+        'administratorRestoredAtUtc', 'completedAtUtc'
+    )
+    $actualKeys = @($Record.Keys | ForEach-Object { [string]$_ } | Sort-Object)
+    if (($actualKeys -join '|') -cne (($expectedKeys | Sort-Object) -join '|') -or
+        [int]$Record.schemaVersion -ne 5 -or
+        [string]$Record.subscriptionId -cne ([guid][string]$Config.subscriptionId).ToString('D') -or
+        [string]$Record.tenantId -cne ([guid][string]$Config.tenantId).ToString('D') -or
+        [string]$Record.resourceGroupName -cne [string]$Config.resourceGroupName -or
+        [string]$Record.server -cne $SqlServerFqdn -or [string]$Record.database -cne 'GatewayDb' -or
+        [string]$Record.deploymentOwnershipId -cne ([guid]$DeploymentOwnershipId).ToString('D') -or
+        [string]$Record.acceptedSourceFingerprint -cne [string]$ManualRepairPlan.originalSourceFingerprint -or
+        [string]$Record.manualDatabaseRepairSourceFingerprint -cne [string]$ManualRepairPlan.repairSourceFingerprint -or
+        [string]$Record.manualDatabaseRepairPlanFingerprint -cne [string]$ManualRepairPlan.planFingerprint -or
+        [string]$Record.exhaustedRecoveryPlanFingerprint -cne [string]$ManualRepairPlan.exhaustedRecoveryPlanFingerprint -or
+        [string]$Record.originalFailedJobName -cne [string]$originalFailure.jobName -or
+        [string]$Record.originalFailedExecutionName -cne [string]$originalFailure.executionName -or
+        [string]$Record.originalFailedExecutionIntentId -cne [string]$originalFailure.executionIntentId -or
+        [string]$Record.originalFailedBoundaryFingerprint -cne [string]$originalFailure.boundaryFingerprint -or
+        [string]$Record.firstFailedRecoveryJobName -cne [string]$firstFailure.jobName -or
+        [string]$Record.firstFailedRecoveryExecutionName -cne [string]$firstFailure.executionName -or
+        [string]$Record.firstFailedRecoveryExecutionIntentId -cne [string]$firstFailure.executionIntentId -or
+        [string]$Record.firstFailedRecoveryPlanFingerprint -cne [string]$firstFailure.recoveryPlanFingerprint -or
+        [string]$Record.firstFailedRecoverySourceFingerprint -cne [string]$firstFailure.recoverySourceFingerprint -or
+        [string]$Record.firstFailedRecoveryBoundaryFingerprint -cne [string]$firstFailure.boundaryFingerprint -or
+        [string]$Record.secondFailedRecoveryJobName -cne [string]$secondFailure.jobName -or
+        [string]$Record.secondFailedRecoveryExecutionName -cne [string]$secondFailure.executionName -or
+        [string]$Record.secondFailedRecoveryExecutionIntentId -cne [string]$secondFailure.executionIntentId -or
+        [string]$Record.secondFailedRecoveryPlanFingerprint -cne [string]$secondFailure.recoveryPlanFingerprint -or
+        [string]$Record.secondFailedRecoverySourceFingerprint -cne [string]$secondFailure.recoverySourceFingerprint -or
+        [string]$Record.secondFailedRecoveryBoundaryFingerprint -cne [string]$secondFailure.boundaryFingerprint -or
+        [string]$Record.jobDeploymentName -cne [string]$contract.deploymentName -or
+        [string]$Record.jobName -cne [string]$contract.jobName -or
+        [string]$Record.jobImage -cne $JobImage -or
+        [string]$Record.privateEndpointNetworkInterfaceId -cne [string]$addressTuple.privateEndpointNetworkInterfaceId -or
+        [string]$Record.privateEndpointIpv4Address -cne [string]$addressTuple.privateEndpointIpv4Address -or
+        [string]$Record.privateDnsARecordSetId -cne [string]$addressTuple.privateDnsARecordSetId -or
+        [string]$Record.privateDnsARecordName -cne [string]$addressTuple.privateDnsARecordName -or
+        [string]$Record.privateDnsARecordIpv4Address -cne [string]$addressTuple.privateDnsARecordIpv4Address -or
+        [string]$Record.originalAdministratorObjectId -cne ([guid]$OriginalAdministratorObjectId).ToString('D') -or
+        [string]$Record.originalAdministratorLogin -cne $OriginalAdministratorLogin -or
+        [string]$Record.executionIntentId -cne ([guid][string]$ManualRepairPlan.repairJob.executionIntentId).ToString('D')) {
+        throw 'The manual database repair receipt does not match its exact exhausted failure chain, source, image, job, network, or administrator boundary.'
+    }
+    foreach ($fingerprint in @(
+        [string]$ManualRepairPlan.repairSourceFingerprint, [string]$ManualRepairPlan.planFingerprint,
+        [string]$ManualRepairPlan.exhaustedRecoveryPlanFingerprint,
+        [string]$originalFailure.boundaryFingerprint, [string]$firstFailure.boundaryFingerprint,
+        [string]$secondFailure.boundaryFingerprint
+    )) {
+        Assert-BootstrapFingerprintValue -Value $fingerprint -Label 'Manual database repair receipt fingerprint'
+    }
+    foreach ($name in @(
+        'deploymentIntentAtUtc', 'deploymentVerifiedAtUtc', 'administratorSwapIntentAtUtc',
+        'administratorSwappedAtUtc', 'jobStartIntentAtUtc', 'executionStartedAtUtc',
+        'executionSucceededAtUtc', 'evidenceRecoveredAtUtc', 'administratorRestoredAtUtc', 'completedAtUtc'
+    )) {
+        $value = [string]$Record[$name]
+        if ([string]::IsNullOrWhiteSpace($value)) { continue }
+        $parsed = [DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParseExact($value, 'O', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) {
+            throw 'The manual database repair receipt contains an invalid UTC timestamp.'
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Record.jobPrincipalId)) {
+        Assert-GuidValue -Value ([string]$Record.jobPrincipalId) -Label 'Manual database repair Job principal ID'
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Record.executionName) -and
+        [string]$Record.executionName -cnotmatch "^$([regex]::Escape([string]$contract.jobName))-[a-z0-9]{5,16}$") {
+        throw 'The manual database repair receipt contains an invalid execution name.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Record.evidenceFingerprint)) {
+        Assert-BootstrapFingerprintValue -Value ([string]$Record.evidenceFingerprint) -Label 'Manual database repair evidence fingerprint'
+    }
+    return $true
+}
+
 function Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple {
     [CmdletBinding()]
     param(
@@ -649,11 +763,16 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
         [Parameter(Mandatory)]$WorkerPrincipal,
         [Parameter(Mandatory)][string]$ExecutionIntentId,
         [switch]$Recovery,
+        [switch]$ManualRepair,
         [ValidateSet(1, 2)][int]$RecoveryAttemptNumber = 1,
         [Parameter()][string]$RecoverySourceFingerprint = '',
         [Parameter()][string]$RecoveryPlanFingerprint = '',
+        [Parameter()][string]$ManualRepairSourceFingerprint = '',
+        [Parameter()][string]$ManualRepairPlanFingerprint = '',
         [Parameter()][string]$OriginalFailedBoundaryFingerprint = '',
-        [Parameter()][string]$PriorFailedRecoveryBoundaryFingerprint = ''
+        [Parameter()][string]$PriorFailedRecoveryBoundaryFingerprint = '',
+        [Parameter()][string]$FirstFailedRecoveryBoundaryFingerprint = '',
+        [Parameter()][string]$SecondFailedRecoveryBoundaryFingerprint = ''
     )
 
     Assert-GuidValue -Value $ExecutionIntentId -Label 'Database-bootstrap execution intent identifier'
@@ -662,16 +781,26 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
         [guid]$ExecutionIntentId -eq [guid]::Empty) {
         throw 'The database-bootstrap execution intent identifier must be a nonempty canonical lowercase GUID.'
     }
-    $recoveryContract = if ($Recovery) { Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $RecoveryAttemptNumber } else { $null }
-    $jobName = if ($Recovery) { [string]$recoveryContract.jobName } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
-    $containerName = if ($Recovery) { [string]$recoveryContract.containerName } else { 'database-bootstrap' }
-    $workloadTag = if ($Recovery) { [string]$recoveryContract.workloadTag } else { 'database-bootstrap' }
+    if ($Recovery -and $ManualRepair) { throw 'Database recovery and manual repair are distinct execution surfaces.' }
+    $recoveryContract = if ($Recovery) { Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $RecoveryAttemptNumber } elseif ($ManualRepair) { Get-GatewayManualDatabaseRepairContract -Config $Config } else { $null }
+    $jobName = if ($Recovery -or $ManualRepair) { [string]$recoveryContract.jobName } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
+    $containerName = if ($Recovery -or $ManualRepair) { [string]$recoveryContract.containerName } else { 'database-bootstrap' }
+    $workloadTag = if ($Recovery -or $ManualRepair) { [string]$recoveryContract.workloadTag } else { 'database-bootstrap' }
     if ($Recovery) {
         Assert-BootstrapFingerprintValue -Value $RecoverySourceFingerprint -Label 'Database recovery source fingerprint'
         Assert-BootstrapFingerprintValue -Value $RecoveryPlanFingerprint -Label 'Database recovery plan fingerprint'
         if ($RecoveryAttemptNumber -eq 2) {
             Assert-BootstrapFingerprintValue -Value $OriginalFailedBoundaryFingerprint -Label 'Original failed database boundary fingerprint'
             Assert-BootstrapFingerprintValue -Value $PriorFailedRecoveryBoundaryFingerprint -Label 'Prior failed recovery boundary fingerprint'
+        }
+    }
+    if ($ManualRepair) {
+        foreach ($fingerprint in @(
+            $ManualRepairSourceFingerprint, $ManualRepairPlanFingerprint,
+            $OriginalFailedBoundaryFingerprint, $FirstFailedRecoveryBoundaryFingerprint,
+            $SecondFailedRecoveryBoundaryFingerprint
+        )) {
+            Assert-BootstrapFingerprintValue -Value $fingerprint -Label 'Manual database repair fingerprint'
         }
     }
     $job = Invoke-AzJson -Arguments @(
@@ -687,7 +816,7 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
         -SourceFingerprint $SourceFingerprint `
         -ApiPrincipal $ApiPrincipal `
         -WorkerPrincipal $WorkerPrincipal `
-        -Recovery:$Recovery)
+        -Recovery:($Recovery -or $ManualRepair))
     $containers = @(ConvertTo-GatewayDatabaseBootstrapCollection -Value $job.properties.template.containers)
     $initContainers = @(if ($null -ne $job.properties.template.PSObject.Properties['initContainers']) {
         ConvertTo-GatewayDatabaseBootstrapCollection -Value $job.properties.template.initContainers
@@ -765,7 +894,13 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
             ($RecoveryAttemptNumber -eq 2 -and (
                 [string]$job.tags.recoveryAttempt -cne '2' -or
                 [string]$job.tags.originalFailedDatabaseBoundaryFingerprint -cne $OriginalFailedBoundaryFingerprint -or
-                [string]$job.tags.priorFailedRecoveryBoundaryFingerprint -cne $PriorFailedRecoveryBoundaryFingerprint))))) {
+                [string]$job.tags.priorFailedRecoveryBoundaryFingerprint -cne $PriorFailedRecoveryBoundaryFingerprint)))) -or
+        ($ManualRepair -and (
+            [string]$job.tags.manualDatabaseRepairSourceFingerprint -cne $ManualRepairSourceFingerprint -or
+            [string]$job.tags.manualDatabaseRepairPlanFingerprint -cne $ManualRepairPlanFingerprint -or
+            [string]$job.tags.originalFailedDatabaseBoundaryFingerprint -cne $OriginalFailedBoundaryFingerprint -or
+            [string]$job.tags.firstFailedRecoveryBoundaryFingerprint -cne $FirstFailedRecoveryBoundaryFingerprint -or
+            [string]$job.tags.secondFailedRecoveryBoundaryFingerprint -cne $SecondFailedRecoveryBoundaryFingerprint))) {
         throw 'The private database-bootstrap job does not match the exact dormant, identity, image, network, trigger, or argument contract.'
     }
     return [ordered]@{
@@ -778,8 +913,12 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
         recoverySourceFingerprint = $RecoverySourceFingerprint
         recoveryPlanFingerprint = $RecoveryPlanFingerprint
         recoveryAttemptNumber = if ($Recovery) { $RecoveryAttemptNumber } else { 0 }
+        manualDatabaseRepairSourceFingerprint = $ManualRepairSourceFingerprint
+        manualDatabaseRepairPlanFingerprint = $ManualRepairPlanFingerprint
         originalFailedBoundaryFingerprint = $OriginalFailedBoundaryFingerprint
         priorFailedRecoveryBoundaryFingerprint = $PriorFailedRecoveryBoundaryFingerprint
+        firstFailedRecoveryBoundaryFingerprint = $FirstFailedRecoveryBoundaryFingerprint
+        secondFailedRecoveryBoundaryFingerprint = $SecondFailedRecoveryBoundaryFingerprint
     }
 }
 
@@ -798,11 +937,16 @@ function Deploy-GatewayDatabaseBootstrapJob {
         [Parameter(Mandatory)][string]$ExecutionIntentId,
         [Parameter(Mandatory)][bool]$FreshIntent,
         [switch]$Recovery,
+        [switch]$ManualRepair,
         [ValidateSet(1, 2)][int]$RecoveryAttemptNumber = 1,
         [Parameter()][string]$RecoverySourceFingerprint = '',
         [Parameter()][string]$RecoveryPlanFingerprint = '',
+        [Parameter()][string]$ManualRepairSourceFingerprint = '',
+        [Parameter()][string]$ManualRepairPlanFingerprint = '',
         [Parameter()][string]$OriginalFailedBoundaryFingerprint = '',
-        [Parameter()][string]$PriorFailedRecoveryBoundaryFingerprint = ''
+        [Parameter()][string]$PriorFailedRecoveryBoundaryFingerprint = '',
+        [Parameter()][string]$FirstFailedRecoveryBoundaryFingerprint = '',
+        [Parameter()][string]$SecondFailedRecoveryBoundaryFingerprint = ''
     )
 
     Assert-BootstrapIpv4Value -Value $ExpectedPrivateEndpointIpv4Address -Label 'Expected SQL private-endpoint IPv4 address'
@@ -814,15 +958,25 @@ function Deploy-GatewayDatabaseBootstrapJob {
         throw 'The database-bootstrap execution intent identifier must be a nonempty canonical lowercase GUID.'
     }
     $root = Get-BootstrapExecutionSourceRoot
-    $recoveryContract = if ($Recovery) { Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $RecoveryAttemptNumber } else { $null }
-    $jobName = if ($Recovery) { [string]$recoveryContract.jobName } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
-    $deploymentName = if ($Recovery) { [string]$recoveryContract.deploymentName } else { "a365gw-$($Config.projectName)-bootstrap-database-job-$($Config.environment)" }
+    if ($Recovery -and $ManualRepair) { throw 'Database recovery and manual repair are distinct execution surfaces.' }
+    $recoveryContract = if ($Recovery) { Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $RecoveryAttemptNumber } elseif ($ManualRepair) { Get-GatewayManualDatabaseRepairContract -Config $Config } else { $null }
+    $jobName = if ($Recovery -or $ManualRepair) { [string]$recoveryContract.jobName } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
+    $deploymentName = if ($Recovery -or $ManualRepair) { [string]$recoveryContract.deploymentName } else { "a365gw-$($Config.projectName)-bootstrap-database-job-$($Config.environment)" }
     if ($Recovery) {
         Assert-BootstrapFingerprintValue -Value $RecoverySourceFingerprint -Label 'Database recovery source fingerprint'
         Assert-BootstrapFingerprintValue -Value $RecoveryPlanFingerprint -Label 'Database recovery plan fingerprint'
         Assert-BootstrapFingerprintValue -Value $OriginalFailedBoundaryFingerprint -Label 'Original failed database boundary fingerprint'
         if ($RecoveryAttemptNumber -eq 2) {
             Assert-BootstrapFingerprintValue -Value $PriorFailedRecoveryBoundaryFingerprint -Label 'Prior failed recovery boundary fingerprint'
+        }
+    }
+    if ($ManualRepair) {
+        foreach ($fingerprint in @(
+            $ManualRepairSourceFingerprint, $ManualRepairPlanFingerprint,
+            $OriginalFailedBoundaryFingerprint, $FirstFailedRecoveryBoundaryFingerprint,
+            $SecondFailedRecoveryBoundaryFingerprint
+        )) {
+            Assert-BootstrapFingerprintValue -Value $fingerprint -Label 'Manual database repair fingerprint'
         }
     }
     $expectedJobId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/jobs/$jobName"
@@ -881,6 +1035,18 @@ function Deploy-GatewayDatabaseBootstrapJob {
                 'replicaTimeoutSeconds=1800'
             )
         }
+        elseif ($ManualRepair) {
+            $deploymentParameters += @(
+                "originalAcceptedSourceFingerprint=$SourceFingerprint",
+                "manualDatabaseRepairSourceFingerprint=$ManualRepairSourceFingerprint",
+                "manualDatabaseRepairPlanFingerprint=$ManualRepairPlanFingerprint",
+                "manualRepairExecutionIntentId=$canonicalExecutionIntentId",
+                "originalFailedDatabaseBoundaryFingerprint=$OriginalFailedBoundaryFingerprint",
+                "firstFailedRecoveryBoundaryFingerprint=$FirstFailedRecoveryBoundaryFingerprint",
+                "secondFailedRecoveryBoundaryFingerprint=$SecondFailedRecoveryBoundaryFingerprint",
+                'replicaTimeoutSeconds=1800'
+            )
+        }
         else {
             $deploymentParameters += @(
                 "bootstrapSourceFingerprint=$SourceFingerprint",
@@ -891,7 +1057,7 @@ function Deploy-GatewayDatabaseBootstrapJob {
             'deployment', 'group', 'create',
             '--resource-group', [string]$Config.resourceGroupName,
             '--name', $deploymentName,
-            '--template-file', (Join-Path $root $(if ($Recovery) { 'bootstrap/infra/database-migrator-recovery-job.bicep' } else { 'bootstrap/infra/database-migrator-job.bicep' })),
+            '--template-file', (Join-Path $root $(if ($Recovery) { 'bootstrap/infra/database-migrator-recovery-job.bicep' } elseif ($ManualRepair) { 'bootstrap/infra/database-migrator-manual-repair-job.bicep' } else { 'bootstrap/infra/database-migrator-job.bicep' })),
             '--parameters') + $deploymentParameters)
     }
     else {
@@ -913,7 +1079,7 @@ function Deploy-GatewayDatabaseBootstrapJob {
         [string]$deployment.properties.parameters.sqlServerFqdn.value -cne $SqlServerFqdn -or
         [string]$deployment.properties.parameters.expectedPrivateEndpointIp.value -cne $ExpectedPrivateEndpointIpv4Address -or
         [string]$deployment.properties.parameters.deploymentOwnershipId.value -cne ([guid]$DeploymentOwnershipId).ToString('D') -or
-        (-not $Recovery -and [string]$deployment.properties.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint) -or
+        (-not $Recovery -and -not $ManualRepair -and [string]$deployment.properties.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint) -or
         ($Recovery -and (
             [string]$deployment.properties.parameters.originalAcceptedSourceFingerprint.value -cne $SourceFingerprint -or
             [string]$deployment.properties.parameters.recoverySourceFingerprint.value -cne $RecoverySourceFingerprint -or
@@ -921,13 +1087,23 @@ function Deploy-GatewayDatabaseBootstrapJob {
             [int]$deployment.properties.parameters.recoveryAttemptNumber.value -ne $RecoveryAttemptNumber -or
             [string]$deployment.properties.parameters.originalFailedDatabaseBoundaryFingerprint.value -cne $OriginalFailedBoundaryFingerprint -or
             [string]$deployment.properties.parameters.priorFailedRecoveryBoundaryFingerprint.value -cne $PriorFailedRecoveryBoundaryFingerprint)) -or
+        ($ManualRepair -and (
+            [string]$deployment.properties.parameters.originalAcceptedSourceFingerprint.value -cne $SourceFingerprint -or
+            [string]$deployment.properties.parameters.manualDatabaseRepairSourceFingerprint.value -cne $ManualRepairSourceFingerprint -or
+            [string]$deployment.properties.parameters.manualDatabaseRepairPlanFingerprint.value -cne $ManualRepairPlanFingerprint -or
+            [string]$deployment.properties.parameters.originalFailedDatabaseBoundaryFingerprint.value -cne $OriginalFailedBoundaryFingerprint -or
+            [string]$deployment.properties.parameters.firstFailedRecoveryBoundaryFingerprint.value -cne $FirstFailedRecoveryBoundaryFingerprint -or
+            [string]$deployment.properties.parameters.secondFailedRecoveryBoundaryFingerprint.value -cne $SecondFailedRecoveryBoundaryFingerprint)) -or
         [string]$deployment.properties.parameters.apiDatabasePrincipalName.value -cne [string]$ApiPrincipal.displayName -or
         [string]$deployment.properties.parameters.apiDatabasePrincipalClientId.value -cne ([guid][string]$ApiPrincipal.clientId).ToString('D') -or
         [string]$deployment.properties.parameters.workerDatabasePrincipalName.value -cne [string]$WorkerPrincipal.displayName -or
         [string]$deployment.properties.parameters.workerDatabasePrincipalClientId.value -cne ([guid][string]$WorkerPrincipal.clientId).ToString('D') -or
-        (-not $Recovery -and [string]$deployment.properties.parameters.executionIntentId.value -cne $canonicalExecutionIntentId) -or
+        (-not $Recovery -and -not $ManualRepair -and [string]$deployment.properties.parameters.executionIntentId.value -cne $canonicalExecutionIntentId) -or
         ($Recovery -and (
             [string]$deployment.properties.parameters.recoveryExecutionIntentId.value -cne $canonicalExecutionIntentId -or
+            [int]$deployment.properties.parameters.replicaTimeoutSeconds.value -ne 1800)) -or
+        ($ManualRepair -and (
+            [string]$deployment.properties.parameters.manualRepairExecutionIntentId.value -cne $canonicalExecutionIntentId -or
             [int]$deployment.properties.parameters.replicaTimeoutSeconds.value -ne 1800))) {
         throw 'The private database-bootstrap job deployment is absent, nonterminal, or outside its exact source, identity, image, and network contract.'
     }
@@ -944,11 +1120,16 @@ function Deploy-GatewayDatabaseBootstrapJob {
         -WorkerPrincipal $WorkerPrincipal `
         -ExecutionIntentId $canonicalExecutionIntentId `
         -Recovery:$Recovery `
+        -ManualRepair:$ManualRepair `
         -RecoveryAttemptNumber $RecoveryAttemptNumber `
         -RecoverySourceFingerprint $RecoverySourceFingerprint `
         -RecoveryPlanFingerprint $RecoveryPlanFingerprint `
+        -ManualRepairSourceFingerprint $ManualRepairSourceFingerprint `
+        -ManualRepairPlanFingerprint $ManualRepairPlanFingerprint `
         -OriginalFailedBoundaryFingerprint $OriginalFailedBoundaryFingerprint `
-        -PriorFailedRecoveryBoundaryFingerprint $PriorFailedRecoveryBoundaryFingerprint
+        -PriorFailedRecoveryBoundaryFingerprint $PriorFailedRecoveryBoundaryFingerprint `
+        -FirstFailedRecoveryBoundaryFingerprint $FirstFailedRecoveryBoundaryFingerprint `
+        -SecondFailedRecoveryBoundaryFingerprint $SecondFailedRecoveryBoundaryFingerprint
 }
 
 function Get-GatewayDatabaseBootstrapExecutions {
@@ -972,10 +1153,12 @@ function Start-GatewayDatabaseBootstrapExecution {
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)][string]$JobName,
         [switch]$Recovery,
+        [switch]$ManualRepair,
         [ValidateSet(1, 2)][int]$RecoveryAttemptNumber = 1
     )
 
-    $expectedJobName = if ($Recovery) { [string](Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $RecoveryAttemptNumber).jobName } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
+    if ($Recovery -and $ManualRepair) { throw 'Database recovery and manual repair are distinct execution surfaces.' }
+    $expectedJobName = if ($Recovery) { [string](Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $RecoveryAttemptNumber).jobName } elseif ($ManualRepair) { [string](Get-GatewayManualDatabaseRepairContract -Config $Config).jobName } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
     if ($JobName -cne $expectedJobName) {
         throw 'The database-bootstrap start target does not match the deterministic Job name.'
     }
@@ -1153,11 +1336,13 @@ function Get-GatewayDatabaseBootstrapExecutionEvidence {
         [Parameter(Mandatory)]$WorkerPrincipal,
         [Parameter(Mandatory)][string]$ExecutionIntentId,
         [switch]$Recovery,
+        [switch]$ManualRepair,
         [ValidateSet(1, 2)][int]$RecoveryAttemptNumber = 1
     )
 
     $canonicalExecutionIntentId = ([guid]$ExecutionIntentId).ToString('D')
-    $expectedContainerName = if ($Recovery) { [string](Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $RecoveryAttemptNumber).containerName } else { 'database-bootstrap' }
+    if ($Recovery -and $ManualRepair) { throw 'Database recovery and manual repair are distinct execution surfaces.' }
+    $expectedContainerName = if ($Recovery) { [string](Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $RecoveryAttemptNumber).containerName } elseif ($ManualRepair) { [string](Get-GatewayManualDatabaseRepairContract -Config $Config).containerName } else { 'database-bootstrap' }
     if ($ExecutionIntentId -cne $canonicalExecutionIntentId -or [guid]$ExecutionIntentId -eq [guid]::Empty -or
         $ExecutionName -cnotmatch "^$([regex]::Escape($JobName))-[a-z0-9]{5,16}$") {
         throw 'The exact private database-bootstrap execution boundary is malformed.'
@@ -1196,7 +1381,7 @@ function Get-GatewayDatabaseBootstrapExecutionEvidence {
         -SqlServerFqdn $SqlServerFqdn -DeploymentOwnershipId $DeploymentOwnershipId `
         -ExpectedPrivateEndpointIpv4Address $ExpectedPrivateEndpointIpv4Address `
         -SourceFingerprint $SourceFingerprint -ApiPrincipal $ApiPrincipal -WorkerPrincipal $WorkerPrincipal `
-        -Recovery:$Recovery)
+        -Recovery:($Recovery -or $ManualRepair))
     $executionStart = [DateTimeOffset]::MinValue
     $executionEnd = [DateTimeOffset]::MinValue
     if (-not [DateTimeOffset]::TryParse(
@@ -1664,6 +1849,121 @@ function Get-GatewayFailedDatabaseRecoveryBoundary {
     return $boundary
 }
 
+function Get-GatewayFailedManualDatabaseRepairBoundary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)]$SqlPrivateEndpoint,
+        [Parameter(Mandatory)][string]$SqlServerFqdn,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ManualRepairPlan,
+        [Parameter(Mandatory)]$ApiPrincipal,
+        [Parameter(Mandatory)]$WorkerPrincipal,
+        [Parameter(Mandatory)][string]$OriginalAdministratorObjectId,
+        [Parameter(Mandatory)][string]$OriginalAdministratorLogin,
+        [switch]$ReturnNullUnlessFailed
+    )
+
+    $contract = Get-GatewayManualDatabaseRepairContract -Config $Config
+    $jobImage = [string]$ManualRepairPlan.correctedImage.image
+    if ($jobImage -cnotmatch '^[a-z0-9.-]+/gateway-db-migrator@sha256:[0-9a-f]{64}$') {
+        throw 'The accepted manual database repair image is not an immutable gateway-db-migrator digest.'
+    }
+    $databaseEvidenceRoot = Join-Path (Get-RepositoryRoot) ".bootstrap/evidence/$($Config.resourceGroupName)/database"
+    $receiptPath = Join-Path $databaseEvidenceRoot ([string]$contract.receiptFileName)
+    $receipt = Read-GatewayPrivateDatabaseBootstrapRecord -Path $receiptPath
+    if ($null -eq $receipt) { throw 'Manual database repair requires its preserved one-shot receipt.' }
+    Assert-GatewayPrivateDatabaseManualRepairRecord `
+        -Record $receipt -Config $Config -SqlServerFqdn $SqlServerFqdn -JobImage $jobImage `
+        -DeploymentOwnershipId ([string]$ManualRepairPlan.deploymentOwnershipId) -ManualRepairPlan $ManualRepairPlan `
+        -OriginalAdministratorObjectId $OriginalAdministratorObjectId `
+        -OriginalAdministratorLogin $OriginalAdministratorLogin -SqlPrivateEndpoint $SqlPrivateEndpoint | Out-Null
+    if ([string]::IsNullOrWhiteSpace([string]$receipt.jobStartIntentAtUtc) -or
+        [string]::IsNullOrWhiteSpace([string]$receipt.executionName) -or
+        [string]::IsNullOrWhiteSpace([string]$receipt.administratorRestoredAtUtc) -or
+        -not [string]::IsNullOrWhiteSpace([string]$receipt.executionSucceededAtUtc) -or
+        -not [string]::IsNullOrWhiteSpace([string]$receipt.evidenceFingerprint) -or
+        -not [string]::IsNullOrWhiteSpace([string]$receipt.evidenceRecoveredAtUtc) -or
+        -not [string]::IsNullOrWhiteSpace([string]$receipt.completedAtUtc)) {
+        throw 'The manual database repair receipt is not the exact failed-before-evidence, administrator-restored boundary.'
+    }
+    $evidenceDirectory = Join-Path $databaseEvidenceRoot ([string]$contract.evidenceDirectoryName)
+    if (@(if (Test-Path -LiteralPath $evidenceDirectory) { Get-ChildItem -LiteralPath $evidenceDirectory -Filter 'GatewayDb-*.json' -File }).Count -ne 0) {
+        throw 'The failed manual database repair has local database evidence and cannot be classified as a clean failure.'
+    }
+    $job = Get-GatewayDatabaseBootstrapJobEvidence `
+        -Config $Config -Foundation $Foundation -SqlServerFqdn $SqlServerFqdn `
+        -ExpectedPrivateEndpointIpv4Address ([string]$SqlPrivateEndpoint.privateEndpointIpv4Address) `
+        -JobImage $jobImage -DeploymentOwnershipId ([string]$ManualRepairPlan.deploymentOwnershipId) `
+        -SourceFingerprint ([string]$ManualRepairPlan.originalSourceFingerprint) `
+        -ApiPrincipal $ApiPrincipal -WorkerPrincipal $WorkerPrincipal `
+        -ExecutionIntentId ([string]$ManualRepairPlan.repairJob.executionIntentId) -ManualRepair `
+        -ManualRepairSourceFingerprint ([string]$ManualRepairPlan.repairSourceFingerprint) `
+        -ManualRepairPlanFingerprint ([string]$ManualRepairPlan.planFingerprint) `
+        -OriginalFailedBoundaryFingerprint ([string]$ManualRepairPlan.originalFailedJob.boundaryFingerprint) `
+        -FirstFailedRecoveryBoundaryFingerprint ([string]$ManualRepairPlan.firstFailedRecovery.boundaryFingerprint) `
+        -SecondFailedRecoveryBoundaryFingerprint ([string]$ManualRepairPlan.secondFailedRecovery.boundaryFingerprint)
+    if ([string]$job.jobPrincipalId -cne [string]$receipt.jobPrincipalId) {
+        throw 'The manual database repair Job system identity changed after its preserved receipt.'
+    }
+    $executions = @(Get-GatewayDatabaseBootstrapExecutions -Config $Config -JobName ([string]$contract.jobName))
+    if ($executions.Count -ne 1 -or [string]$executions[0].name -cne [string]$receipt.executionName) {
+        throw 'Manual database repair requires exactly its one preserved Job execution.'
+    }
+    if ([string]$executions[0].status -cne 'Failed') {
+        if ($ReturnNullUnlessFailed) { return $null }
+        throw 'The manual database repair execution is not in the exact terminal Failed state.'
+    }
+    $execution = Invoke-AzJson -Arguments @(
+        'containerapp', 'job', 'execution', 'show', '--resource-group', [string]$Config.resourceGroupName,
+        '--name', [string]$contract.jobName, '--job-execution-name', [string]$receipt.executionName
+    )
+    $containers = @(ConvertTo-GatewayDatabaseBootstrapCollection -Value $execution.properties.template.containers)
+    $environment = @(if ($containers.Count -eq 1) { ConvertTo-GatewayDatabaseBootstrapCollection -Value $containers[0].env })
+    $expectedArguments = @(Get-GatewayDatabaseBootstrapJobArguments `
+        -SqlServerFqdn $SqlServerFqdn `
+        -ExpectedPrivateEndpointIpv4Address ([string]$SqlPrivateEndpoint.privateEndpointIpv4Address) `
+        -DeploymentOwnershipId ([string]$ManualRepairPlan.deploymentOwnershipId) `
+        -SourceFingerprint ([string]$ManualRepairPlan.originalSourceFingerprint) `
+        -ApiPrincipal $ApiPrincipal -WorkerPrincipal $WorkerPrincipal -Recovery)
+    if (-not $execution -or [string]$execution.name -cne [string]$receipt.executionName -or
+        [string]$execution.properties.status -cne 'Failed' -or $containers.Count -ne 1 -or
+        [string]$containers[0].name -cne [string]$contract.containerName -or
+        [string]$containers[0].image -cne $jobImage -or
+        (@($containers[0].command | ForEach-Object { [string]$_ }) -join '|') -cne 'dotnet|Gateway.DatabaseMigrator.dll' -or
+        (@($containers[0].args | ForEach-Object { [string]$_ }) -join '|') -cne ($expectedArguments -join '|') -or
+        $environment.Count -ne 1 -or [string]$environment[0].name -cne 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID' -or
+        [string]$environment[0].value -cne [string]$receipt.executionIntentId) {
+        throw 'The failed manual database repair execution no longer matches its immutable image, arguments, and intent.'
+    }
+    $currentAdministrator = Get-GatewaySqlEntraAdministrator -Config $Config -ServerName $SqlServerFqdn.Split('.')[0]
+    if ([string]$currentAdministrator.objectId -cne ([guid]$OriginalAdministratorObjectId).ToString('D') -or
+        [string]$currentAdministrator.login -cne $OriginalAdministratorLogin -or
+        [string]$currentAdministrator.tenantId -cne ([guid][string]$Config.tenantId).ToString('D')) {
+        throw 'The original Azure SQL Entra administrator is not restored after the failed manual repair.'
+    }
+    $boundary = [ordered]@{
+        manualDatabaseRepairPlanFingerprint = [string]$ManualRepairPlan.planFingerprint
+        manualDatabaseRepairSourceFingerprint = [string]$ManualRepairPlan.repairSourceFingerprint
+        exhaustedRecoveryPlanFingerprint = [string]$ManualRepairPlan.exhaustedRecoveryPlanFingerprint
+        originalFailedDatabaseBoundaryFingerprint = [string]$ManualRepairPlan.originalFailedJob.boundaryFingerprint
+        firstFailedRecoveryBoundaryFingerprint = [string]$ManualRepairPlan.firstFailedRecovery.boundaryFingerprint
+        secondFailedRecoveryBoundaryFingerprint = [string]$ManualRepairPlan.secondFailedRecovery.boundaryFingerprint
+        jobId = [string]$job.jobId
+        jobName = [string]$contract.jobName
+        jobPrincipalId = [string]$job.jobPrincipalId
+        jobImage = $jobImage
+        executionName = [string]$receipt.executionName
+        executionIntentId = [string]$receipt.executionIntentId
+        executionStatus = 'Failed'
+        administratorRestoredAtUtc = [string]$receipt.administratorRestoredAtUtc
+        receiptPath = $receiptPath
+        receiptFingerprint = Get-BootstrapObjectFingerprint -InputObject $receipt
+    }
+    $boundary['boundaryFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $boundary
+    return $boundary
+}
+
 function Initialize-GatewayDatabase {
     [CmdletBinding()]
     param(
@@ -1678,19 +1978,27 @@ function Initialize-GatewayDatabase {
         [Parameter(Mandatory)][string]$OriginalEntraAdministratorObjectId,
         [Parameter(Mandatory)][string]$OriginalEntraAdministratorLogin,
         [Parameter(Mandatory)][string]$BootstrapClientIpv4,
-        [Parameter()][AllowNull()][System.Collections.IDictionary]$RecoveryPlan
+        [Parameter()][AllowNull()][System.Collections.IDictionary]$RecoveryPlan,
+        [Parameter()][AllowNull()][System.Collections.IDictionary]$ManualRepairPlan
     )
     $repositoryRoot = Get-RepositoryRoot
     $root = Get-BootstrapExecutionSourceRoot
     $executionSourceFingerprint = Get-BootstrapSourceFingerprint -Root $root
     $isRecovery = $null -ne $RecoveryPlan
-    $acceptedSourceFingerprint = if ($isRecovery) { [string]$RecoveryPlan.originalSourceFingerprint } else { $executionSourceFingerprint }
+    $isManualRepair = $null -ne $ManualRepairPlan
+    if ($isRecovery -and $isManualRepair) { throw 'Automatic recovery and manual database repair are distinct one-shot boundaries.' }
+    $isResumeAfterSchema = $isRecovery -or $isManualRepair
+    $acceptedSourceFingerprint = if ($isRecovery) { [string]$RecoveryPlan.originalSourceFingerprint } elseif ($isManualRepair) { [string]$ManualRepairPlan.originalSourceFingerprint } else { $executionSourceFingerprint }
     $recoverySourceFingerprint = if ($isRecovery) { [string]$RecoveryPlan.correctedSourceFingerprint } else { '' }
     $recoveryPlanFingerprint = if ($isRecovery) { [string]$RecoveryPlan.planFingerprint } else { '' }
-    $failedJob = if ($isRecovery) { $RecoveryPlan.failedJob } else { $null }
+    $manualRepairSourceFingerprint = if ($isManualRepair) { [string]$ManualRepairPlan.repairSourceFingerprint } else { '' }
+    $manualRepairPlanFingerprint = if ($isManualRepair) { [string]$ManualRepairPlan.planFingerprint } else { '' }
+    $failedJob = if ($isRecovery) { $RecoveryPlan.failedJob } elseif ($isManualRepair) { $ManualRepairPlan.originalFailedJob } else { $null }
     $recoveryAttemptNumber = if ($isRecovery) { Get-GatewayDatabaseRecoveryAttemptNumber -RecoveryPlan $RecoveryPlan } else { 0 }
-    $recoveryContract = if ($isRecovery) { Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $recoveryAttemptNumber } else { $null }
+    $recoveryContract = if ($isRecovery) { Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $recoveryAttemptNumber } elseif ($isManualRepair) { Get-GatewayManualDatabaseRepairContract -Config $Config } else { $null }
     $priorFailedRecovery = if ($isRecovery -and $recoveryAttemptNumber -eq 2 -and $RecoveryPlan.Contains('priorFailedRecovery')) { $RecoveryPlan.priorFailedRecovery } else { $null }
+    $firstFailedRecovery = if ($isManualRepair) { $ManualRepairPlan.firstFailedRecovery } else { $null }
+    $secondFailedRecovery = if ($isManualRepair) { $ManualRepairPlan.secondFailedRecovery } else { $null }
     $recoveryExecutionIntentId = ''
     Assert-BootstrapFingerprintValue -Value $acceptedSourceFingerprint -Label 'Accepted database-bootstrap source fingerprint'
     if ($isRecovery) {
@@ -1715,6 +2023,39 @@ function Initialize-GatewayDatabase {
             throw 'Database recovery execution source, original failure, or ownership does not match its accepted plan.'
         }
     }
+    if ($isManualRepair) {
+        foreach ($fingerprint in @(
+            $manualRepairSourceFingerprint, $manualRepairPlanFingerprint,
+            [string]$ManualRepairPlan.exhaustedRecoveryPlanFingerprint,
+            [string]$failedJob.boundaryFingerprint, [string]$firstFailedRecovery.boundaryFingerprint,
+            [string]$secondFailedRecovery.boundaryFingerprint
+        )) {
+            Assert-BootstrapFingerprintValue -Value $fingerprint -Label 'Manual database repair fingerprint'
+        }
+        $recoveryExecutionIntentId = [string]$ManualRepairPlan.repairJob.executionIntentId
+        Assert-GuidValue -Value $recoveryExecutionIntentId -Label 'Manual database repair execution intent ID'
+        if ($executionSourceFingerprint -cne $manualRepairSourceFingerprint -or
+            $ManualRepairPlan.repairJob -isnot [System.Collections.IDictionary] -or
+            $ManualRepairPlan.correctedImage -isnot [System.Collections.IDictionary] -or
+            $failedJob -isnot [System.Collections.IDictionary] -or
+            $firstFailedRecovery -isnot [System.Collections.IDictionary] -or
+            $secondFailedRecovery -isnot [System.Collections.IDictionary] -or
+            [string]$ManualRepairPlan.repairJob.name -cne [string]$recoveryContract.jobName -or
+            [string]$ManualRepairPlan.repairJob.repairMode -cne 'ResumeAfterSchemaCompleted' -or
+            [int]$ManualRepairPlan.repairJob.replicaRetryLimit -ne 0 -or
+            [int]$ManualRepairPlan.repairJob.maximumExecutions -ne 1 -or
+            [string]$ManualRepairPlan.correctedImage.state -cne 'DigestCheckpointed' -or
+            [string]$ManualRepairPlan.correctedImage.component -cne 'databaseMigratorRecovery' -or
+            [string]$ManualRepairPlan.correctedImage.sourceFingerprint -cne $manualRepairSourceFingerprint -or
+            [string]$ManualRepairPlan.correctedImage.deploymentOwnershipId -cne ([guid]$DeploymentOwnershipId).ToString('D') -or
+            [string]$ManualRepairPlan.correctedImage.recoveryPlanFingerprint -cne $manualRepairPlanFingerprint -or
+            [string]$ManualRepairPlan.correctedImage.intentId -cne [string]$ManualRepairPlan.repairJob.imageIntentId -or
+            [string]$ManualRepairPlan.correctedImage.image -cne $DatabaseMigratorImage -or
+            $recoveryExecutionIntentId -cne ([guid]$recoveryExecutionIntentId).ToString('D') -or
+            [string]$ManualRepairPlan.deploymentOwnershipId -cne ([guid]$DeploymentOwnershipId).ToString('D')) {
+            throw 'Manual database repair execution source, exhausted failures, or ownership does not match its accepted one-shot plan.'
+        }
+    }
     Assert-GuidValue -Value $DeploymentOwnershipId -Label 'Database bootstrap operation identifier'
     Assert-GuidValue -Value $OriginalEntraAdministratorObjectId -Label 'Original Azure SQL Entra administrator object ID'
     Assert-BootstrapIpv4Value -Value $BootstrapClientIpv4 -Label 'Legacy accepted-plan client IPv4 metadata'
@@ -1728,7 +2069,7 @@ function Initialize-GatewayDatabase {
         throw 'The private database-bootstrap ownership or original Entra administrator contract is malformed.'
     }
     $databaseEvidenceRoot = Join-Path $repositoryRoot ".bootstrap/evidence/$($Config.resourceGroupName)/database"
-    $evidenceDirectory = if ($isRecovery) { Join-Path $databaseEvidenceRoot ([string]$recoveryContract.evidenceDirectoryName) } else { $databaseEvidenceRoot }
+    $evidenceDirectory = if ($isResumeAfterSchema) { Join-Path $databaseEvidenceRoot ([string]$recoveryContract.evidenceDirectoryName) } else { $databaseEvidenceRoot }
     [IO.Directory]::CreateDirectory($evidenceDirectory) | Out-Null
     $serverName = $SqlServerFqdn.Split('.')[0]
     if ($SqlServerFqdn -cnotmatch '^[A-Za-z0-9-]+\.database\.windows\.net$' -or
@@ -1738,8 +2079,8 @@ function Initialize-GatewayDatabase {
     $privateEndpointAddressTuple = Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple `
         -Config $Config -SqlServerFqdn $SqlServerFqdn -Evidence $SqlPrivateEndpoint
     $publicRecoveryPath = Join-Path $databaseEvidenceRoot 'GatewayDb-network-recovery.json'
-    $jobName = if ($isRecovery) { [string]$recoveryContract.jobName } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
-    $receiptPath = if ($isRecovery) { Join-Path $databaseEvidenceRoot ([string]$recoveryContract.receiptFileName) } else { Join-Path $databaseEvidenceRoot 'private-database-bootstrap-receipt.json' }
+    $jobName = if ($isResumeAfterSchema) { [string]$recoveryContract.jobName } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
+    $receiptPath = if ($isResumeAfterSchema) { Join-Path $databaseEvidenceRoot ([string]$recoveryContract.receiptFileName) } else { Join-Path $databaseEvidenceRoot 'private-database-bootstrap-receipt.json' }
     $receipt = Read-GatewayPrivateDatabaseBootstrapRecord -Path $receiptPath
     $freshIntent = $null -eq $receipt
     if (-not $freshIntent) {
@@ -1750,6 +2091,13 @@ function Initialize-GatewayDatabase {
                 -RecoverySourceFingerprint $recoverySourceFingerprint -RecoveryPlanFingerprint $recoveryPlanFingerprint `
                 -ExpectedExecutionIntentId $recoveryExecutionIntentId `
                 -FailedJob $failedJob -RecoveryAttemptNumber $recoveryAttemptNumber -PriorFailedRecovery $priorFailedRecovery `
+                -OriginalAdministratorObjectId $canonicalOriginalAdministratorObjectId `
+                -OriginalAdministratorLogin $OriginalEntraAdministratorLogin -SqlPrivateEndpoint $privateEndpointAddressTuple | Out-Null
+        }
+        elseif ($isManualRepair) {
+            Assert-GatewayPrivateDatabaseManualRepairRecord `
+                -Record $receipt -Config $Config -SqlServerFqdn $SqlServerFqdn -JobImage $DatabaseMigratorImage `
+                -DeploymentOwnershipId $canonicalOwnershipId -ManualRepairPlan $ManualRepairPlan `
                 -OriginalAdministratorObjectId $canonicalOriginalAdministratorObjectId `
                 -OriginalAdministratorLogin $OriginalEntraAdministratorLogin -SqlPrivateEndpoint $privateEndpointAddressTuple | Out-Null
         }
@@ -1838,6 +2186,32 @@ function Initialize-GatewayDatabase {
             }
         }
     }
+    elseif ($isManualRepair) {
+        $liveFailedJob = Get-GatewayFailedDatabaseBootstrapBoundary `
+            -Config $Config -Foundation $Foundation -SqlPrivateEndpoint $privateEndpointAddressTuple `
+            -SqlServerFqdn $SqlServerFqdn -OriginalJobImage ([string]$failedJob.jobImage) `
+            -DeploymentOwnershipId $canonicalOwnershipId -OriginalSourceFingerprint $acceptedSourceFingerprint `
+            -ApiPrincipal $api -WorkerPrincipal $worker `
+            -OriginalAdministratorObjectId $canonicalOriginalAdministratorObjectId `
+            -OriginalAdministratorLogin $OriginalEntraAdministratorLogin
+        $liveFirstFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
+            -Config $Config -Foundation $Foundation -SqlPrivateEndpoint $privateEndpointAddressTuple `
+            -SqlServerFqdn $SqlServerFqdn -RecoveryPlan $ManualRepairPlan.exhaustedRecoveryPlan.previousRecoveryPlan `
+            -ApiPrincipal $api -WorkerPrincipal $worker `
+            -OriginalAdministratorObjectId $canonicalOriginalAdministratorObjectId `
+            -OriginalAdministratorLogin $OriginalEntraAdministratorLogin
+        $liveSecondFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
+            -Config $Config -Foundation $Foundation -SqlPrivateEndpoint $privateEndpointAddressTuple `
+            -SqlServerFqdn $SqlServerFqdn -RecoveryPlan $ManualRepairPlan.exhaustedRecoveryPlan `
+            -ApiPrincipal $api -WorkerPrincipal $worker `
+            -OriginalAdministratorObjectId $canonicalOriginalAdministratorObjectId `
+            -OriginalAdministratorLogin $OriginalEntraAdministratorLogin
+        if ([string]$liveFailedJob.boundaryFingerprint -cne [string]$failedJob.boundaryFingerprint -or
+            [string]$liveFirstFailure.boundaryFingerprint -cne [string]$firstFailedRecovery.boundaryFingerprint -or
+            [string]$liveSecondFailure.boundaryFingerprint -cne [string]$secondFailedRecovery.boundaryFingerprint) {
+            throw 'The exact original/attempt-one/attempt-two failure chain changed after manual database repair acceptance. No mutation was started.'
+        }
+    }
 
     if ($freshIntent) {
         $originalAdministrator = Get-GatewaySqlEntraAdministrator -Config $Config -ServerName $serverName
@@ -1847,7 +2221,7 @@ function Initialize-GatewayDatabase {
             throw 'The singular Azure SQL Entra administrator does not exactly match the authenticated bootstrap administrator before private initialization.'
         }
         $receipt = [ordered]@{
-            schemaVersion = if ($isRecovery -and $recoveryAttemptNumber -eq 2) { 4 } elseif ($isRecovery) { 3 } else { 2 }
+            schemaVersion = if ($isManualRepair) { 5 } elseif ($isRecovery -and $recoveryAttemptNumber -eq 2) { 4 } elseif ($isRecovery) { 3 } else { 2 }
             subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
             tenantId = ([guid][string]$Config.tenantId).ToString('D')
             resourceGroupName = [string]$Config.resourceGroupName
@@ -1855,7 +2229,7 @@ function Initialize-GatewayDatabase {
             database = 'GatewayDb'
             deploymentOwnershipId = $canonicalOwnershipId
             acceptedSourceFingerprint = $acceptedSourceFingerprint
-            jobDeploymentName = if ($isRecovery) { [string]$recoveryContract.deploymentName } else { "a365gw-$($Config.projectName)-bootstrap-database-job-$($Config.environment)" }
+            jobDeploymentName = if ($isResumeAfterSchema) { [string]$recoveryContract.deploymentName } else { "a365gw-$($Config.projectName)-bootstrap-database-job-$($Config.environment)" }
             jobName = $jobName
             jobImage = $DatabaseMigratorImage
             privateEndpointNetworkInterfaceId = [string]$privateEndpointAddressTuple.privateEndpointNetworkInterfaceId
@@ -1866,7 +2240,7 @@ function Initialize-GatewayDatabase {
             originalAdministratorObjectId = $canonicalOriginalAdministratorObjectId
             originalAdministratorLogin = $OriginalEntraAdministratorLogin
             jobPrincipalId = ''
-            executionIntentId = if ($isRecovery) { $recoveryExecutionIntentId } else { [guid]::NewGuid().ToString('D') }
+            executionIntentId = if ($isResumeAfterSchema) { $recoveryExecutionIntentId } else { [guid]::NewGuid().ToString('D') }
             deploymentIntentAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
             deploymentVerifiedAtUtc = ''
             administratorSwapIntentAtUtc = ''
@@ -1897,6 +2271,27 @@ function Initialize-GatewayDatabase {
                 $receipt.Insert(20, 'priorFailedRecoveryBoundaryFingerprint', [string]$priorFailedRecovery.boundaryFingerprint)
             }
         }
+        elseif ($isManualRepair) {
+            $receipt.Insert(8, 'manualDatabaseRepairSourceFingerprint', $manualRepairSourceFingerprint)
+            $receipt.Insert(9, 'manualDatabaseRepairPlanFingerprint', $manualRepairPlanFingerprint)
+            $receipt.Insert(10, 'exhaustedRecoveryPlanFingerprint', [string]$ManualRepairPlan.exhaustedRecoveryPlanFingerprint)
+            $receipt.Insert(11, 'originalFailedJobName', [string]$failedJob.jobName)
+            $receipt.Insert(12, 'originalFailedExecutionName', [string]$failedJob.executionName)
+            $receipt.Insert(13, 'originalFailedExecutionIntentId', [string]$failedJob.executionIntentId)
+            $receipt.Insert(14, 'originalFailedBoundaryFingerprint', [string]$failedJob.boundaryFingerprint)
+            $receipt.Insert(15, 'firstFailedRecoveryJobName', [string]$firstFailedRecovery.jobName)
+            $receipt.Insert(16, 'firstFailedRecoveryExecutionName', [string]$firstFailedRecovery.executionName)
+            $receipt.Insert(17, 'firstFailedRecoveryExecutionIntentId', [string]$firstFailedRecovery.executionIntentId)
+            $receipt.Insert(18, 'firstFailedRecoveryPlanFingerprint', [string]$firstFailedRecovery.recoveryPlanFingerprint)
+            $receipt.Insert(19, 'firstFailedRecoverySourceFingerprint', [string]$firstFailedRecovery.recoverySourceFingerprint)
+            $receipt.Insert(20, 'firstFailedRecoveryBoundaryFingerprint', [string]$firstFailedRecovery.boundaryFingerprint)
+            $receipt.Insert(21, 'secondFailedRecoveryJobName', [string]$secondFailedRecovery.jobName)
+            $receipt.Insert(22, 'secondFailedRecoveryExecutionName', [string]$secondFailedRecovery.executionName)
+            $receipt.Insert(23, 'secondFailedRecoveryExecutionIntentId', [string]$secondFailedRecovery.executionIntentId)
+            $receipt.Insert(24, 'secondFailedRecoveryPlanFingerprint', [string]$secondFailedRecovery.recoveryPlanFingerprint)
+            $receipt.Insert(25, 'secondFailedRecoverySourceFingerprint', [string]$secondFailedRecovery.recoverySourceFingerprint)
+            $receipt.Insert(26, 'secondFailedRecoveryBoundaryFingerprint', [string]$secondFailedRecovery.boundaryFingerprint)
+        }
         Save-GatewayPrivateDatabaseBootstrapRecord -Record $receipt -Path $receiptPath
     }
     if ($isRecovery) {
@@ -1906,6 +2301,13 @@ function Initialize-GatewayDatabase {
             -RecoverySourceFingerprint $recoverySourceFingerprint -RecoveryPlanFingerprint $recoveryPlanFingerprint `
             -ExpectedExecutionIntentId $recoveryExecutionIntentId `
             -FailedJob $failedJob -RecoveryAttemptNumber $recoveryAttemptNumber -PriorFailedRecovery $priorFailedRecovery `
+            -OriginalAdministratorObjectId $canonicalOriginalAdministratorObjectId `
+            -OriginalAdministratorLogin $OriginalEntraAdministratorLogin -SqlPrivateEndpoint $privateEndpointAddressTuple | Out-Null
+    }
+    elseif ($isManualRepair) {
+        Assert-GatewayPrivateDatabaseManualRepairRecord `
+            -Record $receipt -Config $Config -SqlServerFqdn $SqlServerFqdn -JobImage $DatabaseMigratorImage `
+            -DeploymentOwnershipId $canonicalOwnershipId -ManualRepairPlan $ManualRepairPlan `
             -OriginalAdministratorObjectId $canonicalOriginalAdministratorObjectId `
             -OriginalAdministratorLogin $OriginalEntraAdministratorLogin -SqlPrivateEndpoint $privateEndpointAddressTuple | Out-Null
     }
@@ -1927,9 +2329,13 @@ function Initialize-GatewayDatabase {
         -ExecutionIntentId ([string]$receipt.executionIntentId) `
         -FreshIntent:([string]::IsNullOrWhiteSpace([string]$receipt.deploymentVerifiedAtUtc)) `
         -Recovery:$isRecovery -RecoveryAttemptNumber $(if ($isRecovery) { $recoveryAttemptNumber } else { 1 }) `
+        -ManualRepair:$isManualRepair `
         -RecoverySourceFingerprint $recoverySourceFingerprint -RecoveryPlanFingerprint $recoveryPlanFingerprint `
-        -OriginalFailedBoundaryFingerprint $(if ($isRecovery) { [string]$failedJob.boundaryFingerprint } else { '' }) `
-        -PriorFailedRecoveryBoundaryFingerprint $(if ($null -ne $priorFailedRecovery) { [string]$priorFailedRecovery.boundaryFingerprint } else { '' })
+        -ManualRepairSourceFingerprint $manualRepairSourceFingerprint -ManualRepairPlanFingerprint $manualRepairPlanFingerprint `
+        -OriginalFailedBoundaryFingerprint $(if ($isResumeAfterSchema) { [string]$failedJob.boundaryFingerprint } else { '' }) `
+        -PriorFailedRecoveryBoundaryFingerprint $(if ($null -ne $priorFailedRecovery) { [string]$priorFailedRecovery.boundaryFingerprint } else { '' }) `
+        -FirstFailedRecoveryBoundaryFingerprint $(if ($isManualRepair) { [string]$firstFailedRecovery.boundaryFingerprint } else { '' }) `
+        -SecondFailedRecoveryBoundaryFingerprint $(if ($isManualRepair) { [string]$secondFailedRecovery.boundaryFingerprint } else { '' })
     if (-not [string]::IsNullOrWhiteSpace([string]$receipt.jobPrincipalId) -and
         [string]$receipt.jobPrincipalId -cne [string]$jobEvidence.jobPrincipalId) {
         throw 'The database-bootstrap job system identity changed after its durable recovery checkpoint.'
@@ -2006,9 +2412,13 @@ function Initialize-GatewayDatabase {
                     -SourceFingerprint $acceptedSourceFingerprint -ApiPrincipal $api -WorkerPrincipal $worker `
                     -ExecutionIntentId ([string]$receipt.executionIntentId) `
                     -Recovery:$isRecovery -RecoveryAttemptNumber $(if ($isRecovery) { $recoveryAttemptNumber } else { 1 }) `
+                    -ManualRepair:$isManualRepair `
                     -RecoverySourceFingerprint $recoverySourceFingerprint -RecoveryPlanFingerprint $recoveryPlanFingerprint `
-                    -OriginalFailedBoundaryFingerprint $(if ($isRecovery) { [string]$failedJob.boundaryFingerprint } else { '' }) `
-                    -PriorFailedRecoveryBoundaryFingerprint $(if ($null -ne $priorFailedRecovery) { [string]$priorFailedRecovery.boundaryFingerprint } else { '' })
+                    -ManualRepairSourceFingerprint $manualRepairSourceFingerprint -ManualRepairPlanFingerprint $manualRepairPlanFingerprint `
+                    -OriginalFailedBoundaryFingerprint $(if ($isResumeAfterSchema) { [string]$failedJob.boundaryFingerprint } else { '' }) `
+                    -PriorFailedRecoveryBoundaryFingerprint $(if ($null -ne $priorFailedRecovery) { [string]$priorFailedRecovery.boundaryFingerprint } else { '' }) `
+                    -FirstFailedRecoveryBoundaryFingerprint $(if ($isManualRepair) { [string]$firstFailedRecovery.boundaryFingerprint } else { '' }) `
+                    -SecondFailedRecoveryBoundaryFingerprint $(if ($isManualRepair) { [string]$secondFailedRecovery.boundaryFingerprint } else { '' })
                 if ([string]$preStartJobEvidence.jobPrincipalId -cne [string]$jobEvidence.jobPrincipalId -or
                     [string]$preStartJobEvidence.executionIntentId -cne [string]$receipt.executionIntentId) {
                     throw 'The database-bootstrap Job changed immediately before the SQL administrator boundary.'
@@ -2045,7 +2455,7 @@ function Initialize-GatewayDatabase {
                 $receipt.jobStartIntentAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
                 Save-GatewayPrivateDatabaseBootstrapRecord -Record $receipt -Path $receiptPath
                 try {
-                    $startedExecution = Start-GatewayDatabaseBootstrapExecution -Config $Config -JobName $jobName -Recovery:$isRecovery -RecoveryAttemptNumber $(if ($isRecovery) { $recoveryAttemptNumber } else { 1 })
+                    $startedExecution = Start-GatewayDatabaseBootstrapExecution -Config $Config -JobName $jobName -Recovery:$isRecovery -ManualRepair:$isManualRepair -RecoveryAttemptNumber $(if ($isRecovery) { $recoveryAttemptNumber } else { 1 })
                     if ($startedExecution -and [string]$startedExecution.name -notmatch "^$([regex]::Escape($jobName))-[a-z0-9]{5,16}$") {
                         throw 'Azure returned a malformed database-bootstrap execution identifier.'
                     }
@@ -2127,6 +2537,7 @@ function Initialize-GatewayDatabase {
             -DeploymentOwnershipId $canonicalOwnershipId -SourceFingerprint $acceptedSourceFingerprint `
             -ApiPrincipal $api -WorkerPrincipal $worker `
             -ExecutionIntentId ([string]$receipt.executionIntentId) -Recovery:$isRecovery `
+            -ManualRepair:$isManualRepair `
             -RecoveryAttemptNumber $(if ($isRecovery) { $recoveryAttemptNumber } else { 1 })
         $verifiedExecutionStart = [DateTimeOffset]::ParseExact(
             [string]$executionEvidence.startTimeUtc, 'O', [Globalization.CultureInfo]::InvariantCulture,
@@ -2197,7 +2608,7 @@ function Initialize-GatewayDatabase {
             -AcceptedSourceFingerprint $acceptedSourceFingerprint `
             -ExecutionIntentId ([string]$receipt.executionIntentId) `
             -ApiPrincipal $api -WorkerPrincipal $worker `
-            -RequiredRecoveryMode $(if ($isRecovery) { 'ResumeAfterSchemaCompleted' } else { '' })
+            -RequiredRecoveryMode $(if ($isResumeAfterSchema) { 'ResumeAfterSchemaCompleted' } else { '' })
     }
     catch {
         if ($_.Exception.Data['A365GatewayDatabaseRecoveryWindowConsumed'] -eq $true) {
@@ -2268,7 +2679,7 @@ function Initialize-GatewayDatabase {
         -ExecutionIntentId ([string]$receipt.executionIntentId) `
         -ApiPrincipal $api `
         -WorkerPrincipal $worker `
-        -RequiredRecoveryMode $(if ($isRecovery) { 'ResumeAfterSchemaCompleted' } else { '' })
+        -RequiredRecoveryMode $(if ($isResumeAfterSchema) { 'ResumeAfterSchemaCompleted' } else { '' })
     $databaseEvidence = [ordered]@{
         server = $SqlServerFqdn
         database = 'GatewayDb'
@@ -2329,6 +2740,28 @@ function Initialize-GatewayDatabase {
             $databaseEvidence['priorFailedDatabaseRecoverySourceFingerprint'] = [string]$priorFailedRecovery.recoverySourceFingerprint
             $databaseEvidence['priorFailedDatabaseRecoveryBoundaryFingerprint'] = [string]$priorFailedRecovery.boundaryFingerprint
         }
+    }
+    elseif ($isManualRepair) {
+        $databaseEvidence['manualDatabaseRepairMode'] = 'ResumeAfterSchemaCompleted'
+        $databaseEvidence['manualDatabaseRepairPlanFingerprint'] = $manualRepairPlanFingerprint
+        $databaseEvidence['manualDatabaseRepairSourceFingerprint'] = $manualRepairSourceFingerprint
+        $databaseEvidence['exhaustedDatabaseRecoveryPlanFingerprint'] = [string]$ManualRepairPlan.exhaustedRecoveryPlanFingerprint
+        $databaseEvidence['originalFailedDatabaseBootstrapJobName'] = [string]$failedJob.jobName
+        $databaseEvidence['originalFailedDatabaseBootstrapExecutionName'] = [string]$failedJob.executionName
+        $databaseEvidence['originalFailedDatabaseBootstrapExecutionIntentId'] = [string]$failedJob.executionIntentId
+        $databaseEvidence['originalFailedDatabaseBootstrapBoundaryFingerprint'] = [string]$failedJob.boundaryFingerprint
+        $databaseEvidence['firstFailedDatabaseRecoveryJobName'] = [string]$firstFailedRecovery.jobName
+        $databaseEvidence['firstFailedDatabaseRecoveryExecutionName'] = [string]$firstFailedRecovery.executionName
+        $databaseEvidence['firstFailedDatabaseRecoveryExecutionIntentId'] = [string]$firstFailedRecovery.executionIntentId
+        $databaseEvidence['firstFailedDatabaseRecoveryPlanFingerprint'] = [string]$firstFailedRecovery.recoveryPlanFingerprint
+        $databaseEvidence['firstFailedDatabaseRecoverySourceFingerprint'] = [string]$firstFailedRecovery.recoverySourceFingerprint
+        $databaseEvidence['firstFailedDatabaseRecoveryBoundaryFingerprint'] = [string]$firstFailedRecovery.boundaryFingerprint
+        $databaseEvidence['secondFailedDatabaseRecoveryJobName'] = [string]$secondFailedRecovery.jobName
+        $databaseEvidence['secondFailedDatabaseRecoveryExecutionName'] = [string]$secondFailedRecovery.executionName
+        $databaseEvidence['secondFailedDatabaseRecoveryExecutionIntentId'] = [string]$secondFailedRecovery.executionIntentId
+        $databaseEvidence['secondFailedDatabaseRecoveryPlanFingerprint'] = [string]$secondFailedRecovery.recoveryPlanFingerprint
+        $databaseEvidence['secondFailedDatabaseRecoverySourceFingerprint'] = [string]$secondFailedRecovery.recoverySourceFingerprint
+        $databaseEvidence['secondFailedDatabaseRecoveryBoundaryFingerprint'] = [string]$secondFailedRecovery.boundaryFingerprint
     }
     return $databaseEvidence
 }

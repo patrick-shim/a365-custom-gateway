@@ -34,11 +34,12 @@ Describe 'Recovered bootstrap continuation' {
     }
 
     It 'selects the final successful recovery attempt dynamically' {
-        $text | Should -Match "databaseRecoveryPlan.status -cne 'Completed'"
+        $text | Should -Match "databaseRecoveryPlan.status -ceq 'Completed'"
+        $text | Should -Match "manualDatabaseRepairPlan.status -ceq 'Completed'"
         $commands | Should -Contain 'Get-BootstrapDatabaseRecoveryAttemptNumber'
         $commands | Should -Contain 'Assert-BootstrapDatabaseRecoveryHistory'
         $commands | Should -Contain 'Resolve-BootstrapDatabaseRecoveryPlanSourceRoot'
-        $text | Should -Match 'databaseRecoveryAttemptNumber -ne \$attemptNumber'
+        $text | Should -Match 'databaseRecoveryAttemptNumber -eq \$attemptNumber'
         $text | Should -Not -Match '\$attemptNumber\s*=\s*1'
     }
 

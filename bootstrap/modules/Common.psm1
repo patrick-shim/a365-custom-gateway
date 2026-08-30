@@ -897,7 +897,8 @@ function Test-BootstrapSourcePathIsSensitive {
 
     $path = $RelativePath.Replace('\', '/')
     $name = [IO.Path]::GetFileName($path)
-    if ($path -match '(?i)(^|/)(\.azure|\.aws|\.ssh|\.kube|\.docker|\.gnupg)(/|$)' -or
+    if ($path -match '(?i)(^|/)\.secrets?(?:\.|/|$)' -or
+        $path -match '(?i)(^|/)(\.azure|\.aws|\.ssh|\.kube|\.docker|\.gnupg)(/|$)' -or
         $name -match '(?i)^(\.npmrc|\.yarnrc(?:\.yml)?|\.pypirc|\.netrc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|authorized_keys|credentials\.json|secrets\.json|service[-_.]?account.*\.json|accessTokens\.json|azureProfile\.json|tokenCache\.dat)$' -or
         $name -match '(?i)^(credentials?|secrets?|tokens?|passwords?|apikeys?|private[-_.]?settings)[-_.]?.*\.(json|ya?ml|xml|ini|config|txt)$' -or
         $name -match '(?i)^appsettings\.(?!json$).+\.json$' -or
@@ -972,7 +973,7 @@ function Get-BootstrapSourceManifest {
     [string[]]$safeRelativePaths = @($relativePaths | Where-Object {
         $_ -notmatch '(?i)(^|/)(bin|obj|node_modules|\.bootstrap|\.git)(/|$)' -and
         $_ -ine 'bootstrap/config.json' -and
-        $_ -notmatch '(?i)(^|/)\.secrets(?:\.|/|$)' -and
+        $_ -notmatch '(?i)(^|/)\.secrets?(?:\.|/|$)' -and
         $_ -notmatch '(?i)(^|/)\.env(?:\.|$)' -and
         $_ -notmatch '(?i)(^|/)appsettings\.(development|local)\.json$' -and
         -not (Test-BootstrapSourcePathIsSensitive -RelativePath ([string]$_))
@@ -1170,6 +1171,20 @@ function Get-BootstrapEffectiveDeploymentSourceFingerprint {
         $ExecutionSourceFingerprint = Get-BootstrapSourceFingerprint
     }
     Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Bootstrap execution source fingerprint'
+    if ($State.Contains('manualDatabaseRepairPlan') -and
+        $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
+        [string]$State.manualDatabaseRepairPlan.status -ceq 'Completed') {
+        Assert-BootstrapManualDatabaseRepairPrerequisite -State $State | Out-Null
+        $repair = $State.manualDatabaseRepairPlan
+        foreach ($name in @('originalSourceFingerprint', 'repairSourceFingerprint', 'databaseEvidenceFingerprint')) {
+            Assert-BootstrapFingerprintValue -Value ([string]$repair[$name]) -Label "Completed manual database repair $name"
+        }
+        if ([string]$repair.repairSourceFingerprint -cne $ExecutionSourceFingerprint -or
+            [string]$repair.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D')) {
+            throw 'The completed manual database repair does not authorize this execution source or deployment ownership.'
+        }
+        return [string]$repair.originalSourceFingerprint
+    }
     if (-not $State.Contains('databaseRecoveryPlan') -or
         $State.databaseRecoveryPlan -isnot [System.Collections.IDictionary] -or
         [string]$State.databaseRecoveryPlan.status -cne 'Completed') {
@@ -1378,6 +1393,26 @@ function Assert-BootstrapStateAllowsSourcePlan {
     Assert-BootstrapFingerprintValue -Value $recorded -Label 'Recorded evidence source fingerprint'
     $current = Get-BootstrapSourceFingerprint
     if ($recorded -cne $current) {
+        if ($State.Contains('manualDatabaseRepairPlan') -and
+            $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
+            [string]$State.manualDatabaseRepairPlan.status -ceq 'Completed') {
+            Assert-BootstrapManualDatabaseRepairPrerequisite -State $State | Out-Null
+            $repair = $State.manualDatabaseRepairPlan
+            foreach ($name in @('planFingerprint', 'originalSourceFingerprint', 'repairSourceFingerprint', 'databaseEvidenceFingerprint')) {
+                Assert-BootstrapFingerprintValue -Value ([string]$repair[$name]) -Label "Completed manual database repair $name"
+            }
+            $databaseStep = if ($State.steps -is [System.Collections.IDictionary]) { $State.steps['Gateway database'] } else { $null }
+            if ([string]$repair.repairSourceFingerprint -ceq $current -and
+                [string]$repair.deploymentOwnershipId -ceq ([guid][string]$State.deploymentOwnershipId).ToString('D') -and
+                $databaseStep -is [System.Collections.IDictionary] -and
+                [string]$databaseStep.status -ceq 'Completed' -and
+                [string]$databaseStep.completionMode -ceq 'ManualDatabaseRepair' -and
+                $databaseStep.evidence -is [System.Collections.IDictionary] -and
+                [string]$databaseStep.evidence.manualDatabaseRepairPlanFingerprint -ceq [string]$repair.planFingerprint -and
+                (Get-BootstrapObjectFingerprint -InputObject $databaseStep.evidence) -ceq [string]$repair.databaseEvidenceFingerprint) {
+                return $true
+            }
+        }
         if ($State.Contains('databaseRecoveryPlan') -and
             $State.databaseRecoveryPlan -is [System.Collections.IDictionary] -and
             [string]$State.databaseRecoveryPlan.status -ceq 'Completed') {
@@ -1717,6 +1752,45 @@ function Test-BootstrapDatabaseRecoveryFailureReceiptCandidate {
         [string]::IsNullOrWhiteSpace([string]$Receipt.completedAtUtc)
 }
 
+function Get-BootstrapCompletedDatabaseValidationPlans {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
+
+    $hasAutomatic = $State.Contains('databaseRecoveryPlan')
+    $hasManual = $State.Contains('manualDatabaseRepairPlan')
+    $automaticCompleted = $hasAutomatic -and
+        $State.databaseRecoveryPlan -is [System.Collections.IDictionary] -and
+        [string]$State.databaseRecoveryPlan.status -ceq 'Completed'
+    $manualCompleted = $hasManual -and
+        $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
+        [string]$State.manualDatabaseRepairPlan.status -ceq 'Completed'
+
+    if ($automaticCompleted -and $manualCompleted) {
+        throw 'Automatic database recovery and manual database repair cannot both be completed.'
+    }
+    if ($manualCompleted) {
+        Assert-BootstrapManualDatabaseRepairPrerequisite -State $State | Out-Null
+        return [ordered]@{
+            databaseRecoveryPlan = $null
+            manualDatabaseRepairPlan = $State.manualDatabaseRepairPlan
+        }
+    }
+    if ($automaticCompleted) {
+        Assert-BootstrapDatabaseRecoveryHistory -State $State -CurrentPlan $State.databaseRecoveryPlan | Out-Null
+        return [ordered]@{
+            databaseRecoveryPlan = $State.databaseRecoveryPlan
+            manualDatabaseRepairPlan = $null
+        }
+    }
+    if ($hasAutomatic -or $hasManual) {
+        throw 'Standard bootstrap validation cannot adopt an incomplete database recovery or repair boundary.'
+    }
+    return [ordered]@{
+        databaseRecoveryPlan = $null
+        manualDatabaseRepairPlan = $null
+    }
+}
+
 function Test-BootstrapDatabaseRecoveryRequiresNarrowContinuation {
     [CmdletBinding()]
     param(
@@ -1724,11 +1798,16 @@ function Test-BootstrapDatabaseRecoveryRequiresNarrowContinuation {
         [Parameter(Mandatory)][string[]]$ContinuationStepNames
     )
 
-    if (-not $State.Contains('databaseRecoveryPlan') -or
-        $State.databaseRecoveryPlan -isnot [System.Collections.IDictionary] -or
-        [string]$State.databaseRecoveryPlan.status -cne 'Completed') {
+    $automaticCompleted = $State.Contains('databaseRecoveryPlan') -and
+        $State.databaseRecoveryPlan -is [System.Collections.IDictionary] -and
+        [string]$State.databaseRecoveryPlan.status -ceq 'Completed'
+    $manualCompleted = $State.Contains('manualDatabaseRepairPlan') -and
+        $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
+        [string]$State.manualDatabaseRepairPlan.status -ceq 'Completed'
+    if (-not $automaticCompleted -and -not $manualCompleted) {
         return $false
     }
+    if ($manualCompleted) { Assert-BootstrapManualDatabaseRepairPrerequisite -State $State | Out-Null }
     if ($ContinuationStepNames.Count -eq 0) {
         throw 'The recovered-bootstrap continuation step boundary is empty.'
     }
@@ -2062,6 +2141,313 @@ function Start-BootstrapDatabaseRecoveryPlan {
         throw 'Database recovery is not in an executable run-once state.'
     }
     return $State.databaseRecoveryPlan
+}
+
+function Get-GatewayManualDatabaseRepairContract {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Config)
+
+    return [ordered]@{
+        jobName = "job-$($Config.projectName)-db-repair-$($Config.environment)"
+        containerName = 'database-manual-repair'
+        workloadTag = 'database-bootstrap-manual-repair'
+        deploymentName = "a365gw-$($Config.projectName)-bootstrap-database-manual-repair-$($Config.environment)"
+        receiptFileName = 'private-database-bootstrap-manual-repair-receipt.json'
+        evidenceDirectoryName = 'manual-repair'
+    }
+}
+
+function Resolve-BootstrapManualDatabaseRepairPlanSourceRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter()][AllowNull()][System.Collections.IDictionary]$Plan
+    )
+
+    if ($null -eq $Plan) {
+        if (-not $State.Contains('manualDatabaseRepairPlan') -or
+            $State.manualDatabaseRepairPlan -isnot [System.Collections.IDictionary]) {
+            throw 'No accepted manual database repair plan exists for this bootstrap state.'
+        }
+        $Plan = $State.manualDatabaseRepairPlan
+    }
+    foreach ($name in @('planFingerprint', 'repairSourceFingerprint', 'executionSource')) {
+        if (-not $Plan.Contains($name) -or [string]::IsNullOrWhiteSpace([string]$Plan[$name])) {
+            throw 'The manual database repair plan is missing its immutable execution-source boundary.'
+        }
+    }
+    Assert-BootstrapFingerprintValue -Value ([string]$Plan.planFingerprint) -Label 'Manual database repair plan fingerprint'
+    Assert-BootstrapFingerprintValue -Value ([string]$Plan.repairSourceFingerprint) -Label 'Manual database repair source fingerprint'
+    $canonicalOwnershipId = ([guid][string]$State.deploymentOwnershipId).ToString('D')
+    $expectedRelative = ".bootstrap/accepted-source/$canonicalOwnershipId/$(([string]$Plan.planFingerprint).Substring(7))"
+    if ([string]$Plan.executionSource -cne $expectedRelative) {
+        throw 'The manual database repair source snapshot is not bound to this exact deployment ownership and plan fingerprint.'
+    }
+    $root = Get-RepositoryRoot
+    $acceptedRoot = [IO.Path]::GetFullPath((Join-Path $root '.bootstrap/accepted-source'))
+    $snapshot = [IO.Path]::GetFullPath((Join-Path $root ([string]$Plan.executionSource)))
+    if (-not $snapshot.StartsWith($acceptedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal) -or
+        -not (Test-Path -LiteralPath $snapshot -PathType Container) -or
+        (Get-BootstrapSourceFingerprint -Root $snapshot) -cne [string]$Plan.repairSourceFingerprint) {
+        throw 'The manual database repair source snapshot is absent, modified, or outside its managed boundary.'
+    }
+    return $snapshot
+}
+
+function Assert-BootstrapManualDatabaseRepairPrerequisite {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
+
+    if (-not $State.Contains('databaseRecoveryPlan') -or
+        $State.databaseRecoveryPlan -isnot [System.Collections.IDictionary] -or
+        (Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $State.databaseRecoveryPlan) -ne 2 -or
+        [string]$State.databaseRecoveryPlan.status -cne 'Failed' -or
+        $State.databaseRecoveryPlan.manualOnly -ne $true -or
+        $State.databaseRecoveryPlan.failedRecovery -isnot [System.Collections.IDictionary]) {
+        throw 'Manual database repair requires the exact terminal Failed/manualOnly second recovery attempt.'
+    }
+    Assert-BootstrapDatabaseRecoveryHistory -State $State -CurrentPlan $State.databaseRecoveryPlan | Out-Null
+    if ([string]$State.databaseRecoveryPlan.failedRecovery.recoveryPlanFingerprint -cne
+        [string]$State.databaseRecoveryPlan.planFingerprint) {
+        throw 'The terminal second recovery failure no longer matches its preserved recovery plan.'
+    }
+    foreach ($fingerprint in @(
+        [string]$State.databaseRecoveryPlan.failedJob.boundaryFingerprint,
+        [string]$State.databaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint,
+        [string]$State.databaseRecoveryPlan.failedRecovery.boundaryFingerprint
+    )) {
+        Assert-BootstrapFingerprintValue -Value $fingerprint -Label 'Manual database repair failed-boundary fingerprint'
+    }
+    return $true
+}
+
+function Set-BootstrapAcceptedManualDatabaseRepairPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$StatePath,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Plan
+    )
+
+    Assert-BootstrapManualDatabaseRepairPrerequisite -State $State | Out-Null
+    if ($State.Contains('manualDatabaseRepairPlan')) {
+        throw 'A manual database repair plan already exists. It is one-shot and cannot be replaced.'
+    }
+    foreach ($name in @(
+        'schemaVersion', 'planFingerprint', 'configurationFingerprint', 'deploymentOwnershipId',
+        'originalSourceFingerprint', 'repairSourceFingerprint', 'originalAcceptedPlan',
+        'exhaustedRecoveryPlanFingerprint', 'exhaustedRecoveryPlan', 'originalFailedJob',
+        'firstFailedRecovery', 'secondFailedRecovery', 'correctedImage', 'repairJob'
+    )) {
+        if (-not $Plan.Contains($name)) { throw "The manual database repair plan is missing '$name'." }
+    }
+    if (-not $State.Contains('acceptedPlan') -or
+        $State.acceptedPlan -isnot [System.Collections.IDictionary] -or
+        $Plan.originalAcceptedPlan -isnot [System.Collections.IDictionary]) {
+        throw 'The manual database repair plan requires the complete preserved original accepted plan.'
+    }
+    $recovery = $State.databaseRecoveryPlan
+    if ([int]$Plan.schemaVersion -ne 1 -or
+        [string]$Plan.configurationFingerprint -cne [string]$State.configurationFingerprint -or
+        [string]$Plan.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D') -or
+        [string]$Plan.originalSourceFingerprint -cne [string]$State.acceptedPlan.sourceFingerprint -or
+        (Get-BootstrapObjectFingerprint -InputObject $Plan.originalAcceptedPlan) -cne
+            (Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan) -or
+        [string]$Plan.exhaustedRecoveryPlanFingerprint -cne [string]$recovery.planFingerprint -or
+        (Get-BootstrapObjectFingerprint -InputObject $Plan.exhaustedRecoveryPlan) -cne
+            (Get-BootstrapObjectFingerprint -InputObject $recovery) -or
+        [string]$Plan.originalFailedJob.boundaryFingerprint -cne [string]$recovery.failedJob.boundaryFingerprint -or
+        [string]$Plan.firstFailedRecovery.boundaryFingerprint -cne [string]$recovery.priorFailedRecovery.boundaryFingerprint -or
+        [string]$Plan.secondFailedRecovery.boundaryFingerprint -cne [string]$recovery.failedRecovery.boundaryFingerprint -or
+        [string]$Plan.repairJob.imageIntentId -cne [string]$Plan.correctedImage.intentId -or
+        [string]$Plan.repairJob.repairMode -cne 'ResumeAfterSchemaCompleted' -or
+        [int]$Plan.repairJob.replicaRetryLimit -ne 0 -or
+        [int]$Plan.repairJob.maximumExecutions -ne 1) {
+        throw 'The manual database repair plan does not preserve the exact original and exhausted recovery boundaries.'
+    }
+    foreach ($fingerprint in @(
+        [string]$Plan.planFingerprint,
+        [string]$Plan.configurationFingerprint,
+        [string]$Plan.originalSourceFingerprint,
+        [string]$Plan.repairSourceFingerprint,
+        [string]$Plan.exhaustedRecoveryPlanFingerprint
+    )) {
+        Assert-BootstrapFingerprintValue -Value $fingerprint -Label 'Manual database repair fingerprint'
+    }
+    $currentSource = Get-BootstrapSourceFingerprint
+    if ([string]$Plan.repairSourceFingerprint -cne $currentSource -or
+        [string]$Plan.repairSourceFingerprint -ceq [string]$Plan.originalSourceFingerprint -or
+        [string]$Plan.repairSourceFingerprint -ceq [string]$recovery.correctedSourceFingerprint -or
+        [string]$Plan.repairSourceFingerprint -ceq [string]$recovery.previousRecoveryPlan.correctedSourceFingerprint) {
+        throw 'Manual database repair requires one new reviewed source generation distinct from the original and both failed recovery sources.'
+    }
+    $planCore = [ordered]@{}
+    foreach ($key in $Plan.Keys) {
+        if ([string]$key -cne 'planFingerprint') { $planCore[[string]$key] = $Plan[$key] }
+    }
+    if ((Get-BootstrapObjectFingerprint -InputObject $planCore) -cne [string]$Plan.planFingerprint) {
+        throw 'The manual database repair plan fingerprint does not cover its complete one-shot contract.'
+    }
+    $executionSource = New-BootstrapAcceptedSourceSnapshot `
+        -State $State -PlanFingerprint ([string]$Plan.planFingerprint) -SourceFingerprint $currentSource
+    $accepted = ConvertTo-BootstrapCanonicalValue -Value $Plan
+    $accepted['status'] = 'Accepted'
+    $accepted['executionSource'] = $executionSource
+    $accepted['acceptedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+    $accepted['databaseEvidenceFingerprint'] = ''
+    $accepted['completedAtUtc'] = ''
+    $accepted['failedAtUtc'] = ''
+    $accepted['manualOnly'] = $true
+    $State['manualDatabaseRepairPlan'] = $accepted
+    Save-BootstrapState -State $State -Path $StatePath
+    return $State.manualDatabaseRepairPlan
+}
+
+function Assert-BootstrapAcceptedManualDatabaseRepairPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$PlanFingerprint,
+        [Parameter()][TimeSpan]$MaximumAge = ([TimeSpan]::FromMinutes(60)),
+        [switch]$AllowCompleted
+    )
+
+    Assert-BootstrapManualDatabaseRepairPrerequisite -State $State | Out-Null
+    Assert-BootstrapFingerprintValue -Value $PlanFingerprint -Label 'Manual database repair plan fingerprint'
+    if (-not $State.Contains('manualDatabaseRepairPlan') -or
+        $State.manualDatabaseRepairPlan -isnot [System.Collections.IDictionary]) {
+        throw 'No accepted manual database repair plan exists.'
+    }
+    $plan = $State.manualDatabaseRepairPlan
+    $contract = Get-GatewayManualDatabaseRepairContract -Config ([pscustomobject]@{
+        projectName = [string]$State.configuration.projectName
+        environment = [string]$State.configuration.environment
+    })
+    if ([string]$plan.planFingerprint -cne $PlanFingerprint -or
+        [string]$plan.configurationFingerprint -cne [string]$State.configurationFingerprint -or
+        [string]$plan.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D') -or
+        $plan.originalAcceptedPlan -isnot [System.Collections.IDictionary] -or
+        $State.acceptedPlan -isnot [System.Collections.IDictionary] -or
+        (Get-BootstrapObjectFingerprint -InputObject $plan.originalAcceptedPlan) -cne
+            (Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan) -or
+        [string]$plan.exhaustedRecoveryPlanFingerprint -cne [string]$State.databaseRecoveryPlan.planFingerprint -or
+        [string]$plan.repairSourceFingerprint -cne (Get-BootstrapSourceFingerprint) -or
+        [string]$plan.repairJob.name -cne [string]$contract.jobName -or
+        [string]$plan.repairJob.repairMode -cne 'ResumeAfterSchemaCompleted' -or
+        [int]$plan.repairJob.replicaRetryLimit -ne 0 -or
+        [int]$plan.repairJob.maximumExecutions -ne 1) {
+        throw 'The accepted manual database repair plan no longer matches its exact source, ownership, or one-shot Job contract.'
+    }
+    $validStatuses = if ($AllowCompleted) { @('Accepted', 'Running', 'Completed') } else { @('Accepted', 'Running') }
+    if ([string]$plan.status -cnotin $validStatuses) {
+        throw 'The manual database repair plan is not executable. Its one-shot boundary is consumed.'
+    }
+    $null = Resolve-BootstrapManualDatabaseRepairPlanSourceRoot -State $State -Plan $plan
+    if ([string]$plan.status -ceq 'Accepted') {
+        $acceptedAt = [DateTimeOffset]::MinValue
+        $age = [TimeSpan]::MaxValue
+        if ([DateTimeOffset]::TryParseExact(
+                [string]$plan.acceptedAtUtc, 'O', [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind, [ref]$acceptedAt)) {
+            $age = [DateTimeOffset]::UtcNow - $acceptedAt.ToUniversalTime()
+        }
+        if ($age -lt [TimeSpan]::FromMinutes(-5) -or $age -gt $MaximumAge) {
+            throw 'The accepted manual database repair plan is outside its 60-minute execution window.'
+        }
+    }
+    return $true
+}
+
+function Start-BootstrapManualDatabaseRepairPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$StatePath,
+        [Parameter(Mandatory)][string]$PlanFingerprint
+    )
+
+    Assert-BootstrapAcceptedManualDatabaseRepairPlan -State $State -PlanFingerprint $PlanFingerprint | Out-Null
+    if ([string]$State.manualDatabaseRepairPlan.status -ceq 'Accepted') {
+        $State.manualDatabaseRepairPlan.status = 'Running'
+        $State.manualDatabaseRepairPlan.startedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        Save-BootstrapState -State $State -Path $StatePath
+    }
+    elseif ([string]$State.manualDatabaseRepairPlan.status -cne 'Running') {
+        throw 'Manual database repair is not in an executable one-shot state.'
+    }
+    return $State.manualDatabaseRepairPlan
+}
+
+function Set-BootstrapFailedManualDatabaseRepairPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$StatePath,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$FailedRepair
+    )
+
+    if (-not $State.Contains('manualDatabaseRepairPlan') -or
+        $State.manualDatabaseRepairPlan -isnot [System.Collections.IDictionary] -or
+        [string]$State.manualDatabaseRepairPlan.status -cne 'Running' -or
+        [string]$FailedRepair.manualDatabaseRepairPlanFingerprint -cne
+            [string]$State.manualDatabaseRepairPlan.planFingerprint) {
+        throw 'Only the exact Running manual database repair may be marked failed.'
+    }
+    $State.manualDatabaseRepairPlan.status = 'Failed'
+    $State.manualDatabaseRepairPlan.failedRepair = ConvertTo-BootstrapCanonicalValue -Value $FailedRepair
+    $State.manualDatabaseRepairPlan.failedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+    $State.manualDatabaseRepairPlan.manualOnly = $true
+    Save-BootstrapState -State $State -Path $StatePath
+    return $State.manualDatabaseRepairPlan
+}
+
+function Complete-BootstrapManualDatabaseRepairPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$StatePath,
+        [Parameter(Mandatory)][string]$PlanFingerprint,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$DatabaseEvidence
+    )
+
+    Assert-BootstrapAcceptedManualDatabaseRepairPlan -State $State -PlanFingerprint $PlanFingerprint | Out-Null
+    $plan = $State.manualDatabaseRepairPlan
+    if ($plan.correctedImage -isnot [System.Collections.IDictionary] -or
+        [string]$plan.correctedImage.state -cne 'DigestCheckpointed' -or
+        [string]$plan.correctedImage.component -cne 'databaseMigratorRecovery' -or
+        [string]$plan.correctedImage.sourceFingerprint -cne [string]$plan.repairSourceFingerprint -or
+        [string]$plan.correctedImage.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D') -or
+        [string]$plan.correctedImage.recoveryPlanFingerprint -cne $PlanFingerprint -or
+        [string]$plan.correctedImage.intentId -cne [string]$plan.repairJob.imageIntentId -or
+        [string]$plan.correctedImage.image -cnotmatch '^[a-z0-9.-]+/gateway-db-migrator@sha256:[0-9a-f]{64}$' -or
+        [string]$DatabaseEvidence.databaseBootstrapJobImage -cne [string]$plan.correctedImage.image -or
+        [string]$DatabaseEvidence.manualDatabaseRepairPlanFingerprint -cne $PlanFingerprint -or
+        [string]$DatabaseEvidence.exhaustedDatabaseRecoveryPlanFingerprint -cne [string]$plan.exhaustedRecoveryPlanFingerprint -or
+        [string]$DatabaseEvidence.acceptedSourceFingerprint -cne [string]$plan.originalSourceFingerprint -or
+        [string]$DatabaseEvidence.manualDatabaseRepairSourceFingerprint -cne [string]$plan.repairSourceFingerprint -or
+        [string]$DatabaseEvidence.originalFailedDatabaseBootstrapBoundaryFingerprint -cne [string]$plan.originalFailedJob.boundaryFingerprint -or
+        [string]$DatabaseEvidence.firstFailedDatabaseRecoveryBoundaryFingerprint -cne [string]$plan.firstFailedRecovery.boundaryFingerprint -or
+        [string]$DatabaseEvidence.secondFailedDatabaseRecoveryBoundaryFingerprint -cne [string]$plan.secondFailedRecovery.boundaryFingerprint -or
+        [string]$DatabaseEvidence.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D')) {
+        throw 'Manual database repair evidence does not match its complete accepted failure/source/ownership chain.'
+    }
+    $completedAt = [DateTimeOffset]::UtcNow.ToString('O')
+    $evidenceFingerprint = Get-BootstrapObjectFingerprint -InputObject $DatabaseEvidence
+    $priorStep = ConvertTo-BootstrapCanonicalValue -Value $State.steps['Gateway database']
+    $State.manualDatabaseRepairPlan.status = 'Completed'
+    $State.manualDatabaseRepairPlan.databaseEvidenceFingerprint = $evidenceFingerprint
+    $State.manualDatabaseRepairPlan.completedAtUtc = $completedAt
+    $State.steps['Gateway database'] = [ordered]@{
+        status = 'Completed'
+        startedAtUtc = [string]$State.manualDatabaseRepairPlan.startedAtUtc
+        completedAtUtc = $completedAt
+        sourceFingerprint = [string]$plan.repairSourceFingerprint
+        completionMode = 'ManualDatabaseRepair'
+        priorFailedStepFingerprint = Get-BootstrapObjectFingerprint -InputObject $priorStep
+        evidence = $DatabaseEvidence
+    }
+    Save-BootstrapState -State $State -Path $StatePath
+    return $State.manualDatabaseRepairPlan
 }
 
 function Assert-BootstrapAcceptedPlan {
