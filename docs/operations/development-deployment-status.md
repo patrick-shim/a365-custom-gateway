@@ -247,9 +247,30 @@ action followed. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and its
 queues/messages were not accessed.
 
-The next live action is to finish and independently review the bounded recovery
-contract, then start a new isolated `a365gw11` generation and absent resource group
-only in target subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`.
+Commit `bb001483bae0577d7c29a9638c1c7275dae44525` now implements the independently
+approved bounded recovery contract. Plan contract v3 binds the complete boundary;
+only exact-case `Ignore` predictions can enter recovery, and only after exact
+persisted source/configuration/owner/prefix checks. GET-only validation requires the
+Succeeded Incremental deployment, all 76 readable parameters, the exact sorted
+25-resource graph and per-type inventories, deterministic ownership tags, alert and
+dependency relationships, the generated NIC reverse binding, and the SQL `master`
+binding. All malformed, mixed-case, duplicate, cross-type, expanded,
+Prompt-Shields-enabled, or provider-drifted shapes fail closed. The shared Azure
+command boundary pins every recovery read to target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`; no recovery-only path can invoke ARM
+deployment mutation.
+
+A sanitized GET-only smoke against frozen `a365gw10` proved the exact graph and
+boundary fingerprint
+`sha256:48adf18a485c1fa2a4ca186324a14be78242f63b72bb68ee3e93319f7f5e65d9`
+without reconstructing acceptance or invoking Resume. Focused tests pass 178/178.
+The canonical gate passed 430 Pester tests with one expected macOS skip, parsed 19
+PowerShell and 2 JSON files, and compiled 25 Bicep templates plus 5 parameter files.
+Direct Release tests pass 1,304/1,304; the Release build has zero warnings/errors,
+format verification passes, and `git diff --check` is clean.
+
+The next live action is a new isolated `a365gw11` generation and absent resource
+group only in target subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`.
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local

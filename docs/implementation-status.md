@@ -807,6 +807,36 @@ Preserve `a365gw10`; never reconstruct acceptance or Resume it with changed sour
 Protected subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected
 nor mutated, and its queues/messages were not accessed.
 
+Commit `bb001483bae0577d7c29a9638c1c7275dae44525` implements the reviewed bounded
+recovery contract without making `a365gw10` resumable under edited source. Plan
+contract v3 fingerprints the complete recovery boundary. `Ignore` is accepted only
+for exact-case `Ignore` predictions when persisted source, configuration, ownership,
+completed prefix, and absence of later phases all match; live GET-only readback must
+then prove the exact sorted 25-resource inert graph, Succeeded Incremental deployment,
+76/76 readable ARM parameter parity, deterministic tags, type inventories, alert and
+dependency relationships, the generated private-endpoint NIC reverse binding, and
+the SQL `master` parent binding. Fresh, malformed, mixed-case, duplicate,
+cross-type, out-of-group, expanded, Prompt-Shields-enabled, or provider-drifted
+surfaces fail closed. Read-only recovery has no ARM mutation path, and every Azure
+read remains pinned to target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76` by the shared command boundary.
+
+A sanitized GET-only smoke against frozen `a365gw10` proved all 25 resources and
+boundary fingerprint
+`sha256:48adf18a485c1fa2a4ca186324a14be78242f63b72bb68ee3e93319f7f5e65d9`
+without reconstructing acceptance or invoking Resume. Both independent settled-diff
+reviews approved the correction. Focused recovery/configuration tests pass
+**178/178**. The canonical source gate discovered **431** Pester tests: **430**
+passed, none failed, and one Windows-only launcher test was skipped on macOS; it
+also parsed **19** PowerShell files and **2** JSON contracts and compiled all **25**
+Bicep templates plus **5** parameter files. Direct Release tests remain
+**1,304/1,304**: unit 479, Admin UI 155, local Setup 75,
+observability/runtime 149, integration 92, end-to-end 106, architecture 115, and
+security 133. The Release build has zero warnings and errors; `dotnet format
+--verify-no-changes` and `git diff --check` pass. The next live action is a new
+isolated `a365gw11` Plan and Apply in an absent resource group only in the target
+subscription.
+
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
 architecture regression test covers the operation-ID binding. Focused architecture
@@ -1155,10 +1185,11 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    completed foundation/API/images prefix stopped by the stale scope/audience
    guard; and a succeeded inert graph whose recovery What-If exposed the unhandled
    `Ignore` contract. None may consume edited source or its later recovery Plan.
-   First implement and independently review a bounded,
-   state-aware `Ignore` rule that cannot hide expansion limits or unrelated
-   resources. The next live generation after that correction must be a new isolated
-   `a365gw11` deployment and absent resource group, only in target subscription
+   Commit `bb001483bae0577d7c29a9638c1c7275dae44525` implements and independently
+   reviews the bounded, state-aware `Ignore` rule; its GET-only `a365gw10` smoke is
+   recovery evidence, not authorization to Resume that frozen source generation.
+   The next live generation must be a new isolated `a365gw11` deployment and absent
+   resource group, only in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof
