@@ -1141,7 +1141,7 @@ static string GetDatabasePermissionTelemetryCteSql() =>
                             AND permissions.state = N'G'
                             AND grantees.name = N'public'
                             AND permissions.major_id = OBJECT_ID(N'sys.database_firewall_rules')
-                            AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
+                            AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'sys')
                             AND EXISTS
                             (
                                 SELECT 1
@@ -1515,6 +1515,48 @@ static async Task<AzureSqlPristinePlatformDiagnostic> ReadAzureSqlPristinePlatfo
              AND permissions.permission_name = N'SELECT'
              AND permissions.state = N'G'
              AND grantees.name = N'public') AS databaseFirewallRulesPublicSelect,
+          (SELECT COUNT(*)
+           FROM sys.database_permissions AS permissions
+           WHERE permissions.class = 1
+             AND permissions.major_id = OBJECT_ID(N'sys.database_firewall_rules')
+             AND permissions.minor_id = 0
+             AND permissions.permission_name = N'SELECT'
+             AND permissions.state = N'G'
+             AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')) AS databaseFirewallRulesGrantorDbo,
+          (SELECT COUNT(*)
+           FROM sys.database_permissions AS permissions
+           WHERE permissions.class = 1
+             AND permissions.major_id = OBJECT_ID(N'sys.database_firewall_rules')
+             AND permissions.minor_id = 0
+             AND permissions.permission_name = N'SELECT'
+             AND permissions.state = N'G'
+             AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'sys')) AS databaseFirewallRulesGrantorSys,
+          (SELECT COUNT(*)
+           FROM sys.database_permissions AS permissions
+           WHERE permissions.class = 1
+             AND permissions.major_id = OBJECT_ID(N'sys.database_firewall_rules')
+             AND permissions.minor_id = 0
+             AND permissions.permission_name = N'SELECT'
+             AND permissions.state = N'G'
+             AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'public')) AS databaseFirewallRulesGrantorPublic,
+          (SELECT COUNT(*)
+           FROM sys.database_permissions AS permissions
+           WHERE permissions.class = 1
+             AND permissions.major_id = OBJECT_ID(N'sys.database_firewall_rules')
+             AND permissions.minor_id = 0
+             AND permissions.permission_name = N'SELECT'
+             AND permissions.state = N'G'
+             AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'guest')) AS databaseFirewallRulesGrantorGuest,
+          (SELECT COUNT(*)
+           FROM sys.database_permissions AS permissions
+           WHERE permissions.class = 1
+             AND permissions.major_id = OBJECT_ID(N'sys.database_firewall_rules')
+             AND permissions.minor_id = 0
+             AND permissions.permission_name = N'SELECT'
+             AND permissions.state = N'G'
+             AND permissions.grantor_principal_id NOT IN
+                 (DATABASE_PRINCIPAL_ID(N'dbo'), DATABASE_PRINCIPAL_ID(N'sys'),
+                  DATABASE_PRINCIPAL_ID(N'public'), DATABASE_PRINCIPAL_ID(N'guest'))) AS databaseFirewallRulesGrantorOther,
           (SELECT COUNT(*)
            FROM sys.database_permissions AS permissions
            INNER JOIN sys.database_principals AS grantees
@@ -3154,6 +3196,11 @@ internal sealed class AzureSqlPristinePlatformDiagnostic
         "auditDetailsOtherPrincipal",
         "databaseFirewallRulesExactObject",
         "databaseFirewallRulesPublicSelect",
+        "databaseFirewallRulesGrantorDbo",
+        "databaseFirewallRulesGrantorSys",
+        "databaseFirewallRulesGrantorPublic",
+        "databaseFirewallRulesGrantorGuest",
+        "databaseFirewallRulesGrantorOther",
         "otherPositivePublicSelect",
         "dboConnectExact"
     ];
