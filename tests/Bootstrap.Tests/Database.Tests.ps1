@@ -82,6 +82,31 @@ Describe 'Database bootstrap evidence contract' {
             $result.initializationIntent.databaseOwnerSidSha256 | Should -Match '^sha256:[0-9a-f]{64}$'
         }
 
+        It 'builds the exact managed-identity service-principal Graph URL under StrictMode' {
+            $script:principalObjectId = '44444444-4444-4444-8444-444444444444'
+            $script:principalClientId = '55555555-5555-4555-8555-555555555555'
+            Mock Invoke-AzJson {
+                [pscustomobject]@{
+                    id = $script:principalObjectId
+                    appId = $script:principalClientId
+                    displayName = 'ca-gateway-api-dev'
+                }
+            }
+
+            $result = Get-ManagedIdentityClientId -PrincipalObjectId $script:principalObjectId
+
+            $result.objectId | Should -BeExactly $script:principalObjectId
+            $result.clientId | Should -BeExactly $script:principalClientId
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                $Arguments.Count -eq 5 -and
+                [string]$Arguments[0] -ceq 'rest' -and
+                [string]$Arguments[1] -ceq '--method' -and
+                [string]$Arguments[2] -ceq 'GET' -and
+                [string]$Arguments[3] -ceq '--url' -and
+                [string]$Arguments[4] -ceq 'https://graph.microsoft.com/v1.0/servicePrincipals/44444444-4444-4444-8444-444444444444?$select=id,appId,displayName'
+            }
+        }
+
         It 'rejects any additional worker direct permission' {
             $script:records[2].RuntimePrincipal.DirectPermissions = @('VIEW DEFINITION')
 
@@ -107,5 +132,80 @@ Describe 'Database bootstrap evidence contract' {
                 -WorkerPrincipal $script:worker } |
                 Should -Throw '*ownership/source-bound*'
         }
+    }
+}
+
+Describe 'Deployment PowerShell variable parsing contract' {
+    BeforeAll {
+        $script:DeploymentSourceRepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+    }
+
+    It 'rejects ambiguous question-mark variable paths while allowing the automatic status variable' {
+        $automaticTokens = $null
+        $automaticErrors = $null
+        $automaticAst = [Management.Automation.Language.Parser]::ParseInput(
+            '$? | Out-Null',
+            [ref]$automaticTokens,
+            [ref]$automaticErrors)
+        @($automaticErrors).Count | Should -Be 0
+        @($automaticAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.VariableExpressionAst] -and
+            $node.VariablePath.UserPath -cne '?' -and
+            $node.VariablePath.UserPath.Contains('?')
+        }, $true)).Count | Should -Be 0
+
+        $bootstrapRoot = Join-Path $script:DeploymentSourceRepositoryRoot 'bootstrap'
+        $powerShellFiles = @(
+            Get-ChildItem -LiteralPath $bootstrapRoot -Recurse -File |
+                Where-Object Extension -in @('.ps1', '.psm1')
+            Get-ChildItem -LiteralPath (Join-Path $script:DeploymentSourceRepositoryRoot 'src/Gateway.Purview/Automation') -Recurse -File |
+                Where-Object Extension -in @('.ps1', '.psm1')
+        )
+        foreach ($relativePath in @(
+            'tools/apply-migrations.ps1',
+            'tools/_common.ps1',
+            'tools/configure-workflow-v3-entra.ps1',
+            'tools/generate-local-config.ps1',
+            'operations/BoundedUserCanaryState.psm1',
+            'operations/invoke-bounded-user-canary.ps1',
+            'operations/RuntimeImagePull.psm1',
+            'operations/test-provisioning-prerequisites.ps1'
+        )) {
+            $fullPath = Join-Path $script:DeploymentSourceRepositoryRoot $relativePath
+            if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+                throw "Required deployment-affecting PowerShell source is missing: $relativePath"
+            }
+            $powerShellFiles += Get-Item -LiteralPath $fullPath
+        }
+        $rootGatewayScript = Join-Path $script:DeploymentSourceRepositoryRoot 'gateway.ps1'
+        if (Test-Path -LiteralPath $rootGatewayScript -PathType Leaf) {
+            $powerShellFiles += Get-Item -LiteralPath $rootGatewayScript
+        }
+        $powerShellFiles = @($powerShellFiles | Sort-Object FullName -Unique)
+
+        $violations = [Collections.Generic.List[string]]::new()
+        foreach ($file in $powerShellFiles) {
+            $tokens = $null
+            $parseErrors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile(
+                $file.FullName,
+                [ref]$tokens,
+                [ref]$parseErrors)
+            $relativePath = [IO.Path]::GetRelativePath($script:DeploymentSourceRepositoryRoot, $file.FullName)
+            foreach ($parseError in @($parseErrors)) {
+                $violations.Add("${relativePath}:$($parseError.Extent.StartLineNumber): parse error: $($parseError.Message)")
+            }
+            foreach ($variable in @($ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.VariableExpressionAst] -and
+                $node.VariablePath.UserPath -cne '?' -and
+                $node.VariablePath.UserPath.Contains('?')
+            }, $true))) {
+                $violations.Add("${relativePath}:$($variable.Extent.StartLineNumber): ambiguous variable path '$($variable.VariablePath.UserPath)'")
+            }
+        }
+
+        ($violations -join [Environment]::NewLine) | Should -BeNullOrEmpty
     }
 }

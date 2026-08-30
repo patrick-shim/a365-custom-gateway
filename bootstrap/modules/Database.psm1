@@ -8,7 +8,7 @@ function Get-ManagedIdentityClientId {
     if ($PrincipalObjectId -cne $canonicalObjectId) {
         throw 'Managed identity principal object ID must use canonical lowercase GUID form.'
     }
-    $principal = Invoke-AzJson -Arguments @('rest', '--method', 'GET', '--url', "https://graph.microsoft.com/v1.0/servicePrincipals/$canonicalObjectId?`$select=id,appId,displayName")
+    $principal = Invoke-AzJson -Arguments @('rest', '--method', 'GET', '--url', "https://graph.microsoft.com/v1.0/servicePrincipals/${canonicalObjectId}?`$select=id,appId,displayName")
     Assert-GuidValue -Value ([string]$principal.appId) -Label "Managed identity $PrincipalObjectId client ID"
     if ([string]$principal.id -cne $canonicalObjectId) {
         throw 'Managed identity service-principal readback did not echo the exact requested object ID.'
