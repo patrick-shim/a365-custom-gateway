@@ -583,6 +583,76 @@ The next live generation is `a365gw16` / `rg-a365-custom-gw-phase6o`, only in ta
 subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated.
 
+Fresh generation `a365gw16-dev` then used absent resource group
+`rg-a365-custom-gw-phase6o`, ownership
+`f60ba56a-4a72-4cd7-88ec-0fd745461b90`, and ACR
+`acra365gw16dev2vmejs`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Its accepted Plan
+`sha256:eaa1970962c9c0f0121aa4793355c607e7a894e8719a816424daed5d85a5ff67`
+bound configuration
+`sha256:9ef66442b1a6989bf45bcaeeda47a6870122e6e9af7552d23a619203e31d9ce3`
+and source
+`sha256:cd885109f65d749f2bcf4d52297c260b93ea733cf1d3e17e436bc4fade679972`.
+Authenticated What-If reported exactly eight `Create` predictions, no other change
+type, and `applyReady=true`. The single Apply ran from the first step at
+`2026-08-30T04:29:11Z` until the failure at `2026-08-30T04:50:04Z`
+(13:29–13:50 KST); no Resume ran.
+
+Steps 1–10 completed durably. Exact ACR QuickRuns `de1`, `de2`, and `de3` all
+succeeded with no extra run. The API, worker, and Admin UI digests are respectively
+`sha256:f788ed6de78b463703e8f1cd42e29f7456c01786a04fc3b41499ef4bd42d68cd`,
+`sha256:a9e9666638601fcb61812ab9e6e10e54042d7e794c5321dec8649cec0e952160`,
+and
+`sha256:73d7c03f7a018b8599af8070addf032981d2c9109ef570c0ccbe0ca7a85812c7`.
+The source-bound seed blueprint object/application ID is
+`cf919ca3-d180-4273-b730-cc9cc70471db`. The API managed-identity service principal
+is object `324c541e-92ec-4eaa-89d3-05bca32f77d4`, client
+`fdf9a655-7df0-4701-b4b1-d707ca9bff2f`; the workflow-v3 worker is object
+`39f5af57-0d2f-4159-ac4e-5f50867883db`, client
+`62b19841-63ff-4af0-a558-c6eae09da8ae`. Foundation, inert workload, seed
+blueprint, workflow-v3 Entra, and SQL private-endpoint readbacks succeeded.
+
+Step 11 failed before Azure SQL network, firewall, database migrator, schema, or
+principal mutation. The exact root cause was PowerShell parsing of comma-terminated
+Boolean expressions in `tools/apply-migrations.ps1`: all four supplied principal
+arguments became one GUID-valued array element, so the fail-closed all-or-none guard
+reported a partial argument set. Sanitized diagnostic
+`.bootstrap/diagnostics/a365gw16-dev-20260830-045015.json` records the failure. No
+database initialization, Admin UI credential, runtime activation, registration,
+Registry action, Gateway key, or data-plane canary followed. No SQL outbox or
+Service Bus counts were captured; that absence is not a zero-count claim, and no
+Service Bus message data plane was accessed.
+
+A later developer-only preflight diagnostic attempted to stop the corrected script
+with `Set-PSBreakpoint` before its network boundary. The breakpoint did not bind,
+and the child initiated the authorized temporary SQL public-network enablement. It
+was immediately interrupted with `SIGINT` while still waiting for that state, before
+the firewall-create or database-migrator call sites. Target-only cleanup readback at
+`2026-08-30T05:03:49Z` (14:03 KST) proves the child absent, SQL server
+`sql-a365gw16-dev` `Ready` with `publicNetworkAccess=Disabled`, no
+`temp-a365gw-migration-*` firewall rule, and no migration evidence or network-
+recovery file. Because the firewall and migrator occur only after the bounded
+enabled-state wait, no database child ran. This unintended diagnostic crossing and
+its proven cleanup are retained as live evidence; that breakpoint method must not be
+reused.
+
+Commit `61600ab86c721476d9b7b05121ce6a7d60e4e05a` replaces both ambiguous lists
+with typed independent Boolean arrays, computes each cardinality once, and uses the
+validated principal count at both downstream branches. Its regression executes the
+exact source fragment under StrictMode, proves 4/4 principal and 2/2 bootstrap
+bindings, and fails closed for each missing principal and a partial bootstrap
+binding. The focused SQL-network gate passes **11/11**. The canonical source gate
+discovered **470** Pester tests: **469** passed, none failed, and one Windows-only
+launcher test was skipped on macOS; it parsed **19** PowerShell files and **2** JSON
+contracts and compiled all **25** Bicep templates plus **5** parameter files. Direct
+Release tests pass **1,304/1,304**, the Release build has zero warnings/errors, and
+format/diff checks pass. Corrected deployment-affecting source is
+`sha256:5b8184d3a05f364f98af05c78629a5772e7eafd690c479a11601e752b71e9b7d`.
+Preserve `a365gw16`; edited source must never Resume it. The next live generation is
+reserved as `a365gw17` / `rg-a365-custom-gw-phase6p`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated.
+
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
 Prerequisites, then failed during Azure authentication because the old dispatcher
@@ -1709,13 +1779,12 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw16` / `rg-a365-custom-gw-phase6o`. Preserve `a365gw11`,
+   generation `a365gw17` / `rg-a365-custom-gw-phase6p`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
-   preserve `a365gw14` and `a365gw15` with steps 1–10 complete and step 11 `Failed`
-   before any database mutation. Their succeeded resources and GET-only diagnoses do
-   not
-   authorize Resume after any validator or helper source change. Capture
-   the fresh generation's safe state, template
+   preserve `a365gw14`, `a365gw15`, and `a365gw16` with steps 1–10 complete and
+   step 11 `Failed` before any database mutation. Their succeeded resources and
+   GET-only diagnoses do not authorize Resume after any validator or helper source
+   change. Capture the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, temporary SQL-rule cleanup, empty-schema
    initialization, final preflight, authenticated Admin sign-in, one real
