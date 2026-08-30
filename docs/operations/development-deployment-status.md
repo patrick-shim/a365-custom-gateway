@@ -458,6 +458,74 @@ subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
 Service Bus message data plane was accessed in either subscription.
 
+Fresh generation `a365gw14-dev` then used absent resource group
+`rg-a365-custom-gw-phase6m`, ownership
+`59b61c5f-7be5-44b2-a1a3-4d3819264cf2`, and ACR
+`acra365gw14devwalxhk`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Its accepted Plan
+`sha256:4c2c1caf0e22795a52164c814bcc38c98611f708b8065f8b7ffa0297e1eae39c`
+bound configuration
+`sha256:8979733f0231e5bfad1e706410b60d377008e4bce244357afa80dc0252914335`
+and source
+`sha256:f0d03d165f7a4c71664eba46ad8c33ad562968e124ea293ccea07e7217eb2307`.
+Authenticated What-If reported exactly eight `Create` predictions and zero other
+changes, all in that target subscription. The accepted minimal profile remained
+`dev`, Registry preview enabled, exactly one reviewed manager application, Prompt
+Shields disabled, and Purview disabled. The single Apply was accepted at
+`2026-08-30T02:46:13Z` and stopped at `2026-08-30T03:07:42Z` (11:46–12:07 KST);
+no duplicate Apply or Resume ran.
+
+Steps 1–10 completed durably. Foundation deployment
+`a365gw-a365gw14-bootstrap-foundation-dev`, inert deployment
+`a365gw-a365gw14-bootstrap-inert-dev`, SQL private-endpoint deployment
+`a365gw-a365gw14-bootstrap-sql-private-dev`, and all observed nested deployments
+reached `Succeeded`. API, worker, and Admin UI images were checkpointed at
+`sha256:777eadbeb87bec3518d3b84977b318d1b70bd3c7ec4990da5a310e82f9043db3`,
+`sha256:bb1ea293692174900fc3d8144ee6bb9aaef0ad2a499b70b9ccfb69ac47802069`,
+and
+`sha256:fed1a0d17fde11e6a229e9e60fa33b68ffe2b4adef95fe62a8aa91ce1756028b`.
+The source-bound, credential-free seed blueprint object/application ID is
+`8e453b8d-8fe8-4a12-99a6-e083e753f597`; it retained exactly one reviewed manager
+application. Workflow-v3 Entra configuration and the SQL private endpoint also
+completed exact readback.
+
+Step 11 failed within five seconds, before any step-11 database, firewall, or
+SQL public-network mutation. In
+`Get-ManagedIdentityClientId`, PowerShell parsed the interpolated Graph URL token
+`$canonicalObjectId?` as the variable path `canonicalObjectId?`; StrictMode raised
+`VariableIsUndefined` before `Invoke-AzJson` could run. A repository-wide AST audit
+found exactly this one non-automatic question-mark variable path across all tracked
+PowerShell. Target-only SQL control-plane readback proved public network access
+remained `Disabled`, no bootstrap temporary firewall rule existed, and no database
+evidence or recovery record was created. The corrected helper then completed both
+exact live API/worker service-principal GETs. State records steps 1–10 `Completed`,
+step 11 `Failed`, and no later step. No database initialization, Admin UI identity
+or credential, runtime activation, registration, canary, Gateway key, or Registry
+action followed. No SQL outbox or Service Bus message counts were captured; that
+absence is not a zero-count claim, and no message data plane was accessed.
+
+Same-source Resume would deterministically fail again, while the correction changes
+the accepted source fingerprint. Preserve `a365gw14` state, accepted snapshot,
+resource graph, identities, images, blueprint, and private endpoint; never
+reconstruct acceptance or Resume it. Commit
+`891121a6387e96f1f77eac26ef6b6cff94b79d54` braces the URL variable as
+`${canonicalObjectId}` and adds both an exact executing URL regression and a
+repository-wide AST guard that permits automatic `$?` but rejects ambiguous
+non-automatic paths. Independent review approved the settled correction. Focused
+database tests pass **5/5**. The canonical source gate discovered **454** Pester
+tests: **453** passed, none failed, and one Windows-only launcher test was skipped
+on macOS; it parsed **19** PowerShell files and **2** JSON contracts and compiled
+all **25** Bicep templates plus **5** parameter files. Direct Release tests pass
+**1,304/1,304** with the established per-project totals, the Release build has zero
+warnings/errors, and format/diff checks pass. The corrected deployment-affecting
+source fingerprint is
+`sha256:c77ccf00013d106e440f30dda20928e65a165fd655a2eb9f88fdf17cd19a35e1`.
+The next live generation is reserved as `a365gw15` in absent resource group
+`rg-a365-custom-gw-phase6n`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
+Service Bus message data plane was accessed in either subscription.
+
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
 Prerequisites, then failed during Azure authentication because the old dispatcher
@@ -1584,10 +1652,11 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw14` / `rg-a365-custom-gw-phase6m`. Preserve `a365gw11`,
-   `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`; their
-   succeeded inert graphs and GET-only diagnoses do not authorize Resume after any
-   validator source change. Capture
+   generation `a365gw15` / `rg-a365-custom-gw-phase6n`. Preserve `a365gw11`,
+   `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
+   preserve `a365gw14` with steps 1–10 complete and step 11 `Failed` before any
+   database mutation. Their succeeded resources and GET-only diagnoses do not
+   authorize Resume after any validator or helper source change. Capture
    the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, temporary SQL-rule cleanup, empty-schema
