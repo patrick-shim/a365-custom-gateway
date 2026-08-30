@@ -323,7 +323,7 @@ reported as completion of the plan. The authoritative phase status is:
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. `a365gw6` proved no-resubmit image recovery; `a365gw7` exposed the private-ACR first-pull ordering defect; `a365gw8` exposed incomplete typed ACR policy projection; `a365gw9` exposed a stale scope/audience guard at 6/19; `a365gw10` proved same-source interruption/Resume and a succeeded inert graph; `a365gw11` exposed ARM Boolean casing during step 7; `a365gw12` exposed an invalid expectation for a Bicep-derived output-only database name; `a365gw13` exposed empty-array collapse before a strict `.Count`; and `a365gw14` completed steps 1–10 before a StrictMode-ambiguous Graph URL variable stopped database setup before mutation. The v2 audience split and bounded interactive-user canary are locally reviewed. A corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. `a365gw6` proved no-resubmit image recovery; `a365gw7` exposed the private-ACR first-pull ordering defect; `a365gw8` exposed incomplete typed ACR policy projection; `a365gw9` exposed a stale scope/audience guard at 6/19; `a365gw10` proved same-source interruption/Resume and a succeeded inert graph; `a365gw11` exposed ARM Boolean casing during step 7; `a365gw12` exposed an invalid expectation for a Bicep-derived output-only database name; `a365gw13` exposed empty-array collapse before a strict `.Count`; `a365gw14` completed steps 1–10 before a StrictMode-ambiguous Graph URL variable stopped database setup before mutation; and `a365gw15` completed steps 1–10 before database mutation, then exposed the need for a state-aware 30-resource recovery boundary and an explicitly owned Failure Anomalies rule. The v2 audience split and bounded interactive-user canary are locally reviewed. A corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
@@ -1082,6 +1082,75 @@ The next live generation is reserved as `a365gw15` in absent resource group
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
 Service Bus message data plane was accessed in either subscription.
 
+Fresh generation `a365gw15-dev` then used absent resource group
+`rg-a365-custom-gw-phase6n`, ownership
+`abea5207-95b6-439b-ac3a-a1b2b3d7f2fb`, and ACR
+`acra365gw15deve7kaui`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Its accepted Plan
+`sha256:f03f5e9af7d91064959d1eaead74001d1584db55058cc902e9babdc51bd6b12b`
+bound configuration
+`sha256:f540e7b5d51beb8dccf23cb83093245ac00fb6bea231900771d1df0cb85d2688`
+and source
+`sha256:c77ccf00013d106e440f30dda20928e65a165fd655a2eb9f88fdf17cd19a35e1`.
+Authenticated What-If reported exactly eight `Create` predictions and no other
+change type. The accepted minimal profile remained `dev`, Registry beta explicitly
+enabled, exactly one reviewed manager application, Prompt Shields disabled, and
+Purview disabled. The single Apply ran from `2026-08-30T03:25:57Z` until
+`2026-08-30T03:48:13Z` (12:25–12:48 KST); no Resume ran.
+
+Steps 1–10 completed durably. The API, worker, and Admin UI image digests are
+respectively
+`sha256:ee760c926e2be32fe56243612b2315b1a7a3fb1f6034e56ddddcfbfac6c23881`,
+`sha256:8be5395b46e4fc39070e6d405aaf7e847d5098ca26eae646cc4955477ae7b380`,
+and
+`sha256:30d0feb357c9f140c1ea83c35661eaab1021a164f6a47fdc7647812fc97c831c`.
+The source-bound seed blueprint object/application ID is
+`cd5432f4-03eb-4b66-bc5d-c9f943e75047`. Foundation, inert workload, seed
+blueprint, workflow-v3 Entra, and SQL private-endpoint readbacks succeeded. Step 11
+then failed before the database migrator child process, firewall, SQL public-network,
+schema, or database evidence path began. The sanitized state intentionally retains
+only the fixed step failure, so this checkpoint does not claim a narrower provider
+root cause. No database initialization, Admin UI identity or credential, runtime
+activation, registration, canary, Gateway key, or Registry action followed. No SQL
+outbox or Service Bus message counts were captured; that absence is not a zero-count
+claim, and no message data plane was accessed.
+
+The same-source recovery Plan was
+`sha256:cc615c5892406397d796701e014e88fc50e9584ef4abbca599a3b5054bac6710`
+with the same configuration, source, and ownership. Its first read-only What-If
+reported eight `Deploy` plus 29 `Ignore` predictions and correctly kept
+`applyReady=false` because the old boundary covered only the inert graph. A later
+read-only What-If reported eight `Deploy` plus 30 `Ignore` after Azure asynchronously
+created the `Failure Anomalies - ai-a365gw15-dev` smart-detector rule under
+`Microsoft.AlertsManagement`. Exact target-only ARM readback found that enabled Sev3/PT1M
+`FailureAnomaliesDetector` scoped to the current Application Insights resource, but
+untagged and bound to the default action group in retained generation
+`rg-a365-custom-gw-phase6f`. That cross-generation binding is not owned recovery
+evidence and was not adopted or mutated. Preserve `a365gw15` state, accepted source,
+tenant objects, images, and ARM graph; edited source must never Resume it.
+
+Commit `7cb433958fe6207ffb067cd4ce9c0340a8aa7df7` makes the recovery boundary
+state-aware: it requires one contiguous, source-bound step prefix, independently
+revalidates the completed SQL private endpoint and its generated NIC/DNS graph,
+and accepts only the exact 26-resource inert plus four-resource SQL graph. It also
+declares the Failure Anomalies rule with exact project/source/ownership tags,
+Application Insights scope, and current project action group, and registers,
+Doctor-checks, and Resume-revalidates `Microsoft.AlertsManagement`. Recovery remains
+closed after any Admin UI deployment until that separate ARM footprint has an exact
+reviewed boundary. Focused Experience/Azure tests pass **201/201**. The canonical
+source gate discovered **469** Pester tests: **468** passed, none failed, and one
+Windows-only launcher test was skipped on macOS; it parsed **19** PowerShell files
+and **2** JSON contracts and compiled all **25** Bicep templates plus **5** parameter
+files. Direct Release tests pass **1,304/1,304** with the established per-project
+totals, the Release build has zero warnings/errors, and format/diff checks pass.
+The corrected deployment-affecting source fingerprint is
+`sha256:cd885109f65d749f2bcf4d52297c260b93ea733cf1d3e17e436bc4fade679972`.
+The next live generation is reserved as `a365gw16` in absent resource group
+`rg-a365-custom-gw-phase6o`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
+Service Bus message data plane was accessed in either subscription.
+
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
 architecture regression test covers the operation-ID binding. Focused architecture
@@ -1426,7 +1495,8 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    `a365gw7` at 6/19, `a365gw8` at 3/19, `a365gw9` at 6/19, and `a365gw10` at
    6/19. Preserve `a365gw11`, `a365gw12`, and `a365gw13` with steps 1–6 complete
    and step 7 `Failed` after each inert deployment succeeded. Preserve `a365gw14`
-   with steps 1–10 complete and step 11 `Failed` before database mutation. In
+   and `a365gw15` with steps 1–10 complete and step 11 `Failed` before database
+   mutation. In
    order, those generations preserve exact
    image-build recovery; the terminal inert-deployment/private-ACR first-pull
    failure; a succeeded
@@ -1441,8 +1511,11 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    array to null before a strict `.Count`. None of those three reached step 8.
    `a365gw14` then crossed that boundary, created its source-bound seed blueprint,
    configured workflow-v3 Entra, and completed the SQL private endpoint before the
-   ambiguous Graph URL variable stopped step 11. None may consume edited source or
-   its later recovery Plan.
+   ambiguous Graph URL variable stopped step 11. `a365gw15` repeated that complete
+   prefix before failing prior to database mutation; its later read-only recovery
+   What-If exposed an asynchronously created, cross-generation Failure Anomalies
+   action-group binding and the need for the exact 26+4 state-aware graph. None may
+   consume edited source or its later recovery Plan.
    Commit `bb001483bae0577d7c29a9638c1c7275dae44525` implements and independently
    reviews the bounded, state-aware `Ignore` rule; its GET-only `a365gw10` smoke is
    recovery evidence, not authorization to Resume that frozen source generation.
@@ -1452,8 +1525,10 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    reviews the strict array-cardinality correction. Commit
    `891121a6387e96f1f77eac26ef6b6cff94b79d54` implements and independently reviews
    the Graph URL interpolation correction and its repository-wide AST guard. The
-   next live generation is reserved as `a365gw15`
-   in absent resource group `rg-a365-custom-gw-phase6n`, only in target subscription
+   state-aware recovery and owned smart-detector correction is commit
+   `7cb433958fe6207ffb067cd4ce9c0340a8aa7df7`. The next live generation is reserved
+   as `a365gw16` in absent resource group `rg-a365-custom-gw-phase6o`, only in target
+   subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof

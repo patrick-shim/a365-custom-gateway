@@ -526,6 +526,63 @@ The next live generation is reserved as `a365gw15` in absent resource group
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated, and no
 Service Bus message data plane was accessed in either subscription.
 
+Fresh generation `a365gw15-dev` then used absent resource group
+`rg-a365-custom-gw-phase6n`, ownership
+`abea5207-95b6-439b-ac3a-a1b2b3d7f2fb`, and ACR
+`acra365gw15deve7kaui`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Its accepted Plan
+`sha256:f03f5e9af7d91064959d1eaead74001d1584db55058cc902e9babdc51bd6b12b`
+bound configuration
+`sha256:f540e7b5d51beb8dccf23cb83093245ac00fb6bea231900771d1df0cb85d2688`
+and source
+`sha256:c77ccf00013d106e440f30dda20928e65a165fd655a2eb9f88fdf17cd19a35e1`.
+Authenticated What-If reported exactly eight `Create` predictions and no other
+change type. The single Apply ran from `2026-08-30T03:25:57Z` until
+`2026-08-30T03:48:13Z` (12:25–12:48 KST); no Resume ran.
+
+Steps 1–10 completed durably. API, worker, and Admin UI image digests are
+`sha256:ee760c926e2be32fe56243612b2315b1a7a3fb1f6034e56ddddcfbfac6c23881`,
+`sha256:8be5395b46e4fc39070e6d405aaf7e847d5098ca26eae646cc4955477ae7b380`,
+and
+`sha256:30d0feb357c9f140c1ea83c35661eaab1021a164f6a47fdc7647812fc97c831c`.
+The source-bound seed blueprint object/application ID is
+`cd5432f4-03eb-4b66-bc5d-c9f943e75047`. Foundation, inert workload, seed
+blueprint, workflow-v3 Entra, and SQL private-endpoint readbacks succeeded. Step 11
+failed before the database migrator child process, firewall, SQL public-network,
+schema, or database evidence path began. The sanitized state retains only the fixed
+step failure, so no narrower provider root cause is claimed. No later bootstrap,
+registration, Registry, key, or canary action occurred. No SQL outbox or Service Bus
+message counts were captured; that absence is not a zero-count claim, and no message
+data plane was accessed.
+
+The same-source recovery Plan was
+`sha256:cc615c5892406397d796701e014e88fc50e9584ef4abbca599a3b5054bac6710`.
+Its first read-only What-If reported eight `Deploy` plus 29 `Ignore` predictions and
+kept `applyReady=false`. A later read-only What-If reported eight `Deploy` plus 30
+`Ignore` after Azure asynchronously created the Failure Anomalies smart-detector
+rule. Exact target-only ARM readback found that current-App-Insights-scoped rule
+enabled at Sev3/PT1M but untagged and bound to the default action group in retained
+generation `rg-a365-custom-gw-phase6f`. It was neither adopted nor mutated. Preserve
+`a365gw15`; edited source must never Resume it.
+
+Commit `7cb433958fe6207ffb067cd4ce9c0340a8aa7df7` requires one contiguous,
+source-bound state prefix and accepts only an independently revalidated 26-resource
+inert plus four-resource SQL private-endpoint recovery graph. It explicitly owns the
+Failure Anomalies rule with exact tags, current Application Insights scope, and
+current project action group, and adds `Microsoft.AlertsManagement` to Doctor,
+registration, and Resume provider gates. Recovery remains closed after Admin UI
+deployment. Focused Experience/Azure tests pass **201/201**. The canonical source
+gate discovered **469** Pester tests: **468** passed, none failed, and one
+Windows-only launcher test was skipped on macOS; it parsed **19** PowerShell files
+and **2** JSON contracts and compiled all **25** Bicep templates plus **5** parameter
+files. Direct Release tests pass **1,304/1,304**, the Release build has zero
+warnings/errors, and format/diff checks pass. Corrected deployment-affecting source
+is
+`sha256:cd885109f65d749f2bcf4d52297c260b93ea733cf1d3e17e436bc4fade679972`.
+The next live generation is `a365gw16` / `rg-a365-custom-gw-phase6o`, only in target
+subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated.
+
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
 Prerequisites, then failed during Azure authentication because the old dispatcher
@@ -1652,10 +1709,11 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw15` / `rg-a365-custom-gw-phase6n`. Preserve `a365gw11`,
+   generation `a365gw16` / `rg-a365-custom-gw-phase6o`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
-   preserve `a365gw14` with steps 1–10 complete and step 11 `Failed` before any
-   database mutation. Their succeeded resources and GET-only diagnoses do not
+   preserve `a365gw14` and `a365gw15` with steps 1–10 complete and step 11 `Failed`
+   before any database mutation. Their succeeded resources and GET-only diagnoses do
+   not
    authorize Resume after any validator or helper source change. Capture
    the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
