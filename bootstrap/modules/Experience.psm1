@@ -561,7 +561,7 @@ function Get-GatewayDoctorReport {
     $providerValue = 'NotChecked'
     if ($config -and $accountMatchesConfig) {
         try {
-            $requiredProviders = @('Microsoft.AlertsManagement', 'Microsoft.App', 'Microsoft.ContainerRegistry', 'Microsoft.Insights', 'Microsoft.KeyVault', 'Microsoft.ManagedIdentity', 'Microsoft.Network', 'Microsoft.OperationalInsights', 'Microsoft.ServiceBus', 'Microsoft.Sql', 'Microsoft.Storage')
+            $requiredProviders = @('Microsoft.AlertsManagement', 'Microsoft.App', 'Microsoft.ContainerRegistry', 'Microsoft.EventGrid', 'Microsoft.Insights', 'Microsoft.KeyVault', 'Microsoft.ManagedIdentity', 'Microsoft.Network', 'Microsoft.OperationalInsights', 'Microsoft.ServiceBus', 'Microsoft.Sql', 'Microsoft.Storage')
             $unregistered = [Collections.Generic.List[string]]::new()
             foreach ($provider in $requiredProviders) {
                 $providerRecord = Invoke-GatewayAzJson -Arguments @('provider', 'show', '--namespace', $provider, '--query', '{state:registrationState}')
@@ -1333,6 +1333,374 @@ function Assert-GatewaySqlPrivateEndpointWhatIfRecoveryExtension {
     }
 }
 
+function Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$StorageAccountId,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Defender Storage system-topic recovery source fingerprint'
+    if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
+        throw 'Defender Storage system-topic recovery ownership ID is not canonical.'
+    }
+
+    $canonicalStorageAccountId = ConvertTo-GatewayRecoveryWhatIfResourceId `
+        -ResourceId $StorageAccountId -Config $Config
+    $storagePrefix = ("/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.Storage/storageAccounts/").ToLowerInvariant()
+    if (-not $canonicalStorageAccountId.StartsWith($storagePrefix, [StringComparison]::Ordinal) -or
+        $canonicalStorageAccountId.Substring($storagePrefix.Length) -notmatch '^[a-z0-9]{3,24}$') {
+        throw 'Defender Storage system-topic recovery requires one exact target storage-account resource ID.'
+    }
+    $storageAccountName = $canonicalStorageAccountId.Substring($storagePrefix.Length)
+
+    $systemTopicPrefix = ("/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.EventGrid/systemTopics/").ToLowerInvariant()
+    [object[]]$topicInventory = @(Invoke-AzJson -Arguments @(
+        'resource', 'list', '--resource-group', [string]$Config.resourceGroupName,
+        '--resource-type', 'Microsoft.EventGrid/systemTopics', '--query', '[].{id:id}'
+    ))
+    if ($topicInventory.Count -gt 1) {
+        throw 'Defender Storage recovery permits at most one Event Grid system topic in the target resource group.'
+    }
+    if ($topicInventory.Count -eq 0) {
+        $absentExtension = [ordered]@{
+            schemaVersion = 2
+            phase = 'DefenderStorageSystemTopic'
+            present = $false
+            deploymentOwnershipId = $canonicalOwnershipId
+            sourceFingerprint = $SourceFingerprint
+            resourceIds = @()
+            typeInventoryResourceIds = [ordered]@{
+                'Microsoft.EventGrid/systemTopics' = @()
+            }
+            systemTopicBinding = $null
+            eventSubscriptionBinding = $null
+        }
+        $absentExtension.boundaryFingerprint = Get-BootstrapObjectFingerprint -InputObject $absentExtension
+        return $absentExtension
+    }
+
+    $inventoryTopicId = ConvertTo-GatewayRecoveryWhatIfResourceId `
+        -ResourceId ([string](Get-GatewayArmObjectProperty -Object $topicInventory[0] -Name 'id')) `
+        -Config $Config
+    if (-not $inventoryTopicId.StartsWith($systemTopicPrefix, [StringComparison]::Ordinal)) {
+        throw 'The Defender Storage recovery inventory did not return a direct Event Grid system topic.'
+    }
+    $systemTopicName = $inventoryTopicId.Substring($systemTopicPrefix.Length)
+    if ($systemTopicName.Contains('/', [StringComparison]::Ordinal) -or
+        -not $systemTopicName.StartsWith("$storageAccountName-", [StringComparison]::Ordinal)) {
+        throw 'The Defender Storage system-topic name is not reverse-bound to the exact storage account.'
+    }
+    $topicGuidText = $systemTopicName.Substring($storageAccountName.Length + 1)
+    $topicGuid = [guid]::Empty
+    if (-not [guid]::TryParse($topicGuidText, [ref]$topicGuid) -or $topicGuid -eq [guid]::Empty -or
+        $topicGuidText -cne $topicGuid.ToString('D')) {
+        throw 'The Defender Storage system-topic suffix is not one canonical nonempty GUID.'
+    }
+
+    $systemTopic = Invoke-AzJson -Arguments @(
+        'resource', 'show', '--ids', $inventoryTopicId, '--api-version', '2025-02-15',
+        '--query', '{id:id,type:type,name:name,location:location,tags:tags,identity:identity,provisioningState:properties.provisioningState,source:properties.source,topicType:properties.topicType}'
+    )
+    $topicTags = Get-GatewayArmObjectProperty -Object $systemTopic -Name 'tags'
+    $topicIdentity = Get-GatewayArmObjectProperty -Object $systemTopic -Name 'identity'
+    if ($null -eq $systemTopic -or
+        -not ([string](Get-GatewayArmObjectProperty -Object $systemTopic -Name 'id')).Equals($inventoryTopicId, [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([string](Get-GatewayArmObjectProperty -Object $systemTopic -Name 'type')).Equals('Microsoft.EventGrid/systemTopics', [StringComparison]::OrdinalIgnoreCase) -or
+        [string](Get-GatewayArmObjectProperty -Object $systemTopic -Name 'name') -cne $systemTopicName -or
+        -not ([string](Get-GatewayArmObjectProperty -Object $systemTopic -Name 'location')).Equals([string]$Config.location, [StringComparison]::OrdinalIgnoreCase) -or
+        [string](Get-GatewayArmObjectProperty -Object $systemTopic -Name 'provisioningState') -cne 'Succeeded' -or
+        -not ([string](Get-GatewayArmObjectProperty -Object $systemTopic -Name 'source')).Equals($canonicalStorageAccountId, [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([string](Get-GatewayArmObjectProperty -Object $systemTopic -Name 'topicType')).Equals('Microsoft.Storage.StorageAccounts', [StringComparison]::OrdinalIgnoreCase) -or
+        $null -ne $topicIdentity -or
+        ($null -ne $topicTags -and @(Get-GatewayArmObjectPropertyNames -Object $topicTags).Count -ne 0)) {
+        throw 'The Event Grid system topic does not match the exact observed Defender Storage recovery envelope.'
+    }
+
+    [object[]]$eventSubscriptionInventory = @(Invoke-AzJson -Arguments @(
+        'eventgrid', 'system-topic', 'event-subscription', 'list',
+        '--resource-group', [string]$Config.resourceGroupName,
+        '--system-topic-name', $systemTopicName,
+        '--query', '[].{id:id,name:name}'
+    ))
+    if ($eventSubscriptionInventory.Count -ne 1 -or
+        [string](Get-GatewayArmObjectProperty -Object $eventSubscriptionInventory[0] -Name 'name') -cne 'StorageAntimalwareSubscription') {
+        throw 'The Defender Storage system topic does not contain the exact single observed malware-scanning event subscription.'
+    }
+    $eventSubscriptionId = ConvertTo-GatewayRecoveryWhatIfResourceId `
+        -ResourceId ([string](Get-GatewayArmObjectProperty -Object $eventSubscriptionInventory[0] -Name 'id')) `
+        -Config $Config
+    $expectedEventSubscriptionId = "$inventoryTopicId/eventsubscriptions/storageantimalwaresubscription"
+    if ($eventSubscriptionId -cne $expectedEventSubscriptionId) {
+        throw 'The Defender Storage event-subscription inventory is not nested under the exact system topic.'
+    }
+
+    $eventSubscription = Invoke-AzJson -Arguments @(
+        'resource', 'show', '--ids', $eventSubscriptionId, '--api-version', '2025-02-15',
+        '--query', '{id:id,type:type,name:name,provisioningState:properties.provisioningState,topic:properties.topic,destinationEndpointType:properties.destination.endpointType,eventDeliverySchema:properties.eventDeliverySchema,includedEventTypes:properties.filter.includedEventTypes,subjectBeginsWith:properties.filter.subjectBeginsWith,subjectEndsWith:properties.filter.subjectEndsWith,isSubjectCaseSensitive:properties.filter.isSubjectCaseSensitive,advancedFilters:properties.filter.advancedFilters[].{key:key,operatorType:operatorType,values:values},retryPolicy:properties.retryPolicy,deadLetterDestination:properties.deadLetterDestination,deliveryWithResourceIdentity:properties.deliveryWithResourceIdentity,deadLetterWithResourceIdentity:properties.deadLetterWithResourceIdentity}'
+    )
+    $rawIncludedEventTypes = Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'includedEventTypes'
+    [string[]]$includedEventTypes = @(
+        Get-GatewayArmArrayItems -Value $rawIncludedEventTypes |
+            ForEach-Object { [string]$_ }
+    )
+    [Array]::Sort($includedEventTypes, [StringComparer]::Ordinal)
+    [string[]]$expectedEventTypes = @('Microsoft.Storage.BlobCreated', 'Microsoft.Storage.BlobRenamed')
+    $rawAdvancedFilters = Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'advancedFilters'
+    [object[]]$advancedFilters = @(Get-GatewayArmArrayItems -Value $rawAdvancedFilters)
+    $rawFilterValues = if ($advancedFilters.Count -eq 1) {
+        Get-GatewayArmObjectProperty -Object $advancedFilters[0] -Name 'values'
+    }
+    else { $null }
+    [object[]]$filterValues = if ($advancedFilters.Count -eq 1) {
+        @(Get-GatewayArmArrayItems -Value $rawFilterValues)
+    }
+    else { @() }
+    $retryPolicy = Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'retryPolicy'
+    $subjectBeginsWith = Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'subjectBeginsWith'
+    $subjectEndsWith = Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'subjectEndsWith'
+    if ($null -eq $eventSubscription -or
+        -not ([string](Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'id')).Equals($eventSubscriptionId, [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([string](Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'type')).Equals('Microsoft.EventGrid/systemTopics/eventSubscriptions', [StringComparison]::OrdinalIgnoreCase) -or
+        [string](Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'name') -cne 'StorageAntimalwareSubscription' -or
+        [string](Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'provisioningState') -cne 'Succeeded' -or
+        -not ([string](Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'topic')).Equals($inventoryTopicId, [StringComparison]::OrdinalIgnoreCase) -or
+        [string](Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'destinationEndpointType') -cne 'WebHook' -or
+        [string](Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'eventDeliverySchema') -cne 'EventGridSchema' -or
+        $rawIncludedEventTypes -isnot [System.Collections.IList] -or
+        $includedEventTypes.Count -ne 2 -or ($includedEventTypes -join "`n") -cne ($expectedEventTypes -join "`n") -or
+        $subjectBeginsWith -isnot [string] -or [string]$subjectBeginsWith -cne '' -or
+        $subjectEndsWith -isnot [string] -or [string]$subjectEndsWith -cne '' -or
+        $null -ne (Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'isSubjectCaseSensitive') -or
+        $rawAdvancedFilters -isnot [System.Collections.IList] -or $advancedFilters.Count -ne 1 -or
+        [string](Get-GatewayArmObjectProperty -Object $advancedFilters[0] -Name 'key') -cne 'data.blobType' -or
+        [string](Get-GatewayArmObjectProperty -Object $advancedFilters[0] -Name 'operatorType') -cne 'StringContains' -or
+        $rawFilterValues -isnot [System.Collections.IList] -or
+        $filterValues.Count -ne 1 -or [string]$filterValues[0] -cne 'BlockBlob' -or
+        $null -eq $retryPolicy -or
+        [int](Get-GatewayArmObjectProperty -Object $retryPolicy -Name 'eventTimeToLiveInMinutes') -ne 1440 -or
+        [int](Get-GatewayArmObjectProperty -Object $retryPolicy -Name 'maxDeliveryAttempts') -ne 30 -or
+        $null -ne (Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'deadLetterDestination') -or
+        $null -ne (Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'deliveryWithResourceIdentity') -or
+        $null -ne (Get-GatewayArmObjectProperty -Object $eventSubscription -Name 'deadLetterWithResourceIdentity')) {
+        throw 'The Defender Storage event subscription does not match the exact bounded live-generation recovery contract.'
+    }
+
+    $extension = [ordered]@{
+        schemaVersion = 2
+        phase = 'DefenderStorageSystemTopic'
+        present = $true
+        deploymentOwnershipId = $canonicalOwnershipId
+        sourceFingerprint = $SourceFingerprint
+        resourceIds = @($inventoryTopicId)
+        typeInventoryResourceIds = [ordered]@{
+            'Microsoft.EventGrid/systemTopics' = @($inventoryTopicId)
+        }
+        systemTopicBinding = [ordered]@{
+            systemTopicId = $inventoryTopicId
+            name = $systemTopicName
+            location = ([string]$Config.location).ToLowerInvariant()
+            provisioningState = 'Succeeded'
+            storageAccountId = $canonicalStorageAccountId
+            topicType = 'Microsoft.Storage.StorageAccounts'
+            identityPresent = $false
+            tagsPresent = $false
+        }
+        eventSubscriptionBinding = [ordered]@{
+            eventSubscriptionId = $eventSubscriptionId
+            systemTopicId = $inventoryTopicId
+            name = 'StorageAntimalwareSubscription'
+            provisioningState = 'Succeeded'
+            destinationEndpointType = 'WebHook'
+            eventDeliverySchema = 'EventGridSchema'
+            includedEventTypes = $expectedEventTypes
+            subjectBeginsWith = ''
+            subjectEndsWith = ''
+            isSubjectCaseSensitive = $null
+            advancedFilter = [ordered]@{
+                key = 'data.blobType'
+                operatorType = 'StringContains'
+                values = @('BlockBlob')
+            }
+            retryPolicy = [ordered]@{
+                eventTimeToLiveInMinutes = 1440
+                maxDeliveryAttempts = 30
+            }
+            deadLetterDestinationPresent = $false
+            deliveryWithResourceIdentityPresent = $false
+            deadLetterWithResourceIdentityPresent = $false
+        }
+    }
+    $extension.boundaryFingerprint = Get-BootstrapObjectFingerprint -InputObject $extension
+    return $extension
+}
+
+function Assert-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Extension,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$StorageAccountId,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    Assert-GatewayExactDictionaryKeys -Value $Extension -ExpectedKeys @(
+        'schemaVersion', 'phase', 'present', 'deploymentOwnershipId', 'sourceFingerprint',
+        'resourceIds', 'typeInventoryResourceIds', 'systemTopicBinding',
+        'eventSubscriptionBinding', 'boundaryFingerprint'
+    ) -Label 'Defender Storage system-topic recovery extension' | Out-Null
+    if ($Extension.schemaVersion -isnot [int] -or [int]$Extension.schemaVersion -ne 2 -or
+        [string]$Extension.phase -cne 'DefenderStorageSystemTopic' -or
+        $Extension.present -isnot [bool] -or
+        [string]$Extension.deploymentOwnershipId -cne $DeploymentOwnershipId -or
+        [string]$Extension.sourceFingerprint -cne $SourceFingerprint -or
+        $Extension.resourceIds -isnot [System.Collections.IList] -or
+        $Extension.typeInventoryResourceIds -isnot [System.Collections.IDictionary]) {
+        throw 'Defender Storage system-topic recovery extension does not match the exact reviewed contract.'
+    }
+    Assert-BootstrapFingerprintValue -Value ([string]$Extension.boundaryFingerprint) -Label 'Defender Storage system-topic recovery fingerprint'
+    Assert-GatewayExactDictionaryKeys -Value $Extension.typeInventoryResourceIds `
+        -ExpectedKeys @('Microsoft.EventGrid/systemTopics') `
+        -Label 'Defender Storage system-topic recovery type inventory' | Out-Null
+
+    $canonicalStorageAccountId = ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId $StorageAccountId -Config $Config
+    $storagePrefix = ("/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.Storage/storageAccounts/").ToLowerInvariant()
+    if (-not $canonicalStorageAccountId.StartsWith($storagePrefix, [StringComparison]::Ordinal) -or
+        $canonicalStorageAccountId.Substring($storagePrefix.Length) -notmatch '^[a-z0-9]{3,24}$') {
+        throw 'Defender Storage system-topic validation requires one exact target storage-account resource ID.'
+    }
+    $inventoryIds = $Extension.typeInventoryResourceIds['Microsoft.EventGrid/systemTopics']
+    $expectedResourceCount = if ([bool]$Extension.present) { 1 } else { 0 }
+    if ($inventoryIds -isnot [System.Collections.IList] -or
+        @($Extension.resourceIds).Count -ne $expectedResourceCount -or
+        @($inventoryIds).Count -ne $expectedResourceCount) {
+        throw 'Defender Storage system-topic presence does not match its exact resource and type inventory.'
+    }
+    if (-not [bool]$Extension.present) {
+        if ($null -ne $Extension.systemTopicBinding -or $null -ne $Extension.eventSubscriptionBinding) {
+            throw 'An absent Defender Storage system topic cannot carry provider bindings.'
+        }
+        $absentFingerprintInput = [ordered]@{
+            schemaVersion = 2
+            phase = 'DefenderStorageSystemTopic'
+            present = $false
+            deploymentOwnershipId = [string]$Extension.deploymentOwnershipId
+            sourceFingerprint = [string]$Extension.sourceFingerprint
+            resourceIds = @()
+            typeInventoryResourceIds = $Extension.typeInventoryResourceIds
+            systemTopicBinding = $null
+            eventSubscriptionBinding = $null
+        }
+        if ([string]$Extension.boundaryFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $absentFingerprintInput)) {
+            throw 'Absent Defender Storage system-topic recovery fingerprint does not match its exact typed inventory.'
+        }
+        return [ordered]@{ present = $false; resourceIds = @() }
+    }
+
+    if ($Extension.systemTopicBinding -isnot [System.Collections.IDictionary] -or
+        $Extension.eventSubscriptionBinding -isnot [System.Collections.IDictionary]) {
+        throw 'Present Defender Storage system-topic recovery bindings are malformed.'
+    }
+    Assert-GatewayExactDictionaryKeys -Value $Extension.systemTopicBinding -ExpectedKeys @(
+        'systemTopicId', 'name', 'location', 'provisioningState', 'storageAccountId',
+        'topicType', 'identityPresent', 'tagsPresent'
+    ) -Label 'Defender Storage system-topic binding' | Out-Null
+    Assert-GatewayExactDictionaryKeys -Value $Extension.eventSubscriptionBinding -ExpectedKeys @(
+        'eventSubscriptionId', 'systemTopicId', 'name', 'provisioningState',
+        'destinationEndpointType', 'eventDeliverySchema', 'includedEventTypes',
+        'subjectBeginsWith', 'subjectEndsWith', 'isSubjectCaseSensitive',
+        'advancedFilter', 'retryPolicy', 'deadLetterDestinationPresent',
+        'deliveryWithResourceIdentityPresent', 'deadLetterWithResourceIdentityPresent'
+    ) -Label 'Defender Storage event-subscription binding' | Out-Null
+    if ($Extension.eventSubscriptionBinding.advancedFilter -isnot [System.Collections.IDictionary] -or
+        $Extension.eventSubscriptionBinding.retryPolicy -isnot [System.Collections.IDictionary]) {
+        throw 'Defender Storage event-subscription nested bindings are malformed.'
+    }
+    Assert-GatewayExactDictionaryKeys -Value $Extension.eventSubscriptionBinding.advancedFilter `
+        -ExpectedKeys @('key', 'operatorType', 'values') `
+        -Label 'Defender Storage event-subscription advanced filter' | Out-Null
+    Assert-GatewayExactDictionaryKeys -Value $Extension.eventSubscriptionBinding.retryPolicy `
+        -ExpectedKeys @('eventTimeToLiveInMinutes', 'maxDeliveryAttempts') `
+        -Label 'Defender Storage event-subscription retry policy' | Out-Null
+    $systemTopicId = ConvertTo-GatewayRecoveryWhatIfResourceId `
+        -ResourceId ([string]@($Extension.resourceIds)[0]) -Config $Config -RequireCanonicalLowercase
+    $systemTopicPrefix = ("/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.EventGrid/systemTopics/").ToLowerInvariant()
+    if (-not $systemTopicId.StartsWith($systemTopicPrefix, [StringComparison]::Ordinal) -or
+        $systemTopicId.Substring($systemTopicPrefix.Length).Contains('/', [StringComparison]::Ordinal)) {
+        throw 'Defender Storage system-topic validation requires one direct target Event Grid system-topic resource ID.'
+    }
+    if ($inventoryIds -isnot [System.Collections.IList] -or @($inventoryIds).Count -ne 1 -or
+        [string]@($inventoryIds)[0] -cne $systemTopicId -or
+        [string]$Extension.systemTopicBinding.systemTopicId -cne $systemTopicId -or
+        [string]$Extension.systemTopicBinding.storageAccountId -cne $canonicalStorageAccountId -or
+        [string]$Extension.systemTopicBinding.location -cne ([string]$Config.location).ToLowerInvariant() -or
+        [string]$Extension.systemTopicBinding.provisioningState -cne 'Succeeded' -or
+        [string]$Extension.systemTopicBinding.topicType -cne 'Microsoft.Storage.StorageAccounts' -or
+        $Extension.systemTopicBinding.identityPresent -isnot [bool] -or $Extension.systemTopicBinding.identityPresent -ne $false -or
+        $Extension.systemTopicBinding.tagsPresent -isnot [bool] -or $Extension.systemTopicBinding.tagsPresent -ne $false) {
+        throw 'Defender Storage system-topic binding does not match its exact canonical resource graph.'
+    }
+    $storageAccountName = $canonicalStorageAccountId.Substring($storagePrefix.Length)
+    $expectedTopicPrefix = "$storageAccountName-"
+    if (-not ([string]$Extension.systemTopicBinding.name).StartsWith($expectedTopicPrefix, [StringComparison]::Ordinal) -or
+        -not $systemTopicId.EndsWith("/systemtopics/$([string]$Extension.systemTopicBinding.name)", [StringComparison]::Ordinal)) {
+        throw 'Defender Storage system-topic name is not reverse-bound to its canonical resource ID and storage account.'
+    }
+    $topicGuidText = ([string]$Extension.systemTopicBinding.name).Substring($expectedTopicPrefix.Length)
+    $topicGuid = [guid]::Empty
+    if (-not [guid]::TryParse($topicGuidText, [ref]$topicGuid) -or $topicGuid -eq [guid]::Empty -or
+        $topicGuidText -cne $topicGuid.ToString('D')) {
+        throw 'Defender Storage system-topic binding has a noncanonical generated suffix.'
+    }
+
+    $eventBinding = $Extension.eventSubscriptionBinding
+    $eventSubscriptionId = ConvertTo-GatewayRecoveryWhatIfResourceId `
+        -ResourceId ([string]$eventBinding.eventSubscriptionId) -Config $Config -RequireCanonicalLowercase
+    [string[]]$includedEventTypes = @($eventBinding.includedEventTypes | ForEach-Object { [string]$_ })
+    [string[]]$filterValues = @($eventBinding.advancedFilter.values | ForEach-Object { [string]$_ })
+    if ($eventSubscriptionId -cne "$systemTopicId/eventsubscriptions/storageantimalwaresubscription" -or
+        [string]$eventBinding.systemTopicId -cne $systemTopicId -or
+        [string]$eventBinding.name -cne 'StorageAntimalwareSubscription' -or
+        [string]$eventBinding.provisioningState -cne 'Succeeded' -or
+        [string]$eventBinding.destinationEndpointType -cne 'WebHook' -or
+        [string]$eventBinding.eventDeliverySchema -cne 'EventGridSchema' -or
+        $eventBinding.includedEventTypes -isnot [System.Collections.IList] -or
+        $includedEventTypes.Count -ne 2 -or
+        ($includedEventTypes -join "`n") -cne "Microsoft.Storage.BlobCreated`nMicrosoft.Storage.BlobRenamed" -or
+        $eventBinding.subjectBeginsWith -isnot [string] -or [string]$eventBinding.subjectBeginsWith -cne '' -or
+        $eventBinding.subjectEndsWith -isnot [string] -or [string]$eventBinding.subjectEndsWith -cne '' -or
+        $null -ne $eventBinding.isSubjectCaseSensitive -or
+        [string]$eventBinding.advancedFilter.key -cne 'data.blobType' -or
+        [string]$eventBinding.advancedFilter.operatorType -cne 'StringContains' -or
+        $eventBinding.advancedFilter.values -isnot [System.Collections.IList] -or
+        $filterValues.Count -ne 1 -or $filterValues[0] -cne 'BlockBlob' -or
+        [int]$eventBinding.retryPolicy.eventTimeToLiveInMinutes -ne 1440 -or
+        [int]$eventBinding.retryPolicy.maxDeliveryAttempts -ne 30 -or
+        $eventBinding.deadLetterDestinationPresent -isnot [bool] -or $eventBinding.deadLetterDestinationPresent -ne $false -or
+        $eventBinding.deliveryWithResourceIdentityPresent -isnot [bool] -or $eventBinding.deliveryWithResourceIdentityPresent -ne $false -or
+        $eventBinding.deadLetterWithResourceIdentityPresent -isnot [bool] -or $eventBinding.deadLetterWithResourceIdentityPresent -ne $false) {
+        throw 'Defender Storage event-subscription binding does not match the exact bounded live-generation contract.'
+    }
+
+    $fingerprintInput = [ordered]@{
+        schemaVersion = 2
+        phase = 'DefenderStorageSystemTopic'
+        present = $true
+        deploymentOwnershipId = [string]$Extension.deploymentOwnershipId
+        sourceFingerprint = [string]$Extension.sourceFingerprint
+        resourceIds = @($systemTopicId)
+        typeInventoryResourceIds = $Extension.typeInventoryResourceIds
+        systemTopicBinding = $Extension.systemTopicBinding
+        eventSubscriptionBinding = $Extension.eventSubscriptionBinding
+    }
+    if ([string]$Extension.boundaryFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $fingerprintInput)) {
+        throw 'Defender Storage system-topic recovery fingerprint does not match its exact typed resource graph.'
+    }
+    return [ordered]@{ present = $true; resourceIds = @($systemTopicId) }
+}
+
 function New-GatewayStateAwareWhatIfRecoveryBoundary {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$InertBoundary,
@@ -1357,6 +1725,67 @@ function New-GatewayStateAwareWhatIfRecoveryBoundary {
         resourceIds = $resourceIds
         inertBoundaryFingerprint = [string]$InertBoundary.boundaryFingerprint
         sqlPrivateEndpointBoundaryFingerprint = [string]$SqlPrivateEndpointExtension.boundaryFingerprint
+    }
+    $boundary.boundaryFingerprint = Get-BootstrapObjectFingerprint -InputObject $boundary
+    return $boundary
+}
+
+function New-GatewayDefenderStorageAwareWhatIfRecoveryBoundary {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$BaseBoundary,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$DefenderStorageExtension,
+        [Parameter(Mandatory)][string[]]$BaseResourceIds,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$DefenderStorageResourceIds,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    $expectedBaseSchemaVersion = if ($BaseResourceIds.Count -eq 26) { 2 } elseif ($BaseResourceIds.Count -eq 30) { 3 } else { -1 }
+    $expectedBasePhase = if ($BaseResourceIds.Count -eq 26) {
+        'InertIdentityDeployment'
+    }
+    elseif ($BaseResourceIds.Count -eq 30) {
+        'InertIdentityDeployment+SqlPrivateEndpoint'
+    }
+    else { '' }
+    if ($expectedBaseSchemaVersion -lt 0 -or
+        [int]$BaseBoundary.schemaVersion -ne $expectedBaseSchemaVersion -or
+        [string]$BaseBoundary.phase -cne $expectedBasePhase -or
+        [string]$BaseBoundary.deploymentOwnershipId -cne $DeploymentOwnershipId -or
+        [string]$BaseBoundary.sourceFingerprint -cne $SourceFingerprint -or
+        $BaseBoundary.resourceIds -isnot [System.Collections.IList] -or
+        (@($BaseBoundary.resourceIds) -join "`n") -cne ($BaseResourceIds -join "`n")) {
+        throw 'The Defender Storage recovery base boundary is not the exact reviewed inert or inert-plus-SQL graph.'
+    }
+    Assert-BootstrapFingerprintValue -Value ([string]$BaseBoundary.boundaryFingerprint) -Label 'Defender Storage recovery base-boundary fingerprint'
+    Assert-BootstrapFingerprintValue -Value ([string]$DefenderStorageExtension.boundaryFingerprint) -Label 'Defender Storage recovery extension fingerprint'
+    $expectedDefenderStorageCount = if ($DefenderStorageExtension.present -is [bool] -and
+        [bool]$DefenderStorageExtension.present) { 1 } else { 0 }
+    if ($DefenderStorageExtension.schemaVersion -isnot [int] -or
+        [int]$DefenderStorageExtension.schemaVersion -ne 2 -or
+        $DefenderStorageExtension.present -isnot [bool] -or
+        $DefenderStorageExtension.resourceIds -isnot [System.Collections.IList] -or
+        $DefenderStorageResourceIds.Count -ne $expectedDefenderStorageCount -or
+        (@($DefenderStorageExtension.resourceIds) -join "`n") -cne ($DefenderStorageResourceIds -join "`n")) {
+        throw 'The Defender Storage recovery extension does not match its exact absent-or-one-resource system-topic graph.'
+    }
+
+    [string[]]$resourceIds = @($BaseResourceIds + $DefenderStorageResourceIds)
+    [Array]::Sort($resourceIds, [StringComparer]::Ordinal)
+    $expectedCount = $BaseResourceIds.Count + $expectedDefenderStorageCount
+    if ($expectedCount -notin @(26, 27, 30, 31) -or $resourceIds.Count -ne $expectedCount -or
+        @($resourceIds | Sort-Object -Unique -CaseSensitive).Count -ne $expectedCount) {
+        throw 'The Defender Storage-aware recovery boundary is not the exact reviewed 26-, 27-, 30-, or 31-resource graph.'
+    }
+    $boundary = [ordered]@{
+        schemaVersion = 4
+        phase = "$expectedBasePhase+DefenderStorageSystemTopic"
+        defenderStoragePresent = [bool]$DefenderStorageExtension.present
+        deploymentOwnershipId = $DeploymentOwnershipId
+        sourceFingerprint = $SourceFingerprint
+        resourceIds = $resourceIds
+        baseBoundaryFingerprint = [string]$BaseBoundary.boundaryFingerprint
+        defenderStorageBoundaryFingerprint = [string]$DefenderStorageExtension.boundaryFingerprint
     }
     $boundary.boundaryFingerprint = Get-BootstrapObjectFingerprint -InputObject $boundary
     return $boundary
@@ -1607,6 +2036,21 @@ function Invoke-GatewayFoundationWhatIf {
         }
         else {
             try {
+                [string[]]$observedIgnoreIds = @($ignoreChanges | ForEach-Object {
+                    ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId ([string]$_.resourceId) -Config $Config
+                })
+                if (@($observedIgnoreIds | Sort-Object -Unique -CaseSensitive).Count -ne $observedIgnoreIds.Count) {
+                    throw 'What-If returned duplicate normalized Ignore resource IDs.'
+                }
+                $systemTopicPrefix = ("/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.EventGrid/systemTopics/").ToLowerInvariant()
+                [string[]]$observedSystemTopicIgnoreIds = @($observedIgnoreIds | Where-Object {
+                    $_.StartsWith($systemTopicPrefix, [StringComparison]::Ordinal) -and
+                    -not $_.Substring($systemTopicPrefix.Length).Contains('/', [StringComparison]::Ordinal)
+                })
+                if ($observedSystemTopicIgnoreIds.Count -gt 1) {
+                    throw 'What-If returned more than one direct Event Grid system-topic Ignore resource.'
+                }
+
                 $sqlPrivateEndpointExtension = $null
                 $additionalTypeInventoryResourceIds = $null
                 if ($null -ne $recoveryState.sqlPrivateEndpoint) {
@@ -1675,12 +2119,37 @@ function Invoke-GatewayFoundationWhatIf {
                         -SourceFingerprint $SourceFingerprint
                     $expectedIgnoreIds = @($resolvedRecoveryBoundary.resourceIds)
                 }
-                [string[]]$observedIgnoreIds = @($ignoreChanges | ForEach-Object {
-                    ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId ([string]$_.resourceId) -Config $Config
-                })
-                if (@($observedIgnoreIds | Sort-Object -Unique -CaseSensitive).Count -ne $observedIgnoreIds.Count) {
-                    throw 'What-If returned duplicate normalized Ignore resource IDs.'
+
+                [object[]]$defenderStorageResults = @(Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Config $Config `
+                    -StorageAccountId ([string]$recovery.evidence.storageAccountId) `
+                    -DeploymentOwnershipId $canonicalOwnershipId `
+                    -SourceFingerprint $SourceFingerprint)
+                if ($defenderStorageResults.Count -ne 1 -or
+                    $defenderStorageResults[0] -isnot [System.Collections.IDictionary]) {
+                    throw 'Defender Storage recovery provider readback returned an invalid result envelope.'
                 }
+                $defenderStorageExtension = $defenderStorageResults[0]
+                $validatedDefenderStorageExtension = Assert-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Extension $defenderStorageExtension `
+                    -Config $Config `
+                    -StorageAccountId ([string]$recovery.evidence.storageAccountId) `
+                    -DeploymentOwnershipId $canonicalOwnershipId `
+                    -SourceFingerprint $SourceFingerprint
+                [string[]]$validatedDefenderStorageResourceIds = @($validatedDefenderStorageExtension.resourceIds)
+                if ($observedSystemTopicIgnoreIds.Count -ne $validatedDefenderStorageResourceIds.Count -or
+                    ($observedSystemTopicIgnoreIds.Count -eq 1 -and
+                    $observedSystemTopicIgnoreIds[0] -cne $validatedDefenderStorageResourceIds[0])) {
+                    throw 'What-If and provider readback disagree about the exact Defender Storage system-topic presence.'
+                }
+                $resolvedRecoveryBoundary = New-GatewayDefenderStorageAwareWhatIfRecoveryBoundary `
+                    -BaseBoundary $resolvedRecoveryBoundary `
+                    -DefenderStorageExtension $defenderStorageExtension `
+                    -BaseResourceIds $expectedIgnoreIds `
+                    -DefenderStorageResourceIds $validatedDefenderStorageResourceIds `
+                    -DeploymentOwnershipId $canonicalOwnershipId `
+                    -SourceFingerprint $SourceFingerprint
+                $expectedIgnoreIds = @($resolvedRecoveryBoundary.resourceIds)
                 [Array]::Sort($observedIgnoreIds, [StringComparer]::Ordinal)
                 if ($observedIgnoreIds.Count -ne $expectedIgnoreIds.Count -or
                     ($observedIgnoreIds -join "`n") -cne ($expectedIgnoreIds -join "`n")) {
@@ -1962,7 +2431,7 @@ function Write-GatewayDiagnosticBundle {
 
 function Test-GatewayResourceProviderEvidence {
     foreach ($provider in @(
-        'Microsoft.AlertsManagement', 'Microsoft.App', 'Microsoft.ContainerRegistry', 'Microsoft.Insights', 'Microsoft.KeyVault',
+        'Microsoft.AlertsManagement', 'Microsoft.App', 'Microsoft.ContainerRegistry', 'Microsoft.EventGrid', 'Microsoft.Insights', 'Microsoft.KeyVault',
         'Microsoft.ManagedIdentity', 'Microsoft.Network', 'Microsoft.OperationalInsights',
         'Microsoft.ServiceBus', 'Microsoft.Sql', 'Microsoft.Storage'
     )) {

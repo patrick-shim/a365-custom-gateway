@@ -74,6 +74,7 @@ Describe 'Bootstrap Azure resource-provider boundary' {
                 'Microsoft.AlertsManagement',
                 'Microsoft.App',
                 'Microsoft.ContainerRegistry',
+                'Microsoft.EventGrid',
                 'Microsoft.Insights',
                 'Microsoft.KeyVault',
                 'Microsoft.ManagedIdentity',
@@ -84,8 +85,8 @@ Describe 'Bootstrap Azure resource-provider boundary' {
                 'Microsoft.Storage'
             )
             @($script:registeredProviders) | Should -Be $expected
-            Should -Invoke Invoke-BootstrapCommand -Times 11 -Exactly
-            Should -Invoke Invoke-AzTsv -Times 11 -Exactly
+            Should -Invoke Invoke-BootstrapCommand -Times 12 -Exactly
+            Should -Invoke Invoke-AzTsv -Times 12 -Exactly
             Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
                 $FilePath -ceq 'az' -and
                 ($ArgumentList -join '|') -ceq 'provider|register|--namespace|Microsoft.AlertsManagement|--wait|--only-show-errors'

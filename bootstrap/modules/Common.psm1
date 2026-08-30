@@ -327,8 +327,8 @@ function Get-BootstrapAzureCliArguments {
 
     $commandGroup = [string]$effectiveArguments[0]
     $resourceCommandGroups = @(
-        'acr', 'containerapp', 'deployment', 'group', 'identity', 'keyvault',
-        'monitor', 'network', 'provider', 'resource', 'role', 'servicebus',
+        'acr', 'containerapp', 'deployment', 'eventgrid', 'group', 'identity',
+        'keyvault', 'monitor', 'network', 'provider', 'resource', 'role', 'servicebus',
         'sql', 'storage'
     )
     if ($resourceCommandGroups -ccontains $commandGroup) {

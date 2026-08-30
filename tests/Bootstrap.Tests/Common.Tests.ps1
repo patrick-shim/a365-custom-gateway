@@ -823,6 +823,12 @@ Describe 'Bootstrap Azure CLI subscription boundary' {
                 '--subscription', '11111111-1111-4111-8111-111111111111')
 
         @(Get-BootstrapAzureCliArguments -Arguments @(
+                'eventgrid', 'system-topic', 'list', '--resource-group', 'rg-safe')) |
+            Should -Be @(
+                'eventgrid', 'system-topic', 'list', '--resource-group', 'rg-safe',
+                '--subscription', '11111111-1111-4111-8111-111111111111')
+
+        @(Get-BootstrapAzureCliArguments -Arguments @(
                 'account', 'get-access-token', '--resource', 'https://graph.microsoft.com/')) |
             Should -Be @(
                 'account', 'get-access-token', '--resource', 'https://graph.microsoft.com/',

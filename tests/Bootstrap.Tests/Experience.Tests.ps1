@@ -93,6 +93,7 @@ Describe 'Experience Azure resource-provider readback boundary' {
                 'Microsoft.AlertsManagement',
                 'Microsoft.App',
                 'Microsoft.ContainerRegistry',
+                'Microsoft.EventGrid',
                 'Microsoft.Insights',
                 'Microsoft.KeyVault',
                 'Microsoft.ManagedIdentity',
@@ -103,7 +104,7 @@ Describe 'Experience Azure resource-provider readback boundary' {
                 'Microsoft.Storage'
             )
             @($script:readProviders) | Should -Be $expected
-            Should -Invoke Invoke-AzTsv -Times 11 -Exactly
+            Should -Invoke Invoke-AzTsv -Times 12 -Exactly
         }
 
         It 'keeps Doctor and Resume on the same exact provider set' {
@@ -122,9 +123,10 @@ Describe 'Experience Azure resource-provider readback boundary' {
             }
             foreach ($provider in @(
                 'Microsoft.AlertsManagement', 'Microsoft.App', 'Microsoft.ContainerRegistry',
-                'Microsoft.Insights', 'Microsoft.KeyVault', 'Microsoft.ManagedIdentity',
-                'Microsoft.Network', 'Microsoft.OperationalInsights', 'Microsoft.ServiceBus',
-                'Microsoft.Sql', 'Microsoft.Storage'
+                'Microsoft.EventGrid', 'Microsoft.Insights', 'Microsoft.KeyVault',
+                'Microsoft.ManagedIdentity', 'Microsoft.Network',
+                'Microsoft.OperationalInsights', 'Microsoft.ServiceBus', 'Microsoft.Sql',
+                'Microsoft.Storage'
             )) {
                 foreach ($name in $functions.Keys) {
                     ([regex]::Matches($functions[$name], [regex]::Escape("'$provider'"))).Count |
@@ -927,7 +929,10 @@ Describe 'Azure What-If result boundary' {
             }
             $script:recoveryBoundary['boundaryFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $script:recoveryBoundary
             $script:recoveryResult = [ordered]@{
-                evidence = [ordered]@{ deploymentName = 'a365gw-safe-bootstrap-inert-dev' }
+                evidence = [ordered]@{
+                    deploymentName = 'a365gw-safe-bootstrap-inert-dev'
+                    storageAccountId = "$baseResourceId/microsoft.storage/storageaccounts/stsafe"
+                }
                 boundary = $script:recoveryBoundary
             }
             $sqlPrivateEndpointId = "$baseResourceId/microsoft.network/privateendpoints/pe-sql-safe-dev"
@@ -962,6 +967,76 @@ Describe 'Azure What-If result boundary' {
             }
             $script:sqlPrivateEndpointExtension['boundaryFingerprint'] =
                 Get-BootstrapObjectFingerprint -InputObject $script:sqlPrivateEndpointExtension
+            $script:defenderStorageTopicId =
+                "$baseResourceId/microsoft.eventgrid/systemtopics/stsafe-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            $script:defenderStorageEventSubscriptionId =
+                "$($script:defenderStorageTopicId)/eventsubscriptions/storageantimalwaresubscription"
+            $script:defenderStoragePresentExtension = [ordered]@{
+                schemaVersion = 2
+                phase = 'DefenderStorageSystemTopic'
+                present = $true
+                deploymentOwnershipId = $script:whatIfOwnershipId
+                sourceFingerprint = $script:whatIfSourceFingerprint
+                resourceIds = @($script:defenderStorageTopicId)
+                typeInventoryResourceIds = [ordered]@{
+                    'Microsoft.EventGrid/systemTopics' = @($script:defenderStorageTopicId)
+                }
+                systemTopicBinding = [ordered]@{
+                    systemTopicId = $script:defenderStorageTopicId
+                    name = 'stsafe-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+                    location = 'koreacentral'
+                    provisioningState = 'Succeeded'
+                    storageAccountId = "$baseResourceId/microsoft.storage/storageaccounts/stsafe"
+                    topicType = 'Microsoft.Storage.StorageAccounts'
+                    identityPresent = $false
+                    tagsPresent = $false
+                }
+                eventSubscriptionBinding = [ordered]@{
+                    eventSubscriptionId = $script:defenderStorageEventSubscriptionId
+                    systemTopicId = $script:defenderStorageTopicId
+                    name = 'StorageAntimalwareSubscription'
+                    provisioningState = 'Succeeded'
+                    destinationEndpointType = 'WebHook'
+                    eventDeliverySchema = 'EventGridSchema'
+                    includedEventTypes = @(
+                        'Microsoft.Storage.BlobCreated',
+                        'Microsoft.Storage.BlobRenamed'
+                    )
+                    subjectBeginsWith = ''
+                    subjectEndsWith = ''
+                    isSubjectCaseSensitive = $null
+                    advancedFilter = [ordered]@{
+                        key = 'data.blobType'
+                        operatorType = 'StringContains'
+                        values = @('BlockBlob')
+                    }
+                    retryPolicy = [ordered]@{
+                        eventTimeToLiveInMinutes = 1440
+                        maxDeliveryAttempts = 30
+                    }
+                    deadLetterDestinationPresent = $false
+                    deliveryWithResourceIdentityPresent = $false
+                    deadLetterWithResourceIdentityPresent = $false
+                }
+            }
+            $script:defenderStoragePresentExtension['boundaryFingerprint'] =
+                Get-BootstrapObjectFingerprint -InputObject $script:defenderStoragePresentExtension
+            $script:defenderStorageAbsentExtension = [ordered]@{
+                schemaVersion = 2
+                phase = 'DefenderStorageSystemTopic'
+                present = $false
+                deploymentOwnershipId = $script:whatIfOwnershipId
+                sourceFingerprint = $script:whatIfSourceFingerprint
+                resourceIds = @()
+                typeInventoryResourceIds = [ordered]@{
+                    'Microsoft.EventGrid/systemTopics' = @()
+                }
+                systemTopicBinding = $null
+                eventSubscriptionBinding = $null
+            }
+            $script:defenderStorageAbsentExtension['boundaryFingerprint'] =
+                Get-BootstrapObjectFingerprint -InputObject $script:defenderStorageAbsentExtension
+            $script:defenderStorageProviderExtension = $script:defenderStorageAbsentExtension
             $script:recoveryState = [ordered]@{
                 deploymentOwnershipId = $script:whatIfOwnershipId
                 configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $script:config
@@ -1026,8 +1101,43 @@ Describe 'Azure What-If result boundary' {
                     properties = [pscustomobject]@{ changes = $changes }
                 }
             }
+            function Set-TestEarlyRecoveryState {
+                $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
+                $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{
+                    sqlServerFqdn = 'sql-safe-dev.database.windows.net'
+                }
+                $script:recoveryState.steps['Agent 365 seed blueprint'] = [ordered]@{
+                    status = 'Running'
+                    sourceFingerprint = $script:whatIfSourceFingerprint
+                }
+            }
+            function Set-TestLaterRecoveryState {
+                $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
+                $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{
+                    sqlServerFqdn = 'sql-safe-dev.database.windows.net'
+                }
+                foreach ($stepName in @('Agent 365 seed blueprint', 'Workflow v3 Entra configuration')) {
+                    $script:recoveryState.steps[$stepName] = [ordered]@{
+                        status = 'Completed'
+                        sourceFingerprint = $script:whatIfSourceFingerprint
+                        evidence = [ordered]@{ verified = $true }
+                    }
+                }
+                $script:recoveryState.steps['SQL private endpoint'] = [ordered]@{
+                    status = 'Completed'
+                    sourceFingerprint = $script:whatIfSourceFingerprint
+                    evidence = [ordered]@{ deploymentName = 'a365gw-safe-bootstrap-sql-private-dev' }
+                }
+                $script:recoveryState.steps['Gateway database'] = [ordered]@{
+                    status = 'Failed'
+                    sourceFingerprint = $script:whatIfSourceFingerprint
+                }
+            }
             Mock Get-GatewayInertWhatIfRecoveryBoundary { return $script:recoveryResult }
             Mock Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension { return $script:sqlPrivateEndpointExtension }
+            Mock Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension {
+                return $script:defenderStorageProviderExtension
+            }
             Mock Test-GatewayGroupDeploymentEvidence { return $true }
         }
 
@@ -1093,8 +1203,16 @@ Describe 'Azure What-If result boundary' {
             $result.applyReady | Should -BeTrue
             $result.changeCounts['Ignore'] | Should -Be 26
             @($result.changes | Where-Object changeType -eq 'Ignore').Count | Should -Be 26
-            $result.recoveryIgnoreBoundary.boundaryFingerprint |
+            $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 4
+            $result.recoveryIgnoreBoundary.phase |
+                Should -BeExactly 'InertIdentityDeployment+DefenderStorageSystemTopic'
+            $result.recoveryIgnoreBoundary.defenderStoragePresent | Should -BeFalse
+            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 26
+            $result.recoveryIgnoreBoundary.baseBoundaryFingerprint |
                 Should -BeExactly $script:recoveryBoundary.boundaryFingerprint
+            $result.recoveryIgnoreBoundary.defenderStorageBoundaryFingerprint |
+                Should -BeExactly $script:defenderStorageAbsentExtension.boundaryFingerprint
+            $result.recoveryIgnoreBoundary.boundaryFingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
             Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 1 -Exactly -ParameterFilter {
                 $Foundation -eq $script:recoveryState.steps['Azure foundation'].evidence -and
                 $Identity -eq $script:recoveryState.steps['Gateway API identity'].evidence -and
@@ -1102,6 +1220,11 @@ Describe 'Azure What-If result boundary' {
                 $WorkerImage -eq $script:recoveryState.steps['Immutable workload images'].evidence.worker -and
                 $DeploymentOwnershipId -eq $script:whatIfOwnershipId -and
                 $SourceFingerprint -eq $script:whatIfSourceFingerprint
+            }
+            Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly -ParameterFilter {
+                $StorageAccountId -ceq $script:recoveryResult.evidence.storageAccountId -and
+                $DeploymentOwnershipId -ceq $script:whatIfOwnershipId -and
+                $SourceFingerprint -ceq $script:whatIfSourceFingerprint
             }
             Should -Invoke Test-GatewayGroupDeploymentEvidence -Times 1 -Exactly
         }
@@ -1142,9 +1265,49 @@ Describe 'Azure What-If result boundary' {
                 sourceFingerprint = $script:whatIfSourceFingerprint
             }
 
-            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
-                Should -BeTrue
+            $result = Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState
+
+            $result.applyReady | Should -BeTrue
+            $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 4
+            $result.recoveryIgnoreBoundary.defenderStoragePresent | Should -BeFalse
+            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 26
             Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 1 -Exactly
+            Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
+        }
+
+        It 'accepts exactly 27 Ignore resources when one Defender Storage topic extends the early inert recovery boundary' {
+            $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
+            $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{
+                sqlServerFqdn = 'sql-safe-dev.database.windows.net'
+            }
+            $script:recoveryState.steps['Agent 365 seed blueprint'] = [ordered]@{
+                status = 'Running'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+            }
+            Set-TestRecoveryWhatIf -IgnoreIds @(
+                $script:recoveryBoundary.resourceIds + $script:defenderStorageTopicId)
+            $script:defenderStorageProviderExtension = $script:defenderStoragePresentExtension
+
+            $result = Invoke-GatewayFoundationWhatIf `
+                -Config $script:config -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint `
+                -State $script:recoveryState
+
+            $result.applyReady | Should -BeTrue
+            $result.changeCounts['Ignore'] | Should -Be 27
+            $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 4
+            $result.recoveryIgnoreBoundary.phase |
+                Should -BeExactly 'InertIdentityDeployment+DefenderStorageSystemTopic'
+            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 27
+            $result.recoveryIgnoreBoundary.defenderStoragePresent | Should -BeTrue
+            $result.recoveryIgnoreBoundary.defenderStorageBoundaryFingerprint |
+                Should -BeExactly $script:defenderStoragePresentExtension.boundaryFingerprint
+            Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly -ParameterFilter {
+                $StorageAccountId -ceq $script:recoveryResult.evidence.storageAccountId -and
+                $DeploymentOwnershipId -ceq $script:whatIfOwnershipId -and
+                $SourceFingerprint -ceq $script:whatIfSourceFingerprint
+            }
         }
 
         It 'accepts only the exact 30-resource graph after completed SQL private endpoint and a later failure' {
@@ -1177,14 +1340,203 @@ Describe 'Azure What-If result boundary' {
 
             $result.applyReady | Should -BeTrue
             $result.changeCounts['Ignore'] | Should -Be 30
-            $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 3
-            $result.recoveryIgnoreBoundary.phase | Should -BeExactly 'InertIdentityDeployment+SqlPrivateEndpoint'
+            $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 4
+            $result.recoveryIgnoreBoundary.phase |
+                Should -BeExactly 'InertIdentityDeployment+SqlPrivateEndpoint+DefenderStorageSystemTopic'
+            $result.recoveryIgnoreBoundary.defenderStoragePresent | Should -BeFalse
             $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 30
             $result.recoveryIgnoreBoundary.boundaryFingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
+            $result.recoveryIgnoreBoundary.defenderStorageBoundaryFingerprint |
+                Should -BeExactly $script:defenderStorageAbsentExtension.boundaryFingerprint
             Should -Invoke Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension -Times 1 -Exactly
             Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 1 -Exactly -ParameterFilter {
                 $AdditionalTypeInventoryResourceIds -eq $script:sqlPrivateEndpointExtension.typeInventoryResourceIds
             }
+            Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
+        }
+
+        It 'accepts exactly 31 Ignore resources only when one exact Defender Storage topic extends the 30-resource state boundary' {
+            $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
+            $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
+            foreach ($stepName in @('Agent 365 seed blueprint', 'Workflow v3 Entra configuration')) {
+                $script:recoveryState.steps[$stepName] = [ordered]@{
+                    status = 'Completed'
+                    sourceFingerprint = $script:whatIfSourceFingerprint
+                    evidence = [ordered]@{ verified = $true }
+                }
+            }
+            $script:recoveryState.steps['SQL private endpoint'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+                evidence = [ordered]@{ deploymentName = 'a365gw-safe-bootstrap-sql-private-dev' }
+            }
+            $script:recoveryState.steps['Gateway database'] = [ordered]@{
+                status = 'Failed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+            }
+            Set-TestRecoveryWhatIf -IgnoreIds @(
+                $script:recoveryBoundary.resourceIds +
+                $script:sqlPrivateEndpointExtension.resourceIds +
+                $script:defenderStorageTopicId)
+            $script:defenderStorageProviderExtension = $script:defenderStoragePresentExtension
+
+            $result = Invoke-GatewayFoundationWhatIf `
+                -Config $script:config -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint `
+                -State $script:recoveryState
+
+            $result.applyReady | Should -BeTrue
+            $result.changeCounts['Ignore'] | Should -Be 31
+            $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 4
+            $result.recoveryIgnoreBoundary.phase |
+                Should -BeExactly 'InertIdentityDeployment+SqlPrivateEndpoint+DefenderStorageSystemTopic'
+            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 31
+            $result.recoveryIgnoreBoundary.defenderStoragePresent | Should -BeTrue
+            $result.recoveryIgnoreBoundary.boundaryFingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
+            Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly -ParameterFilter {
+                $StorageAccountId -ceq $script:recoveryResult.evidence.storageAccountId -and
+                $DeploymentOwnershipId -ceq $script:whatIfOwnershipId -and
+                $SourceFingerprint -ceq $script:whatIfSourceFingerprint
+            }
+        }
+
+        It 'rejects a 26-resource What-If when independent provider inventory contains one Defender Storage topic' {
+            Set-TestEarlyRecoveryState
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            $script:defenderStorageProviderExtension = $script:defenderStoragePresentExtension
+
+            $result = Invoke-GatewayFoundationWhatIf `
+                -Config $script:config -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint `
+                -State $script:recoveryState
+
+            $result.applyReady | Should -BeFalse
+            $result.recoveryIgnoreBoundary | Should -BeNullOrEmpty
+            Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
+        }
+
+        It 'rejects a 27-resource What-If when independent provider inventory reports typed absence' {
+            Set-TestEarlyRecoveryState
+            Set-TestRecoveryWhatIf -IgnoreIds @(
+                $script:recoveryBoundary.resourceIds + $script:defenderStorageTopicId)
+
+            $result = Invoke-GatewayFoundationWhatIf `
+                -Config $script:config -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint `
+                -State $script:recoveryState
+
+            $result.applyReady | Should -BeFalse
+            $result.recoveryIgnoreBoundary | Should -BeNullOrEmpty
+            Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
+        }
+
+        It 'rejects a 30-resource What-If when independent provider inventory contains one Defender Storage topic' {
+            Set-TestLaterRecoveryState
+            Set-TestRecoveryWhatIf -IgnoreIds @(
+                $script:recoveryBoundary.resourceIds + $script:sqlPrivateEndpointExtension.resourceIds)
+            $script:defenderStorageProviderExtension = $script:defenderStoragePresentExtension
+
+            $result = Invoke-GatewayFoundationWhatIf `
+                -Config $script:config -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint `
+                -State $script:recoveryState
+
+            $result.applyReady | Should -BeFalse
+            $result.recoveryIgnoreBoundary | Should -BeNullOrEmpty
+            Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
+        }
+
+        It 'rejects a 31-resource What-If when independent provider inventory reports typed absence' {
+            Set-TestLaterRecoveryState
+            Set-TestRecoveryWhatIf -IgnoreIds @(
+                $script:recoveryBoundary.resourceIds +
+                $script:sqlPrivateEndpointExtension.resourceIds +
+                $script:defenderStorageTopicId)
+
+            $result = Invoke-GatewayFoundationWhatIf `
+                -Config $script:config -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint `
+                -State $script:recoveryState
+
+            $result.applyReady | Should -BeFalse
+            $result.recoveryIgnoreBoundary | Should -BeNullOrEmpty
+            Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
+        }
+
+        It 'rejects a 29-resource later-state Ignore graph instead of treating a missing SQL resource as optional' {
+            $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
+            $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
+            foreach ($stepName in @('Agent 365 seed blueprint', 'Workflow v3 Entra configuration')) {
+                $script:recoveryState.steps[$stepName] = [ordered]@{
+                    status = 'Completed'
+                    sourceFingerprint = $script:whatIfSourceFingerprint
+                    evidence = [ordered]@{ verified = $true }
+                }
+            }
+            $script:recoveryState.steps['SQL private endpoint'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+                evidence = [ordered]@{ deploymentName = 'a365gw-safe-bootstrap-sql-private-dev' }
+            }
+            $script:recoveryState.steps['Gateway database'] = [ordered]@{
+                status = 'Failed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+            }
+            [string[]]$fullLaterGraph = @(
+                $script:recoveryBoundary.resourceIds + $script:sqlPrivateEndpointExtension.resourceIds)
+            Set-TestRecoveryWhatIf -IgnoreIds @($fullLaterGraph | Select-Object -SkipLast 1)
+
+            (Invoke-GatewayFoundationWhatIf `
+                    -Config $script:config -RepositoryRoot '/safe/source' `
+                    -DeploymentOwnershipId $script:whatIfOwnershipId `
+                    -SourceFingerprint $script:whatIfSourceFingerprint `
+                    -State $script:recoveryState).applyReady |
+                Should -BeFalse
+            Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
+        }
+
+        It 'rejects 32 Ignore resources containing multiple direct Event Grid system topics before provider readback' {
+            $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
+            $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
+            foreach ($stepName in @('Agent 365 seed blueprint', 'Workflow v3 Entra configuration')) {
+                $script:recoveryState.steps[$stepName] = [ordered]@{
+                    status = 'Completed'
+                    sourceFingerprint = $script:whatIfSourceFingerprint
+                    evidence = [ordered]@{ verified = $true }
+                }
+            }
+            $script:recoveryState.steps['SQL private endpoint'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+                evidence = [ordered]@{ deploymentName = 'a365gw-safe-bootstrap-sql-private-dev' }
+            }
+            $script:recoveryState.steps['Gateway database'] = [ordered]@{
+                status = 'Failed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+            }
+            $secondTopic = $script:defenderStorageTopicId.Replace(
+                'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+            Set-TestRecoveryWhatIf -IgnoreIds @(
+                $script:recoveryBoundary.resourceIds +
+                $script:sqlPrivateEndpointExtension.resourceIds +
+                $script:defenderStorageTopicId +
+                $secondTopic)
+
+            (Invoke-GatewayFoundationWhatIf `
+                    -Config $script:config -RepositoryRoot '/safe/source' `
+                    -DeploymentOwnershipId $script:whatIfOwnershipId `
+                    -SourceFingerprint $script:whatIfSourceFingerprint `
+                    -State $script:recoveryState).applyReady |
+                Should -BeFalse
+            Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 0 -Exactly
+            Should -Invoke Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension -Times 0 -Exactly
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
         }
 
         It 'rejects a non-contiguous later recovery state before any provider readback' {
@@ -1596,6 +1948,397 @@ Describe 'SQL private-endpoint What-If recovery extension' {
                     -DeploymentOwnershipId $script:sqlExtensionOwnershipId `
                     -SourceFingerprint $script:sqlExtensionSourceFingerprint } |
                 Should -Throw '*does not exactly reverse-bind*'
+        }
+    }
+}
+
+Describe 'Defender for Storage Event Grid What-If recovery extension' {
+    InModuleScope Experience {
+        BeforeEach {
+            $script:defenderSubscriptionId = '11111111-1111-4111-8111-111111111111'
+            $script:defenderOwnershipId = '22222222-2222-4222-8222-222222222222'
+            $script:defenderSourceFingerprint = "sha256:$('a' * 64)"
+            $script:defenderConfig = [pscustomobject]@{
+                subscriptionId = $script:defenderSubscriptionId
+                resourceGroupName = 'rg-safe-dev'
+                projectName = 'safe'
+                environment = 'dev'
+                location = 'koreacentral'
+            }
+            $providerPrefix = "/subscriptions/$($script:defenderSubscriptionId)/resourcegroups/rg-safe-dev/providers"
+            $script:defenderStorageAccountId =
+                "$providerPrefix/microsoft.storage/storageaccounts/stsafe"
+            $script:defenderSystemTopicName =
+                'stsafe-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            $script:defenderSystemTopicId =
+                "$providerPrefix/microsoft.eventgrid/systemtopics/$($script:defenderSystemTopicName)"
+            $script:defenderEventSubscriptionId =
+                "$($script:defenderSystemTopicId)/eventsubscriptions/storageantimalwaresubscription"
+            $script:defenderTopicInventory = @([pscustomobject]@{
+                id = $script:defenderSystemTopicId
+            })
+            $script:defenderSystemTopic = [pscustomobject]@{
+                id = $script:defenderSystemTopicId
+                type = 'Microsoft.EventGrid/systemTopics'
+                name = $script:defenderSystemTopicName
+                location = 'koreacentral'
+                tags = $null
+                identity = $null
+                provisioningState = 'Succeeded'
+                source = $script:defenderStorageAccountId
+                topicType = 'Microsoft.Storage.StorageAccounts'
+            }
+            $script:defenderEventSubscriptionInventory = @([pscustomobject]@{
+                id = $script:defenderEventSubscriptionId
+                name = 'StorageAntimalwareSubscription'
+            })
+            $script:defenderEventSubscription = [pscustomobject]@{
+                id = $script:defenderEventSubscriptionId
+                type = 'Microsoft.EventGrid/systemTopics/eventSubscriptions'
+                name = 'StorageAntimalwareSubscription'
+                provisioningState = 'Succeeded'
+                topic = $script:defenderSystemTopicId
+                destinationEndpointType = 'WebHook'
+                eventDeliverySchema = 'EventGridSchema'
+                includedEventTypes = @(
+                    'Microsoft.Storage.BlobCreated',
+                    'Microsoft.Storage.BlobRenamed'
+                )
+                subjectBeginsWith = ''
+                subjectEndsWith = ''
+                isSubjectCaseSensitive = $null
+                advancedFilters = @([pscustomobject]@{
+                    key = 'data.blobType'
+                    operatorType = 'StringContains'
+                    values = @('BlockBlob')
+                })
+                retryPolicy = [pscustomobject]@{
+                    eventTimeToLiveInMinutes = 1440
+                    maxDeliveryAttempts = 30
+                }
+                deadLetterDestination = $null
+                deliveryWithResourceIdentity = $null
+                deadLetterWithResourceIdentity = $null
+            }
+            $script:defenderAzCalls = [Collections.Generic.List[object]]::new()
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                $script:defenderAzCalls.Add(@($Arguments))
+                if ([string]$Arguments[0] -ceq 'resource' -and
+                    [string]$Arguments[1] -ceq 'list') {
+                    return $script:defenderTopicInventory
+                }
+                if ([string]$Arguments[0] -ceq 'eventgrid') {
+                    return $script:defenderEventSubscriptionInventory
+                }
+                if ([string]$Arguments[0] -ceq 'resource' -and
+                    [string]$Arguments[1] -ceq 'show') {
+                    $idIndex = [Array]::IndexOf([object[]]$Arguments, '--ids')
+                    if ($idIndex -lt 0 -or $idIndex + 1 -ge $Arguments.Count) {
+                        throw 'Test resource show requires one exact ID.'
+                    }
+                    $resourceId = [string]$Arguments[$idIndex + 1]
+                    if ($resourceId -ceq $script:defenderSystemTopicId) {
+                        return $script:defenderSystemTopic
+                    }
+                    if ($resourceId -ceq $script:defenderEventSubscriptionId) {
+                        return $script:defenderEventSubscription
+                    }
+                }
+                throw 'Unexpected Defender Storage recovery readback.'
+            }
+        }
+
+        It 'derives and validates one exact fingerprinted topic extension from the bounded live-generation child contract' {
+            $extension = Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                -Config $script:defenderConfig `
+                -StorageAccountId $script:defenderStorageAccountId `
+                -DeploymentOwnershipId $script:defenderOwnershipId `
+                -SourceFingerprint $script:defenderSourceFingerprint
+
+            $validated = Assert-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                -Extension $extension `
+                -Config $script:defenderConfig `
+                -StorageAccountId $script:defenderStorageAccountId `
+                -DeploymentOwnershipId $script:defenderOwnershipId `
+                -SourceFingerprint $script:defenderSourceFingerprint
+
+            $extension.schemaVersion | Should -Be 2
+            $extension.present | Should -BeTrue
+            $extension.resourceIds | Should -Be @($script:defenderSystemTopicId)
+            $validated.present | Should -BeTrue
+            $validated.resourceIds | Should -Be @($script:defenderSystemTopicId)
+            $extension.systemTopicBinding.storageAccountId |
+                Should -BeExactly $script:defenderStorageAccountId
+            $extension.eventSubscriptionBinding.eventSubscriptionId |
+                Should -BeExactly $script:defenderEventSubscriptionId
+            $extension.boundaryFingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'resource' -and
+                [string]$Arguments[1] -ceq 'list' -and
+                $Arguments -contains 'Microsoft.EventGrid/systemTopics'
+            }
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'eventgrid' -and
+                $Arguments -contains $script:defenderSystemTopicName -and
+                $Arguments -contains 'event-subscription'
+            }
+            Should -Invoke Invoke-AzJson -Times 2 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'resource' -and
+                [string]$Arguments[1] -ceq 'show' -and
+                $Arguments -contains '2025-02-15'
+            }
+            foreach ($arguments in $script:defenderAzCalls) {
+                ($arguments -join '|') |
+                    Should -Not -Match '(?i)endpointUrl|endpointBaseUrl|include-full-endpoint'
+            }
+        }
+
+        It 'derives and validates a fingerprinted typed-absence marker from an absent provider inventory' {
+            $script:defenderTopicInventory = @()
+
+            $extension = Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                -Config $script:defenderConfig `
+                -StorageAccountId $script:defenderStorageAccountId `
+                -DeploymentOwnershipId $script:defenderOwnershipId `
+                -SourceFingerprint $script:defenderSourceFingerprint
+            $validated = Assert-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                -Extension $extension `
+                -Config $script:defenderConfig `
+                -StorageAccountId $script:defenderStorageAccountId `
+                -DeploymentOwnershipId $script:defenderOwnershipId `
+                -SourceFingerprint $script:defenderSourceFingerprint
+
+            $extension.schemaVersion | Should -Be 2
+            $extension.phase | Should -BeExactly 'DefenderStorageSystemTopic'
+            $extension.present | Should -BeFalse
+            @($extension.resourceIds).Count | Should -Be 0
+            @($extension.typeInventoryResourceIds['Microsoft.EventGrid/systemTopics']).Count |
+                Should -Be 0
+            $extension.systemTopicBinding | Should -BeNullOrEmpty
+            $extension.eventSubscriptionBinding | Should -BeNullOrEmpty
+            $extension.boundaryFingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
+            $validated.present | Should -BeFalse
+            @($validated.resourceIds).Count | Should -Be 0
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'resource' -and
+                [string]$Arguments[1] -ceq 'list'
+            }
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'resource' -and
+                [string]$Arguments[1] -ceq 'show'
+            }
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'eventgrid'
+            }
+        }
+
+        It 'rejects multiple system topics in the exact target resource group' {
+            $script:defenderTopicInventory = @(
+                [pscustomobject]@{ id = $script:defenderSystemTopicId },
+                [pscustomobject]@{
+                    id = $script:defenderSystemTopicId.Replace(
+                        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+                }
+            )
+
+            { Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Config $script:defenderConfig `
+                    -StorageAccountId $script:defenderStorageAccountId `
+                    -DeploymentOwnershipId $script:defenderOwnershipId `
+                    -SourceFingerprint $script:defenderSourceFingerprint } |
+                Should -Throw '*at most one Event Grid system topic*'
+        }
+
+        It 'rejects a system-topic envelope that is not the exact observed topic' {
+            $script:defenderSystemTopic.type = 'Microsoft.EventGrid/topics'
+
+            { Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Config $script:defenderConfig `
+                    -StorageAccountId $script:defenderStorageAccountId `
+                    -DeploymentOwnershipId $script:defenderOwnershipId `
+                    -SourceFingerprint $script:defenderSourceFingerprint } |
+                Should -Throw '*does not match the exact observed Defender Storage recovery envelope*'
+        }
+
+        It 'rejects a system topic bound to a different storage source' {
+            $script:defenderSystemTopic.source =
+                $script:defenderStorageAccountId.Replace('/stsafe', '/stother')
+
+            { Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Config $script:defenderConfig `
+                    -StorageAccountId $script:defenderStorageAccountId `
+                    -DeploymentOwnershipId $script:defenderOwnershipId `
+                    -SourceFingerprint $script:defenderSourceFingerprint } |
+                Should -Throw '*does not match the exact observed Defender Storage recovery envelope*'
+        }
+
+        It 'rejects a topic whose observed live-generation suffix is not one canonical GUID before detail readback' {
+            $wrongSuffixId = $script:defenderSystemTopicId.Replace(
+                'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                'not-a-guid')
+            $script:defenderTopicInventory[0].id = $wrongSuffixId
+
+            { Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Config $script:defenderConfig `
+                    -StorageAccountId $script:defenderStorageAccountId `
+                    -DeploymentOwnershipId $script:defenderOwnershipId `
+                    -SourceFingerprint $script:defenderSourceFingerprint } |
+                Should -Throw '*suffix is not one canonical nonempty GUID*'
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'resource' -and
+                [string]$Arguments[1] -ceq 'list'
+            }
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'resource' -and
+                [string]$Arguments[1] -ceq 'show'
+            }
+        }
+
+        It 'rejects a wrong malware-scanning child identity' {
+            $script:defenderEventSubscriptionInventory[0].name = 'OtherSubscription'
+
+            { Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Config $script:defenderConfig `
+                    -StorageAccountId $script:defenderStorageAccountId `
+                    -DeploymentOwnershipId $script:defenderOwnershipId `
+                    -SourceFingerprint $script:defenderSourceFingerprint } |
+                Should -Throw '*exact single observed malware-scanning event subscription*'
+        }
+
+        It 'rejects a child that does not reverse-bind to the exact topic' {
+            $script:defenderEventSubscription.topic =
+                $script:defenderSystemTopicId.Replace('/stsafe-', '/other-')
+
+            { Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Config $script:defenderConfig `
+                    -StorageAccountId $script:defenderStorageAccountId `
+                    -DeploymentOwnershipId $script:defenderOwnershipId `
+                    -SourceFingerprint $script:defenderSourceFingerprint } |
+                Should -Throw '*does not match the exact bounded live-generation recovery contract*'
+        }
+
+        It 'rejects an extra system-topic child' {
+            $script:defenderEventSubscriptionInventory = @(
+                [pscustomobject]@{
+                    id = $script:defenderEventSubscriptionId
+                    name = 'StorageAntimalwareSubscription'
+                },
+                [pscustomobject]@{
+                    id = "$($script:defenderSystemTopicId)/eventsubscriptions/extra"
+                    name = 'extra'
+                }
+            )
+
+            { Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Config $script:defenderConfig `
+                    -StorageAccountId $script:defenderStorageAccountId `
+                    -DeploymentOwnershipId $script:defenderOwnershipId `
+                    -SourceFingerprint $script:defenderSourceFingerprint } |
+                Should -Throw '*exact single observed malware-scanning event subscription*'
+        }
+
+        It 'rejects drift in the bounded live-generation malware filter' {
+            $script:defenderEventSubscription.advancedFilters[0].values = @('PageBlob')
+
+            { Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Config $script:defenderConfig `
+                    -StorageAccountId $script:defenderStorageAccountId `
+                    -DeploymentOwnershipId $script:defenderOwnershipId `
+                    -SourceFingerprint $script:defenderSourceFingerprint } |
+                Should -Throw '*does not match the exact bounded live-generation recovery contract*'
+        }
+
+        It 'rejects scalar provider values for every array-valued malware contract field' {
+            foreach ($surface in @('includedEventTypes', 'advancedFilters', 'advancedFilterValues')) {
+                $script:defenderEventSubscription.includedEventTypes = @(
+                    'Microsoft.Storage.BlobCreated',
+                    'Microsoft.Storage.BlobRenamed'
+                )
+                $script:defenderEventSubscription.advancedFilters = @([pscustomobject]@{
+                    key = 'data.blobType'
+                    operatorType = 'StringContains'
+                    values = @('BlockBlob')
+                })
+                switch ($surface) {
+                    'includedEventTypes' {
+                        $script:defenderEventSubscription.includedEventTypes =
+                            'Microsoft.Storage.BlobCreated'
+                    }
+                    'advancedFilters' {
+                        $script:defenderEventSubscription.advancedFilters = [pscustomobject]@{
+                            key = 'data.blobType'
+                            operatorType = 'StringContains'
+                            values = @('BlockBlob')
+                        }
+                    }
+                    'advancedFilterValues' {
+                        $script:defenderEventSubscription.advancedFilters[0].values = 'BlockBlob'
+                    }
+                }
+
+                { Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                        -Config $script:defenderConfig `
+                        -StorageAccountId $script:defenderStorageAccountId `
+                        -DeploymentOwnershipId $script:defenderOwnershipId `
+                        -SourceFingerprint $script:defenderSourceFingerprint } |
+                    Should -Throw '*does not match the exact bounded live-generation recovery contract*'
+            }
+        }
+
+        It 'rejects scalar arrays in a persisted present extension before trusting its fingerprint' {
+            foreach ($surface in @('includedEventTypes', 'advancedFilterValues')) {
+                $extension = Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Config $script:defenderConfig `
+                    -StorageAccountId $script:defenderStorageAccountId `
+                    -DeploymentOwnershipId $script:defenderOwnershipId `
+                    -SourceFingerprint $script:defenderSourceFingerprint
+                if ($surface -ceq 'includedEventTypes') {
+                    $extension.eventSubscriptionBinding.includedEventTypes =
+                        'Microsoft.Storage.BlobCreated'
+                }
+                else {
+                    $extension.eventSubscriptionBinding.advancedFilter.values = 'BlockBlob'
+                }
+
+                { Assert-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                        -Extension $extension `
+                        -Config $script:defenderConfig `
+                        -StorageAccountId $script:defenderStorageAccountId `
+                        -DeploymentOwnershipId $script:defenderOwnershipId `
+                        -SourceFingerprint $script:defenderSourceFingerprint } |
+                    Should -Throw '*does not match the exact bounded live-generation contract*'
+            }
+        }
+
+        It 'rejects a tampered extension even when its fingerprint is recomputed' {
+            $extension = Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                -Config $script:defenderConfig `
+                -StorageAccountId $script:defenderStorageAccountId `
+                -DeploymentOwnershipId $script:defenderOwnershipId `
+                -SourceFingerprint $script:defenderSourceFingerprint
+            $extension.eventSubscriptionBinding.advancedFilter.values = @('PageBlob')
+            $extension.boundaryFingerprint = Get-BootstrapObjectFingerprint -InputObject (
+                [ordered]@{
+                    schemaVersion = 2
+                    phase = 'DefenderStorageSystemTopic'
+                    present = $true
+                    deploymentOwnershipId = $extension.deploymentOwnershipId
+                    sourceFingerprint = $extension.sourceFingerprint
+                    resourceIds = $extension.resourceIds
+                    typeInventoryResourceIds = $extension.typeInventoryResourceIds
+                    systemTopicBinding = $extension.systemTopicBinding
+                    eventSubscriptionBinding = $extension.eventSubscriptionBinding
+                })
+
+            { Assert-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
+                    -Extension $extension `
+                    -Config $script:defenderConfig `
+                    -StorageAccountId $script:defenderStorageAccountId `
+                    -DeploymentOwnershipId $script:defenderOwnershipId `
+                    -SourceFingerprint $script:defenderSourceFingerprint } |
+                Should -Throw '*does not match the exact bounded live-generation contract*'
         }
     }
 }

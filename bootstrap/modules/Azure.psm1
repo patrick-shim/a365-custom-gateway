@@ -63,6 +63,7 @@ function Register-BootstrapResourceProviders {
         'Microsoft.AlertsManagement',
         'Microsoft.App',
         'Microsoft.ContainerRegistry',
+        'Microsoft.EventGrid',
         'Microsoft.Insights',
         'Microsoft.KeyVault',
         'Microsoft.ManagedIdentity',
