@@ -15,7 +15,8 @@ An `Apply` run performs these ordered phases:
    Apps subnet, private-endpoint subnet, and VNet-integrated Container Apps
    environment;
 4. creates or safely adopts the Gateway API Entra app, builds the real API, worker,
-   and Admin UI images in the foundation ACR, and pins immutable digests;
+   Admin UI, and database-migrator images in the foundation ACR, and pins immutable
+   digests;
 5. deploys those real API/worker images inert so their managed identities exist;
 6. issues at most one direct Microsoft Graph v1.0 create for one typed Agent ID
    seed blueprint; its exact display name is bound to deployment ownership and the
@@ -26,10 +27,11 @@ An `Apply` run performs these ordered phases:
 7. applies the exact eight worker Graph roles, the API blueprint-read role, the
    delegated Registry scopes/consent, and the API managed-identity OBO FIC;
 8. creates SQL private DNS/endpoint, initializes an empty `GatewayDb` from the
-   reviewed current EF model, and creates the API/worker database principals; the
-   migration may temporarily enable SQL public access and creates one caller-IP-only
-   firewall rule, then cleans up the exact targets and reads back both network
-   changes;
+   reviewed current EF model, and creates the API/worker database principals through
+   one VNet-private, retry-disabled Container Apps Job execution; SQL public access
+   remains `Disabled` with zero firewall rules, and the Job's system identity is the
+   singular SQL Entra administrator only for the bounded execution before the exact
+   original administrator is restored;
 9. creates the Admin UI Entra app and transfers its one-time secret directly to
     Key Vault without rendering or persisting the value;
 10. optionally creates blueprint-scoped Purview collection and inline DLP policy
@@ -283,23 +285,35 @@ fail closed; bootstrap never adopts them by display name alone.
 
 The same ownership ID and accepted source fingerprint are emitted by the ARM
 deployments and tagged on the bootstrap-created runtime resources. Image evidence
-records the source fingerprint and digest-pinned API, worker, and Admin UI images.
+records the source fingerprint and digest-pinned API, worker, Admin UI, and
+database-migrator images.
 Checkpoint reuse requires exact deployment parameters/outputs, resource tags,
 managed-identity IDs, and deployed image references; a matching resource name is
 not sufficient.
 
-Database initialization is also explicitly recoverable. For the bounded migration
-session, bootstrap may temporarily change the SQL server from public access
-`Disabled` to `Enabled` and creates exactly one deterministic firewall rule whose
-start/end address both equal the caller IPv4 shown by Plan and bound into the plan
-fingerprint/state. Plan accepts that address only when bounded HTTPS reads from
-ipify and AWS Check IP return the same canonical IPv4. Its `finally` cleanup deletes
-that exact rule and reads back absence, restores `Disabled`, and reads back the
-restored state. Before mutation it writes the safe ignored record
-`.bootstrap/evidence/<resource-group>/database/GatewayDb-network-recovery.json`.
-The record contains identifiers and cleanup intent, not credentials. It is removed
-only after both cleanup checks succeed; otherwise bootstrap fails closed, preserves
-the record, and `resume` reconciles that exact operation before continuing.
+Database initialization is also explicitly recoverable. Bootstrap deploys one
+dormant, GA manual Container Apps Job inside the VNet-integrated environment with
+the immutable database-migrator image, zero retries, and no secret or execution
+intent in its stored template. Before the one authorized start it persists a safe
+receipt containing the exact deployment, Job, execution-intent, and original SQL
+Entra-administrator identifiers. The Job system identity temporarily becomes the
+server's singular SQL Entra administrator; `finally` recovery waits beyond the Job
+timeout when necessary and restores the exact original administrator before the
+step can finish or fail.
+
+The execution intent is supplied only to the one manual start and must agree with
+the migrator's bound argument/environment contract. Resume adopts an exact existing
+dormant deployment or the sole exact execution; absence permits only the first
+deployment, while partial or ambiguous ARM state fails closed. It never starts a
+second execution after an unknown outcome. The successful execution emits exactly
+three intent-bound, hashed evidence records to its exact Log Analytics stream;
+bootstrap reconstructs and validates those records before accepting the EF schema
+and API/worker principals. Final verification proves the Job is dormant, the sole
+execution succeeded, the original SQL administrator is restored, SQL public access
+remains `Disabled`, no firewall rule exists, and the Job identity has no Azure RBAC
+or Microsoft Graph application-role assignment. The retained
+`sqlBootstrapClientIpv4` plan field is legacy schema metadata fixed to `0.0.0.0` and
+is unused by this private path.
 
 The state may contain tenant, subscription, resource, application, principal,
 blueprint, image-digest, endpoint, and policy identifiers. It never contains SQL

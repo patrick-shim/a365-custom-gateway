@@ -67,8 +67,9 @@ Describe 'Azure SQL temporary firewall cleanup proof' {
         $source | Should -Match "'--expected-api-principal-name'"
         $source | Should -Match "'--expected-worker-principal-client-id'"
         $source | Should -Match "'--require-all-expected-principals-after-mutation'"
-        $module | Should -Match "'-DeploymentOwnershipId'"
-        $module | Should -Match "'-AcceptedSourceFingerprint'"
+        $module | Should -Match "'--deployment-ownership-id'"
+        $module | Should -Match "'--accepted-source-fingerprint'"
+        $module | Should -Not -Match "'-TemporarilyEnablePublicNetwork'"
     }
 
     It 'preserves all principal and bootstrap binding flags as independent Booleans' {

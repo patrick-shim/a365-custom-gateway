@@ -162,7 +162,7 @@ function Invoke-GatewayPlanWorkflow {
     $planFingerprint = Get-GatewayPlanContractFingerprint -Descriptor $descriptor -WhatIf $whatIf -ConfigurationFingerprint $configurationFingerprint -SourceFingerprint $sourceFingerprint
     Show-GatewayPlan -Descriptor $descriptor -SourceValidation $sourceValidation -WhatIf $whatIf -PlanFingerprint $planFingerprint -ConfigurationFingerprint $configurationFingerprint -SourceFingerprint $sourceFingerprint -OutputFormat $Format -EventStreamOnly:$StreamOnly | Out-Null
     if ($Format -eq 'Json') {
-        Write-GatewayExperienceEvent -Type Info -Message "Plan $($descriptor.deploymentId); fingerprint $planFingerprint; configuration $configurationFingerprint; source $sourceFingerprint; SQL bootstrap network window is bound to reviewed client IPv4 $bootstrapClientIpv4" -Data ([ordered]@{
+        Write-GatewayExperienceEvent -Type Info -Message "Plan $($descriptor.deploymentId); fingerprint $planFingerprint; configuration $configurationFingerprint; source $sourceFingerprint; SQL bootstrap uses the VNet-private, retry-disabled database job and restores the original Entra administrator" -Data ([ordered]@{
             step = $planEventBase.step; index = $planEventBase.index; total = $planEventBase.total
             category = 'scope'; deploymentId = [string]$descriptor.deploymentId
             scope = $descriptor.scope; planFingerprint = $planFingerprint
@@ -761,9 +761,19 @@ try {
     }
 
     $database = Invoke-GatewayStateStep -Name 'Gateway database' -Validate {
-        Test-GatewayDatabaseEvidence -Config $configuration -Inert $inert -Evidence $state.steps['Gateway database'].evidence -StepRecord $state.steps['Gateway database'] -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint
+        Test-GatewayDatabaseEvidence -Config $configuration -Foundation $foundation -Inert $inert -Evidence $state.steps['Gateway database'].evidence -StepRecord $state.steps['Gateway database'] -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint -DatabaseMigratorImage ([string]$images.databaseMigrator)
     } -Action {
-        Initialize-GatewayDatabase -Config $configuration -SqlServerFqdn ([string]$inert.sqlServerFqdn) -ApiPrincipalId ([string]$inert.apiPrincipalId) -WorkerPrincipalId ([string]$inert.workerPrincipalId) -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -BootstrapClientIpv4 ([string]$state.acceptedPlan.bootstrapClientIpv4)
+        Initialize-GatewayDatabase `
+            -Config $configuration `
+            -Foundation $foundation `
+            -SqlServerFqdn ([string]$inert.sqlServerFqdn) `
+            -ApiPrincipalId ([string]$inert.apiPrincipalId) `
+            -WorkerPrincipalId ([string]$inert.workerPrincipalId) `
+            -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+            -DatabaseMigratorImage ([string]$images.databaseMigrator) `
+            -OriginalEntraAdministratorObjectId ([string]$identity.userObjectId) `
+            -OriginalEntraAdministratorLogin ([string]$identity.userPrincipalName) `
+            -BootstrapClientIpv4 ([string]$state.acceptedPlan.bootstrapClientIpv4)
     }
 
     $adminIdentity = Invoke-GatewayStateStep -Name 'Admin UI identity' -Validate {

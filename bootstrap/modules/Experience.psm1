@@ -161,74 +161,13 @@ function ConvertTo-GatewayReviewedManagerApplicationIds {
     return @($normalized | Sort-Object)
 }
 
-function Invoke-GatewayBoundedPublicTextRequest {
-    param([Parameter(Mandatory)][Uri]$Uri)
-
-    if ($Uri.Scheme -cne 'https' -or -not $Uri.IsDefaultPort) {
-        throw 'Public network discovery requires an exact HTTPS endpoint.'
-    }
-    $handler = [Net.Http.HttpClientHandler]::new()
-    $handler.AllowAutoRedirect = $false
-    $client = [Net.Http.HttpClient]::new($handler)
-    $client.Timeout = [TimeSpan]::FromSeconds(10)
-    $connectionId = ''
-    try {
-        $response = $client.GetAsync($Uri, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-        try {
-            if ($response.StatusCode -ne [Net.HttpStatusCode]::OK -or
-                ($response.Content.Headers.ContentLength -and $response.Content.Headers.ContentLength -gt 128)) {
-                throw 'Public network discovery endpoint returned an unusable bounded response.'
-            }
-            $stream = $response.Content.ReadAsStream()
-            try {
-                $buffer = [byte[]]::new(64)
-                $memory = [IO.MemoryStream]::new()
-                try {
-                    while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                        if ($memory.Length + $count -gt 128) {
-                            throw 'Public network discovery response exceeded its safe bound.'
-                        }
-                        $memory.Write($buffer, 0, $count)
-                    }
-                    return [Text.Encoding]::UTF8.GetString($memory.ToArray()).Trim()
-                }
-                finally { $memory.Dispose() }
-            }
-            finally { $stream.Dispose() }
-        }
-        finally { $response.Dispose() }
-    }
-    catch {
-        throw "Could not corroborate the workstation's public IPv4 address for the reviewed SQL bootstrap window. Check HTTPS access and rerun Plan."
-    }
-    finally {
-        $client.Dispose()
-        $handler.Dispose()
-    }
-}
-
 function Get-GatewayBootstrapClientIpv4 {
     [CmdletBinding()]
     param()
 
-    $observations = @(
-        Invoke-GatewayBoundedPublicTextRequest -Uri ([Uri]'https://api.ipify.org/')
-        Invoke-GatewayBoundedPublicTextRequest -Uri ([Uri]'https://checkip.amazonaws.com/')
-    )
-    $canonical = [Collections.Generic.List[string]]::new()
-    foreach ($observation in $observations) {
-        $address = $null
-        if (-not [Net.IPAddress]::TryParse([string]$observation, [ref]$address) -or
-            $address.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or
-            $address.ToString() -cne [string]$observation) {
-            throw 'A public network discovery endpoint did not return one canonical IPv4 address. No SQL network window is authorized.'
-        }
-        $canonical.Add($address.ToString())
-    }
-    if ($canonical.Count -ne 2 -or $canonical[0] -cne $canonical[1]) {
-        throw 'Independent public network discovery endpoints did not agree on the workstation IPv4 address. No SQL network window is authorized.'
-    }
-    return $canonical[0]
+    # Retained only as accepted-plan schema metadata. The supported private
+    # Container Apps Job path never opens SQL public access or a firewall rule.
+    return '0.0.0.0'
 }
 
 function Invoke-GatewayAzJson {
@@ -639,7 +578,7 @@ function Get-GatewayPlanDescriptor {
         [Parameter(Mandatory)][string]$SourceFingerprint
     )
 
-    Assert-BootstrapIpv4Value -Value $BootstrapClientIpv4 -Label 'SQL bootstrap client IPv4'
+    Assert-BootstrapIpv4Value -Value $BootstrapClientIpv4 -Label 'Legacy SQL bootstrap IPv4 metadata'
     Assert-GuidValue -Value $DeploymentOwnershipId -Label 'Plan deployment ownership ID'
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Plan source fingerprint'
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
@@ -657,7 +596,7 @@ function Get-GatewayPlanDescriptor {
         'Log Analytics workspace',
         'Virtual network and dedicated subnets',
         'Azure Container Registry and digest-pinned image builds',
-        'Azure Container Apps environment, Gateway API, workflow-v3 worker, and Admin UI',
+        'Azure Container Apps environment, Gateway API, workflow-v3 worker, Admin UI, and dormant database-bootstrap job',
         'Azure SQL logical server/database and private endpoint',
         'Service Bus namespace and isolated workflow-v3 queue',
         'Storage, Key Vaults, private endpoints, and private DNS zones',
@@ -669,7 +608,7 @@ function Get-GatewayPlanDescriptor {
     $imperative.Add([ordered]@{ system = 'Local workstation'; operation = 'Verify Git, Azure CLI, .NET SDK 10, and Bicep; install supported missing prerequisites when explicitly enabled'; mutation = $true })
     $imperative.Add([ordered]@{ system = 'Local workstation'; operation = 'Install the optional Exchange Online module before Apply when Purview policy authoring is enabled'; mutation = $true })
     $imperative.Add([ordered]@{ system = 'Azure'; operation = 'Register required resource providers and read back Registered state'; mutation = $true })
-    $imperative.Add([ordered]@{ system = 'Azure Container Registry'; operation = 'Build API, worker, and Admin UI images and resolve immutable digests'; mutation = $true })
+    $imperative.Add([ordered]@{ system = 'Azure Container Registry'; operation = 'Build API, worker, Admin UI, and database-migrator images and resolve immutable digests'; mutation = $true })
     $imperative.Add([ordered]@{ system = 'Azure network controls'; operation = 'Enforce disabled public access on the project-scoped Key Vaults and verify the hardened state'; mutation = $true })
     $imperative.Add([ordered]@{ system = 'Microsoft Entra'; operation = "Create or safely adopt project-scoped API/Admin applications for $($Config.projectName)-$($Config.environment), service principals, reviewed roles, delegated consent, and one managed-identity OBO federation; fail before mutation on any extra FIC or app-role assignment and perform no permission deletion"; mutation = $true })
     $blueprintOperation = switch ([string]$blueprintPlanDisposition.mode) {
@@ -680,7 +619,7 @@ function Get-GatewayPlanDescriptor {
     }
     $imperative.Add([ordered]@{ system = 'Agent 365 / Microsoft Graph'; operation = $blueprintOperation; mutation = [bool]$blueprintPlanDisposition.providerMutationAuthorized })
     $imperative.Add([ordered]@{ system = 'Agent 365 authority input'; operation = "Require the seed blueprint managerApplications to exactly equal this reviewed configuration set: $($reviewedManagerIds -join ', ')"; mutation = $false })
-    $imperative.Add([ordered]@{ system = 'Azure SQL'; operation = "Initialize only an empty database and create managed-identity principals through one temporary, exact firewall rule bound to reviewed client IPv4 $BootstrapClientIpv4; restore public access to Disabled and prove rule absence"; mutation = $true })
+    $imperative.Add([ordered]@{ system = 'Azure SQL'; operation = 'Initialize only an empty database and create the two exact runtime principals through one VNet-private, retry-disabled Container Apps Job; temporarily assign that job identity as the singular Entra administrator, restore the original administrator exactly, keep public access Disabled, and prove zero firewall rules'; mutation = $true })
     $imperative.Add([ordered]@{ system = 'Key Vault'; operation = 'Transfer the one-time Admin UI application credential directly to Key Vault without rendering it'; mutation = $true })
     if ($Config.purview.enabled -eq $true) {
         $imperative.Add([ordered]@{ system = 'Microsoft Purview'; operation = 'Create or verify blueprint-scoped collection/DLP policy objects through an interactive compliance session'; mutation = $true })
@@ -724,6 +663,7 @@ function Get-GatewayPlanDescriptor {
         administratorBoundaries = @(
             'Azure and Microsoft tenant authentication may require interactive sign-in or Conditional Access.',
             'Tenant-wide Entra consent and Agent ID permissions must be held by the signed-in administrator.',
+            'Database initialization temporarily replaces the singular Azure SQL Entra administrator with the exact private migration-job identity, then restores and independently reads back the original administrator before continuing.',
             'Purview authoring requires a separate interactive Security & Compliance session when enabled.',
             'Workflow v3 stops at 71% for a signed-in Gateway Administrator Registry action; the worker never calls Registry.'
         )
@@ -1040,10 +980,18 @@ function Get-GatewayInertWhatIfRecoveryStateContext {
     # The Admin UI deployment adds a second independently owned ARM footprint.
     # It remains closed here until its exact typed recovery boundary is reviewed.
     if ($State.steps.Contains('Admin UI deployment')) { return $null }
+    # The database step creates a persistent imperative Container Apps Job that
+    # is intentionally outside the foundation What-If graph. Once its durable
+    # receipt exists, a new Plan must not describe the state as apply-ready; only
+    # Resume may reconcile the exact accepted receipt, image, job, execution, and
+    # administrator. A failure before receipt creation remains ARM-only recovery.
+    $databaseReceiptPath = Join-Path (Get-RepositoryRoot) ".bootstrap/evidence/$($Config.resourceGroupName)/database/private-database-bootstrap-receipt.json"
+    if ($State.steps.Contains('Gateway database') -and (Test-Path -LiteralPath $databaseReceiptPath)) { return $null }
 
     $images = $State.steps['Immutable workload images'].evidence
     if ([string]::IsNullOrWhiteSpace([string]$images.api) -or
-        [string]::IsNullOrWhiteSpace([string]$images.worker)) {
+        [string]::IsNullOrWhiteSpace([string]$images.worker) -or
+        [string]::IsNullOrWhiteSpace([string]$images.databaseMigrator)) {
         return $null
     }
     return [ordered]@{
@@ -1051,6 +999,7 @@ function Get-GatewayInertWhatIfRecoveryStateContext {
         identity = $State.steps['Gateway API identity'].evidence
         apiImage = [string]$images.api
         workerImage = [string]$images.worker
+        databaseMigratorImage = [string]$images.databaseMigrator
         sqlPrivateEndpoint = $sqlPrivateEndpoint
         sqlServerFqdn = if ($inertStep.Contains('evidence')) { [string]$inertStep.evidence.sqlServerFqdn } else { '' }
     }
@@ -2205,7 +2154,7 @@ function Show-GatewayPlan {
     Write-Host "Deployment plan: $($Descriptor.deploymentId)" -ForegroundColor Cyan
     Write-Host "Tenant/subscription: $($Descriptor.scope.tenantId) / $($Descriptor.scope.subscriptionId)"
     Write-Host "Region/resource group: $($Descriptor.scope.location) / $($Descriptor.scope.resourceGroupName)"
-    Write-Host "SQL bootstrap client IPv4: $($Descriptor.scope.sqlBootstrapClientIpv4)"
+    Write-Host "Legacy SQL bootstrap IPv4 metadata (unused by the private job): $($Descriptor.scope.sqlBootstrapClientIpv4)"
     Write-Host "Plan fingerprint: $PlanFingerprint"
     Write-Host "Configuration fingerprint: $ConfigurationFingerprint"
     Write-Host "Source fingerprint: $SourceFingerprint"
@@ -3477,17 +3426,21 @@ function Test-GatewayWorkflowIdentityEvidence {
 function Test-GatewayDatabaseEvidence {
     param(
         [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation,
         [Parameter(Mandatory)]$Inert,
         [Parameter(Mandatory)]$Evidence,
         [Parameter(Mandatory)][System.Collections.IDictionary]$StepRecord,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter(Mandatory)][string]$DatabaseMigratorImage
     )
 
     try {
         if (-not $Evidence -or
             [string]$Evidence.database -ne 'GatewayDb' -or
             [string]$Evidence.server -ne [string]$Inert.sqlServerFqdn -or
+            [string]$Evidence.networkMode -cne 'PrivateContainerAppsJob' -or
+            $Evidence.privateNetworkExecutionVerified -ne $true -or
             $Evidence.publicNetworkRestoredToDisabled -ne $true -or
             $Evidence.temporaryFirewallRuleAbsenceVerified -ne $true -or
             $Evidence.networkRecoveryRecordCleared -ne $true -or
@@ -3502,6 +3455,19 @@ function Test-GatewayDatabaseEvidence {
             [string]$Evidence.apiPrincipalClientId -cne ([guid][string]$Evidence.apiPrincipalClientId).ToString('D') -or
             [string]$Evidence.workerPrincipalClientId -cne ([guid][string]$Evidence.workerPrincipalClientId).ToString('D') -or
             [string]$Evidence.apiPrincipalClientId -ceq [string]$Evidence.workerPrincipalClientId -or
+            $Evidence.legacyPublicBootstrapClientIpv4Unused -ne $true -or
+            [string]$Evidence.databaseBootstrapJobName -cne "job-$($Config.projectName)-db-init-$($Config.environment)" -or
+            [string]$Evidence.databaseBootstrapJobId -cne "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/jobs/job-$($Config.projectName)-db-init-$($Config.environment)" -or
+            [string]$Evidence.databaseBootstrapJobPrincipalId -cne ([guid][string]$Evidence.databaseBootstrapJobPrincipalId).ToString('D') -or
+            [string]$Evidence.databaseBootstrapJobImage -cne $DatabaseMigratorImage -or
+            [string]$DatabaseMigratorImage -cnotmatch "^$([regex]::Escape([string]$Foundation.acrLoginServer))/gateway-db-migrator@sha256:[0-9a-f]{64}$" -or
+            [string]$Evidence.databaseBootstrapExecutionName -cnotmatch "^job-$([regex]::Escape([string]$Config.projectName))-db-init-$([regex]::Escape([string]$Config.environment))-[a-z0-9]{5,16}$" -or
+            [string]$Evidence.databaseBootstrapExecutionIntentId -cne ([guid][string]$Evidence.databaseBootstrapExecutionIntentId).ToString('D') -or
+            [guid][string]$Evidence.databaseBootstrapExecutionIntentId -eq [guid]::Empty -or
+            [string]$Evidence.databaseBootstrapEvidenceFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+            [string]$Evidence.originalSqlAdministratorObjectId -cne ([guid][string]$Evidence.originalSqlAdministratorObjectId).ToString('D') -or
+            [string]::IsNullOrWhiteSpace([string]$Evidence.originalSqlAdministratorLogin) -or
+            $Evidence.originalSqlAdministratorRestored -ne $true -or
             (@($Evidence.apiDirectPermissions | ForEach-Object { [string]$_ } | Sort-Object) -join '|') -cne 'VIEW DEFINITION' -or
             @($Evidence.workerDirectPermissions).Count -ne 0 -or
             $StepRecord.status -ne 'Completed' -or
@@ -3516,8 +3482,33 @@ function Test-GatewayDatabaseEvidence {
         $operationMaterial = "$(([guid]$DeploymentOwnershipId).ToString('D').ToLowerInvariant())|$(([string]$Config.resourceGroupName).ToLowerInvariant())|$($serverName.ToLowerInvariant())|gatewaydb"
         $operationHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($operationMaterial))).ToLowerInvariant()
         $firewallRuleName = "temp-a365gw-migration-$($operationHash.Substring(0, 24))"
-        $firewallRules = @(Invoke-AzJson -Arguments @('sql', 'server', 'firewall-rule', 'list', '--resource-group', [string]$Config.resourceGroupName, '--server', $serverName, '--query', "[?name=='$firewallRuleName'].{name:name}"))
-        if ($firewallRules.Count -ne 0) { throw 'mismatch' }
+        $firewallRules = @(Invoke-AzJson -Arguments @('sql', 'server', 'firewall-rule', 'list', '--resource-group', [string]$Config.resourceGroupName, '--server', $serverName, '--query', '[].{name:name}'))
+        if ($firewallRules.Count -ne 0 -or [string]$Evidence.temporaryFirewallRuleName -cne $firewallRuleName) { throw 'mismatch' }
+
+        $sqlAdministrator = Get-GatewaySqlEntraAdministrator -Config $Config -ServerName $serverName
+        if ([string]$sqlAdministrator.objectId -cne [string]$Evidence.originalSqlAdministratorObjectId -or
+            [string]$sqlAdministrator.login -cne [string]$Evidence.originalSqlAdministratorLogin -or
+            [string]$sqlAdministrator.tenantId -cne ([guid][string]$Config.tenantId).ToString('D')) { throw 'mismatch' }
+        $apiPrincipal = [ordered]@{ displayName = [string]$Evidence.apiPrincipalName; clientId = [string]$Evidence.apiPrincipalClientId }
+        $workerPrincipal = [ordered]@{ displayName = [string]$Evidence.workerPrincipalName; clientId = [string]$Evidence.workerPrincipalClientId }
+        $job = Get-GatewayDatabaseBootstrapJobEvidence `
+            -Config $Config -Foundation $Foundation -SqlServerFqdn ([string]$Evidence.server) `
+            -JobImage $DatabaseMigratorImage `
+            -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
+            -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal
+        if ([string]$job.jobId -cne [string]$Evidence.databaseBootstrapJobId -or
+            [string]$job.jobPrincipalId -cne [string]$Evidence.databaseBootstrapJobPrincipalId) { throw 'mismatch' }
+        $executions = @(Get-GatewayDatabaseBootstrapExecutions -Config $Config -JobName ([string]$Evidence.databaseBootstrapJobName))
+        if ($executions.Count -ne 1 -or
+            [string]$executions[0].name -cne [string]$Evidence.databaseBootstrapExecutionName -or
+            [string]$executions[0].status -cne 'Succeeded') { throw 'mismatch' }
+        $execution = Get-GatewayDatabaseBootstrapExecutionEvidence `
+            -Config $Config -JobName ([string]$Evidence.databaseBootstrapJobName) `
+            -ExecutionName ([string]$Evidence.databaseBootstrapExecutionName) `
+            -JobImage $DatabaseMigratorImage -SqlServerFqdn ([string]$Evidence.server) `
+            -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
+            -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+            -ExecutionIntentId ([string]$Evidence.databaseBootstrapExecutionIntentId)
 
         $ready = Invoke-WebRequest -Uri "https://$($Inert.apiFqdn)/health/ready" -Method Get -TimeoutSec 30 -SkipHttpErrorCheck
         if ([int]$ready.StatusCode -lt 200 -or [int]$ready.StatusCode -ge 300) { throw 'mismatch' }
@@ -3528,13 +3519,47 @@ function Test-GatewayDatabaseEvidence {
         if (-not $expectedDirectory.StartsWith($evidenceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
             [IO.Path]::GetFullPath([string]$Evidence.evidenceDirectory) -ne $expectedDirectory) { throw 'mismatch' }
         if (Test-Path -LiteralPath (Join-Path $expectedDirectory 'GatewayDb-network-recovery.json')) { throw 'mismatch' }
-        $started = [DateTimeOffset]::Parse([string]$StepRecord.startedAtUtc)
-        $completed = [DateTimeOffset]::Parse([string]$StepRecord.completedAtUtc)
+        $receiptPath = [IO.Path]::GetFullPath((Join-Path $expectedDirectory 'private-database-bootstrap-receipt.json'))
+        if ([IO.Path]::GetFullPath([string]$Evidence.databaseBootstrapCompletionReceipt) -ne $receiptPath) { throw 'mismatch' }
+        $receipt = Read-GatewayPrivateDatabaseBootstrapRecord -Path $receiptPath
+        Assert-GatewayPrivateDatabaseBootstrapRecord `
+            -Record $receipt -Config $Config -SqlServerFqdn ([string]$Evidence.server) `
+            -JobName ([string]$Evidence.databaseBootstrapJobName) `
+            -JobImage ([string]$Evidence.databaseBootstrapJobImage) `
+            -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
+            -OriginalAdministratorObjectId ([string]$Evidence.originalSqlAdministratorObjectId) `
+            -OriginalAdministratorLogin ([string]$Evidence.originalSqlAdministratorLogin) | Out-Null
+        if ([string]::IsNullOrWhiteSpace([string]$receipt.completedAtUtc) -or
+            [string]$receipt.executionName -cne [string]$Evidence.databaseBootstrapExecutionName -or
+            [string]$receipt.executionIntentId -cne [string]$Evidence.databaseBootstrapExecutionIntentId -or
+            [string]$receipt.evidenceFingerprint -cne [string]$Evidence.databaseBootstrapEvidenceFingerprint -or
+            [string]$receipt.jobPrincipalId -cne [string]$Evidence.databaseBootstrapJobPrincipalId) { throw 'mismatch' }
+        $executionStarted = [DateTimeOffset]::ParseExact(
+            [string]$receipt.executionStartedAtUtc, 'O', [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind)
+        $executionCompleted = [DateTimeOffset]::ParseExact(
+            [string]$receipt.executionSucceededAtUtc, 'O', [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind)
+        if ([string]$execution.startTimeUtc -cne $executionStarted.ToUniversalTime().ToString('O') -or
+            [string]$execution.endTimeUtc -cne $executionCompleted.ToUniversalTime().ToString('O') -or
+            $executionCompleted -lt $executionStarted) { throw 'mismatch' }
         $records = @()
-        foreach ($file in @(Get-ChildItem -LiteralPath $expectedDirectory -Filter 'GatewayDb-*.json' -File)) {
-            $record = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -Depth 50 -ErrorAction Stop
+        $expectedEvidenceNames = @(
+            'GatewayDb-private-initialize.json',
+            'GatewayDb-private-principal-api.json',
+            'GatewayDb-private-principal-worker.json'
+        )
+        $actualEvidenceFiles = @(Get-ChildItem -LiteralPath $expectedDirectory -Filter 'GatewayDb-*.json' -File | Sort-Object Name)
+        if ($actualEvidenceFiles.Count -ne 3 -or
+            (@($actualEvidenceFiles.Name) -join '|') -cne (($expectedEvidenceNames | Sort-Object) -join '|')) { throw 'mismatch' }
+        foreach ($fileName in $expectedEvidenceNames) {
+            $parsedRecords = @(ConvertFrom-GatewayDatabaseEvidenceJson -Json (Get-Content -LiteralPath (Join-Path $expectedDirectory $fileName) -Raw))
+            if ($parsedRecords.Count -ne 1) { throw 'mismatch' }
+            $record = $parsedRecords[0]
             $verified = [DateTimeOffset]::Parse([string]$record.VerifiedAtUtc)
-            if ($verified -ge $started.AddMinutes(-1) -and $verified -le $completed.AddMinutes(1)) { $records += $record }
+            if ($verified -lt $executionStarted.AddMinutes(-1) -or $verified -gt $executionCompleted.AddMinutes(1) -or
+                [string]$record.ExecutionIntentId -cne [string]$Evidence.databaseBootstrapExecutionIntentId) { throw 'mismatch' }
+            $records += $record
         }
         $initialize = @($records | Where-Object { [string]$_.Phase -eq 'initialize' -and [string]$_.Server -eq [string]$Evidence.server -and [string]$_.Database -eq 'GatewayDb' })
         if ($initialize.Count -ne 1 -or
@@ -3581,6 +3606,7 @@ function Test-GatewayDatabaseEvidence {
             $expectedDirectPermissions = if ([string]$expectedPrincipal.name -ceq [string]$Evidence.apiPrincipalName) { @('VIEW DEFINITION') } else { @() }
             if (($directPermissions -join '|') -cne ($expectedDirectPermissions -join '|')) { throw 'mismatch' }
         }
+        if ([string]$Evidence.databaseBootstrapEvidenceFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject @($records))) { throw 'mismatch' }
         return $true
     }
     catch {
@@ -3853,23 +3879,28 @@ function Test-GatewayImmutableImageEvidence {
         [Parameter(Mandatory)][string]$DeploymentOwnershipId
     )
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Image-build source fingerprint'
-    if (-not $Evidence -or [int]$Evidence.schemaVersion -ne 2 -or
+    if (-not $Evidence -or [int]$Evidence.schemaVersion -ne 3 -or
         [string]$Evidence.registry -cnotmatch '^[a-z0-9]{5,50}$' -or
         [string]$Evidence.sourceFingerprint -cne $SourceFingerprint -or
         [string]$Evidence.deploymentOwnershipId -cne $DeploymentOwnershipId -or
-        [string]$Evidence.provenance -cne 'BootstrapPreMutationIntentV2' -or
+        [string]$Evidence.provenance -cne 'BootstrapPreMutationIntentV3' -or
         $Evidence.buildIntents -isnot [System.Collections.IDictionary] -or
-        (@($Evidence.buildIntents.Keys | ForEach-Object { [string]$_ } | Sort-Object -Unique) -join '|') -cne 'adminUi|api|worker' -or
-        @($Evidence.buildIntents.Keys).Count -ne 3 -or
-        (@($Evidence.checkpointedComponents | ForEach-Object { [string]$_ } | Sort-Object -Unique) -join '|') -cne 'adminUi|api|worker' -or
-        @($Evidence.checkpointedComponents).Count -ne 3) { throw 'Immutable-image evidence is incomplete or belongs to different state/source; refusing automatic replay.' }
+        (@($Evidence.buildIntents.Keys | ForEach-Object { [string]$_ } | Sort-Object -Unique) -join '|') -cne 'adminUi|api|databaseMigrator|worker' -or
+        @($Evidence.buildIntents.Keys).Count -ne 4 -or
+        (@($Evidence.checkpointedComponents | ForEach-Object { [string]$_ } | Sort-Object -Unique) -join '|') -cne 'adminUi|api|databaseMigrator|worker' -or
+        @($Evidence.checkpointedComponents).Count -ne 4) { throw 'Immutable-image evidence is incomplete or belongs to different state/source; refusing automatic replay.' }
     try {
         $loginServer = Invoke-AzTsv -Arguments @('acr', 'show', '--name', [string]$Evidence.registry, '--query', 'loginServer')
         if ([string]::IsNullOrWhiteSpace($loginServer)) { throw 'mismatch' }
     }
     catch { throw 'Immutable-image registry revalidation was unavailable or mismatched; refusing automatic rebuild. Review access/state and run gateway diagnose.' }
-    $repositories = [ordered]@{ api = 'gateway-api'; worker = 'gateway-worker'; adminUi = 'gateway-admin' }
-    foreach ($name in @('api', 'worker', 'adminUi')) {
+    $repositories = [ordered]@{
+        api = 'gateway-api'
+        worker = 'gateway-worker'
+        adminUi = 'gateway-admin'
+        databaseMigrator = 'gateway-db-migrator'
+    }
+    foreach ($name in @('api', 'worker', 'adminUi', 'databaseMigrator')) {
         $intent = $Evidence.buildIntents[$name]
         try {
             $canonicalIntentId = ([guid][string]$intent.intentId).ToString('D')

@@ -323,13 +323,14 @@ reported as completion of the plan. The authoritative phase status is:
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. `a365gw6` proved no-resubmit image recovery; `a365gw7` exposed the private-ACR first-pull ordering defect; `a365gw8` exposed incomplete typed ACR policy projection; `a365gw9` exposed a stale scope/audience guard at 6/19; `a365gw10` proved same-source interruption/Resume and a succeeded inert graph; `a365gw11` exposed ARM Boolean casing during step 7; `a365gw12` exposed an invalid expectation for a Bicep-derived output-only database name; `a365gw13` exposed empty-array collapse before a strict `.Count`; `a365gw14` exposed a StrictMode-ambiguous Graph URL before database mutation; `a365gw15` exposed the need for a state-aware 30-resource recovery boundary and an explicitly owned Failure Anomalies rule; `a365gw16` completed steps 1–10 before exposing comma-parsed principal binding at the step-11 pre-mutation guard; and `a365gw17` repeated the exact prefix, proved SQL-network cleanup, and exposed the Defender-managed Event Grid topic omitted from recovery ownership. The v2 audience split and bounded interactive-user canary are locally reviewed. A corrected fresh-generation Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. Generations `a365gw6` through `a365gw17` exposed and bounded the image, identity, ARM-readback, recovery-graph, PowerShell, and provider-managed-resource defects recorded below. `a365gw18` then repeated the exact steps 1–10 prefix and proved the tenant management-group policy keeps SQL public network access `Disabled`; step 11 failed safely before any firewall, migrator, schema, Admin, runtime, registration, Registry, key, or canary action. The corrected candidate replaces that incompatible public path with one VNet-private, retry-disabled Container Apps Job and is locally reviewed only. A fresh `a365gw19` Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
-sanitized ARM What-If, deployment-affecting source, and a corroborated SQL bootstrap
-client IPv4 into one canonical fingerprint. Plan accepts that IPv4 only when bounded
-requests to ipify and AWS Check IP agree. Acceptance creates a content-addressed
-execution snapshot under ignored `.bootstrap/accepted-source/`. Apply/Resume
+sanitized ARM What-If, and deployment-affecting source into one canonical
+fingerprint. The retained `sqlBootstrapClientIpv4` field is legacy schema metadata
+fixed to `0.0.0.0` and is unused by the supported private database path. Acceptance
+creates a content-addressed execution snapshot under ignored
+`.bootstrap/accepted-source/`. Apply/Resume
 requires the running checkout to match the accepted source, validates the snapshot,
 then loads mutation modules, templates, scripts, project inputs, and ACR context
 from those reviewed bytes.
@@ -348,13 +349,18 @@ mutable CLI default. `-NonInteractive` refuses a missing human Agent 365 or Purv
 authorization handoff. Final verification always reruns; no cached verification is
 accepted as deployed truth.
 
-Database setup opens only one disclosed temporary network window. The firewall
-rule's start/end address must equal the Plan-reviewed/stored IPv4. The exact rule is
-then deleted with absence read back, and SQL public access is restored to `Disabled`
-and read back; an unproven cleanup preserves a safe recovery record and fails the
-step. Initialization accepts only zero user tables, then compares the complete EF
-table/column/index contract and rejects extra programmable objects, principal
-authority, schema/role ownership, or lookalike/partial state.
+Database setup keeps SQL public network access `Disabled` and requires zero firewall
+rules. It deploys a dormant, digest-pinned GA manual Container Apps Job inside the
+VNet-integrated environment, persists a non-secret execution-intent receipt before
+the sole authorized start, temporarily assigns the Job identity as the singular SQL
+Entra administrator, and restores the exact original administrator after the exact
+execution settles. Resume adopts exact dormant or execution state and never starts
+a second execution after an unknown outcome. Initialization accepts only zero user
+tables, reconstructs exactly three intent-bound evidence records from the exact Log
+Analytics stream, compares the complete EF table/column/index contract, and rejects
+extra programmable objects, principal authority, schema/role ownership, or
+lookalike/partial state. Final verification also requires the Job identity to have
+zero Azure RBAC and zero Microsoft Graph application-role assignments.
 
 Key Vault authority is secret-scoped: the Admin UI user-assigned identity receives
 Key Vault Secrets User only on its exact Entra client-secret resource; the worker
@@ -1282,6 +1288,47 @@ reserved as `a365gw18` in absent resource group `rg-a365-custom-gw-phase6q`, onl
 target subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated.
 
+The isolated `a365gw18` generation then accepted Plan
+`sha256:d5903ae8cbb0ad77ac088ef43563e904e0bc3342017df3da773f471ac3503cd0`
+for resource group `rg-a365-custom-gw-phase6q`, deployment ownership
+`b4934ae4-98d3-4126-a69d-0dbdd61a7fff`, configuration
+`sha256:90a5a59edaf1cf69cabb46b82262e095d73b41a78526a71b62162daa2ee9abdb`,
+and source
+`sha256:6cf2268084bc3dbadb692701988a900ea4b7e159bafb9a7a521cde4cfa76241b`.
+One Apply completed steps 1–10 and failed safely at step 11. Exact target-only
+readback proved the tenant management-group policy `AzureSQL_PublicNetwork_Modify`
+under assignment `MCAPSGovDeployPolicies`, with no applicable exemption, keeps the
+SQL public endpoint `Disabled`. No firewall rule, migrator, schema, database
+evidence, Admin credential, runtime activation, registration, Registry action,
+Gateway key, canary, or Service Bus message-data-plane access followed. Preserve
+`a365gw18`; its frozen source must never be resumed after the database-path edit.
+
+The replacement candidate uses a digest-pinned, VNet-private manual Container Apps
+Job, not a SQL public-network exception. It persists a safe execution-intent receipt,
+authorizes exactly one retry-disabled execution, temporarily assigns only the Job
+identity as the singular SQL Entra administrator, restores the exact original
+administrator after the execution settles, validates exactly three evidence records
+from the exact Log Analytics stream, and verifies zero SQL firewall rules plus zero
+Azure RBAC/Graph application roles on the Job identity. Independent read-only
+review found no remaining correctness or safety blocker. This is local source/test
+evidence only; it has not changed Azure. The next live generation is reserved as
+`a365gw19` in absent resource group `rg-a365-custom-gw-phase6r`, only in target
+subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
++
+The frozen local candidate gate is a zero-warning/zero-error Release build and
+**1,324/1,324** direct Release tests: unit 495, Admin UI 155, local Setup 75,
+observability/runtime 149, integration 92, end-to-end 106, architecture 119, and
+security 133. The canonical bootstrap/runtime gate discovers **509** Pester tests:
+**508** pass, none fail, and one Windows-only launcher test is skipped on macOS. It
+parses **19** PowerShell files and **2** JSON contracts and compiles all **26** Bicep
+templates plus **5** parameter files. `dotnet format --verify-no-changes`, `git diff
+--check`, and all **58** repository-local links across **55** Markdown files pass.
+Independent review also passes 324 changed-bootstrap Pester tests, 55 targeted
+migrator/recovery unit tests, and four database-Job architecture tests. These are
+source-only results, not deployment evidence.
+
+
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
 architecture regression test covers the operation-ID binding. Focused architecture
@@ -1626,8 +1673,8 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    `a365gw7` at 6/19, `a365gw8` at 3/19, `a365gw9` at 6/19, and `a365gw10` at
    6/19. Preserve `a365gw11`, `a365gw12`, and `a365gw13` with steps 1–6 complete
    and step 7 `Failed` after each inert deployment succeeded. Preserve `a365gw14`,
-   `a365gw15`, `a365gw16`, and `a365gw17` with steps 1–10 complete and step 11
-   `Failed` before database migration. In
+   `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with steps 1–10 complete and
+   step 11 `Failed` before database migration. In
    order, those generations preserve exact
    image-build recovery; the terminal inert-deployment/private-ACR first-pull
    failure; a succeeded
@@ -1656,6 +1703,10 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    again proved Disabled with no firewall or migrator. Its same-source recovery
    What-If then exposed the asynchronously created Defender Storage Event Grid
    system topic as the sole 31st Ignore resource.
+   `a365gw18` repeated the exact prefix and proved the tenant management-group policy
+   keeps SQL public access `Disabled`, so the incompatible public migration path
+   stopped safely. Preserve that generation; never Resume it with the private-Job
+   correction.
    Commit `bb001483bae0577d7c29a9638c1c7275dae44525` implements and independently
    reviews the bounded, state-aware `Ignore` rule; its GET-only `a365gw10` smoke is
    recovery evidence, not authorization to Resume that frozen source generation.
@@ -1671,7 +1722,7 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    principal/bootstrap Boolean-array correction. Commit
    `bee437fe1e2a19976565777184f70f2bbf1319ec` implements the exact typed Defender
    Storage system-topic recovery boundary. The next live generation is reserved as
-   `a365gw18` in absent resource group `rg-a365-custom-gw-phase6q`, only
+   `a365gw19` in absent resource group `rg-a365-custom-gw-phase6r`, only
    in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,

@@ -708,30 +708,11 @@ Describe 'Deleted resource-group recovery boundary' {
     }
 }
 
-Describe 'Reviewed SQL bootstrap client IPv4 discovery' {
+Describe 'Retired SQL public-bootstrap metadata' {
     InModuleScope Experience {
-        It 'accepts only two agreeing canonical IPv4 observations' {
-            Mock Invoke-GatewayBoundedPublicTextRequest { return '192.0.2.44' }
-
-            Get-GatewayBootstrapClientIpv4 | Should -Be '192.0.2.44'
-            Should -Invoke Invoke-GatewayBoundedPublicTextRequest -Times 2 -Exactly
-        }
-
-        It 'rejects disagreement before any SQL network authorization exists' {
-            $script:observationIndex = 0
-            Mock Invoke-GatewayBoundedPublicTextRequest {
-                $script:observationIndex++
-                if ($script:observationIndex -eq 1) { return '192.0.2.44' }
-                return '192.0.2.45'
-            }
-
-            { Get-GatewayBootstrapClientIpv4 } | Should -Throw '*did not agree*'
-        }
-
-        It 'rejects IPv6 or noncanonical endpoint output' {
-            Mock Invoke-GatewayBoundedPublicTextRequest { return '2001:db8::1' }
-
-            { Get-GatewayBootstrapClientIpv4 } | Should -Throw '*canonical IPv4*'
+        It 'uses a fixed unused sentinel without any public address discovery' {
+            Get-GatewayBootstrapClientIpv4 | Should -Be '0.0.0.0'
+            (Get-Command Invoke-GatewayBoundedPublicTextRequest -ErrorAction SilentlyContinue) | Should -BeNullOrEmpty
         }
     }
 }
@@ -1076,6 +1057,7 @@ Describe 'Azure What-If result boundary' {
                         evidence = [ordered]@{
                             api = "safe.azurecr.io/api@sha256:$('1' * 64)"
                             worker = "safe.azurecr.io/worker@sha256:$('2' * 64)"
+                            databaseMigrator = "safe.azurecr.io/gateway-db-migrator@sha256:$('3' * 64)"
                         }
                     }
                     'Inert identity deployment' = [ordered]@{
@@ -2369,17 +2351,23 @@ Describe 'Immutable ACR QuickRun verification boundary' {
                     runId = 'run-admin'
                     digest = "sha256:$('3' * 64)"
                 }
+                databaseMigrator = [ordered]@{
+                    repository = 'gateway-db-migrator'
+                    intentId = '55555555-5555-4555-8555-555555555555'
+                    runId = 'run-database-migrator'
+                    digest = "sha256:$('4' * 64)"
+                }
             }
             $script:imageEvidence = [ordered]@{
-                schemaVersion = 2
+                schemaVersion = 3
                 registry = 'acrsafe'
                 sourceFingerprint = $script:imageSourceFingerprint
                 deploymentOwnershipId = $script:imageOwnershipId
-                provenance = 'BootstrapPreMutationIntentV2'
+                provenance = 'BootstrapPreMutationIntentV3'
                 buildIntents = [ordered]@{}
-                checkpointedComponents = @('api', 'worker', 'adminUi')
+                checkpointedComponents = @('api', 'worker', 'adminUi', 'databaseMigrator')
             }
-            foreach ($name in @('api', 'worker', 'adminUi')) {
+            foreach ($name in @('api', 'worker', 'adminUi', 'databaseMigrator')) {
                 $definition = $script:imageDefinitions[$name]
                 $tag = Get-BootstrapImageBuildIntentTag `
                     -DeploymentOwnershipId $script:imageOwnershipId `
@@ -2408,7 +2396,7 @@ Describe 'Immutable ACR QuickRun verification boundary' {
                 if ([string]$Arguments[0] -ceq 'acr' -and [string]$Arguments[1] -ceq 'manifest') {
                     $nameIndex = [Array]::IndexOf([object[]]$Arguments, '--name')
                     $target = [string]$Arguments[$nameIndex + 1]
-                    foreach ($component in @('api', 'worker', 'adminUi')) {
+                    foreach ($component in @('api', 'worker', 'adminUi', 'databaseMigrator')) {
                         $definition = $script:imageDefinitions[$component]
                         $intent = $script:imageEvidence.buildIntents[$component]
                         if ($target -ceq "$($definition.repository):$($intent.tag)") {
@@ -2443,18 +2431,36 @@ Describe 'Immutable ACR QuickRun verification boundary' {
             }
         }
 
-        It 'accepts exact succeeded QuickRun evidence for all three az acr build outputs' {
+        It 'accepts exact succeeded QuickRun evidence for all four az acr build outputs' {
             Test-GatewayImmutableImageEvidence `
                 -Evidence $script:imageEvidence `
                 -SourceFingerprint $script:imageSourceFingerprint `
                 -DeploymentOwnershipId $script:imageOwnershipId |
                 Should -BeTrue
 
-            Should -Invoke Invoke-AzJson -Times 3 -Exactly -ParameterFilter {
+            Should -Invoke Invoke-AzJson -Times 4 -Exactly -ParameterFilter {
                 [string]$Arguments[0] -ceq 'acr' -and
                 [string]$Arguments[1] -ceq 'task' -and
                 [string]$Arguments[2] -ceq 'show-run'
             }
+        }
+
+        It 'rejects legacy three-image evidence before any Azure readback' {
+            $script:imageEvidence.schemaVersion = 2
+            $script:imageEvidence.provenance = 'BootstrapPreMutationIntentV2'
+            $null = $script:imageEvidence.buildIntents.Remove('databaseMigrator')
+            $null = $script:imageEvidence.Remove('databaseMigrator')
+            $null = $script:imageEvidence.Remove('databaseMigratorDigest')
+            $script:imageEvidence.checkpointedComponents = @('api', 'worker', 'adminUi')
+
+            { Test-GatewayImmutableImageEvidence `
+                    -Evidence $script:imageEvidence `
+                    -SourceFingerprint $script:imageSourceFingerprint `
+                    -DeploymentOwnershipId $script:imageOwnershipId } |
+                Should -Throw '*evidence is incomplete or belongs to different state/source*'
+
+            Should -Invoke Invoke-AzTsv -Times 0 -Exactly
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly
         }
 
         It 'rejects QuickBuild and automatic run types without disclosing provider output' {

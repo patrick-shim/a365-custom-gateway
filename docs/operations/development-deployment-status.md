@@ -726,6 +726,47 @@ reserved as `a365gw18` / `rg-a365-custom-gw-phase6q`, only in target subscriptio
 `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated.
 
+The isolated `a365gw18` generation then accepted Plan
+`sha256:d5903ae8cbb0ad77ac088ef43563e904e0bc3342017df3da773f471ac3503cd0`
+for resource group `rg-a365-custom-gw-phase6q`, deployment ownership
+`b4934ae4-98d3-4126-a69d-0dbdd61a7fff`, configuration
+`sha256:90a5a59edaf1cf69cabb46b82262e095d73b41a78526a71b62162daa2ee9abdb`,
+and source
+`sha256:6cf2268084bc3dbadb692701988a900ea4b7e159bafb9a7a521cde4cfa76241b`.
+One Apply completed steps 1–10 and failed safely at step 11. Exact target-only
+readback proved the tenant management-group policy `AzureSQL_PublicNetwork_Modify`
+under assignment `MCAPSGovDeployPolicies`, with no applicable exemption, keeps the
+SQL public endpoint `Disabled`. No firewall rule, migrator, schema, database
+evidence, Admin credential, runtime activation, registration, Registry action,
+Gateway key, canary, or Service Bus message-data-plane access followed. Preserve
+`a365gw18`; its frozen source must never be resumed after the database-path edit.
+
+The replacement candidate uses a digest-pinned, VNet-private manual Container Apps
+Job, not a SQL public-network exception. It persists a safe execution-intent receipt,
+authorizes exactly one retry-disabled execution, temporarily assigns only the Job
+identity as the singular SQL Entra administrator, restores the exact original
+administrator after the execution settles, validates exactly three evidence records
+from the exact Log Analytics stream, and verifies zero SQL firewall rules plus zero
+Azure RBAC/Graph application roles on the Job identity. Independent read-only
+review found no remaining correctness or safety blocker. This is local source/test
+evidence only; it has not changed Azure. The next live generation is reserved as
+`a365gw19` in absent resource group `rg-a365-custom-gw-phase6r`, only in target
+subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
++
+The frozen local candidate gate is a zero-warning/zero-error Release build and
+**1,324/1,324** direct Release tests: unit 495, Admin UI 155, local Setup 75,
+observability/runtime 149, integration 92, end-to-end 106, architecture 119, and
+security 133. The canonical bootstrap/runtime gate discovers **509** Pester tests:
+**508** pass, none fail, and one Windows-only launcher test is skipped on macOS. It
+parses **19** PowerShell files and **2** JSON contracts and compiles all **26** Bicep
+templates plus **5** parameter files. `dotnet format --verify-no-changes`, `git diff
+--check`, and all **58** repository-local links across **55** Markdown files pass.
+Independent review also passes 324 changed-bootstrap Pester tests, 55 targeted
+migrator/recovery unit tests, and four database-Job architecture tests. These are
+source-only results, not deployment evidence.
+
+
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
 Prerequisites, then failed during Azure authentication because the old dispatcher
@@ -977,6 +1018,10 @@ generation, and keep protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` completely outside the proof.
 
 ## 2026-08-29 local Phase 0–6 bootstrap candidate (unreleased and incomplete)
+
+This retained source checkpoint is superseded by the 2026-08-30 `a365gw18` policy
+evidence and private database-Job correction above. Its public-IP migration text is
+historical and must not be used for the next generation.
 
 The working tree now exposes the day-zero path through `./gateway` on macOS/Linux
 and `gateway.cmd` on Windows. `gateway setup` is an ephemeral loopback-only Fluent
@@ -1852,15 +1897,16 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw18` / `rg-a365-custom-gw-phase6q`. Preserve `a365gw11`,
+   generation `a365gw19` / `rg-a365-custom-gw-phase6r`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
-   preserve `a365gw14`, `a365gw15`, `a365gw16`, and `a365gw17` with steps 1–10
-   complete and step 11 `Failed` before database migration. Their succeeded
+   preserve `a365gw14`, `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with
+   steps 1–10 complete and step 11 `Failed` before database migration. Their succeeded
    resources and GET-only diagnoses do not authorize Resume after any validator or
    helper source change. Capture the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
-   digests, exact Key Vault scopes, temporary SQL-rule cleanup, empty-schema
-   initialization, final preflight, authenticated Admin sign-in, one real
+   digests, exact Key Vault scopes, private database-Job execution and original SQL
+   administrator restoration, zero-firewall empty-schema initialization, final
+   preflight, authenticated Admin sign-in, one real
    registration through `Active`, one bounded data-plane canary, and one Gateway-key
    revocation before marking the minimal-profile clean-subscription path
    live-proven. Purview and Prompt Shields remain disabled and unclaimed for this

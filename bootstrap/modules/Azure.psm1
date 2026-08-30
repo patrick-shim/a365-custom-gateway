@@ -1825,11 +1825,14 @@ function Get-GatewayAcrBuildSourceFiles {
         'Gateway.ContentSafety', 'Gateway.Observability', 'Gateway.Provisioning.Worker',
         'Gateway.AdminUi'
     )
+    $toolRoots = @('Gateway.DatabaseMigrator')
+    $sqlRoot = 'infrastructure/sql'
     $rootFiles = @('global.json', 'nuget.config', 'Directory.Build.props', 'Directory.Build.targets', 'Directory.Packages.props')
     $candidatePaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $git = Get-Command git -ErrorAction SilentlyContinue
     if ($git -and (Test-Path -LiteralPath (Join-Path $RepositoryRoot '.git'))) {
-        $sourceArguments = @($projectRoots | ForEach-Object { "src/$_" }) + $rootFiles
+        $sourceArguments = @($projectRoots | ForEach-Object { "src/$_" }) +
+            @($toolRoots | ForEach-Object { "tools/$_" }) + @($sqlRoot) + $rootFiles
         foreach ($mode in @('tracked', 'untracked')) {
             $arguments = if ($mode -eq 'tracked') {
                 @('-C', $RepositoryRoot, 'ls-files', '--') + $sourceArguments
@@ -1854,13 +1857,30 @@ function Get-GatewayAcrBuildSourceFiles {
                 $null = $candidatePaths.Add([IO.Path]::GetRelativePath($RepositoryRoot, $file.FullName).Replace('\', '/'))
             }
         }
+        foreach ($toolRoot in $toolRoots) {
+            $fullToolRoot = Join-Path $RepositoryRoot "tools/$toolRoot"
+            foreach ($file in @(Get-ChildItem -LiteralPath $fullToolRoot -File -Recurse -Force)) {
+                $null = $candidatePaths.Add([IO.Path]::GetRelativePath($RepositoryRoot, $file.FullName).Replace('\', '/'))
+            }
+        }
+        $fullSqlRoot = Join-Path $RepositoryRoot $sqlRoot
+        foreach ($file in @(Get-ChildItem -LiteralPath $fullSqlRoot -File -Recurse -Force)) {
+            $null = $candidatePaths.Add([IO.Path]::GetRelativePath($RepositoryRoot, $file.FullName).Replace('\', '/'))
+        }
     }
 
     $allowedExtensions = @('.cs', '.csproj', '.razor', '.css', '.js', '.ps1', '.png', '.svg', '.ico', '.resx', '.woff', '.woff2', '.ttf', '.eot', '.map')
     $files = @($candidatePaths | Where-Object {
         if (Test-BootstrapSourcePathIsSensitive -RelativePath ([string]$_)) { return $false }
         if ($_ -in $rootFiles) { return $true }
-        if ($_ -notmatch '^src/([^/]+)/(.+)$' -or $Matches[1] -notin $projectRoots) { return $false }
+        if ($_ -cmatch '^infrastructure/sql/(.+\.sql)$') { return $true }
+        if ($_ -cmatch '^src/([^/]+)/(.+)$') {
+            if ($Matches[1] -notin $projectRoots) { return $false }
+        }
+        elseif ($_ -cmatch '^tools/([^/]+)/(.+)$') {
+            if ($Matches[1] -notin $toolRoots) { return $false }
+        }
+        else { return $false }
         $name = [IO.Path]::GetFileName($_)
         if ($name -eq 'Dockerfile') { return $true }
         if ($name -eq 'appsettings.json') { return $true }
@@ -1871,9 +1891,13 @@ function Get-GatewayAcrBuildSourceFiles {
         'global.json', 'nuget.config',
         'src/Gateway.Api/Dockerfile', 'src/Gateway.Api/Gateway.Api.csproj',
         'src/Gateway.Provisioning.Worker/Dockerfile', 'src/Gateway.Provisioning.Worker/Gateway.Provisioning.Worker.csproj',
-        'src/Gateway.AdminUi/Dockerfile', 'src/Gateway.AdminUi/Gateway.AdminUi.csproj'
+        'src/Gateway.AdminUi/Dockerfile', 'src/Gateway.AdminUi/Gateway.AdminUi.csproj',
+        'tools/Gateway.DatabaseMigrator/Dockerfile', 'tools/Gateway.DatabaseMigrator/Gateway.DatabaseMigrator.csproj'
     )) {
         if ($files -notcontains $required) { throw "Allowlisted ACR build input '$required' is absent from the repository source set." }
+    }
+    if (@($files | Where-Object { $_ -cmatch '^infrastructure/sql/[^/]+\.sql$' }).Count -eq 0) {
+        throw "Allowlisted ACR build input '$sqlRoot' contains no reviewed SQL migration."
     }
     return @($files)
 }
@@ -2267,36 +2291,37 @@ function Build-GatewayImages {
         api = @{ repository = 'gateway-api'; dockerfile = 'src/Gateway.Api/Dockerfile' }
         worker = @{ repository = 'gateway-worker'; dockerfile = 'src/Gateway.Provisioning.Worker/Dockerfile' }
         adminUi = @{ repository = 'gateway-admin'; dockerfile = 'src/Gateway.AdminUi/Dockerfile' }
+        databaseMigrator = @{ repository = 'gateway-db-migrator'; dockerfile = 'tools/Gateway.DatabaseMigrator/Dockerfile' }
     }
     $result = [ordered]@{
-        schemaVersion = 2
+        schemaVersion = 3
         registry = $registry
         sourceFingerprint = $SourceFingerprint
         deploymentOwnershipId = $DeploymentOwnershipId
-        provenance = 'BootstrapPreMutationIntentV2'
+        provenance = 'BootstrapPreMutationIntentV3'
         buildIntents = [ordered]@{}
         checkpointedComponents = @()
     }
     if ($RecoveredEvidence) {
-        if ([int]$RecoveredEvidence.schemaVersion -ne 2 -or
+        if ([int]$RecoveredEvidence.schemaVersion -ne 3 -or
             [string]$RecoveredEvidence.registry -cne $registry -or
             [string]$RecoveredEvidence.sourceFingerprint -cne $SourceFingerprint -or
             [string]$RecoveredEvidence.deploymentOwnershipId -cne $DeploymentOwnershipId -or
-            [string]$RecoveredEvidence.provenance -cne 'BootstrapPreMutationIntentV2' -or
+            [string]$RecoveredEvidence.provenance -cne 'BootstrapPreMutationIntentV3' -or
             $RecoveredEvidence.buildIntents -isnot [System.Collections.IDictionary]) {
             throw 'Partial image-build evidence belongs to a different registry, state, or accepted source.'
         }
         $recoveredComponents = @($RecoveredEvidence.checkpointedComponents | ForEach-Object { [string]$_ })
         $uniqueRecoveredComponents = @($recoveredComponents | Sort-Object -Unique)
         if ($recoveredComponents.Count -ne $uniqueRecoveredComponents.Count -or
-            @($uniqueRecoveredComponents | Where-Object { $_ -notin @('api', 'worker', 'adminUi') }).Count -ne 0) {
+            @($uniqueRecoveredComponents | Where-Object { $_ -notin @('api', 'worker', 'adminUi', 'databaseMigrator') }).Count -ne 0) {
             throw 'Partial image-build evidence contains an invalid component checkpoint set.'
         }
         $result.checkpointedComponents = @($uniqueRecoveredComponents)
         $recoveredIntentComponents = @($RecoveredEvidence.buildIntents.Keys | ForEach-Object { [string]$_ })
         $uniqueIntentComponents = @($recoveredIntentComponents | Sort-Object -Unique)
         if ($recoveredIntentComponents.Count -ne $uniqueIntentComponents.Count -or
-            @($uniqueIntentComponents | Where-Object { $_ -notin @('api', 'worker', 'adminUi') }).Count -ne 0) {
+            @($uniqueIntentComponents | Where-Object { $_ -notin @('api', 'worker', 'adminUi', 'databaseMigrator') }).Count -ne 0) {
             throw 'Partial image-build evidence contains an invalid pre-mutation intent set.'
         }
         foreach ($component in $uniqueIntentComponents) {

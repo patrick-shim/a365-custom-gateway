@@ -31,12 +31,28 @@ function Test-GatewayRecordedDatabaseAttestationBoundary {
         Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Current database-attestation source fingerprint'
         $apiClientId = ([guid][string]$Database.apiPrincipalClientId).ToString('D')
         $workerClientId = ([guid][string]$Database.workerPrincipalClientId).ToString('D')
+        $expectedJobName = "job-$($Config.projectName)-db-init-$($Config.environment)"
+        $expectedJobId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/jobs/$expectedJobName"
         $intent = $Database.initializationIntent
         if (-not $intent -or
             [string]$Database.deploymentOwnershipId -cne $canonicalOwnershipId -or
             [string]$Database.acceptedSourceFingerprint -cne $SourceFingerprint -or
             [string]$Database.server -cne [string]$Runtime.sqlServerFqdn -or
             [string]$Database.database -cne 'GatewayDb' -or
+            [string]$Database.networkMode -cne 'PrivateContainerAppsJob' -or
+            $Database.privateNetworkExecutionVerified -ne $true -or
+            $Database.legacyPublicBootstrapClientIpv4Unused -ne $true -or
+            $Database.originalSqlAdministratorRestored -ne $true -or
+            [string]$Database.originalSqlAdministratorObjectId -cne ([guid][string]$Database.originalSqlAdministratorObjectId).ToString('D') -or
+            [string]::IsNullOrWhiteSpace([string]$Database.originalSqlAdministratorLogin) -or
+            [string]$Database.databaseBootstrapJobName -cne $expectedJobName -or
+            -not ([string]$Database.databaseBootstrapJobId).Equals($expectedJobId, [StringComparison]::OrdinalIgnoreCase) -or
+            [string]$Database.databaseBootstrapJobImage -cnotmatch "^$([regex]::Escape([string]$Runtime.acrLoginServer))/gateway-db-migrator@sha256:[0-9a-f]{64}$" -or
+            [string]$Database.databaseBootstrapJobPrincipalId -cne ([guid][string]$Database.databaseBootstrapJobPrincipalId).ToString('D') -or
+            [string]$Database.databaseBootstrapExecutionName -cnotmatch "^$([regex]::Escape($expectedJobName))-[a-z0-9]{5,16}$" -or
+            [string]$Database.databaseBootstrapExecutionIntentId -cne ([guid][string]$Database.databaseBootstrapExecutionIntentId).ToString('D') -or
+            [guid][string]$Database.databaseBootstrapExecutionIntentId -eq [guid]::Empty -or
+            [string]$Database.databaseBootstrapEvidenceFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
             [string]$Database.schemaFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
             [string]$Database.apiPrincipalName -cne "ca-gateway-api-$($Config.environment)" -or
             [string]$Database.workerPrincipalName -cne "ca-gateway-worker-$($Config.environment)-v3" -or
@@ -173,7 +189,7 @@ function Assert-GatewayPrincipalExactAzureRoleAssignments {
     param(
         [Parameter(Mandatory)][string]$PrincipalId,
         [Parameter(Mandatory)][string]$SubscriptionId,
-        [Parameter(Mandatory)][object[]]$ExpectedAssignments,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$ExpectedAssignments,
         [Parameter(Mandatory)][string]$PrincipalLabel
     )
 
@@ -284,7 +300,8 @@ function Assert-GatewayExactAzureRoleAssignments {
     param(
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$Runtime,
-        [Parameter(Mandatory)]$AdminUi
+        [Parameter(Mandatory)]$AdminUi,
+        [Parameter(Mandatory)]$Database
     )
 
     $subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
@@ -298,7 +315,9 @@ function Assert-GatewayExactAzureRoleAssignments {
     $storagePrefix = "$resourceGroupScope/providers/Microsoft.Storage/storageAccounts/"
     $storageId = ([string]$Runtime.storageAccountId).TrimEnd('/')
     $runtimeImagePullPrincipalId = [string]$Runtime.runtimeImagePullIdentityPrincipalId
+    $databaseBootstrapJobPrincipalId = [string]$Database.databaseBootstrapJobPrincipalId
     $parsedRuntimeImagePullPrincipalId = [guid]::Empty
+    $parsedDatabaseBootstrapJobPrincipalId = [guid]::Empty
     $runtimeImagePullRoleAssignmentId = [string]$Runtime.runtimeImagePullAcrPullRoleAssignmentId
     $runtimeImagePullRoleAssignmentPrefix = "$expectedRegistryId/providers/Microsoft.Authorization/roleAssignments/"
     $runtimeImagePullRoleAssignmentGuidText = if ($runtimeImagePullRoleAssignmentId.StartsWith($runtimeImagePullRoleAssignmentPrefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -313,6 +332,14 @@ function Assert-GatewayExactAzureRoleAssignments {
         -not [guid]::TryParse($runtimeImagePullPrincipalId, [ref]$parsedRuntimeImagePullPrincipalId) -or
         $parsedRuntimeImagePullPrincipalId -eq [guid]::Empty -or
         $runtimeImagePullPrincipalId -cne $parsedRuntimeImagePullPrincipalId.ToString('D') -or
+        -not [guid]::TryParse($databaseBootstrapJobPrincipalId, [ref]$parsedDatabaseBootstrapJobPrincipalId) -or
+        $parsedDatabaseBootstrapJobPrincipalId -eq [guid]::Empty -or
+        $databaseBootstrapJobPrincipalId -cne $parsedDatabaseBootstrapJobPrincipalId.ToString('D') -or
+        $databaseBootstrapJobPrincipalId -in @(
+            [string]$Runtime.apiPrincipalId,
+            [string]$Runtime.workerPrincipalId,
+            $runtimeImagePullPrincipalId,
+            [string]$AdminUi.adminUiPrincipalId) -or
         -not [guid]::TryParse($runtimeImagePullRoleAssignmentGuidText, [ref]$parsedRuntimeImagePullRoleAssignmentId) -or
         $parsedRuntimeImagePullRoleAssignmentId -eq [guid]::Empty -or
         $runtimeImagePullRoleAssignmentGuidText -cne $parsedRuntimeImagePullRoleAssignmentId.ToString('D') -or
@@ -400,6 +427,7 @@ function Assert-GatewayExactAzureRoleAssignments {
     Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId ([string]$Runtime.apiPrincipalId) -PrincipalLabel 'Gateway API identity' | Out-Null
     Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId ([string]$Runtime.workerPrincipalId) -PrincipalLabel 'Workflow-v3 worker identity' | Out-Null
     Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId $runtimeImagePullPrincipalId -PrincipalLabel 'Runtime image-pull identity' | Out-Null
+    Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId $databaseBootstrapJobPrincipalId -PrincipalLabel 'Database-bootstrap job identity' | Out-Null
     Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId ([string]$AdminUi.adminUiPrincipalId) -PrincipalLabel 'Admin UI identity' | Out-Null
 
     for ($attempt = 1; $attempt -le 6; $attempt++) {
@@ -407,6 +435,7 @@ function Assert-GatewayExactAzureRoleAssignments {
             Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId ([string]$Runtime.apiPrincipalId) -SubscriptionId $subscriptionId -ExpectedAssignments @($apiExpected) -PrincipalLabel 'Gateway API identity' | Out-Null
             Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId ([string]$Runtime.workerPrincipalId) -SubscriptionId $subscriptionId -ExpectedAssignments @($workerExpected) -PrincipalLabel 'Workflow-v3 worker identity' | Out-Null
             Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId $runtimeImagePullPrincipalId -SubscriptionId $subscriptionId -ExpectedAssignments $runtimeImagePullExpected -PrincipalLabel 'Runtime image-pull identity' | Out-Null
+            Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId $databaseBootstrapJobPrincipalId -SubscriptionId $subscriptionId -ExpectedAssignments @() -PrincipalLabel 'Database-bootstrap job identity' | Out-Null
             Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId ([string]$AdminUi.adminUiPrincipalId) -SubscriptionId $subscriptionId -ExpectedAssignments $adminExpected -PrincipalLabel 'Admin UI identity' | Out-Null
             return $true
         }
@@ -717,6 +746,41 @@ function Test-GatewayBootstrapDeployment {
         -Database $Database `
         -DeploymentOwnershipId $DeploymentOwnershipId `
         -SourceFingerprint ([string]$Images.sourceFingerprint) | Out-Null
+    if ([string]$Database.databaseBootstrapJobImage -cne [string]$Images.databaseMigrator) {
+        throw 'Recorded database-bootstrap image does not match the exact accepted immutable image.'
+    }
+    $databaseApiPrincipal = [ordered]@{
+        displayName = [string]$Database.apiPrincipalName
+        clientId = [string]$Database.apiPrincipalClientId
+    }
+    $databaseWorkerPrincipal = [ordered]@{
+        displayName = [string]$Database.workerPrincipalName
+        clientId = [string]$Database.workerPrincipalClientId
+    }
+    $databaseJob = Get-GatewayDatabaseBootstrapJobEvidence `
+        -Config $Config -Foundation $Foundation -SqlServerFqdn ([string]$Runtime.sqlServerFqdn) `
+        -JobImage ([string]$Images.databaseMigrator) `
+        -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint ([string]$Images.sourceFingerprint) `
+        -ApiPrincipal $databaseApiPrincipal -WorkerPrincipal $databaseWorkerPrincipal
+    if (-not ([string]$databaseJob.jobId).Equals([string]$Database.databaseBootstrapJobId, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$databaseJob.jobName -cne [string]$Database.databaseBootstrapJobName -or
+        [string]$databaseJob.jobPrincipalId -cne [string]$Database.databaseBootstrapJobPrincipalId) {
+        throw 'The live database-bootstrap job does not match its exact recorded resource and identity boundary.'
+    }
+    $databaseExecutions = @(Get-GatewayDatabaseBootstrapExecutions `
+        -Config $Config -JobName ([string]$Database.databaseBootstrapJobName))
+    if ($databaseExecutions.Count -ne 1 -or
+        [string]$databaseExecutions[0].name -cne [string]$Database.databaseBootstrapExecutionName -or
+        [string]$databaseExecutions[0].status -cne 'Succeeded') {
+        throw 'The database-bootstrap job does not expose exactly its one recorded successful execution.'
+    }
+    $null = Get-GatewayDatabaseBootstrapExecutionEvidence `
+        -Config $Config -JobName ([string]$Database.databaseBootstrapJobName) `
+        -ExecutionName ([string]$Database.databaseBootstrapExecutionName) `
+        -JobImage ([string]$Images.databaseMigrator) -SqlServerFqdn ([string]$Runtime.sqlServerFqdn) `
+        -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint ([string]$Images.sourceFingerprint) `
+        -ApiPrincipal $databaseApiPrincipal -WorkerPrincipal $databaseWorkerPrincipal `
+        -ExecutionIntentId ([string]$Database.databaseBootstrapExecutionIntentId)
     Test-GatewayGroupDeploymentEvidence `
         -Config $Config `
         -Foundation $Foundation `
@@ -739,7 +803,7 @@ function Test-GatewayBootstrapDeployment {
         -DeploymentOwnershipId $DeploymentOwnershipId `
         -SourceFingerprint ([string]$Images.sourceFingerprint) `
         -AdminUiImage ([string]$Images.adminUi) | Out-Null
-    Assert-GatewayExactAzureRoleAssignments -Config $Config -Runtime $Runtime -AdminUi $AdminUi | Out-Null
+    Assert-GatewayExactAzureRoleAssignments -Config $Config -Runtime $Runtime -AdminUi $AdminUi -Database $Database | Out-Null
     Assert-GatewayExactAzureLocalCredentialControls -Config $Config -Runtime $Runtime | Out-Null
     Test-GatewayApplicationEvidence -Config $Config -Evidence $Identity -ObjectIdProperty 'gatewayApiApplicationObjectId' -ClientIdProperty 'gatewayApiClientId' -ApplicationKind GatewayApi | Out-Null
     Test-GatewayApplicationEvidence -Config $Config -Evidence $AdminIdentity -ObjectIdProperty 'adminUiApplicationObjectId' -ClientIdProperty 'adminUiClientId' -ApplicationKind AdminUi -ExpectedAdminUiUrl ([string]$AdminUi.adminUiUrl) | Out-Null
@@ -777,9 +841,19 @@ function Test-GatewayBootstrapDeployment {
     }
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Runtime.workerPrincipalId) -ExpectedRoleValues $expectedWorkerRoles | Out-Null
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Runtime.apiPrincipalId) -ExpectedRoleValues @($expectedApiRoles) | Out-Null
+    Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Runtime.runtimeImagePullIdentityPrincipalId) -ExpectedRoleValues @() | Out-Null
+    Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Database.databaseBootstrapJobPrincipalId) -ExpectedRoleValues @() | Out-Null
     $serverName = ([string]$Runtime.sqlServerFqdn).Split('.')[0]
     $sqlPublic = Invoke-AzTsv -Arguments @('sql', 'server', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $serverName, '--query', 'publicNetworkAccess')
     if ($sqlPublic -ne 'Disabled') { throw 'Azure SQL public network access is not Disabled.' }
+    $sqlFirewallRules = @(Invoke-AzJson -Arguments @('sql', 'server', 'firewall-rule', 'list', '--resource-group', [string]$Config.resourceGroupName, '--server', $serverName, '--query', '[].{name:name}'))
+    if ($sqlFirewallRules.Count -ne 0) { throw 'Azure SQL does not retain the exact zero-firewall-rule private bootstrap boundary.' }
+    $sqlAdministrator = Get-GatewaySqlEntraAdministrator -Config $Config -ServerName $serverName
+    if ([string]$sqlAdministrator.objectId -cne [string]$Database.originalSqlAdministratorObjectId -or
+        [string]$sqlAdministrator.login -cne [string]$Database.originalSqlAdministratorLogin -or
+        [string]$sqlAdministrator.tenantId -cne ([guid][string]$Config.tenantId).ToString('D')) {
+        throw 'Azure SQL did not retain the exact restored original Entra administrator after private bootstrap.'
+    }
     foreach ($vault in @("kv-$($Config.projectName)-$($Config.environment)", "kv-$($Config.projectName)-$($Config.environment)-prov")) {
         $public = Invoke-AzTsv -Arguments @('keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $vault, '--query', 'properties.publicNetworkAccess')
         if ($public -ne 'Disabled') { throw "Key Vault '$vault' public network access is not Disabled." }
@@ -792,6 +866,23 @@ function Test-GatewayBootstrapDeployment {
     foreach ($entry in $expectedImages.GetEnumerator()) {
         $actualImage = Invoke-AzTsv -Arguments @('containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $entry.Key, '--query', 'properties.template.containers[0].image')
         if ($actualImage -ne $entry.Value) { throw "Container App '$($entry.Key)' is not running the recorded immutable image digest." }
+    }
+    if ([string]$Database.databaseBootstrapJobImage -cne [string]$Images.databaseMigrator) {
+        throw 'The database-bootstrap evidence is not bound to the immutable migrator image from the accepted build step.'
+    }
+    $databaseJobImage = Invoke-AzTsv -Arguments @(
+        'containerapp', 'job', 'show', '--resource-group', [string]$Config.resourceGroupName,
+        '--name', [string]$Database.databaseBootstrapJobName,
+        '--query', 'properties.template.containers[0].image'
+    )
+    if ($databaseJobImage -cne [string]$Images.databaseMigrator) {
+        throw 'The dormant database-bootstrap job is not pinned to the recorded immutable migrator image.'
+    }
+    $databaseJobExecutions = @(Get-GatewayDatabaseBootstrapExecutions -Config $Config -JobName ([string]$Database.databaseBootstrapJobName))
+    if ($databaseJobExecutions.Count -ne 1 -or
+        [string]$databaseJobExecutions[0].name -cne [string]$Database.databaseBootstrapExecutionName -or
+        [string]$databaseJobExecutions[0].status -cne 'Succeeded') {
+        throw 'The dormant database-bootstrap job does not retain exactly one successful source-bound execution.'
     }
     Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $Config -Runtime $Runtime | Out-Null
     $purviewProfilePrerequisites = Get-GatewayPurviewCertificateMetadataEvidence -Config $Config

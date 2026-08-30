@@ -26,6 +26,9 @@ var expectedApiPrincipalName = ReadOption(options, "expected-api-principal-name"
 var expectedApiPrincipalClientIdValue = ReadOption(options, "expected-api-principal-client-id");
 var expectedWorkerPrincipalName = ReadOption(options, "expected-worker-principal-name");
 var expectedWorkerPrincipalClientIdValue = ReadOption(options, "expected-worker-principal-client-id");
+var executionIntentIdValue = ReadOptionWithExactEnvironmentAgreement(
+    options,
+    "execution-intent-id");
 var repeat = int.TryParse(ReadOption(options, "repeat") ?? "1", out var parsedRepeat)
     ? parsedRepeat
     : 0;
@@ -43,8 +46,29 @@ if (string.IsNullOrWhiteSpace(database) ||
     throw new ArgumentException("--database must identify a non-system database.");
 }
 
-if (phase is not ("initialize" or "baseline" or "prepare" or "finalize" or "verify" or "principal"))
-    throw new ArgumentException("--phase must be initialize, baseline, prepare, finalize, verify, or principal.");
+if (phase is not ("initialize" or "bootstrap" or "baseline" or "prepare" or "finalize" or "verify" or "principal"))
+{
+    throw new ArgumentException(
+        "--phase must be initialize, bootstrap, baseline, prepare, finalize, verify, or principal.");
+}
+
+Guid? executionIntentId = null;
+if (phase == "bootstrap")
+{
+    if (!Guid.TryParseExact(executionIntentIdValue, "D", out var parsedExecutionIntentId) ||
+        parsedExecutionIntentId == Guid.Empty ||
+        executionIntentIdValue != parsedExecutionIntentId.ToString("D"))
+    {
+        throw new ArgumentException(
+            "--execution-intent-id must be the canonical lowercase non-empty GUID for this bootstrap execution.");
+    }
+    executionIntentId = parsedExecutionIntentId;
+}
+else if (options.ContainsKey("execution-intent-id") ||
+         !string.IsNullOrWhiteSpace(executionIntentIdValue))
+{
+    throw new ArgumentException("--execution-intent-id is allowed only for the bootstrap phase.");
+}
 
 Guid? deploymentOwnershipId = null;
 if (!string.IsNullOrWhiteSpace(deploymentOwnershipIdValue) ||
@@ -65,11 +89,11 @@ if (!string.IsNullOrWhiteSpace(deploymentOwnershipIdValue) ||
     }
     deploymentOwnershipId = parsedDeploymentOwnershipId;
 }
-if (phase == "initialize" &&
+if (phase is "initialize" or "bootstrap" &&
     (deploymentOwnershipId is null || string.IsNullOrWhiteSpace(acceptedSourceFingerprint)))
 {
     throw new ArgumentException(
-        "The initialize phase requires --deployment-ownership-id and --accepted-source-fingerprint for durable recovery binding.");
+        $"The {phase} phase requires --deployment-ownership-id and --accepted-source-fingerprint for durable recovery binding.");
 }
 
 var expectedPrincipalArgumentCount = new[]
@@ -109,6 +133,13 @@ if (deploymentOwnershipId is not null && expectedRuntimePrincipals.Count != 2)
         "Bootstrap-bound database work requires both exact expected Gateway runtime principals.");
 }
 
+if (phase == "bootstrap" &&
+    (!string.IsNullOrWhiteSpace(principalName) || !string.IsNullOrWhiteSpace(principalClientIdValue)))
+{
+    throw new ArgumentException(
+        "The bootstrap phase accepts only the exact expected API and worker principal arguments; standalone --principal-name and --principal-client-id are not allowed.");
+}
+
 var requireAllExpectedPrincipalsAfterMutation = false;
 if (ReadOption(options, "require-all-expected-principals-after-mutation") is { } requireAllValue &&
     (!bool.TryParse(requireAllValue, out requireAllExpectedPrincipalsAfterMutation) ||
@@ -135,6 +166,13 @@ if (phase == "principal")
 
 if (repeat is < 1 or > 2)
     throw new ArgumentException("--repeat must be 1 or 2.");
+if (phase == "bootstrap" && repeat != 1)
+    throw new ArgumentException("The bootstrap phase requires --repeat 1.");
+var stayAliveRequested = bool.TryParse(
+    ReadOption(options, "stay-alive") ?? "false",
+    out var stayAlive) && stayAlive;
+if (phase == "bootstrap" && stayAliveRequested)
+    throw new ArgumentException("The one-shot bootstrap phase does not allow --stay-alive true.");
 
 var scripts = phase switch
 {
@@ -165,8 +203,13 @@ var scriptEvidence = scripts.Select(name =>
         File.ReadAllText(path));
 }).ToArray();
 
-TokenCredential credential = string.IsNullOrWhiteSpace(
-    Environment.GetEnvironmentVariable("IDENTITY_ENDPOINT"))
+var managedIdentityEndpoint = Environment.GetEnvironmentVariable("IDENTITY_ENDPOINT");
+if (phase == "bootstrap" && string.IsNullOrWhiteSpace(managedIdentityEndpoint))
+{
+    throw new InvalidOperationException(
+        "The bootstrap phase requires the Container Apps managed-identity endpoint and never falls back to Azure CLI credentials.");
+}
+TokenCredential credential = string.IsNullOrWhiteSpace(managedIdentityEndpoint)
     ? new AzureCliCredential()
     : new ManagedIdentityCredential();
 var accessToken = await credential.GetTokenAsync(
@@ -191,6 +234,7 @@ await connection.OpenAsync();
 
 RuntimePrincipalEvidence? runtimePrincipalEvidence = null;
 InitializationIntentEvidence? initializationIntentEvidence = null;
+IReadOnlyList<MigrationEvidence>? bootstrapEvidence = null;
 var currentEfModelReady = false;
 if (phase == "initialize")
 {
@@ -198,6 +242,17 @@ if (phase == "initialize")
         connection,
         server,
         database,
+        deploymentOwnershipId!.Value,
+        acceptedSourceFingerprint!,
+        expectedRuntimePrincipals);
+}
+if (phase == "bootstrap")
+{
+    bootstrapEvidence = await BootstrapDatabaseAsync(
+        connection,
+        server,
+        database,
+        executionIntentId!.Value,
         deploymentOwnershipId!.Value,
         acceptedSourceFingerprint!,
         expectedRuntimePrincipals);
@@ -279,34 +334,41 @@ if (phase is "initialize" or "finalize" or "verify")
 var currentSchemaFingerprint = currentEfModelReady
     ? await DatabaseSchemaFingerprintReader.ReadFingerprintAsync(connection)
     : string.Empty;
-var verification = await VerifyAsync(
-    connection,
-    currentEfModelReady,
-    currentSchemaFingerprint);
-var verificationFailed = phase == "baseline"
-    ? verification.WorkflowV2Ready || verification.LegacyGlobalIdempotencyUniqueIndexCount != 1
-    : !verification.WorkflowV2Ready ||
-      (phase is "initialize" or "principal" or "finalize" or "verify") && !verification.CurrentEfModelReady ||
-      (phase == "finalize" && verification.LegacyGlobalIdempotencyUniqueIndexCount != 0);
-if (verificationFailed)
+string evidenceJson;
+SchemaVerification finalVerification;
+if (bootstrapEvidence is not null)
 {
-    throw new InvalidOperationException("Database schema verification did not reach the required state.");
+    if (bootstrapEvidence.Count != 3)
+        throw new InvalidOperationException("The combined bootstrap phase did not produce exactly three evidence records.");
+    finalVerification = bootstrapEvidence[^1].Verification;
+    evidenceJson = JsonSerializer.Serialize(
+        bootstrapEvidence,
+        new JsonSerializerOptions { WriteIndented = true });
 }
+else
+{
+    finalVerification = await VerifyAsync(
+        connection,
+        currentEfModelReady,
+        currentSchemaFingerprint);
+    AssertVerificationReachedRequiredState(phase, finalVerification);
 
-var evidence = new MigrationEvidence(
-    DateTimeOffset.UtcNow,
-    server,
-    database,
-    phase,
-    repeat,
-    scriptEvidence.Select(item => new MigrationScriptEvidence(item.Name, item.Sha256)).ToArray(),
-    verification,
-    runtimePrincipalEvidence,
-    initializationIntentEvidence);
+    var evidence = new MigrationEvidence(
+        DateTimeOffset.UtcNow,
+        server,
+        database,
+        phase,
+        repeat,
+        scriptEvidence.Select(item => new MigrationScriptEvidence(item.Name, item.Sha256)).ToArray(),
+        finalVerification,
+        runtimePrincipalEvidence,
+        initializationIntentEvidence,
+        ExecutionIntentId: null);
 
-var evidenceJson = JsonSerializer.Serialize(
-    evidence,
-    new JsonSerializerOptions { WriteIndented = true });
+    evidenceJson = JsonSerializer.Serialize(
+        evidence,
+        new JsonSerializerOptions { WriteIndented = true });
+}
 var evidencePath = ReadOption(options, "evidence");
 if (!string.IsNullOrWhiteSpace(evidencePath))
 {
@@ -318,21 +380,185 @@ if (!string.IsNullOrWhiteSpace(evidencePath))
     Console.WriteLine($"Wrote non-secret migration evidence to {absoluteEvidencePath}.");
 }
 
-if (bool.TryParse(ReadOption(options, "evidence-stdout") ?? "false", out var evidenceStdout) &&
-    evidenceStdout)
+var evidenceStdoutRequested = bool.TryParse(
+    ReadOption(options, "evidence-stdout") ?? "false",
+    out var evidenceStdout) && evidenceStdout;
+if (phase == "bootstrap")
+{
+    foreach (var line in DatabaseBootstrapEvidenceChunkProtocol.Encode(
+                 evidenceJson,
+                 executionIntentId!.Value))
+    {
+        Console.WriteLine(line);
+    }
+}
+else if (evidenceStdoutRequested)
 {
     Console.WriteLine(
-        $"EVIDENCE_BASE64={Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(evidenceJson))}");
+        $"EVIDENCE_BASE64={Convert.ToBase64String(Encoding.UTF8.GetBytes(evidenceJson))}");
 }
 
 Console.WriteLine(
-    $"Schema verification passed (current-ef-model={verification.CurrentEfModelReady}, workflow-v2={verification.WorkflowV2Ready}, " +
-    $"legacy-global-indexes={verification.LegacyGlobalIdempotencyUniqueIndexCount}).");
+    $"Schema verification passed (current-ef-model={finalVerification.CurrentEfModelReady}, workflow-v2={finalVerification.WorkflowV2Ready}, " +
+    $"legacy-global-indexes={finalVerification.LegacyGlobalIdempotencyUniqueIndexCount}).");
 
-if (bool.TryParse(ReadOption(options, "stay-alive") ?? "false", out var stayAlive) && stayAlive)
+if (stayAliveRequested)
 {
     Console.WriteLine("Migration completed; the diagnostic container will remain alive for evidence collection.");
     await Task.Delay(Timeout.InfiniteTimeSpan);
+}
+
+static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
+    SqlConnection connection,
+    string server,
+    string database,
+    Guid executionIntentId,
+    Guid deploymentOwnershipId,
+    string acceptedSourceFingerprint,
+    IReadOnlyCollection<ExpectedDatabasePrincipal> expectedRuntimePrincipals)
+{
+    if (expectedRuntimePrincipals.Count != 2 ||
+        expectedRuntimePrincipals.Count(item => item.ExpectedDirectPermissionCount == 1) != 1 ||
+        expectedRuntimePrincipals.Count(item => item.ExpectedDirectPermissionCount == 0) != 1)
+    {
+        throw new InvalidOperationException(
+            "The combined bootstrap phase requires the exact reviewed API and worker database-principal contract.");
+    }
+
+    var apiPrincipal = expectedRuntimePrincipals.Single(
+        item => item.ExpectedDirectPermissionCount == 1);
+    var workerPrincipal = expectedRuntimePrincipals.Single(
+        item => item.ExpectedDirectPermissionCount == 0);
+    var evidence = new List<MigrationEvidence>(capacity: 3);
+    var lockResource = $"A365Gateway:DatabaseInitialize:{database}";
+    await AcquireDatabaseInitializationLockAsync(connection, lockResource);
+    try
+    {
+        var initializationIntent = await EnsureEmptyDatabaseInitializedUnderLockAsync(
+            connection,
+            server,
+            database,
+            deploymentOwnershipId,
+            acceptedSourceFingerprint,
+            expectedRuntimePrincipals);
+        await AssertCurrentEfModelSchemaAsync(
+            connection,
+            expectedRuntimePrincipals,
+            allowAllRecoverablePrincipalPrefixes: true);
+        evidence.Add(await CreateVerifiedMigrationEvidenceAsync(
+            connection,
+            server,
+            database,
+            "initialize",
+            executionIntentId,
+            runtimePrincipalEvidence: null,
+            initializationIntentEvidence: initializationIntent));
+
+        await AssertDatabaseInitializationMarkerBindingAsync(
+            connection,
+            server,
+            database,
+            deploymentOwnershipId,
+            acceptedSourceFingerprint);
+        await AssertCurrentEfModelSchemaAsync(
+            connection,
+            expectedRuntimePrincipals,
+            allowAllRecoverablePrincipalPrefixes: true);
+        var apiPrincipalEvidence = await EnsureRuntimePrincipalAsync(
+            connection,
+            apiPrincipal.Name,
+            apiPrincipal.ClientId,
+            requireViewDefinition: true);
+        await AssertCurrentEfModelSchemaAsync(
+            connection,
+            expectedRuntimePrincipals,
+            allowAllRecoverablePrincipalPrefixes: true);
+        evidence.Add(await CreateVerifiedMigrationEvidenceAsync(
+            connection,
+            server,
+            database,
+            "principal",
+            executionIntentId,
+            apiPrincipalEvidence,
+            initializationIntentEvidence: null));
+
+        await AssertDatabaseInitializationMarkerBindingAsync(
+            connection,
+            server,
+            database,
+            deploymentOwnershipId,
+            acceptedSourceFingerprint);
+        await AssertCurrentEfModelSchemaAsync(
+            connection,
+            expectedRuntimePrincipals,
+            allowAllRecoverablePrincipalPrefixes: true);
+        var workerPrincipalEvidence = await EnsureRuntimePrincipalAsync(
+            connection,
+            workerPrincipal.Name,
+            workerPrincipal.ClientId,
+            requireViewDefinition: false);
+        await AssertCurrentEfModelSchemaAsync(
+            connection,
+            expectedRuntimePrincipals,
+            requireAllExpectedPrincipals: true);
+        evidence.Add(await CreateVerifiedMigrationEvidenceAsync(
+            connection,
+            server,
+            database,
+            "principal",
+            executionIntentId,
+            workerPrincipalEvidence,
+            initializationIntentEvidence: null));
+
+        return evidence;
+    }
+    finally
+    {
+        await ReleaseDatabaseInitializationLockAsync(connection, lockResource);
+    }
+}
+
+static async Task<MigrationEvidence> CreateVerifiedMigrationEvidenceAsync(
+    SqlConnection connection,
+    string server,
+    string database,
+    string phase,
+    Guid executionIntentId,
+    RuntimePrincipalEvidence? runtimePrincipalEvidence,
+    InitializationIntentEvidence? initializationIntentEvidence)
+{
+    var currentSchemaFingerprint = await DatabaseSchemaFingerprintReader.ReadFingerprintAsync(connection);
+    var verification = await VerifyAsync(
+        connection,
+        currentEfModelReady: true,
+        currentSchemaFingerprint);
+    AssertVerificationReachedRequiredState(phase, verification);
+    return new MigrationEvidence(
+        DateTimeOffset.UtcNow,
+        server,
+        database,
+        phase,
+        1,
+        Array.Empty<MigrationScriptEvidence>(),
+        verification,
+        runtimePrincipalEvidence,
+        initializationIntentEvidence,
+        executionIntentId.ToString("D"));
+}
+
+static void AssertVerificationReachedRequiredState(
+    string phase,
+    SchemaVerification verification)
+{
+    var verificationFailed = phase == "baseline"
+        ? verification.WorkflowV2Ready || verification.LegacyGlobalIdempotencyUniqueIndexCount != 1
+        : !verification.WorkflowV2Ready ||
+          (phase is "initialize" or "principal" or "finalize" or "verify") && !verification.CurrentEfModelReady ||
+          (phase == "finalize" && verification.LegacyGlobalIdempotencyUniqueIndexCount != 0);
+    if (verificationFailed)
+    {
+        throw new InvalidOperationException("Database schema verification did not reach the required state.");
+    }
 }
 
 static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedAsync(
@@ -347,100 +573,117 @@ static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedAs
     await AcquireDatabaseInitializationLockAsync(connection, lockResource);
     try
     {
-        var databaseIdentity = await ReadDatabaseIdentityBindingAsync(connection);
-        var marker = CreateDatabaseInitializationIntent(
+        return await EnsureEmptyDatabaseInitializedUnderLockAsync(
+            connection,
             server,
             database,
             deploymentOwnershipId,
             acceptedSourceFingerprint,
-            databaseIdentity);
-        var expectedMarker = JsonSerializer.Serialize(marker);
-        var tableCount = await GetUserTableCountAsync(connection);
-        var observedMarker = await ReadDatabaseInitializationMarkerAsync(connection);
-        var exactCurrentSchema = false;
-        if (tableCount > 0)
-        {
-            if (observedMarker is not null &&
-                observedMarker.Equals(expectedMarker, StringComparison.Ordinal))
-            {
-                await AssertCurrentEfModelSchemaAsync(
-                    connection,
-                    expectedRuntimePrincipals,
-                    allowAllRecoverablePrincipalPrefixes: true);
-                exactCurrentSchema = true;
-            }
-        }
-
-        var recoveryMode = DatabaseBootstrapRecoveryContract.Classify(
-            tableCount,
-            observedMarker,
-            expectedMarker,
-            exactCurrentSchema);
-
-        if (recoveryMode is DatabaseInitializationRecoveryMode.Fresh or
-            DatabaseInitializationRecoveryMode.ResumeBeforeSchemaMutation)
-        {
-            var pristineSurface = await ReadPristineDatabaseSurfaceAsync(connection);
-            DatabaseBootstrapRecoveryContract.AssertPristine(pristineSurface);
-        }
-
-        if (recoveryMode == DatabaseInitializationRecoveryMode.Fresh)
-        {
-            await WriteDatabaseInitializationMarkerAsync(connection, expectedMarker);
-            observedMarker = await ReadDatabaseInitializationMarkerAsync(connection);
-            if (!string.Equals(observedMarker, expectedMarker, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    "The durable database initialization marker was not read back exactly before schema mutation.");
-            }
-        }
-
-        if (recoveryMode is DatabaseInitializationRecoveryMode.Fresh or
-            DatabaseInitializationRecoveryMode.ResumeBeforeSchemaMutation)
-        {
-            var options = new DbContextOptionsBuilder<GatewayDbContext>()
-                .UseSqlServer(connection)
-                .Options;
-            await using var context = new GatewayDbContext(options);
-            if (!await context.Database.EnsureCreatedAsync())
-            {
-                throw new InvalidOperationException(
-                    "The marked zero-table Gateway database was not initialized from the reviewed current EF model.");
-            }
-            await AssertCurrentEfModelSchemaAsync(
-                connection,
-                expectedRuntimePrincipals,
-                allowAllRecoverablePrincipalPrefixes: true);
-        }
-
-        var finalMarker = await ReadDatabaseInitializationMarkerAsync(connection);
-        if (!string.Equals(finalMarker, expectedMarker, StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                "The durable database initialization marker changed before initialization verification completed.");
-        }
-
-        Console.WriteLine(
-            recoveryMode == DatabaseInitializationRecoveryMode.Fresh
-                ? "Initialized the empty Gateway database from the reviewed current EF model."
-                : "Recovered the exactly marked Gateway database initialization without adopting partial state.");
-        return new InitializationIntentEvidence(
-            DatabaseBootstrapRecoveryContract.MarkerName,
-            marker.SchemaVersion,
-            marker.DeploymentOwnershipId,
-            marker.AcceptedSourceFingerprint,
-            marker.Server,
-            marker.Database,
-            marker.DatabaseCollation,
-            marker.CatalogCollation,
-            marker.DatabaseOwnerSidSha256,
-            recoveryMode.ToString(),
-            true);
+            expectedRuntimePrincipals);
     }
     finally
     {
         await ReleaseDatabaseInitializationLockAsync(connection, lockResource);
     }
+}
+
+static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedUnderLockAsync(
+    SqlConnection connection,
+    string server,
+    string database,
+    Guid deploymentOwnershipId,
+    string acceptedSourceFingerprint,
+    IReadOnlyCollection<ExpectedDatabasePrincipal> expectedRuntimePrincipals)
+{
+    var databaseIdentity = await ReadDatabaseIdentityBindingAsync(connection);
+    var marker = CreateDatabaseInitializationIntent(
+        server,
+        database,
+        deploymentOwnershipId,
+        acceptedSourceFingerprint,
+        databaseIdentity);
+    var expectedMarker = JsonSerializer.Serialize(marker);
+    var tableCount = await GetUserTableCountAsync(connection);
+    var observedMarker = await ReadDatabaseInitializationMarkerAsync(connection);
+    var exactCurrentSchema = false;
+    if (tableCount > 0)
+    {
+        if (observedMarker is not null &&
+            observedMarker.Equals(expectedMarker, StringComparison.Ordinal))
+        {
+            await AssertCurrentEfModelSchemaAsync(
+                connection,
+                expectedRuntimePrincipals,
+                allowAllRecoverablePrincipalPrefixes: true);
+            exactCurrentSchema = true;
+        }
+    }
+
+    var recoveryMode = DatabaseBootstrapRecoveryContract.Classify(
+        tableCount,
+        observedMarker,
+        expectedMarker,
+        exactCurrentSchema);
+
+    if (recoveryMode is DatabaseInitializationRecoveryMode.Fresh or
+        DatabaseInitializationRecoveryMode.ResumeBeforeSchemaMutation)
+    {
+        var pristineSurface = await ReadPristineDatabaseSurfaceAsync(connection);
+        DatabaseBootstrapRecoveryContract.AssertPristine(pristineSurface);
+    }
+
+    if (recoveryMode == DatabaseInitializationRecoveryMode.Fresh)
+    {
+        await WriteDatabaseInitializationMarkerAsync(connection, expectedMarker);
+        observedMarker = await ReadDatabaseInitializationMarkerAsync(connection);
+        if (!string.Equals(observedMarker, expectedMarker, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The durable database initialization marker was not read back exactly before schema mutation.");
+        }
+    }
+
+    if (recoveryMode is DatabaseInitializationRecoveryMode.Fresh or
+        DatabaseInitializationRecoveryMode.ResumeBeforeSchemaMutation)
+    {
+        var options = new DbContextOptionsBuilder<GatewayDbContext>()
+            .UseSqlServer(connection)
+            .Options;
+        await using var context = new GatewayDbContext(options);
+        if (!await context.Database.EnsureCreatedAsync())
+        {
+            throw new InvalidOperationException(
+                "The marked zero-table Gateway database was not initialized from the reviewed current EF model.");
+        }
+        await AssertCurrentEfModelSchemaAsync(
+            connection,
+            expectedRuntimePrincipals,
+            allowAllRecoverablePrincipalPrefixes: true);
+    }
+
+    var finalMarker = await ReadDatabaseInitializationMarkerAsync(connection);
+    if (!string.Equals(finalMarker, expectedMarker, StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException(
+            "The durable database initialization marker changed before initialization verification completed.");
+    }
+
+    Console.WriteLine(
+        recoveryMode == DatabaseInitializationRecoveryMode.Fresh
+            ? "Initialized the empty Gateway database from the reviewed current EF model."
+            : "Recovered the exactly marked Gateway database initialization without adopting partial state.");
+    return new InitializationIntentEvidence(
+        DatabaseBootstrapRecoveryContract.MarkerName,
+        marker.SchemaVersion,
+        marker.DeploymentOwnershipId,
+        marker.AcceptedSourceFingerprint,
+        marker.Server,
+        marker.Database,
+        marker.DatabaseCollation,
+        marker.CatalogCollation,
+        marker.DatabaseOwnerSidSha256,
+        recoveryMode.ToString(),
+        true);
 }
 
 static DatabaseInitializationIntent CreateDatabaseInitializationIntent(
@@ -2054,11 +2297,33 @@ static string? ReadOption(IReadOnlyDictionary<string, string> options, string ke
     if (options.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
         return value;
 
-    var environmentName = "DATABASE_MIGRATOR_" + key
-        .Replace('-', '_')
-        .ToUpperInvariant();
+    var environmentName = GetOptionEnvironmentName(key);
     return Environment.GetEnvironmentVariable(environmentName);
 }
+
+static string? ReadOptionWithExactEnvironmentAgreement(
+    IReadOnlyDictionary<string, string> options,
+    string key)
+{
+    var environmentName = GetOptionEnvironmentName(key);
+    var hasCommandLineValue = options.TryGetValue(key, out var commandLineValue);
+    var environmentValue = Environment.GetEnvironmentVariable(environmentName);
+    if (hasCommandLineValue && !string.IsNullOrWhiteSpace(environmentValue) &&
+        !string.Equals(commandLineValue, environmentValue, StringComparison.Ordinal))
+    {
+        throw new ArgumentException(
+            $"--{key} and {environmentName} must match exactly when both are supplied.");
+    }
+
+    if (hasCommandLineValue && !string.IsNullOrWhiteSpace(commandLineValue))
+        return commandLineValue;
+    return environmentValue;
+}
+
+static string GetOptionEnvironmentName(string key) =>
+    "DATABASE_MIGRATOR_" + key
+        .Replace('-', '_')
+        .ToUpperInvariant();
 
 static ExpectedDatabasePrincipal ParseExpectedDatabasePrincipal(
     string name,
@@ -2114,7 +2379,8 @@ internal sealed record MigrationEvidence(
     IReadOnlyList<MigrationScriptEvidence> Scripts,
     SchemaVerification Verification,
     RuntimePrincipalEvidence? RuntimePrincipal,
-    InitializationIntentEvidence? InitializationIntent);
+    InitializationIntentEvidence? InitializationIntent,
+    string? ExecutionIntentId);
 internal sealed record RuntimePrincipalEvidence(
     string Name,
     Guid ClientId,
@@ -2188,3 +2454,44 @@ internal sealed record InitializationIntentEvidence(
     string DatabaseOwnerSidSha256,
     string RecoveryMode,
     bool ExactReadbackVerified);
+
+namespace Gateway.DatabaseMigrator
+{
+    public static class DatabaseBootstrapEvidenceChunkProtocol
+    {
+        public const int MaximumChunkLength = 6000;
+        public const int MaximumChunkCount = 128;
+        public const string Marker = "A365GW_DB_EVIDENCE";
+
+        public static IReadOnlyList<string> Encode(string evidenceJson, Guid executionIntentId)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(evidenceJson);
+            if (executionIntentId == Guid.Empty)
+                throw new ArgumentException("The evidence execution-intent ID must be non-empty.", nameof(executionIntentId));
+
+            var jsonBytes = Encoding.UTF8.GetBytes(evidenceJson);
+            var encodedEvidence = Convert.ToBase64String(jsonBytes);
+            var chunkCount = checked(
+                (encodedEvidence.Length + MaximumChunkLength - 1) / MaximumChunkLength);
+            if (chunkCount is < 1 or > MaximumChunkCount)
+            {
+                throw new InvalidOperationException(
+                    $"Bootstrap evidence exceeds the exact {MaximumChunkCount}-chunk durable-log boundary.");
+            }
+
+            var fingerprint =
+                $"sha256:{Convert.ToHexString(SHA256.HashData(jsonBytes)).ToLowerInvariant()}";
+            var canonicalIntentId = executionIntentId.ToString("D");
+            var lines = new string[chunkCount];
+            for (var index = 0; index < chunkCount; index++)
+            {
+                var offset = index * MaximumChunkLength;
+                var length = Math.Min(MaximumChunkLength, encodedEvidence.Length - offset);
+                var chunk = encodedEvidence.Substring(offset, length);
+                lines[index] =
+                    $"{Marker}|{canonicalIntentId}|{index + 1}|{chunkCount}|{fingerprint}|{chunk}";
+            }
+            return lines;
+        }
+    }
+}

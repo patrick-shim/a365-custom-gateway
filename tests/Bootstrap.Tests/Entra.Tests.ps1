@@ -350,6 +350,22 @@ Describe 'Workload Entra pre-mutation authority boundary' {
                 Should -Throw '*outside the exact reviewed*'
         }
 
+        It 'proves a persistent infrastructure identity has exactly zero application-role assignments' {
+            Assert-ExactGraphApplicationRoleAssignments `
+                -PrincipalId '22222222-2222-4222-8222-222222222222' `
+                -ExpectedRoleValues @() |
+                Should -BeTrue
+
+            $script:assignments = @([pscustomobject]@{
+                resourceId = $script:graphPrincipalId
+                appRoleId = 'id-Unreviewed.Role'
+            })
+            { Assert-ExactGraphApplicationRoleAssignments `
+                -PrincipalId '22222222-2222-4222-8222-222222222222' `
+                -ExpectedRoleValues @() } |
+                Should -Throw '*outside the exact reviewed*'
+        }
+
         It 'rejects an unknown application role returned only on a continuation page' {
             Mock Invoke-AzJson {
                 param([string[]]$Arguments)

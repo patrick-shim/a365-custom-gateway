@@ -1542,7 +1542,7 @@ function Set-BootstrapAcceptedPlan {
     if ($SourceFingerprint -cne $currentSourceFingerprint) {
         throw 'Bootstrap source changed before plan acceptance. Generate and review a fresh plan.'
     }
-    Assert-BootstrapIpv4Value -Value $BootstrapClientIpv4 -Label 'SQL bootstrap client IPv4'
+    Assert-BootstrapIpv4Value -Value $BootstrapClientIpv4 -Label 'Legacy SQL bootstrap IPv4 metadata'
 
     $executionSource = New-BootstrapAcceptedSourceSnapshot `
         -State $State `
@@ -1594,7 +1594,7 @@ function Assert-BootstrapAcceptedPlan {
     if (-not $State['acceptedPlan'].Contains('bootstrapClientIpv4')) {
         throw 'The accepted deployment plan predates the reviewed SQL network boundary. Generate and accept a fresh plan before applying.'
     }
-    Assert-BootstrapIpv4Value -Value ([string]$State['acceptedPlan']['bootstrapClientIpv4']) -Label 'Accepted SQL bootstrap client IPv4'
+    Assert-BootstrapIpv4Value -Value ([string]$State['acceptedPlan']['bootstrapClientIpv4']) -Label 'Accepted legacy SQL bootstrap IPv4 metadata'
     if ([string]::IsNullOrWhiteSpace($ConfigurationFingerprint)) {
         $ConfigurationFingerprint = if ($State.Contains('configurationFingerprint')) { [string]$State['configurationFingerprint'] } else { '' }
     }

@@ -1072,7 +1072,7 @@ Describe 'Accepted deployment plan binding' {
             Should -Throw '*will not mix source generations*'
     }
 
-    It 'requires one canonical reviewed SQL client IPv4 at plan acceptance' {
+    It 'requires the fixed legacy SQL IPv4 sentinel in accepted-plan metadata' {
         $config = New-TestBootstrapConfig
         $state = New-BootstrapState -Config $config
         $path = Join-Path $TestDrive 'invalid-client-ip.json'

@@ -6,6 +6,7 @@ Describe 'Database bootstrap evidence contract' {
     InModuleScope Database {
         BeforeEach {
             $script:ownershipId = '11111111-1111-4111-8111-111111111111'
+            $script:executionIntentId = '77777777-7777-4777-8777-777777777777'
             $script:sourceFingerprint = "sha256:$('a' * 64)"
             $script:schemaFingerprint = "sha256:$('b' * 64)"
             $script:api = [pscustomobject]@{
@@ -24,6 +25,7 @@ Describe 'Database bootstrap evidence contract' {
             $script:records = @(
                 [pscustomobject]@{
                     Phase = 'initialize'
+                    ExecutionIntentId = $script:executionIntentId
                     Server = 'sql-safe-dev.database.windows.net'
                     Database = 'GatewayDb'
                     Verification = $verification
@@ -42,6 +44,7 @@ Describe 'Database bootstrap evidence contract' {
                 },
                 [pscustomobject]@{
                     Phase = 'principal'
+                    ExecutionIntentId = $script:executionIntentId
                     Server = 'sql-safe-dev.database.windows.net'
                     Database = 'GatewayDb'
                     Verification = $verification
@@ -54,6 +57,7 @@ Describe 'Database bootstrap evidence contract' {
                 },
                 [pscustomobject]@{
                     Phase = 'principal'
+                    ExecutionIntentId = $script:executionIntentId
                     Server = 'sql-safe-dev.database.windows.net'
                     Database = 'GatewayDb'
                     Verification = $verification
@@ -72,6 +76,7 @@ Describe 'Database bootstrap evidence contract' {
                 -Records $script:records `
                 -SqlServerFqdn 'sql-safe-dev.database.windows.net' `
                 -DeploymentOwnershipId $script:ownershipId `
+                -ExecutionIntentId $script:executionIntentId `
                 -AcceptedSourceFingerprint $script:sourceFingerprint `
                 -ApiPrincipal $script:api `
                 -WorkerPrincipal $script:worker
@@ -114,6 +119,7 @@ Describe 'Database bootstrap evidence contract' {
                 -Records $script:records `
                 -SqlServerFqdn 'sql-safe-dev.database.windows.net' `
                 -DeploymentOwnershipId $script:ownershipId `
+                -ExecutionIntentId $script:executionIntentId `
                 -AcceptedSourceFingerprint $script:sourceFingerprint `
                 -ApiPrincipal $script:api `
                 -WorkerPrincipal $script:worker } |
@@ -127,6 +133,7 @@ Describe 'Database bootstrap evidence contract' {
                 -Records $script:records `
                 -SqlServerFqdn 'sql-safe-dev.database.windows.net' `
                 -DeploymentOwnershipId $script:ownershipId `
+                -ExecutionIntentId $script:executionIntentId `
                 -AcceptedSourceFingerprint $script:sourceFingerprint `
                 -ApiPrincipal $script:api `
                 -WorkerPrincipal $script:worker } |

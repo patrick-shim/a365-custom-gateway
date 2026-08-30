@@ -117,6 +117,14 @@ Describe 'Allowlisted ACR build context' {
         foreach ($project in @('Gateway.Api', 'Gateway.Provisioning.Worker', 'Gateway.AdminUi')) {
             'FROM scratch' | Set-Content -LiteralPath (Join-Path $TestDrive "src/$project/Dockerfile")
         }
+        $migratorDirectory = Join-Path $TestDrive 'tools/Gateway.DatabaseMigrator'
+        New-Item -ItemType Directory -Path $migratorDirectory -Force | Out-Null
+        '<Project />' | Set-Content -LiteralPath (Join-Path $migratorDirectory 'Gateway.DatabaseMigrator.csproj')
+        'namespace Safe;' | Set-Content -LiteralPath (Join-Path $migratorDirectory 'Program.cs')
+        'FROM scratch' | Set-Content -LiteralPath (Join-Path $migratorDirectory 'Dockerfile')
+        $sqlDirectory = Join-Path $TestDrive 'infrastructure/sql'
+        New-Item -ItemType Directory -Path $sqlDirectory -Force | Out-Null
+        'SELECT 1;' | Set-Content -LiteralPath (Join-Path $sqlDirectory 'reviewed.sql')
         'must-not-leave-machine' | Set-Content -LiteralPath (Join-Path $TestDrive 'src/Gateway.Api/.env')
         'must-not-leave-machine' | Set-Content -LiteralPath (Join-Path $TestDrive 'src/Gateway.Api/operator.pem')
         'must-not-leave-machine' | Set-Content -LiteralPath (Join-Path $TestDrive 'src/Gateway.Api/credentials.json')
@@ -126,6 +134,8 @@ Describe 'Allowlisted ACR build context' {
         $context = New-GatewayAcrBuildContext -RepositoryRoot $TestDrive -SourceFingerprint $sourceFingerprint
         try {
             Test-Path -LiteralPath (Join-Path $context 'src/Gateway.Api/Safe.cs') | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $context 'tools/Gateway.DatabaseMigrator/Program.cs') | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $context 'infrastructure/sql/reviewed.sql') | Should -BeTrue
             Test-Path -LiteralPath (Join-Path $context 'src/Gateway.Api/.env') | Should -BeFalse
             Test-Path -LiteralPath (Join-Path $context 'src/Gateway.Api/operator.pem') | Should -BeFalse
             Test-Path -LiteralPath (Join-Path $context 'src/Gateway.Api/credentials.json') | Should -BeFalse
@@ -154,6 +164,13 @@ Describe 'Allowlisted ACR build context' {
         foreach ($project in @('Gateway.Api', 'Gateway.Provisioning.Worker', 'Gateway.AdminUi')) {
             'FROM scratch' | Set-Content -LiteralPath (Join-Path $TestDrive "src/$project/Dockerfile")
         }
+        $migratorDirectory = Join-Path $TestDrive 'tools/Gateway.DatabaseMigrator'
+        New-Item -ItemType Directory -Path $migratorDirectory -Force | Out-Null
+        '<Project />' | Set-Content -LiteralPath (Join-Path $migratorDirectory 'Gateway.DatabaseMigrator.csproj')
+        'FROM scratch' | Set-Content -LiteralPath (Join-Path $migratorDirectory 'Dockerfile')
+        $sqlDirectory = Join-Path $TestDrive 'infrastructure/sql'
+        New-Item -ItemType Directory -Path $sqlDirectory -Force | Out-Null
+        'SELECT 1;' | Set-Content -LiteralPath (Join-Path $sqlDirectory 'reviewed.sql')
 
         try {
             $sourceFingerprint = Get-BootstrapSourceFingerprint -Root $TestDrive
@@ -192,16 +209,23 @@ Describe 'Deterministic resumable ACR image builds' {
             $script:sourceFingerprint = "sha256:$('a' * 64)"
             $script:ownershipId = '33333333-3333-4333-8333-333333333333'
             $script:expectedTag = "bootstrap-33333333333343338333333333333333-$('a' * 64)"
-            $script:repositories = [ordered]@{ api = 'gateway-api'; worker = 'gateway-worker'; adminUi = 'gateway-admin' }
+            $script:repositories = [ordered]@{
+                api = 'gateway-api'
+                worker = 'gateway-worker'
+                adminUi = 'gateway-admin'
+                databaseMigrator = 'gateway-db-migrator'
+            }
             $script:intentIds = [ordered]@{
                 api = '44444444-4444-4444-8444-444444444444'
                 worker = '55555555-5555-4555-8555-555555555555'
                 adminUi = '66666666-6666-4666-8666-666666666666'
+                databaseMigrator = '77777777-7777-4777-8777-777777777777'
             }
             $script:digestByRepository = [ordered]@{
                 'gateway-api' = "sha256:$('1' * 64)"
                 'gateway-worker' = "sha256:$('2' * 64)"
                 'gateway-admin' = "sha256:$('3' * 64)"
+                'gateway-db-migrator' = "sha256:$('4' * 64)"
             }
             Mock Get-BootstrapExecutionSourceRoot { return $TestDrive }
             Mock Get-BootstrapSourceFingerprint { return $script:sourceFingerprint }
@@ -517,15 +541,15 @@ Describe 'Deterministic resumable ACR image builds' {
             Mock New-GatewayAcrBuildContext { throw 'Build context must not be created for recovered images.' }
             Mock Invoke-BootstrapCommand { throw 'No ACR build mutation was expected.' }
             $recovered = [ordered]@{
-                schemaVersion = 2
+                schemaVersion = 3
                 registry = 'acrsafe'
                 sourceFingerprint = $script:sourceFingerprint
                 deploymentOwnershipId = $script:ownershipId
-                provenance = 'BootstrapPreMutationIntentV2'
+                provenance = 'BootstrapPreMutationIntentV3'
                 buildIntents = [ordered]@{}
-                checkpointedComponents = @('api', 'worker', 'adminUi')
+                checkpointedComponents = @('api', 'worker', 'adminUi', 'databaseMigrator')
             }
-            foreach ($component in @('api', 'worker', 'adminUi')) {
+            foreach ($component in @('api', 'worker', 'adminUi', 'databaseMigrator')) {
                 $repository = $script:repositories[$component]
                 $digest = $script:digestByRepository[$repository]
                 $image = "acrsafe.azurecr.io/$repository@$digest"
@@ -546,11 +570,42 @@ Describe 'Deterministic resumable ACR image builds' {
                 -RecoveredEvidence $recovered `
                 -Checkpoint { throw 'Recovered images must not be checkpointed again.' }
 
-            $result.schemaVersion | Should -Be 2
+            $result.schemaVersion | Should -Be 3
             $result.deploymentOwnershipId | Should -BeExactly $script:ownershipId
             $result.api | Should -BeExactly "acrsafe.azurecr.io/gateway-api@$($script:digestByRepository['gateway-api'])"
-            Should -Invoke Get-GatewayAcrExactTagDigest -Times 3 -Exactly
+            $result.databaseMigrator | Should -BeExactly "acrsafe.azurecr.io/gateway-db-migrator@$($script:digestByRepository['gateway-db-migrator'])"
+            Should -Invoke Get-GatewayAcrExactTagDigest -Times 4 -Exactly
             Should -Invoke Invoke-BootstrapCommand -Times 0 -Exactly
+        }
+
+        It 'rejects legacy three-image recovery evidence before ACR discovery or mutation' {
+            $legacy = [ordered]@{
+                schemaVersion = 2
+                registry = 'acrsafe'
+                sourceFingerprint = $script:sourceFingerprint
+                deploymentOwnershipId = $script:ownershipId
+                provenance = 'BootstrapPreMutationIntentV2'
+                buildIntents = [ordered]@{}
+                checkpointedComponents = @()
+            }
+            Mock Get-GatewayAcrExactTagDigest { throw 'Legacy evidence must fail before ACR discovery.' }
+            Mock Get-GatewayAcrExactImageRuns { throw 'Legacy evidence must fail before ACR discovery.' }
+            Mock Invoke-AzJson { throw 'Legacy evidence must never authorize an ACR mutation.' }
+            Mock New-GatewayAcrBuildContext { throw 'Legacy evidence must not create a build context.' }
+
+            { Build-GatewayImages `
+                    -Config ([pscustomobject]@{}) `
+                    -AcrLoginServer 'acrsafe.azurecr.io' `
+                    -SourceFingerprint $script:sourceFingerprint `
+                    -DeploymentOwnershipId $script:ownershipId `
+                    -RecoveredEvidence $legacy `
+                    -Checkpoint {} } |
+                Should -Throw '*belongs to a different registry, state, or accepted source*'
+
+            Should -Invoke Get-GatewayAcrExactTagDigest -Times 0 -Exactly
+            Should -Invoke Get-GatewayAcrExactImageRuns -Times 0 -Exactly
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly
+            Should -Invoke New-GatewayAcrBuildContext -Times 0 -Exactly
         }
 
         It 'checkpoints every unique intent before building and every digest after reconciliation' {
@@ -583,6 +638,7 @@ Describe 'Deterministic resumable ACR image builds' {
                     'gateway-api' { 'api=RunQueued' }
                     'gateway-worker' { 'api=DigestCheckpointed,worker=RunQueued' }
                     'gateway-admin' { 'api=DigestCheckpointed,worker=DigestCheckpointed,adminUi=RunQueued' }
+                    'gateway-db-migrator' { 'api=DigestCheckpointed,worker=DigestCheckpointed,adminUi=DigestCheckpointed,databaseMigrator=RunQueued' }
                 }
                 if ([string]($script:checkpointStates[-1]) -cne $expectedCheckpoint) {
                     throw 'Exact ACR run readback occurred before its durable RunQueued checkpoint.'
@@ -624,8 +680,9 @@ Describe 'Deterministic resumable ACR image builds' {
 
             $result.workerDigest | Should -BeExactly $script:digestByRepository['gateway-worker']
             $result.adminUiDigest | Should -BeExactly $script:digestByRepository['gateway-admin']
-            Should -Invoke Invoke-AzJson -Times 3 -Exactly -ParameterFilter { $CaptureStdoutOnly }
-            $script:buildArguments.Count | Should -Be 3
+            $result.databaseMigratorDigest | Should -BeExactly $script:digestByRepository['gateway-db-migrator']
+            Should -Invoke Invoke-AzJson -Times 4 -Exactly -ParameterFilter { $CaptureStdoutOnly }
+            $script:buildArguments.Count | Should -Be 4
             $script:checkpointStates | Should -Be @(
                 'api=IntentRecorded',
                 'api=RunQueued',
@@ -635,13 +692,16 @@ Describe 'Deterministic resumable ACR image builds' {
                 'api=DigestCheckpointed,worker=DigestCheckpointed',
                 'api=DigestCheckpointed,worker=DigestCheckpointed,adminUi=IntentRecorded',
                 'api=DigestCheckpointed,worker=DigestCheckpointed,adminUi=RunQueued',
-                'api=DigestCheckpointed,worker=DigestCheckpointed,adminUi=DigestCheckpointed'
+                'api=DigestCheckpointed,worker=DigestCheckpointed,adminUi=DigestCheckpointed',
+                'api=DigestCheckpointed,worker=DigestCheckpointed,adminUi=DigestCheckpointed,databaseMigrator=IntentRecorded',
+                'api=DigestCheckpointed,worker=DigestCheckpointed,adminUi=DigestCheckpointed,databaseMigrator=RunQueued',
+                'api=DigestCheckpointed,worker=DigestCheckpointed,adminUi=DigestCheckpointed,databaseMigrator=DigestCheckpointed'
             )
             foreach ($arguments in $script:buildArguments) {
                 $imageIndex = [Array]::IndexOf($arguments, '--image')
                 $arguments[$imageIndex + 1] | Should -Match ':(bootstrap-[0-9a-f]{32}-[0-9a-f]{32}-[0-9a-f]{32})$'
                 $fileIndex = [Array]::IndexOf($arguments, '--file')
-                $arguments[$fileIndex + 1] | Should -Match '^src/Gateway\.(Api|Provisioning\.Worker|AdminUi)/Dockerfile$'
+                $arguments[$fileIndex + 1] | Should -Match '^(src/Gateway\.(Api|Provisioning\.Worker|AdminUi)|tools/Gateway\.DatabaseMigrator)/Dockerfile$'
                 $arguments | Should -Contain $context
                 $arguments | Should -Contain '--no-logs'
                 $arguments | Should -Not -Contain '--no-wait'
@@ -794,8 +854,8 @@ Describe 'Deterministic resumable ACR image builds' {
             New-Item -ItemType Directory -Path $context -Force | Out-Null
             $apiTag = Get-BootstrapImageBuildIntentTag -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint -IntentId $script:intentIds.api
             $recovered = [ordered]@{
-                schemaVersion = 2; registry = 'acrsafe'; sourceFingerprint = $script:sourceFingerprint
-                deploymentOwnershipId = $script:ownershipId; provenance = 'BootstrapPreMutationIntentV2'
+                schemaVersion = 3; registry = 'acrsafe'; sourceFingerprint = $script:sourceFingerprint
+                deploymentOwnershipId = $script:ownershipId; provenance = 'BootstrapPreMutationIntentV3'
                 buildIntents = [ordered]@{
                     api = [ordered]@{ component = 'api'; repository = 'gateway-api'; intentId = $script:intentIds.api; tag = $apiTag; state = 'IntentRecorded' }
                 }
@@ -850,7 +910,7 @@ Describe 'Deterministic resumable ACR image builds' {
                 -RecoveredEvidence $recovered -Checkpoint { param($evidence) }
 
             $result.apiDigest | Should -BeExactly $script:digestByRepository['gateway-api']
-            Should -Invoke Invoke-AzJson -Times 2 -Exactly
+            Should -Invoke Invoke-AzJson -Times 3 -Exactly
             Should -Invoke Invoke-AzJson -Times 0 -Exactly -ParameterFilter {
                 $imageIndex = [Array]::IndexOf($Arguments, '--image')
                 $Arguments[$imageIndex + 1] -like 'gateway-api:*'
@@ -863,8 +923,8 @@ Describe 'Deterministic resumable ACR image builds' {
                 -SourceFingerprint $script:sourceFingerprint `
                 -IntentId $script:intentIds.api
             $recovered = [ordered]@{
-                schemaVersion = 2; registry = 'acrsafe'; sourceFingerprint = $script:sourceFingerprint
-                deploymentOwnershipId = $script:ownershipId; provenance = 'BootstrapPreMutationIntentV2'
+                schemaVersion = 3; registry = 'acrsafe'; sourceFingerprint = $script:sourceFingerprint
+                deploymentOwnershipId = $script:ownershipId; provenance = 'BootstrapPreMutationIntentV3'
                 buildIntents = [ordered]@{
                     api = [ordered]@{
                         component = 'api'; repository = 'gateway-api'; intentId = $script:intentIds.api
@@ -906,8 +966,8 @@ Describe 'Deterministic resumable ACR image builds' {
         It 'refuses to resubmit a recovered intent when neither the run nor its outcome can be proven' {
             $apiTag = Get-BootstrapImageBuildIntentTag -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint -IntentId $script:intentIds.api
             $recovered = [ordered]@{
-                schemaVersion = 2; registry = 'acrsafe'; sourceFingerprint = $script:sourceFingerprint
-                deploymentOwnershipId = $script:ownershipId; provenance = 'BootstrapPreMutationIntentV2'
+                schemaVersion = 3; registry = 'acrsafe'; sourceFingerprint = $script:sourceFingerprint
+                deploymentOwnershipId = $script:ownershipId; provenance = 'BootstrapPreMutationIntentV3'
                 buildIntents = [ordered]@{
                     api = [ordered]@{ component = 'api'; repository = 'gateway-api'; intentId = $script:intentIds.api; tag = $apiTag; state = 'IntentRecorded' }
                 }

@@ -89,10 +89,11 @@ subscription-scope ARM What-If. Review its project-scoped deployment identity,
 resource families, sorted change summary, imperative Entra/Graph/Agent 365/SQL/
 policy manifest, cost classes, preview boundaries, administrator handoffs, and
 explicitly unverified items. ARM What-If does not cover those imperative systems.
-Also record the exact tenant, subscription, source fingerprint, and proposed SQL
-bootstrap client IPv4 shown by Plan. The IPv4 is eligible only when bounded HTTPS
-reads from ipify and AWS Check IP agree on the same canonical IPv4; it is included
-in the descriptor and accepted plan fingerprint.
+Also record the exact tenant, subscription, source fingerprint, and immutable API,
+worker, Admin UI, and database-migrator image inputs shown by Plan. The retained
+`sqlBootstrapClientIpv4` descriptor field is legacy schema metadata fixed to
+`0.0.0.0`; the supported private database path neither discovers a caller address
+nor opens a SQL public-network or firewall window.
 
 ## 4. Apply through the exact accepted plan
 
@@ -147,15 +148,24 @@ identity. A completed mutation checkpoint may be reused only after its independe
 read-only validator succeeds. An unavailable or ambiguous readback must stop rather
 than replay the mutation.
 
-Empty-database initialization has a bounded, disclosed network mutation. Bootstrap
-may temporarily enable the SQL public endpoint and creates exactly one deterministic
-firewall rule whose start/end addresses equal the accepted Plan IPv4. Before doing
-so it writes the ignored safe recovery record
-`.bootstrap/evidence/<resource-group>/database/GatewayDb-network-recovery.json`.
-Cleanup deletes the exact rule and reads back its absence, restores public access to
-`Disabled`, and reads that state back. If either cleanup cannot be proven, the step
-fails, the recovery record remains, and the same deployment must be resumed to
-reconcile it; do not delete the record or create a second rule manually.
+Empty-database initialization runs through one dormant, GA manual Container Apps
+Job in the VNet-integrated environment. Its template is digest-pinned, retry-
+disabled, contains no secret or execution intent, and uses a dedicated system
+identity. Before the first start, bootstrap persists a safe receipt binding the
+exact Job/deployment, original SQL Entra administrator, and a non-secret execution
+intent. It then sets the Job identity as the singular SQL Entra administrator,
+starts exactly one intent-bound execution, and waits for the exact execution beyond
+the configured Job timeout before restoring the exact original administrator.
+
+Resume must adopt the exact dormant deployment or sole exact execution. It may
+create the dormant deployment only when both the exact Job and deployment are
+absent, and it must never issue a second start after an unknown outcome. Partial,
+ambiguous, mismatched, failed, stopped, or degraded execution state fails closed.
+The successful execution publishes exactly three hashed intent-bound evidence
+records to its exact Log Analytics stream; bootstrap validates their chunks,
+content, schema, and API/worker least-privilege authority before accepting the
+step. At every exit, SQL public access must remain `Disabled`, the firewall-rule
+list must remain empty, and the exact original SQL administrator must read back.
 
 ## 5. Verify the installed foundation
 
@@ -171,17 +181,20 @@ Capture safe evidence for:
 
 - project-scoped subscription/resource-group deployments and exact resource IDs;
 - private-network posture and disabled local/key authentication where required;
-- immutable API, worker, and Admin UI image digests, with the exact accepted source
-  fingerprint in image evidence, ARM parameters/outputs, and deployed resource tags;
+- immutable API, worker, Admin UI, and database-migrator image digests, with the
+  exact accepted source fingerprint in image evidence, ARM parameters/outputs, and
+  deployed resource tags;
 - project-scoped API/Admin applications, managed identities, exact roles, OBO FIC,
   and redirect URIs, including the state-owned application tags and single pinned
   operator owner;
 - typed seed blueprint plus exact equality between provider-observed
   `managerApplications` and the independently reviewed one-to-ten IDs recorded in
   configuration and the accepted plan fingerprint;
-- empty-database initialization, workload managed-identity principals, SQL public
-  access restored to `Disabled`, exact temporary-rule absence, and cleared network
-  recovery record;
+- empty-database initialization and exact workload managed-identity principals;
+  the dormant private database Job and its sole successful intent-bound execution;
+  validated Log Analytics evidence; exact original SQL Entra-administrator
+  restoration; SQL public access still `Disabled`; zero firewall rules; and zero
+  Azure RBAC or Microsoft Graph application roles on the Job identity;
 - runtime/Admin health and provisioning-prerequisite readbacks;
 - optional Content Safety account/role or Purview policy exact readback, including
   exact worker Purview environment settings and the narrowly scoped certificate

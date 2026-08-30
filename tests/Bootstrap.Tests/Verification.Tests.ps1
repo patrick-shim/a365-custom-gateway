@@ -14,6 +14,7 @@ Describe 'Final verification strict-mode delegated-scope cardinality' {
             $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
                 $node.Name -ceq 'Test-GatewayBootstrapDeployment'
         }, $true)
+        $script:finalVerificationSource = $function.Extent.Text
         $script:finalGrantAssignment = $function.Body.Find({ param($node)
             $node -is [Management.Automation.Language.AssignmentStatementAst] -and
                 [string]$node.Left -ceq '$adminGrantScopes'
@@ -41,6 +42,13 @@ Describe 'Final verification strict-mode delegated-scope cardinality' {
             $invalid = @([pscustomobject]@{ resourceId = $resourceId; consentType = 'AllPrincipals'; scope = $scope })
             { & $validationRunner -allAdminGrants $invalid -Identity $identity } | Should -Throw '*exactly one tenant-wide access_as_user*'
         }
+    }
+
+    It 'revalidates the full dormant database job, sole execution, intent, and job identity boundary' {
+        $script:finalVerificationSource | Should -Match 'Get-GatewayDatabaseBootstrapJobEvidence'
+        $script:finalVerificationSource | Should -Match 'Get-GatewayDatabaseBootstrapExecutions'
+        $script:finalVerificationSource | Should -Match 'Get-GatewayDatabaseBootstrapExecutionEvidence'
+        $script:finalVerificationSource | Should -Match 'Assert-GatewayExactAzureRoleAssignments[^\r\n]+-Database \$Database'
     }
 }
 
@@ -242,9 +250,15 @@ Describe 'Current private-runtime database attestation boundary' {
             $script:apiClientId = '44444444-4444-4444-8444-444444444444'
             $script:workerClientId = '55555555-5555-4555-8555-555555555555'
             $script:schemaFingerprint = "sha256:$('b' * 64)"
-            $script:config = [pscustomobject]@{ environment = 'dev' }
+            $script:config = [pscustomobject]@{
+                subscriptionId = '99999999-9999-4999-8999-999999999999'
+                resourceGroupName = 'rg-safe-dev'
+                projectName = 'safe'
+                environment = 'dev'
+            }
             $script:runtime = [pscustomobject]@{
                 sqlServerFqdn = 'sql-safe-dev.database.windows.net'
+                acrLoginServer = 'acrsafe.azurecr.io'
                 apiPrincipalId = $script:apiObjectId
                 workerPrincipalId = $script:workerObjectId
                 databaseAttestationEnabled = $true
@@ -258,6 +272,19 @@ Describe 'Current private-runtime database attestation boundary' {
             $script:database = [pscustomobject]@{
                 deploymentOwnershipId = $script:ownershipId
                 acceptedSourceFingerprint = $script:sourceFingerprint
+                networkMode = 'PrivateContainerAppsJob'
+                privateNetworkExecutionVerified = $true
+                legacyPublicBootstrapClientIpv4Unused = $true
+                originalSqlAdministratorRestored = $true
+                originalSqlAdministratorObjectId = '66666666-6666-4666-8666-666666666666'
+                originalSqlAdministratorLogin = 'operator@contoso.test'
+                databaseBootstrapJobName = 'job-safe-db-init-dev'
+                databaseBootstrapJobId = '/subscriptions/99999999-9999-4999-8999-999999999999/resourceGroups/rg-safe-dev/providers/Microsoft.App/jobs/job-safe-db-init-dev'
+                databaseBootstrapJobImage = "acrsafe.azurecr.io/gateway-db-migrator@sha256:$('e' * 64)"
+                databaseBootstrapJobPrincipalId = '77777777-7777-4777-8777-777777777777'
+                databaseBootstrapExecutionName = 'job-safe-db-init-dev-abcde'
+                databaseBootstrapExecutionIntentId = '88888888-8888-4888-8888-888888888888'
+                databaseBootstrapEvidenceFingerprint = "sha256:$('d' * 64)"
                 server = $script:runtime.sqlServerFqdn
                 database = 'GatewayDb'
                 schemaFingerprint = $script:schemaFingerprint
@@ -499,6 +526,9 @@ Describe 'Dedicated runtime image-pull identity least-privilege boundary' {
             $script:pullAdmin = [pscustomobject]@{
                 adminUiPrincipalId = '77777777-7777-4777-8777-777777777777'
             }
+            $script:pullDatabase = [pscustomobject]@{
+                databaseBootstrapJobPrincipalId = '88888888-8888-4888-8888-888888888888'
+            }
             Mock Invoke-AzJson {
                 param([string[]]$Arguments)
                 if ($Arguments[0] -eq 'identity') {
@@ -540,7 +570,7 @@ Describe 'Dedicated runtime image-pull identity least-privilege boundary' {
 
         It 'removes AcrPull from runtime system identities and binds one exact receipt to the pull UAMI' {
             Assert-GatewayExactAzureRoleAssignments `
-                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin |
+                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin -Database $script:pullDatabase |
                 Should -BeTrue
 
             Should -Invoke Assert-GatewayServicePrincipalHasNoDirectoryMemberships -Times 1 -Exactly -ParameterFilter {
@@ -553,6 +583,15 @@ Describe 'Dedicated runtime image-pull identity least-privilege boundary' {
                     [string]$ExpectedAssignments[0].scope -eq $script:pullRegistryId -and
                     [string]$ExpectedAssignments[0].roleDefinitionId -eq '7f951dda-4ed3-4680-a7ca-43fe172d538d' -and
                     [string]$ExpectedAssignments[0].assignmentId -eq $script:pullRoleAssignmentId
+            }
+            Should -Invoke Assert-GatewayServicePrincipalHasNoDirectoryMemberships -Times 1 -Exactly -ParameterFilter {
+                $PrincipalId -eq $script:pullDatabase.databaseBootstrapJobPrincipalId -and
+                    $PrincipalLabel -eq 'Database-bootstrap job identity'
+            }
+            Should -Invoke Assert-GatewayPrincipalExactAzureRoleAssignments -Times 1 -Exactly -ParameterFilter {
+                $PrincipalId -eq $script:pullDatabase.databaseBootstrapJobPrincipalId -and
+                    $PrincipalLabel -eq 'Database-bootstrap job identity' -and
+                    @($ExpectedAssignments).Count -eq 0
             }
             foreach ($systemPrincipalId in @($script:pullRuntime.apiPrincipalId, $script:pullRuntime.workerPrincipalId)) {
                 Should -Invoke Assert-GatewayPrincipalExactAzureRoleAssignments -Times 1 -Exactly -ParameterFilter {
@@ -568,7 +607,7 @@ Describe 'Dedicated runtime image-pull identity least-privilege boundary' {
                 return $true
             }
             { Assert-GatewayExactAzureRoleAssignments `
-                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin } |
+                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin -Database $script:pullDatabase } |
                 Should -Throw '*unreviewed membership*'
 
             Mock Assert-GatewayServicePrincipalHasNoDirectoryMemberships { return $true }
@@ -577,20 +616,20 @@ Describe 'Dedicated runtime image-pull identity least-privilege boundary' {
                 return $true
             }
             { Assert-GatewayExactAzureRoleAssignments `
-                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin } |
+                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin -Database $script:pullDatabase } |
                 Should -Throw '*least-privilege role/scope matrix*'
         }
 
         It 'rejects malformed role receipts and wrong identity ownership or source tags' {
             $script:pullRuntime.runtimeImagePullAcrPullRoleAssignmentId = "$script:pullRegistryId/providers/Microsoft.Authorization/roleAssignments/not-a-guid"
             { Assert-GatewayExactAzureRoleAssignments `
-                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin } |
+                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin -Database $script:pullDatabase } |
                 Should -Throw '*resource IDs*'
 
             $script:pullRuntime.runtimeImagePullAcrPullRoleAssignmentId = $script:pullRoleAssignmentId
             $script:pullIdentitySourceFingerprint = "sha256:$('b' * 64)"
             { Assert-GatewayExactAzureRoleAssignments `
-                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin } |
+                -Config $script:pullConfig -Runtime $script:pullRuntime -AdminUi $script:pullAdmin -Database $script:pullDatabase } |
                 Should -Throw '*ownership, and source boundary*'
         }
     }

@@ -452,7 +452,7 @@ function Assert-GatewayApiDelegatedPermissionBoundary {
 function Assert-GraphApplicationRoleAssignmentBoundary {
     param(
         [Parameter(Mandatory)][string]$PrincipalId,
-        [Parameter(Mandatory)][string[]]$ExpectedRoleValues,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedRoleValues,
         [switch]$RequireComplete
     )
     $graph = (Get-GraphPermissionCatalog).servicePrincipal
@@ -474,7 +474,10 @@ function Assert-GraphApplicationRoleAssignmentBoundary {
 }
 
 function Assert-ExactGraphApplicationRoleAssignments {
-    param([Parameter(Mandatory)][string]$PrincipalId, [Parameter(Mandatory)][string[]]$ExpectedRoleValues)
+    param(
+        [Parameter(Mandatory)][string]$PrincipalId,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedRoleValues
+    )
     return Assert-GraphApplicationRoleAssignmentBoundary -PrincipalId $PrincipalId -ExpectedRoleValues $ExpectedRoleValues -RequireComplete
 }
 
