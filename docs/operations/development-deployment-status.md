@@ -1180,6 +1180,76 @@ compile. Format and diff checks pass. Independent integration and security revie
 found no concrete blocker. This is source validation only. Run a fresh `a365gw26` /
 `rg-a365-custom-gw-phase6y` Plan; never Resume or second-start `a365gw25`.
 
+Generation `a365gw26` accepted exact Plan
+`sha256:edcd8f53f6845183b5e24fb09f6f53e523a3384db456919f9293076b6dfe51e8`
+for `rg-a365-custom-gw-phase6y`, ownership
+`ca53c133-f95b-43b0-84ed-1f87272a8157`, configuration
+`sha256:7d70030541b3c27e094270ff30816014de631c57b9a35cd27520ddecd54bc746`,
+and clean-commit source
+`sha256:c4c5e4ec29b601452fa21cc2d42740c139f28ad8d84396b3dc3be9cdd5c2fdc3`
+at `1e906d3333cd0b51c95dc56198f90dbb42b4afdf`. What-If reported eight
+Creates and zero Deletes. Apply completed steps 1--10 and made step 11 terminal
+`Failed` at `2026-08-30T15:45:48.6311720Z`; every later step remained `Pending`.
+Foundation, inert, SQL-private, and database-Job deployment correlations were
+`f9b2618b-03f8-41e0-9727-f8c13356d15c`,
+`fba1bc60-d783-4a67-871d-4faeb2735c95`,
+`02337fa6-11ac-4aa6-8d65-f40630e2fea6`, and
+`9c1c0e80-caf6-4198-8536-83ae782b1ef1`.
+
+Immutable image digests were API
+`sha256:3491c062e3850774f421bdc181cafc9908c71ea97f64441e7363793a50a91bb2`,
+worker
+`sha256:b618c7f6287407fdc0b6f0d5672edf20d8b98b9a58ecc74735f7f4faaebfa5e4`,
+Admin UI
+`sha256:62dbb94ddf69e4cdc96373a7ac0fe04bbdac5c4020b8d3e1b8cf0a229f18cfc6`,
+and migrator
+`sha256:3ee759df484fb807468bd71fb820ee03d3736858484f0d230500413fa027babf`.
+The source-bound seed blueprint was
+`5ae719f4-59d9-4c26-929d-0922ab5aecca`, with exact sole owner/sponsor, reviewed
+manager, and no credential. Gateway API object/client/service-principal IDs were
+`db1cc41e-263a-42d0-b6ac-809d72438b0c`,
+`0c72b252-8f74-49c4-9948-41590586889b`, and
+`990be5a3-a6d5-4032-9577-a3fdec535460`.
+
+Manual Job `job-a365gw26-db-init-dev`, principal
+`4edd5972-5273-48f4-a21c-19a58e5d93bd`, intent
+`1faf2451-61e9-4f2a-9cee-bfef88fb800f`, received exact private NIC/A-record address
+`10.42.2.5`. Its sole start correlation
+`e483bd83-f3a5-46a3-8d9a-0db056e41b45` created execution
+`job-a365gw26-db-init-dev-dsx6xlz` and replica
+`job-a365gw26-db-init-dev-dsx6xlz-j5qr7`, now terminal `Failed` / `NotRunning`
+with no `endTime`. The Job passed control-plane and in-container DNS readiness,
+opened SQL privately, then failed before marker, schema, or runtime-principal
+mutation. Safe counts were zero for tables, objects, every catalog/type category,
+schemas, principals, memberships, options, and owner mismatch. Direct-permission
+telemetry was `directPermissions=2`, `rawNonWhitelisted=1`,
+`positiveIdPublicSelectTargets=1`, `positiveIdPublicSelectMsShippedObjectTargets=1`,
+`positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations=0`, and
+`positiveIdPublicSelectMsShippedSystemCatalogTargets=0`. This evidence neither
+identifies nor admits the remaining row.
+
+Administrator swap/start/restore correlations were
+`cc7b6aa4-e19e-4c09-b8ff-2fc24f0078e2`,
+`e483bd83-f3a5-46a3-8d9a-0db056e41b45`, and
+`cf715d60-df80-455b-8e39-f0773084657f`. Exact recovery proved SQL `Ready`, public
+access `Disabled`, zero firewall rules, disabled server/database auditing and Azure
+Monitor targets, zero sensitivity classifications, disabled threat policy, and the
+singular original administrator restored: object ID/SID
+`2db7287c-9462-404f-810e-17e57377618d`, tenant
+`ff8b1e46-ff0f-4bc2-ab02-caf2b92da496`. API/worker remained inert and no later
+identity, credential, activation, registration, Registry, Gateway-key, canary, or
+Service Bus data-plane action occurred.
+
+Preserve
+`.bootstrap/accepted-source/ca53c133-f95b-43b0-84ed-1f87272a8157/edcd8f53f6845183b5e24fb09f6f53e523a3384db456919f9293076b6dfe51e8`,
+`.bootstrap/state/6f6ae863-dcb7-456f-a7f0-d6f9887cfb76-rg-a365-custom-gw-phase6y-dev.json`,
+`.bootstrap/evidence/rg-a365-custom-gw-phase6y/database/private-database-bootstrap-receipt.json`,
+and `.bootstrap/diagnostics/a365gw26-dev-20260830-154613.json`. Never Resume or
+second-start `a365gw26`. The next correction must use fixed count-only partitioning
+and must remove the current Microsoft-shipped-object substitution weakness; prove it
+only through a fresh `a365gw27` generation. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was not selected, queried, or mutated.
+
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local

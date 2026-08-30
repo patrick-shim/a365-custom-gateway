@@ -1750,6 +1750,82 @@ integration and security reviews found no concrete blocker. This is local source
 proof, not Azure deployment proof. The only next live generation is `a365gw26` /
 `rg-a365-custom-gw-phase6y`; never Resume or second-start `a365gw25`.
 
+Generation `a365gw26` then accepted Plan
+`sha256:edcd8f53f6845183b5e24fb09f6f53e523a3384db456919f9293076b6dfe51e8`
+for `rg-a365-custom-gw-phase6y`, deployment ownership
+`ca53c133-f95b-43b0-84ed-1f87272a8157`, configuration
+`sha256:7d70030541b3c27e094270ff30816014de631c57b9a35cd27520ddecd54bc746`,
+and source
+`sha256:c4c5e4ec29b601452fa21cc2d42740c139f28ad8d84396b3dc3be9cdd5c2fdc3`
+from clean commit `1e906d3333cd0b51c95dc56198f90dbb42b4afdf`. What-If contained
+exactly eight Creates and zero Deletes in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Apply completed steps 1--10;
+step 11 `Gateway database` became terminal `Failed` at
+`2026-08-30T15:45:48.6311720Z`, all eight later steps remained `Pending`, and no
+output endpoint was recorded. Foundation, inert, SQL-private, and database-Job
+deployment correlations were `f9b2618b-03f8-41e0-9727-f8c13356d15c`,
+`fba1bc60-d783-4a67-871d-4faeb2735c95`,
+`02337fa6-11ac-4aa6-8d65-f40630e2fea6`, and
+`9c1c0e80-caf6-4198-8536-83ae782b1ef1`.
+
+The four immutable image digests were API
+`sha256:3491c062e3850774f421bdc181cafc9908c71ea97f64441e7363793a50a91bb2`,
+worker
+`sha256:b618c7f6287407fdc0b6f0d5672edf20d8b98b9a58ecc74735f7f4faaebfa5e4`,
+Admin UI
+`sha256:62dbb94ddf69e4cdc96373a7ac0fe04bbdac5c4020b8d3e1b8cf0a229f18cfc6`,
+and database migrator
+`sha256:3ee759df484fb807468bd71fb820ee03d3736858484f0d230500413fa027babf`.
+The source-bound seed blueprint object/application ID was
+`5ae719f4-59d9-4c26-929d-0922ab5aecca`; it had the authenticated administrator as
+sole owner/sponsor, the exact reviewed manager application, and no credential. The
+Gateway API application object/client/service-principal IDs were
+`db1cc41e-263a-42d0-b6ac-809d72438b0c`,
+`0c72b252-8f74-49c4-9948-41590586889b`, and
+`990be5a3-a6d5-4032-9577-a3fdec535460`.
+
+Step 11 deployed manual Job `job-a365gw26-db-init-dev`, principal
+`4edd5972-5273-48f4-a21c-19a58e5d93bd`, with intent
+`1faf2451-61e9-4f2a-9cee-bfef88fb800f`. The persisted private-endpoint NIC and
+A-record addresses both equaled `10.42.2.5`. Its sole start, correlation
+`e483bd83-f3a5-46a3-8d9a-0db056e41b45`, created exact execution
+`job-a365gw26-db-init-dev-dsx6xlz` and replica
+`job-a365gw26-db-init-dev-dsx6xlz-j5qr7`; they are terminal `Failed` and
+`NotRunning`, with no reported execution `endTime`. The Job passed both DNS gates,
+opened SQL privately, and reached the pristine-surface query. It then failed closed
+before the durable initialization marker, EF schema, or runtime principals because
+the safe counts were tables/objects/schemas/principals/roleMemberships all zero,
+`directPermissions=2`, options/ownerMismatch zero, and direct-permission telemetry
+`rawNonWhitelisted=1`, `positiveIdPublicSelectTargets=1`,
+`positiveIdPublicSelectMsShippedObjectTargets=1`,
+`positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations=0`, and
+`positiveIdPublicSelectMsShippedSystemCatalogTargets=0`. Those counts do not identify
+or authorize the remaining permission row.
+
+The temporary administrator swap, Job start, and administrator restoration used
+correlations `cc7b6aa4-e19e-4c09-b8ff-2fc24f0078e2`,
+`e483bd83-f3a5-46a3-8d9a-0db056e41b45`, and
+`cf715d60-df80-455b-8e39-f0773084657f`. Exact post-failure readback proved SQL
+`Ready`, public network access `Disabled`, zero firewall rules, disabled server and
+database auditing with no Azure Monitor target, zero sensitivity classifications,
+disabled threat policy, and the singular original administrator restored:
+`admin@diax48836189.onmicrosoft.com`, object ID/SID
+`2db7287c-9462-404f-810e-17e57377618d`, tenant
+`ff8b1e46-ff0f-4bc2-ab02-caf2b92da496`. API/worker gates remained inert. No Admin
+UI identity/credential, runtime/Admin activation, registration, Registry action,
+Gateway key, canary, or Service Bus data-plane action followed.
+
+Preserve the accepted snapshot, state, schema-v2 receipt, diagnostic, execution,
+replica, and resources at
+`.bootstrap/accepted-source/ca53c133-f95b-43b0-84ed-1f87272a8157/edcd8f53f6845183b5e24fb09f6f53e523a3384db456919f9293076b6dfe51e8`,
+`.bootstrap/state/6f6ae863-dcb7-456f-a7f0-d6f9887cfb76-rg-a365-custom-gw-phase6y-dev.json`,
+`.bootstrap/evidence/rg-a365-custom-gw-phase6y/database/private-database-bootstrap-receipt.json`,
+and `.bootstrap/diagnostics/a365gw26-dev-20260830-154613.json`. Never Resume or
+second-start `a365gw26`. The next source must partition the remaining permission
+through fixed identifier-free counters and repair the broad Microsoft-shipped-object
+substitution weakness before a fresh isolated `a365gw27` Plan. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was not selected, queried, or mutated.
+
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an
