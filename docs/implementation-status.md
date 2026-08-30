@@ -9,7 +9,7 @@ deployment, Microsoft 365 Admin Center landing, blueprint-scoped Purview DLP pro
 the local Phase 0–6 clean-subscription bootstrap hardening, the unreleased Purview
 protection-profile source feature, and the live development Prompt Shields
 deployment:
-**2026-08-30**.
+**2026-08-31**.
 
 ## Live development checkpoint: pre-model prompt protection
 
@@ -317,13 +317,13 @@ reported as completion of the plan. The authoritative phase status is:
 
 | Phase | Current status | Remaining boundary |
 |---|---|---|
-| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. `a365gw20` proves deliberate interruption/Resume; `a365gw21` proves bounded recovery from a rejected start override; `a365gw22` proves the corrected no-override start emitted exactly one private execution; `a365gw23` proves exact recovery after the pristine check reported the remaining built-in Azure SQL baseline; `a365gw24` exposed the remaining catalog-class diagnostic boundary; and `a365gw25` exposed the private-endpoint DNS-readiness race before the migrator opened SQL. An every-checkpoint interruption matrix and a completed disposable clean-subscription proof are still absent. |
+| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. `a365gw20` proves deliberate interruption/Resume; `a365gw21` proves bounded recovery from a rejected start override; `a365gw22` proves the corrected no-override start emitted exactly one private execution; `a365gw23` proves exact recovery after the pristine check reported the remaining built-in Azure SQL baseline; `a365gw24` exposed the remaining catalog-class diagnostic boundary; `a365gw25` exposed the private-endpoint DNS-readiness race before the migrator opened SQL; and `a365gw26` proved the DNS correction before rejecting one unclassified permission and exposing shipped-object target substitution. An every-checkpoint interruption matrix and a completed disposable clean-subscription proof are still absent. |
 | 1 — One cross-platform front door | Source complete; proof incomplete | `gateway`/`gateway.cmd` and the terminal command surface are implemented. The current candidate has not completed Windows, macOS Intel, macOS Arm, and Linux execution evidence. |
 | 2 — Guided configuration | Partial | Quick Development, Staging Foundation, and Production-safe Foundation are implemented. The promised guided Connect Existing and Advanced profiles are not; existing-state import remains recovery-only and refuses unsafe adoption. Simulated Demo was explicitly optional-later and is absent. |
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. Generations `a365gw6` through `a365gw23` exposed and bounded the earlier image, identity, ARM-readback, recovery-graph, PowerShell, provider-managed-resource, SQL-policy, Job-readback, Job-start, and first pristine-database defects recorded below. `a365gw24` then exposed one unexpected catalog class without relaxing the zero-object gate. `a365gw25` carried the fixed count-only telemetry but stopped at SQL connection-open error 47073 before any SQL statement because private-endpoint NIC/A-record and in-container resolver readiness had not converged. A fresh `a365gw26` Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. Generations `a365gw6` through `a365gw23` exposed and bounded the earlier image, identity, ARM-readback, recovery-graph, PowerShell, provider-managed-resource, SQL-policy, Job-readback, Job-start, and first pristine-database defects recorded below. `a365gw24` then exposed one unexpected catalog class without relaxing the zero-object gate. `a365gw25` carried the fixed count-only telemetry but stopped at SQL connection-open error 47073 before any SQL statement because private-endpoint NIC/A-record and in-container resolver readiness had not converged. `a365gw26` passed both DNS gates and reached SQL, then rejected one raw permission and an unreviewed Microsoft-shipped/non-system-catalog target. The rejection-only diagnostic is implemented locally; a fresh `a365gw27` live run, the eventual corrected Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, and deployment-affecting source into one canonical
@@ -1747,8 +1747,8 @@ Windows-only launcher test is skipped on macOS. It parses **19** PowerShell file
 and **2** JSON contracts; all **26** Bicep templates and **5** parameter files
 compile. `dotnet format --verify-no-changes` and `git diff --check` pass. Independent
 integration and security reviews found no concrete blocker. This is local source
-proof, not Azure deployment proof. The only next live generation is `a365gw26` /
-`rg-a365-custom-gw-phase6y`; never Resume or second-start `a365gw25`.
+proof, not Azure deployment proof. At that checkpoint the next live generation was
+`a365gw26` / `rg-a365-custom-gw-phase6y`; `a365gw25` remained frozen.
 
 Generation `a365gw26` then accepted Plan
 `sha256:edcd8f53f6845183b5e24fb09f6f53e523a3384db456919f9293076b6dfe51e8`
@@ -1825,6 +1825,31 @@ second-start `a365gw26`. The next source must partition the remaining permission
 through fixed identifier-free counters and repair the broad Microsoft-shipped-object
 substitution weakness before a fresh isolated `a365gw27` Plan. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was not selected, queried, or mutated.
+
+The next local source checkpoint replaces the broad shipped-object inference with
+one shared pristine/post-schema SQL CTE and projection containing exactly **81**
+ordered, nonnegative, identifier-free counters. Raw permission rows are partitioned
+by class, state, grantee, permission, address, and grantor; positive-ID targets are
+partitioned by origin, type, schema, parent, and specialized-catalog membership.
+Managed validation enforces exact partition totals, subset relations, cardinality,
+nonnegative values, and checked arithmetic. The fail-closed baseline remains exact:
+raw zero, positive total two, shipped total two, `sys.system_objects` total two,
+database-object-only total zero, and unresolved/non-shipped total zero. Both the
+observed `a365gw26` tuple and the equal-count substitution
+`raw=0,total=2,shipped=2,systemCatalog=0,databaseOnly=2,residual=0` are regression-
+tested as rejected. The pristine check still precedes every marker/schema/runtime-
+principal mutation, and the post-schema check uses the identical stricter source.
+
+The zero-warning/zero-error Release build and all **1,452/1,452** direct Release
+tests pass: unit 578, Admin UI 155, local Setup 118, observability/runtime 149,
+integration 92, end-to-end 106, architecture 121, and security 133. The canonical
+source gate discovers **528** Pester tests: **527** pass, none fail, and one
+Windows-only launcher test is skipped on macOS. It parses **19** PowerShell files
+and **2** JSON contracts; all **26** Bicep templates and **5** parameter files
+compile. `dotnet format --verify-no-changes` and `git diff --check` pass. Independent
+security review found no concrete blocker. This checkpoint made no Azure or
+deployment mutation. Run only a fresh `a365gw27` Plan; never Resume or second-start
+`a365gw26`.
 
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
@@ -2197,6 +2222,11 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    47073 at `connection.OpenAsync()` before any SQL statement, no marker/schema/
    runtime-principal mutation, the exact original administrator restored, SQL
    `Ready`, public access `Disabled`, zero firewall rules, and all later steps
+   pending with API/worker gates inert. Never Resume or second-start it. Preserve
+   `a365gw26` with steps 1–10 complete, step 11 terminal `Failed`, exactly one
+   failed execution/replica, both DNS gates passed, SQL opened privately, no marker/
+   schema/runtime-principal mutation, the exact original administrator restored,
+   SQL `Ready`, public access `Disabled`, zero firewall rules, and every later step
    pending with API/worker gates inert. Never Resume or second-start it. In order,
    those generations preserve exact
    image-build recovery; the terminal inert-deployment/private-ACR first-pull
@@ -2248,7 +2278,11 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    Preserve it with one failed execution/replica, no marker/schema/runtime-principal
    mutation, the original administrator restored, SQL `Ready`, public access
    `Disabled`, zero firewall rules, and every later step pending. Never Resume or
-   second-start it.
+   second-start it. `a365gw26` then passed both DNS gates and opened SQL privately,
+   but rejected one raw permission plus a shipped-object/non-system-catalog target
+   before any marker/schema/runtime-principal mutation. Preserve its sole failed
+   execution/replica, restored original administrator, inert API/worker gates, and
+   pending later steps. Never Resume or second-start it.
    None of these
    generations may consume edited source or modified accepted snapshots.
    Commit `bb001483bae0577d7c29a9638c1c7275dae44525` implements and independently
@@ -2267,7 +2301,7 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    `bee437fe1e2a19976565777184f70f2bbf1319ec` implements the exact typed Defender
    Storage system-topic recovery boundary. Commit `dc25132` contains the independently
    reviewed Container Apps Job readback normalization. The next live generation is
-   `a365gw26` in resource group `rg-a365-custom-gw-phase6y`, only in target subscription
+   `a365gw27` in resource group `rg-a365-custom-gw-phase6z`, only in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof

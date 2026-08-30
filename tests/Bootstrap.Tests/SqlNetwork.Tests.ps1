@@ -151,31 +151,55 @@ return [ordered]@{
         $contract = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/DatabaseBootstrapRecoveryContract.cs') -Raw
         $pristinePosition = $source.IndexOf('ReadPristineDatabaseSurfaceAsync(connection)', [StringComparison]::Ordinal)
         $writePosition = $source.IndexOf('WriteDatabaseInitializationMarkerAsync(connection, expectedMarker)', [StringComparison]::Ordinal)
+        $cteMethodStart = $source.IndexOf('static string GetDatabasePermissionTelemetryCteSql()', [StringComparison]::Ordinal)
+        $projectionMethodStart = $source.IndexOf('static string GetDatabasePermissionTelemetryProjectionSql()', $cteMethodStart, [StringComparison]::Ordinal)
         $pristineMethodStart = $source.IndexOf('static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(', [StringComparison]::Ordinal)
         $pristineMethodEnd = $source.IndexOf('static async Task AcquireDatabaseInitializationLockAsync(', $pristineMethodStart, [StringComparison]::Ordinal)
+        $authorityMethodStart = $source.IndexOf('static async Task AssertExpectedDatabaseAuthorityAsync(', [StringComparison]::Ordinal)
+        $authorityMethodEnd = $source.IndexOf('static async Task<string> ReadDatabaseCollationAsync(', $authorityMethodStart, [StringComparison]::Ordinal)
+        $cteSource = $source.Substring($cteMethodStart, $projectionMethodStart - $cteMethodStart)
         $pristineSource = $source.Substring($pristineMethodStart, $pristineMethodEnd - $pristineMethodStart)
+        $authoritySource = $source.Substring($authorityMethodStart, $authorityMethodEnd - $authorityMethodStart)
+        $permissionBlockStart = $authoritySource.IndexOf('int unexpectedDirectPermissionCount;', [StringComparison]::Ordinal)
+        $permissionBlockEnd = $authoritySource.IndexOf('var observed = principals.Values', $permissionBlockStart, [StringComparison]::Ordinal)
+        $postSchemaPermissionSource = $authoritySource.Substring($permissionBlockStart, $permissionBlockEnd - $permissionBlockStart)
+        $allowanceStart = $cteSource.IndexOf('CROSS APPLY', [StringComparison]::Ordinal)
+        $allowanceEnd = $cteSource.IndexOf(') AS permission_shape', $allowanceStart, [StringComparison]::Ordinal)
+        $allowanceSource = $cteSource.Substring($allowanceStart, $allowanceEnd - $allowanceStart)
 
         $pristinePosition | Should -BeGreaterThan -1
         $writePosition | Should -BeGreaterThan $pristinePosition
+        $cteMethodStart | Should -BeGreaterOrEqual 0
+        $projectionMethodStart | Should -BeGreaterThan $cteMethodStart
+        $authorityMethodStart | Should -BeGreaterOrEqual 0
+        $authorityMethodEnd | Should -BeGreaterThan $authorityMethodStart
+        $permissionBlockStart | Should -BeGreaterOrEqual 0
+        $permissionBlockEnd | Should -BeGreaterThan $permissionBlockStart
+        $allowanceStart | Should -BeGreaterOrEqual 0
+        $allowanceEnd | Should -BeGreaterThan $allowanceStart
         $source | Should -Match 'FROM sys\.triggers WHERE is_ms_shipped = 0'
         $source | Should -Match 'FROM sys\.synonyms'
         $source | Should -Match 'FROM sys\.sequences'
         $source | Should -Match 'FROM sys\.database_role_members'
         $negativeSystemSelectAllowance = "permissions\.class\s*=\s*1\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'SELECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'public'\s+AND\s+permissions\.major_id\s*<\s*0"
-        ([regex]::Matches($source, $negativeSystemSelectAllowance)).Count | Should -Be 2
-        $positiveSystemSelectAllowance = "(?s)permissions\.class\s*=\s*1\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'SELECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'public'\s+AND\s+permissions\.major_id\s*>\s*0\s+AND\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+sys\.all_objects\s+AS\s+system_objects\s+WHERE\s+system_objects\.object_id\s*=\s*permissions\.major_id\s+AND\s+system_objects\.is_ms_shipped\s*=\s*1\s*\)"
-        ([regex]::Matches($source, $positiveSystemSelectAllowance)).Count | Should -Be 2
-        $boundedPositiveSystemSelectAllowance = "(?s)SELECT\s+CASE\s+WHEN\s+COUNT\(\*\)\s*=\s*2\s+THEN\s+0\s+ELSE\s+1\s+END\s+FROM\s+sys\.database_permissions\s+AS\s+baseline_permissions\s+INNER\s+JOIN\s+sys\.database_principals\s+AS\s+baseline_grantees.*?baseline_grantees\.name\s*=\s*N'public'.*?baseline_permissions\.major_id\s*>\s*0.*?baseline_objects\.object_id\s*=\s*baseline_permissions\.major_id\s+AND\s+baseline_objects\.is_ms_shipped\s*=\s*1"
-        ([regex]::Matches($source, $boundedPositiveSystemSelectAllowance)).Count | Should -Be 1
+        ([regex]::Matches($cteSource, $negativeSystemSelectAllowance)).Count | Should -Be 1
+        $positiveSystemSelectAllowance = "(?s)permissions\.class\s*=\s*1\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'SELECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'public'\s+AND\s+permissions\.major_id\s*>\s*0\s+AND\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+sys\.all_objects\s+AS\s+allowed_shipped_objects\s+WHERE\s+allowed_shipped_objects\.object_id\s*=\s*permissions\.major_id\s+AND\s+allowed_shipped_objects\.is_ms_shipped\s*=\s*1\s*\)"
+        ([regex]::Matches($cteSource, $positiveSystemSelectAllowance)).Count | Should -Be 1
+        $contract | Should -Match 'ExpectedPositiveIdPublicSelectTargetCount\s*=\s*2'
         $contract | Should -Match 'ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount\s*=\s*2'
-        $source | Should -Match 'DatabaseDirectPermissionTelemetry\.FromCounts'
-        $pristineSource | Should -Match 'AS positiveIdPublicSelectTargets'
-        $pristineSource | Should -Match 'INNER JOIN sys\.objects AS correlated_objects'
-        $pristineSource | Should -Match "(?s)correlated_objects\.is_ms_shipped\s*=\s*0.*?correlated_objects\.type\s+IN\s*\(N'V', N'P', N'PC', N'FN', N'IF', N'TF', N'FS', N'FT', N'AF'\)"
-        $pristineSource | Should -Match 'INNER JOIN sys\.system_objects AS system_catalog_objects'
-        $pristineSource | Should -Match 'system_catalog_objects\.is_ms_shipped\s*=\s*1'
-        $pristineSource | Should -Not -Match '(?s)FROM\s+sys\.objects\s+AS\s+objects\s+INNER\s+JOIN\s+sys\.system_objects'
-        $source | Should -Not -Match 'VIEW ANY COLUMN (MASTER|ENCRYPTION) KEY DEFINITION'
+        $contract | Should -Match 'ExpectedPositiveIdPublicSelectMsShippedSystemCatalogTargetCount\s*=\s*2'
+        $contract | Should -Match '(?s)var baselineMismatch\s*=.*?positiveIdPublicSelectTargetCount\s*==\s*ExpectedPositiveIdPublicSelectTargetCount.*?positiveIdPublicSelectMsShippedObjectTargetCount\s*==\s*ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount.*?positiveIdPublicSelectMsShippedSystemCatalogTargetCount\s*==\s*ExpectedPositiveIdPublicSelectMsShippedSystemCatalogTargetCount.*?positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount\s*==\s*0.*?positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount\s*==\s*0'
+        $pristineSource | Should -Match 'DatabaseDirectPermissionTelemetry\.FromOrderedCounts\(permissionCounts\)'
+        $postSchemaPermissionSource | Should -Match 'DatabaseDirectPermissionTelemetry\.FromOrderedCounts\(permissionCounts\)'
+        ([regex]::Matches($pristineSource, 'GetDatabasePermissionTelemetryCteSql\(\)')).Count | Should -Be 1
+        ([regex]::Matches($pristineSource, 'GetDatabasePermissionTelemetryProjectionSql\(\)')).Count | Should -Be 1
+        ([regex]::Matches($postSchemaPermissionSource, 'GetDatabasePermissionTelemetryCteSql\(\)')).Count | Should -Be 1
+        ([regex]::Matches($postSchemaPermissionSource, 'GetDatabasePermissionTelemetryProjectionSql\(\)')).Count | Should -Be 1
+        $pristineSource | Should -Match 'AddWithValue\("@allowMetadataPrincipalViewDefinition", 0\)'
+        $postSchemaPermissionSource | Should -Match 'AddWithValue\("@allowMetadataPrincipalViewDefinition", 1\)'
+        $allowanceSource | Should -Not -Match 'VIEW ANY COLUMN (MASTER|ENCRYPTION) KEY DEFINITION'
+        ([regex]::Matches($cteSource, "WHEN N'VIEW ANY COLUMN MASTER KEY DEFINITION' THEN 4")).Count | Should -Be 1
+        ([regex]::Matches($cteSource, "WHEN N'VIEW ANY COLUMN ENCRYPTION KEY DEFINITION' THEN 5")).Count | Should -Be 1
         $source | Should -Match "roles\.name = N'db_owner'\s+AND\s+roles\.is_fixed_role = 1\s+AND\s+members\.name = N'dbo'\s+AND\s+members\.principal_id = DATABASE_PRINCIPAL_ID\(N'dbo'\)"
         $source | Should -Match 'SELECT CASE WHEN COUNT\(\*\) = 1 THEN 0 ELSE 1 END'
         $source | Should -Match 'roleName\.Equals\("db_owner", StringComparison\.Ordinal\)'
@@ -185,7 +209,7 @@ return [ordered]@{
         $source | Should -Match 'DatabaseOwnerSidSha256'
     }
 
-    It 'uses one fixed identifier-free catalog telemetry boundary for pristine and exact-schema checks' {
+    It 'uses one fixed count-only database permission diagnostic in pristine and post-schema checks' {
         $source = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/Program.cs') -Raw
         $contract = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/DatabaseBootstrapRecoveryContract.cs') -Raw
 
@@ -210,7 +234,7 @@ return [ordered]@{
         $contract | Should -Match '\.\. FixedProgrammableObjectTypeNames'
 
         $projectionStart = $source.IndexOf('static string GetUnexpectedDatabaseSurfaceProjectionSql()', [StringComparison]::Ordinal)
-        $projectionEnd = $source.IndexOf('static async Task<UnexpectedDatabaseSurfaceTelemetry> ReadUnexpectedDatabaseSurfaceTelemetryAsync(', $projectionStart, [StringComparison]::Ordinal)
+        $projectionEnd = $source.IndexOf('static string GetDatabasePermissionTelemetryCteSql()', $projectionStart, [StringComparison]::Ordinal)
         $projectionStart | Should -BeGreaterOrEqual 0
         $projectionEnd | Should -BeGreaterThan $projectionStart
         $projectionSource = $source.Substring($projectionStart, $projectionEnd - $projectionStart)
@@ -232,27 +256,168 @@ return [ordered]@{
             ForEach-Object { $_.Groups[1].Value })
         ($catalogAliases -join ',') | Should -Be ($expectedCatalogAliases -join ',')
 
+        [string[]]$expectedPermissionAliases = @(
+            'rawNonWhitelistedDirectPermissions',
+            'positiveIdPublicSelectTargets',
+            'positiveIdPublicSelectMsShippedObjectTargets',
+            'positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations',
+            'positiveIdPublicSelectMsShippedSystemCatalogTargets',
+            'positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargets',
+            'positiveIdPublicSelectNonMsShippedOrUnresolvedTargets'
+        )
+        $expectedPermissionAliases += @('DatabasePermissions', 'ObjectOrColumnPermissions', 'OtherPermissions') |
+            ForEach-Object { "rawClass$_" }
+        $expectedPermissionAliases += @('GrantPermissions', 'GrantWithGrantOptionPermissions', 'DenyPermissions', 'RevokePermissions', 'OtherPermissions') |
+            ForEach-Object { "rawState$_" }
+        $expectedPermissionAliases += @('PublicPermissions', 'GuestPermissions', 'DboPermissions', 'FixedRolePermissions', 'OtherPermissions') |
+            ForEach-Object { "rawGrantee$_" }
+        $expectedPermissionAliases += @(
+            'rawPermissionNameConnect',
+            'rawPermissionNameSelect',
+            'rawPermissionNameViewDefinition',
+            'rawPermissionNameViewAnyColumnMasterKeyDefinition',
+            'rawPermissionNameViewAnyColumnEncryptionKeyDefinition',
+            'rawPermissionNameOther'
+        )
+        $expectedPermissionAliases += @('Database', 'NegativeObject', 'ZeroObject', 'PositiveObject', 'Column', 'Other') |
+            ForEach-Object { "rawAddress$_" }
+        $expectedPermissionAliases += @('rawGrantorDbo', 'rawGrantorOther')
+        $targetTypeSuffixes = @(
+            'AggregateFunctions', 'CheckConstraints', 'DefaultConstraints', 'EdgeConstraints', 'ExternalTables',
+            'ForeignKeys', 'SqlScalarFunctions', 'ClrScalarFunctions', 'ClrTableValuedFunctions',
+            'SqlInlineTableValuedFunctions', 'InternalTables', 'SqlStoredProcedures', 'ClrStoredProcedures',
+            'PlanGuides', 'PrimaryKeys', 'Rules', 'ReplicationFilterProcedures', 'SystemTables', 'Synonyms',
+            'Sequences', 'ServiceQueues', 'StatisticsTrees', 'ClrDmlTriggers', 'SqlTableValuedFunctions',
+            'SqlDmlTriggers', 'TableTypes', 'UserTables', 'UniqueConstraints', 'Views',
+            'ExtendedStoredProcedures', 'OtherOrUnresolved'
+        )
+        $expectedPermissionAliases += $targetTypeSuffixes | ForEach-Object { "positiveIdPublicSelectType$_" }
+        $expectedPermissionAliases += @('Sys', 'Dbo', 'OtherOrUnresolved') |
+            ForEach-Object { "positiveIdPublicSelectSchema$_" }
+        $expectedPermissionAliases += @('Parentless', 'Parented', 'ParentUnresolved') |
+            ForEach-Object { "positiveIdPublicSelect$_" }
+        $specializedCatalogSuffixes = @(
+            'Views', 'Procedures', 'SqlModules', 'Tables', 'InternalTables', 'Sequences', 'Synonyms', 'Triggers'
+        )
+        $expectedPermissionAliases += $specializedCatalogSuffixes |
+            ForEach-Object { "positiveIdPublicSelectIn$_" }
+        $expectedPermissionAliases += @(
+            'positiveIdPublicSelectWithSpecializedCatalogMembership',
+            'positiveIdPublicSelectWithoutSpecializedCatalogMembership'
+        )
+
+        $permissionCteStart = $source.IndexOf('static string GetDatabasePermissionTelemetryCteSql()', [StringComparison]::Ordinal)
+        $permissionProjectionStart = $source.IndexOf('static string GetDatabasePermissionTelemetryProjectionSql()', $permissionCteStart, [StringComparison]::Ordinal)
+        $permissionProjectionEnd = $source.IndexOf('static async Task<UnexpectedDatabaseSurfaceTelemetry> ReadUnexpectedDatabaseSurfaceTelemetryAsync(', $permissionProjectionStart, [StringComparison]::Ordinal)
+        $permissionCteStart | Should -BeGreaterOrEqual 0
+        $permissionProjectionStart | Should -BeGreaterThan $permissionCteStart
+        $permissionProjectionEnd | Should -BeGreaterThan $permissionProjectionStart
+        $permissionCteSource = $source.Substring($permissionCteStart, $permissionProjectionStart - $permissionCteStart)
+        $permissionProjectionSource = $source.Substring($permissionProjectionStart, $permissionProjectionEnd - $permissionProjectionStart)
+        ([regex]::Matches($permissionCteSource, 'WITH databasePermissionTelemetry AS')).Count | Should -Be 1
+
+        $permissionProjectionMatches = [regex]::Matches(
+            $permissionProjectionSource,
+            '(?m)^\s*\(SELECT COUNT\(\*\) FROM databasePermissionTelemetry WHERE [^\r\n]+\) AS ([A-Za-z][A-Za-z0-9]+),?\s*$')
+        $permissionProjectionAliases = @($permissionProjectionMatches | ForEach-Object { $_.Groups[1].Value })
+        $permissionProjectionMatches.Count | Should -Be $expectedPermissionAliases.Count
+        ($permissionProjectionAliases -join ',') | Should -Be ($expectedPermissionAliases -join ',')
+        $permissionProjectionSource | Should -Not -Match '(?i)\b(?:name|object_id|principal_id|sid|permission_name|major_id|minor_id|grantor_principal_id)\b'
+        $permissionProjectionSource | Should -Not -Match 'Console\.Write'
+
+        $permissionFieldArraysStart = $contract.IndexOf('private static readonly string[] FixedLeadingFieldNames', [StringComparison]::Ordinal)
+        $permissionFieldArraysEnd = $contract.IndexOf('private static readonly string[] FixedSqlFieldNames', $permissionFieldArraysStart, [StringComparison]::Ordinal)
+        $permissionFieldArraysStart | Should -BeGreaterOrEqual 0
+        $permissionFieldArraysEnd | Should -BeGreaterThan $permissionFieldArraysStart
+        $permissionFieldArraysSource = $contract.Substring($permissionFieldArraysStart, $permissionFieldArraysEnd - $permissionFieldArraysStart)
+        $contractPermissionAliases = @([regex]::Matches($permissionFieldArraysSource, '(?m)^\s*"([A-Za-z][A-Za-z0-9]+)",?\s*$') |
+            ForEach-Object { $_.Groups[1].Value })
+        ($contractPermissionAliases -join ',') | Should -Be ($expectedPermissionAliases -join ',')
+
+        foreach ($rawPartition in @(
+                'FixedRawClassFieldNames',
+                'FixedRawStateFieldNames',
+                'FixedRawGranteeFieldNames',
+                'FixedRawPermissionNameFieldNames',
+                'FixedRawAddressFieldNames',
+                'FixedRawGrantorFieldNames')) {
+            $contract | Should -Match "ValidateExactPartition\(counts, ref cursor, $rawPartition\.Length, rawNonWhitelistedCount\)"
+        }
+        foreach ($targetPartition in @(
+                'FixedPositiveTargetTypeFieldNames',
+                'FixedPositiveTargetSchemaFieldNames',
+                'FixedPositiveTargetParentFieldNames')) {
+            $contract | Should -Match "ValidateExactPartition\(counts, ref cursor, $targetPartition\.Length, positiveIdPublicSelectTargetCount\)"
+        }
+        $contract | Should -Match '(?s)specializedMembershipCount\s*\+\s*noSpecializedMembershipCount\)\s*!=\s*positiveIdPublicSelectTargetCount'
+        $contract | Should -Match '(?s)counts\[index\]\s*>\s*specializedMembershipCount.*?specializedCorrelationTotal\s*=\s*checked\(specializedCorrelationTotal\s*\+\s*counts\[index\]\)'
+        $contract | Should -Match 'specializedMembershipCount\s*>\s*specializedCorrelationTotal'
+
+        foreach ($bucketAlias in @(
+                'raw_class_bucket',
+                'raw_state_bucket',
+                'raw_grantee_bucket',
+                'raw_permission_name_bucket',
+                'raw_address_bucket',
+                'raw_grantor_bucket',
+                'positive_target_origin_bucket',
+                'positive_target_type_bucket',
+                'positive_target_schema_bucket',
+                'positive_target_parent_bucket',
+                'has_positive_target_specialized_catalog_membership')) {
+            $permissionCteSource | Should -Match "END AS $bucketAlias"
+        }
+        $permissionCteSource | Should -Not -Match '(?im)^\s*(?:SELECT|,)\s+(?:permissions|grantees|target_[A-Za-z0-9_]+)\.(?:name|object_id|principal_id|sid|permission_name|major_id|minor_id|grantor_principal_id)\s*(?:AS\s+|,|$)'
+        $permissionCteSource | Should -Match '(?s)FROM sys\.system_objects AS system_catalog_objects.*?system_catalog_objects\.is_ms_shipped = 1.*?THEN 1.*?FROM sys\.objects AS shipped_database_objects.*?shipped_database_objects\.is_ms_shipped = 1.*?THEN 2.*?ELSE 3.*?END AS positive_target_origin_bucket'
+        $permissionCteSource | Should -Match '(?s)permissions\.class = 0.*?THEN 1.*?permissions\.class = 1.*?THEN 2.*?ELSE 3.*?END AS raw_class_bucket'
+        $permissionCteSource | Should -Match "(?s)CASE permissions\.state.*?WHEN N'G' THEN 1.*?WHEN N'W' THEN 2.*?WHEN N'D' THEN 3.*?WHEN N'R' THEN 4.*?ELSE 5.*?END AS raw_state_bucket"
+        $permissionCteSource | Should -Match "(?s)grantees\.name = N'public' THEN 1.*?grantees\.name = N'guest' THEN 2.*?grantees\.name = N'dbo' THEN 3.*?grantees\.is_fixed_role = 1 THEN 4.*?ELSE 5.*?END AS raw_grantee_bucket"
+        $permissionCteSource | Should -Match "(?s)CASE permissions\.permission_name.*?WHEN N'CONNECT' THEN 1.*?WHEN N'SELECT' THEN 2.*?WHEN N'VIEW DEFINITION' THEN 3.*?WHEN N'VIEW ANY COLUMN MASTER KEY DEFINITION' THEN 4.*?WHEN N'VIEW ANY COLUMN ENCRYPTION KEY DEFINITION' THEN 5.*?ELSE 6.*?END AS raw_permission_name_bucket"
+        $permissionCteSource | Should -Match '(?s)permissions\.class = 0\s+AND permissions\.major_id = 0\s+AND permissions\.minor_id = 0 THEN 1.*?permissions\.class = 1\s+AND permissions\.major_id < 0\s+AND permissions\.minor_id = 0 THEN 2.*?permissions\.class = 1\s+AND permissions\.major_id = 0\s+AND permissions\.minor_id = 0 THEN 3.*?permissions\.class = 1\s+AND permissions\.major_id > 0\s+AND permissions\.minor_id = 0 THEN 4.*?permissions\.class = 1\s+AND permissions\.minor_id > 0 THEN 5.*?ELSE 6.*?END AS raw_address_bucket'
+        $permissionCteSource | Should -Match "(?s)permissions\.grantor_principal_id = DATABASE_PRINCIPAL_ID\(N'dbo'\) THEN 1.*?ELSE 2.*?END AS raw_grantor_bucket"
+
+        $targetTypeCodes = @(
+            'AF', 'C', 'D', 'EC', 'ET', 'F', 'FN', 'FS', 'FT', 'IF', 'IT', 'P', 'PC', 'PG', 'PK',
+            'R', 'RF', 'S', 'SN', 'SO', 'SQ', 'ST', 'TA', 'TF', 'TR', 'TT', 'U', 'UQ', 'V', 'X'
+        )
+        for ($index = 0; $index -lt $targetTypeCodes.Count; $index++) {
+            $bucket = $index + 1
+            $permissionCteSource | Should -Match "WHEN N'$($targetTypeCodes[$index])' THEN $bucket"
+        }
+        $permissionCteSource | Should -Match "(?s)WHEN N'X' THEN 30\s+ELSE 31.*?END AS positive_target_type_bucket"
+        $permissionCteSource | Should -Match '(?s)SELECT CASE target_schemas\.name\s+WHEN N''sys'' THEN 1\s+WHEN N''dbo'' THEN 2\s+ELSE 3.*?END AS positive_target_schema_bucket'
+        $permissionCteSource | Should -Match '(?s)SELECT CASE WHEN target_parent_objects\.parent_object_id = 0 THEN 1 ELSE 2 END.*?3\s*\).*?END AS positive_target_parent_bucket'
+        foreach ($specializedCatalog in @('views', 'procedures', 'sql_modules', 'tables', 'internal_tables', 'sequences', 'synonyms', 'triggers')) {
+            $permissionCteSource | Should -Match "EXISTS \(SELECT 1 FROM sys\.$specializedCatalog WHERE object_id = permissions\.major_id\)"
+        }
+
+        $contract | Should -Match '(?s)positiveIdPublicSelectMsShippedSystemCatalogTargetCount\s*\+\s*positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount\).*?positiveIdPublicSelectMsShippedObjectTargetCount'
+        $contract | Should -Match '(?s)positiveIdPublicSelectMsShippedSystemCatalogTargetCount\s*\+\s*positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount\s*\+\s*positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount\).*?positiveIdPublicSelectTargetCount'
+
         $pristineStart = $source.IndexOf('static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(', [StringComparison]::Ordinal)
         $pristineEnd = $source.IndexOf('static async Task AcquireDatabaseInitializationLockAsync(', $pristineStart, [StringComparison]::Ordinal)
         $pristineStart | Should -BeGreaterOrEqual 0
         $pristineEnd | Should -BeGreaterThan $pristineStart
         $pristineSource = $source.Substring($pristineStart, $pristineEnd - $pristineStart)
+        ([regex]::Matches($pristineSource, 'connection\.CreateCommand\(\)')).Count | Should -Be 1
         ([regex]::Matches($pristineSource, 'command\.CommandText\s*=')).Count | Should -Be 1
         ([regex]::Matches($pristineSource, 'ExecuteReaderAsync\(\)')).Count | Should -Be 1
+        ([regex]::Matches($pristineSource, 'reader\.ReadAsync\(\)')).Count | Should -Be 2
         ([regex]::Matches($pristineSource, 'GetUnexpectedDatabaseSurfaceProjectionSql\(\)')).Count | Should -Be 1
+        ([regex]::Matches($pristineSource, 'GetDatabasePermissionTelemetryCteSql\(\)')).Count | Should -Be 1
+        ([regex]::Matches($pristineSource, 'GetDatabasePermissionTelemetryProjectionSql\(\)')).Count | Should -Be 1
         $pristineSource | Should -Not -Match 'ReadUnexpectedDatabaseSurfaceTelemetryAsync\(connection\)'
+        $pristineSource | Should -Not -Match 'ExecuteScalarAsync\('
         $pristineSource | Should -Match 'AssertExactSqlFieldContract\(\s*reader,\s*PristineDatabaseSurfaceSnapshot\.SqlFieldNames'
         $expectedPristineOnlyAliases = @(
-            'userTables', 'unexpectedSchemas', 'unexpectedPrincipals', 'unexpectedRoleMemberships',
-            'rawNonWhitelistedDirectPermissions', 'positiveIdPublicSelectTargets',
-            'positiveIdPublicSelectMsShippedObjectTargets',
-            'positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations',
-            'positiveIdPublicSelectMsShippedSystemCatalogTargets', 'unsafeDatabaseOptions',
+            'userTables', 'unexpectedSchemas', 'unexpectedPrincipals', 'unexpectedRoleMemberships', 'unsafeDatabaseOptions',
             'databaseOwnerMismatches'
         )
         $pristineOnlyAliases = @([regex]::Matches($pristineSource, '\)\s+AS\s+([A-Za-z][A-Za-z0-9]+)') |
             ForEach-Object { $_.Groups[1].Value })
         ($pristineOnlyAliases -join ',') | Should -Be ($expectedPristineOnlyAliases -join ',')
+        $pristineSource | Should -Match '(?s)GetUnexpectedDatabaseSurfaceProjectionSql\(\).*?AS userTables.*?AS unexpectedRoleMemberships.*?GetDatabasePermissionTelemetryProjectionSql\(\).*?AS unsafeDatabaseOptions.*?AS databaseOwnerMismatches'
+        $contract | Should -Match '(?s)\.\. UnexpectedDatabaseSurfaceTelemetry\.SqlFieldNames,.*?"userTables".*?"unexpectedRoleMemberships".*?\.\. DatabaseDirectPermissionTelemetry\.SqlFieldNames,.*?"unsafeDatabaseOptions".*?"databaseOwnerMismatches"'
 
         $schemaStart = $source.IndexOf('static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync(', [StringComparison]::Ordinal)
         $schemaEnd = $source.IndexOf('static IReadOnlyCollection<string> GetExpectedIncludedIndexColumns(', $schemaStart, [StringComparison]::Ordinal)
@@ -261,6 +426,29 @@ return [ordered]@{
         $schemaSource = $source.Substring($schemaStart, $schemaEnd - $schemaStart)
         ([regex]::Matches($schemaSource, 'ReadUnexpectedDatabaseSurfaceTelemetryAsync\(connection\)')).Count | Should -Be 1
         $schemaSource | Should -Match 'var unexpectedSurfaceCount\s*=\s*checked\(\s*catalogSurface\.TotalCount\s*\+\s*supplementalUnexpectedSurfaceCount\)'
+
+        $authorityStart = $source.IndexOf('static async Task AssertExpectedDatabaseAuthorityAsync(', [StringComparison]::Ordinal)
+        $authorityEnd = $source.IndexOf('static async Task<string> ReadDatabaseCollationAsync(', $authorityStart, [StringComparison]::Ordinal)
+        $authoritySource = $source.Substring($authorityStart, $authorityEnd - $authorityStart)
+        $permissionBlockStart = $authoritySource.IndexOf('int unexpectedDirectPermissionCount;', [StringComparison]::Ordinal)
+        $permissionBlockEnd = $authoritySource.IndexOf('var observed = principals.Values', $permissionBlockStart, [StringComparison]::Ordinal)
+        $postSchemaPermissionSource = $authoritySource.Substring($permissionBlockStart, $permissionBlockEnd - $permissionBlockStart)
+        ([regex]::Matches($postSchemaPermissionSource, 'connection\.CreateCommand\(\)')).Count | Should -Be 1
+        ([regex]::Matches($postSchemaPermissionSource, 'command\.CommandText\s*=')).Count | Should -Be 1
+        ([regex]::Matches($postSchemaPermissionSource, 'ExecuteReaderAsync\(\)')).Count | Should -Be 1
+        ([regex]::Matches($postSchemaPermissionSource, 'reader\.ReadAsync\(\)')).Count | Should -Be 2
+        ([regex]::Matches($postSchemaPermissionSource, 'GetDatabasePermissionTelemetryCteSql\(\)')).Count | Should -Be 1
+        ([regex]::Matches($postSchemaPermissionSource, 'GetDatabasePermissionTelemetryProjectionSql\(\)')).Count | Should -Be 1
+        $postSchemaPermissionSource | Should -Match 'AssertExactSqlFieldContract\(\s*reader,\s*DatabaseDirectPermissionTelemetry\.SqlFieldNames'
+        $postSchemaPermissionSource | Should -Match 'DatabaseDirectPermissionTelemetry\.FromOrderedCounts\(permissionCounts\)\.UnexpectedCount'
+        $postSchemaPermissionSource | Should -Not -Match 'ExecuteScalarAsync\('
+        $source | Should -Not -Match 'ReadDatabasePermissionTelemetryAsync'
+    }
+
+    It 'retains one exact bootstrap database Job start call' {
+        $module = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'bootstrap/modules/Database.psm1') -Raw
+
+        ([regex]::Matches($module, "'containerapp', 'job', 'start'")).Count | Should -Be 1
     }
 
     It 'reconciles exact network recovery before database absence or initial-state rejection' {

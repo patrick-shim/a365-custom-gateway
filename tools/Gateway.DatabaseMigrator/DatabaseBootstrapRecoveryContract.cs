@@ -226,53 +226,207 @@ public sealed class UnexpectedDatabaseSurfaceTelemetry
 /// </summary>
 public sealed class DatabaseDirectPermissionTelemetry
 {
+    public const int ExpectedPositiveIdPublicSelectTargetCount = 2;
     public const int ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount = 2;
+    public const int ExpectedPositiveIdPublicSelectMsShippedSystemCatalogTargetCount = 2;
+
+    private static readonly string[] FixedLeadingFieldNames =
+    [
+        "rawNonWhitelistedDirectPermissions",
+        "positiveIdPublicSelectTargets",
+        "positiveIdPublicSelectMsShippedObjectTargets",
+        "positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations",
+        "positiveIdPublicSelectMsShippedSystemCatalogTargets",
+        "positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargets",
+        "positiveIdPublicSelectNonMsShippedOrUnresolvedTargets"
+    ];
+
+    private static readonly string[] FixedRawClassFieldNames =
+    [
+        "rawClassDatabasePermissions",
+        "rawClassObjectOrColumnPermissions",
+        "rawClassOtherPermissions"
+    ];
+
+    private static readonly string[] FixedRawStateFieldNames =
+    [
+        "rawStateGrantPermissions",
+        "rawStateGrantWithGrantOptionPermissions",
+        "rawStateDenyPermissions",
+        "rawStateRevokePermissions",
+        "rawStateOtherPermissions"
+    ];
+
+    private static readonly string[] FixedRawGranteeFieldNames =
+    [
+        "rawGranteePublicPermissions",
+        "rawGranteeGuestPermissions",
+        "rawGranteeDboPermissions",
+        "rawGranteeFixedRolePermissions",
+        "rawGranteeOtherPermissions"
+    ];
+
+    private static readonly string[] FixedRawPermissionNameFieldNames =
+    [
+        "rawPermissionNameConnect",
+        "rawPermissionNameSelect",
+        "rawPermissionNameViewDefinition",
+        "rawPermissionNameViewAnyColumnMasterKeyDefinition",
+        "rawPermissionNameViewAnyColumnEncryptionKeyDefinition",
+        "rawPermissionNameOther"
+    ];
+
+    private static readonly string[] FixedRawAddressFieldNames =
+    [
+        "rawAddressDatabase",
+        "rawAddressNegativeObject",
+        "rawAddressZeroObject",
+        "rawAddressPositiveObject",
+        "rawAddressColumn",
+        "rawAddressOther"
+    ];
+
+    private static readonly string[] FixedRawGrantorFieldNames =
+    [
+        "rawGrantorDbo",
+        "rawGrantorOther"
+    ];
+
+    private static readonly string[] FixedPositiveTargetTypeFieldNames =
+    [
+        "positiveIdPublicSelectTypeAggregateFunctions",
+        "positiveIdPublicSelectTypeCheckConstraints",
+        "positiveIdPublicSelectTypeDefaultConstraints",
+        "positiveIdPublicSelectTypeEdgeConstraints",
+        "positiveIdPublicSelectTypeExternalTables",
+        "positiveIdPublicSelectTypeForeignKeys",
+        "positiveIdPublicSelectTypeSqlScalarFunctions",
+        "positiveIdPublicSelectTypeClrScalarFunctions",
+        "positiveIdPublicSelectTypeClrTableValuedFunctions",
+        "positiveIdPublicSelectTypeSqlInlineTableValuedFunctions",
+        "positiveIdPublicSelectTypeInternalTables",
+        "positiveIdPublicSelectTypeSqlStoredProcedures",
+        "positiveIdPublicSelectTypeClrStoredProcedures",
+        "positiveIdPublicSelectTypePlanGuides",
+        "positiveIdPublicSelectTypePrimaryKeys",
+        "positiveIdPublicSelectTypeRules",
+        "positiveIdPublicSelectTypeReplicationFilterProcedures",
+        "positiveIdPublicSelectTypeSystemTables",
+        "positiveIdPublicSelectTypeSynonyms",
+        "positiveIdPublicSelectTypeSequences",
+        "positiveIdPublicSelectTypeServiceQueues",
+        "positiveIdPublicSelectTypeStatisticsTrees",
+        "positiveIdPublicSelectTypeClrDmlTriggers",
+        "positiveIdPublicSelectTypeSqlTableValuedFunctions",
+        "positiveIdPublicSelectTypeSqlDmlTriggers",
+        "positiveIdPublicSelectTypeTableTypes",
+        "positiveIdPublicSelectTypeUserTables",
+        "positiveIdPublicSelectTypeUniqueConstraints",
+        "positiveIdPublicSelectTypeViews",
+        "positiveIdPublicSelectTypeExtendedStoredProcedures",
+        "positiveIdPublicSelectTypeOtherOrUnresolved"
+    ];
+
+    private static readonly string[] FixedPositiveTargetSchemaFieldNames =
+    [
+        "positiveIdPublicSelectSchemaSys",
+        "positiveIdPublicSelectSchemaDbo",
+        "positiveIdPublicSelectSchemaOtherOrUnresolved"
+    ];
+
+    private static readonly string[] FixedPositiveTargetParentFieldNames =
+    [
+        "positiveIdPublicSelectParentless",
+        "positiveIdPublicSelectParented",
+        "positiveIdPublicSelectParentUnresolved"
+    ];
+
+    private static readonly string[] FixedPositiveTargetSpecializedCatalogFieldNames =
+    [
+        "positiveIdPublicSelectInViews",
+        "positiveIdPublicSelectInProcedures",
+        "positiveIdPublicSelectInSqlModules",
+        "positiveIdPublicSelectInTables",
+        "positiveIdPublicSelectInInternalTables",
+        "positiveIdPublicSelectInSequences",
+        "positiveIdPublicSelectInSynonyms",
+        "positiveIdPublicSelectInTriggers"
+    ];
+
+    private static readonly string[] FixedPositiveTargetSpecializedPartitionFieldNames =
+    [
+        "positiveIdPublicSelectWithSpecializedCatalogMembership",
+        "positiveIdPublicSelectWithoutSpecializedCatalogMembership"
+    ];
+
+    private static readonly string[] FixedSqlFieldNames =
+    [
+        .. FixedLeadingFieldNames,
+        .. FixedRawClassFieldNames,
+        .. FixedRawStateFieldNames,
+        .. FixedRawGranteeFieldNames,
+        .. FixedRawPermissionNameFieldNames,
+        .. FixedRawAddressFieldNames,
+        .. FixedRawGrantorFieldNames,
+        .. FixedPositiveTargetTypeFieldNames,
+        .. FixedPositiveTargetSchemaFieldNames,
+        .. FixedPositiveTargetParentFieldNames,
+        .. FixedPositiveTargetSpecializedCatalogFieldNames,
+        .. FixedPositiveTargetSpecializedPartitionFieldNames
+    ];
 
     private DatabaseDirectPermissionTelemetry(
-        int rawNonWhitelistedCount,
-        int positiveIdPublicSelectTargetCount,
-        int positiveIdPublicSelectMsShippedObjectTargetCount,
-        int positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount,
-        int positiveIdPublicSelectMsShippedSystemCatalogTargetCount,
+        IReadOnlyList<DatabaseSurfaceCategoryCount> counts,
         int unexpectedCount)
     {
-        RawNonWhitelistedCount = rawNonWhitelistedCount;
-        PositiveIdPublicSelectTargetCount = positiveIdPublicSelectTargetCount;
-        PositiveIdPublicSelectMsShippedObjectTargetCount = positiveIdPublicSelectMsShippedObjectTargetCount;
-        PositiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount =
-            positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount;
-        PositiveIdPublicSelectMsShippedSystemCatalogTargetCount =
-            positiveIdPublicSelectMsShippedSystemCatalogTargetCount;
+        Counts = counts;
         UnexpectedCount = unexpectedCount;
     }
 
-    public int RawNonWhitelistedCount { get; }
+    public static int ExpectedFieldCount => FixedSqlFieldNames.Length;
 
-    public int PositiveIdPublicSelectTargetCount { get; }
+    public static IReadOnlyList<string> SqlFieldNames => Array.AsReadOnly(FixedSqlFieldNames);
 
-    public int PositiveIdPublicSelectMsShippedObjectTargetCount { get; }
+    public IReadOnlyList<DatabaseSurfaceCategoryCount> Counts { get; }
 
-    public int PositiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount { get; }
+    public int RawNonWhitelistedCount => Counts[0].Count;
 
-    public int PositiveIdPublicSelectMsShippedSystemCatalogTargetCount { get; }
+    public int PositiveIdPublicSelectTargetCount => Counts[1].Count;
+
+    public int PositiveIdPublicSelectMsShippedObjectTargetCount => Counts[2].Count;
+
+    public int PositiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount => Counts[3].Count;
+
+    public int PositiveIdPublicSelectMsShippedSystemCatalogTargetCount => Counts[4].Count;
+
+    public int PositiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount => Counts[5].Count;
+
+    public int PositiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount => Counts[6].Count;
 
     public int UnexpectedCount { get; }
 
-    public static DatabaseDirectPermissionTelemetry FromCounts(
-        int rawNonWhitelistedCount,
-        int positiveIdPublicSelectTargetCount,
-        int positiveIdPublicSelectMsShippedObjectTargetCount,
-        int positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount,
-        int positiveIdPublicSelectMsShippedSystemCatalogTargetCount)
+    public static DatabaseDirectPermissionTelemetry FromOrderedCounts(IReadOnlyList<int> orderedCounts)
     {
-        if (rawNonWhitelistedCount < 0 ||
-            positiveIdPublicSelectTargetCount < 0 ||
-            positiveIdPublicSelectMsShippedObjectTargetCount < 0 ||
-            positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount < 0 ||
-            positiveIdPublicSelectMsShippedSystemCatalogTargetCount < 0)
+        ArgumentNullException.ThrowIfNull(orderedCounts);
+        if (orderedCounts.Count != FixedSqlFieldNames.Length)
+        {
+            throw new InvalidOperationException(
+                $"Azure SQL returned {orderedCounts.Count} database-permission counters; exactly {FixedSqlFieldNames.Length} are required.");
+        }
+        if (orderedCounts.Any(count => count < 0))
         {
             throw new InvalidOperationException("Azure SQL returned a negative database-permission counter.");
         }
+
+        var counts = orderedCounts.ToArray();
+        var rawNonWhitelistedCount = counts[0];
+        var positiveIdPublicSelectTargetCount = counts[1];
+        var positiveIdPublicSelectMsShippedObjectTargetCount = counts[2];
+        var positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount = counts[3];
+        var positiveIdPublicSelectMsShippedSystemCatalogTargetCount = counts[4];
+        var positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount = counts[5];
+        var positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount = counts[6];
+
         if (positiveIdPublicSelectMsShippedObjectTargetCount > positiveIdPublicSelectTargetCount)
         {
             throw new InvalidOperationException(
@@ -286,33 +440,112 @@ public sealed class DatabaseDirectPermissionTelemetry
                 nonMsShippedPositiveIdPublicSelectTargetCount ||
             positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount > rawNonWhitelistedCount ||
             positiveIdPublicSelectMsShippedSystemCatalogTargetCount > positiveIdPublicSelectTargetCount ||
-            positiveIdPublicSelectMsShippedSystemCatalogTargetCount > positiveIdPublicSelectMsShippedObjectTargetCount)
+            positiveIdPublicSelectMsShippedSystemCatalogTargetCount > positiveIdPublicSelectMsShippedObjectTargetCount ||
+            positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount > positiveIdPublicSelectTargetCount ||
+            positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount > positiveIdPublicSelectTargetCount)
         {
             throw new InvalidOperationException(
                 "Azure SQL returned inconsistent positive-ID public SELECT target or correlation counts.");
         }
 
-        var baselineMismatch = positiveIdPublicSelectMsShippedObjectTargetCount ==
-            ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount
+        var cursor = FixedLeadingFieldNames.Length;
+        ValidateExactPartition(counts, ref cursor, FixedRawClassFieldNames.Length, rawNonWhitelistedCount);
+        ValidateExactPartition(counts, ref cursor, FixedRawStateFieldNames.Length, rawNonWhitelistedCount);
+        ValidateExactPartition(counts, ref cursor, FixedRawGranteeFieldNames.Length, rawNonWhitelistedCount);
+        ValidateExactPartition(counts, ref cursor, FixedRawPermissionNameFieldNames.Length, rawNonWhitelistedCount);
+        ValidateExactPartition(counts, ref cursor, FixedRawAddressFieldNames.Length, rawNonWhitelistedCount);
+        ValidateExactPartition(counts, ref cursor, FixedRawGrantorFieldNames.Length, rawNonWhitelistedCount);
+        ValidateExactPartition(counts, ref cursor, FixedPositiveTargetTypeFieldNames.Length, positiveIdPublicSelectTargetCount);
+        ValidateExactPartition(counts, ref cursor, FixedPositiveTargetSchemaFieldNames.Length, positiveIdPublicSelectTargetCount);
+        ValidateExactPartition(counts, ref cursor, FixedPositiveTargetParentFieldNames.Length, positiveIdPublicSelectTargetCount);
+
+        var specializedMembershipStart = cursor;
+        cursor = checked(cursor + FixedPositiveTargetSpecializedCatalogFieldNames.Length);
+        var specializedMembershipCount = counts[cursor];
+        var noSpecializedMembershipCount = counts[checked(cursor + 1)];
+        if (checked(specializedMembershipCount + noSpecializedMembershipCount) !=
+            positiveIdPublicSelectTargetCount)
+        {
+            throw new InvalidOperationException(
+                "Azure SQL returned an inconsistent database-permission telemetry partition.");
+        }
+        var specializedCorrelationTotal = 0;
+        for (var index = specializedMembershipStart; index < cursor; index++)
+        {
+            if (counts[index] > specializedMembershipCount)
+            {
+                throw new InvalidOperationException(
+                    "Azure SQL returned an inconsistent database-permission telemetry correlation.");
+            }
+            specializedCorrelationTotal = checked(specializedCorrelationTotal + counts[index]);
+        }
+        if (specializedMembershipCount > specializedCorrelationTotal)
+        {
+            throw new InvalidOperationException(
+                "Azure SQL returned an inconsistent database-permission telemetry correlation.");
+        }
+        cursor = checked(cursor + FixedPositiveTargetSpecializedPartitionFieldNames.Length);
+        if (cursor != counts.Length)
+        {
+            throw new InvalidOperationException(
+                "The fixed database-permission telemetry field contract is inconsistent.");
+        }
+
+        if (checked(
+                positiveIdPublicSelectMsShippedSystemCatalogTargetCount +
+                positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount) !=
+            positiveIdPublicSelectMsShippedObjectTargetCount ||
+            checked(
+                positiveIdPublicSelectMsShippedSystemCatalogTargetCount +
+                positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount +
+                positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount) !=
+            positiveIdPublicSelectTargetCount ||
+            positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount !=
+            nonMsShippedPositiveIdPublicSelectTargetCount)
+        {
+            throw new InvalidOperationException(
+                "Azure SQL returned an inconsistent positive-ID public SELECT target partition.");
+        }
+
+        var baselineMismatch =
+            positiveIdPublicSelectTargetCount == ExpectedPositiveIdPublicSelectTargetCount &&
+            positiveIdPublicSelectMsShippedObjectTargetCount ==
+                ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount &&
+            positiveIdPublicSelectMsShippedSystemCatalogTargetCount ==
+                ExpectedPositiveIdPublicSelectMsShippedSystemCatalogTargetCount &&
+            positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount == 0 &&
+            positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount == 0
             ? 0
             : 1;
+
+        var fixedCounts = FixedSqlFieldNames
+            .Select((name, index) => new DatabaseSurfaceCategoryCount(name, counts[index]))
+            .ToArray();
         return new DatabaseDirectPermissionTelemetry(
-            rawNonWhitelistedCount,
-            positiveIdPublicSelectTargetCount,
-            positiveIdPublicSelectMsShippedObjectTargetCount,
-            positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount,
-            positiveIdPublicSelectMsShippedSystemCatalogTargetCount,
+            Array.AsReadOnly(fixedCounts),
             checked(rawNonWhitelistedCount + baselineMismatch));
     }
 
     public string ToSafeSummary() =>
-        $"rawNonWhitelisted={RawNonWhitelistedCount}," +
-        $"positiveIdPublicSelectTargets={PositiveIdPublicSelectTargetCount}," +
-        $"positiveIdPublicSelectMsShippedObjectTargets={PositiveIdPublicSelectMsShippedObjectTargetCount}," +
-        $"positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations=" +
-        $"{PositiveIdPublicSelectNonMsShippedProgrammableObjectCorrelationCount}," +
-        $"positiveIdPublicSelectMsShippedSystemCatalogTargets=" +
-        $"{PositiveIdPublicSelectMsShippedSystemCatalogTargetCount}";
+        string.Join(',', Counts.Select(item => $"{item.Category}={item.Count}"));
+
+    private static void ValidateExactPartition(
+        IReadOnlyList<int> counts,
+        ref int cursor,
+        int partitionLength,
+        int expectedTotal)
+    {
+        var observedTotal = 0;
+        var end = checked(cursor + partitionLength);
+        for (var index = cursor; index < end; index++)
+            observedTotal = checked(observedTotal + counts[index]);
+        if (observedTotal != expectedTotal)
+        {
+            throw new InvalidOperationException(
+                "Azure SQL returned an inconsistent database-permission telemetry partition.");
+        }
+        cursor = end;
+    }
 }
 
 public sealed record PristineDatabaseSurfaceSnapshot(
@@ -332,11 +565,7 @@ public sealed record PristineDatabaseSurfaceSnapshot(
         "unexpectedSchemas",
         "unexpectedPrincipals",
         "unexpectedRoleMemberships",
-        "rawNonWhitelistedDirectPermissions",
-        "positiveIdPublicSelectTargets",
-        "positiveIdPublicSelectMsShippedObjectTargets",
-        "positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations",
-        "positiveIdPublicSelectMsShippedSystemCatalogTargets",
+        .. DatabaseDirectPermissionTelemetry.SqlFieldNames,
         "unsafeDatabaseOptions",
         "databaseOwnerMismatches"
     ];

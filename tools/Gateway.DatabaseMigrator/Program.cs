@@ -828,6 +828,370 @@ static string GetUnexpectedDatabaseSurfaceProjectionSql() =>
       (SELECT COUNT(*) FROM sys.objects WHERE is_ms_shipped = 0 AND type = N'AF') AS aggregateFunctions
     """;
 
+static string GetDatabasePermissionTelemetryCteSql() =>
+    """
+    WITH databasePermissionTelemetry AS
+    (
+        SELECT
+            permission_shape.is_raw_non_whitelisted,
+            permission_shape.is_positive_id_public_select,
+            CASE
+                WHEN permission_shape.is_positive_id_public_select = 1
+                 AND EXISTS
+                 (
+                     SELECT 1
+                     FROM sys.all_objects AS shipped_objects
+                     WHERE shipped_objects.object_id = permissions.major_id
+                       AND shipped_objects.is_ms_shipped = 1
+                 )
+                THEN 1 ELSE 0
+            END AS is_positive_ms_shipped_object,
+            CASE
+                WHEN permission_shape.is_positive_id_public_select = 1
+                 AND EXISTS
+                 (
+                     SELECT 1
+                     FROM sys.objects AS programmable_objects
+                     WHERE programmable_objects.object_id = permissions.major_id
+                       AND programmable_objects.is_ms_shipped = 0
+                       AND programmable_objects.type IN
+                           (N'V', N'P', N'PC', N'FN', N'IF', N'TF', N'FS', N'FT', N'AF')
+                 )
+                THEN 1 ELSE 0
+            END AS is_positive_non_ms_shipped_programmable_object,
+            CASE
+                WHEN permission_shape.is_positive_id_public_select = 0 THEN 0
+                WHEN EXISTS
+                (
+                    SELECT 1
+                    FROM sys.system_objects AS system_catalog_objects
+                    WHERE system_catalog_objects.object_id = permissions.major_id
+                      AND system_catalog_objects.is_ms_shipped = 1
+                ) THEN 1
+                WHEN EXISTS
+                (
+                    SELECT 1
+                    FROM sys.objects AS shipped_database_objects
+                    WHERE shipped_database_objects.object_id = permissions.major_id
+                      AND shipped_database_objects.is_ms_shipped = 1
+                ) THEN 2
+                ELSE 3
+            END AS positive_target_origin_bucket,
+            CASE
+                WHEN permissions.class = 0 THEN 1
+                WHEN permissions.class = 1 THEN 2
+                ELSE 3
+            END AS raw_class_bucket,
+            CASE permissions.state
+                WHEN N'G' THEN 1
+                WHEN N'W' THEN 2
+                WHEN N'D' THEN 3
+                WHEN N'R' THEN 4
+                ELSE 5
+            END AS raw_state_bucket,
+            CASE
+                WHEN grantees.name = N'public' THEN 1
+                WHEN grantees.name = N'guest' THEN 2
+                WHEN grantees.name = N'dbo' THEN 3
+                WHEN grantees.is_fixed_role = 1 THEN 4
+                ELSE 5
+            END AS raw_grantee_bucket,
+            CASE permissions.permission_name
+                WHEN N'CONNECT' THEN 1
+                WHEN N'SELECT' THEN 2
+                WHEN N'VIEW DEFINITION' THEN 3
+                WHEN N'VIEW ANY COLUMN MASTER KEY DEFINITION' THEN 4
+                WHEN N'VIEW ANY COLUMN ENCRYPTION KEY DEFINITION' THEN 5
+                ELSE 6
+            END AS raw_permission_name_bucket,
+            CASE
+                WHEN permissions.class = 0
+                 AND permissions.major_id = 0
+                 AND permissions.minor_id = 0 THEN 1
+                WHEN permissions.class = 1
+                 AND permissions.major_id < 0
+                 AND permissions.minor_id = 0 THEN 2
+                WHEN permissions.class = 1
+                 AND permissions.major_id = 0
+                 AND permissions.minor_id = 0 THEN 3
+                WHEN permissions.class = 1
+                 AND permissions.major_id > 0
+                 AND permissions.minor_id = 0 THEN 4
+                WHEN permissions.class = 1
+                 AND permissions.minor_id > 0 THEN 5
+                ELSE 6
+            END AS raw_address_bucket,
+            CASE
+                WHEN permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo') THEN 1
+                ELSE 2
+            END AS raw_grantor_bucket,
+            CASE
+                WHEN permission_shape.is_positive_id_public_select = 0 THEN 0
+                ELSE COALESCE
+                (
+                    (
+                        SELECT CASE target_type_objects.type
+                            WHEN N'AF' THEN 1
+                            WHEN N'C' THEN 2
+                            WHEN N'D' THEN 3
+                            WHEN N'EC' THEN 4
+                            WHEN N'ET' THEN 5
+                            WHEN N'F' THEN 6
+                            WHEN N'FN' THEN 7
+                            WHEN N'FS' THEN 8
+                            WHEN N'FT' THEN 9
+                            WHEN N'IF' THEN 10
+                            WHEN N'IT' THEN 11
+                            WHEN N'P' THEN 12
+                            WHEN N'PC' THEN 13
+                            WHEN N'PG' THEN 14
+                            WHEN N'PK' THEN 15
+                            WHEN N'R' THEN 16
+                            WHEN N'RF' THEN 17
+                            WHEN N'S' THEN 18
+                            WHEN N'SN' THEN 19
+                            WHEN N'SO' THEN 20
+                            WHEN N'SQ' THEN 21
+                            WHEN N'ST' THEN 22
+                            WHEN N'TA' THEN 23
+                            WHEN N'TF' THEN 24
+                            WHEN N'TR' THEN 25
+                            WHEN N'TT' THEN 26
+                            WHEN N'U' THEN 27
+                            WHEN N'UQ' THEN 28
+                            WHEN N'V' THEN 29
+                            WHEN N'X' THEN 30
+                            ELSE 31
+                        END
+                        FROM sys.all_objects AS target_type_objects
+                        WHERE target_type_objects.object_id = permissions.major_id
+                    ),
+                    31
+                )
+            END AS positive_target_type_bucket,
+            CASE
+                WHEN permission_shape.is_positive_id_public_select = 0 THEN 0
+                ELSE COALESCE
+                (
+                    (
+                        SELECT CASE target_schemas.name
+                            WHEN N'sys' THEN 1
+                            WHEN N'dbo' THEN 2
+                            ELSE 3
+                        END
+                        FROM sys.all_objects AS target_schema_objects
+                        INNER JOIN sys.schemas AS target_schemas
+                          ON target_schemas.schema_id = target_schema_objects.schema_id
+                        WHERE target_schema_objects.object_id = permissions.major_id
+                    ),
+                    3
+                )
+            END AS positive_target_schema_bucket,
+            CASE
+                WHEN permission_shape.is_positive_id_public_select = 0 THEN 0
+                ELSE COALESCE
+                (
+                    (
+                        SELECT CASE WHEN target_parent_objects.parent_object_id = 0 THEN 1 ELSE 2 END
+                        FROM sys.all_objects AS target_parent_objects
+                        WHERE target_parent_objects.object_id = permissions.major_id
+                    ),
+                    3
+                )
+            END AS positive_target_parent_bucket,
+            CASE WHEN permission_shape.is_positive_id_public_select = 1
+                       AND EXISTS (SELECT 1 FROM sys.views WHERE object_id = permissions.major_id)
+                 THEN 1 ELSE 0 END AS positive_target_in_views,
+            CASE WHEN permission_shape.is_positive_id_public_select = 1
+                       AND EXISTS (SELECT 1 FROM sys.procedures WHERE object_id = permissions.major_id)
+                 THEN 1 ELSE 0 END AS positive_target_in_procedures,
+            CASE WHEN permission_shape.is_positive_id_public_select = 1
+                       AND EXISTS (SELECT 1 FROM sys.sql_modules WHERE object_id = permissions.major_id)
+                 THEN 1 ELSE 0 END AS positive_target_in_sql_modules,
+            CASE WHEN permission_shape.is_positive_id_public_select = 1
+                       AND EXISTS (SELECT 1 FROM sys.tables WHERE object_id = permissions.major_id)
+                 THEN 1 ELSE 0 END AS positive_target_in_tables,
+            CASE WHEN permission_shape.is_positive_id_public_select = 1
+                       AND EXISTS (SELECT 1 FROM sys.internal_tables WHERE object_id = permissions.major_id)
+                 THEN 1 ELSE 0 END AS positive_target_in_internal_tables,
+            CASE WHEN permission_shape.is_positive_id_public_select = 1
+                       AND EXISTS (SELECT 1 FROM sys.sequences WHERE object_id = permissions.major_id)
+                 THEN 1 ELSE 0 END AS positive_target_in_sequences,
+            CASE WHEN permission_shape.is_positive_id_public_select = 1
+                       AND EXISTS (SELECT 1 FROM sys.synonyms WHERE object_id = permissions.major_id)
+                 THEN 1 ELSE 0 END AS positive_target_in_synonyms,
+            CASE WHEN permission_shape.is_positive_id_public_select = 1
+                       AND EXISTS (SELECT 1 FROM sys.triggers WHERE object_id = permissions.major_id)
+                 THEN 1 ELSE 0 END AS positive_target_in_triggers,
+            CASE
+                WHEN permission_shape.is_positive_id_public_select = 1
+                 AND
+                 (
+                     EXISTS (SELECT 1 FROM sys.views WHERE object_id = permissions.major_id)
+                     OR EXISTS (SELECT 1 FROM sys.procedures WHERE object_id = permissions.major_id)
+                     OR EXISTS (SELECT 1 FROM sys.sql_modules WHERE object_id = permissions.major_id)
+                     OR EXISTS (SELECT 1 FROM sys.tables WHERE object_id = permissions.major_id)
+                     OR EXISTS (SELECT 1 FROM sys.internal_tables WHERE object_id = permissions.major_id)
+                     OR EXISTS (SELECT 1 FROM sys.sequences WHERE object_id = permissions.major_id)
+                     OR EXISTS (SELECT 1 FROM sys.synonyms WHERE object_id = permissions.major_id)
+                     OR EXISTS (SELECT 1 FROM sys.triggers WHERE object_id = permissions.major_id)
+                 )
+                THEN 1 ELSE 0
+            END AS has_positive_target_specialized_catalog_membership
+        FROM sys.database_permissions AS permissions
+        INNER JOIN sys.database_principals AS grantees
+          ON grantees.principal_id = permissions.grantee_principal_id
+        CROSS APPLY
+        (
+            SELECT
+                CASE
+                    WHEN NOT
+                    (
+                        (
+                            permissions.class = 0
+                            AND permissions.major_id = 0
+                            AND permissions.minor_id = 0
+                            AND permissions.permission_name = N'CONNECT'
+                            AND permissions.state IN (N'G', N'W')
+                            AND grantees.name IN (N'public', N'guest')
+                        )
+                        OR
+                        (
+                            permissions.class = 1
+                            AND permissions.minor_id = 0
+                            AND permissions.permission_name = N'SELECT'
+                            AND permissions.state = N'G'
+                            AND grantees.name = N'public'
+                            AND permissions.major_id < 0
+                        )
+                        OR
+                        (
+                            permissions.class = 1
+                            AND permissions.minor_id = 0
+                            AND permissions.permission_name = N'SELECT'
+                            AND permissions.state = N'G'
+                            AND grantees.name = N'public'
+                            AND permissions.major_id > 0
+                            AND EXISTS
+                            (
+                                SELECT 1
+                                FROM sys.all_objects AS allowed_shipped_objects
+                                WHERE allowed_shipped_objects.object_id = permissions.major_id
+                                  AND allowed_shipped_objects.is_ms_shipped = 1
+                            )
+                        )
+                        OR
+                        (
+                            @allowMetadataPrincipalViewDefinition = 1
+                            AND permissions.class = 0
+                            AND permissions.major_id = 0
+                            AND permissions.minor_id = 0
+                            AND permissions.permission_name = N'VIEW DEFINITION'
+                            AND permissions.state = N'G'
+                            AND grantees.name = @metadataPrincipalName
+                            AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
+                        )
+                    )
+                    THEN 1 ELSE 0
+                END AS is_raw_non_whitelisted,
+                CASE
+                    WHEN permissions.class = 1
+                     AND permissions.minor_id = 0
+                     AND permissions.permission_name = N'SELECT'
+                     AND permissions.state = N'G'
+                     AND grantees.name = N'public'
+                     AND permissions.major_id > 0
+                    THEN 1 ELSE 0
+                END AS is_positive_id_public_select
+        ) AS permission_shape
+    )
+    """;
+
+static string GetDatabasePermissionTelemetryProjectionSql() =>
+    """
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1) AS rawNonWhitelistedDirectPermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_positive_id_public_select = 1) AS positiveIdPublicSelectTargets,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_positive_ms_shipped_object = 1) AS positiveIdPublicSelectMsShippedObjectTargets,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_positive_non_ms_shipped_programmable_object = 1) AS positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_origin_bucket = 1) AS positiveIdPublicSelectMsShippedSystemCatalogTargets,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_origin_bucket = 2) AS positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargets,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_origin_bucket = 3) AS positiveIdPublicSelectNonMsShippedOrUnresolvedTargets,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_class_bucket = 1) AS rawClassDatabasePermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_class_bucket = 2) AS rawClassObjectOrColumnPermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_class_bucket = 3) AS rawClassOtherPermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_state_bucket = 1) AS rawStateGrantPermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_state_bucket = 2) AS rawStateGrantWithGrantOptionPermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_state_bucket = 3) AS rawStateDenyPermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_state_bucket = 4) AS rawStateRevokePermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_state_bucket = 5) AS rawStateOtherPermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 1) AS rawGranteePublicPermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 2) AS rawGranteeGuestPermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 3) AS rawGranteeDboPermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 4) AS rawGranteeFixedRolePermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantee_bucket = 5) AS rawGranteeOtherPermissions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 1) AS rawPermissionNameConnect,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 2) AS rawPermissionNameSelect,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 3) AS rawPermissionNameViewDefinition,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 4) AS rawPermissionNameViewAnyColumnMasterKeyDefinition,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 5) AS rawPermissionNameViewAnyColumnEncryptionKeyDefinition,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_permission_name_bucket = 6) AS rawPermissionNameOther,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 1) AS rawAddressDatabase,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 2) AS rawAddressNegativeObject,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 3) AS rawAddressZeroObject,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 4) AS rawAddressPositiveObject,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 5) AS rawAddressColumn,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_address_bucket = 6) AS rawAddressOther,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantor_bucket = 1) AS rawGrantorDbo,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_raw_non_whitelisted = 1 AND raw_grantor_bucket = 2) AS rawGrantorOther,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 1) AS positiveIdPublicSelectTypeAggregateFunctions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 2) AS positiveIdPublicSelectTypeCheckConstraints,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 3) AS positiveIdPublicSelectTypeDefaultConstraints,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 4) AS positiveIdPublicSelectTypeEdgeConstraints,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 5) AS positiveIdPublicSelectTypeExternalTables,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 6) AS positiveIdPublicSelectTypeForeignKeys,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 7) AS positiveIdPublicSelectTypeSqlScalarFunctions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 8) AS positiveIdPublicSelectTypeClrScalarFunctions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 9) AS positiveIdPublicSelectTypeClrTableValuedFunctions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 10) AS positiveIdPublicSelectTypeSqlInlineTableValuedFunctions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 11) AS positiveIdPublicSelectTypeInternalTables,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 12) AS positiveIdPublicSelectTypeSqlStoredProcedures,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 13) AS positiveIdPublicSelectTypeClrStoredProcedures,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 14) AS positiveIdPublicSelectTypePlanGuides,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 15) AS positiveIdPublicSelectTypePrimaryKeys,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 16) AS positiveIdPublicSelectTypeRules,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 17) AS positiveIdPublicSelectTypeReplicationFilterProcedures,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 18) AS positiveIdPublicSelectTypeSystemTables,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 19) AS positiveIdPublicSelectTypeSynonyms,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 20) AS positiveIdPublicSelectTypeSequences,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 21) AS positiveIdPublicSelectTypeServiceQueues,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 22) AS positiveIdPublicSelectTypeStatisticsTrees,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 23) AS positiveIdPublicSelectTypeClrDmlTriggers,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 24) AS positiveIdPublicSelectTypeSqlTableValuedFunctions,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 25) AS positiveIdPublicSelectTypeSqlDmlTriggers,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 26) AS positiveIdPublicSelectTypeTableTypes,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 27) AS positiveIdPublicSelectTypeUserTables,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 28) AS positiveIdPublicSelectTypeUniqueConstraints,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 29) AS positiveIdPublicSelectTypeViews,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 30) AS positiveIdPublicSelectTypeExtendedStoredProcedures,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_type_bucket = 31) AS positiveIdPublicSelectTypeOtherOrUnresolved,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_schema_bucket = 1) AS positiveIdPublicSelectSchemaSys,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_schema_bucket = 2) AS positiveIdPublicSelectSchemaDbo,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_schema_bucket = 3) AS positiveIdPublicSelectSchemaOtherOrUnresolved,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_parent_bucket = 1) AS positiveIdPublicSelectParentless,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_parent_bucket = 2) AS positiveIdPublicSelectParented,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_parent_bucket = 3) AS positiveIdPublicSelectParentUnresolved,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_views = 1) AS positiveIdPublicSelectInViews,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_procedures = 1) AS positiveIdPublicSelectInProcedures,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_sql_modules = 1) AS positiveIdPublicSelectInSqlModules,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_tables = 1) AS positiveIdPublicSelectInTables,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_internal_tables = 1) AS positiveIdPublicSelectInInternalTables,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_sequences = 1) AS positiveIdPublicSelectInSequences,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_synonyms = 1) AS positiveIdPublicSelectInSynonyms,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE positive_target_in_triggers = 1) AS positiveIdPublicSelectInTriggers,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE has_positive_target_specialized_catalog_membership = 1) AS positiveIdPublicSelectWithSpecializedCatalogMembership,
+      (SELECT COUNT(*) FROM databasePermissionTelemetry WHERE is_positive_id_public_select = 1 AND has_positive_target_specialized_catalog_membership = 0) AS positiveIdPublicSelectWithoutSpecializedCatalogMembership
+    """;
+
 static async Task<UnexpectedDatabaseSurfaceTelemetry> ReadUnexpectedDatabaseSurfaceTelemetryAsync(
     SqlConnection connection)
 {
@@ -895,6 +1259,7 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
     await using var command = connection.CreateCommand();
     command.CommandTimeout = 60;
     command.CommandText = $"""
+        {GetDatabasePermissionTelemetryCteSql()}
         SELECT
         {GetUnexpectedDatabaseSurfaceProjectionSql()},
           (SELECT COUNT(*) FROM sys.tables WHERE is_ms_shipped = 0) AS userTables,
@@ -948,108 +1313,7 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
                     AND members.principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
               )
           ) AS unexpectedRoleMemberships,
-          (
-              SELECT COUNT(*)
-              FROM sys.database_permissions AS permissions
-              INNER JOIN sys.database_principals AS grantees
-                ON grantees.principal_id = permissions.grantee_principal_id
-              WHERE NOT
-              (
-                  (
-                      permissions.class = 0
-                      AND permissions.permission_name = N'CONNECT'
-                      AND permissions.state IN (N'G', N'W')
-                      AND grantees.name IN (N'public', N'guest')
-                  )
-                  OR
-                  (
-                      permissions.class = 1
-                      AND permissions.minor_id = 0
-                      AND permissions.permission_name = N'SELECT'
-                      AND permissions.state = N'G'
-                      AND grantees.name = N'public'
-                      AND permissions.major_id < 0
-                  )
-                  OR
-                  (
-                      permissions.class = 1
-                      AND permissions.minor_id = 0
-                      AND permissions.permission_name = N'SELECT'
-                      AND permissions.state = N'G'
-                      AND grantees.name = N'public'
-                      AND permissions.major_id > 0
-                      AND EXISTS
-                      (
-                          SELECT 1
-                          FROM sys.all_objects AS system_objects
-                          WHERE system_objects.object_id = permissions.major_id
-                            AND system_objects.is_ms_shipped = 1
-                      )
-                  )
-              )
-          ) AS rawNonWhitelistedDirectPermissions,
-          (
-              SELECT COUNT(*)
-              FROM sys.database_permissions AS positive_permissions
-              INNER JOIN sys.database_principals AS positive_grantees
-                ON positive_grantees.principal_id = positive_permissions.grantee_principal_id
-              WHERE positive_permissions.class = 1
-                AND positive_permissions.minor_id = 0
-                AND positive_permissions.permission_name = N'SELECT'
-                AND positive_permissions.state = N'G'
-                AND positive_grantees.name = N'public'
-                AND positive_permissions.major_id > 0
-          ) AS positiveIdPublicSelectTargets,
-          (
-              SELECT COUNT(*)
-              FROM sys.database_permissions AS baseline_permissions
-              INNER JOIN sys.database_principals AS baseline_grantees
-                ON baseline_grantees.principal_id = baseline_permissions.grantee_principal_id
-              WHERE baseline_permissions.class = 1
-                AND baseline_permissions.minor_id = 0
-                AND baseline_permissions.permission_name = N'SELECT'
-                AND baseline_permissions.state = N'G'
-                AND baseline_grantees.name = N'public'
-                AND baseline_permissions.major_id > 0
-                AND EXISTS
-                (
-                    SELECT 1
-                    FROM sys.all_objects AS baseline_objects
-                    WHERE baseline_objects.object_id = baseline_permissions.major_id
-                      AND baseline_objects.is_ms_shipped = 1
-                )
-          ) AS positiveIdPublicSelectMsShippedObjectTargets,
-          (
-              SELECT COUNT(*)
-              FROM sys.database_permissions AS correlated_permissions
-              INNER JOIN sys.database_principals AS correlated_grantees
-                ON correlated_grantees.principal_id = correlated_permissions.grantee_principal_id
-              INNER JOIN sys.objects AS correlated_objects
-                ON correlated_objects.object_id = correlated_permissions.major_id
-               AND correlated_objects.is_ms_shipped = 0
-              WHERE correlated_permissions.class = 1
-                AND correlated_permissions.minor_id = 0
-                AND correlated_permissions.permission_name = N'SELECT'
-                AND correlated_permissions.state = N'G'
-                AND correlated_grantees.name = N'public'
-                AND correlated_permissions.major_id > 0
-                AND correlated_objects.type IN (N'V', N'P', N'PC', N'FN', N'IF', N'TF', N'FS', N'FT', N'AF')
-          ) AS positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations,
-          (
-              SELECT COUNT(*)
-              FROM sys.database_permissions AS system_catalog_permissions
-              INNER JOIN sys.database_principals AS system_catalog_grantees
-                ON system_catalog_grantees.principal_id = system_catalog_permissions.grantee_principal_id
-              INNER JOIN sys.system_objects AS system_catalog_objects
-                ON system_catalog_objects.object_id = system_catalog_permissions.major_id
-               AND system_catalog_objects.is_ms_shipped = 1
-              WHERE system_catalog_permissions.class = 1
-                AND system_catalog_permissions.minor_id = 0
-                AND system_catalog_permissions.permission_name = N'SELECT'
-                AND system_catalog_permissions.state = N'G'
-                AND system_catalog_grantees.name = N'public'
-                AND system_catalog_permissions.major_id > 0
-          ) AS positiveIdPublicSelectMsShippedSystemCatalogTargets,
+        {GetDatabasePermissionTelemetryProjectionSql()},
           (
               SELECT COUNT(*)
               FROM sys.databases
@@ -1082,6 +1346,8 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
           ) AS databaseOwnerMismatches;
         """;
     command.Parameters.AddWithValue("@markerName", DatabaseBootstrapRecoveryContract.MarkerName);
+    command.Parameters.AddWithValue("@allowMetadataPrincipalViewDefinition", 0);
+    command.Parameters.AddWithValue("@metadataPrincipalName", string.Empty);
     await using var reader = await command.ExecuteReaderAsync();
     AssertExactSqlFieldContract(
         reader,
@@ -1091,20 +1357,22 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
         throw new InvalidOperationException("Azure SQL returned no pristine database-surface row.");
     var catalogSurface = ReadUnexpectedDatabaseSurfaceTelemetry(reader, startOrdinal: 0);
     var remainingStartOrdinal = UnexpectedDatabaseSurfaceTelemetry.SqlFieldNames.Count;
+    var permissionStartOrdinal = checked(remainingStartOrdinal + 4);
+    var permissionCounts = Enumerable
+        .Range(permissionStartOrdinal, DatabaseDirectPermissionTelemetry.ExpectedFieldCount)
+        .Select(reader.GetInt32)
+        .ToArray();
+    var optionStartOrdinal = checked(
+        permissionStartOrdinal + DatabaseDirectPermissionTelemetry.ExpectedFieldCount);
     var snapshot = new PristineDatabaseSurfaceSnapshot(
         reader.GetInt32(remainingStartOrdinal),
         catalogSurface,
         reader.GetInt32(remainingStartOrdinal + 1),
         reader.GetInt32(remainingStartOrdinal + 2),
         reader.GetInt32(remainingStartOrdinal + 3),
-        DatabaseDirectPermissionTelemetry.FromCounts(
-            reader.GetInt32(remainingStartOrdinal + 4),
-            reader.GetInt32(remainingStartOrdinal + 5),
-            reader.GetInt32(remainingStartOrdinal + 6),
-            reader.GetInt32(remainingStartOrdinal + 7),
-            reader.GetInt32(remainingStartOrdinal + 8)),
-        reader.GetInt32(remainingStartOrdinal + 9),
-        reader.GetInt32(remainingStartOrdinal + 10));
+        DatabaseDirectPermissionTelemetry.FromOrderedCounts(permissionCounts),
+        reader.GetInt32(optionStartOrdinal),
+        reader.GetInt32(optionStartOrdinal + 1));
     if (await reader.ReadAsync())
         throw new InvalidOperationException("Azure SQL returned duplicate pristine database-surface rows.");
     return snapshot;
@@ -1327,82 +1595,31 @@ static async Task AssertExpectedDatabaseAuthorityAsync(
     await using (var command = connection.CreateCommand())
     {
         command.CommandTimeout = 60;
-        command.CommandText = """
+        command.CommandText = $"""
+            {GetDatabasePermissionTelemetryCteSql()}
             SELECT
-            (
-                SELECT COUNT(*)
-                FROM sys.database_permissions AS permissions
-                INNER JOIN sys.database_principals AS grantees
-                  ON grantees.principal_id = permissions.grantee_principal_id
-                WHERE NOT
-                (
-                    (
-                        permissions.class = 0
-                        AND permissions.major_id = 0
-                        AND permissions.minor_id = 0
-                        AND permissions.permission_name = N'CONNECT'
-                        AND permissions.state IN (N'G', N'W')
-                        AND grantees.name IN (N'public', N'guest')
-                    )
-                    OR
-                    (
-                        permissions.class = 1
-                        AND permissions.minor_id = 0
-                        AND permissions.permission_name = N'SELECT'
-                        AND permissions.state = N'G'
-                        AND grantees.name = N'public'
-                        AND permissions.major_id < 0
-                    )
-                    OR
-                    (
-                        permissions.class = 1
-                        AND permissions.minor_id = 0
-                        AND permissions.permission_name = N'SELECT'
-                        AND permissions.state = N'G'
-                        AND grantees.name = N'public'
-                        AND permissions.major_id > 0
-                        AND EXISTS
-                        (
-                            SELECT 1
-                            FROM sys.all_objects AS system_objects
-                            WHERE system_objects.object_id = permissions.major_id
-                              AND system_objects.is_ms_shipped = 1
-                        )
-                    )
-                    OR
-                    (
-                        permissions.class = 0
-                        AND permissions.major_id = 0
-                        AND permissions.minor_id = 0
-                        AND permissions.permission_name = N'VIEW DEFINITION'
-                        AND permissions.state = N'G'
-                        AND grantees.name = @metadataPrincipalName
-                        AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
-                    )
-                )
-            ) +
-            (
-                SELECT CASE WHEN COUNT(*) = 2 THEN 0 ELSE 1 END
-                FROM sys.database_permissions AS baseline_permissions
-                INNER JOIN sys.database_principals AS baseline_grantees
-                  ON baseline_grantees.principal_id = baseline_permissions.grantee_principal_id
-                WHERE baseline_permissions.class = 1
-                  AND baseline_permissions.minor_id = 0
-                  AND baseline_permissions.permission_name = N'SELECT'
-                  AND baseline_permissions.state = N'G'
-                  AND baseline_grantees.name = N'public'
-                  AND baseline_permissions.major_id > 0
-                  AND EXISTS
-                  (
-                      SELECT 1
-                      FROM sys.all_objects AS baseline_objects
-                      WHERE baseline_objects.object_id = baseline_permissions.major_id
-                        AND baseline_objects.is_ms_shipped = 1
-                  )
-            );
+            {GetDatabasePermissionTelemetryProjectionSql()};
             """;
+        command.Parameters.AddWithValue("@allowMetadataPrincipalViewDefinition", 1);
         command.Parameters.AddWithValue("@metadataPrincipalName", metadataPrincipal.Name);
-        unexpectedDirectPermissionCount = Convert.ToInt32(await command.ExecuteScalarAsync());
+        await using var reader = await command.ExecuteReaderAsync();
+        AssertExactSqlFieldContract(
+            reader,
+            DatabaseDirectPermissionTelemetry.SqlFieldNames,
+            "post-schema database-permission telemetry");
+        if (!await reader.ReadAsync())
+            throw new InvalidOperationException("Azure SQL returned no post-schema database-permission telemetry row.");
+        var permissionCounts = Enumerable
+            .Range(0, DatabaseDirectPermissionTelemetry.ExpectedFieldCount)
+            .Select(reader.GetInt32)
+            .ToArray();
+        unexpectedDirectPermissionCount =
+            DatabaseDirectPermissionTelemetry.FromOrderedCounts(permissionCounts).UnexpectedCount;
+        if (await reader.ReadAsync())
+        {
+            throw new InvalidOperationException(
+                "Azure SQL returned duplicate post-schema database-permission telemetry rows.");
+        }
     }
 
     var observed = principals.Values

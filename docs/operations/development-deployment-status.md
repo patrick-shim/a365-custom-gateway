@@ -6,7 +6,7 @@ SQL, Entra, Service Bus, Graph, or deployment action. It records evidence, not
 desired state. Current state is kept first; retained chronology below is explicitly
 labeled historical and must never be mistaken for the resume point.
 
-Last reconciled: **2026-08-30**. Continuous workflow-v3 registration,
+Last reconciled: **2026-08-31**. Continuous workflow-v3 registration,
 automatic delegated Administrator completion, final Agent 365 verification,
 registration-bound ingestion, Microsoft 365 Admin Center landing, and blueprint-
 scoped prompt DLP and independent pre-model Prompt Shields are live in development.
@@ -1177,8 +1177,9 @@ source gate discovers **527** Pester tests: **526** pass, none fail, and one
 Windows-only launcher test is skipped on macOS. It parses **19** PowerShell files
 and **2** JSON contracts; all **26** Bicep templates and **5** parameter files
 compile. Format and diff checks pass. Independent integration and security reviews
-found no concrete blocker. This is source validation only. Run a fresh `a365gw26` /
-`rg-a365-custom-gw-phase6y` Plan; never Resume or second-start `a365gw25`.
+found no concrete blocker. This was source validation only. At that checkpoint the
+next live generation was `a365gw26` / `rg-a365-custom-gw-phase6y`; `a365gw25`
+remained frozen.
 
 Generation `a365gw26` accepted exact Plan
 `sha256:edcd8f53f6845183b5e24fb09f6f53e523a3384db456919f9293076b6dfe51e8`
@@ -1249,6 +1250,30 @@ second-start `a365gw26`. The next correction must use fixed count-only partition
 and must remove the current Microsoft-shipped-object substitution weakness; prove it
 only through a fresh `a365gw27` generation. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` was not selected, queried, or mutated.
+
+The next local source checkpoint uses one shared pristine/post-schema SQL CTE and
+projection with exactly **81** ordered, nonnegative, identifier-free counters. Raw
+permission rows are partitioned by class, state, grantee, permission, address, and
+grantor; positive-ID targets are partitioned by origin, type, schema, parent, and
+specialized-catalog membership. Managed validation enforces exact partitions,
+subsets, cardinality, and checked arithmetic. The fail-closed baseline remains
+exactly raw zero, positive total two, shipped total two, `sys.system_objects` total
+two, database-object-only zero, and unresolved/non-shipped zero. Regression tests
+reject both the observed `a365gw26` tuple and
+`raw=0,total=2,shipped=2,systemCatalog=0,databaseOnly=2,residual=0`; no name, ID,
+SID, definition, content, credential, or provider body can enter the count-only
+diagnostic. The pristine check remains before mutation and the post-schema check
+uses the identical source.
+
+The Release build has zero warnings/errors and all **1,452/1,452** direct Release
+tests pass: unit 578, Admin UI 155, local Setup 118, observability/runtime 149,
+integration 92, end-to-end 106, architecture 121, and security 133. The canonical
+source gate discovers **528** Pester tests: **527** pass, none fail, and one
+Windows-only launcher test is skipped on macOS. It parses **19** PowerShell files
+and **2** JSON contracts; all **26** Bicep templates and **5** parameter files
+compile. Format/diff checks pass and independent security review found no concrete
+blocker. This checkpoint made no Azure mutation. Run only a fresh `a365gw27` Plan;
+never Resume or second-start `a365gw26`.
 
 
 The first target-subscription Apply attempt used the earlier source generation
@@ -2381,7 +2406,7 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw26` / `rg-a365-custom-gw-phase6y`. Preserve `a365gw11`,
+   generation `a365gw27` / `rg-a365-custom-gw-phase6z`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
    preserve `a365gw14`, `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with
    steps 1–10 complete and step 11 `Failed` before database migration. Their succeeded
@@ -2406,6 +2431,11 @@ separate authorization entry here.
    steps 1–10 complete, step 11 terminal `Failed`, exactly one failed Job
    execution/replica, SQL error 47073 at `connection.OpenAsync()` before any SQL
    statement, no marker/schema/runtime-principal mutation, exact original-
+   administrator restoration, SQL `Ready`, public access `Disabled`, zero firewall
+   rules, and every later step pending with the API/worker inert. Never Resume or
+   second-start it. Preserve `a365gw26` with steps 1–10 complete, step 11 terminal
+   `Failed`, exactly one failed execution/replica, both DNS gates passed, SQL opened
+   privately, no marker/schema/runtime-principal mutation, exact original-
    administrator restoration, SQL `Ready`, public access `Disabled`, zero firewall
    rules, and every later step pending with the API/worker inert. Never Resume or
    second-start it. None may

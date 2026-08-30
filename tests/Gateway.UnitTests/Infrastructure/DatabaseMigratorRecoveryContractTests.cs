@@ -84,9 +84,9 @@ public sealed class DatabaseMigratorRecoveryContractTests
         yield return [pristine with { UnexpectedSchemaCount = 1 }];
         yield return [pristine with { UnexpectedPrincipalCount = 1 }];
         yield return [pristine with { RoleMembershipCount = 1 }];
-        yield return [pristine with { DirectPermissions = DatabaseDirectPermissionTelemetry.FromCounts(1, 3, 2, 1, 2) }];
-        yield return [pristine with { DirectPermissions = DatabaseDirectPermissionTelemetry.FromCounts(0, 1, 1, 0, 1) }];
-        yield return [pristine with { DirectPermissions = DatabaseDirectPermissionTelemetry.FromCounts(0, 3, 3, 0, 3) }];
+        yield return [pristine with { DirectPermissions = CreatePermissionTelemetry(1, 3, 2, 1, 2, 0, 1) }];
+        yield return [pristine with { DirectPermissions = CreatePermissionTelemetry(0, 1, 1, 0, 1, 0, 0) }];
+        yield return [pristine with { DirectPermissions = CreatePermissionTelemetry(0, 3, 3, 0, 3, 0, 0) }];
         yield return [pristine with { UnsafeDatabaseOptionCount = 1 }];
         yield return [pristine with { DatabaseOwnerMismatchCount = 1 }];
     }
@@ -119,30 +119,19 @@ public sealed class DatabaseMigratorRecoveryContractTests
             3,
             4,
             5,
-            DatabaseDirectPermissionTelemetry.FromCounts(6, 8, 2, 1, 2),
+            CreatePermissionTelemetry(6, 8, 2, 1, 2, 0, 6),
             7,
             8);
 
         var action = () => DatabaseBootstrapRecoveryContract.AssertPristine(surface);
 
-        action.Should().Throw<InvalidOperationException>()
-            .WithMessage(
-                "Clean bootstrap requires a pristine database surface before its durable initialization marker is written; " +
-                "safe counts were tables=1, objects=2, " +
-                "catalog=[programmableObjects=0,triggers=2,synonyms=0,sequences=0,externalTables=0," +
-                "externalDataSources=0,externalFileFormats=0,databaseScopedCredentials=0,columnMasterKeys=0," +
-                "columnEncryptionKeys=0,userAssemblies=0,userDefinedOrTableTypes=0,partitionFunctions=0," +
-                "partitionSchemes=0,fullTextCatalogs=0,fullTextIndexes=0,userXmlSchemaCollections=0," +
-                "databaseAuditSpecifications=0,securityPolicies=0,databaseFirewallRules=0," +
-                "changeTrackingTables=0,temporalPeriods=0,sensitivityClassifications=0,extendedProperties=0], " +
-                "programmableObjectTypes=[views=0,sqlStoredProcedures=0,clrStoredProcedures=0," +
-                "sqlScalarFunctions=0,sqlInlineTableValuedFunctions=0,sqlTableValuedFunctions=0," +
-                "clrScalarFunctions=0,clrTableValuedFunctions=0,aggregateFunctions=0], " +
-                "schemas=3, principals=4, roleMemberships=5, directPermissions=6, " +
-                "directPermissionTelemetry=[rawNonWhitelisted=6,positiveIdPublicSelectTargets=8," +
-                "positiveIdPublicSelectMsShippedObjectTargets=2," +
-                "positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations=1," +
-                "positiveIdPublicSelectMsShippedSystemCatalogTargets=2], options=7, ownerMismatch=8.");
+        var exception = action.Should().Throw<InvalidOperationException>().Which;
+        exception.Message.Should().StartWith(
+            "Clean bootstrap requires a pristine database surface before its durable initialization marker is written; " +
+            "safe counts were tables=1, objects=2, ");
+        exception.Message.Should().Contain("schemas=3, principals=4, roleMemberships=5, directPermissions=7, ");
+        exception.Message.Should().Contain(
+            $"directPermissionTelemetry=[{surface.DirectPermissions.ToSafeSummary()}], options=7, ownerMismatch=8.");
     }
 
     public static IEnumerable<object[]> UnexpectedCatalogCategoryIndexes() =>
@@ -204,17 +193,64 @@ public sealed class DatabaseMigratorRecoveryContractTests
             "clrStoredProcedures", "sqlScalarFunctions", "sqlInlineTableValuedFunctions",
             "sqlTableValuedFunctions", "clrScalarFunctions", "clrTableValuedFunctions", "aggregateFunctions"
         ];
-        string[] pristineOnlyFields =
+        string[] permissionFields =
         [
-            "userTables", "unexpectedSchemas", "unexpectedPrincipals", "unexpectedRoleMemberships",
             "rawNonWhitelistedDirectPermissions", "positiveIdPublicSelectTargets",
             "positiveIdPublicSelectMsShippedObjectTargets",
             "positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations",
-            "positiveIdPublicSelectMsShippedSystemCatalogTargets", "unsafeDatabaseOptions",
-            "databaseOwnerMismatches"
+            "positiveIdPublicSelectMsShippedSystemCatalogTargets",
+            "positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargets",
+            "positiveIdPublicSelectNonMsShippedOrUnresolvedTargets",
+            "rawClassDatabasePermissions", "rawClassObjectOrColumnPermissions", "rawClassOtherPermissions",
+            "rawStateGrantPermissions", "rawStateGrantWithGrantOptionPermissions", "rawStateDenyPermissions",
+            "rawStateRevokePermissions", "rawStateOtherPermissions",
+            "rawGranteePublicPermissions", "rawGranteeGuestPermissions", "rawGranteeDboPermissions",
+            "rawGranteeFixedRolePermissions", "rawGranteeOtherPermissions",
+            "rawPermissionNameConnect", "rawPermissionNameSelect", "rawPermissionNameViewDefinition",
+            "rawPermissionNameViewAnyColumnMasterKeyDefinition",
+            "rawPermissionNameViewAnyColumnEncryptionKeyDefinition", "rawPermissionNameOther",
+            "rawAddressDatabase", "rawAddressNegativeObject", "rawAddressZeroObject",
+            "rawAddressPositiveObject", "rawAddressColumn", "rawAddressOther",
+            "rawGrantorDbo", "rawGrantorOther",
+            "positiveIdPublicSelectTypeAggregateFunctions", "positiveIdPublicSelectTypeCheckConstraints",
+            "positiveIdPublicSelectTypeDefaultConstraints", "positiveIdPublicSelectTypeEdgeConstraints",
+            "positiveIdPublicSelectTypeExternalTables", "positiveIdPublicSelectTypeForeignKeys",
+            "positiveIdPublicSelectTypeSqlScalarFunctions", "positiveIdPublicSelectTypeClrScalarFunctions",
+            "positiveIdPublicSelectTypeClrTableValuedFunctions",
+            "positiveIdPublicSelectTypeSqlInlineTableValuedFunctions",
+            "positiveIdPublicSelectTypeInternalTables", "positiveIdPublicSelectTypeSqlStoredProcedures",
+            "positiveIdPublicSelectTypeClrStoredProcedures", "positiveIdPublicSelectTypePlanGuides",
+            "positiveIdPublicSelectTypePrimaryKeys", "positiveIdPublicSelectTypeRules",
+            "positiveIdPublicSelectTypeReplicationFilterProcedures",
+            "positiveIdPublicSelectTypeSystemTables", "positiveIdPublicSelectTypeSynonyms",
+            "positiveIdPublicSelectTypeSequences", "positiveIdPublicSelectTypeServiceQueues",
+            "positiveIdPublicSelectTypeStatisticsTrees", "positiveIdPublicSelectTypeClrDmlTriggers",
+            "positiveIdPublicSelectTypeSqlTableValuedFunctions",
+            "positiveIdPublicSelectTypeSqlDmlTriggers", "positiveIdPublicSelectTypeTableTypes",
+            "positiveIdPublicSelectTypeUserTables", "positiveIdPublicSelectTypeUniqueConstraints",
+            "positiveIdPublicSelectTypeViews", "positiveIdPublicSelectTypeExtendedStoredProcedures",
+            "positiveIdPublicSelectTypeOtherOrUnresolved",
+            "positiveIdPublicSelectSchemaSys", "positiveIdPublicSelectSchemaDbo",
+            "positiveIdPublicSelectSchemaOtherOrUnresolved",
+            "positiveIdPublicSelectParentless", "positiveIdPublicSelectParented",
+            "positiveIdPublicSelectParentUnresolved",
+            "positiveIdPublicSelectInViews", "positiveIdPublicSelectInProcedures",
+            "positiveIdPublicSelectInSqlModules", "positiveIdPublicSelectInTables",
+            "positiveIdPublicSelectInInternalTables", "positiveIdPublicSelectInSequences",
+            "positiveIdPublicSelectInSynonyms", "positiveIdPublicSelectInTriggers",
+            "positiveIdPublicSelectWithSpecializedCatalogMembership",
+            "positiveIdPublicSelectWithoutSpecializedCatalogMembership"
+        ];
+        string[] pristineOnlyFields =
+        [
+            "userTables", "unexpectedSchemas", "unexpectedPrincipals", "unexpectedRoleMemberships",
+            .. permissionFields,
+            "unsafeDatabaseOptions", "databaseOwnerMismatches"
         ];
 
         UnexpectedDatabaseSurfaceTelemetry.SqlFieldNames.Should().Equal(catalogFields);
+        DatabaseDirectPermissionTelemetry.SqlFieldNames.Should().Equal(permissionFields);
+        DatabaseDirectPermissionTelemetry.ExpectedFieldCount.Should().Be(permissionFields.Length);
         PristineDatabaseSurfaceSnapshot.SqlFieldNames.Should().Equal(catalogFields.Concat(pristineOnlyFields));
     }
 
@@ -297,71 +333,177 @@ public sealed class DatabaseMigratorRecoveryContractTests
     }
 
     [Theory]
-    [InlineData(0, 2, 2, 0, 2, 0)]
-    [InlineData(1, 3, 2, 1, 2, 1)]
-    [InlineData(0, 1, 1, 0, 1, 1)]
-    [InlineData(0, 3, 3, 0, 3, 1)]
-    public void DirectPermissionTelemetry_PreservesExactTwoSystemSelectBaseline(
+    [InlineData(0, 2, 2, 0, 2, 0, 0, 0)]
+    [InlineData(1, 1, 1, 0, 0, 1, 0, 2)]
+    [InlineData(1, 3, 2, 1, 2, 0, 1, 2)]
+    [InlineData(0, 2, 2, 0, 0, 2, 0, 1)]
+    [InlineData(0, 1, 1, 0, 1, 0, 0, 1)]
+    [InlineData(0, 3, 3, 0, 3, 0, 0, 1)]
+    public void DirectPermissionTelemetry_PreservesExactTwoSystemCatalogSelectBaseline(
         int rawNonWhitelisted,
         int positiveIdTargets,
         int positiveIdMsShippedObjectTargets,
         int positiveIdNonMsShippedProgrammableObjectCorrelations,
         int positiveIdMsShippedSystemCatalogTargets,
+        int positiveIdMsShippedDatabaseObjectOnlyTargets,
+        int positiveIdNonMsShippedOrUnresolvedTargets,
         int expectedUnexpected)
     {
-        var telemetry = DatabaseDirectPermissionTelemetry.FromCounts(
+        var telemetry = CreatePermissionTelemetry(
             rawNonWhitelisted,
             positiveIdTargets,
             positiveIdMsShippedObjectTargets,
             positiveIdNonMsShippedProgrammableObjectCorrelations,
-            positiveIdMsShippedSystemCatalogTargets);
+            positiveIdMsShippedSystemCatalogTargets,
+            positiveIdMsShippedDatabaseObjectOnlyTargets,
+            positiveIdNonMsShippedOrUnresolvedTargets);
 
         telemetry.UnexpectedCount.Should().Be(expectedUnexpected);
         telemetry.ToSafeSummary().Should().Be(
-            $"rawNonWhitelisted={rawNonWhitelisted}," +
-            $"positiveIdPublicSelectTargets={positiveIdTargets}," +
-            $"positiveIdPublicSelectMsShippedObjectTargets={positiveIdMsShippedObjectTargets}," +
-            "positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations=" +
-            $"{positiveIdNonMsShippedProgrammableObjectCorrelations}," +
-            $"positiveIdPublicSelectMsShippedSystemCatalogTargets={positiveIdMsShippedSystemCatalogTargets}");
+            string.Join(',', telemetry.Counts.Select(item => $"{item.Category}={item.Count}")));
     }
 
     [Fact]
-    public void DirectPermissionTelemetry_RejectsNegativeOrInconsistentCounts()
+    public void DirectPermissionTelemetry_RejectsGw26LiveTupleAndAllObjectTargetSubstitution()
     {
-        var negative = () => DatabaseDirectPermissionTelemetry.FromCounts(0, 2, 2, 0, -1);
-        var negativeProgrammableCorrelation = () => DatabaseDirectPermissionTelemetry.FromCounts(0, 2, 2, -1, 2);
-        var shippedExceedsTotal = () => DatabaseDirectPermissionTelemetry.FromCounts(0, 1, 2, 0, 1);
-        var programmableExceedsTotal = () => DatabaseDirectPermissionTelemetry.FromCounts(2, 1, 0, 2, 0);
-        var programmableExceedsRaw = () => DatabaseDirectPermissionTelemetry.FromCounts(0, 3, 2, 1, 2);
-        var unaccountedNonMsShippedTarget = () => DatabaseDirectPermissionTelemetry.FromCounts(0, 3, 2, 0, 2);
-        var programmableExceedsNonMsShippedTargets = () =>
-            DatabaseDirectPermissionTelemetry.FromCounts(2, 3, 2, 2, 2);
-        var systemCatalogExceedsTotal = () => DatabaseDirectPermissionTelemetry.FromCounts(0, 1, 1, 0, 2);
-        var systemCatalogExceedsShipped = () => DatabaseDirectPermissionTelemetry.FromCounts(0, 2, 1, 0, 2);
+        var gw26Live = CreatePermissionTelemetry(1, 1, 1, 0, 0, 1, 0);
+        var allObjectSubstitution = CreatePermissionTelemetry(0, 2, 2, 0, 0, 2, 0);
 
-        negative.Should().Throw<InvalidOperationException>();
-        negativeProgrammableCorrelation.Should().Throw<InvalidOperationException>();
-        shippedExceedsTotal.Should().Throw<InvalidOperationException>();
-        programmableExceedsTotal.Should().Throw<InvalidOperationException>();
-        programmableExceedsRaw.Should().Throw<InvalidOperationException>();
-        unaccountedNonMsShippedTarget.Should().Throw<InvalidOperationException>();
-        programmableExceedsNonMsShippedTargets.Should().Throw<InvalidOperationException>();
-        systemCatalogExceedsTotal.Should().Throw<InvalidOperationException>();
-        systemCatalogExceedsShipped.Should().Throw<InvalidOperationException>();
+        gw26Live.UnexpectedCount.Should().Be(2);
+        allObjectSubstitution.UnexpectedCount.Should().Be(1);
+        var liveAction = () => DatabaseBootstrapRecoveryContract.AssertPristine(
+            CreatePristineSurface() with { DirectPermissions = gw26Live });
+        var substitutionAction = () => DatabaseBootstrapRecoveryContract.AssertPristine(
+            CreatePristineSurface() with { DirectPermissions = allObjectSubstitution });
+        liveAction.Should().Throw<InvalidOperationException>();
+        substitutionAction.Should().Throw<InvalidOperationException>();
     }
 
     [Fact]
-    public void DirectPermissionTelemetry_RejectsCheckedUnexpectedCountOverflow()
+    public void DirectPermissionTelemetry_ReportsFixedRawAndPositiveTargetDimensionsWithoutIdentifiers()
     {
-        var action = () => DatabaseDirectPermissionTelemetry.FromCounts(
-            int.MaxValue,
-            0,
-            0,
-            0,
-            0);
+        var counts = CreatePermissionCounts(1, 1, 1, 0, 0, 1, 0);
+        SetPermissionCount(counts, "rawGranteeOtherPermissions", 0);
+        SetPermissionCount(counts, "rawGranteePublicPermissions", 1);
+        SetPermissionCount(counts, "rawPermissionNameOther", 0);
+        SetPermissionCount(counts, "rawPermissionNameViewAnyColumnEncryptionKeyDefinition", 1);
+        SetPermissionCount(counts, "rawGrantorOther", 0);
+        SetPermissionCount(counts, "rawGrantorDbo", 1);
+        SetPermissionCount(counts, "positiveIdPublicSelectTypeOtherOrUnresolved", 0);
+        SetPermissionCount(counts, "positiveIdPublicSelectTypeViews", 1);
+        SetPermissionCount(counts, "positiveIdPublicSelectSchemaOtherOrUnresolved", 0);
+        SetPermissionCount(counts, "positiveIdPublicSelectSchemaSys", 1);
+        SetPermissionCount(counts, "positiveIdPublicSelectParentUnresolved", 0);
+        SetPermissionCount(counts, "positiveIdPublicSelectParentless", 1);
+        SetPermissionCount(counts, "positiveIdPublicSelectWithoutSpecializedCatalogMembership", 0);
+        SetPermissionCount(counts, "positiveIdPublicSelectWithSpecializedCatalogMembership", 1);
+        SetPermissionCount(counts, "positiveIdPublicSelectInViews", 1);
+        SetPermissionCount(counts, "positiveIdPublicSelectInSqlModules", 1);
 
-        action.Should().Throw<OverflowException>();
+        var telemetry = DatabaseDirectPermissionTelemetry.FromOrderedCounts(counts);
+
+        telemetry.UnexpectedCount.Should().Be(2);
+        telemetry.ToSafeSummary().Should().Contain("rawGranteePublicPermissions=1");
+        telemetry.ToSafeSummary().Should().Contain("rawPermissionNameViewAnyColumnEncryptionKeyDefinition=1");
+        telemetry.ToSafeSummary().Should().Contain("rawGrantorDbo=1");
+        telemetry.ToSafeSummary().Should().Contain("positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargets=1");
+        telemetry.ToSafeSummary().Should().Contain("positiveIdPublicSelectTypeViews=1");
+        telemetry.ToSafeSummary().Should().Contain("positiveIdPublicSelectSchemaSys=1");
+        telemetry.ToSafeSummary().Should().Contain("positiveIdPublicSelectParentless=1");
+        telemetry.ToSafeSummary().Should().Contain("positiveIdPublicSelectInViews=1");
+        telemetry.ToSafeSummary().Should().NotContain("object_id");
+        telemetry.ToSafeSummary().Should().NotContain("principal_id");
+        telemetry.ToSafeSummary().Should().NotContain("sid=");
+    }
+
+    public static IEnumerable<object[]> PermissionExactPartitionFields()
+    {
+        yield return ["rawClassOtherPermissions"];
+        yield return ["rawStateOtherPermissions"];
+        yield return ["rawGranteePublicPermissions"];
+        yield return ["rawPermissionNameConnect"];
+        yield return ["rawAddressOther"];
+        yield return ["rawGrantorDbo"];
+        yield return ["positiveIdPublicSelectTypeViews"];
+        yield return ["positiveIdPublicSelectSchemaDbo"];
+        yield return ["positiveIdPublicSelectParented"];
+    }
+
+    [Theory]
+    [MemberData(nameof(PermissionExactPartitionFields))]
+    public void DirectPermissionTelemetry_RejectsEveryInconsistentExactPartition(string fieldName)
+    {
+        var counts = CreatePermissionCounts(0, 2, 2, 0, 2, 0, 0);
+        SetPermissionCount(counts, fieldName, 1);
+
+        var action = () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(counts);
+
+        action.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void DirectPermissionTelemetry_RejectsWrongCardinalityNegativeAndInconsistentSubsets()
+    {
+        var valid = CreatePermissionCounts(0, 2, 2, 0, 2, 0, 0);
+        var negative = valid.ToArray();
+        negative[0] = -1;
+        var shippedExceedsTotal = CreatePermissionCounts(0, 1, 1, 0, 1, 0, 0);
+        SetPermissionCount(shippedExceedsTotal, "positiveIdPublicSelectMsShippedObjectTargets", 2);
+        var programmableExceedsRaw = CreatePermissionCounts(0, 3, 2, 0, 2, 0, 1);
+        SetPermissionCount(programmableExceedsRaw,
+            "positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations", 1);
+        var inconsistentOrigin = CreatePermissionCounts(0, 2, 2, 0, 2, 0, 0);
+        SetPermissionCount(inconsistentOrigin, "positiveIdPublicSelectMsShippedSystemCatalogTargets", 1);
+        SetPermissionCount(inconsistentOrigin, "positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargets", 0);
+        var specializedCorrelationWithoutUnion = CreatePermissionCounts(0, 2, 2, 0, 2, 0, 0);
+        SetPermissionCount(specializedCorrelationWithoutUnion, "positiveIdPublicSelectInViews", 1);
+        var unionWithoutCorrelation = CreatePermissionCounts(0, 2, 2, 0, 2, 0, 0);
+        SetPermissionCount(unionWithoutCorrelation,
+            "positiveIdPublicSelectWithoutSpecializedCatalogMembership", 1);
+        SetPermissionCount(unionWithoutCorrelation,
+            "positiveIdPublicSelectWithSpecializedCatalogMembership", 1);
+
+        Action[] actions =
+        [
+            () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(valid[..^1]),
+            () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(negative),
+            () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(shippedExceedsTotal),
+            () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(programmableExceedsRaw),
+            () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(inconsistentOrigin),
+            () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(specializedCorrelationWithoutUnion),
+            () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(unionWithoutCorrelation)
+        ];
+        foreach (var action in actions)
+            action.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void DirectPermissionTelemetry_RejectsCheckedTotalsAndUnexpectedCountOverflow()
+    {
+        var unexpectedCountOverflow = CreatePermissionCounts(int.MaxValue, 0, 0, 0, 0, 0, 0);
+        var rawPartitionOverflow = CreatePermissionCounts(0, 0, 0, 0, 0, 0, 0);
+        SetPermissionCount(rawPartitionOverflow, "rawClassDatabasePermissions", int.MaxValue);
+        SetPermissionCount(rawPartitionOverflow, "rawClassObjectOrColumnPermissions", 1);
+        var typePartitionOverflow = CreatePermissionCounts(0, 0, 0, 0, 0, 0, 0);
+        SetPermissionCount(typePartitionOverflow, "positiveIdPublicSelectTypeAggregateFunctions", int.MaxValue);
+        SetPermissionCount(typePartitionOverflow, "positiveIdPublicSelectTypeCheckConstraints", 1);
+        var specializedCorrelationOverflow = CreatePermissionCounts(0, 0, 0, 0, 0, 0, 0);
+        SetPermissionCount(specializedCorrelationOverflow, "positiveIdPublicSelectInViews", int.MaxValue);
+        SetPermissionCount(specializedCorrelationOverflow, "positiveIdPublicSelectInProcedures", 1);
+        SetPermissionCount(specializedCorrelationOverflow,
+            "positiveIdPublicSelectWithSpecializedCatalogMembership", int.MaxValue);
+        SetPermissionCount(specializedCorrelationOverflow,
+            "positiveIdPublicSelectWithoutSpecializedCatalogMembership", 1);
+
+        Action[] actions =
+        [
+            () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(unexpectedCountOverflow),
+            () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(rawPartitionOverflow),
+            () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(typePartitionOverflow),
+            () => DatabaseDirectPermissionTelemetry.FromOrderedCounts(specializedCorrelationOverflow)
+        ];
+        foreach (var action in actions)
+            action.Should().Throw<OverflowException>();
     }
 
     public static IEnumerable<object[]> SchemaDriftCases()
@@ -543,9 +685,73 @@ public sealed class DatabaseMigratorRecoveryContractTests
             0,
             0,
             0,
-            DatabaseDirectPermissionTelemetry.FromCounts(0, 2, 2, 0, 2),
+            CreatePermissionTelemetry(0, 2, 2, 0, 2, 0, 0),
             0,
             0);
+
+    private static DatabaseDirectPermissionTelemetry CreatePermissionTelemetry(
+        int rawNonWhitelisted,
+        int positiveIdTargets,
+        int positiveIdMsShippedObjectTargets,
+        int positiveIdNonMsShippedProgrammableObjectCorrelations,
+        int positiveIdMsShippedSystemCatalogTargets,
+        int positiveIdMsShippedDatabaseObjectOnlyTargets,
+        int positiveIdNonMsShippedOrUnresolvedTargets) =>
+        DatabaseDirectPermissionTelemetry.FromOrderedCounts(
+            CreatePermissionCounts(
+                rawNonWhitelisted,
+                positiveIdTargets,
+                positiveIdMsShippedObjectTargets,
+                positiveIdNonMsShippedProgrammableObjectCorrelations,
+                positiveIdMsShippedSystemCatalogTargets,
+                positiveIdMsShippedDatabaseObjectOnlyTargets,
+                positiveIdNonMsShippedOrUnresolvedTargets));
+
+    private static int[] CreatePermissionCounts(
+        int rawNonWhitelisted,
+        int positiveIdTargets,
+        int positiveIdMsShippedObjectTargets,
+        int positiveIdNonMsShippedProgrammableObjectCorrelations,
+        int positiveIdMsShippedSystemCatalogTargets,
+        int positiveIdMsShippedDatabaseObjectOnlyTargets,
+        int positiveIdNonMsShippedOrUnresolvedTargets)
+    {
+        var counts = new int[DatabaseDirectPermissionTelemetry.ExpectedFieldCount];
+        SetPermissionCount(counts, "rawNonWhitelistedDirectPermissions", rawNonWhitelisted);
+        SetPermissionCount(counts, "positiveIdPublicSelectTargets", positiveIdTargets);
+        SetPermissionCount(counts, "positiveIdPublicSelectMsShippedObjectTargets",
+            positiveIdMsShippedObjectTargets);
+        SetPermissionCount(counts, "positiveIdPublicSelectNonMsShippedProgrammableObjectCorrelations",
+            positiveIdNonMsShippedProgrammableObjectCorrelations);
+        SetPermissionCount(counts, "positiveIdPublicSelectMsShippedSystemCatalogTargets",
+            positiveIdMsShippedSystemCatalogTargets);
+        SetPermissionCount(counts, "positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargets",
+            positiveIdMsShippedDatabaseObjectOnlyTargets);
+        SetPermissionCount(counts, "positiveIdPublicSelectNonMsShippedOrUnresolvedTargets",
+            positiveIdNonMsShippedOrUnresolvedTargets);
+
+        SetPermissionCount(counts, "rawClassDatabasePermissions", rawNonWhitelisted);
+        SetPermissionCount(counts, "rawStateGrantPermissions", rawNonWhitelisted);
+        SetPermissionCount(counts, "rawGranteeOtherPermissions", rawNonWhitelisted);
+        SetPermissionCount(counts, "rawPermissionNameOther", rawNonWhitelisted);
+        SetPermissionCount(counts, "rawAddressDatabase", rawNonWhitelisted);
+        SetPermissionCount(counts, "rawGrantorOther", rawNonWhitelisted);
+        SetPermissionCount(counts, "positiveIdPublicSelectTypeOtherOrUnresolved", positiveIdTargets);
+        SetPermissionCount(counts, "positiveIdPublicSelectSchemaOtherOrUnresolved", positiveIdTargets);
+        SetPermissionCount(counts, "positiveIdPublicSelectParentUnresolved", positiveIdTargets);
+        SetPermissionCount(counts, "positiveIdPublicSelectWithoutSpecializedCatalogMembership",
+            positiveIdTargets);
+        return counts;
+    }
+
+    private static void SetPermissionCount(int[] counts, string fieldName, int value)
+    {
+        var index = DatabaseDirectPermissionTelemetry.SqlFieldNames
+            .Select((name, ordinal) => (name, ordinal))
+            .Single(item => item.name.Equals(fieldName, StringComparison.Ordinal))
+            .ordinal;
+        counts[index] = value;
+    }
 
     private static int[] CreateZeroCatalogCounts() =>
         new int[UnexpectedDatabaseSurfaceTelemetry.ExpectedCategoryCount];
