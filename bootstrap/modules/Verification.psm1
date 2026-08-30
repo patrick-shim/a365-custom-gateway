@@ -37,7 +37,10 @@ function Test-GatewayRecordedDatabaseAttestationBoundary {
         Assert-BootstrapIpv4Value -Value ([string]$Database.privateDnsARecordIpv4Address) -Label 'Recorded SQL private DNS A-record IPv4 address'
         $apiClientId = ([guid][string]$Database.apiPrincipalClientId).ToString('D')
         $workerClientId = ([guid][string]$Database.workerPrincipalClientId).ToString('D')
-        $expectedJobName = "job-$($Config.projectName)-db-init-$($Config.environment)"
+        $isRecovery = $Database -is [System.Collections.IDictionary] -and
+            $Database.Contains('databaseRecoveryMode') -and
+            [string]$Database.databaseRecoveryMode -ceq 'ResumeAfterSchemaCompleted'
+        $expectedJobName = if ($isRecovery) { "job-$($Config.projectName)-db-recover-$($Config.environment)" } else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
         $expectedJobId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/jobs/$expectedJobName"
         $intent = $Database.initializationIntent
         if (-not $intent -or
@@ -78,6 +81,7 @@ function Test-GatewayRecordedDatabaseAttestationBoundary {
             [int]$intent.schemaVersion -ne 1 -or
             [string]$intent.deploymentOwnershipId -cne $canonicalOwnershipId -or
             [string]$intent.acceptedSourceFingerprint -cne $SourceFingerprint -or
+            ($isRecovery -and [string]$intent.recoveryMode -cne 'ResumeAfterSchemaCompleted') -or
             [string]$intent.server -cne [string]$Runtime.sqlServerFqdn -or
             [string]$intent.database -cne 'GatewayDb' -or
             [string]$intent.databaseCollation -cne 'SQL_Latin1_General_CP1_CI_AS' -or
@@ -744,9 +748,19 @@ function Test-GatewayBootstrapDeployment {
         [Parameter(Mandatory)]$AdminIdentity,
         [Parameter(Mandatory)]$AdminCredential,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter()][AllowNull()][System.Collections.IDictionary]$DatabaseRecoveryPlan,
         [switch]$NonInteractive
     )
     $root = Get-BootstrapExecutionSourceRoot
+    $isRecovery = $null -ne $DatabaseRecoveryPlan
+    $databaseJobImage = if ($isRecovery) { [string]$Database.databaseBootstrapJobImage } else { [string]$Images.databaseMigrator }
+    if ($isRecovery -and (
+        [string]$DatabaseRecoveryPlan.status -cne 'Completed' -or
+        [string]$Database.databaseRecoveryPlanFingerprint -cne [string]$DatabaseRecoveryPlan.planFingerprint -or
+        [string]$Database.recoverySourceFingerprint -cne [string]$DatabaseRecoveryPlan.correctedSourceFingerprint -or
+        [string]$Database.originalFailedDatabaseBootstrapBoundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint)) {
+        throw 'Completed database recovery state does not reconcile to the recorded database evidence.'
+    }
     Assert-GatewayRuntimeDeploymentOwnership -Runtime $Runtime -DeploymentOwnershipId $DeploymentOwnershipId | Out-Null
     Test-GatewaySqlPrivateEndpointEvidence -Config $Config -Foundation $Foundation -SqlServerFqdn ([string]$Runtime.sqlServerFqdn) -Evidence $SqlPrivateEndpoint -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint ([string]$Images.sourceFingerprint) | Out-Null
     foreach ($propertyName in @(
@@ -765,7 +779,7 @@ function Test-GatewayBootstrapDeployment {
         -Database $Database `
         -DeploymentOwnershipId $DeploymentOwnershipId `
         -SourceFingerprint ([string]$Images.sourceFingerprint) | Out-Null
-    if ([string]$Database.databaseBootstrapJobImage -cne [string]$Images.databaseMigrator) {
+    if (-not $isRecovery -and [string]$Database.databaseBootstrapJobImage -cne [string]$Images.databaseMigrator) {
         throw 'Recorded database-bootstrap image does not match the exact accepted immutable image.'
     }
     $databaseApiPrincipal = [ordered]@{
@@ -779,10 +793,13 @@ function Test-GatewayBootstrapDeployment {
     $databaseJob = Get-GatewayDatabaseBootstrapJobEvidence `
         -Config $Config -Foundation $Foundation -SqlServerFqdn ([string]$Runtime.sqlServerFqdn) `
         -ExpectedPrivateEndpointIpv4Address ([string]$SqlPrivateEndpoint.privateEndpointIpv4Address) `
-        -JobImage ([string]$Images.databaseMigrator) `
+        -JobImage $databaseJobImage `
         -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint ([string]$Images.sourceFingerprint) `
         -ApiPrincipal $databaseApiPrincipal -WorkerPrincipal $databaseWorkerPrincipal `
-        -ExecutionIntentId ([string]$Database.databaseBootstrapExecutionIntentId)
+        -ExecutionIntentId ([string]$Database.databaseBootstrapExecutionIntentId) `
+        -Recovery:$isRecovery `
+        -RecoverySourceFingerprint $(if ($isRecovery) { [string]$DatabaseRecoveryPlan.correctedSourceFingerprint } else { '' }) `
+        -RecoveryPlanFingerprint $(if ($isRecovery) { [string]$DatabaseRecoveryPlan.planFingerprint } else { '' })
     if (-not ([string]$databaseJob.jobId).Equals([string]$Database.databaseBootstrapJobId, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$databaseJob.jobName -cne [string]$Database.databaseBootstrapJobName -or
         [string]$databaseJob.jobPrincipalId -cne [string]$Database.databaseBootstrapJobPrincipalId) {
@@ -798,11 +815,24 @@ function Test-GatewayBootstrapDeployment {
     $null = Get-GatewayDatabaseBootstrapExecutionEvidence `
         -Config $Config -JobName ([string]$Database.databaseBootstrapJobName) `
         -ExecutionName ([string]$Database.databaseBootstrapExecutionName) `
-        -JobImage ([string]$Images.databaseMigrator) -SqlServerFqdn ([string]$Runtime.sqlServerFqdn) `
+        -JobImage $databaseJobImage -SqlServerFqdn ([string]$Runtime.sqlServerFqdn) `
         -ExpectedPrivateEndpointIpv4Address ([string]$SqlPrivateEndpoint.privateEndpointIpv4Address) `
         -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint ([string]$Images.sourceFingerprint) `
         -ApiPrincipal $databaseApiPrincipal -WorkerPrincipal $databaseWorkerPrincipal `
-        -ExecutionIntentId ([string]$Database.databaseBootstrapExecutionIntentId)
+        -ExecutionIntentId ([string]$Database.databaseBootstrapExecutionIntentId) -Recovery:$isRecovery
+    if ($isRecovery) {
+        $originalFailure = Get-GatewayFailedDatabaseBootstrapBoundary `
+            -Config $Config -Foundation $Foundation -SqlPrivateEndpoint $SqlPrivateEndpoint `
+            -SqlServerFqdn ([string]$Runtime.sqlServerFqdn) `
+            -OriginalJobImage ([string]$DatabaseRecoveryPlan.failedJob.jobImage) `
+            -DeploymentOwnershipId $DeploymentOwnershipId -OriginalSourceFingerprint ([string]$Images.sourceFingerprint) `
+            -ApiPrincipal $databaseApiPrincipal -WorkerPrincipal $databaseWorkerPrincipal `
+            -OriginalAdministratorObjectId ([string]$Database.originalSqlAdministratorObjectId) `
+            -OriginalAdministratorLogin ([string]$Database.originalSqlAdministratorLogin)
+        if ([string]$originalFailure.boundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint) {
+            throw 'The original failed database-bootstrap Job/execution/intent evidence changed after recovery.'
+        }
+    }
     Test-GatewayGroupDeploymentEvidence `
         -Config $Config `
         -Foundation $Foundation `
@@ -865,9 +895,16 @@ function Test-GatewayBootstrapDeployment {
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Runtime.apiPrincipalId) -ExpectedRoleValues @($expectedApiRoles) | Out-Null
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Runtime.runtimeImagePullIdentityPrincipalId) -ExpectedRoleValues @() | Out-Null
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Database.databaseBootstrapJobPrincipalId) -ExpectedRoleValues @() | Out-Null
+    if ($isRecovery) {
+        $originalJobPrincipalId = [string]$DatabaseRecoveryPlan.failedJob.jobPrincipalId
+        Assert-GatewayServicePrincipalHasNoDirectoryMemberships -PrincipalId $originalJobPrincipalId -PrincipalLabel 'Original failed database-bootstrap Job identity' | Out-Null
+        Assert-GatewayPrincipalExactAzureRoleAssignments -PrincipalId $originalJobPrincipalId -SubscriptionId ([guid][string]$Config.subscriptionId).ToString('D') -ExpectedAssignments @() -PrincipalLabel 'Original failed database-bootstrap Job identity' | Out-Null
+        Assert-ExactGraphApplicationRoleAssignments -PrincipalId $originalJobPrincipalId -ExpectedRoleValues @() | Out-Null
+    }
     $serverName = ([string]$Runtime.sqlServerFqdn).Split('.')[0]
     $sqlPublic = Invoke-AzTsv -Arguments @('sql', 'server', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $serverName, '--query', 'publicNetworkAccess')
-    if ($sqlPublic -ne 'Disabled') { throw 'Azure SQL public network access is not Disabled.' }
+    $sqlAzureAdOnly = Invoke-AzTsv -Arguments @('sql', 'server', 'ad-only-auth', 'get', '--resource-group', [string]$Config.resourceGroupName, '--name', $serverName, '--query', 'azureAdOnlyAuthentication')
+    if ($sqlPublic -ne 'Disabled' -or $sqlAzureAdOnly -cne 'true') { throw 'Azure SQL must retain public access Disabled and Entra-only authentication enabled.' }
     $sqlFirewallRules = @(Invoke-AzJson -Arguments @('sql', 'server', 'firewall-rule', 'list', '--resource-group', [string]$Config.resourceGroupName, '--server', $serverName, '--query', '[].{name:name}'))
     if ($sqlFirewallRules.Count -ne 0) { throw 'Azure SQL does not retain the exact zero-firewall-rule private bootstrap boundary.' }
     $sqlAdministrator = Get-GatewaySqlEntraAdministrator -Config $Config -ServerName $serverName
@@ -889,7 +926,7 @@ function Test-GatewayBootstrapDeployment {
         $actualImage = Invoke-AzTsv -Arguments @('containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $entry.Key, '--query', 'properties.template.containers[0].image')
         if ($actualImage -ne $entry.Value) { throw "Container App '$($entry.Key)' is not running the recorded immutable image digest." }
     }
-    if ([string]$Database.databaseBootstrapJobImage -cne [string]$Images.databaseMigrator) {
+    if (-not $isRecovery -and [string]$Database.databaseBootstrapJobImage -cne [string]$Images.databaseMigrator) {
         throw 'The database-bootstrap evidence is not bound to the immutable migrator image from the accepted build step.'
     }
     $databaseJobImage = Invoke-AzTsv -Arguments @(
@@ -897,7 +934,7 @@ function Test-GatewayBootstrapDeployment {
         '--name', [string]$Database.databaseBootstrapJobName,
         '--query', 'properties.template.containers[0].image'
     )
-    if ($databaseJobImage -cne [string]$Images.databaseMigrator) {
+    if ($databaseJobImage -cne [string]$Database.databaseBootstrapJobImage) {
         throw 'The dormant database-bootstrap job is not pinned to the recorded immutable migrator image.'
     }
     $databaseJobExecutions = @(Get-GatewayDatabaseBootstrapExecutions -Config $Config -JobName ([string]$Database.databaseBootstrapJobName))

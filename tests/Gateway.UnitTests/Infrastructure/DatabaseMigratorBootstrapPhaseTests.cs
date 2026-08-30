@@ -218,6 +218,66 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             .WithMessage("*allowed only for the bootstrap phase*");
     }
 
+    [Fact]
+    public async Task Bootstrap_AcceptsOnlyTheExactRequiredRecoveryModeBeforeAuthentication()
+    {
+        var action = () => InvokeMigratorAsync(
+            CreateBoundBootstrapArguments()
+                .Concat(["--required-recovery-mode", "ResumeAfterSchemaCompleted"])
+                .ToArray());
+
+        await action.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*requires the Container Apps managed-identity endpoint*");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("Fresh")]
+    [InlineData("ResumeBeforeSchemaMutation")]
+    [InlineData("resumeafterschemacompleted")]
+    public async Task Bootstrap_RejectsAnyNonExactRequiredRecoveryMode(string value)
+    {
+        var action = () => InvokeMigratorAsync(
+            CreateBoundBootstrapArguments()
+                .Concat(["--required-recovery-mode", value])
+                .ToArray());
+
+        await action.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*--required-recovery-mode must be the exact value ResumeAfterSchemaCompleted*");
+    }
+
+    [Fact]
+    public async Task NonBootstrapPhase_RejectsRequiredRecoveryMode()
+    {
+        var action = () => InvokeMigratorAsync(
+            "--server", "sql-test.database.windows.net",
+            "--database", "GatewayDb",
+            "--phase", "verify",
+            "--required-recovery-mode", "ResumeAfterSchemaCompleted");
+
+        await action.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*allowed only for the one-shot bootstrap database recovery job*");
+    }
+
+    [Fact]
+    public async Task Bootstrap_RejectsAmbientRequiredRecoveryMode()
+    {
+        const string variableName = "DATABASE_MIGRATOR_REQUIRED_RECOVERY_MODE";
+        var priorValue = Environment.GetEnvironmentVariable(variableName);
+        try
+        {
+            Environment.SetEnvironmentVariable(variableName, "ResumeAfterSchemaCompleted");
+            var action = () => InvokeMigratorAsync(CreateBoundBootstrapArguments());
+
+            await action.Should().ThrowAsync<ArgumentException>()
+                .WithMessage("*is forbidden; recovery classification requires the explicit command-line option*");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variableName, priorValue);
+        }
+    }
+
     [Theory]
     [InlineData("true")]
     [InlineData("false")]
@@ -324,6 +384,39 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
         dnsConvergence.Should().BeGreaterThanOrEqualTo(0);
         dnsConvergence.Should().BeLessThan(tokenAcquisition);
         tokenAcquisition.Should().BeLessThan(sqlOpen);
+    }
+
+    [Fact]
+    public void RequiredRecoveryMode_IsEnforcedImmediatelyAfterClassificationAndBeforeMutation()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "Gateway.DatabaseMigrator",
+            "Program.cs"));
+        var initializationBody = Regex.Match(
+            source,
+            @"static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedUnderLockAsync\([\s\S]*?(?=\nstatic void AssertRequiredDatabaseInitializationRecoveryMode)",
+            RegexOptions.CultureInvariant).Value;
+
+        initializationBody.Should().NotBeEmpty();
+        initializationBody.Should().MatchRegex(
+            @"var recoveryMode = DatabaseBootstrapRecoveryContract\.Classify\(\s*tableCount,\s*observedMarker,\s*expectedMarker,\s*exactCurrentSchema\);\s*AssertRequiredDatabaseInitializationRecoveryMode\(recoveryMode, requiredRecoveryMode\);");
+        var classificationGate = initializationBody.IndexOf(
+            "AssertRequiredDatabaseInitializationRecoveryMode(recoveryMode, requiredRecoveryMode)",
+            StringComparison.Ordinal);
+        classificationGate.Should().BeGreaterThanOrEqualTo(0);
+        classificationGate.Should().BeLessThan(initializationBody.IndexOf(
+            "ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync(connection)",
+            StringComparison.Ordinal));
+        classificationGate.Should().BeLessThan(initializationBody.IndexOf(
+            "WriteDatabaseInitializationMarkerAsync(connection, expectedMarker)",
+            StringComparison.Ordinal));
+        classificationGate.Should().BeLessThan(initializationBody.IndexOf(
+            "context.Database.EnsureCreatedAsync()",
+            StringComparison.Ordinal));
+        source.Should().Contain(
+            "no schema, seed, or principal mutation was attempted");
     }
 
     [Fact]

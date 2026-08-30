@@ -2501,6 +2501,137 @@ function Build-GatewayImages {
     return $result
 }
 
+function Build-GatewayDatabaseRecoveryImage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$AcrLoginServer,
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$RecoveryPlanFingerprint,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$BuildIntent,
+        [Parameter(Mandatory)][scriptblock]$Checkpoint
+    )
+
+    $root = Get-BootstrapExecutionSourceRoot
+    $registry = $AcrLoginServer.Split('.')[0]
+    $repository = 'gateway-db-migrator'
+    $dockerfile = 'tools/Gateway.DatabaseMigrator/Dockerfile'
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Database recovery image source fingerprint'
+    Assert-BootstrapFingerprintValue -Value $RecoveryPlanFingerprint -Label 'Database recovery plan fingerprint'
+    Assert-GuidValue -Value $DeploymentOwnershipId -Label 'Database recovery deployment ownership ID'
+    if ($registry -cnotmatch '^[a-z0-9]{5,50}$' -or
+        $AcrLoginServer -cne "$registry.azurecr.io" -or
+        (Get-BootstrapSourceFingerprint -Root $root) -cne $SourceFingerprint) {
+        throw 'The database recovery image source or deployment ACR boundary is invalid.'
+    }
+    foreach ($name in @('component', 'repository', 'dockerfile', 'intentId', 'tag', 'state')) {
+        if (-not $BuildIntent.Contains($name)) { throw "Database recovery image intent is missing '$name'." }
+    }
+    $canonicalIntentId = ([guid][string]$BuildIntent.intentId).ToString('D')
+    $expectedTag = Get-BootstrapImageBuildIntentTag `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -SourceFingerprint $SourceFingerprint `
+        -IntentId $canonicalIntentId
+    if ([string]$BuildIntent.component -cne 'databaseMigratorRecovery' -or
+        [string]$BuildIntent.repository -cne $repository -or
+        [string]$BuildIntent.dockerfile -cne $dockerfile -or
+        [string]$BuildIntent.intentId -cne $canonicalIntentId -or
+        [guid]$canonicalIntentId -eq [guid]::Empty -or
+        [string]$BuildIntent.tag -cne $expectedTag -or
+        [string]$BuildIntent.state -cnotin @('Planned', 'IntentRecorded', 'RunQueued', 'DigestCheckpointed')) {
+        throw 'The database recovery image intent is malformed or belongs to another source/owner.'
+    }
+    $result = ConvertTo-BootstrapCanonicalValue -Value $BuildIntent
+    $result['schemaVersion'] = 1
+    $result['recoveryPlanFingerprint'] = $RecoveryPlanFingerprint
+    $result['sourceFingerprint'] = $SourceFingerprint
+    $result['deploymentOwnershipId'] = ([guid]$DeploymentOwnershipId).ToString('D')
+    $intentCreatedThisInvocation = $false
+    $buildContext = $null
+    try {
+        if ([string]$result.state -ceq 'DigestCheckpointed') {
+            $digest = [string]$result.digest
+            $image = "$AcrLoginServer/$repository@$digest"
+            $discovered = Get-GatewayAcrExactTagDigest -Registry $registry -Repository $repository -Tag $expectedTag
+            if ($digest -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+                [string]$result.image -cne $image -or
+                -not $discovered -or [string]$discovered.digest -cne $digest) {
+                throw 'The checkpointed database recovery image no longer matches its exact ACR tag and digest.'
+            }
+            return $result
+        }
+
+        if ([string]$result.state -ceq 'Planned') {
+            $preexisting = Get-GatewayAcrExactTagDigest -Registry $registry -Repository $repository -Tag $expectedTag
+            $preexistingRuns = @(Get-GatewayAcrExactImageRuns -Registry $registry -Repository $repository -Tag $expectedTag)
+            if ($preexisting -or $preexistingRuns.Count -ne 0) {
+                throw 'The planned database recovery image intent already has provider state; refusing to adopt or overwrite it.'
+            }
+            $result.state = 'IntentRecorded'
+            & $Checkpoint $result
+            $intentCreatedThisInvocation = $true
+        }
+
+        if ([string]$result.state -ceq 'IntentRecorded') {
+            $runs = @()
+            for ($attempt = 1; $attempt -le 6 -and $runs.Count -eq 0; $attempt++) {
+                $runs = @(Get-GatewayAcrExactImageRuns -Registry $registry -Repository $repository -Tag $expectedTag)
+                if ($runs.Count -eq 0 -and -not $intentCreatedThisInvocation -and $attempt -lt 6) { Start-Sleep -Seconds 2 }
+                elseif ($intentCreatedThisInvocation) { break }
+            }
+            if ($runs.Count -eq 0) {
+                if (-not $intentCreatedThisInvocation) {
+                    throw 'The recorded database recovery image intent has no exact ACR run or digest. Its submission outcome is ambiguous; automatic resubmission is forbidden.'
+                }
+                $buildContext = New-GatewayAcrBuildContext -RepositoryRoot $root -SourceFingerprint $SourceFingerprint
+                $completedRun = Invoke-AzJson -CaptureStdoutOnly -Arguments @(
+                    'acr', 'build', '--registry', $registry, '--image', "${repository}:$expectedTag",
+                    '--file', $dockerfile, $buildContext, '--no-logs',
+                    '--query', '{runId:runId,status:status,runType:runType,outputImages:not_null(outputImages, `[]`)[].{repository:repository,tag:tag,digest:digest}}')
+                $completedRun = Assert-GatewayAcrCompletedBuildContract -Run $completedRun -Repository $repository -Tag $expectedTag
+                $result.runId = [string]$completedRun.runId
+            }
+            else {
+                $result.runId = [string]$runs[0].runId
+            }
+            $result.state = 'RunQueued'
+            & $Checkpoint $result
+        }
+
+        if ([string]$result.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$') {
+            throw 'The database recovery image intent has no canonical ACR run identifier.'
+        }
+        $terminalRun = $null
+        for ($attempt = 1; $attempt -le 30; $attempt++) {
+            $currentRun = Get-GatewayAcrExactRunById -Registry $registry -Repository $repository -Tag $expectedTag -RunId ([string]$result.runId)
+            if ([string]$currentRun.status -ceq 'Succeeded') { $terminalRun = $currentRun; break }
+            if ([string]$currentRun.status -in @('Failed', 'Canceled', 'Error', 'Timeout')) {
+                throw 'The exact database recovery ACR build reached a terminal failure. Automatic resubmission is forbidden.'
+            }
+            if ($attempt -lt 30) { Start-Sleep -Seconds 2 }
+        }
+        if (-not $terminalRun) {
+            throw 'The exact database recovery ACR build is pending or unavailable. Retry reconciliation later; no second build was submitted.'
+        }
+        $digest = [string]@($terminalRun.outputImages)[0].digest
+        $discovered = Get-GatewayAcrExactTagDigest -Registry $registry -Repository $repository -Tag $expectedTag
+        if ($digest -cnotmatch '^sha256:[0-9a-f]{64}$' -or -not $discovered -or [string]$discovered.digest -cne $digest) {
+            throw 'The succeeded database recovery ACR run did not reconcile to its exact intent tag and digest.'
+        }
+        $result.state = 'DigestCheckpointed'
+        $result.digest = $digest
+        $result.image = "$AcrLoginServer/$repository@$digest"
+        & $Checkpoint $result
+        return $result
+    }
+    finally {
+        if ($buildContext -and (Test-Path -LiteralPath $buildContext)) {
+            Remove-Item -LiteralPath $buildContext -Recurse -Force
+        }
+    }
+}
+
 function Get-GatewaySqlPrivateEndpointAddressSnapshot {
     [CmdletBinding()]
     param(

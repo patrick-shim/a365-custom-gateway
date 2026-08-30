@@ -42,6 +42,15 @@ if (!string.IsNullOrWhiteSpace(pristineDiagnosticOnlyEnvironmentValue))
 }
 var pristineDiagnosticOnly =
     options.TryGetValue("pristine-diagnostic-only", out var pristineDiagnosticOnlyValue);
+var requiredRecoveryModeEnvironmentValue =
+    Environment.GetEnvironmentVariable("DATABASE_MIGRATOR_REQUIRED_RECOVERY_MODE");
+if (!string.IsNullOrWhiteSpace(requiredRecoveryModeEnvironmentValue))
+{
+    throw new ArgumentException(
+        "DATABASE_MIGRATOR_REQUIRED_RECOVERY_MODE is forbidden; recovery classification requires the explicit command-line option.");
+}
+var requiredRecoveryModeWasProvided =
+    options.TryGetValue("required-recovery-mode", out var requiredRecoveryModeValue);
 
 if (!server.EndsWith(".database.windows.net", StringComparison.OrdinalIgnoreCase) ||
     server.Any(char.IsWhiteSpace))
@@ -68,6 +77,21 @@ if (pristineDiagnosticOnly &&
 {
     throw new ArgumentException(
         "--pristine-diagnostic-only must be the exact value true and is allowed only for the bootstrap phase.");
+}
+
+DatabaseInitializationRecoveryMode? requiredRecoveryMode = null;
+if (requiredRecoveryModeWasProvided)
+{
+    if (phase != "bootstrap" ||
+        !string.Equals(
+            requiredRecoveryModeValue,
+            nameof(DatabaseInitializationRecoveryMode.ResumeAfterSchemaCompleted),
+            StringComparison.Ordinal))
+    {
+        throw new ArgumentException(
+            "--required-recovery-mode must be the exact value ResumeAfterSchemaCompleted and is allowed only for the one-shot bootstrap database recovery job.");
+    }
+    requiredRecoveryMode = DatabaseInitializationRecoveryMode.ResumeAfterSchemaCompleted;
 }
 
 Guid? executionIntentId = null;
@@ -318,7 +342,8 @@ if (phase == "bootstrap")
         executionIntentId!.Value,
         deploymentOwnershipId!.Value,
         acceptedSourceFingerprint!,
-        expectedRuntimePrincipals);
+        expectedRuntimePrincipals,
+        requiredRecoveryMode);
 }
 if (phase == "principal")
 {
@@ -478,7 +503,8 @@ static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
     Guid executionIntentId,
     Guid deploymentOwnershipId,
     string acceptedSourceFingerprint,
-    IReadOnlyCollection<ExpectedDatabasePrincipal> expectedRuntimePrincipals)
+    IReadOnlyCollection<ExpectedDatabasePrincipal> expectedRuntimePrincipals,
+    DatabaseInitializationRecoveryMode? requiredRecoveryMode)
 {
     if (expectedRuntimePrincipals.Count != 2 ||
         expectedRuntimePrincipals.Count(item => item.ExpectedDirectPermissionCount == 1) != 1 ||
@@ -503,7 +529,8 @@ static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
             database,
             deploymentOwnershipId,
             acceptedSourceFingerprint,
-            expectedRuntimePrincipals);
+            expectedRuntimePrincipals,
+            requiredRecoveryMode);
         await AssertCurrentEfModelSchemaAsync(
             connection,
             expectedRuntimePrincipals,
@@ -642,7 +669,8 @@ static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedAs
             database,
             deploymentOwnershipId,
             acceptedSourceFingerprint,
-            expectedRuntimePrincipals);
+            expectedRuntimePrincipals,
+            requiredRecoveryMode: null);
     }
     finally
     {
@@ -656,7 +684,8 @@ static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedUn
     string database,
     Guid deploymentOwnershipId,
     string acceptedSourceFingerprint,
-    IReadOnlyCollection<ExpectedDatabasePrincipal> expectedRuntimePrincipals)
+    IReadOnlyCollection<ExpectedDatabasePrincipal> expectedRuntimePrincipals,
+    DatabaseInitializationRecoveryMode? requiredRecoveryMode)
 {
     var databaseIdentity = await ReadDatabaseIdentityBindingAsync(connection);
     var marker = CreateDatabaseInitializationIntent(
@@ -687,6 +716,7 @@ static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedUn
         observedMarker,
         expectedMarker,
         exactCurrentSchema);
+    AssertRequiredDatabaseInitializationRecoveryMode(recoveryMode, requiredRecoveryMode);
 
     if (recoveryMode is DatabaseInitializationRecoveryMode.Fresh or
         DatabaseInitializationRecoveryMode.ResumeBeforeSchemaMutation)
@@ -747,6 +777,17 @@ static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedUn
         marker.DatabaseOwnerSidSha256,
         recoveryMode.ToString(),
         true);
+}
+
+static void AssertRequiredDatabaseInitializationRecoveryMode(
+    DatabaseInitializationRecoveryMode actualRecoveryMode,
+    DatabaseInitializationRecoveryMode? requiredRecoveryMode)
+{
+    if (requiredRecoveryMode is not null && actualRecoveryMode != requiredRecoveryMode.Value)
+    {
+        throw new InvalidOperationException(
+            $"Database recovery classified the persisted database as {actualRecoveryMode}, not the exact required {requiredRecoveryMode.Value}; no schema, seed, or principal mutation was attempted.");
+    }
 }
 
 static DatabaseInitializationIntent CreateDatabaseInitializationIntent(

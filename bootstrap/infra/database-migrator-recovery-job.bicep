@@ -169,6 +169,8 @@ resource databaseRecoveryJob 'Microsoft.App/jobs@2025-01-01' = {
             databaseName
             '--phase'
             'bootstrap'
+            '--required-recovery-mode'
+            'ResumeAfterSchemaCompleted'
             '--repeat'
             '1'
             '--repository-root'

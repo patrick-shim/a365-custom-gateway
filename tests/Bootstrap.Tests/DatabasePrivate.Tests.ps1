@@ -925,7 +925,10 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 if ($PrincipalObjectId -ceq $script:workerPrincipalId) { return $script:worker }
                 throw 'Unexpected managed identity lookup.'
             }
-            Mock Invoke-AzTsv { return 'Disabled' }
+            Mock Invoke-AzTsv {
+                if ($Arguments -contains 'ad-only-auth') { return 'true' }
+                return 'Disabled'
+            }
             Mock Invoke-AzJson { return @() }
             Mock Deploy-GatewayDatabaseBootstrapJob {
                 return [ordered]@{
@@ -1003,7 +1006,10 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 if ($PrincipalObjectId -ceq $script:workerPrincipalId) { return $script:worker }
                 throw 'Unexpected managed identity lookup.'
             }
-            Mock Invoke-AzTsv { return 'Disabled' }
+            Mock Invoke-AzTsv {
+                if ($Arguments -contains 'ad-only-auth') { return 'true' }
+                return 'Disabled'
+            }
             Mock Invoke-AzJson { return @() }
             Mock Deploy-GatewayDatabaseBootstrapJob {
                 return [ordered]@{

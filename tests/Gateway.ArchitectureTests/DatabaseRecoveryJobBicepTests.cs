@@ -77,6 +77,10 @@ public class DatabaseRecoveryJobBicepTests
         source.Should().NotContain(":latest");
         source.Should().Contain("'dotnet'\n            'Gateway.DatabaseMigrator.dll'");
         source.Should().Contain("'--phase'\n            'bootstrap'");
+        source.Should().Contain(
+            "'--required-recovery-mode'\n            'ResumeAfterSchemaCompleted'");
+        Regex.Matches(source, "'--required-recovery-mode'", RegexOptions.CultureInvariant)
+            .Count.Should().Be(1);
         source.Should().Contain("'--repeat'\n            '1'");
         source.Should().Contain("'--expected-private-endpoint-ip'\n            expectedPrivateEndpointIp");
         source.Should().Contain("'--deployment-ownership-id'\n            deploymentOwnershipId");
