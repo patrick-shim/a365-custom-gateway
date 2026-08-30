@@ -1461,9 +1461,44 @@ solution Release builds with zero warnings/errors. Full .NET passes
 (609 + 155 + 118 + 149 + 92 + 106 + 121 + 133). Full canonical Bootstrap Pester
 completed **466** total: **465** passed, zero failed, **1** skipped, and zero
 inconclusive/not run in **188.92s**. This is local proof, not live post-create
-verification. Commit the frozen fix, then run only a fresh isolated `a365gw30`
-Plan/Apply in target subscription. Never Resume `a365gw29`. No action in protected
-subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` is authorized.
+verification. At that checkpoint the next action was to commit the frozen fix and
+run fresh isolated `a365gw30`; `a365gw29` remained immutable.
+
+Generation `a365gw30` accepted Plan
+`sha256:41da8543c26d5ed5b6cb23de26f83da392d75f750abf9133f254167ac247f577`,
+configuration
+`sha256:70318a6a8c7c5c2ad3a2fcb643040d7b5507bf7d156b4350ddcf54e56663f448`,
+source
+`sha256:1f7b6ea33513db53a3fe4bc71a54975afbe30973005dd00d0baddd8af1142689`,
+ownership `3fa7d337-1bd5-4937-97e1-f069c6cd7ec9`, at commit `847fdc5`.
+Apply completed steps 1–10. Sole retry-disabled execution
+`job-a365gw30-db-init-dev-zo20dqz` created schema and seed, then failed at
+`GetExpectedSchemaContract` (`Program.cs:2006`) because a null default schema was
+coerced to `dbo` for EF
+`GetValueGenerationStrategy(ActivityReceipt.Id)`. Runtime-principal and completion-
+evidence creation were not reached. The replica exited 139 and was not restarted.
+
+The exact original SQL administrator `admin@diax48836189.onmicrosoft.com`,
+object/SID `2db7287c-9462-404f-810e-17e57377618d`, was restored at
+`2026-08-30T19:40:05.3370530Z`. Later steps remained pending and the runtime stayed
+inert; no registration, Registry action, Gateway key, canary, or Service Bus data-
+plane action occurred. Preserve the generation, schema/seed, failed execution/
+replica, and restored administrator. Never Resume `a365gw30` or start its Job again.
+
+The settled offline correction derives identity metadata from the exact
+`IColumnMapping` `TableMapping` table/schema, and the included-index helper uses the
+exact `index.Table` schema. Compiled production-helper regressions cover the full
+model, `ActivityReceipts`, synthetic null-schema `IDENTITY(37,11)`,
+`IncludeProperties`, and closed SQL. Focused schema **3/3**, full phase class
+**33/33**, and the migrator build with zero warnings/errors pass. Full Release also
+completes with zero warnings and zero errors. Full .NET passes **1,485/1,485**, zero
+failed/skipped: Unit 611, Admin UI 155, Setup 118, Observability/runtime 149,
+Integration 92, E2E 106, Architecture 121, and Security 133. Canonical Bootstrap
+Pester discovered **466**: **465** passed, zero failed, **1** skipped, with **7**
+existing unapproved-verb warnings and no errors. Commit the frozen fix, then run
+only fresh isolated `a365gw31` Plan/Apply in target subscription; never Resume or
+restart `a365gw30`. No action
+in protected subscription `95bedc30-f6ac-481b-a3a6-588d2883c216` is authorized.
 
 
 The first target-subscription Apply attempt used the earlier source generation
@@ -2596,8 +2631,11 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof by committing the
-   frozen, fully gated two-line EF Core 10 design-time-model fix. Then run only a
-   fresh isolated `a365gw30` Plan/Apply in target subscription
+   frozen mapping-specific schema fix. Its full Release, .NET **1,485/1,485**, and
+   canonical Bootstrap Pester **465/466** gates pass with zero failures; the sole
+   Pester skip and **7** existing unapproved-verb warnings are preserved. Then run
+   only a fresh isolated `a365gw31` Plan/Apply in target
+   subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
    preserve `a365gw14`, `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with
@@ -2646,7 +2684,12 @@ separate authorization entry here.
    after convergence, marker write, and schema creation. Post-create exact-schema
    verification failed before runtime-principal/evidence creation; the exact
    original administrator was restored and later steps remain pending/inert. Never
-   Resume `a365gw29` or second-start its Job. None may
+   Resume `a365gw29` or second-start its Job. Preserve `a365gw30` with steps 1–10
+   complete and its sole retry-disabled execution terminal `Failed` after schema/
+   seed creation but before runtime-principal/evidence creation. Its replica exited
+   139 with no restart, the exact original administrator was restored, and later
+   steps stayed pending/inert. Never Resume `a365gw30` or start its Job again. None
+   may
    consume edited source. Capture the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, private database-Job execution and original SQL

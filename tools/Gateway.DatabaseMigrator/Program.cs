@@ -1988,7 +1988,6 @@ static ExactDatabaseSchemaSnapshot GetExpectedSchemaContract(
             continue;
         var schema = table.Schema ?? "dbo";
         var tableKey = $"{schema}.{table.Name}";
-        var storeObject = StoreObjectIdentifier.Table(table.Name, schema);
         var hasLobData = table.Columns.Any(column => IsLargeObjectStoreType(column.StoreType));
         tables.Add(
             $"{tableKey}|temporal:0|memory:0|durability:SCHEMA_AND_DATA|" +
@@ -1998,23 +1997,33 @@ static ExactDatabaseSchemaSnapshot GetExpectedSchemaContract(
 
         foreach (var column in table.Columns)
         {
-            var mappedProperties = column.PropertyMappings
-                .Select(mapping => mapping.Property)
+            var propertyMappings = column.PropertyMappings
+                .Select(mapping =>
+                {
+                    var mappedTable = mapping.TableMapping.Table;
+                    var mappedStoreObject = StoreObjectIdentifier.Table(mappedTable.Name, mappedTable.Schema);
+                    return (
+                        Property: mapping.Property,
+                        StoreObject: mappedStoreObject,
+                        Strategy: mapping.Property.GetValueGenerationStrategy(mappedStoreObject));
+                })
                 .Distinct()
                 .ToArray();
-            var strategies = mappedProperties
-                .Select(property => property.GetValueGenerationStrategy(storeObject))
+            var strategies = propertyMappings
+                .Select(mapping => mapping.Strategy)
                 .Distinct()
                 .ToArray();
             if (strategies.Length > 1)
                 throw new InvalidOperationException("The EF relational model returned conflicting value-generation strategies for one column.");
             var identity = strategies.SingleOrDefault() == SqlServerValueGenerationStrategy.IdentityColumn;
-            var identityProperty = identity ? mappedProperties.First() : null;
+            var identityMapping = identity
+                ? propertyMappings.First(mapping => mapping.Strategy == SqlServerValueGenerationStrategy.IdentityColumn)
+                : default;
             var identitySeed = identity
-                ? Convert.ToString(identityProperty!.GetIdentitySeed(storeObject) ?? 1L, CultureInfo.InvariantCulture)!
+                ? Convert.ToString(identityMapping.Property!.GetIdentitySeed(identityMapping.StoreObject) ?? 1L, CultureInfo.InvariantCulture)!
                 : "-";
             var identityIncrement = identity
-                ? Convert.ToString(identityProperty!.GetIdentityIncrement(storeObject) ?? 1, CultureInfo.InvariantCulture)!
+                ? Convert.ToString(identityMapping.Property!.GetIdentityIncrement(identityMapping.StoreObject) ?? 1, CultureInfo.InvariantCulture)!
                 : "-";
             var defaultValue = GetExpectedDefaultContract(column);
             var computedSql = column.ComputedColumnSql is null
@@ -2071,7 +2080,7 @@ static ExactDatabaseSchemaSnapshot GetExpectedSchemaContract(
             var keyColumns = index.Columns
                 .Select((column, position) => $"K:{column.Name}:{(descending[position] ? "D" : "A")}")
                 .ToArray();
-            var includedColumns = GetExpectedIncludedIndexColumns(index, storeObject)
+            var includedColumns = GetExpectedIncludedIndexColumns(index)
                 .Order(StringComparer.Ordinal)
                 .Select(name => $"I:{name}");
             var clustered = GetExpectedIndexClustered(index);
@@ -2547,10 +2556,9 @@ static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync(SqlC
         unexpectedSurfaceCount);
 }
 
-static IReadOnlyCollection<string> GetExpectedIncludedIndexColumns(
-    ITableIndex index,
-    StoreObjectIdentifier storeObject)
+static IReadOnlyCollection<string> GetExpectedIncludedIndexColumns(ITableIndex index)
 {
+    var storeObject = StoreObjectIdentifier.Table(index.Table.Name, index.Table.Schema);
     var included = new HashSet<string>(StringComparer.Ordinal);
     foreach (var mappedIndex in index.MappedIndexes)
     {

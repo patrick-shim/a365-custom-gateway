@@ -420,6 +420,119 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
     }
 
     [Fact]
+    public void ExpectedSchemaContract_EnumeratesEveryDesignTimeTableAndColumnThroughProductionMetadataPath()
+    {
+        using var connection = new Microsoft.Data.SqlClient.SqlConnection(
+            "Server=tcp:127.0.0.1,1;Database=GatewayDb;Integrated Security=True;" +
+            "Encrypt=False;Connect Timeout=1");
+        var options = new DbContextOptionsBuilder<GatewayDbContext>()
+            .UseSqlServer(connection)
+            .Options;
+        using var context = new GatewayDbContext(options);
+
+        var expectedTables = context
+            .GetService<IDesignTimeModel>()
+            .Model
+            .GetRelationalModel()
+            .Tables
+            .Where(table => !table.IsExcludedFromMigrations)
+            .ToArray();
+        var expectedTableKeys = expectedTables
+            .Select(table => $"{table.Schema ?? "dbo"}.{table.Name}")
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var expectedColumnKeys = expectedTables
+            .SelectMany(table => table.Columns.Select(
+                column => $"{table.Schema ?? "dbo"}.{table.Name}|{column.Name}"))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        var productionHelper = GetExpectedSchemaContractHelper();
+
+        connection.State.Should().Be(System.Data.ConnectionState.Closed);
+        var snapshot = InvokeExpectedSchemaContract(
+            productionHelper,
+            context,
+            "SQL_Latin1_General_CP1_CI_AS");
+        connection.State.Should().Be(System.Data.ConnectionState.Closed);
+
+        var actualTableKeys = snapshot.Tables
+            .Select(value => value.Split('|', 2)[0])
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var actualColumnKeys = snapshot.Columns
+            .Select(value => string.Join('|', value.Split('|', 3).Take(2)))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        actualTableKeys.Should().Equal(expectedTableKeys);
+        actualColumnKeys.Should().Equal(expectedColumnKeys);
+        snapshot.Columns.Should().OnlyContain(value => value.Contains("|identity:", StringComparison.Ordinal));
+
+        const string activityReceiptsTableKey = "dbo.ActivityReceipts";
+        var activityReceiptsTable = expectedTables.Single(table =>
+            table.Name == "ActivityReceipts" &&
+            table.Schema is null);
+        var activityReceiptIdProperty = activityReceiptsTable.Columns
+            .Single(column => column.Name == "Id")
+            .PropertyMappings
+            .Single()
+            .Property;
+        var oldCoercedStoreObject = StoreObjectIdentifier.Table(
+            activityReceiptsTable.Name,
+            "dbo");
+        var oldCoercedMetadataPath = () =>
+            activityReceiptIdProperty.GetValueGenerationStrategy(oldCoercedStoreObject);
+
+        oldCoercedMetadataPath.Should().Throw<InvalidOperationException>()
+            .WithMessage("*is not mapped to 'dbo.ActivityReceipts'*");
+        expectedTableKeys.Should().Contain(activityReceiptsTableKey);
+        actualTableKeys.Should().Contain(activityReceiptsTableKey);
+        actualColumnKeys
+            .Where(value => value.StartsWith($"{activityReceiptsTableKey}|", StringComparison.Ordinal))
+            .Should()
+            .Equal(expectedColumnKeys.Where(
+                value => value.StartsWith($"{activityReceiptsTableKey}|", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void ExpectedSchemaContract_SerializesMappedIdentityAndIncludedIndexMetadataWithoutOpeningSql()
+    {
+        using var connection = new Microsoft.Data.SqlClient.SqlConnection(
+            "Server=tcp:127.0.0.1,1;Database=GatewayDb;Integrated Security=True;" +
+            "Encrypt=False;Connect Timeout=1");
+        var options = new DbContextOptionsBuilder<GatewayDbContext>()
+            .UseSqlServer(connection)
+            .Options;
+        using var context = new SyntheticMetadataGatewayDbContext(options);
+
+        var syntheticTable = context
+            .GetService<IDesignTimeModel>()
+            .Model
+            .GetRelationalModel()
+            .Tables
+            .Single(table => table.Name == SyntheticMetadataGatewayDbContext.TableName);
+        syntheticTable.Schema.Should().BeNull();
+
+        connection.State.Should().Be(System.Data.ConnectionState.Closed);
+        var snapshot = InvokeExpectedSchemaContract(
+            GetExpectedSchemaContractHelper(),
+            context,
+            "SQL_Latin1_General_CP1_CI_AS");
+        connection.State.Should().Be(System.Data.ConnectionState.Closed);
+
+        snapshot.Columns.Should().Contain(
+            "dbo.SyntheticSchemaMetadata|Id|int|0|default:-|computed:-|stored:0|" +
+            "identity:1:37:11:nfr:0|rowversion:0|generated:0|sparse:0|columnset:0|" +
+            "filestream:0|collation:-|encrypted:0:-:-|masked:0:-|hidden:0|xml:0:0|rule:0");
+        snapshot.Indexes.Should().Contain(
+            "dbo.SyntheticSchemaMetadata|IX_SyntheticSchemaMetadata_IndexedValue|" +
+            "unique:0|filter:-|type:NONCLUSTERED|space:PRIMARY|disabled:0|hypothetical:0|" +
+            "fill:0|padded:0|ignoredup:0|rowlocks:1|pagelocks:1|seq:0|statsnorecompute:0|" +
+            "K:IndexedValue:A,I:IncludedValue");
+    }
+
+    [Fact]
     public void AuditSpecificationConvergence_IsBoundedAndRevalidatesTheFullSurfaceBeforeMutation()
     {
         var repositoryRoot = FindRepositoryRoot();
@@ -615,6 +728,66 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
 
         if (invocation is Task task)
             await task;
+    }
+
+    private static ExactDatabaseSchemaSnapshot InvokeExpectedSchemaContract(
+        MethodInfo productionHelper,
+        GatewayDbContext context,
+        string databaseCollation)
+    {
+        try
+        {
+            return (ExactDatabaseSchemaSnapshot)(productionHelper.Invoke(
+                null,
+                [context, databaseCollation]) ??
+                throw new InvalidOperationException(
+                    "The production expected-schema helper returned no schema snapshot."));
+        }
+        catch (TargetInvocationException exception) when (exception.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(exception.InnerException).Throw();
+            throw;
+        }
+    }
+
+    private static MethodInfo GetExpectedSchemaContractHelper() =>
+        typeof(DatabaseBootstrapRecoveryContract)
+            .Assembly
+            .GetTypes()
+            .SelectMany(type => type.GetMethods(BindingFlags.Static | BindingFlags.NonPublic))
+            .Single(method =>
+                method.Name.Contains("GetExpectedSchemaContract", StringComparison.Ordinal) &&
+                method.GetParameters() is var parameters &&
+                parameters.Length == 2 &&
+                parameters[0].ParameterType == typeof(GatewayDbContext) &&
+                parameters[1].ParameterType == typeof(string));
+
+    private sealed class SyntheticMetadataGatewayDbContext(
+        DbContextOptions<GatewayDbContext> options) : GatewayDbContext(options)
+    {
+        public const string TableName = "SyntheticSchemaMetadata";
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            base.OnModelCreating(modelBuilder);
+
+            var entity = modelBuilder.Entity<SyntheticSchemaMetadata>();
+            entity.ToTable(TableName);
+            entity.HasKey(item => item.Id);
+            entity.Property(item => item.Id).UseIdentityColumn(37, 11);
+            entity.Property(item => item.IndexedValue).HasMaxLength(64).IsRequired();
+            entity.Property(item => item.IncludedValue).HasMaxLength(64).IsRequired();
+            entity.HasIndex(item => item.IndexedValue)
+                .HasDatabaseName("IX_SyntheticSchemaMetadata_IndexedValue")
+                .IncludeProperties(item => item.IncludedValue);
+        }
+    }
+
+    private sealed class SyntheticSchemaMetadata
+    {
+        public int Id { get; set; }
+        public string IndexedValue { get; set; } = string.Empty;
+        public string IncludedValue { get; set; } = string.Empty;
     }
 
     private static string FindRepositoryRoot()

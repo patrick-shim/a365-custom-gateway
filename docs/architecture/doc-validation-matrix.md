@@ -14,8 +14,16 @@ audit convergence, wrote its initialization marker, and created schema, but EF C
 principal/evidence creation; no later bootstrap step is deployed. The exact two-line
 design-time-model correction now passes full .NET **1,483/1,483**, zero-warning/error
 Release, and canonical Bootstrap Pester with **466** total, **465** passed, zero
-failed, **1** skipped, and zero inconclusive/not run in **188.92s**. It remains local
-until committed and exercised by fresh `a365gw30`. Development
+failed, **1** skipped, and zero inconclusive/not run in **188.92s**. After commit,
+fresh `a365gw30` exercised that boundary, created schema/seed, and then exposed a
+null-default-schema coercion defect in identity metadata before
+runtime principals/evidence. The settled mapping-specific fix passes focused schema
+**3/3**, phase class **33/33**, full Release with zero warnings/errors, and full
+.NET **1,485/1,485** with zero failed/skipped. Canonical Bootstrap Pester discovered
+**466**: **465** passed, zero failed, **1** skipped, with **7** existing
+unapproved-verb warnings and no errors. The next action is commit, then fresh
+`a365gw31`.
+Development
 continuous mode has Active registrations for
 both create-new and reuse-existing blueprint paths. Both are Available as
 `A365CustomGateway` agents in Microsoft 365 Admin Center; bound ingress returned
@@ -107,9 +115,14 @@ completion reaches 85% and emits only final worker verification.
     reviewed database profile needs bounded read-only convergence before any
     mutation. `a365gw29` proved the correction live through the full reread/assert
     and marker/schema gate; its later EF Core design-time-model failure is a
-    separate post-create verifier defect. The exact two-line fix now roots relational
-    enumeration at `context.GetService<IDesignTimeModel>().Model`, is structurally
-    guarded against `context.Model`, and is locally gated but not live-proven.
+    separate post-create verifier defect. The exact two-line design-time-model fix
+    roots relational enumeration at
+    `context.GetService<IDesignTimeModel>().Model`; `a365gw30` proved that boundary
+    live before exposing a second mapping-schema defect. The settled correction now
+    uses the exact `IColumnMapping` table/schema for identity metadata and exact
+    `index.Table` schema for included indexes; focused and full canonical gates pass
+    with zero failures. It remains local until committed and exercised by fresh
+    `a365gw31`.
 
 ### Decision Impact
 
