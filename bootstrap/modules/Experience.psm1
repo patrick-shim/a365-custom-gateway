@@ -945,13 +945,208 @@ function Test-GatewayPlanSource {
     }
 }
 
+function Get-GatewayInertWhatIfRecoveryStateContext {
+    param(
+        [AllowNull()][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    if ($null -eq $State -or $State -isnot [System.Collections.IDictionary] -or
+        -not $State.Contains('steps') -or $State.steps -isnot [System.Collections.IDictionary] -or
+        -not $State.Contains('deploymentOwnershipId') -or
+        [string]$State.deploymentOwnershipId -cne $DeploymentOwnershipId -or
+        -not $State.Contains('configurationFingerprint') -or
+        [string]$State.configurationFingerprint -cne (Get-BootstrapConfigurationFingerprint -Config $Config) -or
+        -not $State.Contains('source') -or $State.source -isnot [System.Collections.IDictionary]) {
+        return $null
+    }
+
+    foreach ($sourceRecordName in @('created', 'lastWritten')) {
+        if (-not $State.source.Contains($sourceRecordName) -or
+            $State.source[$sourceRecordName] -isnot [System.Collections.IDictionary] -or
+            -not $State.source[$sourceRecordName].Contains('bootstrapSourceFingerprint') -or
+            [string]$State.source[$sourceRecordName].bootstrapSourceFingerprint -cne $SourceFingerprint) {
+            return $null
+        }
+    }
+
+    $requiredCompletedSteps = @('Azure foundation', 'Gateway API identity', 'Immutable workload images')
+    foreach ($stepName in $requiredCompletedSteps) {
+        if (-not $State.steps.Contains($stepName)) { return $null }
+        $step = $State.steps[$stepName]
+        if ($step -isnot [System.Collections.IDictionary] -or
+            -not $step.Contains('status') -or [string]$step.status -cne 'Completed' -or
+            -not $step.Contains('sourceFingerprint') -or [string]$step.sourceFingerprint -cne $SourceFingerprint -or
+            -not $step.Contains('evidence') -or $null -eq $step.evidence) {
+            return $null
+        }
+    }
+
+    $inertStepName = 'Inert identity deployment'
+    if (-not $State.steps.Contains($inertStepName)) { return $null }
+    $inertStep = $State.steps[$inertStepName]
+    if ($inertStep -isnot [System.Collections.IDictionary] -or
+        -not $inertStep.Contains('status') -or [string]$inertStep.status -cnotin @('Running', 'Failed', 'Completed') -or
+        -not $inertStep.Contains('sourceFingerprint') -or [string]$inertStep.sourceFingerprint -cne $SourceFingerprint) {
+        return $null
+    }
+
+    $stepNames = @(Get-GatewayBootstrapStepNames)
+    $inertIndex = [Array]::IndexOf($stepNames, $inertStepName)
+    if ($inertIndex -lt 0) { return $null }
+    foreach ($stepName in @($stepNames[($inertIndex + 1)..($stepNames.Count - 1)])) {
+        if ($State.steps.Contains($stepName)) { return $null }
+    }
+    foreach ($stepName in @($State.steps.Keys | ForEach-Object { [string]$_ })) {
+        if ($stepName -cnotin $stepNames) { return $null }
+    }
+
+    $images = $State.steps['Immutable workload images'].evidence
+    if ([string]::IsNullOrWhiteSpace([string]$images.api) -or
+        [string]::IsNullOrWhiteSpace([string]$images.worker)) {
+        return $null
+    }
+    return [ordered]@{
+        foundation = $State.steps['Azure foundation'].evidence
+        identity = $State.steps['Gateway API identity'].evidence
+        apiImage = [string]$images.api
+        workerImage = [string]$images.worker
+    }
+}
+
+function ConvertTo-GatewayRecoveryWhatIfResourceId {
+    param(
+        [Parameter(Mandatory)][string]$ResourceId,
+        [Parameter(Mandatory)]$Config,
+        [switch]$RequireCanonicalLowercase
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ResourceId) -or $ResourceId -match '[\s?#]' -or
+        $ResourceId.Contains('//', [StringComparison]::Ordinal) -or
+        $ResourceId.EndsWith('/', [StringComparison]::Ordinal)) {
+        throw 'Recovery What-If resource ID is malformed.'
+    }
+    $canonicalSubscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
+    $resourceGroupName = [string]$Config.resourceGroupName
+    if ([string]::IsNullOrWhiteSpace($resourceGroupName) -or $resourceGroupName -match '[\s/?#]') {
+        throw 'Recovery What-If resource-group boundary is malformed.'
+    }
+    $normalized = $ResourceId.ToLowerInvariant()
+    $expectedPrefix = "/subscriptions/$canonicalSubscriptionId/resourcegroups/$($resourceGroupName.ToLowerInvariant())/providers/"
+    if (-not $normalized.StartsWith($expectedPrefix, [StringComparison]::Ordinal) -or
+        $normalized.Length -le $expectedPrefix.Length) {
+        throw 'Recovery What-If resource ID is outside the exact target resource group.'
+    }
+    if ($RequireCanonicalLowercase -and $ResourceId -cne $normalized) {
+        throw 'Recovery boundary resource IDs must be canonical lowercase values.'
+    }
+    return $normalized
+}
+
+function Assert-GatewayExactDictionaryKeys {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Value,
+        [Parameter(Mandatory)][string[]]$ExpectedKeys,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    [string[]]$actual = @($Value.Keys | ForEach-Object { [string]$_ })
+    [string[]]$expected = @($ExpectedKeys)
+    [Array]::Sort($actual, [StringComparer]::Ordinal)
+    [Array]::Sort($expected, [StringComparer]::Ordinal)
+    if ($actual.Count -ne $expected.Count -or ($actual -join "`n") -cne ($expected -join "`n")) {
+        throw "$Label has an unexpected property surface."
+    }
+    return $true
+}
+
+function Assert-GatewayInertWhatIfRecoveryBoundary {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Boundary,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    Assert-GatewayExactDictionaryKeys -Value $Boundary -ExpectedKeys @(
+        'schemaVersion', 'phase', 'deploymentName', 'deploymentOwnershipId',
+        'sourceFingerprint', 'resourceIds', 'generatedNicBinding',
+        'masterDatabaseBinding', 'boundaryFingerprint'
+    ) -Label 'Recovery Ignore boundary' | Out-Null
+    if ($Boundary.schemaVersion -isnot [int] -or [int]$Boundary.schemaVersion -ne 1 -or
+        [string]$Boundary.phase -cne 'InertIdentityDeployment' -or
+        [string]$Boundary.deploymentName -cne "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)" -or
+        [string]$Boundary.deploymentOwnershipId -cne $DeploymentOwnershipId -or
+        [string]$Boundary.sourceFingerprint -cne $SourceFingerprint -or
+        $Boundary.resourceIds -isnot [System.Collections.IList] -or
+        @($Boundary.resourceIds).Count -ne 25 -or
+        $Boundary.generatedNicBinding -isnot [System.Collections.IDictionary] -or
+        $Boundary.masterDatabaseBinding -isnot [System.Collections.IDictionary]) {
+        throw 'Recovery Ignore boundary does not match the exact inert deployment contract.'
+    }
+    Assert-BootstrapFingerprintValue -Value ([string]$Boundary.boundaryFingerprint) -Label 'Recovery Ignore boundary fingerprint'
+    Assert-GatewayExactDictionaryKeys -Value $Boundary.generatedNicBinding -ExpectedKeys @(
+        'nicId', 'privateEndpointId', 'subnetId'
+    ) -Label 'Recovery generated-NIC binding' | Out-Null
+    Assert-GatewayExactDictionaryKeys -Value $Boundary.masterDatabaseBinding -ExpectedKeys @(
+        'databaseId', 'sqlServerId'
+    ) -Label 'Recovery master-database binding' | Out-Null
+
+    [string[]]$resourceIds = @($Boundary.resourceIds | ForEach-Object {
+        ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId ([string]$_) -Config $Config -RequireCanonicalLowercase
+    })
+    [string[]]$sortedResourceIds = @($resourceIds)
+    [Array]::Sort($sortedResourceIds, [StringComparer]::Ordinal)
+    if (($resourceIds -join "`n") -cne ($sortedResourceIds -join "`n") -or
+        @($resourceIds | Sort-Object -Unique -CaseSensitive).Count -ne $resourceIds.Count) {
+        throw 'Recovery Ignore boundary resource IDs are not unique canonical ordinal-sorted values.'
+    }
+
+    foreach ($bindingName in @('nicId', 'privateEndpointId', 'subnetId')) {
+        $bindingId = ConvertTo-GatewayRecoveryWhatIfResourceId `
+            -ResourceId ([string]$Boundary.generatedNicBinding[$bindingName]) `
+            -Config $Config `
+            -RequireCanonicalLowercase
+        if ($bindingName -ne 'subnetId' -and $bindingId -notin $resourceIds) {
+            throw 'Recovery generated-NIC binding is not contained by the exact resource graph.'
+        }
+    }
+    foreach ($bindingName in @('databaseId', 'sqlServerId')) {
+        $bindingId = ConvertTo-GatewayRecoveryWhatIfResourceId `
+            -ResourceId ([string]$Boundary.masterDatabaseBinding[$bindingName]) `
+            -Config $Config `
+            -RequireCanonicalLowercase
+        if ($bindingId -notin $resourceIds) {
+            throw 'Recovery master-database binding is not contained by the exact resource graph.'
+        }
+    }
+
+    $fingerprintInput = [ordered]@{
+        schemaVersion = 1
+        phase = 'InertIdentityDeployment'
+        deploymentName = [string]$Boundary.deploymentName
+        deploymentOwnershipId = [string]$Boundary.deploymentOwnershipId
+        sourceFingerprint = [string]$Boundary.sourceFingerprint
+        resourceIds = $resourceIds
+        generatedNicBinding = $Boundary.generatedNicBinding
+        masterDatabaseBinding = $Boundary.masterDatabaseBinding
+    }
+    if ([string]$Boundary.boundaryFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $fingerprintInput)) {
+        throw 'Recovery Ignore boundary fingerprint does not match its exact typed resource graph.'
+    }
+    return $resourceIds
+}
+
 function Invoke-GatewayFoundationWhatIf {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)][string]$RepositoryRoot,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [AllowNull()][System.Collections.IDictionary]$State
     )
 
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
@@ -974,6 +1169,7 @@ function Invoke-GatewayFoundationWhatIf {
             executed = $false
             applyReady = $false
             reason = 'No cached Azure CLI account matched the configured tenant and subscription. Run az login, then rerun Plan.'
+            recoveryIgnoreBoundary = $null
             changes = @()
         }
     }
@@ -1075,6 +1271,7 @@ function Invoke-GatewayFoundationWhatIf {
             reason = 'Azure What-If returned a missing or malformed result contract. No mutation is authorized.'
             deploymentName = $deploymentName
             changeCounts = [ordered]@{}
+            recoveryIgnoreBoundary = $null
             changes = @()
         }
     }
@@ -1087,11 +1284,80 @@ function Invoke-GatewayFoundationWhatIf {
         [string]::IsNullOrWhiteSpace([string]$_.resourceId) -or
         [string]$_.resourceId -notmatch "^/subscriptions/$([regex]::Escape(([guid][string]$Config.subscriptionId).ToString('D')))(?:/|$)" -or
         [string]$_.resourceId -match '[\s?#]' -or
-        [string]$_.changeType -notin @('Create', 'Deploy')
+        [string]$_.changeType -cnotin @('Create', 'Deploy', 'Ignore')
     })
     $canonicalPairs = @($changes | ForEach-Object { "$([string]$_.changeType)|$(([string]$_.resourceId).ToLowerInvariant())" })
     if (@($canonicalPairs | Sort-Object -Unique).Count -ne $canonicalPairs.Count) {
         $unreviewableChanges += [ordered]@{ changeType = 'MalformedDuplicate'; resourceId = '' }
+    }
+    $canonicalResourceIds = @($changes | ForEach-Object { ([string]$_.resourceId).ToLowerInvariant() })
+    if (@($canonicalResourceIds | Sort-Object -Unique).Count -ne $canonicalResourceIds.Count) {
+        $unreviewableChanges += [ordered]@{ changeType = 'MalformedDuplicateResource'; resourceId = '' }
+    }
+    $recoveryIgnoreBoundary = $null
+    $ignoreChanges = @($changes | Where-Object { [string]$_.changeType -ceq 'Ignore' })
+    if ($ignoreChanges.Count -gt 0 -and $unreviewableChanges.Count -eq 0) {
+        $recoveryState = Get-GatewayInertWhatIfRecoveryStateContext `
+            -State $State `
+            -Config $Config `
+            -DeploymentOwnershipId $canonicalOwnershipId `
+            -SourceFingerprint $SourceFingerprint
+        if ($null -eq $recoveryState) {
+            $unreviewableChanges += [ordered]@{ changeType = 'UnauthorizedIgnore'; resourceId = '' }
+        }
+        else {
+            try {
+                [object[]]$recoveryResults = @(Get-GatewayInertWhatIfRecoveryBoundary `
+                    -Config $Config `
+                    -Foundation $recoveryState.foundation `
+                    -Identity $recoveryState.identity `
+                    -ApiImage $recoveryState.apiImage `
+                    -WorkerImage $recoveryState.workerImage `
+                    -DeploymentOwnershipId $canonicalOwnershipId `
+                    -SourceFingerprint $SourceFingerprint)
+                if ($recoveryResults.Count -ne 1 -or $recoveryResults[0] -isnot [System.Collections.IDictionary]) {
+                    throw 'Recovery provider readback returned an invalid result envelope.'
+                }
+                $recovery = $recoveryResults[0]
+                Assert-GatewayExactDictionaryKeys -Value $recovery -ExpectedKeys @('evidence', 'boundary') -Label 'Recovery provider readback' | Out-Null
+                if ($null -eq $recovery.evidence -or $recovery.boundary -isnot [System.Collections.IDictionary]) {
+                    throw 'Recovery provider readback is incomplete.'
+                }
+                [object[]]$deploymentValidation = @(Test-GatewayGroupDeploymentEvidence `
+                    -Config $Config `
+                    -Foundation $recoveryState.foundation `
+                    -Identity $recoveryState.identity `
+                    -Evidence $recovery.evidence `
+                    -DeploymentOwnershipId $canonicalOwnershipId `
+                    -SourceFingerprint $SourceFingerprint `
+                    -ApiImage $recoveryState.apiImage `
+                    -WorkerImage $recoveryState.workerImage)
+                if ($deploymentValidation.Count -ne 1 -or $deploymentValidation[0] -isnot [bool] -or
+                    $deploymentValidation[0] -ne $true) {
+                    throw 'Recovered inert deployment evidence failed exact independent validation.'
+                }
+                [string[]]$expectedIgnoreIds = @(Assert-GatewayInertWhatIfRecoveryBoundary `
+                    -Boundary $recovery.boundary `
+                    -Config $Config `
+                    -DeploymentOwnershipId $canonicalOwnershipId `
+                    -SourceFingerprint $SourceFingerprint)
+                [string[]]$observedIgnoreIds = @($ignoreChanges | ForEach-Object {
+                    ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId ([string]$_.resourceId) -Config $Config
+                })
+                if (@($observedIgnoreIds | Sort-Object -Unique -CaseSensitive).Count -ne $observedIgnoreIds.Count) {
+                    throw 'What-If returned duplicate normalized Ignore resource IDs.'
+                }
+                [Array]::Sort($observedIgnoreIds, [StringComparer]::Ordinal)
+                if ($observedIgnoreIds.Count -ne $expectedIgnoreIds.Count -or
+                    ($observedIgnoreIds -join "`n") -cne ($expectedIgnoreIds -join "`n")) {
+                    throw 'What-If Ignore predictions did not exactly match the recovered inert resource graph.'
+                }
+                $recoveryIgnoreBoundary = $recovery.boundary
+            }
+            catch {
+                $unreviewableChanges += [ordered]@{ changeType = 'UnauthorizedIgnore'; resourceId = '' }
+            }
+        }
     }
     return [ordered]@{
         executed = $true
@@ -1099,6 +1365,7 @@ function Invoke-GatewayFoundationWhatIf {
         reason = if ($unreviewableChanges.Count -gt 0) { 'What-If reported a deletion, unsupported prediction, or malformed resource change. Bootstrap has no destroy mode and will not accept this plan.' } else { '' }
         deploymentName = $deploymentName
         changeCounts = $counts
+        recoveryIgnoreBoundary = $recoveryIgnoreBoundary
         changes = $changes
     }
 }
@@ -1593,6 +1860,25 @@ function Get-GatewayOptionalObjectProperty {
     return $null
 }
 
+function Test-GatewayContainerAppLocationEquivalent {
+    param(
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyString()][string]$ActualLocation,
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyString()][string]$ExpectedLocation
+    )
+
+    if ($ActualLocation -notmatch '^[A-Za-z0-9 ]+$' -or
+        $ExpectedLocation -notmatch '^[A-Za-z0-9 ]+$') {
+        return $false
+    }
+    $normalizedActual = $ActualLocation.Replace(' ', '')
+    $normalizedExpected = $ExpectedLocation.Replace(' ', '')
+    if ([string]::IsNullOrEmpty($normalizedActual) -or
+        [string]::IsNullOrEmpty($normalizedExpected)) {
+        return $false
+    }
+    return [string]::Equals($normalizedActual, $normalizedExpected, [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Assert-GatewayExactContainerEnvironment {
     param(
         [Parameter(Mandatory)]$Entries,
@@ -1662,12 +1948,15 @@ function Assert-GatewayExactSystemContainerAppEnvelope {
         [Parameter()][string]$ExpectedFqdn = ''
     )
     $containers = @($App.properties.template.containers)
-    $secrets = @(Get-GatewayOptionalObjectProperty -Object $App.properties.configuration -Name 'secrets')
+    $reportedSecrets = Get-GatewayOptionalObjectProperty -Object $App.properties.configuration -Name 'secrets'
+    $secrets = @()
+    if ($null -ne $reportedSecrets) { $secrets = @($reportedSecrets) }
     $userAssigned = Get-GatewayOptionalObjectProperty -Object $App.identity -Name 'userAssignedIdentities'
     $userAssignedIdentityIds = @(if ($null -ne $userAssigned) {
         $userAssigned.PSObject.Properties | ForEach-Object { [string]$_.Name }
     })
-    if ([string]$App.name -cne $ExpectedName -or [string]$App.location -cne $ExpectedLocation -or
+    if ([string]$App.name -cne $ExpectedName -or
+        -not (Test-GatewayContainerAppLocationEquivalent -ActualLocation ([string]$App.location) -ExpectedLocation $ExpectedLocation) -or
         [string]$App.properties.provisioningState -cne 'Succeeded' -or
         [string]$App.identity.type -cne 'SystemAssigned, UserAssigned' -or
         $userAssignedIdentityIds.Count -ne 1 -or
@@ -1683,7 +1972,8 @@ function Assert-GatewayExactSystemContainerAppEnvelope {
     $ingress = Get-GatewayOptionalObjectProperty -Object $App.properties.configuration -Name 'ingress'
     if ($ExternalIngress) {
         if ($null -eq $ingress -or $ingress.external -ne $true -or $ingress.allowInsecure -ne $false -or
-            [int]$ingress.targetPort -ne 8080 -or [string]$ingress.transport -cne 'auto' -or
+            [int]$ingress.targetPort -ne 8080 -or
+            -not ([string]$ingress.transport).Equals('auto', [StringComparison]::OrdinalIgnoreCase) -or
             [string]$ingress.fqdn -cne $ExpectedFqdn) {
             throw 'Container App ingress is not the exact external HTTPS-only contract.'
         }
@@ -2086,7 +2376,7 @@ function Test-GatewayNamedGroupDeployment {
             [string]$Evidence.signInRedirectUri -ne "$(([string]$Evidence.adminUiUrl).TrimEnd('/'))/signin-oidc" -or
             [string]$Evidence.signedOutCallbackUri -ne "$(([string]$Evidence.adminUiUrl).TrimEnd('/'))/signout-callback-oidc") { throw 'mismatch' }
 
-        if ([string]$admin.location -cne [string]$Config.location -or
+        if (-not (Test-GatewayContainerAppLocationEquivalent -ActualLocation ([string]$admin.location) -ExpectedLocation ([string]$Config.location)) -or
             [string]$admin.identity.type -cne 'UserAssigned' -or
             -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $admin.identity -Name 'principalId')) -or
             -not ([string]$admin.properties.managedEnvironmentId).Equals([string]$Foundation.containerAppsEnvironmentId, [StringComparison]::OrdinalIgnoreCase) -or
@@ -2100,7 +2390,8 @@ function Test-GatewayNamedGroupDeployment {
             -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $adminSecrets[0] -Name 'value'))) { throw 'mismatch' }
         $adminIngress = $admin.properties.configuration.ingress
         if ($adminIngress.external -ne $true -or $adminIngress.allowInsecure -ne $false -or
-            [int]$adminIngress.targetPort -ne 8080 -or [string]$adminIngress.transport -cne 'auto' -or
+            [int]$adminIngress.targetPort -ne 8080 -or
+            -not ([string]$adminIngress.transport).Equals('auto', [StringComparison]::OrdinalIgnoreCase) -or
             [string]$adminIngress.fqdn -cne [string]$Evidence.adminUiFqdn -or
             [string]$adminIngress.stickySessions.affinity -cne 'sticky') { throw 'mismatch' }
         $adminEnvironment = [ordered]@{

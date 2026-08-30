@@ -80,7 +80,7 @@ function Get-GatewayPlanContractFingerprint {
         [ordered]@{ resourceId = [string]$_.resourceId; changeType = [string]$_.changeType }
     })
     return Get-BootstrapObjectFingerprint -InputObject ([ordered]@{
-        contractVersion = 2
+        contractVersion = 3
         configurationFingerprint = $ConfigurationFingerprint
         sourceFingerprint = $SourceFingerprint
         descriptor = $Descriptor
@@ -88,6 +88,7 @@ function Get-GatewayPlanContractFingerprint {
             executed = [bool]$WhatIf.executed
             applyReady = [bool]$WhatIf.applyReady
             changes = $predictedChanges
+            recoveryIgnoreBoundary = $WhatIf.recoveryIgnoreBoundary
         }
     })
 }
@@ -147,7 +148,7 @@ function Invoke-GatewayPlanWorkflow {
     Set-BootstrapAzureSubscriptionContext `
         -SubscriptionId ([string]$Configuration.subscriptionId) `
         -TenantId ([string]$Configuration.tenantId)
-    $whatIf = Invoke-GatewayFoundationWhatIf -Config $Configuration -RepositoryRoot $root -DeploymentOwnershipId ([string]$State.deploymentOwnershipId) -SourceFingerprint $sourceFingerprintBefore
+    $whatIf = Invoke-GatewayFoundationWhatIf -Config $Configuration -RepositoryRoot $root -DeploymentOwnershipId ([string]$State.deploymentOwnershipId) -SourceFingerprint $sourceFingerprintBefore -State $State
     Assert-GatewaySeedBlueprintPlanBoundary -Descriptor $descriptor -Config $Configuration -State $State | Out-Null
     $sourceFingerprintAfter = Get-BootstrapSourceFingerprint
     $configurationFingerprintAfter = Get-BootstrapConfigurationFingerprint -Config $Configuration
@@ -586,7 +587,7 @@ try {
             Write-GatewayExperienceEvent -Type Info -Message 'Rechecking the accepted Azure What-If prediction before any mutation...' -Data ([ordered]@{
                 step = 'Plan review'; index = 1; total = $stepNames.Count
             }) -OutputFormat $OutputFormat
-            $applyWhatIf = Invoke-GatewayFoundationWhatIf -Config $configuration -RepositoryRoot $executionSourceRoot -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint
+            $applyWhatIf = Invoke-GatewayFoundationWhatIf -Config $configuration -RepositoryRoot $executionSourceRoot -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeAcceptedSourceFingerprint -State $state
         }
         if (-not $applyWhatIf.applyReady) { throw 'Accepted plan revalidation could not run authenticated Azure What-If. No mutation was started.' }
         $expectedPlanFingerprint = Get-GatewayPlanContractFingerprint -Descriptor $descriptor -WhatIf $applyWhatIf -ConfigurationFingerprint $configurationFingerprint -SourceFingerprint $activeAcceptedSourceFingerprint

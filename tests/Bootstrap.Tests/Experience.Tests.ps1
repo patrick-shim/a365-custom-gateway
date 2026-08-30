@@ -2,7 +2,15 @@ $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Common.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Entra.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Agent365.psm1') -Force
+Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Azure.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Experience.psm1') -Force
+& (Get-Module Experience) {
+    function Get-GatewayInertWhatIfRecoveryBoundary {
+        param($Config, $Foundation, $Identity, [string]$ApiImage, [string]$WorkerImage,
+            [string]$DeploymentOwnershipId, [string]$SourceFingerprint)
+        throw 'Test placeholder must be mocked.'
+    }
+}
 
 Describe 'ACR ARM-audience authoritative readback boundary' {
     It 'uses the exact ARM resource API for every bootstrap policy readback' {
@@ -74,6 +82,54 @@ Describe 'Plan exact-account context boundary' {
         $whatIfIndex | Should -BeGreaterThan $setIndex
         $graphIndex | Should -BeGreaterThan $whatIfIndex
         $planSource | Should -Match 'Set-BootstrapAzureSubscriptionContext\s+`\s+-SubscriptionId \(\[string\]\$Configuration\.subscriptionId\)\s+`\s+-TenantId \(\[string\]\$Configuration\.tenantId\)'
+        $planSource | Should -Match 'Invoke-GatewayFoundationWhatIf[^\r\n]+-State \$State'
+        $source | Should -Match 'Invoke-GatewayFoundationWhatIf[^\r\n]+-State \$state'
+    }
+}
+
+Describe 'Plan fingerprint recovery-Ignore binding' {
+    BeforeAll {
+        $bootstrapPath = [IO.Path]::GetFullPath((Join-Path (Split-Path (Get-Module Experience).Path -Parent) '../bootstrap.ps1'))
+        $script:planContractBootstrapPath = $bootstrapPath
+        $tokens = $null
+        $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($bootstrapPath, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should -Be 0
+        $definition = $ast.Find({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Get-GatewayPlanContractFingerprint'
+        }, $true)
+        Invoke-Expression $definition.Extent.Text
+    }
+
+    It 'changes authorization when the deterministic recovery boundary changes' {
+        $sourceFingerprint = "sha256:$('a' * 64)"
+        $configurationFingerprint = "sha256:$('b' * 64)"
+        $whatIf = [ordered]@{
+            executed = $true
+            applyReady = $true
+            changes = @([ordered]@{ changeType = 'Ignore'; resourceId = '/subscriptions/safe/resourceGroups/safe/providers/safe/type/name' })
+            recoveryIgnoreBoundary = [ordered]@{
+                schemaVersion = 1
+                boundaryFingerprint = "sha256:$('c' * 64)"
+            }
+        }
+        $first = Get-GatewayPlanContractFingerprint `
+            -Descriptor ([ordered]@{ deploymentId = 'safe' }) `
+            -WhatIf $whatIf `
+            -ConfigurationFingerprint $configurationFingerprint `
+            -SourceFingerprint $sourceFingerprint
+        $whatIf.recoveryIgnoreBoundary.boundaryFingerprint = "sha256:$('d' * 64)"
+        $second = Get-GatewayPlanContractFingerprint `
+            -Descriptor ([ordered]@{ deploymentId = 'safe' }) `
+            -WhatIf $whatIf `
+            -ConfigurationFingerprint $configurationFingerprint `
+            -SourceFingerprint $sourceFingerprint
+
+        $first | Should -Not -Be $second
+        (Get-Content -LiteralPath $script:planContractBootstrapPath -Raw) |
+            Should -Match 'contractVersion = 3'
     }
 }
 
@@ -604,6 +660,89 @@ Describe 'Azure What-If result boundary' {
                 resourceGroupName = 'rg-safe-dev'
             }
             $script:whatIfSourceFingerprint = "sha256:$('a' * 64)"
+            $script:whatIfOwnershipId = '33333333-3333-4333-8333-333333333333'
+            $baseResourceId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourcegroups/rg-safe-dev/providers'
+            [string[]]$resourceIds = @(
+                "$baseResourceId/microsoft.network/networkinterfaces/pe-safe.nic.1234"
+                "$baseResourceId/microsoft.network/privateendpoints/pe-safe"
+                "$baseResourceId/microsoft.sql/servers/sql-safe"
+                "$baseResourceId/microsoft.sql/servers/sql-safe/databases/master"
+                0..20 | ForEach-Object { "$baseResourceId/microsoft.test/resources/resource-$('{0:d2}' -f $_)" }
+            )
+            [Array]::Sort($resourceIds, [StringComparer]::Ordinal)
+            $script:recoveryBoundary = [ordered]@{
+                schemaVersion = 1
+                phase = 'InertIdentityDeployment'
+                deploymentName = 'a365gw-safe-bootstrap-inert-dev'
+                deploymentOwnershipId = $script:whatIfOwnershipId
+                sourceFingerprint = $script:whatIfSourceFingerprint
+                resourceIds = $resourceIds
+                generatedNicBinding = [ordered]@{
+                    nicId = "$baseResourceId/microsoft.network/networkinterfaces/pe-safe.nic.1234"
+                    privateEndpointId = "$baseResourceId/microsoft.network/privateendpoints/pe-safe"
+                    subnetId = "$baseResourceId/microsoft.network/virtualnetworks/vnet-safe/subnets/snet-private-endpoints"
+                }
+                masterDatabaseBinding = [ordered]@{
+                    databaseId = "$baseResourceId/microsoft.sql/servers/sql-safe/databases/master"
+                    sqlServerId = "$baseResourceId/microsoft.sql/servers/sql-safe"
+                }
+            }
+            $script:recoveryBoundary['boundaryFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $script:recoveryBoundary
+            $script:recoveryResult = [ordered]@{
+                evidence = [ordered]@{ deploymentName = 'a365gw-safe-bootstrap-inert-dev' }
+                boundary = $script:recoveryBoundary
+            }
+            $script:recoveryState = [ordered]@{
+                deploymentOwnershipId = $script:whatIfOwnershipId
+                configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $script:config
+                source = [ordered]@{
+                    created = [ordered]@{ bootstrapSourceFingerprint = $script:whatIfSourceFingerprint }
+                    lastWritten = [ordered]@{ bootstrapSourceFingerprint = $script:whatIfSourceFingerprint }
+                }
+                steps = [ordered]@{
+                    'Azure foundation' = [ordered]@{
+                        status = 'Completed'
+                        sourceFingerprint = $script:whatIfSourceFingerprint
+                        evidence = [ordered]@{ deploymentOwnershipId = $script:whatIfOwnershipId }
+                    }
+                    'Gateway API identity' = [ordered]@{
+                        status = 'Completed'
+                        sourceFingerprint = $script:whatIfSourceFingerprint
+                        evidence = [ordered]@{ gatewayApiClientId = '44444444-4444-4444-8444-444444444444' }
+                    }
+                    'Immutable workload images' = [ordered]@{
+                        status = 'Completed'
+                        sourceFingerprint = $script:whatIfSourceFingerprint
+                        evidence = [ordered]@{
+                            api = "safe.azurecr.io/api@sha256:$('1' * 64)"
+                            worker = "safe.azurecr.io/worker@sha256:$('2' * 64)"
+                        }
+                    }
+                    'Inert identity deployment' = [ordered]@{
+                        status = 'Failed'
+                        sourceFingerprint = $script:whatIfSourceFingerprint
+                    }
+                }
+            }
+            function Set-TestRecoveryWhatIf {
+                param([Parameter(Mandatory)][string[]]$IgnoreIds)
+                [object[]]$changes = @(
+                    [pscustomobject]@{
+                        changeType = 'Deploy'
+                        resourceId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev'
+                    }
+                    $IgnoreIds | ForEach-Object {
+                        [pscustomobject]@{ changeType = 'Ignore'; resourceId = $_ }
+                    }
+                )
+                $script:whatIfResult = [pscustomobject]@{
+                    status = 'Succeeded'
+                    error = $null
+                    properties = [pscustomobject]@{ changes = $changes }
+                }
+            }
+            Mock Get-GatewayInertWhatIfRecoveryBoundary { return $script:recoveryResult }
+            Mock Test-GatewayGroupDeploymentEvidence { return $true }
         }
 
         It 'accepts an explicit empty changes array' {
@@ -655,6 +794,171 @@ Describe 'Azure What-If result boundary' {
             $result.changeCounts['Deploy'] | Should -Be 1
         }
 
+        It 'accepts Ignore only for the exact source-owned inert recovery graph' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+
+            $result = Invoke-GatewayFoundationWhatIf `
+                -Config $script:config `
+                -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint `
+                -State $script:recoveryState
+
+            $result.applyReady | Should -BeTrue
+            $result.changeCounts['Ignore'] | Should -Be 25
+            @($result.changes | Where-Object changeType -eq 'Ignore').Count | Should -Be 25
+            $result.recoveryIgnoreBoundary.boundaryFingerprint |
+                Should -BeExactly $script:recoveryBoundary.boundaryFingerprint
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 1 -Exactly -ParameterFilter {
+                $Foundation -eq $script:recoveryState.steps['Azure foundation'].evidence -and
+                $Identity -eq $script:recoveryState.steps['Gateway API identity'].evidence -and
+                $ApiImage -eq $script:recoveryState.steps['Immutable workload images'].evidence.api -and
+                $WorkerImage -eq $script:recoveryState.steps['Immutable workload images'].evidence.worker -and
+                $DeploymentOwnershipId -eq $script:whatIfOwnershipId -and
+                $SourceFingerprint -eq $script:whatIfSourceFingerprint
+            }
+            Should -Invoke Test-GatewayGroupDeploymentEvidence -Times 1 -Exactly
+        }
+
+        It 'rejects Ignore when the required state prefix is not completed' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            $script:recoveryState.steps['Azure foundation'].status = 'Failed'
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+        }
+
+        It 'rejects Ignore when state source provenance differs' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            $script:recoveryState.source.lastWritten.bootstrapSourceFingerprint = "sha256:$('b' * 64)"
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+        }
+
+        It 'rejects Ignore when state ownership differs' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            $script:recoveryState.deploymentOwnershipId = '55555555-5555-4555-8555-555555555555'
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+        }
+
+        It 'rejects Ignore after any later phase started' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            $script:recoveryState.steps['Agent 365 seed blueprint'] = [ordered]@{
+                status = 'Running'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+            }
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+        }
+
+        It 'rejects wrong-case or unknown inert persisted statuses' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            foreach ($status in @('running', 'FAILED', 'completed', 'Started', 'Unknown')) {
+                $script:recoveryState.steps['Inert identity deployment'].status = $status
+
+                (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                    Should -BeFalse
+            }
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+        }
+
+        It 'rejects wrong-case or unknown persisted step names' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            $foundationStep = $script:recoveryState.steps['Azure foundation']
+            $script:recoveryState.steps.Remove('Azure foundation')
+            $script:recoveryState.steps['azure foundation'] = $foundationStep
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+
+            $script:recoveryState.steps.Remove('azure foundation')
+            $script:recoveryState.steps['Azure foundation'] = $foundationStep
+            $script:recoveryState.steps['Unreviewed recovery step'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+            }
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+        }
+
+        It 'rejects a missing recovery Ignore resource' {
+            Set-TestRecoveryWhatIf -IgnoreIds @($script:recoveryBoundary.resourceIds | Select-Object -SkipLast 1)
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+        }
+
+        It 'rejects an extra recovery Ignore resource' {
+            $extraId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourcegroups/rg-safe-dev/providers/microsoft.test/resources/extra'
+            Set-TestRecoveryWhatIf -IgnoreIds @($script:recoveryBoundary.resourceIds + $extraId)
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+        }
+
+        It 'rejects duplicate normalized recovery Ignore resources' {
+            $duplicate = ([string]$script:recoveryBoundary.resourceIds[0]).ToUpperInvariant()
+            Set-TestRecoveryWhatIf -IgnoreIds @($script:recoveryBoundary.resourceIds + $duplicate)
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+        }
+
+        It 'rejects one normalized resource ID reported under both Deploy and Ignore' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            $script:whatIfResult.properties.changes[0].resourceId =
+                ([string]$script:recoveryBoundary.resourceIds[0]).ToUpperInvariant()
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+        }
+
+        It 'rejects an out-of-resource-group recovery Ignore resource' {
+            [string[]]$observed = @($script:recoveryBoundary.resourceIds)
+            $observed[0] = $observed[0].Replace('/resourcegroups/rg-safe-dev/', '/resourcegroups/rg-other/')
+            Set-TestRecoveryWhatIf -IgnoreIds $observed
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+        }
+
+        It 'rejects an unexpected recovery boundary property' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            $script:recoveryBoundary['unreviewed'] = 'value'
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+        }
+
+        It 'rejects an out-of-scope recovery boundary binding' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            $script:recoveryBoundary.generatedNicBinding.nicId =
+                '/subscriptions/11111111-1111-4111-8111-111111111111/resourcegroups/rg-other/providers/microsoft.network/networkinterfaces/unreviewed'
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+        }
+
+        It 'rejects a mismatched recovery boundary fingerprint' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            $script:recoveryBoundary.boundaryFingerprint = "sha256:$('f' * 64)"
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+        }
+
         It 'rejects an ambiguous dual-surface changes contract' {
             $script:whatIfResult = [pscustomobject]@{
                 status = 'Succeeded'
@@ -684,7 +988,7 @@ Describe 'Azure What-If result boundary' {
         }
 
         It 'rejects every non-ResourceIdOnly or incomplete change prediction' {
-            foreach ($changeType in @('Delete', 'Ignore', 'Modify', 'NoChange', 'NoEffect', 'Unsupported')) {
+            foreach ($changeType in @('Delete', 'Ignore', 'Modify', 'NoChange', 'NoEffect', 'Unsupported', 'FutureChange')) {
                 $script:whatIfResult = [pscustomobject]@{
                     status = 'Succeeded'
                     error = $null
@@ -697,6 +1001,27 @@ Describe 'Azure What-If result boundary' {
                 (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint).applyReady |
                     Should -BeFalse
             }
+        }
+
+        It 'rejects lower or mixed-case spellings of every reviewed change type' {
+            foreach ($changeType in @(
+                'create', 'CREATE', 'cReAtE',
+                'deploy', 'DEPLOY', 'dEpLoY',
+                'ignore', 'IGNORE', 'iGnOrE'
+            )) {
+                $script:whatIfResult = [pscustomobject]@{
+                    status = 'Succeeded'
+                    error = $null
+                    changes = @([pscustomobject]@{
+                        changeType = $changeType
+                        resourceId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev'
+                    })
+                }
+
+                (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                    Should -BeFalse
+            }
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
         }
 
         It 'rejects null or shape-less successful output' {

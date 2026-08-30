@@ -1083,6 +1083,135 @@ Describe 'Gateway core initial and runtime identity bindings' {
             Mock Invoke-ArmDeploymentWithSecureParameters { throw 'core-deployment-reached' }
         }
 
+        It 'accepts exact succeeded Container App location form <Location>' -ForEach @(
+            @{ Location = 'koreacentral' },
+            @{ Location = 'Korea Central' }
+        ) {
+            $app = & $script:newPartialWorkerApp
+            $app.location = $Location
+            $app.properties.provisioningState = 'Succeeded'
+            $app.properties.configuration.Remove('secretCount')
+            $app.properties.configuration['secrets'] = @()
+
+            Assert-GatewaySucceededContainerAppBoundary -App $app -Role Worker `
+                -Config $script:coreConfig -Foundation $script:coreFoundation `
+                -ExpectedImage $script:coreWorkerImage -ExpectedPrincipalId ([string]$app.identity.principalId) `
+                -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint |
+                Should -BeTrue
+        }
+
+        It 'accepts the Azure display-name location on a partial Container App boundary' {
+            $app = & $script:newPartialWorkerApp
+            $app.location = 'Korea Central'
+
+            Assert-GatewayExactPartialContainerAppEnvelope -App $app -Role Worker `
+                -Config $script:coreConfig -Foundation $script:coreFoundation `
+                -ExpectedImage $script:coreWorkerImage -DeploymentOwnershipId $script:coreOwnershipId `
+                -SourceFingerprint $script:coreSourceFingerprint `
+                -ExpectedEnvironment ([ordered]@{ DOTNET_ENVIRONMENT = 'Production' }) |
+                Should -BeTrue
+        }
+
+        It 'accepts exact zero succeeded Container App secrets in <SecretShape> form' -ForEach @(
+            @{ SecretShape = 'null' },
+            @{ SecretShape = 'empty-array' }
+        ) {
+            $app = & $script:newPartialWorkerApp
+            $app.properties.provisioningState = 'Succeeded'
+            $app.properties.configuration.Remove('secretCount')
+            $app.properties.configuration['secrets'] = if ($SecretShape -ceq 'null') { $null } else { @() }
+
+            Assert-GatewaySucceededContainerAppBoundary -App $app -Role Worker `
+                -Config $script:coreConfig -Foundation $script:coreFoundation `
+                -ExpectedImage $script:coreWorkerImage -ExpectedPrincipalId ([string]$app.identity.principalId) `
+                -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint |
+                Should -BeTrue
+        }
+
+        It 'rejects one succeeded Container App secret without reading its value' {
+            $app = & $script:newPartialWorkerApp
+            $app.properties.provisioningState = 'Succeeded'
+            $app.properties.configuration.Remove('secretCount')
+            $app.properties.configuration['secrets'] = @([ordered]@{ name = 'unreviewed-secret' })
+
+            { Assert-GatewaySucceededContainerAppBoundary -App $app -Role Worker `
+                    -Config $script:coreConfig -Foundation $script:coreFoundation `
+                    -ExpectedImage $script:coreWorkerImage -ExpectedPrincipalId ([string]$app.identity.principalId) `
+                    -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint } |
+                Should -Throw '*outside the exact image, identity, environment, and secret-free boundary*'
+        }
+
+        It 'accepts Azure provider casing for the exact API ingress transport enum' {
+            $succeededApp = & $script:newCompleteApiApp
+            $succeededApp.properties.configuration.ingress.transport = 'Auto'
+            $succeededApp.properties.configuration.Remove('secretCount')
+            $succeededApp.properties.configuration['secrets'] = @()
+
+            Assert-GatewaySucceededContainerAppBoundary -App $succeededApp -Role Api `
+                -Config $script:coreConfig -Foundation $script:coreFoundation `
+                -ExpectedImage $script:coreApiImage -ExpectedPrincipalId ([string]$succeededApp.identity.principalId) `
+                -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint |
+                Should -BeTrue
+
+            $partialApp = & $script:newCompleteApiApp
+            $partialApp.properties.configuration.ingress.transport = 'Auto'
+            Assert-GatewayExactPartialContainerAppEnvelope -App $partialApp -Role Api `
+                -Config $script:coreConfig -Foundation $script:coreFoundation `
+                -ExpectedImage $script:coreApiImage -DeploymentOwnershipId $script:coreOwnershipId `
+                -SourceFingerprint $script:coreSourceFingerprint `
+                -ExpectedEnvironment ([ordered]@{
+                    ASPNETCORE_ENVIRONMENT = 'Production'
+                    __recoveryApiFqdn = 'ca-gateway-api-dev.safe.azurecontainerapps.io'
+                }) | Should -BeTrue
+        }
+
+        It 'rejects a different API ingress transport enum on both recovery boundaries' {
+            $succeededApp = & $script:newCompleteApiApp
+            $succeededApp.properties.configuration.ingress.transport = 'tcp'
+            $succeededApp.properties.configuration.Remove('secretCount')
+            $succeededApp.properties.configuration['secrets'] = @()
+            { Assert-GatewaySucceededContainerAppBoundary -App $succeededApp -Role Api `
+                    -Config $script:coreConfig -Foundation $script:coreFoundation `
+                    -ExpectedImage $script:coreApiImage -ExpectedPrincipalId ([string]$succeededApp.identity.principalId) `
+                    -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint } |
+                Should -Throw '*external HTTPS-only ingress boundary*'
+
+            $partialApp = & $script:newCompleteApiApp
+            $partialApp.properties.configuration.ingress.transport = 'tcp'
+            { Assert-GatewayExactPartialContainerAppEnvelope -App $partialApp -Role Api `
+                    -Config $script:coreConfig -Foundation $script:coreFoundation `
+                    -ExpectedImage $script:coreApiImage -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint `
+                    -ExpectedEnvironment ([ordered]@{
+                        ASPNETCORE_ENVIRONMENT = 'Production'
+                        __recoveryApiFqdn = 'ca-gateway-api-dev.safe.azurecontainerapps.io'
+                    }) } | Should -Throw '*external HTTPS-only contract*'
+        }
+
+        It 'rejects a different Azure region on the succeeded Container App boundary' {
+            $app = & $script:newPartialWorkerApp
+            $app.location = 'Japan East'
+            $app.properties.provisioningState = 'Succeeded'
+            $app.properties.configuration.Remove('secretCount')
+            $app.properties.configuration['secrets'] = @()
+
+            { Assert-GatewaySucceededContainerAppBoundary -App $app -Role Worker `
+                    -Config $script:coreConfig -Foundation $script:coreFoundation `
+                    -ExpectedImage $script:coreWorkerImage -ExpectedPrincipalId ([string]$app.identity.principalId) `
+                    -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint } |
+                Should -Throw '*outside the exact image, identity, environment, and secret-free boundary*'
+        }
+
+        It 'rejects empty or non-ASCII-alphanumeric Azure location forms <Location>' -ForEach @(
+            @{ Location = '' },
+            @{ Location = ' ' },
+            @{ Location = "Korea`tCentral" },
+            @{ Location = 'Korea-Central' },
+            @{ Location = '서울' }
+        ) {
+            { ConvertTo-GatewayCanonicalAzureLocation -Location $Location } | Should -Throw '*Azure location*'
+        }
+
         It 'accepts the project-scoped API audience, binds empty initial authority, and reaches the inert deployment boundary' {
             { Deploy-GatewayCore `
                     -Config $script:coreConfig `
@@ -1101,8 +1230,43 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 [string]$Parameters.agent365ProvisioningManagedIdentityPrincipalId -ceq '' -and
                 @($Parameters.agent365ManagerApplicationIds).Count -eq 0 -and
                 [bool]$Parameters.agent365ManagerApplicationsPreflightConfirmed -eq $false -and
+                [bool]$Parameters.allowLegacySystemAssignedImagePull -eq $false -and
                 [string]$Parameters.entraIdAudience -ceq [string]$script:coreIdentity.gatewayApiTokenAudience
             }
+        }
+
+        It 'keeps the exact deployment map in case-sensitive parity with compiled main.bicep and rejects legacy image pull' {
+            $script:capturedCompiledParityParameters = $null
+            Mock Invoke-AzTsv { return '0' }
+            Mock Invoke-ArmDeploymentWithSecureParameters {
+                param($ResourceGroup, $Name, $TemplateFile, $Parameters, $Mode)
+                $script:capturedCompiledParityParameters = $Parameters
+                throw 'compiled-parameter-parity-captured'
+            }
+
+            { Deploy-GatewayCore @script:coreInitialArguments } |
+                Should -Throw '*compiled-parameter-parity-captured*'
+
+            $mainBicep = [IO.Path]::GetFullPath((Join-Path (Get-Location) 'infrastructure/bicep/main.bicep'))
+            $compiledText = (& az bicep build --file $mainBicep --stdout --only-show-errors 2>$null) -join [Environment]::NewLine
+            $LASTEXITCODE | Should -Be 0
+            $compiled = ConvertFrom-Json -InputObject $compiledText -Depth 100 -ErrorAction Stop
+            $compiledNames = @($compiled.parameters.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+            $capturedNames = @($script:capturedCompiledParityParameters.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
+
+            $capturedNames.Count | Should -Be 76
+            ($capturedNames -join '|') | Should -BeExactly ($compiledNames -join '|')
+            $script:capturedCompiledParityParameters.allowLegacySystemAssignedImagePull | Should -BeFalse
+
+            $actual = [ordered]@{}
+            foreach ($entry in $script:capturedCompiledParityParameters.GetEnumerator()) {
+                $actual[$entry.Key] = [ordered]@{ value = $entry.Value }
+            }
+            $actual.allowLegacySystemAssignedImagePull.value = $true
+            { Assert-GatewayExactReadableArmParameters -ActualParameters $actual `
+                    -ExpectedParameters $script:capturedCompiledParityParameters `
+                    -SecureParameterNames @('adminUiEntraClientSecretKeyVaultSecretUri') } |
+                Should -Throw '*allowLegacySystemAssignedImagePull*'
         }
 
         It 'rejects swapped scope-base and v2 token-audience values before any Azure discovery or workload mutation' {
@@ -1482,6 +1646,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
 
         It 'adopts a Succeeded deployment through GET-only evidence and app validation' {
             $succeeded = & $script:newTerminalCoreDeployment 'Succeeded'
+            $script:succeededCheckpoint = $null
             $script:succeededEvidence = [ordered]@{
                 deploymentName = 'a365gw-safe-bootstrap-inert-dev'
                 apiPrincipalId = '14141414-1414-4414-8414-141414141414'
@@ -1497,11 +1662,46 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 return [pscustomobject]@{ name = [string]$Arguments[$Arguments.Count - 1] }
             }
 
-            $result = Deploy-GatewayCore @script:coreInitialArguments -Checkpoint { throw 'checkpoint must not run' }
+            $result = Deploy-GatewayCore @script:coreInitialArguments -SucceededRecoveryOnly -Checkpoint {
+                param($evidence)
+                $script:succeededCheckpoint = $evidence
+            }
 
             $result.deploymentName | Should -BeExactly 'a365gw-safe-bootstrap-inert-dev'
+            $script:succeededCheckpoint.deploymentName | Should -BeExactly 'a365gw-safe-bootstrap-inert-dev'
             Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
             Should -Invoke Assert-GatewaySucceededContainerAppBoundary -Times 2 -Exactly
+        }
+
+        It 'rejects absent or non-Succeeded read-only inert recovery without ARM mutation' {
+            { Deploy-GatewayCore @script:coreInitialArguments -SucceededRecoveryOnly } |
+                Should -Throw '*Succeeded inert deployment required for read-only recovery is absent*'
+
+            $failed = & $script:newTerminalCoreDeployment 'Failed'
+            Mock Assert-GatewayExactReadableArmParameters { return $true }
+            Mock Invoke-AzTsv { return '1' }
+            Mock Invoke-AzJson { return $failed }
+            { Deploy-GatewayCore @script:coreInitialArguments -SucceededRecoveryOnly } |
+                Should -Throw '*not Succeeded; no mutation was attempted*'
+
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+        }
+
+        It 'checkpoints fresh Succeeded inert evidence before returning it for outer validation' {
+            $script:freshSucceededCheckpoint = $null
+            $succeeded = & $script:newTerminalCoreDeployment 'Succeeded'
+            $script:succeededEvidence = [ordered]@{ deploymentName = 'a365gw-safe-bootstrap-inert-dev' }
+            Mock Invoke-ArmDeploymentWithSecureParameters { return $succeeded }
+            Mock New-GatewayCoreEvidence { return $script:succeededEvidence }
+
+            $result = Deploy-GatewayCore @script:coreInitialArguments -Checkpoint {
+                param($evidence)
+                $script:freshSucceededCheckpoint = $evidence
+            }
+
+            $result.deploymentName | Should -BeExactly 'a365gw-safe-bootstrap-inert-dev'
+            $script:freshSucceededCheckpoint.deploymentName | Should -BeExactly 'a365gw-safe-bootstrap-inert-dev'
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly
         }
 
         It 'validates both exact extant app targets before a terminal retry' {
@@ -1735,6 +1935,377 @@ Describe 'Gateway core initial and runtime identity bindings' {
             $script:retryCheckpoint.terminalDeploymentRetryReceipts.Count | Should -Be 2
             $script:retryCheckpoint.terminalDeploymentRetryReceipts[0].correlationId | Should -BeExactly '16161616-1616-4616-8616-161616161616'
             $script:retryCheckpoint.terminalDeploymentRetryReceipts[1].correlationId | Should -BeExactly '17171717-1717-4717-8717-171717171717'
+        }
+
+        Context 'Succeeded inert What-If Ignore recovery boundary' {
+            BeforeEach {
+                $script:coreFoundation | Add-Member -NotePropertyName virtualNetworkId `
+                    -NotePropertyValue "/subscriptions/$($script:coreConfig.subscriptionId)/resourceGroups/$($script:coreConfig.resourceGroupName)/providers/Microsoft.Network/virtualNetworks/vnet-safe-dev"
+                $script:coreFoundation | Add-Member -NotePropertyName privateEndpointSubnetId `
+                    -NotePropertyValue "$($script:coreFoundation.virtualNetworkId)/subnets/snet-private-endpoints"
+                $script:coreFoundation | Add-Member -NotePropertyName logAnalyticsWorkspaceName -NotePropertyValue 'log-safe-dev'
+                $script:boundaryProviderPrefix = "/subscriptions/$($script:coreConfig.subscriptionId)/resourceGroups/$($script:coreConfig.resourceGroupName)/providers"
+                $script:boundaryStorageName = 'stsafedevabc123'
+                $script:boundaryStorageId = "$($script:boundaryProviderPrefix)/Microsoft.Storage/storageAccounts/$($script:boundaryStorageName)"
+                $script:boundaryPrivateEndpointName = "pe-$($script:boundaryStorageName)-blob"
+                $script:boundaryPrivateEndpointId = "$($script:boundaryProviderPrefix)/Microsoft.Network/privateEndpoints/$($script:boundaryPrivateEndpointName)"
+                $script:boundaryDnsZoneId = "$($script:boundaryProviderPrefix)/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net"
+                $script:boundaryDnsLinkName = 'link-safe-dev-storage'
+                $script:boundaryDnsLinkId = "$($script:boundaryDnsZoneId)/virtualNetworkLinks/$($script:boundaryDnsLinkName)"
+                $script:boundaryNicId = "$($script:boundaryProviderPrefix)/Microsoft.Network/networkInterfaces/$($script:boundaryPrivateEndpointName).nic.34343434-3434-4434-8434-343434343434"
+                $script:boundaryServiceBusId = "$($script:boundaryProviderPrefix)/Microsoft.ServiceBus/namespaces/sb-safe-dev"
+                $script:boundarySqlServerId = "$($script:boundaryProviderPrefix)/Microsoft.Sql/servers/sql-safe-dev"
+                $script:boundaryGatewayDbId = "$($script:boundarySqlServerId)/databases/GatewayDb"
+                $script:boundaryMasterId = "$($script:boundarySqlServerId)/databases/master"
+                $script:boundaryActionGroupId = "$($script:boundaryProviderPrefix)/Microsoft.Insights/actionGroups/ag-gateway-alerts"
+                $script:boundaryAppInsightsId = "$($script:boundaryProviderPrefix)/Microsoft.Insights/components/ai-safe-dev"
+                $script:boundarySharedVaultId = "$($script:boundaryProviderPrefix)/Microsoft.KeyVault/vaults/kv-safe-dev"
+                $script:boundaryProvisioningVaultId = "$($script:boundaryProviderPrefix)/Microsoft.KeyVault/vaults/kv-safe-dev-prov"
+                $script:boundaryBaseTags = [ordered]@{
+                    project = 'a365-gateway'; environment = 'dev'; managedBy = 'bicep'; projectName = 'safe'
+                    deploymentId = 'safe-dev'; bootstrapOwnershipId = $script:coreOwnershipId
+                    bootstrapSourceFingerprint = $script:coreSourceFingerprint
+                }
+                $script:boundaryProvisioningTags = [ordered]@{}
+                foreach ($entry in $script:boundaryBaseTags.GetEnumerator()) { $script:boundaryProvisioningTags[$entry.Key] = $entry.Value }
+                $script:boundaryProvisioningTags.workload = 'provisioning-credentials'
+                $script:boundaryPrivateEndpointTags = [ordered]@{}
+                foreach ($entry in $script:boundaryBaseTags.GetEnumerator()) { $script:boundaryPrivateEndpointTags[$entry.Key] = $entry.Value }
+                $script:boundaryPrivateEndpointTags.workload = 'interaction-content'
+                $script:boundaryResources = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+                $script:boundaryIdsByType = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+                $script:addBoundaryResource = {
+                    param(
+                        [string]$Id, [string]$Type, [string]$Name, [string]$Location,
+                        $Tags, $Properties, [bool]$IncludeInInventory = $true
+                    )
+                    $resource = [pscustomobject]@{
+                        id = $Id; type = $Type; name = $Name; location = $Location
+                        tags = $Tags
+                        properties = if ($null -eq $Properties) { [ordered]@{ provisioningState = 'Succeeded' } } else { $Properties }
+                    }
+                    $script:boundaryResources[$Id] = $resource
+                    if ($IncludeInInventory) {
+                        if (-not $script:boundaryIdsByType.ContainsKey($Type)) {
+                            $script:boundaryIdsByType[$Type] = [Collections.ArrayList]::new()
+                        }
+                        [void]$script:boundaryIdsByType[$Type].Add($Id)
+                    }
+                }
+
+                & $script:addBoundaryResource "$($script:boundaryProviderPrefix)/Microsoft.App/containerApps/ca-gateway-api-dev" `
+                    'Microsoft.App/containerApps' 'ca-gateway-api-dev' 'koreacentral' $script:boundaryBaseTags $null
+                & $script:addBoundaryResource "$($script:boundaryProviderPrefix)/Microsoft.App/containerApps/ca-gateway-worker-dev-v3" `
+                    'Microsoft.App/containerApps' 'ca-gateway-worker-dev-v3' 'koreacentral' $script:boundaryBaseTags $null
+                & $script:addBoundaryResource $script:boundaryActionGroupId 'Microsoft.Insights/actionGroups' `
+                    'ag-gateway-alerts' 'global' $script:boundaryBaseTags $null
+                & $script:addBoundaryResource $script:boundaryAppInsightsId 'Microsoft.Insights/components' 'ai-safe-dev' `
+                    'koreacentral' $script:boundaryBaseTags ([ordered]@{
+                        provisioningState = 'Succeeded'
+                        WorkspaceResourceId = "$($script:boundaryProviderPrefix)/Microsoft.OperationalInsights/workspaces/log-safe-dev"
+                    })
+                & $script:addBoundaryResource $script:boundarySharedVaultId 'Microsoft.KeyVault/vaults' 'kv-safe-dev' `
+                    'koreacentral' $script:boundaryBaseTags $null
+                & $script:addBoundaryResource $script:boundaryProvisioningVaultId 'Microsoft.KeyVault/vaults' 'kv-safe-dev-prov' `
+                    'koreacentral' $script:boundaryProvisioningTags $null
+                & $script:addBoundaryResource $script:boundaryDnsZoneId 'Microsoft.Network/privateDnsZones' `
+                    'privatelink.blob.core.windows.net' 'global' ([ordered]@{}) $null
+                & $script:addBoundaryResource $script:boundaryDnsLinkId 'Microsoft.Network/privateDnsZones/virtualNetworkLinks' `
+                    'link-safe-dev-storage' 'global' ([ordered]@{}) ([ordered]@{
+                        provisioningState = 'Succeeded'; registrationEnabled = $false
+                        virtualNetwork = [ordered]@{ id = $script:coreFoundation.virtualNetworkId }
+                    })
+                & $script:addBoundaryResource $script:boundaryPrivateEndpointId 'Microsoft.Network/privateEndpoints' `
+                    $script:boundaryPrivateEndpointName 'koreacentral' $script:boundaryPrivateEndpointTags ([ordered]@{
+                        provisioningState = 'Succeeded'
+                        subnet = [ordered]@{ id = $script:coreFoundation.privateEndpointSubnetId }
+                        privateLinkServiceConnections = @([ordered]@{
+                            name = "peconn-$($script:boundaryStorageName)-blob"
+                            properties = [ordered]@{
+                                privateLinkServiceId = $script:boundaryStorageId
+                                groupIds = @('blob')
+                            }
+                        })
+                        networkInterfaces = @([ordered]@{ id = $script:boundaryNicId })
+                    })
+                & $script:addBoundaryResource $script:boundaryServiceBusId 'Microsoft.ServiceBus/namespaces' `
+                    'sb-safe-dev' 'koreacentral' $script:boundaryBaseTags $null
+                & $script:addBoundaryResource $script:boundarySqlServerId 'Microsoft.Sql/servers' `
+                    'sql-safe-dev' 'koreacentral' $script:boundaryBaseTags $null
+                & $script:addBoundaryResource $script:boundaryGatewayDbId 'Microsoft.Sql/servers/databases' `
+                    'GatewayDb' 'koreacentral' $script:boundaryBaseTags $null
+                & $script:addBoundaryResource $script:boundaryMasterId 'Microsoft.Sql/servers/databases' `
+                    'master' 'koreacentral' ([ordered]@{}) $null
+                & $script:addBoundaryResource $script:boundaryStorageId 'Microsoft.Storage/storageAccounts' `
+                    $script:boundaryStorageName 'koreacentral' $script:boundaryBaseTags $null
+
+                $metricScopes = [ordered]@{
+                    'alert-sql-connection-failed-dev' = $script:boundaryGatewayDbId
+                    'alert-servicebus-server-errors-dev' = $script:boundaryServiceBusId
+                    'alert-keyvault-availability-drop-dev' = $script:boundarySharedVaultId
+                    'alert-servicebus-queue-depth-high-dev' = $script:boundaryServiceBusId
+                    'alert-servicebus-deadletter-depth-dev' = $script:boundaryServiceBusId
+                }
+                foreach ($entry in $metricScopes.GetEnumerator()) {
+                    & $script:addBoundaryResource "$($script:boundaryProviderPrefix)/Microsoft.Insights/metricAlerts/$($entry.Key)" `
+                        'Microsoft.Insights/metricAlerts' ([string]$entry.Key) 'global' $script:boundaryBaseTags ([ordered]@{
+                            provisioningState = 'Succeeded'; scopes = @([string]$entry.Value)
+                            actions = @([ordered]@{ actionGroupId = $script:boundaryActionGroupId })
+                        })
+                }
+                foreach ($name in @(
+                    'alert-api-server-errors-dev', 'alert-api-auth-failures-dev',
+                    'alert-api-response-latency-high-dev', 'alert-identity-mismatch-dev',
+                    'alert-provisioning-failed-dev'
+                )) {
+                    & $script:addBoundaryResource "$($script:boundaryProviderPrefix)/Microsoft.Insights/scheduledQueryRules/$name" `
+                        'Microsoft.Insights/scheduledQueryRules' $name 'koreacentral' $script:boundaryBaseTags ([ordered]@{
+                            provisioningState = 'Succeeded'; scopes = @($script:boundaryAppInsightsId)
+                            actions = [ordered]@{ actionGroups = @($script:boundaryActionGroupId) }
+                        })
+                }
+                & $script:addBoundaryResource $script:boundaryNicId 'Microsoft.Network/networkInterfaces' `
+                    "$($script:boundaryPrivateEndpointName).nic.34343434-3434-4434-8434-343434343434" `
+                    'koreacentral' ([ordered]@{}) ([ordered]@{
+                        provisioningState = 'Succeeded'
+                        privateEndpoint = [ordered]@{ id = $script:boundaryPrivateEndpointId }
+                        ipConfigurations = @([ordered]@{
+                            properties = [ordered]@{ subnet = [ordered]@{ id = $script:coreFoundation.privateEndpointSubnetId } }
+                        })
+                    })
+                & $script:addBoundaryResource "$($script:boundaryPrivateEndpointId)/privateDnsZoneGroups/storageBlobDnsGroup" `
+                    'Microsoft.Network/privateEndpoints/privateDnsZoneGroups' `
+                    'storageBlobDnsGroup' '' ([ordered]@{}) ([ordered]@{
+                        provisioningState = 'Succeeded'
+                        privateDnsZoneConfigs = @([ordered]@{
+                            name = 'blob'; properties = [ordered]@{ privateDnsZoneId = $script:boundaryDnsZoneId }
+                        })
+                    }) $false
+                $script:boundaryResources["$($script:boundaryPrivateEndpointId)/privateDnsZoneGroups/storageBlobDnsGroup"].location = $null
+
+                $script:boundaryEvidence = [ordered]@{
+                    deploymentName = 'a365gw-safe-bootstrap-inert-dev'
+                    deploymentOwnershipId = $script:coreOwnershipId
+                    sourceFingerprint = $script:coreSourceFingerprint
+                    apiImage = $script:coreApiImage
+                    workerImage = $script:coreWorkerImage
+                    containerRegistryId = "$($script:boundaryProviderPrefix)/Microsoft.ContainerRegistry/registries/$($script:coreFoundation.acrName)"
+                    sharedKeyVaultId = $script:boundarySharedVaultId
+                    storageAccountId = $script:boundaryStorageId
+                    storageBlobPrivateEndpointId = $script:boundaryPrivateEndpointId
+                    storageBlobPrivateDnsZoneId = $script:boundaryDnsZoneId
+                    serviceBusQueueId = "$($script:boundaryServiceBusId)/queues/gateway-provisioning-v3"
+                    serviceBusQueueName = 'gateway-provisioning-v3'
+                    sqlServerFqdn = 'sql-safe-dev.database.windows.net'
+                }
+
+                Mock Get-GatewayInertBoundaryResource {
+                    param([string]$ResourceId, [string]$ApiVersion)
+                    return $script:boundaryResources[$ResourceId]
+                }
+                Mock Get-GatewayInertBoundaryTypeInventory {
+                    param($Config, [string]$ResourceType)
+                    return @($script:boundaryIdsByType[$ResourceType] | ForEach-Object { [pscustomobject]@{ id = $_ } })
+                }
+            }
+
+            It 'builds one deterministic sorted 25-resource boundary with exact NIC and master bindings' {
+                $first = New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
+                    -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                    -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint
+                $second = New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
+                    -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                    -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint
+
+                $first.schemaVersion | Should -Be 1
+                $first.phase | Should -BeExactly 'InertIdentityDeployment'
+                $first.resourceIds.Count | Should -Be 25
+                ($first.resourceIds -join '|') | Should -BeExactly ((@($first.resourceIds | Sort-Object -CaseSensitive)) -join '|')
+                $first.generatedNicBinding.nicId | Should -BeExactly $script:boundaryNicId.ToLowerInvariant()
+                $first.generatedNicBinding.privateEndpointId | Should -BeExactly $script:boundaryPrivateEndpointId.ToLowerInvariant()
+                $first.masterDatabaseBinding.databaseId | Should -BeExactly $script:boundaryMasterId.ToLowerInvariant()
+                $first.boundaryFingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
+                $second.boundaryFingerprint | Should -BeExactly $first.boundaryFingerprint
+                Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+                Should -Invoke Get-GatewayInertBoundaryResource -ParameterFilter { $ResourceId -match '[*?]' } -Times 0 -Exactly
+            }
+
+            It 'rejects a parent-qualified provider name for child resource <Child>' -ForEach @(
+                @{ Child = 'private DNS virtual-network link' },
+                @{ Child = 'Gateway SQL database' },
+                @{ Child = 'SQL master database' },
+                @{ Child = 'private-endpoint DNS zone group' }
+            ) {
+                switch ($Child) {
+                    'private DNS virtual-network link' {
+                        $id = $script:boundaryDnsLinkId
+                        $parentQualifiedName = "privatelink.blob.core.windows.net/$($script:boundaryDnsLinkName)"
+                    }
+                    'Gateway SQL database' {
+                        $id = $script:boundaryGatewayDbId
+                        $parentQualifiedName = 'sql-safe-dev/GatewayDb'
+                    }
+                    'SQL master database' {
+                        $id = $script:boundaryMasterId
+                        $parentQualifiedName = 'sql-safe-dev/master'
+                    }
+                    'private-endpoint DNS zone group' {
+                        $id = "$($script:boundaryPrivateEndpointId)/privateDnsZoneGroups/storageBlobDnsGroup"
+                        $parentQualifiedName = "$($script:boundaryPrivateEndpointName)/storageBlobDnsGroup"
+                    }
+                }
+                $script:boundaryResources[$id].name = $parentQualifiedName
+
+                { New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                        -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
+                        -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                        -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint } |
+                    Should -Throw '*exact ID, type, name, and location envelope*'
+                Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+            }
+
+            It 'accepts the provider-null location only for the private-endpoint DNS zone-group child' {
+                $dnsZoneGroupId = "$($script:boundaryPrivateEndpointId)/privateDnsZoneGroups/storageBlobDnsGroup"
+                $script:boundaryResources[$dnsZoneGroupId].location | Should -BeNullOrEmpty
+
+                $boundary = New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
+                    -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                    -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint
+
+                $boundary.resourceIds.Count | Should -Be 25
+            }
+
+            It 'rejects a nonempty private-endpoint DNS zone-group location <Location>' -ForEach @(
+                @{ Location = 'koreacentral' },
+                @{ Location = 'global' }
+            ) {
+                $dnsZoneGroupId = "$($script:boundaryPrivateEndpointId)/privateDnsZoneGroups/storageBlobDnsGroup"
+                $script:boundaryResources[$dnsZoneGroupId].location = $Location
+
+                { New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                        -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
+                        -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                        -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint } |
+                    Should -Throw '*Microsoft.Network/privateEndpoints/privateDnsZoneGroups/storageBlobDnsGroup*'
+            }
+
+            It 'identifies only the safe expected type and name in a resource-envelope diagnostic' {
+                $script:boundaryResources[$script:boundaryStorageId].name = 'provider-only-unexpected-name'
+                $message = $null
+                try {
+                    New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                        -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
+                        -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                        -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint | Out-Null
+                }
+                catch { $message = $_.Exception.Message }
+
+                $message | Should -BeExactly `
+                    "An inert recovery resource does not match its exact ID, type, name, and location envelope (Microsoft.Storage/storageAccounts/$($script:boundaryStorageName))."
+                $message | Should -Not -Match 'provider-only-unexpected-name'
+            }
+
+            It 'uses only succeeded-recovery reads when composing the public helper result' {
+                $expectedBoundary = [ordered]@{ schemaVersion = 1; phase = 'InertIdentityDeployment'; resourceIds = @('safe') }
+                Mock Deploy-GatewayCore { return $script:boundaryEvidence }
+                Mock New-GatewayInertWhatIfRecoveryBoundary { return $expectedBoundary }
+
+                $result = Get-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation -Identity $script:coreIdentity `
+                    -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                    -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint
+
+                $result.evidence | Should -Be $script:boundaryEvidence
+                $result.boundary | Should -Be $expectedBoundary
+                Should -Invoke Deploy-GatewayCore -Times 1 -Exactly -ParameterFilter {
+                    $Initial -and $SucceededRecoveryOnly -and $WorkerPrincipalId -ceq '' -and
+                    @($ManagerApplicationIds).Count -eq 0
+                }
+                Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+            }
+
+            It 'fails closed on inert resource-graph mutation <Mutation>' -ForEach @(
+                @{ Mutation = 'extraInventory' },
+                @{ Mutation = 'missingInventory' },
+                @{ Mutation = 'duplicateInventory' },
+                @{ Mutation = 'ambiguousNic' },
+                @{ Mutation = 'outOfGroupNic' },
+                @{ Mutation = 'unownedTag' },
+                @{ Mutation = 'missingResource' },
+                @{ Mutation = 'reverseNic' },
+                @{ Mutation = 'masterBinding' },
+                @{ Mutation = 'extraAlertScope' },
+                @{ Mutation = 'crossTypeReadback' }
+            ) {
+                switch ($Mutation) {
+                    'extraInventory' {
+                        [void]$script:boundaryIdsByType['Microsoft.Storage/storageAccounts'].Add(
+                            "$($script:boundaryProviderPrefix)/Microsoft.Storage/storageAccounts/unownedextra")
+                    }
+                    'missingInventory' {
+                        $script:boundaryIdsByType['Microsoft.KeyVault/vaults'].RemoveAt(0)
+                    }
+                    'duplicateInventory' {
+                        [void]$script:boundaryIdsByType['Microsoft.ServiceBus/namespaces'].Add($script:boundaryServiceBusId)
+                    }
+                    'ambiguousNic' {
+                        $script:boundaryResources[$script:boundaryPrivateEndpointId].properties.networkInterfaces +=
+                            ,[ordered]@{ id = "$($script:boundaryProviderPrefix)/Microsoft.Network/networkInterfaces/other.nic.45454545-4545-4454-8454-454545454545" }
+                    }
+                    'outOfGroupNic' {
+                        $script:boundaryResources[$script:boundaryPrivateEndpointId].properties.networkInterfaces[0].id =
+                            '/subscriptions/99999999-9999-4999-8999-999999999999/resourceGroups/other/providers/Microsoft.Network/networkInterfaces/other'
+                    }
+                    'unownedTag' {
+                        $script:boundaryResources[$script:boundaryStorageId].tags.bootstrapOwnershipId =
+                            '56565656-5656-4565-8565-565656565656'
+                    }
+                    'missingResource' {
+                        Mock Get-GatewayInertBoundaryResource {
+                            param([string]$ResourceId, [string]$ApiVersion)
+                            if ($ResourceId -ieq $script:boundaryStorageId) { return $null }
+                            return $script:boundaryResources[$ResourceId]
+                        }
+                    }
+                    'reverseNic' {
+                        $script:boundaryResources[$script:boundaryNicId].properties.privateEndpoint.id =
+                            "$($script:boundaryProviderPrefix)/Microsoft.Network/privateEndpoints/other"
+                    }
+                    'masterBinding' {
+                        $script:boundaryResources[$script:boundaryMasterId].id =
+                            "$($script:boundarySqlServerId)/databases/not-master"
+                    }
+                    'extraAlertScope' {
+                        $alertId = "$($script:boundaryProviderPrefix)/Microsoft.Insights/metricAlerts/alert-sql-connection-failed-dev"
+                        $script:boundaryResources[$alertId].properties.scopes += ,$script:boundaryServiceBusId
+                    }
+                    'crossTypeReadback' {
+                        $script:boundaryResources[$script:boundaryStorageId].type = 'Microsoft.KeyVault/vaults'
+                    }
+                }
+
+                { New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                        -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
+                        -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                        -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint } |
+                    Should -Throw
+                Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+            }
+
+            It 'rejects optional graph expansion before any provider read' {
+                $script:coreConfig.promptShield.enabled = $true
+
+                { New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                        -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
+                        -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                        -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint } |
+                    Should -Throw '*does not include optional Prompt Shields resources*'
+                Should -Invoke Get-GatewayInertBoundaryResource -Times 0 -Exactly
+                Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+            }
         }
     }
 }

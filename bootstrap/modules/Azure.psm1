@@ -1,6 +1,19 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function ConvertTo-GatewayCanonicalAzureLocation {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Location)
+
+    if ([string]::IsNullOrEmpty($Location) -or $Location -cnotmatch '\A[A-Za-z0-9 ]+\z') {
+        throw 'An Azure location must contain only ASCII letters, digits, and spaces.'
+    }
+    $canonical = $Location.Replace(' ', '').ToLowerInvariant()
+    if ([string]::IsNullOrEmpty($canonical)) {
+        throw 'An Azure location cannot be empty after removing ASCII spaces.'
+    }
+    return $canonical
+}
+
 function Connect-BootstrapAzure {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Config, [switch]$NonInteractive)
@@ -507,7 +520,8 @@ function Assert-GatewayExactPartialContainerAppEnvelope {
     $name = if ($Role -ceq 'Api') { "ca-gateway-api-$($Config.environment)" } else { "ca-gateway-worker-$($Config.environment)-v3" }
     $expectedId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/containerApps/$name"
     if ([string]$App.name -cne $name -or [string]$App.type -cne 'Microsoft.App/containerApps' -or
-        [string]$App.location -cne [string]$Config.location -or
+        (ConvertTo-GatewayCanonicalAzureLocation -Location ([string]$App.location)) -cne
+            (ConvertTo-GatewayCanonicalAzureLocation -Location ([string]$Config.location)) -or
         -not ([string]$App.id).Equals($expectedId, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'A partial Container App is outside the exact name, type, location, and resource scope.'
     }
@@ -569,10 +583,18 @@ function Assert-GatewayExactPartialContainerAppEnvelope {
                 if ($requireComplete -and -not (Test-GatewayArmObjectProperty -Object $ingress -Name ([string]$entry.Key))) {
                     throw 'A completed child API ingress field is absent.'
                 }
-                if ((Test-GatewayArmObjectProperty -Object $ingress -Name ([string]$entry.Key)) -and
-                    (Get-BootstrapObjectFingerprint -InputObject (Get-GatewayArmObjectProperty -Object $ingress -Name ([string]$entry.Key))) -cne
-                    (Get-BootstrapObjectFingerprint -InputObject $entry.Value)) {
-                    throw 'A partial API ingress field is outside the exact external HTTPS-only contract.'
+                if (Test-GatewayArmObjectProperty -Object $ingress -Name ([string]$entry.Key)) {
+                    $actualValue = Get-GatewayArmObjectProperty -Object $ingress -Name ([string]$entry.Key)
+                    $matches = if ([string]$entry.Key -ceq 'transport') {
+                        ([string]$actualValue).Equals([string]$entry.Value, [StringComparison]::OrdinalIgnoreCase)
+                    }
+                    else {
+                        (Get-BootstrapObjectFingerprint -InputObject $actualValue) -ceq
+                            (Get-BootstrapObjectFingerprint -InputObject $entry.Value)
+                    }
+                    if (-not $matches) {
+                        throw 'A partial API ingress field is outside the exact external HTTPS-only contract.'
+                    }
                 }
             }
             if (Test-GatewayArmObjectProperty -Object $ingress -Name 'fqdn') {
@@ -832,6 +854,8 @@ function New-GatewayCoreEvidence {
         @('apiFqdn', 'apiFqdn'), @('apiPrincipalId', 'apiPrincipalId'), @('workerPrincipalId', 'workerPrincipalId'),
         @('adminUiFqdn', 'adminUiFqdn'), @('acrLoginServer', 'acrLoginServer'), @('containerRegistryId', 'containerRegistryId'),
         @('keyVaultUri', 'keyVaultUri'), @('sharedKeyVaultId', 'sharedKeyVaultId'), @('storageAccountId', 'storageAccountId'),
+        @('storageBlobPrivateEndpointId', 'storageBlobPrivateEndpointId'),
+        @('storageBlobPrivateDnsZoneId', 'storageBlobPrivateDnsZoneId'),
         @('sqlServerFqdn', 'sqlServerFqdn'), @('serviceBusQueueName', 'serviceBusQueueName'), @('serviceBusQueueId', 'serviceBusQueueId'),
         @('agent365RegistryProvider', 'registryProvider'), @('promptShieldEndpoint', 'promptShieldEndpoint'),
         @('promptShieldAccountId', 'promptShieldAccountId'), @('promptShieldAccountName', 'promptShieldAccountName'),
@@ -932,13 +956,14 @@ function Assert-GatewaySucceededContainerAppBoundary {
     )
     $name = if ($Role -ceq 'Api') { "ca-gateway-api-$($Config.environment)" } else { "ca-gateway-worker-$($Config.environment)-v3" }
     if ([string]$App.name -cne $name -or [string]$App.properties.provisioningState -cne 'Succeeded' -or
-        [string]$App.location -cne [string]$Config.location -or
+        (ConvertTo-GatewayCanonicalAzureLocation -Location ([string]$App.location)) -cne
+            (ConvertTo-GatewayCanonicalAzureLocation -Location ([string]$Config.location)) -or
         [string]$App.properties.template.containers[0].name -cne $name -or
         [string]$App.properties.template.containers[0].image -cne $ExpectedImage -or
         [string]$App.identity.principalId -cne $ExpectedPrincipalId -or
         -not ([string]$App.properties.managedEnvironmentId).Equals([string]$Foundation.containerAppsEnvironmentId, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$App.properties.configuration.activeRevisionsMode -cne 'Single' -or
-        @($App.properties.configuration.secrets).Count -ne 0) {
+        @(Get-GatewayArmArrayItems -Value (Get-GatewayArmObjectProperty -Object $App.properties.configuration -Name 'secrets')).Count -ne 0) {
         throw 'A completed inert Container App is outside the exact image, identity, environment, and secret-free boundary.'
     }
     Assert-GatewayExactTagMap -ActualTags $App.tags -ExpectedTags ([ordered]@{
@@ -956,7 +981,8 @@ function Assert-GatewaySucceededContainerAppBoundary {
     $ingress = Get-GatewayArmObjectProperty -Object $App.properties.configuration -Name 'ingress'
     if ($Role -ceq 'Worker' -and $null -ne $ingress) { throw 'A completed inert worker unexpectedly exposes ingress.' }
     if ($Role -ceq 'Api' -and ($null -eq $ingress -or $ingress.external -ne $true -or $ingress.allowInsecure -ne $false -or
-        [int]$ingress.targetPort -ne 8080 -or [string]$ingress.transport -cne 'auto')) {
+        [int]$ingress.targetPort -ne 8080 -or
+        -not ([string]$ingress.transport).Equals('auto', [StringComparison]::OrdinalIgnoreCase))) {
         throw 'A completed inert API does not retain the exact external HTTPS-only ingress boundary.'
     }
     return $true
@@ -983,8 +1009,12 @@ function Deploy-GatewayCore {
         [Parameter()][switch]$EnableProvisioning,
         [Parameter()][switch]$EnablePurview,
         [Parameter()][AllowNull()]$RecoveredEvidence,
-        [Parameter()][scriptblock]$Checkpoint
+        [Parameter()][scriptblock]$Checkpoint,
+        [Parameter()][switch]$SucceededRecoveryOnly
     )
+    if ($SucceededRecoveryOnly -and -not $Initial) {
+        throw 'Succeeded-only workload recovery is available only for the initial inert deployment.'
+    }
     $root = Get-BootstrapExecutionSourceRoot
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
     if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
@@ -1115,6 +1145,7 @@ function Deploy-GatewayCore {
         agent365ProvisioningManagedIdentityPrincipalId = $WorkerPrincipalId
         historicalWorkerContainerAppName = "ca-gateway-worker-$($Config.environment)"
         preserveExistingApiSecrets = -not $Initial
+        allowLegacySystemAssignedImagePull = $false
         workerProcessingEnabled = [bool]$EnableWorkerProcessing
         enableLegacyWorkerCredentialKeyVaultSecretsOfficer = $false
         provisioningExecutionEnabled = [bool]$EnableProvisioning
@@ -1176,6 +1207,9 @@ function Deploy-GatewayCore {
             throw 'Azure returned an invalid or duplicate inert deployment discovery result; no workload mutation was attempted.'
         }
         if ($deploymentCount -eq 0) {
+            if ($SucceededRecoveryOnly) {
+                throw 'The exact Succeeded inert deployment required for read-only recovery is absent.'
+            }
             if ($null -ne $RecoveredEvidence) {
                 throw 'A prior inert deployment receipt or evidence exists but the source-bound ARM deployment record is absent.'
             }
@@ -1218,7 +1252,11 @@ function Deploy-GatewayCore {
                 Assert-GatewaySucceededContainerAppBoundary -App $existingWorker -Role Worker -Config $Config -Foundation $Foundation `
                     -ExpectedImage $WorkerImage -ExpectedPrincipalId ([string]$evidence.workerPrincipalId) `
                     -DeploymentOwnershipId $canonicalOwnershipId -SourceFingerprint $SourceFingerprint | Out-Null
+                if ($null -ne $Checkpoint) { & $Checkpoint $evidence | Out-Null }
                 return $evidence
+            }
+            if ($SucceededRecoveryOnly) {
+                throw 'The exact inert deployment required for read-only recovery is not Succeeded; no mutation was attempted.'
             }
             if ($existingState -notin @('Failed', 'Canceled')) {
                 throw 'The existing inert deployment is nonterminal or has an unknown state; no mutation was attempted.'
@@ -1292,14 +1330,416 @@ function Deploy-GatewayCore {
             }) | Out-Null
         }
     }
+    if ($SucceededRecoveryOnly) {
+        throw 'The exact Succeeded inert deployment required for read-only recovery was not recovered; no mutation was attempted.'
+    }
     $deployment = Invoke-ArmDeploymentWithSecureParameters -ResourceGroup ([string]$Config.resourceGroupName) -Name $name `
         -TemplateFile (Join-Path $root 'infrastructure/bicep/main.bicep') -Parameters $parameters -Mode Incremental
     if (-not $deployment -or [string]$deployment.properties.provisioningState -cne 'Succeeded') {
         throw 'The workload ARM deployment did not return a completed Succeeded result.'
     }
-    return New-GatewayCoreEvidence -DeploymentName $name -Outputs $deployment.properties.outputs `
+    $evidence = New-GatewayCoreEvidence -DeploymentName $name -Outputs $deployment.properties.outputs `
         -Foundation $Foundation -Parameters $parameters -RetryReceipts $retryReceipts `
         -ObservedPartialPrincipalIds $observedPartialPrincipalIds
+    if ($Initial -and $null -ne $Checkpoint) { & $Checkpoint $evidence | Out-Null }
+    return $evidence
+}
+
+function ConvertTo-GatewayCanonicalArmResourceId {
+    param(
+        [Parameter(Mandatory)][string]$ResourceId,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $targetPrefix = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/"
+    if ([string]::IsNullOrWhiteSpace($ResourceId) -or
+        -not $ResourceId.StartsWith($targetPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $ResourceId.Length -le $targetPrefix.Length -or $ResourceId.EndsWith('/', [StringComparison]::Ordinal) -or
+        $ResourceId.Contains('?') -or $ResourceId.Contains('#') -or $ResourceId.Contains('//')) {
+        throw "$Label is outside the exact target resource-group provider boundary."
+    }
+    return $ResourceId.ToLowerInvariant()
+}
+
+function Get-GatewayInertBoundaryResource {
+    param(
+        [Parameter(Mandatory)][string]$ResourceId,
+        [Parameter(Mandatory)][string]$ApiVersion
+    )
+    $resource = Invoke-AzJson -Arguments @(
+        'resource', 'show', '--ids', $ResourceId, '--api-version', $ApiVersion
+    )
+    if ($null -eq $resource) {
+        throw 'An exact inert recovery resource was absent or unreadable.'
+    }
+    return $resource
+}
+
+function Get-GatewayInertBoundaryTypeInventory {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$ResourceType
+    )
+    return @(Invoke-AzJson -Arguments @(
+        'resource', 'list', '--resource-group', [string]$Config.resourceGroupName,
+        '--resource-type', $ResourceType, '--query', '[].{id:id}'
+    ))
+}
+
+function Assert-GatewayInertBoundaryResourceEnvelope {
+    param(
+        [Parameter(Mandatory)]$Resource,
+        [Parameter(Mandatory)][string]$ExpectedId,
+        [Parameter(Mandatory)][string]$ExpectedType,
+        [Parameter(Mandatory)][string]$ExpectedName,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ExpectedLocation,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ExpectedTags,
+        [switch]$TagsAreProviderGenerated
+    )
+    $actualId = [string](Get-GatewayArmObjectProperty -Object $Resource -Name 'id')
+    $actualType = [string](Get-GatewayArmObjectProperty -Object $Resource -Name 'type')
+    $actualName = [string](Get-GatewayArmObjectProperty -Object $Resource -Name 'name')
+    $actualLocation = [string](Get-GatewayArmObjectProperty -Object $Resource -Name 'location')
+    if (-not $actualId.Equals($ExpectedId, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $actualType.Equals($ExpectedType, [StringComparison]::OrdinalIgnoreCase) -or
+        $actualName -cne $ExpectedName -or
+        -not $actualLocation.Equals($ExpectedLocation, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "An inert recovery resource does not match its exact ID, type, name, and location envelope ($ExpectedType/$ExpectedName)."
+    }
+    $properties = Get-GatewayArmObjectProperty -Object $Resource -Name 'properties'
+    if ($null -ne $properties -and (Test-GatewayArmObjectProperty -Object $properties -Name 'provisioningState') -and
+        [string](Get-GatewayArmObjectProperty -Object $properties -Name 'provisioningState') -cne 'Succeeded') {
+        throw 'An inert recovery resource is not in the exact Succeeded state.'
+    }
+    if (-not $TagsAreProviderGenerated) {
+        $actualTags = Get-GatewayArmObjectProperty -Object $Resource -Name 'tags'
+        if ($null -eq $actualTags) { $actualTags = [ordered]@{} }
+        Assert-GatewayExactTagMap -ActualTags $actualTags -ExpectedTags $ExpectedTags | Out-Null
+    }
+    return $true
+}
+
+function Assert-GatewayExactArmIdCollection {
+    param(
+        [AllowNull()]$Items,
+        [Parameter(Mandatory)][string[]]$ExpectedIds,
+        [Parameter(Mandatory)][string]$PropertyName,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $expected = @($ExpectedIds | ForEach-Object {
+        ConvertTo-GatewayCanonicalArmResourceId -ResourceId $_ -Config $Config -Label $Label
+    } | Sort-Object -CaseSensitive)
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $actual = @()
+    foreach ($item in @(Get-GatewayArmArrayItems -Value $Items)) {
+        $rawId = [string](Get-GatewayArmObjectProperty -Object $item -Name $PropertyName)
+        $id = ConvertTo-GatewayCanonicalArmResourceId -ResourceId $rawId -Config $Config -Label $Label
+        if (-not $seen.Add($id)) { throw "$Label contains a duplicate exact resource ID." }
+        $actual += $id
+    }
+    $actual = @($actual | Sort-Object -CaseSensitive)
+    if ($actual.Count -ne $expected.Count -or ($actual -join '|') -cne ($expected -join '|')) {
+        throw "$Label contains a missing, extra, or mismatched resource relationship."
+    }
+    return $true
+}
+
+function New-GatewayInertWhatIfRecoveryBoundary {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)]$Evidence,
+        [Parameter(Mandatory)][string]$ApiImage,
+        [Parameter(Mandatory)][string]$WorkerImage,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+    if ($Config.promptShield.enabled -eq $true) {
+        throw 'The exact 25-resource inert What-If recovery boundary does not include optional Prompt Shields resources.'
+    }
+    $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Inert What-If recovery source fingerprint'
+    $deploymentName = "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)"
+    if ($DeploymentOwnershipId -cne $canonicalOwnershipId -or
+        [string]$Evidence.deploymentName -cne $deploymentName -or
+        [string]$Evidence.deploymentOwnershipId -cne $canonicalOwnershipId -or
+        [string]$Evidence.sourceFingerprint -cne $SourceFingerprint -or
+        [string]$Evidence.apiImage -cne $ApiImage -or [string]$Evidence.workerImage -cne $WorkerImage) {
+        throw 'Succeeded inert evidence is not bound to the exact deployment, owner, source, and images.'
+    }
+
+    $providerPrefix = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers"
+    $baseTags = [ordered]@{
+        project = 'a365-gateway'
+        environment = [string]$Config.environment
+        managedBy = 'bicep'
+        projectName = [string]$Config.projectName
+        deploymentId = "$($Config.projectName)-$($Config.environment)"
+        bootstrapOwnershipId = $canonicalOwnershipId
+        bootstrapSourceFingerprint = $SourceFingerprint
+    }
+    $provisioningTags = [ordered]@{}
+    foreach ($entry in $baseTags.GetEnumerator()) { $provisioningTags[$entry.Key] = $entry.Value }
+    $provisioningTags.workload = 'provisioning-credentials'
+    $privateEndpointTags = [ordered]@{}
+    foreach ($entry in $baseTags.GetEnumerator()) { $privateEndpointTags[$entry.Key] = $entry.Value }
+    $privateEndpointTags.workload = 'interaction-content'
+
+    $acrPrefix = "acr$($Config.projectName)$($Config.environment)"
+    if ([string]$Foundation.acrName -cnotmatch "^$([regex]::Escape($acrPrefix))[a-z0-9]{6}$") {
+        throw 'The inert boundary cannot derive the exact storage suffix from current foundation evidence.'
+    }
+    $uniqueSuffix = ([string]$Foundation.acrName).Substring($acrPrefix.Length)
+    $storageName = "st$($Config.projectName)$($Config.environment)$uniqueSuffix"
+    $apiName = "ca-gateway-api-$($Config.environment)"
+    $workerName = "ca-gateway-worker-$($Config.environment)-v3"
+    $actionGroupId = "$providerPrefix/Microsoft.Insights/actionGroups/ag-gateway-alerts"
+    $appInsightsId = "$providerPrefix/Microsoft.Insights/components/ai-$($Config.projectName)-$($Config.environment)"
+    $sharedVaultId = "$providerPrefix/Microsoft.KeyVault/vaults/kv-$($Config.projectName)-$($Config.environment)"
+    $provisioningVaultId = "$providerPrefix/Microsoft.KeyVault/vaults/kv-$($Config.projectName)-$($Config.environment)-prov"
+    $storageId = "$providerPrefix/Microsoft.Storage/storageAccounts/$storageName"
+    $privateEndpointName = "pe-$storageName-blob"
+    $privateEndpointId = "$providerPrefix/Microsoft.Network/privateEndpoints/$privateEndpointName"
+    $privateDnsZoneId = "$providerPrefix/Microsoft.Network/privateDnsZones/privatelink.blob.core.windows.net"
+    $privateDnsLinkName = "link-$($Config.projectName)-$($Config.environment)-storage"
+    $privateDnsLinkId = "$privateDnsZoneId/virtualNetworkLinks/$privateDnsLinkName"
+    $serviceBusId = "$providerPrefix/Microsoft.ServiceBus/namespaces/sb-$($Config.projectName)-$($Config.environment)"
+    $sqlServerId = "$providerPrefix/Microsoft.Sql/servers/sql-$($Config.projectName)-$($Config.environment)"
+    $gatewayDatabaseId = "$sqlServerId/databases/GatewayDb"
+    $masterDatabaseId = "$sqlServerId/databases/master"
+    $apiId = "$providerPrefix/Microsoft.App/containerApps/$apiName"
+    $workerId = "$providerPrefix/Microsoft.App/containerApps/$workerName"
+    $expectedAcrId = "$providerPrefix/Microsoft.ContainerRegistry/registries/$($Foundation.acrName)"
+    $expectedQueueId = "$serviceBusId/queues/gateway-provisioning-v3"
+
+    foreach ($binding in @(
+        @([string]$Evidence.containerRegistryId, $expectedAcrId),
+        @([string]$Evidence.sharedKeyVaultId, $sharedVaultId),
+        @([string]$Evidence.storageAccountId, $storageId),
+        @([string]$Evidence.storageBlobPrivateEndpointId, $privateEndpointId),
+        @([string]$Evidence.storageBlobPrivateDnsZoneId, $privateDnsZoneId),
+        @([string]$Evidence.serviceBusQueueId, $expectedQueueId)
+    )) {
+        if (-not ([string]$binding[0]).Equals([string]$binding[1], [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Succeeded inert deployment outputs drifted from the exact deterministic resource graph.'
+        }
+    }
+    if ([string]$Evidence.sqlServerFqdn -cne "sql-$($Config.projectName)-$($Config.environment).database.windows.net" -or
+        [string]$Evidence.serviceBusQueueName -cne 'gateway-provisioning-v3') {
+        throw 'Succeeded inert deployment outputs drifted from the exact SQL and Service Bus contract.'
+    }
+
+    $descriptors = [Collections.Generic.List[object]]::new()
+    foreach ($descriptor in @(
+        [ordered]@{ id = $apiId; type = 'Microsoft.App/containerApps'; name = $apiName; apiVersion = '2024-03-01'; location = [string]$Config.location; tags = $baseTags; alreadyValidated = $true },
+        [ordered]@{ id = $workerId; type = 'Microsoft.App/containerApps'; name = $workerName; apiVersion = '2025-01-01'; location = [string]$Config.location; tags = $baseTags; alreadyValidated = $true },
+        [ordered]@{ id = $actionGroupId; type = 'Microsoft.Insights/actionGroups'; name = 'ag-gateway-alerts'; apiVersion = '2023-01-01'; location = 'global'; tags = $baseTags },
+        [ordered]@{ id = $appInsightsId; type = 'Microsoft.Insights/components'; name = "ai-$($Config.projectName)-$($Config.environment)"; apiVersion = '2020-02-02'; location = [string]$Config.location; tags = $baseTags },
+        [ordered]@{ id = $sharedVaultId; type = 'Microsoft.KeyVault/vaults'; name = "kv-$($Config.projectName)-$($Config.environment)"; apiVersion = '2023-07-01'; location = [string]$Config.location; tags = $baseTags },
+        [ordered]@{ id = $provisioningVaultId; type = 'Microsoft.KeyVault/vaults'; name = "kv-$($Config.projectName)-$($Config.environment)-prov"; apiVersion = '2023-07-01'; location = [string]$Config.location; tags = $provisioningTags },
+        [ordered]@{ id = $privateDnsZoneId; type = 'Microsoft.Network/privateDnsZones'; name = 'privatelink.blob.core.windows.net'; apiVersion = '2020-06-01'; location = 'global'; tags = ([ordered]@{}) },
+        [ordered]@{ id = $privateDnsLinkId; type = 'Microsoft.Network/privateDnsZones/virtualNetworkLinks'; name = $privateDnsLinkName; apiVersion = '2020-06-01'; location = 'global'; tags = ([ordered]@{}) },
+        [ordered]@{ id = $privateEndpointId; type = 'Microsoft.Network/privateEndpoints'; name = $privateEndpointName; apiVersion = '2023-11-01'; location = [string]$Config.location; tags = $privateEndpointTags },
+        [ordered]@{ id = $serviceBusId; type = 'Microsoft.ServiceBus/namespaces'; name = "sb-$($Config.projectName)-$($Config.environment)"; apiVersion = '2022-10-01-preview'; location = [string]$Config.location; tags = $baseTags },
+        [ordered]@{ id = $sqlServerId; type = 'Microsoft.Sql/servers'; name = "sql-$($Config.projectName)-$($Config.environment)"; apiVersion = '2023-08-01-preview'; location = [string]$Config.location; tags = $baseTags },
+        [ordered]@{ id = $gatewayDatabaseId; type = 'Microsoft.Sql/servers/databases'; name = 'GatewayDb'; apiVersion = '2023-08-01-preview'; location = [string]$Config.location; tags = $baseTags },
+        [ordered]@{ id = $masterDatabaseId; type = 'Microsoft.Sql/servers/databases'; name = 'master'; apiVersion = '2023-08-01-preview'; location = [string]$Config.location; tags = ([ordered]@{}); providerTags = $true },
+        [ordered]@{ id = $storageId; type = 'Microsoft.Storage/storageAccounts'; name = $storageName; apiVersion = '2023-05-01'; location = [string]$Config.location; tags = $baseTags }
+    )) { $descriptors.Add($descriptor) }
+
+    $metricScopes = [ordered]@{
+        "alert-sql-connection-failed-$($Config.environment)" = $gatewayDatabaseId
+        "alert-servicebus-server-errors-$($Config.environment)" = $serviceBusId
+        "alert-keyvault-availability-drop-$($Config.environment)" = $sharedVaultId
+        "alert-servicebus-queue-depth-high-$($Config.environment)" = $serviceBusId
+        "alert-servicebus-deadletter-depth-$($Config.environment)" = $serviceBusId
+    }
+    foreach ($entry in $metricScopes.GetEnumerator()) {
+        $descriptors.Add([ordered]@{
+            id = "$providerPrefix/Microsoft.Insights/metricAlerts/$($entry.Key)"
+            type = 'Microsoft.Insights/metricAlerts'; name = [string]$entry.Key; apiVersion = '2018-03-01'
+            location = 'global'; tags = $baseTags; scopeId = [string]$entry.Value; relationship = 'MetricAlert'
+        })
+    }
+    foreach ($name in @(
+        "alert-api-server-errors-$($Config.environment)",
+        "alert-api-auth-failures-$($Config.environment)",
+        "alert-api-response-latency-high-$($Config.environment)",
+        "alert-identity-mismatch-$($Config.environment)",
+        "alert-provisioning-failed-$($Config.environment)"
+    )) {
+        $descriptors.Add([ordered]@{
+            id = "$providerPrefix/Microsoft.Insights/scheduledQueryRules/$name"
+            type = 'Microsoft.Insights/scheduledQueryRules'; name = $name; apiVersion = '2023-03-15-preview'
+            location = [string]$Config.location; tags = $baseTags; scopeId = $appInsightsId; relationship = 'ScheduledQuery'
+        })
+    }
+
+    $resourcesById = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    foreach ($descriptor in @($descriptors)) {
+        $canonicalId = ConvertTo-GatewayCanonicalArmResourceId -ResourceId ([string]$descriptor.id) -Config $Config -Label 'Inert recovery resource'
+        if (-not $resourcesById.TryAdd($canonicalId, $descriptor)) {
+            throw 'The inert recovery graph contains a duplicate deterministic resource ID.'
+        }
+        if ([bool](Get-GatewayArmObjectProperty -Object $descriptor -Name 'alreadyValidated')) { continue }
+        $resource = Get-GatewayInertBoundaryResource -ResourceId ([string]$descriptor.id) -ApiVersion ([string]$descriptor.apiVersion)
+        Assert-GatewayInertBoundaryResourceEnvelope -Resource $resource -ExpectedId ([string]$descriptor.id) `
+            -ExpectedType ([string]$descriptor.type) -ExpectedName ([string]$descriptor.name) `
+            -ExpectedLocation ([string]$descriptor.location) -ExpectedTags $descriptor.tags `
+            -TagsAreProviderGenerated:([bool](Get-GatewayArmObjectProperty -Object $descriptor -Name 'providerTags')) | Out-Null
+        $descriptor['resource'] = $resource
+    }
+
+    $appInsights = $resourcesById[(ConvertTo-GatewayCanonicalArmResourceId -ResourceId $appInsightsId -Config $Config -Label 'Application Insights resource')].resource
+    $expectedWorkspaceId = "$providerPrefix/Microsoft.OperationalInsights/workspaces/$($Foundation.logAnalyticsWorkspaceName)"
+    if (-not ([string]$appInsights.properties.WorkspaceResourceId).Equals($expectedWorkspaceId, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Application Insights is not bound to the exact source-owned Log Analytics workspace.'
+    }
+    foreach ($descriptor in @($descriptors | Where-Object {
+        [string](Get-GatewayArmObjectProperty -Object $_ -Name 'relationship') -in @('MetricAlert', 'ScheduledQuery')
+    })) {
+        $resource = $descriptor.resource
+        Assert-GatewayExactArmIdCollection -Items @($resource.properties.scopes | ForEach-Object { [ordered]@{ id = $_ } }) `
+            -ExpectedIds @([string]$descriptor.scopeId) -PropertyName 'id' -Config $Config -Label 'Alert scope relationship' | Out-Null
+        $actionIds = if ([string]$descriptor.relationship -ceq 'MetricAlert') {
+            @($resource.properties.actions | ForEach-Object { [ordered]@{ id = $_.actionGroupId } })
+        }
+        else {
+            @($resource.properties.actions.actionGroups | ForEach-Object { [ordered]@{ id = $_ } })
+        }
+        Assert-GatewayExactArmIdCollection -Items $actionIds -ExpectedIds @($actionGroupId) -PropertyName 'id' `
+            -Config $Config -Label 'Alert action-group relationship' | Out-Null
+    }
+
+    $dnsLink = $resourcesById[(ConvertTo-GatewayCanonicalArmResourceId -ResourceId $privateDnsLinkId -Config $Config -Label 'Private DNS link')].resource
+    if ($dnsLink.properties.registrationEnabled -ne $false -or
+        -not ([string]$dnsLink.properties.virtualNetwork.id).Equals([string]$Foundation.virtualNetworkId, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The Blob private DNS link is not exactly bound to the foundation virtual network.'
+    }
+    $privateEndpoint = $resourcesById[(ConvertTo-GatewayCanonicalArmResourceId -ResourceId $privateEndpointId -Config $Config -Label 'Storage private endpoint')].resource
+    if (-not ([string]$privateEndpoint.properties.subnet.id).Equals([string]$Foundation.privateEndpointSubnetId, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The Storage private endpoint is not bound to the exact foundation subnet.'
+    }
+    $connections = @($privateEndpoint.properties.privateLinkServiceConnections)
+    if ($connections.Count -ne 1 -or [string]$connections[0].name -cne "peconn-$storageName-blob" -or
+        -not ([string]$connections[0].properties.privateLinkServiceId).Equals($storageId, [StringComparison]::OrdinalIgnoreCase) -or
+        @($connections[0].properties.groupIds).Count -ne 1 -or [string]$connections[0].properties.groupIds[0] -cne 'blob') {
+        throw 'The Storage private endpoint connection is missing, ambiguous, or outside the exact Storage blob relationship.'
+    }
+    $networkInterfaces = @($privateEndpoint.properties.networkInterfaces)
+    if ($networkInterfaces.Count -ne 1) {
+        throw 'The Storage private endpoint does not expose exactly one generated network interface.'
+    }
+    $nicId = ConvertTo-GatewayCanonicalArmResourceId -ResourceId ([string]$networkInterfaces[0].id) -Config $Config -Label 'Generated private-endpoint network interface'
+    $nicPrefix = ("$providerPrefix/Microsoft.Network/networkInterfaces/$privateEndpointName.nic.").ToLowerInvariant()
+    if (-not $nicId.StartsWith($nicPrefix, [StringComparison]::Ordinal)) {
+        throw 'The generated network interface name is not reverse-bound to the exact Storage private endpoint.'
+    }
+    $nicGuidText = $nicId.Substring($nicPrefix.Length)
+    $nicGuid = [guid]::Empty
+    if (-not [guid]::TryParse($nicGuidText, [ref]$nicGuid) -or $nicGuid -eq [guid]::Empty -or
+        $nicGuidText -cne $nicGuid.ToString('D')) {
+        throw 'The generated private-endpoint network-interface suffix is not one canonical GUID.'
+    }
+    $nicName = "$privateEndpointName.nic.$nicGuidText"
+    $nic = Get-GatewayInertBoundaryResource -ResourceId $nicId -ApiVersion '2023-11-01'
+    Assert-GatewayInertBoundaryResourceEnvelope -Resource $nic -ExpectedId $nicId -ExpectedType 'Microsoft.Network/networkInterfaces' `
+        -ExpectedName $nicName -ExpectedLocation ([string]$Config.location) -ExpectedTags ([ordered]@{}) -TagsAreProviderGenerated | Out-Null
+    if (-not ([string]$nic.properties.privateEndpoint.id).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase) -or
+        @($nic.properties.ipConfigurations).Count -ne 1 -or
+        -not ([string]$nic.properties.ipConfigurations[0].properties.subnet.id).Equals([string]$Foundation.privateEndpointSubnetId, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The generated network interface does not reverse-bind exactly to the private endpoint and foundation subnet.'
+    }
+    $nicDescriptor = [ordered]@{
+        id = $nicId; type = 'Microsoft.Network/networkInterfaces'; name = $nicName
+        apiVersion = '2023-11-01'; location = [string]$Config.location; tags = ([ordered]@{}); providerTags = $true
+    }
+    if (-not $resourcesById.TryAdd($nicId, $nicDescriptor)) {
+        throw 'The generated network interface duplicates another inert recovery resource ID.'
+    }
+    $descriptors.Add($nicDescriptor)
+
+    $dnsZoneGroupId = "$privateEndpointId/privateDnsZoneGroups/storageBlobDnsGroup"
+    $dnsZoneGroup = Get-GatewayInertBoundaryResource -ResourceId $dnsZoneGroupId -ApiVersion '2023-11-01'
+    Assert-GatewayInertBoundaryResourceEnvelope -Resource $dnsZoneGroup -ExpectedId $dnsZoneGroupId `
+        -ExpectedType 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups' `
+        -ExpectedName 'storageBlobDnsGroup' -ExpectedLocation '' `
+        -ExpectedTags ([ordered]@{}) -TagsAreProviderGenerated | Out-Null
+    $dnsConfigs = @($dnsZoneGroup.properties.privateDnsZoneConfigs)
+    if ($dnsConfigs.Count -ne 1 -or [string]$dnsConfigs[0].name -cne 'blob' -or
+        -not ([string]$dnsConfigs[0].properties.privateDnsZoneId).Equals($privateDnsZoneId, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The Storage private endpoint DNS group is not exactly bound to the Blob private DNS zone.'
+    }
+
+    if ($descriptors.Count -ne 25 -or $resourcesById.Count -ne 25) {
+        throw 'The inert recovery graph is not the exact reviewed 25-resource What-If Ignore boundary.'
+    }
+    foreach ($typeGroup in @($descriptors | Group-Object -Property {
+        [string](Get-GatewayArmObjectProperty -Object $_ -Name 'type')
+    })) {
+        $expectedTypeIds = @($typeGroup.Group | ForEach-Object {
+            ConvertTo-GatewayCanonicalArmResourceId -ResourceId ([string]$_.id) -Config $Config -Label 'Inert type inventory'
+        } | Sort-Object -CaseSensitive)
+        $inventory = @(Get-GatewayInertBoundaryTypeInventory -Config $Config -ResourceType ([string]$typeGroup.Name))
+        $seenInventoryIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        $actualTypeIds = @()
+        foreach ($item in $inventory) {
+            $inventoryId = ConvertTo-GatewayCanonicalArmResourceId `
+                -ResourceId ([string](Get-GatewayArmObjectProperty -Object $item -Name 'id')) `
+                -Config $Config -Label 'Inert type inventory'
+            if (-not $seenInventoryIds.Add($inventoryId)) {
+                throw 'The inert type inventory contains a duplicate resource ID.'
+            }
+            $actualTypeIds += $inventoryId
+        }
+        $actualTypeIds = @($actualTypeIds | Sort-Object -CaseSensitive)
+        if ($actualTypeIds.Count -ne $expectedTypeIds.Count -or ($actualTypeIds -join '|') -cne ($expectedTypeIds -join '|')) {
+            throw 'The inert type inventory contains a missing, extra, out-of-boundary, or unowned resource.'
+        }
+    }
+
+    $resourceIds = @($resourcesById.Keys | Sort-Object -CaseSensitive)
+    $boundary = [ordered]@{
+        schemaVersion = 1
+        phase = 'InertIdentityDeployment'
+        deploymentName = $deploymentName
+        deploymentOwnershipId = $canonicalOwnershipId
+        sourceFingerprint = $SourceFingerprint
+        resourceIds = $resourceIds
+        generatedNicBinding = [ordered]@{
+            nicId = $nicId
+            privateEndpointId = $privateEndpointId.ToLowerInvariant()
+            subnetId = ([string]$Foundation.privateEndpointSubnetId).ToLowerInvariant()
+        }
+        masterDatabaseBinding = [ordered]@{
+            databaseId = $masterDatabaseId.ToLowerInvariant()
+            sqlServerId = $sqlServerId.ToLowerInvariant()
+        }
+    }
+    $boundary.boundaryFingerprint = Get-BootstrapObjectFingerprint -InputObject $boundary
+    return $boundary
+}
+
+function Get-GatewayInertWhatIfRecoveryBoundary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$ApiImage,
+        [Parameter(Mandatory)][string]$WorkerImage,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+    $evidence = Deploy-GatewayCore -Config $Config -Foundation $Foundation -Identity $Identity `
+        -ApiImage $ApiImage -WorkerImage $WorkerImage -WorkerPrincipalId '' -ManagerApplicationIds @() `
+        -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
+        -Initial -SucceededRecoveryOnly
+    $boundary = New-GatewayInertWhatIfRecoveryBoundary -Config $Config -Foundation $Foundation `
+        -Evidence $evidence -ApiImage $ApiImage -WorkerImage $WorkerImage `
+        -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint
+    return [ordered]@{ evidence = $evidence; boundary = $boundary }
 }
 
 function Get-GatewayAcrBuildSourceFiles {
