@@ -468,6 +468,7 @@ prerequisite installation or a successful `Plan` as Azure deployment evidence.
 | ARM change preview | https://learn.microsoft.com/azure/azure-resource-manager/templates/deploy-what-if | Subscription/resource-group What-If uses the caller's normal ARM authorization and makes no deployment mutation | Unresolved expressions and expansion limits can produce noisy or incomplete predictions; What-If cannot describe imperative Graph, Agent 365, or Purview calls | `gateway plan` reports ARM What-If separately from a reviewed imperative-operation manifest and retains exact post-Apply readbacks. |
 | GitHub Actions workload identity | https://learn.microsoft.com/azure/developer/github/connect-from-azure-openid-connect and https://learn.microsoft.com/entra/workload-id/workload-identity-federation-create-trust | Exact GitHub issuer/subject FIC, one `api://AzureADTokenExchange` audience, `id-token: write`, then `azure/login@v2` | Initial FIC creation and Azure RBAC are privileged human bootstrap actions; standard FIC matching has no wildcard and propagation can delay token exchange | CI federation is an optional post-bootstrap handoff with exact GitHub Environment subjects and reviewed least-scoped roles. It is never silently created from repository metadata. |
 | Agent ID seed setup | https://learn.microsoft.com/graph/api/agentidentityblueprint-post?view=graph-rest-1.0 and https://learn.microsoft.com/entra/agent-id/identity-platform/create-blueprint | One delegated Microsoft Graph v1.0 POST with `OData-Version: 4.0`; bind the signed-in user as owner and required sponsor and include only reviewed first-party `managerApplications` | The caller needs the documented Agent ID permission/role; an unknown POST outcome cannot be safely repeated | The accepted plan binds an ownership/source-derived exact name. Apply rejects a pre-existing collision, creates no password/key/FIC/principal, persists exact readback, and Resume performs GET-only reconciliation of an already-started create. |
+| Manual Container Apps Job start for private SQL initialization | https://learn.microsoft.com/azure/container-apps/jobs, https://learn.microsoft.com/cli/azure/containerapp/job?view=azure-cli-latest, and https://learn.microsoft.com/rest/api/resource-manager/containerapps/jobs/start?view=rest-resource-manager-containerapps-2025-01-01 | Deploy one manual-trigger Job with a digest-pinned image and a system-assigned identity, then invoke `az containerapp job start --resource-group <exact> --name <exact>` through ARM authorization | Microsoft documents that supplying any start-time override replaces the Job's entire execution template; a partial environment-only override does not inherit the stored image, command, arguments, or resources | Bootstrap persists a canonical non-secret execution-intent ID before Job deployment, binds it as the sole literal environment entry in the independently validated template, revalidates that template and zero prior executions immediately before the SQL-administrator window, and performs one no-override start. Retry limit is zero; a durable start intent with an unknown outcome is discovered without a second start. |
 
 The public setup command is therefore "one command" but not "zero authorization."
 It automates discovery, validation, ARM deployment, builds, and readback while
@@ -475,15 +476,18 @@ presenting the documented tenant-consent checkpoints to the appropriate humans.
 The PowerShell state machine remains canonical; Azure Developer CLI, if added later,
 may only be a façade and must not expose an unreviewed destroy path.
 
-Source provenance and the bounded SQL network window are Gateway-owned controls,
+Source provenance and the bounded private SQL initialization window are Gateway-owned controls,
 not new Microsoft capability claims. Plan fingerprints its sanitized ARM What-If,
-configuration, operation descriptor, deployment source, and one client IPv4
-corroborated through bounded ipify/AWS Check IP reads. Acceptance creates a
+configuration, operation descriptor, and deployment source. The retained client
+IPv4 is accepted-plan compatibility metadata and is not used by the private Job
+path. Acceptance creates a
 content-addressed ignored source snapshot; Apply/Resume requires the running
 checkout to match it and executes from those accepted bytes. Durable state cannot
 mix source generations. ARM deployments/resource tags and digest-pinned images
-carry the same ownership/source evidence. SQL public access is enabled only for the
-accepted exact-IP rule and must be restored to `Disabled` with rule absence proven.
+carry the same ownership/source evidence. Azure SQL public access remains
+`Disabled`, firewall-rule absence is required throughout, and the exact original
+Entra administrator must be restored after the single private Container Apps Job
+execution.
 
 ---
 

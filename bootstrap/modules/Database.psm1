@@ -430,9 +430,16 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
         [Parameter(Mandatory)]$ApiPrincipal,
-        [Parameter(Mandatory)]$WorkerPrincipal
+        [Parameter(Mandatory)]$WorkerPrincipal,
+        [Parameter(Mandatory)][string]$ExecutionIntentId
     )
 
+    Assert-GuidValue -Value $ExecutionIntentId -Label 'Database-bootstrap execution intent identifier'
+    $canonicalExecutionIntentId = ([guid]$ExecutionIntentId).ToString('D')
+    if ($ExecutionIntentId -cne $canonicalExecutionIntentId -or
+        [guid]$ExecutionIntentId -eq [guid]::Empty) {
+        throw 'The database-bootstrap execution intent identifier must be a nonempty canonical lowercase GUID.'
+    }
     $jobName = "job-$($Config.projectName)-db-init-$($Config.environment)"
     $job = Invoke-AzJson -Arguments @(
         'containerapp', 'job', 'show',
@@ -462,6 +469,11 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
     $containerEnvironment = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['env']) {
         ConvertTo-GatewayDatabaseBootstrapCollection -Value $containers[0].env
     })
+    $containerEnvironmentSecretReference = ''
+    if ($containerEnvironment.Count -eq 1 -and
+        $null -ne $containerEnvironment[0].PSObject.Properties['secretRef']) {
+        $containerEnvironmentSecretReference = [string]$containerEnvironment[0].secretRef
+    }
     $containerVolumeMounts = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['volumeMounts']) {
         ConvertTo-GatewayDatabaseBootstrapCollection -Value $containers[0].volumeMounts
     })
@@ -501,7 +513,10 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
         [string]$containers[0].image -cne $JobImage -or
         ($containerCommands -join '|') -cne 'dotnet|Gateway.DatabaseMigrator.dll' -or
         ($containerArguments -join '|') -cne ($expectedArguments -join '|') -or
-        $containerEnvironment.Count -ne 0 -or
+        $containerEnvironment.Count -ne 1 -or
+        [string]$containerEnvironment[0].name -cne 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID' -or
+        [string]$containerEnvironment[0].value -cne $canonicalExecutionIntentId -or
+        -not [string]::IsNullOrWhiteSpace($containerEnvironmentSecretReference) -or
         $containerVolumeMounts.Count -ne 0 -or
         $containerProbes.Count -ne 0 -or
         [decimal]$containers[0].resources.cpu -ne [decimal]0.5 -or
@@ -517,6 +532,7 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
         jobPrincipalId = ([guid][string]$job.identity.principalId).ToString('D')
         jobImage = $JobImage
         containerName = 'database-bootstrap'
+        executionIntentId = $canonicalExecutionIntentId
     }
 }
 
@@ -531,9 +547,16 @@ function Deploy-GatewayDatabaseBootstrapJob {
         [Parameter(Mandatory)][string]$SourceFingerprint,
         [Parameter(Mandatory)]$ApiPrincipal,
         [Parameter(Mandatory)]$WorkerPrincipal,
+        [Parameter(Mandatory)][string]$ExecutionIntentId,
         [Parameter(Mandatory)][bool]$FreshIntent
     )
 
+    Assert-GuidValue -Value $ExecutionIntentId -Label 'Database-bootstrap execution intent identifier'
+    $canonicalExecutionIntentId = ([guid]$ExecutionIntentId).ToString('D')
+    if ($ExecutionIntentId -cne $canonicalExecutionIntentId -or
+        [guid]$ExecutionIntentId -eq [guid]::Empty) {
+        throw 'The database-bootstrap execution intent identifier must be a nonempty canonical lowercase GUID.'
+    }
     $root = Get-BootstrapExecutionSourceRoot
     $jobName = "job-$($Config.projectName)-db-init-$($Config.environment)"
     $deploymentName = "a365gw-$($Config.projectName)-bootstrap-database-job-$($Config.environment)"
@@ -584,7 +607,8 @@ function Deploy-GatewayDatabaseBootstrapJob {
             "apiDatabasePrincipalName=$($ApiPrincipal.displayName)",
             "apiDatabasePrincipalClientId=$(([guid][string]$ApiPrincipal.clientId).ToString('D'))",
             "workerDatabasePrincipalName=$($WorkerPrincipal.displayName)",
-            "workerDatabasePrincipalClientId=$(([guid][string]$WorkerPrincipal.clientId).ToString('D'))"
+            "workerDatabasePrincipalClientId=$(([guid][string]$WorkerPrincipal.clientId).ToString('D'))",
+            "executionIntentId=$canonicalExecutionIntentId"
         )
     }
     else {
@@ -609,7 +633,8 @@ function Deploy-GatewayDatabaseBootstrapJob {
         [string]$deployment.properties.parameters.apiDatabasePrincipalName.value -cne [string]$ApiPrincipal.displayName -or
         [string]$deployment.properties.parameters.apiDatabasePrincipalClientId.value -cne ([guid][string]$ApiPrincipal.clientId).ToString('D') -or
         [string]$deployment.properties.parameters.workerDatabasePrincipalName.value -cne [string]$WorkerPrincipal.displayName -or
-        [string]$deployment.properties.parameters.workerDatabasePrincipalClientId.value -cne ([guid][string]$WorkerPrincipal.clientId).ToString('D')) {
+        [string]$deployment.properties.parameters.workerDatabasePrincipalClientId.value -cne ([guid][string]$WorkerPrincipal.clientId).ToString('D') -or
+        [string]$deployment.properties.parameters.executionIntentId.value -cne $canonicalExecutionIntentId) {
         throw 'The private database-bootstrap job deployment is absent, nonterminal, or outside its exact source, identity, image, and network contract.'
     }
 
@@ -621,7 +646,8 @@ function Deploy-GatewayDatabaseBootstrapJob {
         -DeploymentOwnershipId $DeploymentOwnershipId `
         -SourceFingerprint $SourceFingerprint `
         -ApiPrincipal $ApiPrincipal `
-        -WorkerPrincipal $WorkerPrincipal
+        -WorkerPrincipal $WorkerPrincipal `
+        -ExecutionIntentId $canonicalExecutionIntentId
 }
 
 function Get-GatewayDatabaseBootstrapExecutions {
@@ -637,6 +663,24 @@ function Get-GatewayDatabaseBootstrapExecutions {
         '--name', $JobName,
         '--query', '[].{name:name,status:properties.status,startTime:properties.startTime,endTime:properties.endTime}'
     ))
+}
+
+function Start-GatewayDatabaseBootstrapExecution {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$JobName
+    )
+
+    $expectedJobName = "job-$($Config.projectName)-db-init-$($Config.environment)"
+    if ($JobName -cne $expectedJobName) {
+        throw 'The database-bootstrap start target does not match the deterministic Job name.'
+    }
+    return Invoke-AzJson -Arguments @(
+        'containerapp', 'job', 'start',
+        '--resource-group', [string]$Config.resourceGroupName,
+        '--name', $JobName
+    ) -CaptureStdoutOnly
 }
 
 function Get-GatewayDatabaseBootstrapExecutionsBounded {
@@ -830,6 +874,11 @@ function Get-GatewayDatabaseBootstrapExecutionEvidence {
     $environment = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['env']) {
         ConvertTo-GatewayDatabaseBootstrapCollection -Value $containers[0].env
     })
+    $environmentSecretReference = ''
+    if ($environment.Count -eq 1 -and
+        $null -ne $environment[0].PSObject.Properties['secretRef']) {
+        $environmentSecretReference = [string]$environment[0].secretRef
+    }
     $volumeMounts = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['volumeMounts']) {
         ConvertTo-GatewayDatabaseBootstrapCollection -Value $containers[0].volumeMounts
     })
@@ -862,7 +911,7 @@ function Get-GatewayDatabaseBootstrapExecutionEvidence {
         $environment.Count -ne 1 -or
         [string]$environment[0].name -cne 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID' -or
         [string]$environment[0].value -cne $canonicalExecutionIntentId -or
-        -not [string]::IsNullOrWhiteSpace([string]$environment[0].secretRef) -or
+        -not [string]::IsNullOrWhiteSpace($environmentSecretReference) -or
         $volumeMounts.Count -ne 0 -or
         $probes.Count -ne 0 -or
         [decimal]$containers[0].resources.cpu -ne [decimal]0.5 -or
@@ -1163,10 +1212,14 @@ function Initialize-GatewayDatabase {
         -Config $Config -Foundation $Foundation -SqlServerFqdn $SqlServerFqdn `
         -JobImage $DatabaseMigratorImage -DeploymentOwnershipId $canonicalOwnershipId `
         -SourceFingerprint $acceptedSourceFingerprint -ApiPrincipal $api -WorkerPrincipal $worker `
+        -ExecutionIntentId ([string]$receipt.executionIntentId) `
         -FreshIntent:([string]::IsNullOrWhiteSpace([string]$receipt.deploymentVerifiedAtUtc))
     if (-not [string]::IsNullOrWhiteSpace([string]$receipt.jobPrincipalId) -and
         [string]$receipt.jobPrincipalId -cne [string]$jobEvidence.jobPrincipalId) {
         throw 'The database-bootstrap job system identity changed after its durable recovery checkpoint.'
+    }
+    if ([string]$jobEvidence.executionIntentId -cne [string]$receipt.executionIntentId) {
+        throw 'The database-bootstrap job execution intent changed after its durable recovery checkpoint.'
     }
     $receipt.jobPrincipalId = [string]$jobEvidence.jobPrincipalId
     if ([string]::IsNullOrWhiteSpace([string]$receipt.deploymentVerifiedAtUtc)) {
@@ -1230,6 +1283,19 @@ function Initialize-GatewayDatabase {
                 throw 'The one recorded database-bootstrap job start has an unknown provider outcome after the full job-timeout recovery window. It will not be repeated.'
             }
             else {
+                $preStartJobEvidence = Get-GatewayDatabaseBootstrapJobEvidence `
+                    -Config $Config -Foundation $Foundation -SqlServerFqdn $SqlServerFqdn `
+                    -JobImage $DatabaseMigratorImage -DeploymentOwnershipId $canonicalOwnershipId `
+                    -SourceFingerprint $acceptedSourceFingerprint -ApiPrincipal $api -WorkerPrincipal $worker `
+                    -ExecutionIntentId ([string]$receipt.executionIntentId)
+                if ([string]$preStartJobEvidence.jobPrincipalId -cne [string]$jobEvidence.jobPrincipalId -or
+                    [string]$preStartJobEvidence.executionIntentId -cne [string]$receipt.executionIntentId) {
+                    throw 'The database-bootstrap Job changed immediately before the SQL administrator boundary.'
+                }
+                $preStartExecutions = @(Get-GatewayDatabaseBootstrapExecutions -Config $Config -JobName $jobName)
+                if ($preStartExecutions.Count -ne 0) {
+                    throw 'The database-bootstrap execution set changed immediately before the SQL administrator boundary.'
+                }
                 $currentAdministrator = Get-GatewaySqlEntraAdministrator -Config $Config -ServerName $serverName
                 if ([string]$currentAdministrator.objectId -cne $canonicalOriginalAdministratorObjectId -or
                     [string]$currentAdministrator.login -cne $OriginalEntraAdministratorLogin -or
@@ -1247,14 +1313,7 @@ function Initialize-GatewayDatabase {
                 $receipt.jobStartIntentAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
                 Save-GatewayPrivateDatabaseBootstrapRecord -Record $receipt -Path $receiptPath
                 try {
-                    $startArguments = @(
-                        'containerapp', 'job', 'start',
-                        '--resource-group', [string]$Config.resourceGroupName,
-                        '--name', $jobName,
-                        '--container-name', [string]$jobEvidence.containerName,
-                        '--env-vars', "DATABASE_MIGRATOR_EXECUTION_INTENT_ID=$([string]$receipt.executionIntentId)"
-                    )
-                    $startedExecution = Invoke-AzJson -Arguments $startArguments -CaptureStdoutOnly
+                    $startedExecution = Start-GatewayDatabaseBootstrapExecution -Config $Config -JobName $jobName
                     if ($startedExecution -and [string]$startedExecution.name -notmatch "^$([regex]::Escape($jobName))-[a-z0-9]{5,16}$") {
                         throw 'Azure returned a malformed database-bootstrap execution identifier.'
                     }

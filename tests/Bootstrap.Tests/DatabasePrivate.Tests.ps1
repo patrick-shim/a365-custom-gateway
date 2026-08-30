@@ -4,6 +4,96 @@ Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Database.psm1
 
 Describe 'Private database bootstrap recovery and evidence contract' {
     InModuleScope Database {
+        BeforeAll {
+            $script:newTestGatewayDatabaseBootstrapJob = {
+                param(
+                    [Parameter(Mandatory)]$Config,
+                    [Parameter(Mandatory)]$Foundation,
+                    [Parameter(Mandatory)][string]$SqlServerFqdn,
+                    [Parameter(Mandatory)][string]$JobImage,
+                    [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+                    [Parameter(Mandatory)][string]$SourceFingerprint,
+                    [Parameter(Mandatory)]$ApiPrincipal,
+                    [Parameter(Mandatory)]$WorkerPrincipal,
+                    [Parameter(Mandatory)][string]$JobPrincipalId,
+                    [Parameter(Mandatory)][string]$ExecutionIntentId,
+                    [switch]$IncludeEmptySecretRef
+                )
+
+            $jobName = "job-$($Config.projectName)-db-init-$($Config.environment)"
+            $arguments = @(Get-GatewayDatabaseBootstrapJobArguments `
+                -SqlServerFqdn $SqlServerFqdn `
+                -DeploymentOwnershipId $DeploymentOwnershipId `
+                -SourceFingerprint $SourceFingerprint `
+                -ApiPrincipal $ApiPrincipal `
+                -WorkerPrincipal $WorkerPrincipal)
+            $environment = [pscustomobject]@{
+                name = 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'
+                value = $ExecutionIntentId
+            }
+            if ($IncludeEmptySecretRef) {
+                $environment | Add-Member -NotePropertyName secretRef -NotePropertyValue ''
+            }
+            $userAssignedIdentities = [pscustomobject]@{}
+            $userAssignedIdentities | Add-Member `
+                -NotePropertyName ([string]$Foundation.runtimeImagePullIdentityId) `
+                -NotePropertyValue ([pscustomobject]@{})
+
+            return [pscustomobject]@{
+                id = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/jobs/$jobName"
+                name = $jobName
+                location = 'Korea Central'
+                identity = [pscustomobject]@{
+                    type = 'SystemAssigned, UserAssigned'
+                    tenantId = $Config.tenantId
+                    principalId = $JobPrincipalId
+                    userAssignedIdentities = $userAssignedIdentities
+                }
+                tags = [pscustomobject]@{
+                    bootstrapOwnershipId = $DeploymentOwnershipId
+                    bootstrapSourceFingerprint = $SourceFingerprint
+                    workload = 'database-bootstrap'
+                }
+                properties = [pscustomobject]@{
+                    provisioningState = 'Succeeded'
+                    environmentId = $Foundation.containerAppsEnvironmentId
+                    configuration = [pscustomobject]@{
+                        triggerType = 'Manual'
+                        replicaTimeout = 1800
+                        replicaRetryLimit = 0
+                        manualTriggerConfig = [pscustomobject]@{ parallelism = 1; replicaCompletionCount = 1 }
+                        registries = @([pscustomobject]@{
+                            server = $Foundation.acrLoginServer
+                            identity = $Foundation.runtimeImagePullIdentityId
+                        })
+                        secrets = $null
+                        identitySettings = @(
+                            [pscustomobject]@{ identity = 'system'; lifecycle = 'Main' },
+                            [pscustomobject]@{
+                                identity = ([string]$Foundation.runtimeImagePullIdentityId).ToLowerInvariant()
+                                lifecycle = 'None'
+                            }
+                        )
+                    }
+                    template = [pscustomobject]@{
+                        initContainers = $null
+                        volumes = $null
+                        containers = @([pscustomobject]@{
+                            name = 'database-bootstrap'
+                            image = $JobImage
+                            command = @('dotnet', 'Gateway.DatabaseMigrator.dll')
+                            args = $arguments
+                            env = @($environment)
+                            volumeMounts = $null
+                            probes = $null
+                            resources = [pscustomobject]@{ cpu = 0.5; memory = '1Gi' }
+                        })
+                    }
+                }
+            }
+            }
+        }
+
         BeforeEach {
             $script:config = [pscustomobject]@{
                 subscriptionId = '11111111-1111-4111-8111-111111111111'
@@ -223,77 +313,83 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             [string]$actual[0].name | Should -BeExactly 'unexpected'
         }
 
-        It 'accepts the exact live Azure Job shape with a display-name region and provider-null absent arrays' {
+        It 'accepts the exact intent-bound live Azure Job shape with an empty or omitted secretRef' {
             $pullIdentityId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-pull-dev"
-            $userAssignedIdentities = [pscustomobject]@{}
-            $userAssignedIdentities | Add-Member -NotePropertyName $pullIdentityId -NotePropertyValue ([pscustomobject]@{})
             $foundation = [pscustomobject]@{
                 acrLoginServer = 'gatewayacr.azurecr.io'
                 containerAppsEnvironmentId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.App/managedEnvironments/cae-gateway-dev"
                 runtimeImagePullIdentityId = $pullIdentityId
             }
-            $arguments = @(Get-GatewayDatabaseBootstrapJobArguments `
-                -SqlServerFqdn $script:sqlServerFqdn `
-                -DeploymentOwnershipId $script:ownershipId `
-                -SourceFingerprint $script:sourceFingerprint `
-                -ApiPrincipal $script:api `
-                -WorkerPrincipal $script:worker)
-            $job = [pscustomobject]@{
-                id = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.App/jobs/$($script:jobName)"
-                name = $script:jobName
-                location = 'Korea Central'
-                identity = [pscustomobject]@{
-                    type = 'SystemAssigned, UserAssigned'
-                    tenantId = $script:config.tenantId
-                    principalId = $script:jobPrincipalId
-                    userAssignedIdentities = $userAssignedIdentities
-                }
-                tags = [pscustomobject]@{
-                    bootstrapOwnershipId = $script:ownershipId
-                    bootstrapSourceFingerprint = $script:sourceFingerprint
-                    workload = 'database-bootstrap'
-                }
-                properties = [pscustomobject]@{
-                    provisioningState = 'Succeeded'
-                    environmentId = $foundation.containerAppsEnvironmentId
-                    configuration = [pscustomobject]@{
-                        triggerType = 'Manual'
-                        replicaTimeout = 1800
-                        replicaRetryLimit = 0
-                        manualTriggerConfig = [pscustomobject]@{ parallelism = 1; replicaCompletionCount = 1 }
-                        registries = @([pscustomobject]@{ server = $foundation.acrLoginServer; identity = $pullIdentityId })
-                        secrets = $null
-                        identitySettings = @(
-                            [pscustomobject]@{ identity = 'system'; lifecycle = 'Main' },
-                            [pscustomobject]@{ identity = $pullIdentityId.ToLowerInvariant(); lifecycle = 'None' }
-                        )
-                    }
-                    template = [pscustomobject]@{
-                        initContainers = $null
-                        volumes = $null
-                        containers = @([pscustomobject]@{
-                            name = 'database-bootstrap'
-                            image = $script:jobImage
-                            command = @('dotnet', 'Gateway.DatabaseMigrator.dll')
-                            args = $arguments
-                            env = $null
-                            volumeMounts = $null
-                            probes = $null
-                            resources = [pscustomobject]@{ cpu = 0.5; memory = '1Gi' }
-                        })
-                    }
-                }
-            }
-            Mock Invoke-AzJson { return $job }
+            Mock Invoke-AzJson { return $script:jobFixture }
 
-            $result = Get-GatewayDatabaseBootstrapJobEvidence `
+            foreach ($includeEmptySecretRef in @($false, $true)) {
+                $script:jobFixture = & $script:newTestGatewayDatabaseBootstrapJob `
+                    -Config $script:config -Foundation $foundation `
+                    -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
+                    -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
+                    -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
+                    -JobPrincipalId $script:jobPrincipalId -ExecutionIntentId $script:executionIntentId `
+                    -IncludeEmptySecretRef:$includeEmptySecretRef
+
+                $result = Get-GatewayDatabaseBootstrapJobEvidence `
+                    -Config $script:config -Foundation $foundation `
+                    -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
+                    -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
+                    -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
+                    -ExecutionIntentId $script:executionIntentId
+
+                [string]$result.jobName | Should -BeExactly $script:jobName
+                [string]$result.jobPrincipalId | Should -BeExactly $script:jobPrincipalId
+            }
+        }
+
+        It 'rejects missing, wrong, noncanonical, empty, extra, or secret-backed dormant Job intent environment' {
+            $foundation = [pscustomobject]@{
+                acrLoginServer = 'gatewayacr.azurecr.io'
+                containerAppsEnvironmentId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.App/managedEnvironments/cae-gateway-dev"
+                runtimeImagePullIdentityId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-pull-dev"
+            }
+            $script:jobFixture = & $script:newTestGatewayDatabaseBootstrapJob `
                 -Config $script:config -Foundation $foundation `
                 -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
                 -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
-                -ApiPrincipal $script:api -WorkerPrincipal $script:worker
+                -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
+                -JobPrincipalId $script:jobPrincipalId -ExecutionIntentId $script:executionIntentId
+            Mock Invoke-AzJson { return $script:jobFixture }
+            $invoke = {
+                Get-GatewayDatabaseBootstrapJobEvidence `
+                    -Config $script:config -Foundation $foundation `
+                    -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
+                    -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
+                    -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
+                    -ExecutionIntentId $script:executionIntentId
+            }
 
-            [string]$result.jobName | Should -BeExactly $script:jobName
-            [string]$result.jobPrincipalId | Should -BeExactly $script:jobPrincipalId
+            $unsafeEnvironmentCases = @(
+                [pscustomobject]@{ environment = [object[]]@() },
+                [pscustomobject]@{ environment = [object[]]@(
+                    [pscustomobject]@{ name = 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'; value = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }
+                ) },
+                [pscustomobject]@{ environment = [object[]]@(
+                    [pscustomobject]@{ name = 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'; value = $script:executionIntentId.ToUpperInvariant() }
+                ) },
+                [pscustomobject]@{ environment = [object[]]@(
+                    [pscustomobject]@{ name = 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'; value = '' }
+                ) },
+                [pscustomobject]@{ environment = [object[]]@(
+                    [pscustomobject]@{ name = 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'; value = $script:executionIntentId },
+                    [pscustomobject]@{ name = 'UNREVIEWED'; value = 'present' }
+                ) },
+                [pscustomobject]@{ environment = [object[]]@([pscustomobject]@{
+                    name = 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'
+                    value = $script:executionIntentId
+                    secretRef = 'replacement-secret'
+                }) }
+            )
+            foreach ($unsafeEnvironmentCase in $unsafeEnvironmentCases) {
+                $script:jobFixture.properties.template.containers[0].env = $unsafeEnvironmentCase.environment
+                $invoke | Should -Throw '*does not match the exact dormant, identity, image, network, trigger, or argument contract*'
+            }
         }
 
         It 'performs the first dormant deployment after a persisted intent when both deterministic ARM records remain absent' {
@@ -322,6 +418,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                         apiDatabasePrincipalClientId = [pscustomobject]@{ value = $script:api.clientId }
                         workerDatabasePrincipalName = [pscustomobject]@{ value = $script:worker.displayName }
                         workerDatabasePrincipalClientId = [pscustomobject]@{ value = $script:worker.clientId }
+                        executionIntentId = [pscustomobject]@{ value = $script:executionIntentId }
                     }
                 }
             }
@@ -341,11 +438,19 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 -Config $script:config -Foundation $script:foundation `
                 -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
                 -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
-                -ApiPrincipal $script:api -WorkerPrincipal $script:worker -FreshIntent:$true
+                -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
+                -ExecutionIntentId $script:executionIntentId -FreshIntent:$true
 
             [string]$result.jobName | Should -BeExactly $script:jobName
             Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
-                [string]$Arguments[0] -ceq 'deployment' -and [string]$Arguments[2] -ceq 'create'
+                [string]$Arguments[0] -ceq 'deployment' -and
+                [string]$Arguments[2] -ceq 'create' -and
+                @($Arguments | Where-Object {
+                    [string]$_ -ceq "executionIntentId=$($script:executionIntentId)"
+                }).Count -eq 1
+            }
+            Should -Invoke Get-GatewayDatabaseBootstrapJobEvidence -Times 1 -Exactly -ParameterFilter {
+                $ExecutionIntentId -ceq $script:executionIntentId
             }
         }
 
@@ -374,6 +479,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                         apiDatabasePrincipalClientId = [pscustomobject]@{ value = $script:api.clientId }
                         workerDatabasePrincipalName = [pscustomobject]@{ value = $script:worker.displayName }
                         workerDatabasePrincipalClientId = [pscustomobject]@{ value = $script:worker.clientId }
+                        executionIntentId = [pscustomobject]@{ value = $script:executionIntentId }
                     }
                 }
             }
@@ -394,7 +500,8 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 -Config $script:config -Foundation $script:foundation `
                 -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
                 -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
-                -ApiPrincipal $script:api -WorkerPrincipal $script:worker -FreshIntent:$true
+                -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
+                -ExecutionIntentId $script:executionIntentId -FreshIntent:$true
 
             Should -Invoke Invoke-AzJson -Times 0 -Exactly -ParameterFilter {
                 [string]$Arguments[0] -ceq 'deployment' -and [string]$Arguments[2] -ceq 'create'
@@ -402,6 +509,62 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
                 [string]$Arguments[0] -ceq 'deployment' -and [string]$Arguments[2] -ceq 'show'
             }
+            Should -Invoke Get-GatewayDatabaseBootstrapJobEvidence -Times 1 -Exactly -ParameterFilter {
+                $ExecutionIntentId -ceq $script:executionIntentId
+            }
+        }
+
+        It 'starts the reviewed Job without replacing any part of its persisted template' {
+            Mock Invoke-AzJson {
+                return [pscustomobject]@{ name = "$($script:jobName)-abc12" }
+            }
+
+            $result = Start-GatewayDatabaseBootstrapExecution `
+                -Config $script:config -JobName $script:jobName
+
+            [string]$result.name | Should -BeExactly "$($script:jobName)-abc12"
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                $CaptureStdoutOnly -and
+                $Arguments.Count -eq 7 -and
+                [string]$Arguments[0] -ceq 'containerapp' -and
+                [string]$Arguments[1] -ceq 'job' -and
+                [string]$Arguments[2] -ceq 'start' -and
+                [string]$Arguments[3] -ceq '--resource-group' -and
+                [string]$Arguments[4] -ceq $script:config.resourceGroupName -and
+                [string]$Arguments[5] -ceq '--name' -and
+                [string]$Arguments[6] -ceq $script:jobName -and
+                @($Arguments | Where-Object { $_ -in @('--env-vars', '--container-name', '--image', '--yaml') }).Count -eq 0
+            }
+        }
+
+        It 'revalidates the exact Job and zero executions before SQL elevation and the sole start intent' {
+            $tokens = $null
+            $parseErrors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile(
+                (Get-Module Database).Path, [ref]$tokens, [ref]$parseErrors)
+            $parseErrors.Count | Should -Be 0
+            $function = $ast.Find({ param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ceq 'Initialize-GatewayDatabase'
+            }, $true)
+            $source = $function.Extent.Text
+            $boundaryStart = $source.IndexOf('$preStartJobEvidence = Get-GatewayDatabaseBootstrapJobEvidence', [StringComparison]::Ordinal)
+            $boundaryStart | Should -BeGreaterOrEqual 0
+            $boundary = $source.Substring($boundaryStart)
+            $zeroRead = $boundary.IndexOf('$preStartExecutions = @(Get-GatewayDatabaseBootstrapExecutions', [StringComparison]::Ordinal)
+            $zeroGuard = $boundary.IndexOf('$preStartExecutions.Count -ne 0', [StringComparison]::Ordinal)
+            $swapIntent = $boundary.IndexOf('$receipt.administratorSwapIntentAtUtc =', [StringComparison]::Ordinal)
+            $elevation = $boundary.IndexOf('Set-GatewaySqlEntraAdministratorExact', [StringComparison]::Ordinal)
+            $startIntent = $boundary.IndexOf('$receipt.jobStartIntentAtUtc =', [StringComparison]::Ordinal)
+            $start = $boundary.IndexOf('Start-GatewayDatabaseBootstrapExecution -Config $Config -JobName $jobName', [StringComparison]::Ordinal)
+            foreach ($index in @($zeroRead, $zeroGuard, $swapIntent, $elevation, $startIntent, $start)) {
+                $index | Should -BeGreaterOrEqual 0
+            }
+            $zeroRead | Should -BeLessThan $zeroGuard
+            $zeroGuard | Should -BeLessThan $swapIntent
+            $swapIntent | Should -BeLessThan $elevation
+            $elevation | Should -BeLessThan $startIntent
+            $startIntent | Should -BeLessThan $start
         }
 
         It 'reassembles indexed intent-bound chunks containing exactly three evidence records' {
@@ -464,14 +627,22 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 Should -Throw '*duplicated, inconsistent, or outside its bounds*'
         }
 
-        It 'validates the exact successful execution template, intent, times, and absence of mounted replacement surfaces' {
+        It 'validates the exact successful execution with empty or omitted secretRef and no replacement surfaces' {
             $script:expectedExecutionArguments = @(Get-GatewayDatabaseBootstrapJobArguments `
                 -SqlServerFqdn $script:sqlServerFqdn `
                 -DeploymentOwnershipId $script:ownershipId `
                 -SourceFingerprint $script:sourceFingerprint `
                 -ApiPrincipal $script:api `
                 -WorkerPrincipal $script:worker)
+            $script:executionSecretReferenceShape = 'omitted'
             Mock Invoke-AzJson {
+                $environmentEntry = [ordered]@{
+                    name = 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'
+                    value = $script:executionIntentId
+                }
+                if ($script:executionSecretReferenceShape -ceq 'empty') {
+                    $environmentEntry.secretRef = ''
+                }
                 return [pscustomobject]@{
                     name = "$($script:jobName)-abc12"
                     properties = [pscustomobject]@{
@@ -486,11 +657,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                                 image = $script:jobImage
                                 command = @('dotnet', 'Gateway.DatabaseMigrator.dll')
                                 args = $script:expectedExecutionArguments
-                                env = @([pscustomobject]@{
-                                    name = 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'
-                                    value = $script:executionIntentId
-                                    secretRef = ''
-                                })
+                                env = @([pscustomobject]$environmentEntry)
                                 volumeMounts = @()
                                 resources = [pscustomobject]@{ cpu = 0.5; memory = '1Gi' }
                             })
@@ -499,18 +666,21 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 }
             }
 
-            $result = Get-GatewayDatabaseBootstrapExecutionEvidence `
-                -Config $script:config -JobName $script:jobName `
-                -ExecutionName "$($script:jobName)-abc12" `
-                -JobImage $script:jobImage -SqlServerFqdn $script:sqlServerFqdn `
-                -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
-                -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
-                -ExecutionIntentId $script:executionIntentId
+            foreach ($shape in @('omitted', 'empty')) {
+                $script:executionSecretReferenceShape = $shape
+                $result = Get-GatewayDatabaseBootstrapExecutionEvidence `
+                    -Config $script:config -JobName $script:jobName `
+                    -ExecutionName "$($script:jobName)-abc12" `
+                    -JobImage $script:jobImage -SqlServerFqdn $script:sqlServerFqdn `
+                    -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
+                    -ApiPrincipal $script:api -WorkerPrincipal $script:worker `
+                    -ExecutionIntentId $script:executionIntentId
 
-            $result.status | Should -BeExactly 'Succeeded'
-            $result.executionIntentId | Should -BeExactly $script:executionIntentId
-            $result.startTimeUtc | Should -BeExactly '2026-08-30T00:04:30.0000000+00:00'
-            $result.endTimeUtc | Should -BeExactly '2026-08-30T00:05:30.0000000+00:00'
+                $result.status | Should -BeExactly 'Succeeded'
+                $result.executionIntentId | Should -BeExactly $script:executionIntentId
+                $result.startTimeUtc | Should -BeExactly '2026-08-30T00:04:30.0000000+00:00'
+                $result.endTimeUtc | Should -BeExactly '2026-08-30T00:05:30.0000000+00:00'
+            }
         }
 
         It 'rejects an execution with an init container, volume, mount, or intent drift' {
@@ -530,7 +700,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                     env = @([pscustomobject]@{
                         name = 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'
                         value = if ($script:executionTamper -ceq 'intent') { 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' } else { $script:executionIntentId }
-                        secretRef = ''
+                        secretRef = if ($script:executionTamper -ceq 'secret') { 'replacement-secret' } else { '' }
                     })
                     volumeMounts = if ($script:executionTamper -ceq 'mount') { @([pscustomobject]@{ volumeName = 'replacement'; mountPath = '/app' }) } else { @() }
                     probes = if ($script:executionTamper -ceq 'probe') { @([pscustomobject]@{ type = 'Liveness' }) } else { @() }
@@ -560,7 +730,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                     -ExecutionIntentId $script:executionIntentId
             }
 
-            foreach ($tamper in @('init', 'volume', 'mount', 'probe', 'intent')) {
+            foreach ($tamper in @('init', 'volume', 'mount', 'probe', 'intent', 'secret')) {
                 $script:executionTamper = $tamper
                 $invoke | Should -Throw '*does not match the exact immutable image, intent, process, environment, volume, and resource contract*'
             }
@@ -691,6 +861,7 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                     jobPrincipalId = $script:jobPrincipalId
                     jobImage = $script:jobImage
                     containerName = 'database-bootstrap'
+                    executionIntentId = $script:executionIntentId
                 }
             }
             Mock Get-GatewayDatabaseBootstrapExecutionsBounded { return @() }
@@ -718,7 +889,9 @@ Describe 'Private database bootstrap recovery and evidence contract' {
                 Should -Throw '*recorded database-bootstrap job start has an unknown provider outcome after the full job-timeout recovery window. It will not be repeated*'
 
             Should -Invoke Get-GatewayDatabaseBootstrapExecutionsBounded -Times 1 -Exactly
-            Should -Invoke Deploy-GatewayDatabaseBootstrapJob -Times 1 -Exactly -ParameterFilter { -not $FreshIntent }
+            Should -Invoke Deploy-GatewayDatabaseBootstrapJob -Times 1 -Exactly -ParameterFilter {
+                -not $FreshIntent -and $ExecutionIntentId -ceq $script:executionIntentId
+            }
             Should -Invoke Invoke-AzJson -Times 0 -Exactly -ParameterFilter {
                 $Arguments.Count -ge 3 -and
                 [string]$Arguments[0] -ceq 'containerapp' -and

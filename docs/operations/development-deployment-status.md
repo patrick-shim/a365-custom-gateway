@@ -814,8 +814,55 @@ confirmed that a fresh source generation is required. The zero-warning/zero-erro
 Release build and all **1,324/1,324** direct Release tests pass. The canonical gate
 discovers **512** Pester tests: **511** pass, none fail, and one Windows-only launcher
 test is skipped on macOS; it parses **19** PowerShell files and **2** JSON contracts
-and compiles all **26** Bicep templates plus **5** parameter files. The next live
-generation is `a365gw21` / `rg-a365-custom-gw-phase6t`, only in target subscription
+and compiles all **26** Bicep templates plus **5** parameter files.
+
+Generation `a365gw21` accepted Plan
+`sha256:7a5f0d11838a9961bc85e890c726f40764bfad1e713b9b6f92dd417359033855`
+for `rg-a365-custom-gw-phase6t`, deployment ownership
+`bf8fd3a9-86e9-41ff-978a-dc3e4654c944`, configuration
+`sha256:31e9d1b47e30eb269408d937e3306e0b4e47262a7c5fe916e928c6491a8953a0`,
+and source
+`sha256:db5c4eee6528c133c19ad1859708e667594e82d12ba3aff558b73c928ff6312d`.
+What-If contained exactly eight Creates and no Deletes. Apply completed steps 1–10.
+Foundation deployment `a365gw-a365gw21-bootstrap-foundation-dev` succeeded under
+correlation `56a563eb-1a48-4ae6-ae31-0acd9e4587dc`; four immutable QuickRuns
+succeeded in `acra365gw21devp7in2u`; inert deployment
+`a365gw-a365gw21-bootstrap-inert-dev` succeeded under correlation
+`be55cb4b-1970-4902-8fed-94c594206e10`.
+
+Step 11 deployed and exactly validated dormant manual Job
+`job-a365gw21-db-init-dev` through deployment
+`a365gw-a365gw21-bootstrap-database-job-dev`, correlation
+`7bae8412-e580-437b-ad29-38d3a1c04ed8`. The receipt recorded its principal,
+deployment verification, SQL-administrator swap, and one durable start intent.
+Azure Activity Log correlation `bbca4fbf-1b0f-4fc2-9802-442faa92a1c5` reported
+`ContainerAppImageRequired`: the environment-only start override replaced the full
+template and omitted its required image. Exact target-only readback proved zero Job
+executions and no database schema/evidence/completion. A separately bounded recovery
+restored the original singular SQL Entra administrator exactly, re-proved public
+network access `Disabled` and zero firewall rules, and terminated only the local
+waiter. Step 11 remains `Running` in immutable state; preserve the partial receipt
+and live recovery truth. No Admin credential, runtime activation, registration,
+Registry action, Gateway key, canary, or Service Bus message-data-plane access
+followed.
+
+Current Microsoft documentation states that any Job start override replaces the
+entire execution template. The working-tree correction binds the existing safe
+intent into the reviewed digest-pinned template, revalidates the Job plus zero
+executions immediately before temporary SQL authority, and issues one no-override
+start with only the exact resource group and Job name. Its complete local gate is a
+zero-warning/zero-error Release build and **1,325/1,325** direct Release tests: unit
+495, Admin UI 155, local Setup 75, observability/runtime 149, integration 92,
+end-to-end 106, architecture 120, and security 133. The canonical source gate
+discovers **516** Pester tests: **515** pass, none fail, and one Windows-only launcher
+test is skipped on macOS; it parses **19** PowerShell files and **2** JSON contracts
+and compiles all **26** Bicep templates plus **5** parameter files. Focused
+database/final-verification/experience coverage passes **173/173**, the Job
+architecture tests pass **5/5**, and format/diff checks pass. It remains source-only
+until frozen and deployed; independent read-only review found no remaining
+correctness or safety blocker. Never Resume `a365gw21` with edited source. The next
+live generation is `a365gw22` /
+`rg-a365-custom-gw-phase6u`, only in target subscription
 `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
 
@@ -1950,15 +1997,17 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw21` / `rg-a365-custom-gw-phase6t`. Preserve `a365gw11`,
+   generation `a365gw22` / `rg-a365-custom-gw-phase6u`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
    preserve `a365gw14`, `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with
    steps 1–10 complete and step 11 `Failed` before database migration. Their succeeded
    resources and GET-only diagnoses do not authorize Resume after any validator or
    helper source change. Preserve `a365gw19` at a nonterminal foundation checkpoint
-   with no exact ARM deployment/resource group and preserve `a365gw20` after dormant
-   Job deployment but before any SQL mutation or Job execution; neither may consume
-   commit `dc25132`. Capture the fresh generation's safe state, template
+   with no exact ARM deployment/resource group, preserve `a365gw20` after dormant
+   Job deployment but before any SQL mutation or Job execution, and preserve
+   `a365gw21` with its failed durable start intent, zero executions, exact manual SQL
+   administrator restoration, and immutable `Running` step-11 state. None may
+   consume edited source. Capture the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, private database-Job execution and original SQL
    administrator restoration, zero-firewall empty-schema initialization, final

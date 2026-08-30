@@ -47,6 +47,11 @@ param deploymentOwnershipId string
 @maxLength(71)
 param bootstrapSourceFingerprint string
 
+@description('Canonical lowercase non-empty GUID that binds the dormant job template to its sole authorized database-bootstrap execution.')
+@minLength(36)
+@maxLength(36)
+param executionIntentId string
+
 @description('Exact Azure SQL contained-principal name for the Gateway API managed identity.')
 @minLength(1)
 @maxLength(128)
@@ -165,7 +170,12 @@ resource databaseBootstrapJob 'Microsoft.App/jobs@2025-01-01' = {
             '--evidence-stdout'
             'true'
           ]
-          env: []
+          env: [
+            {
+              name: 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'
+              value: executionIntentId
+            }
+          ]
           probes: []
           resources: {
             cpu: json('0.5')

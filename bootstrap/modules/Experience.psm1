@@ -3495,7 +3495,8 @@ function Test-GatewayDatabaseEvidence {
             -Config $Config -Foundation $Foundation -SqlServerFqdn ([string]$Evidence.server) `
             -JobImage $DatabaseMigratorImage `
             -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
-            -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal
+            -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
+            -ExecutionIntentId ([string]$Evidence.databaseBootstrapExecutionIntentId)
         if ([string]$job.jobId -cne [string]$Evidence.databaseBootstrapJobId -or
             [string]$job.jobPrincipalId -cne [string]$Evidence.databaseBootstrapJobPrincipalId) { throw 'mismatch' }
         $executions = @(Get-GatewayDatabaseBootstrapExecutions -Config $Config -JobName ([string]$Evidence.databaseBootstrapJobName))

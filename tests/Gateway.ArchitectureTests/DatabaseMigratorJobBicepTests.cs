@@ -45,7 +45,6 @@ public class DatabaseMigratorJobBicepTests
         Regex.Matches(source, "identity: imagePullIdentityResourceId", RegexOptions.CultureInvariant)
             .Count.Should().Be(2);
         source.Should().Contain("secrets: []");
-        source.Should().Contain("env: []");
         source.Should().Contain("probes: []");
         source.Should().NotContain("initContainers:");
         source.Should().NotContain("volumes:");
@@ -54,6 +53,29 @@ public class DatabaseMigratorJobBicepTests
         source.Should().NotContain("passwordSecretRef:");
         source.Should().NotContain("AZURE_CLIENT_ID");
         source.Should().NotContain("Authentication=Active Directory");
+    }
+
+    [Fact]
+    public void DatabaseBootstrapJob_ShouldBindItsSoleEnvironmentEntryToTheExecutionIntent()
+    {
+        var source = ReadJobSource();
+
+        source.Should().MatchRegex(
+            @"@minLength\(36\)\s+@maxLength\(36\)\s+param executionIntentId string");
+        source.Should().Contain(
+            "env: [\n" +
+            "            {\n" +
+            "              name: 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'\n" +
+            "              value: executionIntentId\n" +
+            "            }\n" +
+            "          ]");
+        Regex.Matches(
+                source,
+                "name: 'DATABASE_MIGRATOR_EXECUTION_INTENT_ID'",
+                RegexOptions.CultureInvariant)
+            .Count.Should().Be(1);
+        source.Should().NotContain("secretRef:");
+        source.Should().NotContain("AZURE_CLIENT_ID");
     }
 
     [Fact]

@@ -46,6 +46,7 @@ Describe 'Final verification strict-mode delegated-scope cardinality' {
 
     It 'revalidates the full dormant database job, sole execution, intent, and job identity boundary' {
         $script:finalVerificationSource | Should -Match 'Get-GatewayDatabaseBootstrapJobEvidence'
+        $script:finalVerificationSource | Should -Match 'Get-GatewayDatabaseBootstrapJobEvidence(?s:.*?)-ExecutionIntentId \(\[string\]\$Database\.databaseBootstrapExecutionIntentId\)'
         $script:finalVerificationSource | Should -Match 'Get-GatewayDatabaseBootstrapExecutions'
         $script:finalVerificationSource | Should -Match 'Get-GatewayDatabaseBootstrapExecutionEvidence'
         $script:finalVerificationSource | Should -Match 'Assert-GatewayExactAzureRoleAssignments[^\r\n]+-Database \$Database'

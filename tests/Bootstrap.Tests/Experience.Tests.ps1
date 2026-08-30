@@ -13,6 +13,21 @@ Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Experience.ps
     }
 }
 
+Describe 'Experience database Job execution-intent propagation' {
+    It 'passes the recorded canonical intent into the live dormant Job validator' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            (Get-Module Experience).Path, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $function = $ast.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Test-GatewayDatabaseEvidence'
+        }, $true)
+        $function.Extent.Text | Should -Match 'Get-GatewayDatabaseBootstrapJobEvidence(?s:.*?)-ExecutionIntentId \(\[string\]\$Evidence\.databaseBootstrapExecutionIntentId\)'
+    }
+}
+
 Describe 'Experience strict-mode array cardinality boundaries' {
     BeforeAll {
         $tokens = $null

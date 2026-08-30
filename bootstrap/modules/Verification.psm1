@@ -761,7 +761,8 @@ function Test-GatewayBootstrapDeployment {
         -Config $Config -Foundation $Foundation -SqlServerFqdn ([string]$Runtime.sqlServerFqdn) `
         -JobImage ([string]$Images.databaseMigrator) `
         -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint ([string]$Images.sourceFingerprint) `
-        -ApiPrincipal $databaseApiPrincipal -WorkerPrincipal $databaseWorkerPrincipal
+        -ApiPrincipal $databaseApiPrincipal -WorkerPrincipal $databaseWorkerPrincipal `
+        -ExecutionIntentId ([string]$Database.databaseBootstrapExecutionIntentId)
     if (-not ([string]$databaseJob.jobId).Equals([string]$Database.databaseBootstrapJobId, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$databaseJob.jobName -cne [string]$Database.databaseBootstrapJobName -or
         [string]$databaseJob.jobPrincipalId -cne [string]$Database.databaseBootstrapJobPrincipalId) {
