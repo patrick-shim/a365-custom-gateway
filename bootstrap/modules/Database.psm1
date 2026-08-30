@@ -1,6 +1,38 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Test-GatewayDatabaseBootstrapLocationEquivalent {
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ActualLocation,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ExpectedLocation
+    )
+
+    if ($ActualLocation -notmatch '^[A-Za-z0-9 ]+$' -or
+        $ExpectedLocation -notmatch '^[A-Za-z0-9 ]+$') {
+        return $false
+    }
+    $normalizedActual = $ActualLocation.Replace(' ', '')
+    $normalizedExpected = $ExpectedLocation.Replace(' ', '')
+    if ([string]::IsNullOrEmpty($normalizedActual) -or
+        [string]::IsNullOrEmpty($normalizedExpected)) {
+        return $false
+    }
+    return [string]::Equals(
+        $normalizedActual,
+        $normalizedExpected,
+        [StringComparison]::OrdinalIgnoreCase)
+}
+
+function ConvertTo-GatewayDatabaseBootstrapCollection {
+    param([Parameter()][AllowNull()]$Value)
+
+    foreach ($entry in @($Value)) {
+        if ($null -ne $entry) {
+            $entry
+        }
+    }
+}
+
 function Get-ManagedIdentityClientId {
     param([Parameter(Mandatory)][string]$PrincipalObjectId)
     Assert-GuidValue -Value $PrincipalObjectId -Label 'Managed identity principal object ID'
@@ -414,23 +446,35 @@ function Get-GatewayDatabaseBootstrapJobEvidence {
         -SourceFingerprint $SourceFingerprint `
         -ApiPrincipal $ApiPrincipal `
         -WorkerPrincipal $WorkerPrincipal)
-    $containers = @($job.properties.template.containers)
-    $initContainers = @(if ($null -ne $job.properties.template.PSObject.Properties['initContainers']) { $job.properties.template.initContainers })
-    $volumes = @(if ($null -ne $job.properties.template.PSObject.Properties['volumes']) { $job.properties.template.volumes })
-    $registries = @($job.properties.configuration.registries)
-    $secrets = @($job.properties.configuration.secrets)
-    $identitySettings = @($job.properties.configuration.identitySettings)
+    $containers = @(ConvertTo-GatewayDatabaseBootstrapCollection -Value $job.properties.template.containers)
+    $initContainers = @(if ($null -ne $job.properties.template.PSObject.Properties['initContainers']) {
+        ConvertTo-GatewayDatabaseBootstrapCollection -Value $job.properties.template.initContainers
+    })
+    $volumes = @(if ($null -ne $job.properties.template.PSObject.Properties['volumes']) {
+        ConvertTo-GatewayDatabaseBootstrapCollection -Value $job.properties.template.volumes
+    })
+    $registries = @(ConvertTo-GatewayDatabaseBootstrapCollection -Value $job.properties.configuration.registries)
+    $secrets = @(ConvertTo-GatewayDatabaseBootstrapCollection -Value $job.properties.configuration.secrets)
+    $identitySettings = @(ConvertTo-GatewayDatabaseBootstrapCollection -Value $job.properties.configuration.identitySettings)
     $identityIds = @($job.identity.userAssignedIdentities.PSObject.Properties.Name)
     $containerCommands = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['command']) { $containers[0].command | ForEach-Object { [string]$_ } })
     $containerArguments = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['args']) { $containers[0].args | ForEach-Object { [string]$_ } })
-    $containerEnvironment = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['env']) { $containers[0].env })
-    $containerVolumeMounts = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['volumeMounts']) { $containers[0].volumeMounts })
-    $containerProbes = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['probes']) { $containers[0].probes })
+    $containerEnvironment = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['env']) {
+        ConvertTo-GatewayDatabaseBootstrapCollection -Value $containers[0].env
+    })
+    $containerVolumeMounts = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['volumeMounts']) {
+        ConvertTo-GatewayDatabaseBootstrapCollection -Value $containers[0].volumeMounts
+    })
+    $containerProbes = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['probes']) {
+        ConvertTo-GatewayDatabaseBootstrapCollection -Value $containers[0].probes
+    })
     $identityType = ([string]$job.identity.type).Replace(' ', '')
     if (-not $job -or
         -not ([string]$job.id).Equals($expectedJobId, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$job.name -cne $jobName -or
-        [string]$job.location -cne [string]$Config.location -or
+        -not (Test-GatewayDatabaseBootstrapLocationEquivalent `
+            -ActualLocation ([string]$job.location) `
+            -ExpectedLocation ([string]$Config.location)) -or
         [string]$job.properties.provisioningState -cne 'Succeeded' -or
         -not ([string]$job.properties.environmentId).Equals([string]$Foundation.containerAppsEnvironmentId, [StringComparison]::OrdinalIgnoreCase) -or
         $identityType -cne 'SystemAssigned,UserAssigned' -or
@@ -776,12 +820,22 @@ function Get-GatewayDatabaseBootstrapExecutionEvidence {
     if (-not $execution -or [string]$execution.name -cne $ExecutionName) {
         throw 'The exact private database-bootstrap execution could not be read back.'
     }
-    $containers = @($execution.properties.template.containers)
-    $initContainers = @(if ($null -ne $execution.properties.template.PSObject.Properties['initContainers']) { $execution.properties.template.initContainers })
-    $volumes = @(if ($null -ne $execution.properties.template.PSObject.Properties['volumes']) { $execution.properties.template.volumes })
-    $environment = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['env']) { $containers[0].env })
-    $volumeMounts = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['volumeMounts']) { $containers[0].volumeMounts })
-    $probes = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['probes']) { $containers[0].probes })
+    $containers = @(ConvertTo-GatewayDatabaseBootstrapCollection -Value $execution.properties.template.containers)
+    $initContainers = @(if ($null -ne $execution.properties.template.PSObject.Properties['initContainers']) {
+        ConvertTo-GatewayDatabaseBootstrapCollection -Value $execution.properties.template.initContainers
+    })
+    $volumes = @(if ($null -ne $execution.properties.template.PSObject.Properties['volumes']) {
+        ConvertTo-GatewayDatabaseBootstrapCollection -Value $execution.properties.template.volumes
+    })
+    $environment = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['env']) {
+        ConvertTo-GatewayDatabaseBootstrapCollection -Value $containers[0].env
+    })
+    $volumeMounts = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['volumeMounts']) {
+        ConvertTo-GatewayDatabaseBootstrapCollection -Value $containers[0].volumeMounts
+    })
+    $probes = @(if ($containers.Count -eq 1 -and $null -ne $containers[0].PSObject.Properties['probes']) {
+        ConvertTo-GatewayDatabaseBootstrapCollection -Value $containers[0].probes
+    })
     $expectedArguments = @(Get-GatewayDatabaseBootstrapJobArguments `
         -SqlServerFqdn $SqlServerFqdn -DeploymentOwnershipId $DeploymentOwnershipId `
         -SourceFingerprint $SourceFingerprint -ApiPrincipal $ApiPrincipal -WorkerPrincipal $WorkerPrincipal)

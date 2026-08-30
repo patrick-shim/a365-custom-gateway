@@ -198,6 +198,104 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             ($actual -join "`n") | Should -BeExactly ($expected -join "`n")
         }
 
+        It 'accepts the Azure display-name form for the exact database Job region and rejects punctuation drift' {
+            Test-GatewayDatabaseBootstrapLocationEquivalent `
+                -ActualLocation 'Korea Central' `
+                -ExpectedLocation 'koreacentral' | Should -BeTrue
+
+            Test-GatewayDatabaseBootstrapLocationEquivalent `
+                -ActualLocation 'Korea-Central' `
+                -ExpectedLocation 'koreacentral' | Should -BeFalse
+
+            Test-GatewayDatabaseBootstrapLocationEquivalent `
+                -ActualLocation 'West US' `
+                -ExpectedLocation 'koreacentral' | Should -BeFalse
+        }
+
+        It 'normalizes provider-null optional Job arrays to exact absence without hiding entries' {
+            @(ConvertTo-GatewayDatabaseBootstrapCollection -Value $null).Count | Should -Be 0
+            @(ConvertTo-GatewayDatabaseBootstrapCollection -Value @()).Count | Should -Be 0
+            @(ConvertTo-GatewayDatabaseBootstrapCollection -Value @($null)).Count | Should -Be 0
+
+            $entry = [pscustomobject]@{ name = 'unexpected' }
+            $actual = @(ConvertTo-GatewayDatabaseBootstrapCollection -Value @($entry))
+            $actual.Count | Should -Be 1
+            [string]$actual[0].name | Should -BeExactly 'unexpected'
+        }
+
+        It 'accepts the exact live Azure Job shape with a display-name region and provider-null absent arrays' {
+            $pullIdentityId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-pull-dev"
+            $userAssignedIdentities = [pscustomobject]@{}
+            $userAssignedIdentities | Add-Member -NotePropertyName $pullIdentityId -NotePropertyValue ([pscustomobject]@{})
+            $foundation = [pscustomobject]@{
+                acrLoginServer = 'gatewayacr.azurecr.io'
+                containerAppsEnvironmentId = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.App/managedEnvironments/cae-gateway-dev"
+                runtimeImagePullIdentityId = $pullIdentityId
+            }
+            $arguments = @(Get-GatewayDatabaseBootstrapJobArguments `
+                -SqlServerFqdn $script:sqlServerFqdn `
+                -DeploymentOwnershipId $script:ownershipId `
+                -SourceFingerprint $script:sourceFingerprint `
+                -ApiPrincipal $script:api `
+                -WorkerPrincipal $script:worker)
+            $job = [pscustomobject]@{
+                id = "/subscriptions/$($script:config.subscriptionId)/resourceGroups/$($script:config.resourceGroupName)/providers/Microsoft.App/jobs/$($script:jobName)"
+                name = $script:jobName
+                location = 'Korea Central'
+                identity = [pscustomobject]@{
+                    type = 'SystemAssigned, UserAssigned'
+                    tenantId = $script:config.tenantId
+                    principalId = $script:jobPrincipalId
+                    userAssignedIdentities = $userAssignedIdentities
+                }
+                tags = [pscustomobject]@{
+                    bootstrapOwnershipId = $script:ownershipId
+                    bootstrapSourceFingerprint = $script:sourceFingerprint
+                    workload = 'database-bootstrap'
+                }
+                properties = [pscustomobject]@{
+                    provisioningState = 'Succeeded'
+                    environmentId = $foundation.containerAppsEnvironmentId
+                    configuration = [pscustomobject]@{
+                        triggerType = 'Manual'
+                        replicaTimeout = 1800
+                        replicaRetryLimit = 0
+                        manualTriggerConfig = [pscustomobject]@{ parallelism = 1; replicaCompletionCount = 1 }
+                        registries = @([pscustomobject]@{ server = $foundation.acrLoginServer; identity = $pullIdentityId })
+                        secrets = $null
+                        identitySettings = @(
+                            [pscustomobject]@{ identity = 'system'; lifecycle = 'Main' },
+                            [pscustomobject]@{ identity = $pullIdentityId.ToLowerInvariant(); lifecycle = 'None' }
+                        )
+                    }
+                    template = [pscustomobject]@{
+                        initContainers = $null
+                        volumes = $null
+                        containers = @([pscustomobject]@{
+                            name = 'database-bootstrap'
+                            image = $script:jobImage
+                            command = @('dotnet', 'Gateway.DatabaseMigrator.dll')
+                            args = $arguments
+                            env = $null
+                            volumeMounts = $null
+                            probes = $null
+                            resources = [pscustomobject]@{ cpu = 0.5; memory = '1Gi' }
+                        })
+                    }
+                }
+            }
+            Mock Invoke-AzJson { return $job }
+
+            $result = Get-GatewayDatabaseBootstrapJobEvidence `
+                -Config $script:config -Foundation $foundation `
+                -SqlServerFqdn $script:sqlServerFqdn -JobImage $script:jobImage `
+                -DeploymentOwnershipId $script:ownershipId -SourceFingerprint $script:sourceFingerprint `
+                -ApiPrincipal $script:api -WorkerPrincipal $script:worker
+
+            [string]$result.jobName | Should -BeExactly $script:jobName
+            [string]$result.jobPrincipalId | Should -BeExactly $script:jobPrincipalId
+        }
+
         It 'performs the first dormant deployment after a persisted intent when both deterministic ARM records remain absent' {
             $script:foundation = [pscustomobject]@{
                 acrLoginServer = 'gatewayacr.azurecr.io'
