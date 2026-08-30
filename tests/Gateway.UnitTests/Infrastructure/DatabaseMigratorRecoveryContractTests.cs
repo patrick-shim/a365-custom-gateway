@@ -75,6 +75,281 @@ public sealed class DatabaseMigratorRecoveryContractTests
         var action = () => DatabaseBootstrapRecoveryContract.AssertPristine(CreatePristineSurface());
 
         action.Should().NotThrow();
+        DatabaseBootstrapRecoveryContract.ClassifyPristineReadiness(CreatePristineSurface())
+            .Should().Be(PristineDatabaseSurfaceReadiness.Ready);
+    }
+
+    [Fact]
+    public void Initialization_AllowsOnlyTheSoleAuditSpecificationMismatchToWait()
+    {
+        var surface = CreateSurfaceWithCatalogCounts(("databaseAuditSpecifications", 1));
+
+        DatabaseBootstrapRecoveryContract.ClassifyPristineReadiness(surface)
+            .Should().Be(PristineDatabaseSurfaceReadiness.AuditSpecificationPending);
+        surface.CatalogSurface.DatabaseAuditSpecificationMismatchCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void Initialization_RejectsAuditWaitForMixedOrOtherPristineMismatches()
+    {
+        var auditPending = CreateSurfaceWithCatalogCounts(("databaseAuditSpecifications", 1));
+        PristineDatabaseSurfaceSnapshot[] rejected =
+        [
+            auditPending with { UserTableCount = 1 },
+            auditPending with { UnexpectedSchemaCount = 1 },
+            auditPending with { DirectPermissions = CreatePermissionTelemetry(1, 2, 1, 0, 0, 1, 1) },
+            CreateSurfaceWithCatalogCounts(("databaseAuditSpecifications", 2)),
+            CreateSurfaceWithCatalogCounts(("databaseAuditSpecifications", 1), ("securityPolicies", 1)),
+            CreateSurfaceWithCatalogCounts(("securityPolicies", 1))
+        ];
+
+        foreach (var surface in rejected)
+        {
+            var action = () => DatabaseBootstrapRecoveryContract.ClassifyPristineReadiness(surface);
+
+            action.Should().Throw<InvalidOperationException>()
+                .WithMessage("*requires a pristine database surface*");
+        }
+    }
+
+    [Fact]
+    public void AuditSpecificationReadiness_AcceptsOnlyTheExactReadyTuple()
+    {
+        var snapshot = new AzureSqlAuditSpecificationReadinessSnapshot(1, 1, 1, 0, 0, 0, 1, 0);
+
+        DatabaseBootstrapRecoveryContract.ClassifyAuditSpecificationReadiness(snapshot)
+            .Should().Be(AzureSqlAuditSpecificationReadiness.Ready);
+    }
+
+    [Theory]
+    [InlineData(0, 0, 0, 0, 0, 0, 0, 0)]
+    [InlineData(1, 1, 0, 1, 0, 0, 1, 0)]
+    [InlineData(1, 1, 1, 0, 1, 0, 0, 0)]
+    [InlineData(1, 1, 1, 0, 0, 1, 0, 0)]
+    public void AuditSpecificationReadiness_AllowsOnlyInternallyConsistentBoundedPendingTuples(
+        int total,
+        int expectedNameHashMatches,
+        int enabled,
+        int disabled,
+        int nullGuid,
+        int zeroGuid,
+        int nonzeroGuid,
+        int details)
+    {
+        var snapshot = new AzureSqlAuditSpecificationReadinessSnapshot(
+            total,
+            expectedNameHashMatches,
+            enabled,
+            disabled,
+            nullGuid,
+            zeroGuid,
+            nonzeroGuid,
+            details);
+
+        DatabaseBootstrapRecoveryContract.ClassifyAuditSpecificationReadiness(snapshot)
+            .Should().Be(AzureSqlAuditSpecificationReadiness.Pending);
+    }
+
+    public static IEnumerable<object[]> InvalidAuditSpecificationReadinessTuples()
+    {
+        yield return [new AzureSqlAuditSpecificationReadinessSnapshot(2, 2, 2, 0, 0, 0, 2, 0)];
+        yield return [new AzureSqlAuditSpecificationReadinessSnapshot(1, 0, 1, 0, 0, 0, 1, 0)];
+        yield return [new AzureSqlAuditSpecificationReadinessSnapshot(1, 1, 1, 0, 0, 0, 1, 1)];
+        yield return [new AzureSqlAuditSpecificationReadinessSnapshot(1, 1, 0, 0, 0, 0, 1, 0)];
+        yield return [new AzureSqlAuditSpecificationReadinessSnapshot(1, 1, 1, 1, 0, 0, 1, 0)];
+        yield return [new AzureSqlAuditSpecificationReadinessSnapshot(1, 1, 1, 0, 0, 0, 0, 0)];
+        yield return [new AzureSqlAuditSpecificationReadinessSnapshot(1, 1, 1, 0, 1, 0, 1, 0)];
+        yield return [new AzureSqlAuditSpecificationReadinessSnapshot(-1, 0, 0, 0, 0, 0, 0, 0)];
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidAuditSpecificationReadinessTuples))]
+    public void AuditSpecificationReadiness_RejectsMultiplicityWrongHashDetailsAndInconsistentPartitions(
+        AzureSqlAuditSpecificationReadinessSnapshot snapshot)
+    {
+        var action = () => DatabaseBootstrapRecoveryContract.ClassifyAuditSpecificationReadiness(snapshot);
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("*outside the exact bounded transition*safe counts were *");
+    }
+
+    [Fact]
+    public async Task AuditSpecificationConvergence_ReturnsImmediatelyWhenReady()
+    {
+        var readCount = 0;
+        var delayCount = 0;
+        var elapsed = TimeSpan.Zero;
+
+        await AzureSqlAuditSpecificationConvergence.WaitAsync(
+            token =>
+            {
+                token.CanBeCanceled.Should().BeTrue();
+                readCount++;
+                return Task.FromResult(ReadyAuditSpecificationSnapshot());
+            },
+            timeout: TimeSpan.FromSeconds(10),
+            retryDelay: TimeSpan.FromSeconds(1),
+            elapsedProvider: () => elapsed,
+            delayAsync: (delay, token) =>
+            {
+                delayCount++;
+                elapsed += delay;
+                return Task.CompletedTask;
+            });
+
+        readCount.Should().Be(1);
+        delayCount.Should().Be(0);
+        elapsed.Should().Be(TimeSpan.Zero);
+    }
+
+    [Fact]
+    public async Task AuditSpecificationConvergence_RetriesPendingUntilReady()
+    {
+        var readCount = 0;
+        var delayCount = 0;
+        var elapsed = TimeSpan.Zero;
+
+        await AzureSqlAuditSpecificationConvergence.WaitAsync(
+            token =>
+            {
+                token.CanBeCanceled.Should().BeTrue();
+                readCount++;
+                return Task.FromResult(
+                    readCount == 1
+                        ? PendingAuditSpecificationSnapshot()
+                        : ReadyAuditSpecificationSnapshot());
+            },
+            timeout: TimeSpan.FromSeconds(10),
+            retryDelay: TimeSpan.FromSeconds(1),
+            elapsedProvider: () => elapsed,
+            delayAsync: (delay, token) =>
+            {
+                token.CanBeCanceled.Should().BeTrue();
+                delayCount++;
+                elapsed += delay;
+                return Task.CompletedTask;
+            });
+
+        readCount.Should().Be(2);
+        delayCount.Should().Be(1);
+        elapsed.Should().Be(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task AuditSpecificationConvergence_RejectsUnsafeStateWithoutRetry()
+    {
+        var readCount = 0;
+        var delayCount = 0;
+        var unsafeSnapshot = new AzureSqlAuditSpecificationReadinessSnapshot(1, 0, 1, 0, 0, 0, 1, 0);
+
+        var action = () => AzureSqlAuditSpecificationConvergence.WaitAsync(
+            token =>
+            {
+                readCount++;
+                return Task.FromResult(unsafeSnapshot);
+            },
+            timeout: TimeSpan.FromSeconds(10),
+            retryDelay: TimeSpan.FromSeconds(1),
+            elapsedProvider: () => TimeSpan.Zero,
+            delayAsync: (delay, token) =>
+            {
+                delayCount++;
+                return Task.CompletedTask;
+            });
+
+        await action.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*outside the exact bounded transition*");
+        readCount.Should().Be(1);
+        delayCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AuditSpecificationConvergence_FailsClosedAtTheMonotonicDeadline()
+    {
+        var readCount = 0;
+        var delayCount = 0;
+        var elapsed = TimeSpan.Zero;
+
+        var action = () => AzureSqlAuditSpecificationConvergence.WaitAsync(
+            token =>
+            {
+                readCount++;
+                elapsed += TimeSpan.FromSeconds(3);
+                return Task.FromResult(PendingAuditSpecificationSnapshot());
+            },
+            timeout: TimeSpan.FromSeconds(10),
+            retryDelay: TimeSpan.FromSeconds(5),
+            elapsedProvider: () => elapsed,
+            delayAsync: (delay, token) =>
+            {
+                delayCount++;
+                elapsed += delay;
+                return Task.CompletedTask;
+            });
+
+        await action.Should().ThrowAsync<TimeoutException>()
+            .WithMessage("*bounded monotonic deadline*safe counts were *");
+        readCount.Should().Be(2);
+        delayCount.Should().Be(1);
+        elapsed.Should().Be(TimeSpan.FromSeconds(11));
+    }
+
+    [Fact]
+    public async Task AuditSpecificationConvergence_PropagatesCallerCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var readCount = 0;
+        var delayCount = 0;
+
+        var action = () => AzureSqlAuditSpecificationConvergence.WaitAsync(
+            token =>
+            {
+                token.CanBeCanceled.Should().BeTrue();
+                readCount++;
+                return Task.FromResult(PendingAuditSpecificationSnapshot());
+            },
+            timeout: TimeSpan.FromSeconds(10),
+            retryDelay: TimeSpan.FromSeconds(1),
+            elapsedProvider: () => TimeSpan.Zero,
+            delayAsync: (delay, token) =>
+            {
+                delayCount++;
+                cancellation.Cancel();
+                return Task.Delay(delay, token);
+            },
+            cancellationToken: cancellation.Token);
+
+        await action.Should().ThrowAsync<OperationCanceledException>();
+        readCount.Should().Be(1);
+        delayCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AuditSpecificationConvergence_PropagatesReaderErrorsWithoutRetry()
+    {
+        var readCount = 0;
+        var delayCount = 0;
+        var readerError = new InvalidOperationException("Safe synthetic reader failure.");
+
+        var action = () => AzureSqlAuditSpecificationConvergence.WaitAsync(
+            token =>
+            {
+                readCount++;
+                return Task.FromException<AzureSqlAuditSpecificationReadinessSnapshot>(readerError);
+            },
+            timeout: TimeSpan.FromSeconds(10),
+            retryDelay: TimeSpan.FromSeconds(1),
+            elapsedProvider: () => TimeSpan.Zero,
+            delayAsync: (delay, token) =>
+            {
+                delayCount++;
+                return Task.CompletedTask;
+            });
+
+        var exception = await action.Should().ThrowAsync<InvalidOperationException>();
+        exception.Which.Should().BeSameAs(readerError);
+        readCount.Should().Be(1);
+        delayCount.Should().Be(0);
     }
 
     public static IEnumerable<object[]> NonPristineDatabaseSurfaces()
@@ -688,6 +963,33 @@ public sealed class DatabaseMigratorRecoveryContractTests
             CreatePermissionTelemetry(0, 1, 1, 0, 0, 1, 0),
             0,
             0);
+
+    private static AzureSqlAuditSpecificationReadinessSnapshot ReadyAuditSpecificationSnapshot() =>
+        new(1, 1, 1, 0, 0, 0, 1, 0);
+
+    private static AzureSqlAuditSpecificationReadinessSnapshot PendingAuditSpecificationSnapshot() =>
+        new(0, 0, 0, 0, 0, 0, 0, 0);
+
+    private static PristineDatabaseSurfaceSnapshot CreateSurfaceWithCatalogCounts(
+        params (string Category, int Count)[] values)
+    {
+        var catalogCounts = CreateZeroCatalogCounts();
+        foreach (var (category, count) in values)
+        {
+            var index = UnexpectedDatabaseSurfaceTelemetry.CategoryNames
+                .Select((name, ordinal) => (name, ordinal))
+                .Single(item => item.name.Equals(category, StringComparison.Ordinal))
+                .ordinal;
+            catalogCounts[index] = count;
+        }
+
+        return CreatePristineSurface() with
+        {
+            CatalogSurface = UnexpectedDatabaseSurfaceTelemetry.FromOrderedCounts(
+                catalogCounts,
+                CreateZeroProgrammableObjectTypeCounts())
+        };
+    }
 
     private static DatabaseDirectPermissionTelemetry CreatePermissionTelemetry(
         int rawNonWhitelisted,

@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace Gateway.DatabaseMigrator;
 
 public enum DatabaseInitializationRecoveryMode
@@ -5,6 +7,140 @@ public enum DatabaseInitializationRecoveryMode
     Fresh,
     ResumeBeforeSchemaMutation,
     ResumeAfterSchemaCompleted
+}
+
+public enum PristineDatabaseSurfaceReadiness
+{
+    Ready,
+    AuditSpecificationPending
+}
+
+public enum AzureSqlAuditSpecificationReadiness
+{
+    Ready,
+    Pending
+}
+
+/// <summary>
+/// Waits only for the exact, count-only Azure SQL audit-specification readiness
+/// transition. The monotonic deadline covers both catalog reads and retry delays.
+/// </summary>
+public static class AzureSqlAuditSpecificationConvergence
+{
+    public static Task WaitAsync(
+        Func<CancellationToken, Task<AzureSqlAuditSpecificationReadinessSnapshot>> readSnapshotAsync,
+        TimeSpan timeout,
+        TimeSpan retryDelay,
+        CancellationToken cancellationToken = default)
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        return WaitAsync(
+            readSnapshotAsync,
+            timeout,
+            retryDelay,
+            () => Stopwatch.GetElapsedTime(startedAt),
+            static (delay, token) => Task.Delay(delay, token),
+            cancellationToken);
+    }
+
+    public static async Task WaitAsync(
+        Func<CancellationToken, Task<AzureSqlAuditSpecificationReadinessSnapshot>> readSnapshotAsync,
+        TimeSpan timeout,
+        TimeSpan retryDelay,
+        Func<TimeSpan> elapsedProvider,
+        Func<TimeSpan, CancellationToken, Task> delayAsync,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(readSnapshotAsync);
+        ArgumentNullException.ThrowIfNull(elapsedProvider);
+        ArgumentNullException.ThrowIfNull(delayAsync);
+        if (timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        if (retryDelay <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(retryDelay));
+
+        var attemptRatio = Math.Ceiling(timeout.TotalMilliseconds / retryDelay.TotalMilliseconds);
+        if (attemptRatio >= int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(retryDelay));
+        var maximumAttempts = checked((int)attemptRatio + 1);
+        var previousElapsed = TimeSpan.Zero;
+        AzureSqlAuditSpecificationReadinessSnapshot? lastSnapshot = null;
+
+        TimeSpan ReadMonotonicElapsed()
+        {
+            var elapsed = elapsedProvider();
+            if (elapsed < previousElapsed)
+            {
+                throw new InvalidOperationException(
+                    "Azure SQL audit-specification readiness requires a monotonic elapsed-time source.");
+            }
+
+            previousElapsed = elapsed;
+            return elapsed;
+        }
+
+        TimeSpan ReadRemainingOrThrow()
+        {
+            var remaining = timeout - ReadMonotonicElapsed();
+            if (remaining <= TimeSpan.Zero)
+                throw CreateTimeoutException(lastSnapshot);
+            return remaining;
+        }
+
+        for (var attempt = 1; attempt <= maximumAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var remaining = ReadRemainingOrThrow();
+            using (var deadlineCancellation =
+                   CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                deadlineCancellation.CancelAfter(remaining);
+                try
+                {
+                    lastSnapshot = await readSnapshotAsync(deadlineCancellation.Token);
+                }
+                catch (OperationCanceledException)
+                    when (!cancellationToken.IsCancellationRequested &&
+                          deadlineCancellation.IsCancellationRequested)
+                {
+                    throw CreateTimeoutException(lastSnapshot);
+                }
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var readiness = DatabaseBootstrapRecoveryContract
+                .ClassifyAuditSpecificationReadiness(lastSnapshot);
+            remaining = ReadRemainingOrThrow();
+            if (readiness == AzureSqlAuditSpecificationReadiness.Ready)
+                return;
+
+            if (attempt == maximumAttempts)
+                throw CreateTimeoutException(lastSnapshot);
+
+            var delay = retryDelay <= remaining ? retryDelay : remaining;
+            using var delayCancellation =
+                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            delayCancellation.CancelAfter(remaining);
+            try
+            {
+                await delayAsync(delay, delayCancellation.Token);
+            }
+            catch (OperationCanceledException)
+                when (!cancellationToken.IsCancellationRequested &&
+                      delayCancellation.IsCancellationRequested)
+            {
+                throw CreateTimeoutException(lastSnapshot);
+            }
+        }
+
+        throw CreateTimeoutException(lastSnapshot);
+    }
+
+    private static TimeoutException CreateTimeoutException(
+        AzureSqlAuditSpecificationReadinessSnapshot? snapshot) =>
+        new(
+            "Azure SQL audit-specification readiness did not converge before the bounded monotonic deadline; " +
+            $"safe counts were {(snapshot is null ? "unavailable" : snapshot.ToSafeSummary())}.");
 }
 
 /// <summary>
@@ -17,28 +153,65 @@ public static class DatabaseBootstrapRecoveryContract
 
     public static void AssertPristine(PristineDatabaseSurfaceSnapshot surface)
     {
-        ArgumentNullException.ThrowIfNull(surface);
-        ArgumentNullException.ThrowIfNull(surface.CatalogSurface);
-        ArgumentNullException.ThrowIfNull(surface.DirectPermissions);
-        if (surface.UserTableCount != 0 ||
-            surface.UnexpectedObjectCount != 0 ||
-            surface.UnexpectedSchemaCount != 0 ||
-            surface.UnexpectedPrincipalCount != 0 ||
-            surface.RoleMembershipCount != 0 ||
-            surface.UnexpectedDirectPermissionCount != 0 ||
-            surface.UnsafeDatabaseOptionCount != 0 ||
-            surface.DatabaseOwnerMismatchCount != 0)
+        ValidatePristineSurface(surface);
+        if (!IsPristine(surface))
+            throw CreateNonPristineException(surface);
+    }
+
+    public static PristineDatabaseSurfaceReadiness ClassifyPristineReadiness(
+        PristineDatabaseSurfaceSnapshot surface)
+    {
+        ValidatePristineSurface(surface);
+        if (IsPristine(surface))
+            return PristineDatabaseSurfaceReadiness.Ready;
+
+        if (surface.UserTableCount == 0 &&
+            surface.UnexpectedObjectCount == 1 &&
+            surface.CatalogSurface.DatabaseAuditSpecificationMismatchCount == 1 &&
+            surface.UnexpectedSchemaCount == 0 &&
+            surface.UnexpectedPrincipalCount == 0 &&
+            surface.RoleMembershipCount == 0 &&
+            surface.UnexpectedDirectPermissionCount == 0 &&
+            surface.UnsafeDatabaseOptionCount == 0 &&
+            surface.DatabaseOwnerMismatchCount == 0)
         {
-            throw new InvalidOperationException(
-                "Clean bootstrap requires a pristine database surface before its durable initialization marker is written; " +
-                $"safe counts were tables={surface.UserTableCount}, objects={surface.UnexpectedObjectCount}, " +
-                $"catalog=[{surface.CatalogSurface.ToSafeSummary()}], " +
-                $"programmableObjectTypes=[{surface.CatalogSurface.ToSafeProgrammableObjectTypeSummary()}], " +
-                $"schemas={surface.UnexpectedSchemaCount}, principals={surface.UnexpectedPrincipalCount}, " +
-                $"roleMemberships={surface.RoleMembershipCount}, directPermissions={surface.UnexpectedDirectPermissionCount}, " +
-                $"directPermissionTelemetry=[{surface.DirectPermissions.ToSafeSummary()}], " +
-                $"options={surface.UnsafeDatabaseOptionCount}, ownerMismatch={surface.DatabaseOwnerMismatchCount}.");
+            return PristineDatabaseSurfaceReadiness.AuditSpecificationPending;
         }
+
+        throw CreateNonPristineException(surface);
+    }
+
+    public static AzureSqlAuditSpecificationReadiness ClassifyAuditSpecificationReadiness(
+        AzureSqlAuditSpecificationReadinessSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (snapshot.Counts.Any(count => count < 0))
+            throw CreateInvalidAuditSpecificationReadinessException(snapshot);
+
+        var ready = snapshot.TotalCount == 1 &&
+                    snapshot.ExpectedNameHashMatchCount == 1 &&
+                    snapshot.EnabledCount == 1 &&
+                    snapshot.DisabledCount == 0 &&
+                    snapshot.NullGuidCount == 0 &&
+                    snapshot.ZeroGuidCount == 0 &&
+                    snapshot.NonzeroGuidCount == 1 &&
+                    snapshot.DetailCount == 0;
+        if (ready)
+            return AzureSqlAuditSpecificationReadiness.Ready;
+
+        var noRowPending = snapshot.Counts.All(count => count == 0);
+        if (noRowPending)
+            return AzureSqlAuditSpecificationReadiness.Pending;
+
+        var exactRowPending = snapshot.TotalCount == 1 &&
+                              snapshot.ExpectedNameHashMatchCount == 1 &&
+                              snapshot.DetailCount == 0 &&
+                              (long)snapshot.EnabledCount + snapshot.DisabledCount == 1 &&
+                              (long)snapshot.NullGuidCount + snapshot.ZeroGuidCount + snapshot.NonzeroGuidCount == 1;
+        if (exactRowPending)
+            return AzureSqlAuditSpecificationReadiness.Pending;
+
+        throw CreateInvalidAuditSpecificationReadinessException(snapshot);
     }
 
     public static DatabaseInitializationRecoveryMode Classify(
@@ -80,6 +253,41 @@ public static class DatabaseBootstrapRecoveryContract
 
         return DatabaseInitializationRecoveryMode.ResumeAfterSchemaCompleted;
     }
+
+    private static void ValidatePristineSurface(PristineDatabaseSurfaceSnapshot surface)
+    {
+        ArgumentNullException.ThrowIfNull(surface);
+        ArgumentNullException.ThrowIfNull(surface.CatalogSurface);
+        ArgumentNullException.ThrowIfNull(surface.DirectPermissions);
+    }
+
+    private static bool IsPristine(PristineDatabaseSurfaceSnapshot surface) =>
+        surface.UserTableCount == 0 &&
+        surface.UnexpectedObjectCount == 0 &&
+        surface.UnexpectedSchemaCount == 0 &&
+        surface.UnexpectedPrincipalCount == 0 &&
+        surface.RoleMembershipCount == 0 &&
+        surface.UnexpectedDirectPermissionCount == 0 &&
+        surface.UnsafeDatabaseOptionCount == 0 &&
+        surface.DatabaseOwnerMismatchCount == 0;
+
+    private static InvalidOperationException CreateNonPristineException(
+        PristineDatabaseSurfaceSnapshot surface) =>
+        new(
+            "Clean bootstrap requires a pristine database surface before its durable initialization marker is written; " +
+            $"safe counts were tables={surface.UserTableCount}, objects={surface.UnexpectedObjectCount}, " +
+            $"catalog=[{surface.CatalogSurface.ToSafeSummary()}], " +
+            $"programmableObjectTypes=[{surface.CatalogSurface.ToSafeProgrammableObjectTypeSummary()}], " +
+            $"schemas={surface.UnexpectedSchemaCount}, principals={surface.UnexpectedPrincipalCount}, " +
+            $"roleMemberships={surface.RoleMembershipCount}, directPermissions={surface.UnexpectedDirectPermissionCount}, " +
+            $"directPermissionTelemetry=[{surface.DirectPermissions.ToSafeSummary()}], " +
+            $"options={surface.UnsafeDatabaseOptionCount}, ownerMismatch={surface.DatabaseOwnerMismatchCount}.");
+
+    private static InvalidOperationException CreateInvalidAuditSpecificationReadinessException(
+        AzureSqlAuditSpecificationReadinessSnapshot snapshot) =>
+        new(
+            "Azure SQL returned an audit-specification readiness state outside the exact bounded transition; " +
+            $"safe counts were {snapshot.ToSafeSummary()}.");
 }
 
 public sealed record DatabaseSurfaceCategoryCount(string Category, int Count);
@@ -90,6 +298,8 @@ public sealed record DatabaseSurfaceCategoryCount(string Category, int Count);
 /// </summary>
 public sealed class UnexpectedDatabaseSurfaceTelemetry
 {
+    private const int DatabaseAuditSpecificationCategoryIndex = 17;
+
     private static readonly string[] FixedCategoryNames =
     [
         "programmableObjects",
@@ -163,6 +373,9 @@ public sealed class UnexpectedDatabaseSurfaceTelemetry
     public IReadOnlyList<DatabaseSurfaceCategoryCount> ProgrammableObjectTypes { get; }
 
     public int TotalCount { get; }
+
+    public int DatabaseAuditSpecificationMismatchCount =>
+        Categories[DatabaseAuditSpecificationCategoryIndex].Count;
 
     public static UnexpectedDatabaseSurfaceTelemetry FromOrderedCounts(
         IReadOnlyList<int> categoryCounts,
@@ -577,6 +790,46 @@ public sealed record PristineDatabaseSurfaceSnapshot(
     public int UnexpectedObjectCount => CatalogSurface.TotalCount;
 
     public int UnexpectedDirectPermissionCount => DirectPermissions.UnexpectedCount;
+}
+
+public sealed record AzureSqlAuditSpecificationReadinessSnapshot(
+    int TotalCount,
+    int ExpectedNameHashMatchCount,
+    int EnabledCount,
+    int DisabledCount,
+    int NullGuidCount,
+    int ZeroGuidCount,
+    int NonzeroGuidCount,
+    int DetailCount)
+{
+    private static readonly string[] FixedSqlFieldNames =
+    [
+        "auditSpecificationsTotal",
+        "auditSpecificationsExpectedNameHashMatches",
+        "auditSpecificationsEnabled",
+        "auditSpecificationsDisabled",
+        "auditSpecificationsNullGuid",
+        "auditSpecificationsZeroGuid",
+        "auditSpecificationsNonzeroGuid",
+        "auditDetailsTotal"
+    ];
+
+    public static IReadOnlyList<string> SqlFieldNames => Array.AsReadOnly(FixedSqlFieldNames);
+
+    public IReadOnlyList<int> Counts =>
+    [
+        TotalCount,
+        ExpectedNameHashMatchCount,
+        EnabledCount,
+        DisabledCount,
+        NullGuidCount,
+        ZeroGuidCount,
+        NonzeroGuidCount,
+        DetailCount
+    ];
+
+    public string ToSafeSummary() =>
+        string.Join(',', FixedSqlFieldNames.Select((name, index) => $"{name}={Counts[index]}"));
 }
 
 public sealed record ExpectedDatabasePrincipal(

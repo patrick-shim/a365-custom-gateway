@@ -283,7 +283,7 @@ if (pristineDiagnosticOnly)
             await ReadSingleAuditSpecificationNameFingerprintAsync(connection);
         Console.WriteLine(
             $"Pristine Azure SQL audit-specification name fingerprint={auditSpecificationNameFingerprint}.");
-        var pristineSurface = await ReadPristineDatabaseSurfaceAsync(connection);
+        var pristineSurface = await ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync(connection);
         DatabaseBootstrapRecoveryContract.AssertPristine(pristineSurface);
         Console.WriteLine(
             "Pristine database diagnostic passed the exact count-only contract; no database mutation was attempted.");
@@ -691,7 +691,7 @@ static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedUn
     if (recoveryMode is DatabaseInitializationRecoveryMode.Fresh or
         DatabaseInitializationRecoveryMode.ResumeBeforeSchemaMutation)
     {
-        var pristineSurface = await ReadPristineDatabaseSurfaceAsync(connection);
+        var pristineSurface = await ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync(connection);
         DatabaseBootstrapRecoveryContract.AssertPristine(pristineSurface);
     }
 
@@ -1325,6 +1325,18 @@ static void AssertExactSqlFieldContract(
     }
 }
 
+static async Task<PristineDatabaseSurfaceSnapshot>
+    ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync(SqlConnection connection)
+{
+    var initialSurface = await ReadPristineDatabaseSurfaceAsync(connection);
+    var readiness = DatabaseBootstrapRecoveryContract.ClassifyPristineReadiness(initialSurface);
+    if (readiness == PristineDatabaseSurfaceReadiness.Ready)
+        return initialSurface;
+
+    await WaitForAzureSqlAuditSpecificationReadinessAsync(connection);
+    return await ReadPristineDatabaseSurfaceAsync(connection);
+}
+
 static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(
     SqlConnection connection)
 {
@@ -1448,6 +1460,63 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
         reader.GetInt32(optionStartOrdinal + 1));
     if (await reader.ReadAsync())
         throw new InvalidOperationException("Azure SQL returned duplicate pristine database-surface rows.");
+    return snapshot;
+}
+
+static Task WaitForAzureSqlAuditSpecificationReadinessAsync(
+    SqlConnection connection,
+    CancellationToken cancellationToken = default) =>
+    AzureSqlAuditSpecificationConvergence.WaitAsync(
+        token => ReadAzureSqlAuditSpecificationReadinessAsync(connection, token),
+        timeout: TimeSpan.FromMinutes(10),
+        retryDelay: TimeSpan.FromSeconds(5),
+        cancellationToken);
+
+static async Task<AzureSqlAuditSpecificationReadinessSnapshot>
+    ReadAzureSqlAuditSpecificationReadinessAsync(
+        SqlConnection connection,
+        CancellationToken cancellationToken)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = """
+        SELECT
+          COUNT(*) AS auditSpecificationsTotal,
+          COUNT(CASE WHEN
+              HASHBYTES(N'SHA2_256', CONVERT(varbinary(max), name)) =
+                  0xe0f4f7f5e21d49507cf14e0bf1bc6f6b43e7085aaf424fc68e81b33e4ff2ec26
+              THEN 1 END) AS auditSpecificationsExpectedNameHashMatches,
+          COUNT(CASE WHEN is_state_enabled = 1 THEN 1 END) AS auditSpecificationsEnabled,
+          COUNT(CASE WHEN is_state_enabled = 0 THEN 1 END) AS auditSpecificationsDisabled,
+          COUNT(CASE WHEN audit_guid IS NULL THEN 1 END) AS auditSpecificationsNullGuid,
+          COUNT(CASE WHEN
+              audit_guid = CAST(N'00000000-0000-0000-0000-000000000000' AS uniqueidentifier)
+              THEN 1 END) AS auditSpecificationsZeroGuid,
+          COUNT(CASE WHEN
+              audit_guid IS NOT NULL
+              AND audit_guid <> CAST(N'00000000-0000-0000-0000-000000000000' AS uniqueidentifier)
+              THEN 1 END) AS auditSpecificationsNonzeroGuid,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details) AS auditDetailsTotal
+        FROM sys.database_audit_specifications;
+        """;
+    await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+    AssertExactSqlFieldContract(
+        reader,
+        AzureSqlAuditSpecificationReadinessSnapshot.SqlFieldNames,
+        "Azure SQL audit-specification readiness");
+    if (!await reader.ReadAsync(cancellationToken))
+        throw new InvalidOperationException("Azure SQL returned no audit-specification readiness row.");
+    var snapshot = new AzureSqlAuditSpecificationReadinessSnapshot(
+        reader.GetInt32(0),
+        reader.GetInt32(1),
+        reader.GetInt32(2),
+        reader.GetInt32(3),
+        reader.GetInt32(4),
+        reader.GetInt32(5),
+        reader.GetInt32(6),
+        reader.GetInt32(7));
+    if (await reader.ReadAsync(cancellationToken))
+        throw new InvalidOperationException("Azure SQL returned duplicate audit-specification readiness rows.");
     return snapshot;
 }
 

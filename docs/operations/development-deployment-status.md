@@ -1275,6 +1275,140 @@ compile. Format/diff checks pass and independent security review found no concre
 blocker. This checkpoint made no Azure mutation. Run only a fresh `a365gw27` Plan;
 never Resume or second-start `a365gw26`.
 
+Generation `a365gw27` accepted Plan
+`sha256:536d1834d8867e8ce32a8c086cd733c4bac93192f36254d9343a5750543f000f`
+for `rg-a365-custom-gw-phase6z`, ownership
+`97b2fd4a-0e7d-47df-9b13-709af3df23eb`, configuration
+`sha256:4054c995987d174d9e84710200a2a1836d3df0ef8e0b794ec5c7dd60676d0a2e`,
+and clean-commit source
+`sha256:d3088387e6996901c522c241ecb2155a194e2ae6656784bb552e530dbf01f6c3`
+at `8a7b4d47090866c4505a36c32bfbc8084e1eb6d9`. What-If reported exactly
+eight Creates and zero Deletes, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Apply completed steps 1–10.
+Foundation, inert, SQL-private, and database-Job deployments succeeded under
+correlations `b80515c8-b1c7-460a-81b1-5a55f49ae6e6`,
+`b60e6133-d780-4afa-8856-75f89b5ec562`,
+`7321e1e4-73c4-4d9c-80fa-399bb9c73966`, and
+`2f23facc-d3d9-4c80-80c2-0ab2a0100344`.
+API, worker, Admin UI, and database-migrator images resolved respectively to
+`sha256:5ae0741acc6df6b49ba51d82ffbf1c7aa8944dd3c4eb2d01ffcb56ab84f5872d`,
+`sha256:73b78116cbbec7fd2298d148887498dda5fe8836751850687de963222ad80888`,
+`sha256:5b32302e5015c56065a054df5513f4dcfc27360bdc5cde6b208f0bff2f0786c7`,
+and `sha256:aae3f742e0cb29d548631a60c7ed92121bb1d40ed348e5523b8f737aa567eca6`.
+
+The original step-11 Job `job-a365gw27-db-init-dev`, principal
+`3c9f501b-fa91-480f-a690-8868cef4e4ed`, and intent
+`90df820b-807a-4cfe-aaa1-a154dd66eb33` started exactly once. Execution
+`job-a365gw27-db-init-dev-zkl60vp` and replica
+`job-a365gw27-db-init-dev-zkl60vp-khcnm` passed both DNS gates and opened SQL
+privately. The original 81-counter query referenced its CTE 81 times and hit SQL
+command timeout `-2` before returning. The execution is terminal `Failed` with no
+reported `endTime`; no initialization marker, EF table, or runtime principal was
+written. Administrator swap/start/restore correlations were
+`480edcd0-ff5c-46ca-a03f-fa69735c4134`,
+`c9e08e77-745c-4c31-b052-1030476075a5`, and
+`a5d12174-8cd5-4900-a6d9-2630c1b88fcf`.
+
+Five distinct retry-disabled diagnostic Jobs then each started exactly once. They
+used the same private-DNS, session-lock, temporary-administrator boundary and the
+CLI-only read-only diagnostic mode, which returns before database marker, schema,
+or runtime-principal mutation:
+
+| Job | Execution | Result | Exact safe finding |
+|---|---|---|---|
+| `job-a365gw27-db-diag-dev` | `job-a365gw27-db-diag-dev-j7xpziz` | `Failed`, expected | One audit specification, exact `dbo`-from-`dbo` database `CONNECT`, and one positive-ID Microsoft-shipped `sys` view with public `SELECT`. |
+| `job-a365gw27-db-diag2-dev` | `job-a365gw27-db-diag2-dev-gvnux1l` | `Failed`, expected | The target view is exactly `sys.database_firewall_rules`; the audit row is enabled, has a non-null GUID and zero detail rows, and its name matches neither server nor database. |
+| `job-a365gw27-db-diag3-dev` | `job-a365gw27-db-diag3-dev-0p4h1sb` | `Failed`, expected | The sole audit-specification name fingerprint is `sha256:e0f4f7f5e21d49507cf14e0bf1bc6f6b43e7085aaf424fc68e81b33e4ff2ec26`. |
+| `job-a365gw27-db-diag4-dev` | `job-a365gw27-db-diag4-dev-vkqz2us` | `Failed`, expected | The audit and `CONNECT` rows matched; the remaining firewall-view Grant failed because its grantor was not yet exact-bound. |
+| `job-a365gw27-db-diag5-dev` | `job-a365gw27-db-diag5-dev-vmd3wdp` | `Succeeded` | The firewall-view public `SELECT` grantor is exactly `sys`; the complete pristine count-only contract passed and no mutation was attempted. |
+
+The exact accepted inert profile is zero user tables; one enabled, non-zero-GUID,
+zero-detail audit specification with the fingerprint above; one database-class,
+database-address, ordinary `CONNECT` Grant to `dbo` from `dbo`; one object-level
+ordinary `SELECT` Grant to `public` on the Microsoft-shipped
+`sys.database_firewall_rules` view from `sys`; and zero other unexpected catalog,
+schema, principal, membership, permission, option, or owner-mismatch rows. Exact
+readback after every Job restored `admin@diax48836189.onmicrosoft.com`, object/SID
+`2db7287c-9462-404f-810e-17e57377618d`, tenant
+`ff8b1e46-ff0f-4bc2-ab02-caf2b92da496`; SQL remained `Ready`, public access
+`Disabled`, with zero firewall rules. No Admin UI identity/credential, runtime
+activation, registration, Registry action, Gateway key, canary, or Service Bus
+data-plane action followed.
+
+Preserve the immutable accepted snapshot, state, original receipt, five diagnostic
+receipts, six executions/replicas, and resources under
+`.bootstrap/accepted-source/97b2fd4a-0e7d-47df-9b13-709af3df23eb/536d1834d8867e8ce32a8c086cd733c4bac93192f36254d9343a5750543f000f`,
+`.bootstrap/state/6f6ae863-dcb7-456f-a7f0-d6f9887cfb76-rg-a365-custom-gw-phase6z-dev.json`,
+and `.bootstrap/evidence/rg-a365-custom-gw-phase6z/database/`. Never Resume
+`a365gw27` and never second-start any of its six Jobs. Its source generation is
+frozen. At that checkpoint, the next safe action was a fresh `a365gw28` Plan/Apply
+in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76` only. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
+
+Generation `a365gw28` subsequently accepted Plan
+`sha256:a951f66b47a9704c67963ed6fe7d5f9354fcb51a3809e9f2ed60565085bb2478`
+for `rg-a365-custom-gw-phase7a`, ownership
+`86c7bbc9-4f90-4219-94b0-fc3ad97836bf`, configuration
+`sha256:021b031d5545b7f752aeeddec00fb4069d5dd6b3c7cd27330b559092eb430677`,
+and source
+`sha256:af8f8bc0942a3609df55c6045ca435c4a895b689ecec81b80fdeb8073c4fba3e`
+at clean commit `355a0e9caa30fd32b06148d379cbbe03074a5b26`. What-If reported
+exactly eight Creates and zero Deletes in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`; Apply completed steps 1–10.
+API, worker, Admin UI, and database-migrator digests were respectively
+`sha256:5778fa9d65e65dcacdf741b7efe54b6cf671c3ba96384d1d355ff60789a948f4`,
+`sha256:2fce69bbc78458c090f6e0b8a54c0c65670027cac09c61bd0db44e81895d4269`,
+`sha256:fd40cdbf28a2613dceb00dbbd57093ce33c2465d15bb8ea11fb96ec0eebde592`,
+and `sha256:fd4183bfe75a2a3d480886b1cee9264db9a36e2288db1629c76cf9051228aa62`.
+
+The retry-disabled step-11 Job `job-a365gw28-db-init-dev`, principal
+`0e64dcd1-1dc3-40bc-941e-71999e56d799`, and intent
+`eaf99652-2353-4f43-8cce-6d75e01f70e4` started exactly once as
+`job-a365gw28-db-init-dev-x5wjbrl`. Its first pristine read returned the
+audit-specification mismatch category as one and failed closed before any marker,
+schema/table, or runtime-principal mutation. Readback restored the exact original
+administrator `admin@diax48836189.onmicrosoft.com`, object/SID
+`2db7287c-9462-404f-810e-17e57377618d`, tenant
+`ff8b1e46-ff0f-4bc2-ab02-caf2b92da496`, at
+`2026-08-30T18:01:38.5087180Z`; every later step stayed pending and the API/worker
+stayed inert.
+
+A distinct retry-disabled read-only diagnostic Job then started exactly once as
+`job-a365gw28-db-diag-dev-u7mt9mi` and reached `Succeeded` at 18:06 UTC. It made no
+database mutation, restored the original administrator, and reproduced the exact
+`a365gw27` profile: the enabled, non-null-GUID, zero-detail audit specification with
+fingerprint
+`sha256:e0f4f7f5e21d49507cf14e0bf1bc6f6b43e7085aaf424fc68e81b33e4ff2ec26`,
+the `dbo`-from-`dbo` database `CONNECT`, and the `sys`-granted public `SELECT` on
+`sys.database_firewall_rules`. The original mismatch was therefore transient
+audit-specification readiness in this run, not proof of a different fingerprint.
+Two observed deployments do not establish a documented universal Azure SQL name,
+and bootstrap does not independently read back a server/database audit policy; it
+currently verifies the `SQLSecurityAuditEvents` diagnostic setting.
+
+Preserve both `a365gw28` Jobs. Never Resume `a365gw28` or second-start either Job.
+Corrected local source now performs dedicated fail-closed audit readiness
+convergence under the existing SQL initialization lock. Only the sole audit-
+specification mismatch category may wait; every mixed or other surface fails
+immediately. The wait reads the compact exact tuple for total rows, expected-name
+hash match, enabled/disabled state, null/zero/non-zero GUID, and detail count. Its
+monotonic ten-minute wall-clock deadline includes reads and delays and propagates
+caller cancellation. A complete pristine-surface reread and `AssertPristine`
+immediately precede marker/schema mutation.
+
+Independent review found no blocker. Frozen-source local gates pass focused C#
+**148/148**, focused `SqlNetwork.Tests.ps1` **14/14**, database-migrator Release
+and full solution Release with zero warnings/errors, and full .NET
+**1,482/1,482** with zero failed or skipped
+(608 + 155 + 118 + 149 + 92 + 106 + 121 + 133). The full canonical Bootstrap
+Pester gate completed in **192.48s**: **466** total/discovered, **465** passed,
+zero failed, **1** skipped, and zero inconclusive/not-run. The correction is locally
+proven but not live-proven.
+The next live action is a fresh `a365gw29` Plan/Apply only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. No action in protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` is authorized.
+
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
@@ -2405,8 +2539,13 @@ separate authorization entry here.
    policy and do not infer response-side inline enforcement from that result.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
-6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw27` / `rg-a365-custom-gw-phase6z`. Preserve `a365gw11`,
+6. Continue the disposable clean-development-subscription proof with the implemented
+   bounded read-only convergence source. Its focused/full .NET, Release, and
+   canonical Bootstrap Pester gates pass; Pester completed in **192.48s** with
+   **466** total/discovered, **465** passed, zero failed, **1** skipped, and zero
+   inconclusive/not-run. The next live action
+   is a fresh isolated `a365gw29` Plan/Apply only in target subscription
+   `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
    preserve `a365gw14`, `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with
    steps 1–10 complete and step 11 `Failed` before database migration. Their succeeded
@@ -2438,7 +2577,18 @@ separate authorization entry here.
    privately, no marker/schema/runtime-principal mutation, exact original-
    administrator restoration, SQL `Ready`, public access `Disabled`, zero firewall
    rules, and every later step pending with the API/worker inert. Never Resume or
-   second-start it. None may
+   second-start it. Preserve `a365gw27` with steps 1–10 complete, its original
+   step-11 Job terminal `Failed` after one timed-out query, and five separate
+   diagnostic Jobs each started exactly once. Diagnostic 5 reached `Succeeded` on
+   the exact read-only inert profile; the original administrator was restored after
+   every Job and no marker/table/runtime-principal or later bootstrap mutation
+   occurred. Never Resume `a365gw27` or second-start any of its six Jobs. Preserve
+   `a365gw28` with steps 1–10 complete, the original step-11 execution terminal
+   `Failed` on the transient audit-specification mismatch, and the separate
+   read-only diagnostic execution terminal `Succeeded` after reproducing the exact
+   `a365gw27` profile. Both restored the exact original administrator and made no
+   database mutation; later steps remain pending and the API/worker remain inert.
+   Never Resume `a365gw28` or second-start either Job. None may
    consume edited source. Capture the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, private database-Job execution and original SQL

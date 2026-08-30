@@ -352,7 +352,10 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             .Count.Should().Be(1);
         Regex.Matches(diagnosticBody, "ReadSingleAuditSpecificationNameFingerprintAsync", RegexOptions.CultureInvariant)
             .Count.Should().Be(1);
-        Regex.Matches(diagnosticBody, "ReadPristineDatabaseSurfaceAsync", RegexOptions.CultureInvariant)
+        Regex.Matches(
+                diagnosticBody,
+                "ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync",
+                RegexOptions.CultureInvariant)
             .Count.Should().Be(1);
         Regex.Matches(diagnosticBody, "DatabaseBootstrapRecoveryContract.AssertPristine", RegexOptions.CultureInvariant)
             .Count.Should().Be(1);
@@ -369,6 +372,103 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
         source.Should().Contain("AS dboConnectExact");
         source.Should().Contain("HASHBYTES(N'SHA2_256', CONVERT(varbinary(max), name))");
         source.Should().Contain("^sha256:[0-9a-f]{64}$");
+    }
+
+    [Fact]
+    public void AuditSpecificationConvergence_IsBoundedAndRevalidatesTheFullSurfaceBeforeMutation()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "tools",
+            "Gateway.DatabaseMigrator",
+            "Program.cs"));
+        var contract = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "tools",
+            "Gateway.DatabaseMigrator",
+            "DatabaseBootstrapRecoveryContract.cs"));
+        var convergenceBody = Regex.Match(
+            source,
+            @"static async Task<PristineDatabaseSurfaceSnapshot>\s+ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync\([\s\S]*?(?=\nstatic async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync)",
+            RegexOptions.CultureInvariant).Value;
+        var waitBody = Regex.Match(
+            source,
+            @"static Task WaitForAzureSqlAuditSpecificationReadinessAsync\([\s\S]*?(?=\nstatic async Task<AzureSqlAuditSpecificationReadinessSnapshot>)",
+            RegexOptions.CultureInvariant).Value;
+        var readinessReadBody = Regex.Match(
+            source,
+            @"static async Task<AzureSqlAuditSpecificationReadinessSnapshot>\s+ReadAzureSqlAuditSpecificationReadinessAsync\([\s\S]*?(?=\nstatic async Task<AzureSqlPristinePlatformDiagnostic>)",
+            RegexOptions.CultureInvariant).Value;
+        var initializationBody = Regex.Match(
+            source,
+            @"static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedUnderLockAsync\([\s\S]*?(?=\nstatic DatabaseInitializationIntent)",
+            RegexOptions.CultureInvariant).Value;
+
+        convergenceBody.Should().NotBeEmpty();
+        waitBody.Should().NotBeEmpty();
+        readinessReadBody.Should().NotBeEmpty();
+        initializationBody.Should().NotBeEmpty();
+
+        var fullSurfaceReads = Regex.Matches(
+            convergenceBody,
+            "ReadPristineDatabaseSurfaceAsync",
+            RegexOptions.CultureInvariant);
+        fullSurfaceReads.Count.Should().Be(2);
+        var classifyPosition = convergenceBody.IndexOf(
+            "DatabaseBootstrapRecoveryContract.ClassifyPristineReadiness(initialSurface)",
+            StringComparison.Ordinal);
+        var waitPosition = convergenceBody.IndexOf(
+            "WaitForAzureSqlAuditSpecificationReadinessAsync(connection)",
+            StringComparison.Ordinal);
+        classifyPosition.Should().BeGreaterThan(fullSurfaceReads[0].Index);
+        waitPosition.Should().BeGreaterThan(classifyPosition);
+        fullSurfaceReads[1].Index.Should().BeGreaterThan(waitPosition);
+
+        waitBody.Should().Contain("AzureSqlAuditSpecificationConvergence.WaitAsync");
+        waitBody.Should().Contain("token => ReadAzureSqlAuditSpecificationReadinessAsync(connection, token)");
+        waitBody.Should().Contain("TimeSpan.FromMinutes(10)");
+        waitBody.Should().Contain("TimeSpan.FromSeconds(5)");
+        waitBody.Should().Contain("cancellationToken");
+
+        contract.Should().Contain("Stopwatch.GetTimestamp()");
+        contract.Should().Contain("Stopwatch.GetElapsedTime(startedAt)");
+        contract.Should().Contain("for (var attempt = 1; attempt <= maximumAttempts; attempt++)");
+        contract.Should().Contain("CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)");
+        Regex.Matches(contract, "CancelAfter\\(remaining\\)", RegexOptions.CultureInvariant)
+            .Count.Should().Be(2);
+        contract.Should().Contain("Task.Delay(delay, token)");
+        contract.Should().Contain("cancellationToken.ThrowIfCancellationRequested()");
+        contract.Should().Contain("did not converge before the bounded monotonic deadline");
+
+        readinessReadBody.Should().Contain("ExecuteReaderAsync(cancellationToken)");
+        Regex.Matches(
+                readinessReadBody,
+                "ReadAsync\\(cancellationToken\\)",
+                RegexOptions.CultureInvariant)
+            .Count.Should().Be(2);
+
+        var convergedReadPosition = initializationBody.IndexOf(
+            "ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync(connection)",
+            StringComparison.Ordinal);
+        var pristineAssertionPosition = initializationBody.IndexOf(
+            "DatabaseBootstrapRecoveryContract.AssertPristine(pristineSurface)",
+            StringComparison.Ordinal);
+        var markerPosition = initializationBody.IndexOf(
+            "WriteDatabaseInitializationMarkerAsync(connection, expectedMarker)",
+            StringComparison.Ordinal);
+        var schemaPosition = initializationBody.IndexOf(
+            "context.Database.EnsureCreatedAsync()",
+            StringComparison.Ordinal);
+        convergedReadPosition.Should().BeGreaterThanOrEqualTo(0);
+        pristineAssertionPosition.Should().BeGreaterThan(convergedReadPosition);
+        markerPosition.Should().BeGreaterThan(pristineAssertionPosition);
+        schemaPosition.Should().BeGreaterThan(markerPosition);
+        Regex.Matches(
+                source,
+                "ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync\\(connection\\)",
+                RegexOptions.CultureInvariant)
+            .Count.Should().Be(2);
     }
 
     [Fact]

@@ -149,12 +149,13 @@ return [ordered]@{
     It 'proves the full pristine surface before writing the initialization marker' {
         $source = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/Program.cs') -Raw
         $contract = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/DatabaseBootstrapRecoveryContract.cs') -Raw
-        $pristinePosition = $source.IndexOf('ReadPristineDatabaseSurfaceAsync(connection)', [StringComparison]::Ordinal)
-        $writePosition = $source.IndexOf('WriteDatabaseInitializationMarkerAsync(connection, expectedMarker)', [StringComparison]::Ordinal)
+        $initializationStart = $source.IndexOf('static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedUnderLockAsync(', [StringComparison]::Ordinal)
+        $pristinePosition = $source.IndexOf('ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync(connection)', $initializationStart, [StringComparison]::Ordinal)
+        $writePosition = $source.IndexOf('WriteDatabaseInitializationMarkerAsync(connection, expectedMarker)', $initializationStart, [StringComparison]::Ordinal)
         $cteMethodStart = $source.IndexOf('static string GetDatabasePermissionTelemetryCteSql()', [StringComparison]::Ordinal)
         $projectionMethodStart = $source.IndexOf('static string GetDatabasePermissionTelemetryProjectionSql()', $cteMethodStart, [StringComparison]::Ordinal)
         $pristineMethodStart = $source.IndexOf('static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(', [StringComparison]::Ordinal)
-        $pristineMethodEnd = $source.IndexOf('static async Task<AzureSqlPristinePlatformDiagnostic> ReadAzureSqlPristinePlatformDiagnosticAsync(', $pristineMethodStart, [StringComparison]::Ordinal)
+        $pristineMethodEnd = $source.IndexOf('static Task WaitForAzureSqlAuditSpecificationReadinessAsync(', $pristineMethodStart, [StringComparison]::Ordinal)
         $authorityMethodStart = $source.IndexOf('static async Task AssertExpectedDatabaseAuthorityAsync(', [StringComparison]::Ordinal)
         $authorityMethodEnd = $source.IndexOf('static async Task<string> ReadDatabaseCollationAsync(', $authorityMethodStart, [StringComparison]::Ordinal)
         $cteSource = $source.Substring($cteMethodStart, $projectionMethodStart - $cteMethodStart)
@@ -213,12 +214,85 @@ return [ordered]@{
         $source | Should -Match 'DatabaseOwnerSidSha256'
     }
 
+    It 'bounds the exact count-only Azure SQL audit-specification readiness transition' {
+        $source = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/Program.cs') -Raw
+        $contract = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/DatabaseBootstrapRecoveryContract.cs') -Raw
+        $convergenceStart = $source.IndexOf('ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync', [StringComparison]::Ordinal)
+        $fullReadStart = $source.IndexOf('static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(', $convergenceStart, [StringComparison]::Ordinal)
+        $waitStart = $source.IndexOf('static Task WaitForAzureSqlAuditSpecificationReadinessAsync(', $fullReadStart, [StringComparison]::Ordinal)
+        $readinessReadStart = $source.IndexOf('static async Task<AzureSqlAuditSpecificationReadinessSnapshot>', $waitStart, [StringComparison]::Ordinal)
+        $platformDiagnosticStart = $source.IndexOf('static async Task<AzureSqlPristinePlatformDiagnostic>', $readinessReadStart, [StringComparison]::Ordinal)
+
+        $convergenceStart | Should -BeGreaterOrEqual 0
+        $fullReadStart | Should -BeGreaterThan $convergenceStart
+        $waitStart | Should -BeGreaterThan $fullReadStart
+        $readinessReadStart | Should -BeGreaterThan $waitStart
+        $platformDiagnosticStart | Should -BeGreaterThan $readinessReadStart
+
+        $readinessReadSource = $source.Substring(
+            $readinessReadStart,
+            $platformDiagnosticStart - $readinessReadStart)
+        $expectedAliases = @(
+            'auditSpecificationsTotal',
+            'auditSpecificationsExpectedNameHashMatches',
+            'auditSpecificationsEnabled',
+            'auditSpecificationsDisabled',
+            'auditSpecificationsNullGuid',
+            'auditSpecificationsZeroGuid',
+            'auditSpecificationsNonzeroGuid',
+            'auditDetailsTotal'
+        )
+        $actualAliases = @([regex]::Matches(
+                $readinessReadSource,
+                '(?m)\) AS ([A-Za-z][A-Za-z0-9]+),?\s*$') |
+            ForEach-Object { $_.Groups[1].Value })
+        ($actualAliases -join ',') | Should -Be ($expectedAliases -join ',')
+        $readinessReadSource | Should -Match 'COUNT\(\*\) AS auditSpecificationsTotal'
+        ([regex]::Matches($readinessReadSource, 'COUNT\(CASE WHEN')).Count | Should -Be 6
+        $readinessReadSource | Should -Match '\(SELECT COUNT\(\*\) FROM sys\.database_audit_specification_details\) AS auditDetailsTotal'
+        $readinessReadSource | Should -Not -Match '(?im)^\s*SELECT\s+(?:name|audit_guid|is_state_enabled)\b'
+        $readinessReadSource | Should -Not -Match 'Console\.Write'
+        ([regex]::Matches(
+                $source,
+                '0xe0f4f7f5e21d49507cf14e0bf1bc6f6b43e7085aaf424fc68e81b33e4ff2ec26')).Count | Should -Be 2
+
+        $contract | Should -Match '(?s)TotalCount == 1.*?ExpectedNameHashMatchCount == 1.*?EnabledCount == 1.*?DisabledCount == 0.*?NullGuidCount == 0.*?ZeroGuidCount == 0.*?NonzeroGuidCount == 1.*?DetailCount == 0'
+        $contract | Should -Match 'snapshot\.Counts\.All\(count => count == 0\)'
+        $contract | Should -Match '(?s)exactRowPending.*?TotalCount == 1.*?ExpectedNameHashMatchCount == 1.*?DetailCount == 0.*?EnabledCount \+ snapshot\.DisabledCount == 1.*?NullGuidCount \+ snapshot\.ZeroGuidCount \+ snapshot\.NonzeroGuidCount == 1'
+        $source | Should -Match 'AzureSqlAuditSpecificationConvergence\.WaitAsync'
+        $source | Should -Match 'token => ReadAzureSqlAuditSpecificationReadinessAsync\(connection, token\)'
+        $source | Should -Match 'TimeSpan\.FromMinutes\(10\)'
+        $source | Should -Match 'TimeSpan\.FromSeconds\(5\)'
+        $readinessReadSource | Should -Match 'ExecuteReaderAsync\(cancellationToken\)'
+        ([regex]::Matches($readinessReadSource, 'ReadAsync\(cancellationToken\)')).Count | Should -Be 2
+        $contract | Should -Match 'Stopwatch\.GetTimestamp\(\)'
+        $contract | Should -Match 'Stopwatch\.GetElapsedTime\(startedAt\)'
+        $contract | Should -Match 'for \(var attempt = 1; attempt <= maximumAttempts; attempt\+\+\)'
+        ([regex]::Matches($contract, 'CancelAfter\(remaining\)')).Count | Should -Be 2
+        $contract | Should -Match 'Task\.Delay\(delay, token\)'
+        $contract | Should -Match 'cancellationToken\.ThrowIfCancellationRequested\(\)'
+        $contract | Should -Match 'did not converge before the bounded monotonic deadline'
+
+        $initializationStart = $source.IndexOf('static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedUnderLockAsync(', [StringComparison]::Ordinal)
+        $initializationEnd = $source.IndexOf('static DatabaseInitializationIntent CreateDatabaseInitializationIntent(', $initializationStart, [StringComparison]::Ordinal)
+        $initializationSource = $source.Substring($initializationStart, $initializationEnd - $initializationStart)
+        $convergedReadPosition = $initializationSource.IndexOf('ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync(connection)', [StringComparison]::Ordinal)
+        $assertPosition = $initializationSource.IndexOf('DatabaseBootstrapRecoveryContract.AssertPristine(pristineSurface)', [StringComparison]::Ordinal)
+        $markerPosition = $initializationSource.IndexOf('WriteDatabaseInitializationMarkerAsync(connection, expectedMarker)', [StringComparison]::Ordinal)
+        $schemaPosition = $initializationSource.IndexOf('context.Database.EnsureCreatedAsync()', [StringComparison]::Ordinal)
+        $convergedReadPosition | Should -BeGreaterOrEqual 0
+        $assertPosition | Should -BeGreaterThan $convergedReadPosition
+        $markerPosition | Should -BeGreaterThan $assertPosition
+        $schemaPosition | Should -BeGreaterThan $markerPosition
+        ([regex]::Matches($source, 'ReadPristineDatabaseSurfaceAfterAuditConvergenceAsync\(connection\)')).Count | Should -Be 2
+    }
+
     It 'uses one fixed count-only database permission diagnostic in pristine and post-schema checks' {
         $source = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/Program.cs') -Raw
         $contract = Get-Content -LiteralPath (Join-Path $script:RepositoryRoot 'tools/Gateway.DatabaseMigrator/DatabaseBootstrapRecoveryContract.cs') -Raw
 
         $contract | Should -Match 'SumChecked\(categoryCounts\)'
-        $contract | Should -Match 'surface\.UnexpectedObjectCount\s*!=\s*0'
+        $contract | Should -Match 'surface\.UnexpectedObjectCount\s*==\s*0'
         $contract | Should -Match 'catalog=\[\{surface\.CatalogSurface\.ToSafeSummary\(\)\}\]'
         $source | Should -Match 'reader\.GetName\(index\)\.Equals\(expectedFieldNames\[index\], StringComparison\.Ordinal\)'
 
@@ -402,7 +476,7 @@ return [ordered]@{
         $contract | Should -Match '(?s)positiveIdPublicSelectMsShippedSystemCatalogTargetCount\s*\+\s*positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount\s*\+\s*positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount\).*?positiveIdPublicSelectTargetCount'
 
         $pristineStart = $source.IndexOf('static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(', [StringComparison]::Ordinal)
-        $pristineEnd = $source.IndexOf('static async Task<AzureSqlPristinePlatformDiagnostic> ReadAzureSqlPristinePlatformDiagnosticAsync(', $pristineStart, [StringComparison]::Ordinal)
+        $pristineEnd = $source.IndexOf('static Task WaitForAzureSqlAuditSpecificationReadinessAsync(', $pristineStart, [StringComparison]::Ordinal)
         $pristineStart | Should -BeGreaterOrEqual 0
         $pristineEnd | Should -BeGreaterThan $pristineStart
         $pristineSource = $source.Substring($pristineStart, $pristineEnd - $pristineStart)
