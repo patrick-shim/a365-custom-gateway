@@ -36,6 +36,40 @@ printf '%s\n' "$@" > "$GATEWAY_TEST_MARKER"
         }
     }
 
+    It 'routes the public database recovery command and explicit authorization to PowerShell' {
+        $pwshStub = Join-Path $TestDrive 'pwsh'
+        $marker = Join-Path $TestDrive 'recovery-pwsh-arguments.txt'
+        @'
+#!/bin/sh
+printf '%s\n' "$@" > "$GATEWAY_TEST_MARKER"
+'@ | Set-Content -LiteralPath $pwshStub -Encoding utf8NoBOM
+        & chmod 700 $pwshStub
+        $LASTEXITCODE | Should -Be 0
+
+        $originalPath = $env:PATH
+        $originalMarker = $env:GATEWAY_TEST_MARKER
+        try {
+            $env:PATH = "$TestDrive$([IO.Path]::PathSeparator)$originalPath"
+            $env:GATEWAY_TEST_MARKER = $marker
+            $launcher = Join-Path $repositoryRoot 'gateway'
+            $configPath = 'bootstrap/config.json'
+
+            & bash $launcher recover-database --config $configPath --yes
+
+            $LASTEXITCODE | Should -Be 0
+            $arguments = @(Get-Content -LiteralPath $marker)
+            $arguments | Should -Contain '-Mode'
+            $arguments | Should -Contain 'RecoverDatabase'
+            $arguments | Should -Contain '-Config'
+            $arguments | Should -Contain $configPath
+            $arguments | Should -Contain '-Yes'
+        }
+        finally {
+            $env:PATH = $originalPath
+            $env:GATEWAY_TEST_MARKER = $originalMarker
+        }
+    }
+
     It 'rejects an unknown command before invoking PowerShell' {
         $pwshStub = Join-Path $TestDrive 'pwsh'
         $marker = Join-Path $TestDrive 'pwsh-was-invoked.txt'
@@ -201,6 +235,7 @@ Describe 'Cross-platform guided setup prerequisite contract' {
         $launcher | Should -Match 'Setup requires PowerShell 7'
         $launcher | Should -Match 'Setup requires the \.NET 10 SDK'
         $launcher | Should -Match 'Setup requires Azure CLI'
+        $launcher | Should -Match 'if /I "%COMMAND%"=="recover-database" set "GATEWAY_MODE=RecoverDatabase"'
     }
 }
 

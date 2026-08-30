@@ -19,6 +19,8 @@ Commands:
   plan        Compile bootstrap Bicep, show operations, and run Azure What-If
   apply       Apply an accepted, current plan
   resume      Resume an interrupted accepted plan
+  recover-database
+              Run the reviewed, one-time recovery for an eligible failed database bootstrap
   status      Show checkpoint and truthful readiness status without Azure calls
   verify      Rerun the read-only deployment verification gate
   open        Open the recorded verified Admin UI HTTPS endpoint
@@ -28,7 +30,7 @@ Common options:
   --config PATH          Use a specific non-secret configuration file
   --json                 Emit structured JSON results/events
   --non-interactive      Refuse interactive authentication or prompts
-  --yes                  Explicitly accept the exact plan for automated plan/up/resume
+  --yes                  Explicitly accept the exact plan for automated plan/up/resume/recovery
   --expected-plan-fingerprint SHA256
                         Require the fresh plan to match an external approval
   --event-stream-only    With --json, emit bounded typed progress events only
@@ -95,6 +97,7 @@ case "$command_name" in
   plan) mode='Plan' ;;
   apply) mode='Apply' ;;
   resume) mode='Resume' ;;
+  recover-database) mode='RecoverDatabase' ;;
   status) mode='Status' ;;
   verify) mode='Verify' ;;
   open) mode='Open' ;;

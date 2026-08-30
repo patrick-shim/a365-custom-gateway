@@ -13,6 +13,7 @@ if /I "%COMMAND%"=="doctor" set "GATEWAY_MODE=Doctor"
 if /I "%COMMAND%"=="plan" set "GATEWAY_MODE=Plan"
 if /I "%COMMAND%"=="apply" set "GATEWAY_MODE=Apply"
 if /I "%COMMAND%"=="resume" set "GATEWAY_MODE=Resume"
+if /I "%COMMAND%"=="recover-database" set "GATEWAY_MODE=RecoverDatabase"
 if /I "%COMMAND%"=="status" set "GATEWAY_MODE=Status"
 if /I "%COMMAND%"=="verify" set "GATEWAY_MODE=Verify"
 if /I "%COMMAND%"=="open" set "GATEWAY_MODE=Open"
@@ -284,6 +285,8 @@ echo   doctor      Check tools, configuration, and Azure sign-in readiness
 echo   plan        Compile Bicep, show operations, and run Azure What-If
 echo   apply       Apply an accepted current plan
 echo   resume      Resume an interrupted accepted plan
+echo   recover-database
+echo               Run the reviewed one-time recovery for an eligible failed database bootstrap
 echo   status      Show checkpoint and truthful readiness status
 echo   verify      Rerun read-only deployment verification
 echo   open        Open the recorded verified Admin UI
@@ -292,7 +295,7 @@ echo.
 echo Options:
 echo   --config PATH
 echo   --json  --non-interactive  --yes  --force  --open  --no-install
-echo   --yes explicitly accepts the exact plan for automated plan/up/resume
+echo   --yes explicitly accepts the exact plan for automated plan/up/resume/recovery
 echo   --expected-plan-fingerprint SHA256  --event-stream-only
 echo   --diagnostic-path PATH
 echo.
