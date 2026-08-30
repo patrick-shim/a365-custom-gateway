@@ -154,7 +154,7 @@ return [ordered]@{
         $cteMethodStart = $source.IndexOf('static string GetDatabasePermissionTelemetryCteSql()', [StringComparison]::Ordinal)
         $projectionMethodStart = $source.IndexOf('static string GetDatabasePermissionTelemetryProjectionSql()', $cteMethodStart, [StringComparison]::Ordinal)
         $pristineMethodStart = $source.IndexOf('static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(', [StringComparison]::Ordinal)
-        $pristineMethodEnd = $source.IndexOf('static async Task AcquireDatabaseInitializationLockAsync(', $pristineMethodStart, [StringComparison]::Ordinal)
+        $pristineMethodEnd = $source.IndexOf('static async Task<AzureSqlPristinePlatformDiagnostic> ReadAzureSqlPristinePlatformDiagnosticAsync(', $pristineMethodStart, [StringComparison]::Ordinal)
         $authorityMethodStart = $source.IndexOf('static async Task AssertExpectedDatabaseAuthorityAsync(', [StringComparison]::Ordinal)
         $authorityMethodEnd = $source.IndexOf('static async Task<string> ReadDatabaseCollationAsync(', $authorityMethodStart, [StringComparison]::Ordinal)
         $cteSource = $source.Substring($cteMethodStart, $projectionMethodStart - $cteMethodStart)
@@ -183,12 +183,16 @@ return [ordered]@{
         $source | Should -Match 'FROM sys\.database_role_members'
         $negativeSystemSelectAllowance = "permissions\.class\s*=\s*1\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'SELECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'public'\s+AND\s+permissions\.major_id\s*<\s*0"
         ([regex]::Matches($cteSource, $negativeSystemSelectAllowance)).Count | Should -Be 1
-        $positiveSystemSelectAllowance = "(?s)permissions\.class\s*=\s*1\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'SELECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'public'\s+AND\s+permissions\.major_id\s*>\s*0\s+AND\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+sys\.all_objects\s+AS\s+allowed_shipped_objects\s+WHERE\s+allowed_shipped_objects\.object_id\s*=\s*permissions\.major_id\s+AND\s+allowed_shipped_objects\.is_ms_shipped\s*=\s*1\s*\)"
+        $positiveSystemSelectAllowance = "(?s)permissions\.class\s*=\s*1\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'SELECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'public'\s+AND\s+permissions\.major_id\s*=\s*OBJECT_ID\(N'sys\.database_firewall_rules'\)\s+AND\s+permissions\.grantor_principal_id\s*=\s*DATABASE_PRINCIPAL_ID\(N'dbo'\)\s+AND\s+EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+sys\.all_objects\s+AS\s+allowed_shipped_objects\s+WHERE\s+allowed_shipped_objects\.object_id\s*=\s*permissions\.major_id\s+AND\s+allowed_shipped_objects\.is_ms_shipped\s*=\s*1\s+AND\s+allowed_shipped_objects\.schema_id\s*=\s*SCHEMA_ID\(N'sys'\)\s+AND\s+allowed_shipped_objects\.type\s*=\s*N'V'\s*\)"
         ([regex]::Matches($cteSource, $positiveSystemSelectAllowance)).Count | Should -Be 1
-        $contract | Should -Match 'ExpectedPositiveIdPublicSelectTargetCount\s*=\s*2'
-        $contract | Should -Match 'ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount\s*=\s*2'
-        $contract | Should -Match 'ExpectedPositiveIdPublicSelectMsShippedSystemCatalogTargetCount\s*=\s*2'
-        $contract | Should -Match '(?s)var baselineMismatch\s*=.*?positiveIdPublicSelectTargetCount\s*==\s*ExpectedPositiveIdPublicSelectTargetCount.*?positiveIdPublicSelectMsShippedObjectTargetCount\s*==\s*ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount.*?positiveIdPublicSelectMsShippedSystemCatalogTargetCount\s*==\s*ExpectedPositiveIdPublicSelectMsShippedSystemCatalogTargetCount.*?positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount\s*==\s*0.*?positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount\s*==\s*0'
+        $dboConnectAllowance = "(?s)permissions\.class\s*=\s*0\s+AND\s+permissions\.major_id\s*=\s*0\s+AND\s+permissions\.minor_id\s*=\s*0\s+AND\s+permissions\.permission_name\s*=\s*N'CONNECT'\s+AND\s+permissions\.state\s*=\s*N'G'\s+AND\s+grantees\.name\s*=\s*N'dbo'\s+AND\s+permissions\.grantor_principal_id\s*=\s*DATABASE_PRINCIPAL_ID\(N'dbo'\)"
+        ([regex]::Matches($cteSource, $dboConnectAllowance)).Count | Should -Be 1
+        $contract | Should -Match 'ExpectedPositiveIdPublicSelectTargetCount\s*=\s*1'
+        $contract | Should -Match 'ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount\s*=\s*1'
+        $contract | Should -Match 'ExpectedPositiveIdPublicSelectMsShippedSystemCatalogTargetCount\s*=\s*0'
+        $contract | Should -Match 'ExpectedPositiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount\s*=\s*1'
+        $contract | Should -Match '(?s)var baselineMismatch\s*=.*?positiveIdPublicSelectTargetCount\s*==\s*ExpectedPositiveIdPublicSelectTargetCount.*?positiveIdPublicSelectMsShippedObjectTargetCount\s*==\s*ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount.*?positiveIdPublicSelectMsShippedSystemCatalogTargetCount\s*==\s*ExpectedPositiveIdPublicSelectMsShippedSystemCatalogTargetCount.*?positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount\s*==\s*ExpectedPositiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount.*?positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount\s*==\s*0'
+        $source | Should -Match "(?s)HASHBYTES\(N'SHA2_256', CONVERT\(varbinary\(max\), name\)\)\s*=\s*0xe0f4f7f5e21d49507cf14e0bf1bc6f6b43e7085aaf424fc68e81b33e4ff2ec26.*?is_state_enabled = 1.*?audit_guid IS NOT NULL.*?audit_guid <> CAST\(N'00000000-0000-0000-0000-000000000000' AS uniqueidentifier\).*?NOT EXISTS \(SELECT 1 FROM sys\.database_audit_specification_details\)"
         $pristineSource | Should -Match 'DatabaseDirectPermissionTelemetry\.FromOrderedCounts\(permissionCounts\)'
         $postSchemaPermissionSource | Should -Match 'DatabaseDirectPermissionTelemetry\.FromOrderedCounts\(permissionCounts\)'
         ([regex]::Matches($pristineSource, 'GetDatabasePermissionTelemetryCteSql\(\)')).Count | Should -Be 1
@@ -398,7 +402,7 @@ return [ordered]@{
         $contract | Should -Match '(?s)positiveIdPublicSelectMsShippedSystemCatalogTargetCount\s*\+\s*positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount\s*\+\s*positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount\).*?positiveIdPublicSelectTargetCount'
 
         $pristineStart = $source.IndexOf('static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAsync(', [StringComparison]::Ordinal)
-        $pristineEnd = $source.IndexOf('static async Task AcquireDatabaseInitializationLockAsync(', $pristineStart, [StringComparison]::Ordinal)
+        $pristineEnd = $source.IndexOf('static async Task<AzureSqlPristinePlatformDiagnostic> ReadAzureSqlPristinePlatformDiagnosticAsync(', $pristineStart, [StringComparison]::Ordinal)
         $pristineStart | Should -BeGreaterOrEqual 0
         $pristineEnd | Should -BeGreaterThan $pristineStart
         $pristineSource = $source.Substring($pristineStart, $pristineEnd - $pristineStart)

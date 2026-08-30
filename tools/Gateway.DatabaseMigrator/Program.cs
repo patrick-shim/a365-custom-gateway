@@ -846,7 +846,24 @@ static string GetUnexpectedDatabaseSurfaceProjectionSql() =>
       (SELECT COUNT(*) FROM sys.fulltext_catalogs) AS fullTextCatalogs,
       (SELECT COUNT(*) FROM sys.fulltext_indexes) AS fullTextIndexes,
       (SELECT COUNT(*) FROM sys.xml_schema_collections WHERE xml_collection_id > 1) AS userXmlSchemaCollections,
-      (SELECT COUNT(*) FROM sys.database_audit_specifications) AS databaseAuditSpecifications,
+      (
+          SELECT CASE
+              WHEN COUNT(*) = 1
+               AND COUNT
+                   (
+                       CASE WHEN
+                           HASHBYTES(N'SHA2_256', CONVERT(varbinary(max), name)) =
+                               0xe0f4f7f5e21d49507cf14e0bf1bc6f6b43e7085aaf424fc68e81b33e4ff2ec26
+                           AND is_state_enabled = 1
+                           AND audit_guid IS NOT NULL
+                           AND audit_guid <> CAST(N'00000000-0000-0000-0000-000000000000' AS uniqueidentifier)
+                       THEN 1 END
+                   ) = 1
+               AND NOT EXISTS (SELECT 1 FROM sys.database_audit_specification_details)
+              THEN 0 ELSE 1
+          END
+          FROM sys.database_audit_specifications
+      ) AS databaseAuditSpecifications,
       (SELECT COUNT(*) FROM sys.security_policies WHERE is_ms_shipped = 0) AS securityPolicies,
       (SELECT COUNT(*) FROM sys.database_firewall_rules) AS databaseFirewallRules,
       (SELECT COUNT(*) FROM sys.change_tracking_tables) AS changeTrackingTables,
@@ -1099,6 +1116,16 @@ static string GetDatabasePermissionTelemetryCteSql() =>
                         )
                         OR
                         (
+                            permissions.class = 0
+                            AND permissions.major_id = 0
+                            AND permissions.minor_id = 0
+                            AND permissions.permission_name = N'CONNECT'
+                            AND permissions.state = N'G'
+                            AND grantees.name = N'dbo'
+                            AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
+                        )
+                        OR
+                        (
                             permissions.class = 1
                             AND permissions.minor_id = 0
                             AND permissions.permission_name = N'SELECT'
@@ -1113,13 +1140,16 @@ static string GetDatabasePermissionTelemetryCteSql() =>
                             AND permissions.permission_name = N'SELECT'
                             AND permissions.state = N'G'
                             AND grantees.name = N'public'
-                            AND permissions.major_id > 0
+                            AND permissions.major_id = OBJECT_ID(N'sys.database_firewall_rules')
+                            AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')
                             AND EXISTS
                             (
                                 SELECT 1
                                 FROM sys.all_objects AS allowed_shipped_objects
                                 WHERE allowed_shipped_objects.object_id = permissions.major_id
                                   AND allowed_shipped_objects.is_ms_shipped = 1
+                                  AND allowed_shipped_objects.schema_id = SCHEMA_ID(N'sys')
+                                  AND allowed_shipped_objects.type = N'V'
                             )
                         )
                         OR

@@ -333,13 +333,13 @@ public sealed class DatabaseMigratorRecoveryContractTests
     }
 
     [Theory]
-    [InlineData(0, 2, 2, 0, 2, 0, 0, 0)]
-    [InlineData(1, 1, 1, 0, 0, 1, 0, 2)]
+    [InlineData(0, 1, 1, 0, 0, 1, 0, 0)]
+    [InlineData(1, 1, 1, 0, 0, 1, 0, 1)]
     [InlineData(1, 3, 2, 1, 2, 0, 1, 2)]
-    [InlineData(0, 2, 2, 0, 0, 2, 0, 1)]
     [InlineData(0, 1, 1, 0, 1, 0, 0, 1)]
+    [InlineData(0, 2, 2, 0, 0, 2, 0, 1)]
     [InlineData(0, 3, 3, 0, 3, 0, 0, 1)]
-    public void DirectPermissionTelemetry_PreservesExactTwoSystemCatalogSelectBaseline(
+    public void DirectPermissionTelemetry_PreservesExactDatabaseFirewallViewSelectBaseline(
         int rawNonWhitelisted,
         int positiveIdTargets,
         int positiveIdMsShippedObjectTargets,
@@ -369,7 +369,7 @@ public sealed class DatabaseMigratorRecoveryContractTests
         var gw26Live = CreatePermissionTelemetry(1, 1, 1, 0, 0, 1, 0);
         var allObjectSubstitution = CreatePermissionTelemetry(0, 2, 2, 0, 0, 2, 0);
 
-        gw26Live.UnexpectedCount.Should().Be(2);
+        gw26Live.UnexpectedCount.Should().Be(1);
         allObjectSubstitution.UnexpectedCount.Should().Be(1);
         var liveAction = () => DatabaseBootstrapRecoveryContract.AssertPristine(
             CreatePristineSurface() with { DirectPermissions = gw26Live });
@@ -402,7 +402,7 @@ public sealed class DatabaseMigratorRecoveryContractTests
 
         var telemetry = DatabaseDirectPermissionTelemetry.FromOrderedCounts(counts);
 
-        telemetry.UnexpectedCount.Should().Be(2);
+        telemetry.UnexpectedCount.Should().Be(1);
         telemetry.ToSafeSummary().Should().Contain("rawGranteePublicPermissions=1");
         telemetry.ToSafeSummary().Should().Contain("rawPermissionNameViewAnyColumnEncryptionKeyDefinition=1");
         telemetry.ToSafeSummary().Should().Contain("rawGrantorDbo=1");
@@ -685,7 +685,7 @@ public sealed class DatabaseMigratorRecoveryContractTests
             0,
             0,
             0,
-            CreatePermissionTelemetry(0, 2, 2, 0, 2, 0, 0),
+            CreatePermissionTelemetry(0, 1, 1, 0, 0, 1, 0),
             0,
             0);
 

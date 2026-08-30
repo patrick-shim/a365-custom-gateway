@@ -226,9 +226,10 @@ public sealed class UnexpectedDatabaseSurfaceTelemetry
 /// </summary>
 public sealed class DatabaseDirectPermissionTelemetry
 {
-    public const int ExpectedPositiveIdPublicSelectTargetCount = 2;
-    public const int ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount = 2;
-    public const int ExpectedPositiveIdPublicSelectMsShippedSystemCatalogTargetCount = 2;
+    public const int ExpectedPositiveIdPublicSelectTargetCount = 1;
+    public const int ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount = 1;
+    public const int ExpectedPositiveIdPublicSelectMsShippedSystemCatalogTargetCount = 0;
+    public const int ExpectedPositiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount = 1;
 
     private static readonly string[] FixedLeadingFieldNames =
     [
@@ -513,7 +514,8 @@ public sealed class DatabaseDirectPermissionTelemetry
                 ExpectedPositiveIdPublicSelectMsShippedObjectTargetCount &&
             positiveIdPublicSelectMsShippedSystemCatalogTargetCount ==
                 ExpectedPositiveIdPublicSelectMsShippedSystemCatalogTargetCount &&
-            positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount == 0 &&
+            positiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount ==
+                ExpectedPositiveIdPublicSelectMsShippedDatabaseObjectOnlyTargetCount &&
             positiveIdPublicSelectNonMsShippedOrUnresolvedTargetCount == 0
             ? 0
             : 1;
