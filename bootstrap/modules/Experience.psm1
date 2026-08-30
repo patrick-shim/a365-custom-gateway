@@ -2214,12 +2214,19 @@ function Invoke-GatewayDatabaseRecoveryWhatIf {
     }
     $changes = @($rawChanges | ForEach-Object {
         [ordered]@{ changeType = [string]$_.changeType; resourceId = ([string]$_.resourceId).ToLowerInvariant() }
-    })
+    } | Sort-Object resourceId, changeType)
     $expectedJobId = ("/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/jobs/$jobName").ToLowerInvariant()
-    if ($changes.Count -ne 1 -or
-        [string]$changes[0].changeType -cne 'Create' -or
-        [string]$changes[0].resourceId -cne $expectedJobId) {
-        throw 'Database recovery What-If must contain exactly one Create for the distinct recovery Job and no other change.'
+    $resourceGroupPrefix = ("/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/").ToLowerInvariant()
+    $creates = @($changes | Where-Object { [string]$_.changeType -ceq 'Create' })
+    $unsafe = @($changes | Where-Object {
+        ([string]$_.changeType -cne 'Create' -and [string]$_.changeType -cne 'Ignore') -or
+        -not ([string]$_.resourceId).StartsWith($resourceGroupPrefix, [StringComparison]::Ordinal) -or
+        ([string]$_.changeType -ceq 'Ignore' -and [string]$_.resourceId -ceq $expectedJobId)
+    })
+    if ($creates.Count -ne 1 -or
+        [string]$creates[0].resourceId -cne $expectedJobId -or
+        $unsafe.Count -ne 0) {
+        throw 'Database recovery What-If must contain exactly one Create for the distinct recovery Job; every existing resource may appear only as an in-scope Ignore.'
     }
     return [ordered]@{
         executed = $true

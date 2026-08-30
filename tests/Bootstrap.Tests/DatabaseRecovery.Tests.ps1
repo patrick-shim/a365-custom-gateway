@@ -121,6 +121,87 @@ Describe 'First-class database recovery contract' {
         }
     }
 
+    It 'accepts existing in-scope resources only as Ignore beside the sole recovery Job Create' {
+        InModuleScope Experience {
+            $config = [ordered]@{
+                subscriptionId = '11111111-1111-4111-8111-111111111111'
+                resourceGroupName = 'rg-demo'
+                projectName = 'demo'
+                environment = 'dev'
+                location = 'koreacentral'
+            }
+            $foundation = [ordered]@{
+                containerAppsEnvironmentId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-demo/providers/Microsoft.App/managedEnvironments/cae-demo-dev-vnet'
+                acrLoginServer = 'acrdemodev.azurecr.io'
+                runtimeImagePullIdentityId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-demo/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-runtime-pull-dev'
+            }
+            $api = [ordered]@{ displayName = 'ca-gateway-api-dev'; clientId = '22222222-2222-4222-8222-222222222222' }
+            $worker = [ordered]@{ displayName = 'ca-gateway-worker-dev-v3'; clientId = '33333333-3333-4333-8333-333333333333' }
+            $jobId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-demo/providers/Microsoft.App/jobs/job-demo-db-recover-dev'
+            $existingId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-demo/providers/Microsoft.Sql/servers/sql-demo-dev'
+            Mock Invoke-AzJson {
+                [ordered]@{
+                    status = 'Succeeded'
+                    changes = @(
+                        [ordered]@{ changeType = 'Ignore'; resourceId = $existingId }
+                        [ordered]@{ changeType = 'Create'; resourceId = $jobId }
+                    )
+                }
+            }
+
+            $result = Invoke-GatewayDatabaseRecoveryWhatIf `
+                -Config $config -Foundation $foundation -RepositoryRoot '/accepted/source' `
+                -SqlServerFqdn 'sql-demo-dev.database.windows.net' `
+                -ExpectedPrivateEndpointIpv4Address '10.42.2.4' `
+                -DatabaseMigratorImageDigest ('sha256:' + ('a' * 64)) `
+                -DeploymentOwnershipId '44444444-4444-4444-8444-444444444444' `
+                -OriginalAcceptedSourceFingerprint ('sha256:' + ('b' * 64)) `
+                -RecoverySourceFingerprint ('sha256:' + ('c' * 64)) `
+                -RecoveryPlanFingerprint ('sha256:' + ('d' * 64)) `
+                -RecoveryExecutionIntentId '55555555-5555-4555-8555-555555555555' `
+                -ApiPrincipal $api -WorkerPrincipal $worker
+
+            $result.applyReady | Should -BeTrue
+            @($result.changes | Where-Object { $_.changeType -ceq 'Create' }).Count | Should -Be 1
+            @($result.changes | Where-Object { $_.changeType -ceq 'Ignore' }).Count | Should -Be 1
+        }
+    }
+
+    It 'rejects any recovery What-If mutation other than the sole recovery Job Create' {
+        InModuleScope Experience {
+            $config = [ordered]@{
+                subscriptionId = '11111111-1111-4111-8111-111111111111'; resourceGroupName = 'rg-demo'
+                projectName = 'demo'; environment = 'dev'; location = 'koreacentral'
+            }
+            $foundation = [ordered]@{
+                containerAppsEnvironmentId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-demo/providers/Microsoft.App/managedEnvironments/cae-demo-dev-vnet'
+                acrLoginServer = 'acrdemodev.azurecr.io'
+                runtimeImagePullIdentityId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-demo/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-runtime-pull-dev'
+            }
+            $api = [ordered]@{ displayName = 'ca-gateway-api-dev'; clientId = '22222222-2222-4222-8222-222222222222' }
+            $worker = [ordered]@{ displayName = 'ca-gateway-worker-dev-v3'; clientId = '33333333-3333-4333-8333-333333333333' }
+            Mock Invoke-AzJson {
+                [ordered]@{
+                    status = 'Succeeded'
+                    changes = @(
+                        [ordered]@{ changeType = 'Create'; resourceId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-demo/providers/Microsoft.App/jobs/job-demo-db-recover-dev' }
+                        [ordered]@{ changeType = 'Modify'; resourceId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-demo/providers/Microsoft.Sql/servers/sql-demo-dev' }
+                    )
+                }
+            }
+
+            { Invoke-GatewayDatabaseRecoveryWhatIf `
+                    -Config $config -Foundation $foundation -RepositoryRoot '/accepted/source' `
+                    -SqlServerFqdn 'sql-demo-dev.database.windows.net' -ExpectedPrivateEndpointIpv4Address '10.42.2.4' `
+                    -DatabaseMigratorImageDigest ('sha256:' + ('a' * 64)) `
+                    -DeploymentOwnershipId '44444444-4444-4444-8444-444444444444' `
+                    -OriginalAcceptedSourceFingerprint ('sha256:' + ('b' * 64)) `
+                    -RecoverySourceFingerprint ('sha256:' + ('c' * 64)) -RecoveryPlanFingerprint ('sha256:' + ('d' * 64)) `
+                    -RecoveryExecutionIntentId '55555555-5555-4555-8555-555555555555' -ApiPrincipal $api -WorkerPrincipal $worker } |
+                Should -Throw '*every existing resource may appear only as an in-scope Ignore*'
+        }
+    }
+
     It 'expires only an unstarted accepted plan and keeps a running exact-intent plan resumable' {
         InModuleScope Common {
             $configurationFingerprint = 'sha256:' + ('1' * 64)
