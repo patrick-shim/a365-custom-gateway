@@ -101,6 +101,34 @@ resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
   }
 }
 
+// Application Insights creates this rule automatically and may bind it to a
+// subscription-wide default action group from another resource group. Declare
+// the exact project-scoped rule so bootstrap owns its notification boundary.
+resource failureAnomaliesSmartDetector 'Microsoft.AlertsManagement/smartDetectorAlertRules@2021-04-01' = {
+  name: 'Failure Anomalies - ${last(split(appInsightsId, '/'))}'
+  location: 'global'
+  tags: tags
+  properties: {
+    actionGroups: {
+      customEmailSubject: ''
+      customWebhookPayload: ''
+      groupIds: [
+        actionGroup.id
+      ]
+    }
+    description: 'Failure Anomalies for the A365 Gateway Application Insights resource.'
+    detector: {
+      id: 'FailureAnomaliesDetector'
+    }
+    frequency: 'PT1M'
+    scope: [
+      appInsightsId
+    ]
+    severity: 'Sev3'
+    state: 'Enabled'
+  }
+}
+
 // ============================================================================
 // Metric Alerts
 // ============================================================================

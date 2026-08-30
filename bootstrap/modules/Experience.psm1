@@ -561,7 +561,7 @@ function Get-GatewayDoctorReport {
     $providerValue = 'NotChecked'
     if ($config -and $accountMatchesConfig) {
         try {
-            $requiredProviders = @('Microsoft.App', 'Microsoft.ContainerRegistry', 'Microsoft.Insights', 'Microsoft.KeyVault', 'Microsoft.ManagedIdentity', 'Microsoft.Network', 'Microsoft.OperationalInsights', 'Microsoft.ServiceBus', 'Microsoft.Sql', 'Microsoft.Storage')
+            $requiredProviders = @('Microsoft.AlertsManagement', 'Microsoft.App', 'Microsoft.ContainerRegistry', 'Microsoft.Insights', 'Microsoft.KeyVault', 'Microsoft.ManagedIdentity', 'Microsoft.Network', 'Microsoft.OperationalInsights', 'Microsoft.ServiceBus', 'Microsoft.Sql', 'Microsoft.Storage')
             $unregistered = [Collections.Generic.List[string]]::new()
             foreach ($provider in $requiredProviders) {
                 $providerRecord = Invoke-GatewayAzJson -Arguments @('provider', 'show', '--namespace', $provider, '--query', '{state:registrationState}')
@@ -996,12 +996,50 @@ function Get-GatewayInertWhatIfRecoveryStateContext {
     $stepNames = @(Get-GatewayBootstrapStepNames)
     $inertIndex = [Array]::IndexOf($stepNames, $inertStepName)
     if ($inertIndex -lt 0) { return $null }
-    foreach ($stepName in @($stepNames[($inertIndex + 1)..($stepNames.Count - 1)])) {
-        if ($State.steps.Contains($stepName)) { return $null }
-    }
+    [int[]]$observedIndexes = @()
     foreach ($stepName in @($State.steps.Keys | ForEach-Object { [string]$_ })) {
-        if ($stepName -cnotin $stepNames) { return $null }
+        $stepIndex = [Array]::IndexOf($stepNames, $stepName)
+        if ($stepIndex -lt 0) { return $null }
+        $observedIndexes += $stepIndex
     }
+    if ($observedIndexes.Count -eq 0) { return $null }
+    $lastObservedIndex = [Linq.Enumerable]::Max([int[]]$observedIndexes)
+    if ($lastObservedIndex -lt $inertIndex) { return $null }
+    for ($index = 0; $index -le $lastObservedIndex; $index++) {
+        $stepName = [string]$stepNames[$index]
+        if (-not $State.steps.Contains($stepName)) { return $null }
+        $step = $State.steps[$stepName]
+        if ($step -isnot [System.Collections.IDictionary] -or
+            -not $step.Contains('status') -or
+            [string]$step.status -cnotin @('Running', 'Failed', 'Completed') -or
+            -not $step.Contains('sourceFingerprint') -or
+            [string]$step.sourceFingerprint -cne $SourceFingerprint) {
+            return $null
+        }
+        if ($index -lt $lastObservedIndex -and [string]$step.status -cne 'Completed') { return $null }
+        if ([string]$step.status -ceq 'Completed' -and
+            (-not $step.Contains('evidence') -or $null -eq $step.evidence)) {
+            return $null
+        }
+    }
+    if ($lastObservedIndex -gt $inertIndex -and [string]$inertStep.status -cne 'Completed') {
+        return $null
+    }
+
+    $sqlPrivateEndpoint = $null
+    $sqlPrivateEndpointName = 'SQL private endpoint'
+    $sqlPrivateEndpointIndex = [Array]::IndexOf($stepNames, $sqlPrivateEndpointName)
+    if ($State.steps.Contains($sqlPrivateEndpointName)) {
+        $sqlStep = $State.steps[$sqlPrivateEndpointName]
+        if ([string]$sqlStep.status -cne 'Completed') { return $null }
+        $sqlPrivateEndpoint = $sqlStep.evidence
+    }
+    if ($lastObservedIndex -gt $sqlPrivateEndpointIndex -and $null -eq $sqlPrivateEndpoint) {
+        return $null
+    }
+    # The Admin UI deployment adds a second independently owned ARM footprint.
+    # It remains closed here until its exact typed recovery boundary is reviewed.
+    if ($State.steps.Contains('Admin UI deployment')) { return $null }
 
     $images = $State.steps['Immutable workload images'].evidence
     if ([string]::IsNullOrWhiteSpace([string]$images.api) -or
@@ -1013,7 +1051,27 @@ function Get-GatewayInertWhatIfRecoveryStateContext {
         identity = $State.steps['Gateway API identity'].evidence
         apiImage = [string]$images.api
         workerImage = [string]$images.worker
+        sqlPrivateEndpoint = $sqlPrivateEndpoint
+        sqlServerFqdn = if ($inertStep.Contains('evidence')) { [string]$inertStep.evidence.sqlServerFqdn } else { '' }
     }
+}
+
+function Test-GatewayRecoveryWhatIfResourceIdLexicalBoundary {
+    param(
+        [AllowNull()][string]$ResourceId,
+        [Parameter(Mandatory)]$Config
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ResourceId) -or $ResourceId -match '[\t\r\n?#]' -or
+        $ResourceId.Contains('//', [StringComparison]::Ordinal) -or
+        $ResourceId.EndsWith('/', [StringComparison]::Ordinal)) {
+        return $false
+    }
+    if ($ResourceId.Contains(' ', [StringComparison]::Ordinal)) {
+        $expectedSmartDetectorId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.AlertsManagement/smartDetectorAlertRules/Failure Anomalies - ai-$($Config.projectName)-$($Config.environment)"
+        return $ResourceId.Equals($expectedSmartDetectorId, [StringComparison]::OrdinalIgnoreCase)
+    }
+    return $true
 }
 
 function ConvertTo-GatewayRecoveryWhatIfResourceId {
@@ -1023,9 +1081,7 @@ function ConvertTo-GatewayRecoveryWhatIfResourceId {
         [switch]$RequireCanonicalLowercase
     )
 
-    if ([string]::IsNullOrWhiteSpace($ResourceId) -or $ResourceId -match '[\s?#]' -or
-        $ResourceId.Contains('//', [StringComparison]::Ordinal) -or
-        $ResourceId.EndsWith('/', [StringComparison]::Ordinal)) {
+    if (-not (Test-GatewayRecoveryWhatIfResourceIdLexicalBoundary -ResourceId $ResourceId -Config $Config)) {
         throw 'Recovery What-If resource ID is malformed.'
     }
     $canonicalSubscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
@@ -1062,6 +1118,250 @@ function Assert-GatewayExactDictionaryKeys {
     return $true
 }
 
+function Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)][string]$SqlServerFqdn,
+        [Parameter(Mandatory)]$Evidence,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    [object[]]$validation = @(Test-GatewaySqlPrivateEndpointEvidence `
+        -Config $Config `
+        -Foundation $Foundation `
+        -SqlServerFqdn $SqlServerFqdn `
+        -Evidence $Evidence `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -SourceFingerprint $SourceFingerprint)
+    if ($validation.Count -ne 1 -or $validation[0] -isnot [bool] -or $validation[0] -ne $true) {
+        throw 'Recovered SQL private-endpoint evidence failed exact independent validation.'
+    }
+
+    $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'SQL private-endpoint recovery source fingerprint'
+    if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
+        throw 'SQL private-endpoint recovery ownership ID is not canonical.'
+    }
+    $serverName = $SqlServerFqdn.Split('.')[0]
+    $providerPrefix = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers"
+    $privateEndpointId = "$providerPrefix/Microsoft.Network/privateEndpoints/pe-$serverName"
+    $privateEndpoint = Invoke-AzJson -Arguments @(
+        'network', 'private-endpoint', 'show', '--ids', $privateEndpointId,
+        '--query', '{id:id,name:name,location:location,provisioningState:provisioningState,subnet:subnet,networkInterfaces:networkInterfaces}'
+    )
+    $networkInterfaces = @($privateEndpoint.networkInterfaces)
+    if (-not ([string]$privateEndpoint.id).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$privateEndpoint.name -cne "pe-$serverName" -or
+        -not ([string]$privateEndpoint.location).Equals([string]$Config.location, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$privateEndpoint.provisioningState -cne 'Succeeded' -or
+        -not ([string]$privateEndpoint.subnet.id).Equals([string]$Foundation.privateEndpointSubnetId, [StringComparison]::OrdinalIgnoreCase) -or
+        $networkInterfaces.Count -ne 1) {
+        throw 'The SQL private endpoint does not expose one exact generated network interface.'
+    }
+
+    $nicId = ConvertTo-GatewayRecoveryWhatIfResourceId `
+        -ResourceId ([string]$networkInterfaces[0].id) `
+        -Config $Config
+    $nicPrefix = ("$providerPrefix/Microsoft.Network/networkInterfaces/pe-$serverName.nic.").ToLowerInvariant()
+    if (-not $nicId.StartsWith($nicPrefix, [StringComparison]::Ordinal)) {
+        throw 'The SQL private-endpoint network-interface name is not reverse-bound to the exact endpoint.'
+    }
+    $nicGuidText = $nicId.Substring($nicPrefix.Length)
+    $nicGuid = [guid]::Empty
+    if (-not [guid]::TryParse($nicGuidText, [ref]$nicGuid) -or $nicGuid -eq [guid]::Empty -or
+        $nicGuidText -cne $nicGuid.ToString('D')) {
+        throw 'The SQL private-endpoint network-interface suffix is not one canonical GUID.'
+    }
+    $nic = Invoke-AzJson -Arguments @(
+        'resource', 'show', '--ids', $nicId, '--api-version', '2023-11-01',
+        '--query', '{id:id,type:type,name:name,location:location,properties:properties}'
+    )
+    $ipConfigurations = @($nic.properties.ipConfigurations)
+    if (-not ([string]$nic.id).Equals($nicId, [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([string]$nic.type).Equals('Microsoft.Network/networkInterfaces', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$nic.name -cne "pe-$serverName.nic.$nicGuidText" -or
+        -not ([string]$nic.location).Equals([string]$Config.location, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$nic.properties.provisioningState -cne 'Succeeded' -or
+        -not ([string]$nic.properties.privateEndpoint.id).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase) -or
+        $ipConfigurations.Count -ne 1 -or
+        -not ([string]$ipConfigurations[0].properties.subnet.id).Equals([string]$Foundation.privateEndpointSubnetId, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The SQL private-endpoint network interface does not exactly reverse-bind to the endpoint and foundation subnet.'
+    }
+
+    $privateEndpointCanonicalId = ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId ([string]$Evidence.privateEndpointId) -Config $Config
+    $privateDnsZoneCanonicalId = ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId ([string]$Evidence.privateDnsZoneId) -Config $Config
+    $virtualNetworkLinkCanonicalId = ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId ([string]$Evidence.virtualNetworkLinkId) -Config $Config
+    $privateDnsZoneGroupCanonicalId = ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId ([string]$Evidence.privateDnsZoneGroupId) -Config $Config
+    [string[]]$resourceIds = @(
+        $nicId,
+        $privateDnsZoneCanonicalId,
+        $virtualNetworkLinkCanonicalId,
+        $privateEndpointCanonicalId
+    )
+    [Array]::Sort($resourceIds, [StringComparer]::Ordinal)
+    if (@($resourceIds | Sort-Object -Unique -CaseSensitive).Count -ne 4) {
+        throw 'The SQL private-endpoint recovery extension is not the exact four-resource What-If graph.'
+    }
+    $typeInventoryResourceIds = [ordered]@{
+        'Microsoft.Network/networkInterfaces' = @($nicId)
+        'Microsoft.Network/privateDnsZones' = @($privateDnsZoneCanonicalId)
+        'Microsoft.Network/privateDnsZones/virtualNetworkLinks' = @($virtualNetworkLinkCanonicalId)
+        'Microsoft.Network/privateEndpoints' = @($privateEndpointCanonicalId)
+    }
+    $extension = [ordered]@{
+        schemaVersion = 1
+        phase = 'SqlPrivateEndpoint'
+        deploymentName = "a365gw-$($Config.projectName)-bootstrap-sql-private-$($Config.environment)"
+        deploymentOwnershipId = $canonicalOwnershipId
+        sourceFingerprint = $SourceFingerprint
+        resourceIds = $resourceIds
+        typeInventoryResourceIds = $typeInventoryResourceIds
+        generatedNicBinding = [ordered]@{
+            nicId = $nicId
+            privateEndpointId = $privateEndpointCanonicalId
+            subnetId = ([string]$Foundation.privateEndpointSubnetId).ToLowerInvariant()
+        }
+        privateDnsBinding = [ordered]@{
+            zoneId = $privateDnsZoneCanonicalId
+            virtualNetworkLinkId = $virtualNetworkLinkCanonicalId
+            zoneGroupId = $privateDnsZoneGroupCanonicalId
+        }
+    }
+    $extension.boundaryFingerprint = Get-BootstrapObjectFingerprint -InputObject $extension
+    return $extension
+}
+
+function Assert-GatewaySqlPrivateEndpointWhatIfRecoveryExtension {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Extension,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    Assert-GatewayExactDictionaryKeys -Value $Extension -ExpectedKeys @(
+        'schemaVersion', 'phase', 'deploymentName', 'deploymentOwnershipId',
+        'sourceFingerprint', 'resourceIds', 'typeInventoryResourceIds',
+        'generatedNicBinding', 'privateDnsBinding', 'boundaryFingerprint'
+    ) -Label 'SQL private-endpoint recovery extension' | Out-Null
+    if ($Extension.schemaVersion -isnot [int] -or [int]$Extension.schemaVersion -ne 1 -or
+        [string]$Extension.phase -cne 'SqlPrivateEndpoint' -or
+        [string]$Extension.deploymentName -cne "a365gw-$($Config.projectName)-bootstrap-sql-private-$($Config.environment)" -or
+        [string]$Extension.deploymentOwnershipId -cne $DeploymentOwnershipId -or
+        [string]$Extension.sourceFingerprint -cne $SourceFingerprint -or
+        $Extension.resourceIds -isnot [System.Collections.IList] -or
+        @($Extension.resourceIds).Count -ne 4 -or
+        $Extension.typeInventoryResourceIds -isnot [System.Collections.IDictionary] -or
+        $Extension.generatedNicBinding -isnot [System.Collections.IDictionary] -or
+        $Extension.privateDnsBinding -isnot [System.Collections.IDictionary]) {
+        throw 'SQL private-endpoint recovery extension does not match the exact reviewed contract.'
+    }
+    Assert-BootstrapFingerprintValue -Value ([string]$Extension.boundaryFingerprint) -Label 'SQL private-endpoint recovery fingerprint'
+    Assert-GatewayExactDictionaryKeys -Value $Extension.typeInventoryResourceIds -ExpectedKeys @(
+        'Microsoft.Network/networkInterfaces',
+        'Microsoft.Network/privateDnsZones',
+        'Microsoft.Network/privateDnsZones/virtualNetworkLinks',
+        'Microsoft.Network/privateEndpoints'
+    ) -Label 'SQL private-endpoint recovery type inventory' | Out-Null
+    Assert-GatewayExactDictionaryKeys -Value $Extension.generatedNicBinding -ExpectedKeys @(
+        'nicId', 'privateEndpointId', 'subnetId'
+    ) -Label 'SQL private-endpoint generated-NIC binding' | Out-Null
+    Assert-GatewayExactDictionaryKeys -Value $Extension.privateDnsBinding -ExpectedKeys @(
+        'zoneId', 'virtualNetworkLinkId', 'zoneGroupId'
+    ) -Label 'SQL private-endpoint DNS binding' | Out-Null
+
+    [string[]]$resourceIds = @($Extension.resourceIds | ForEach-Object {
+        ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId ([string]$_) -Config $Config -RequireCanonicalLowercase
+    })
+    [string[]]$sortedResourceIds = @($resourceIds)
+    [Array]::Sort($sortedResourceIds, [StringComparer]::Ordinal)
+    if (($resourceIds -join "`n") -cne ($sortedResourceIds -join "`n") -or
+        @($resourceIds | Sort-Object -Unique -CaseSensitive).Count -ne 4) {
+        throw 'SQL private-endpoint recovery resource IDs are not unique canonical ordinal-sorted values.'
+    }
+    $inventoryIds = [Collections.Generic.List[string]]::new()
+    foreach ($resourceType in @(
+        'Microsoft.Network/networkInterfaces',
+        'Microsoft.Network/privateDnsZones',
+        'Microsoft.Network/privateDnsZones/virtualNetworkLinks',
+        'Microsoft.Network/privateEndpoints'
+    )) {
+        $rawIds = $Extension.typeInventoryResourceIds[$resourceType]
+        if ($rawIds -isnot [System.Collections.IList] -or @($rawIds).Count -ne 1) {
+            throw 'SQL private-endpoint recovery type inventory must contain exactly one resource per reviewed type.'
+        }
+        $inventoryIds.Add((ConvertTo-GatewayRecoveryWhatIfResourceId `
+            -ResourceId ([string]@($rawIds)[0]) -Config $Config -RequireCanonicalLowercase))
+    }
+    [string[]]$sortedInventoryIds = @($inventoryIds)
+    [Array]::Sort($sortedInventoryIds, [StringComparer]::Ordinal)
+    if (($sortedInventoryIds -join "`n") -cne ($resourceIds -join "`n")) {
+        throw 'SQL private-endpoint recovery type inventory does not match its exact resource graph.'
+    }
+    foreach ($binding in @(
+        [ordered]@{ value = [string]$Extension.generatedNicBinding.nicId; contained = $true },
+        [ordered]@{ value = [string]$Extension.generatedNicBinding.privateEndpointId; contained = $true },
+        [ordered]@{ value = [string]$Extension.generatedNicBinding.subnetId; contained = $false },
+        [ordered]@{ value = [string]$Extension.privateDnsBinding.zoneId; contained = $true },
+        [ordered]@{ value = [string]$Extension.privateDnsBinding.virtualNetworkLinkId; contained = $true },
+        [ordered]@{ value = [string]$Extension.privateDnsBinding.zoneGroupId; contained = $false }
+    )) {
+        $bindingId = ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId $binding.value -Config $Config -RequireCanonicalLowercase
+        if ($binding.contained -and $bindingId -notin $resourceIds) {
+            throw 'SQL private-endpoint recovery binding is not contained by its exact resource graph.'
+        }
+    }
+    $fingerprintInput = [ordered]@{
+        schemaVersion = 1
+        phase = 'SqlPrivateEndpoint'
+        deploymentName = [string]$Extension.deploymentName
+        deploymentOwnershipId = [string]$Extension.deploymentOwnershipId
+        sourceFingerprint = [string]$Extension.sourceFingerprint
+        resourceIds = $resourceIds
+        typeInventoryResourceIds = $Extension.typeInventoryResourceIds
+        generatedNicBinding = $Extension.generatedNicBinding
+        privateDnsBinding = $Extension.privateDnsBinding
+    }
+    if ([string]$Extension.boundaryFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $fingerprintInput)) {
+        throw 'SQL private-endpoint recovery fingerprint does not match its exact typed resource graph.'
+    }
+    return [ordered]@{
+        resourceIds = $resourceIds
+        typeInventoryResourceIds = $Extension.typeInventoryResourceIds
+    }
+}
+
+function New-GatewayStateAwareWhatIfRecoveryBoundary {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$InertBoundary,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$SqlPrivateEndpointExtension,
+        [Parameter(Mandatory)][string[]]$InertResourceIds,
+        [Parameter(Mandatory)][string[]]$SqlPrivateEndpointResourceIds,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    [string[]]$resourceIds = @($InertResourceIds + $SqlPrivateEndpointResourceIds)
+    [Array]::Sort($resourceIds, [StringComparer]::Ordinal)
+    if ($resourceIds.Count -ne 30 -or
+        @($resourceIds | Sort-Object -Unique -CaseSensitive).Count -ne 30) {
+        throw 'The state-aware recovery boundary is not the exact reviewed 30-resource graph.'
+    }
+    $boundary = [ordered]@{
+        schemaVersion = 3
+        phase = 'InertIdentityDeployment+SqlPrivateEndpoint'
+        deploymentOwnershipId = $DeploymentOwnershipId
+        sourceFingerprint = $SourceFingerprint
+        resourceIds = $resourceIds
+        inertBoundaryFingerprint = [string]$InertBoundary.boundaryFingerprint
+        sqlPrivateEndpointBoundaryFingerprint = [string]$SqlPrivateEndpointExtension.boundaryFingerprint
+    }
+    $boundary.boundaryFingerprint = Get-BootstrapObjectFingerprint -InputObject $boundary
+    return $boundary
+}
+
 function Assert-GatewayInertWhatIfRecoveryBoundary {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Boundary,
@@ -1075,13 +1375,13 @@ function Assert-GatewayInertWhatIfRecoveryBoundary {
         'sourceFingerprint', 'resourceIds', 'generatedNicBinding',
         'masterDatabaseBinding', 'boundaryFingerprint'
     ) -Label 'Recovery Ignore boundary' | Out-Null
-    if ($Boundary.schemaVersion -isnot [int] -or [int]$Boundary.schemaVersion -ne 1 -or
+    if ($Boundary.schemaVersion -isnot [int] -or [int]$Boundary.schemaVersion -ne 2 -or
         [string]$Boundary.phase -cne 'InertIdentityDeployment' -or
         [string]$Boundary.deploymentName -cne "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)" -or
         [string]$Boundary.deploymentOwnershipId -cne $DeploymentOwnershipId -or
         [string]$Boundary.sourceFingerprint -cne $SourceFingerprint -or
         $Boundary.resourceIds -isnot [System.Collections.IList] -or
-        @($Boundary.resourceIds).Count -ne 25 -or
+        @($Boundary.resourceIds).Count -ne 26 -or
         $Boundary.generatedNicBinding -isnot [System.Collections.IDictionary] -or
         $Boundary.masterDatabaseBinding -isnot [System.Collections.IDictionary]) {
         throw 'Recovery Ignore boundary does not match the exact inert deployment contract.'
@@ -1124,7 +1424,7 @@ function Assert-GatewayInertWhatIfRecoveryBoundary {
     }
 
     $fingerprintInput = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         phase = 'InertIdentityDeployment'
         deploymentName = [string]$Boundary.deploymentName
         deploymentOwnershipId = [string]$Boundary.deploymentOwnershipId
@@ -1283,7 +1583,7 @@ function Invoke-GatewayFoundationWhatIf {
     $unreviewableChanges = @($changes | Where-Object {
         [string]::IsNullOrWhiteSpace([string]$_.resourceId) -or
         [string]$_.resourceId -notmatch "^/subscriptions/$([regex]::Escape(([guid][string]$Config.subscriptionId).ToString('D')))(?:/|$)" -or
-        [string]$_.resourceId -match '[\s?#]' -or
+        -not (Test-GatewayRecoveryWhatIfResourceIdLexicalBoundary -ResourceId ([string]$_.resourceId) -Config $Config) -or
         [string]$_.changeType -cnotin @('Create', 'Deploy', 'Ignore')
     })
     $canonicalPairs = @($changes | ForEach-Object { "$([string]$_.changeType)|$(([string]$_.resourceId).ToLowerInvariant())" })
@@ -1307,6 +1607,27 @@ function Invoke-GatewayFoundationWhatIf {
         }
         else {
             try {
+                $sqlPrivateEndpointExtension = $null
+                $additionalTypeInventoryResourceIds = $null
+                if ($null -ne $recoveryState.sqlPrivateEndpoint) {
+                    [object[]]$extensionResults = @(Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension `
+                        -Config $Config `
+                        -Foundation $recoveryState.foundation `
+                        -SqlServerFqdn $recoveryState.sqlServerFqdn `
+                        -Evidence $recoveryState.sqlPrivateEndpoint `
+                        -DeploymentOwnershipId $canonicalOwnershipId `
+                        -SourceFingerprint $SourceFingerprint)
+                    if ($extensionResults.Count -ne 1 -or $extensionResults[0] -isnot [System.Collections.IDictionary]) {
+                        throw 'SQL private-endpoint recovery provider readback returned an invalid result envelope.'
+                    }
+                    $sqlPrivateEndpointExtension = $extensionResults[0]
+                    $validatedExtension = Assert-GatewaySqlPrivateEndpointWhatIfRecoveryExtension `
+                        -Extension $sqlPrivateEndpointExtension `
+                        -Config $Config `
+                        -DeploymentOwnershipId $canonicalOwnershipId `
+                        -SourceFingerprint $SourceFingerprint
+                    $additionalTypeInventoryResourceIds = $validatedExtension.typeInventoryResourceIds
+                }
                 [object[]]$recoveryResults = @(Get-GatewayInertWhatIfRecoveryBoundary `
                     -Config $Config `
                     -Foundation $recoveryState.foundation `
@@ -1314,7 +1635,8 @@ function Invoke-GatewayFoundationWhatIf {
                     -ApiImage $recoveryState.apiImage `
                     -WorkerImage $recoveryState.workerImage `
                     -DeploymentOwnershipId $canonicalOwnershipId `
-                    -SourceFingerprint $SourceFingerprint)
+                    -SourceFingerprint $SourceFingerprint `
+                    -AdditionalTypeInventoryResourceIds $additionalTypeInventoryResourceIds)
                 if ($recoveryResults.Count -ne 1 -or $recoveryResults[0] -isnot [System.Collections.IDictionary]) {
                     throw 'Recovery provider readback returned an invalid result envelope.'
                 }
@@ -1341,6 +1663,18 @@ function Invoke-GatewayFoundationWhatIf {
                     -Config $Config `
                     -DeploymentOwnershipId $canonicalOwnershipId `
                     -SourceFingerprint $SourceFingerprint)
+                $resolvedRecoveryBoundary = $recovery.boundary
+                if ($null -ne $sqlPrivateEndpointExtension) {
+                    [string[]]$sqlPrivateEndpointResourceIds = @($validatedExtension.resourceIds)
+                    $resolvedRecoveryBoundary = New-GatewayStateAwareWhatIfRecoveryBoundary `
+                        -InertBoundary $recovery.boundary `
+                        -SqlPrivateEndpointExtension $sqlPrivateEndpointExtension `
+                        -InertResourceIds $expectedIgnoreIds `
+                        -SqlPrivateEndpointResourceIds $sqlPrivateEndpointResourceIds `
+                        -DeploymentOwnershipId $canonicalOwnershipId `
+                        -SourceFingerprint $SourceFingerprint
+                    $expectedIgnoreIds = @($resolvedRecoveryBoundary.resourceIds)
+                }
                 [string[]]$observedIgnoreIds = @($ignoreChanges | ForEach-Object {
                     ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId ([string]$_.resourceId) -Config $Config
                 })
@@ -1350,9 +1684,9 @@ function Invoke-GatewayFoundationWhatIf {
                 [Array]::Sort($observedIgnoreIds, [StringComparer]::Ordinal)
                 if ($observedIgnoreIds.Count -ne $expectedIgnoreIds.Count -or
                     ($observedIgnoreIds -join "`n") -cne ($expectedIgnoreIds -join "`n")) {
-                    throw 'What-If Ignore predictions did not exactly match the recovered inert resource graph.'
+                    throw 'What-If Ignore predictions did not exactly match the recovered state-aware resource graph.'
                 }
-                $recoveryIgnoreBoundary = $recovery.boundary
+                $recoveryIgnoreBoundary = $resolvedRecoveryBoundary
             }
             catch {
                 $unreviewableChanges += [ordered]@{ changeType = 'UnauthorizedIgnore'; resourceId = '' }
@@ -1628,7 +1962,7 @@ function Write-GatewayDiagnosticBundle {
 
 function Test-GatewayResourceProviderEvidence {
     foreach ($provider in @(
-        'Microsoft.App', 'Microsoft.ContainerRegistry', 'Microsoft.Insights', 'Microsoft.KeyVault',
+        'Microsoft.AlertsManagement', 'Microsoft.App', 'Microsoft.ContainerRegistry', 'Microsoft.Insights', 'Microsoft.KeyVault',
         'Microsoft.ManagedIdentity', 'Microsoft.Network', 'Microsoft.OperationalInsights',
         'Microsoft.ServiceBus', 'Microsoft.Sql', 'Microsoft.Storage'
     )) {

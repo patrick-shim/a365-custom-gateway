@@ -56,6 +56,47 @@ Describe 'Bootstrap Azure authentication boundary' {
     }
 }
 
+Describe 'Bootstrap Azure resource-provider boundary' {
+    InModuleScope Azure {
+        BeforeEach {
+            $script:registeredProviders = [Collections.Generic.List[string]]::new()
+            Mock Invoke-BootstrapCommand {
+                param([string]$FilePath, [string[]]$ArgumentList)
+                $script:registeredProviders.Add([string]$ArgumentList[3])
+            }
+            Mock Invoke-AzTsv { return 'Registered' }
+        }
+
+        It 'registers and independently reads back the exact provider set including AlertsManagement' {
+            Register-BootstrapResourceProviders | Should -Not -BeNullOrEmpty
+
+            $expected = @(
+                'Microsoft.AlertsManagement',
+                'Microsoft.App',
+                'Microsoft.ContainerRegistry',
+                'Microsoft.Insights',
+                'Microsoft.KeyVault',
+                'Microsoft.ManagedIdentity',
+                'Microsoft.Network',
+                'Microsoft.OperationalInsights',
+                'Microsoft.ServiceBus',
+                'Microsoft.Sql',
+                'Microsoft.Storage'
+            )
+            @($script:registeredProviders) | Should -Be $expected
+            Should -Invoke Invoke-BootstrapCommand -Times 11 -Exactly
+            Should -Invoke Invoke-AzTsv -Times 11 -Exactly
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                ($ArgumentList -join '|') -ceq 'provider|register|--namespace|Microsoft.AlertsManagement|--wait|--only-show-errors'
+            }
+            Should -Invoke Invoke-AzTsv -Times 1 -Exactly -ParameterFilter {
+                ($Arguments -join '|') -ceq 'provider|show|--namespace|Microsoft.AlertsManagement|--query|registrationState'
+            }
+        }
+    }
+}
+
 Describe 'Allowlisted ACR build context' {
     It 'copies only reviewed runtime source classes and excludes credential-file classes' {
         $projectRoots = @(
@@ -1258,6 +1299,33 @@ Describe 'Gateway core initial and runtime identity bindings' {
             ($capturedNames -join '|') | Should -BeExactly ($compiledNames -join '|')
             $script:capturedCompiledParityParameters.allowLegacySystemAssignedImagePull | Should -BeFalse
 
+            $monitoringDeploymentProperty = $compiled.resources.PSObject.Properties['alerts']
+            $monitoringDeploymentProperty | Should -Not -BeNullOrEmpty
+            $monitoringDeployment = $monitoringDeploymentProperty.Value
+            [string]$monitoringDeployment.name | Should -BeExactly 'deploy-monitoring-alerts'
+            $monitoringResources = @($monitoringDeployment.properties.template.resources.PSObject.Properties | ForEach-Object { $_.Value })
+            $smartDetectorRules = @($monitoringResources | Where-Object {
+                [string](Get-GatewayArmObjectProperty -Object $_ -Name 'type') -ieq 'Microsoft.AlertsManagement/smartDetectorAlertRules'
+            })
+            $smartDetectorRules.Count | Should -Be 1
+            $smartDetector = $smartDetectorRules[0]
+            [string]$smartDetector.apiVersion | Should -BeExactly '2021-04-01'
+            [string]$smartDetector.name | Should -BeExactly `
+                "[format('Failure Anomalies - {0}', last(split(parameters('appInsightsId'), '/')))]"
+            [string]$smartDetector.location | Should -BeExactly 'global'
+            [string]$smartDetector.tags | Should -BeExactly "[parameters('tags')]"
+            [string]$smartDetector.properties.description | Should -BeExactly `
+                'Failure Anomalies for the A365 Gateway Application Insights resource.'
+            [string]$smartDetector.properties.detector.id | Should -BeExactly 'FailureAnomaliesDetector'
+            [string]$smartDetector.properties.frequency | Should -BeExactly 'PT1M'
+            [string]$smartDetector.properties.severity | Should -BeExactly 'Sev3'
+            [string]$smartDetector.properties.state | Should -BeExactly 'Enabled'
+            @($smartDetector.properties.scope).Count | Should -Be 1
+            [string]$smartDetector.properties.scope[0] | Should -BeExactly "[parameters('appInsightsId')]"
+            @($smartDetector.properties.actionGroups.groupIds).Count | Should -Be 1
+            [string]$smartDetector.properties.actionGroups.groupIds[0] | Should -BeExactly `
+                "[resourceId('Microsoft.Insights/actionGroups', parameters('actionGroupName'))]"
+
             $actual = [ordered]@{}
             foreach ($entry in $script:capturedCompiledParityParameters.GetEnumerator()) {
                 $actual[$entry.Key] = [ordered]@{ value = $entry.Value }
@@ -2030,6 +2098,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 $script:boundaryMasterId = "$($script:boundarySqlServerId)/databases/master"
                 $script:boundaryActionGroupId = "$($script:boundaryProviderPrefix)/Microsoft.Insights/actionGroups/ag-gateway-alerts"
                 $script:boundaryAppInsightsId = "$($script:boundaryProviderPrefix)/Microsoft.Insights/components/ai-safe-dev"
+                $script:boundarySmartDetectorId = "$($script:boundaryProviderPrefix)/Microsoft.AlertsManagement/smartDetectorAlertRules/Failure Anomalies - ai-safe-dev"
                 $script:boundarySharedVaultId = "$($script:boundaryProviderPrefix)/Microsoft.KeyVault/vaults/kv-safe-dev"
                 $script:boundaryProvisioningVaultId = "$($script:boundaryProviderPrefix)/Microsoft.KeyVault/vaults/kv-safe-dev-prov"
                 $script:boundaryBaseTags = [ordered]@{
@@ -2074,6 +2143,22 @@ Describe 'Gateway core initial and runtime identity bindings' {
                     'koreacentral' $script:boundaryBaseTags ([ordered]@{
                         provisioningState = 'Succeeded'
                         WorkspaceResourceId = "$($script:boundaryProviderPrefix)/Microsoft.OperationalInsights/workspaces/log-safe-dev"
+                    })
+                & $script:addBoundaryResource $script:boundarySmartDetectorId `
+                    'Microsoft.AlertsManagement/smartDetectorAlertRules' 'Failure Anomalies - ai-safe-dev' `
+                    'global' $script:boundaryBaseTags ([ordered]@{
+                        provisioningState = 'Succeeded'
+                        description = 'Failure Anomalies for the A365 Gateway Application Insights resource.'
+                        state = 'Enabled'
+                        severity = 'Sev3'
+                        frequency = 'PT1M'
+                        detector = [ordered]@{ id = 'FailureAnomaliesDetector'; parameters = $null }
+                        scope = @($script:boundaryAppInsightsId)
+                        actionGroups = [ordered]@{
+                            customEmailSubject = $null
+                            customWebhookPayload = $null
+                            groupIds = @($script:boundaryActionGroupId)
+                        }
                     })
                 & $script:addBoundaryResource $script:boundarySharedVaultId 'Microsoft.KeyVault/vaults' 'kv-safe-dev' `
                     'koreacentral' $script:boundaryBaseTags $null
@@ -2180,7 +2265,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 }
             }
 
-            It 'builds one deterministic sorted 25-resource boundary with exact NIC and master bindings' {
+            It 'builds one deterministic sorted 26-resource boundary with exact smart-detector, NIC, and master bindings' {
                 $first = New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
                     -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
                     -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
@@ -2190,9 +2275,9 @@ Describe 'Gateway core initial and runtime identity bindings' {
                     -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
                     -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint
 
-                $first.schemaVersion | Should -Be 1
+                $first.schemaVersion | Should -Be 2
                 $first.phase | Should -BeExactly 'InertIdentityDeployment'
-                $first.resourceIds.Count | Should -Be 25
+                $first.resourceIds.Count | Should -Be 26
                 ($first.resourceIds -join '|') | Should -BeExactly ((@($first.resourceIds | Sort-Object -CaseSensitive)) -join '|')
                 $first.generatedNicBinding.nicId | Should -BeExactly $script:boundaryNicId.ToLowerInvariant()
                 $first.generatedNicBinding.privateEndpointId | Should -BeExactly $script:boundaryPrivateEndpointId.ToLowerInvariant()
@@ -2201,6 +2286,58 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 $second.boundaryFingerprint | Should -BeExactly $first.boundaryFingerprint
                 Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
                 Should -Invoke Get-GatewayInertBoundaryResource -ParameterFilter { $ResourceId -match '[*?]' } -Times 0 -Exactly
+            }
+
+            It 'accepts only the exact four-type SQL private-endpoint inventory extension without changing the inert graph' {
+                $sqlPrivateEndpointId = "$($script:boundaryProviderPrefix)/Microsoft.Network/privateEndpoints/pe-sql-safe-dev"
+                $sqlNicId = "$($script:boundaryProviderPrefix)/Microsoft.Network/networkInterfaces/pe-sql-safe-dev.nic.45454545-4545-4454-8454-454545454545"
+                $sqlZoneId = "$($script:boundaryProviderPrefix)/Microsoft.Network/privateDnsZones/privatelink.database.windows.net"
+                $sqlLinkId = "$sqlZoneId/virtualNetworkLinks/link-safe-dev-sql"
+                [void]$script:boundaryIdsByType['Microsoft.Network/privateEndpoints'].Add($sqlPrivateEndpointId)
+                [void]$script:boundaryIdsByType['Microsoft.Network/networkInterfaces'].Add($sqlNicId)
+                [void]$script:boundaryIdsByType['Microsoft.Network/privateDnsZones'].Add($sqlZoneId)
+                [void]$script:boundaryIdsByType['Microsoft.Network/privateDnsZones/virtualNetworkLinks'].Add($sqlLinkId)
+                $additionalInventory = [ordered]@{
+                    'Microsoft.Network/networkInterfaces' = @($sqlNicId.ToLowerInvariant())
+                    'Microsoft.Network/privateDnsZones' = @($sqlZoneId.ToLowerInvariant())
+                    'Microsoft.Network/privateDnsZones/virtualNetworkLinks' = @($sqlLinkId.ToLowerInvariant())
+                    'Microsoft.Network/privateEndpoints' = @($sqlPrivateEndpointId.ToLowerInvariant())
+                }
+
+                $boundary = New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
+                    -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                    -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint `
+                    -AdditionalTypeInventoryResourceIds $additionalInventory
+
+                $boundary.resourceIds.Count | Should -Be 26
+                @($boundary.resourceIds | Where-Object { $_ -in @(
+                    $sqlPrivateEndpointId.ToLowerInvariant(), $sqlNicId.ToLowerInvariant(),
+                    $sqlZoneId.ToLowerInvariant(), $sqlLinkId.ToLowerInvariant()) }).Count | Should -Be 0
+                Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+            }
+
+            It 'rejects a partial or unknown inert inventory extension before accepting provider inventory' {
+                foreach ($additionalInventory in @(
+                    [ordered]@{
+                        'Microsoft.Network/networkInterfaces' = @($script:boundaryNicId.ToLowerInvariant())
+                    },
+                    [ordered]@{
+                        'Microsoft.Network/networkInterfaces' = @($script:boundaryNicId.ToLowerInvariant())
+                        'Microsoft.Network/privateDnsZones' = @($script:boundaryDnsZoneId.ToLowerInvariant())
+                        'Microsoft.Network/privateDnsZones/virtualNetworkLinks' = @($script:boundaryDnsLinkId.ToLowerInvariant())
+                        'Microsoft.Network/privateEndpoints' = @($script:boundaryPrivateEndpointId.ToLowerInvariant())
+                        'Microsoft.Test/resources' = @("$($script:boundaryProviderPrefix)/Microsoft.Test/resources/extra".ToLowerInvariant())
+                    }
+                )) {
+                    { New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                            -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
+                            -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                            -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint `
+                            -AdditionalTypeInventoryResourceIds $additionalInventory } |
+                        Should -Throw '*exact SQL private-endpoint type surface*'
+                }
+                Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
             }
 
             It 'rejects a parent-qualified provider name for child resource <Child>' -ForEach @(
@@ -2246,7 +2383,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
                     -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
                     -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint
 
-                $boundary.resourceIds.Count | Should -Be 25
+                $boundary.resourceIds.Count | Should -Be 26
             }
 
             It 'rejects a nonempty private-endpoint DNS zone-group location <Location>' -ForEach @(
@@ -2280,7 +2417,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
             }
 
             It 'uses only succeeded-recovery reads when composing the public helper result' {
-                $expectedBoundary = [ordered]@{ schemaVersion = 1; phase = 'InertIdentityDeployment'; resourceIds = @('safe') }
+                $expectedBoundary = [ordered]@{ schemaVersion = 2; phase = 'InertIdentityDeployment'; resourceIds = @('safe') }
                 Mock Deploy-GatewayCore { return $script:boundaryEvidence }
                 Mock New-GatewayInertWhatIfRecoveryBoundary { return $expectedBoundary }
 
@@ -2309,6 +2446,8 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 @{ Mutation = 'reverseNic' },
                 @{ Mutation = 'masterBinding' },
                 @{ Mutation = 'extraAlertScope' },
+                @{ Mutation = 'smartDetectorScope' },
+                @{ Mutation = 'smartDetectorActionGroup' },
                 @{ Mutation = 'crossTypeReadback' }
             ) {
                 switch ($Mutation) {
@@ -2352,6 +2491,14 @@ Describe 'Gateway core initial and runtime identity bindings' {
                     'extraAlertScope' {
                         $alertId = "$($script:boundaryProviderPrefix)/Microsoft.Insights/metricAlerts/alert-sql-connection-failed-dev"
                         $script:boundaryResources[$alertId].properties.scopes += ,$script:boundaryServiceBusId
+                    }
+                    'smartDetectorScope' {
+                        $script:boundaryResources[$script:boundarySmartDetectorId].properties.scope =
+                            @($script:boundaryServiceBusId)
+                    }
+                    'smartDetectorActionGroup' {
+                        $script:boundaryResources[$script:boundarySmartDetectorId].properties.actionGroups.groupIds =
+                            @("$($script:boundaryProviderPrefix)/Microsoft.Insights/actionGroups/other")
                     }
                     'crossTypeReadback' {
                         $script:boundaryResources[$script:boundaryStorageId].type = 'Microsoft.KeyVault/vaults'

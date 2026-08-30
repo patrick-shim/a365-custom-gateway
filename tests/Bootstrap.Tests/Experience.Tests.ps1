@@ -7,7 +7,8 @@ Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Experience.ps
 & (Get-Module Experience) {
     function Get-GatewayInertWhatIfRecoveryBoundary {
         param($Config, $Foundation, $Identity, [string]$ApiImage, [string]$WorkerImage,
-            [string]$DeploymentOwnershipId, [string]$SourceFingerprint)
+            [string]$DeploymentOwnershipId, [string]$SourceFingerprint,
+            [System.Collections.IDictionary]$AdditionalTypeInventoryResourceIds)
         throw 'Test placeholder must be mocked.'
     }
 }
@@ -70,6 +71,66 @@ Describe 'Experience strict-mode array cardinality boundaries' {
         foreach ($scope in @('', 'access_as_user unexpected')) {
             $invalid = @([pscustomobject]@{ resourceId = $resourceId; consentType = 'AllPrincipals'; scope = $scope })
             { & $validationRunner -grants $invalid -gatewayPrincipals $principal } | Should -Throw '*mismatch*'
+        }
+    }
+}
+
+Describe 'Experience Azure resource-provider readback boundary' {
+    InModuleScope Experience {
+        BeforeEach {
+            $script:readProviders = [Collections.Generic.List[string]]::new()
+            Mock Invoke-AzTsv {
+                param([string[]]$Arguments)
+                $script:readProviders.Add([string]$Arguments[3])
+                return 'Registered'
+            }
+        }
+
+        It 'revalidates the exact provider set including AlertsManagement before Resume' {
+            Test-GatewayResourceProviderEvidence | Should -BeTrue
+
+            $expected = @(
+                'Microsoft.AlertsManagement',
+                'Microsoft.App',
+                'Microsoft.ContainerRegistry',
+                'Microsoft.Insights',
+                'Microsoft.KeyVault',
+                'Microsoft.ManagedIdentity',
+                'Microsoft.Network',
+                'Microsoft.OperationalInsights',
+                'Microsoft.ServiceBus',
+                'Microsoft.Sql',
+                'Microsoft.Storage'
+            )
+            @($script:readProviders) | Should -Be $expected
+            Should -Invoke Invoke-AzTsv -Times 11 -Exactly
+        }
+
+        It 'keeps Doctor and Resume on the same exact provider set' {
+            $tokens = $null
+            $parseErrors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile(
+                (Get-Module Experience).Path, [ref]$tokens, [ref]$parseErrors)
+            $parseErrors.Count | Should -Be 0
+            $functions = @{}
+            foreach ($name in @('Get-GatewayDoctorReport', 'Test-GatewayResourceProviderEvidence')) {
+                $functions[$name] = $ast.Find({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                        $node.Name -ceq $name
+                }, $true).Extent.Text
+            }
+            foreach ($provider in @(
+                'Microsoft.AlertsManagement', 'Microsoft.App', 'Microsoft.ContainerRegistry',
+                'Microsoft.Insights', 'Microsoft.KeyVault', 'Microsoft.ManagedIdentity',
+                'Microsoft.Network', 'Microsoft.OperationalInsights', 'Microsoft.ServiceBus',
+                'Microsoft.Sql', 'Microsoft.Storage'
+            )) {
+                foreach ($name in $functions.Keys) {
+                    ([regex]::Matches($functions[$name], [regex]::Escape("'$provider'"))).Count |
+                        Should -Be 1 -Because "$name must contain the provider exactly once"
+                }
+            }
         }
     }
 }
@@ -843,11 +904,12 @@ Describe 'Azure What-If result boundary' {
                 "$baseResourceId/microsoft.network/privateendpoints/pe-safe"
                 "$baseResourceId/microsoft.sql/servers/sql-safe"
                 "$baseResourceId/microsoft.sql/servers/sql-safe/databases/master"
+                "$baseResourceId/microsoft.alertsmanagement/smartdetectoralertrules/failure anomalies - ai-safe-dev"
                 0..20 | ForEach-Object { "$baseResourceId/microsoft.test/resources/resource-$('{0:d2}' -f $_)" }
             )
             [Array]::Sort($resourceIds, [StringComparer]::Ordinal)
             $script:recoveryBoundary = [ordered]@{
-                schemaVersion = 1
+                schemaVersion = 2
                 phase = 'InertIdentityDeployment'
                 deploymentName = 'a365gw-safe-bootstrap-inert-dev'
                 deploymentOwnershipId = $script:whatIfOwnershipId
@@ -868,6 +930,38 @@ Describe 'Azure What-If result boundary' {
                 evidence = [ordered]@{ deploymentName = 'a365gw-safe-bootstrap-inert-dev' }
                 boundary = $script:recoveryBoundary
             }
+            $sqlPrivateEndpointId = "$baseResourceId/microsoft.network/privateendpoints/pe-sql-safe-dev"
+            $sqlNicId = "$baseResourceId/microsoft.network/networkinterfaces/pe-sql-safe-dev.nic.aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            $sqlZoneId = "$baseResourceId/microsoft.network/privatednszones/privatelink.database.windows.net"
+            $sqlLinkId = "$sqlZoneId/virtualnetworklinks/link-safe-dev-sql"
+            [string[]]$sqlResourceIds = @($sqlNicId, $sqlZoneId, $sqlLinkId, $sqlPrivateEndpointId)
+            [Array]::Sort($sqlResourceIds, [StringComparer]::Ordinal)
+            $script:sqlPrivateEndpointExtension = [ordered]@{
+                schemaVersion = 1
+                phase = 'SqlPrivateEndpoint'
+                deploymentName = 'a365gw-safe-bootstrap-sql-private-dev'
+                deploymentOwnershipId = $script:whatIfOwnershipId
+                sourceFingerprint = $script:whatIfSourceFingerprint
+                resourceIds = $sqlResourceIds
+                typeInventoryResourceIds = [ordered]@{
+                    'Microsoft.Network/networkInterfaces' = @($sqlNicId)
+                    'Microsoft.Network/privateDnsZones' = @($sqlZoneId)
+                    'Microsoft.Network/privateDnsZones/virtualNetworkLinks' = @($sqlLinkId)
+                    'Microsoft.Network/privateEndpoints' = @($sqlPrivateEndpointId)
+                }
+                generatedNicBinding = [ordered]@{
+                    nicId = $sqlNicId
+                    privateEndpointId = $sqlPrivateEndpointId
+                    subnetId = "$baseResourceId/microsoft.network/virtualnetworks/vnet-safe/subnets/snet-private-endpoints"
+                }
+                privateDnsBinding = [ordered]@{
+                    zoneId = $sqlZoneId
+                    virtualNetworkLinkId = $sqlLinkId
+                    zoneGroupId = "$sqlPrivateEndpointId/privatednszonegroups/sqldnsgroup"
+                }
+            }
+            $script:sqlPrivateEndpointExtension['boundaryFingerprint'] =
+                Get-BootstrapObjectFingerprint -InputObject $script:sqlPrivateEndpointExtension
             $script:recoveryState = [ordered]@{
                 deploymentOwnershipId = $script:whatIfOwnershipId
                 configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $script:config
@@ -876,6 +970,21 @@ Describe 'Azure What-If result boundary' {
                     lastWritten = [ordered]@{ bootstrapSourceFingerprint = $script:whatIfSourceFingerprint }
                 }
                 steps = [ordered]@{
+                    'Prerequisites' = [ordered]@{
+                        status = 'Completed'
+                        sourceFingerprint = $script:whatIfSourceFingerprint
+                        evidence = [ordered]@{ ready = $true }
+                    }
+                    'Azure authentication' = [ordered]@{
+                        status = 'Completed'
+                        sourceFingerprint = $script:whatIfSourceFingerprint
+                        evidence = [ordered]@{ tenantId = '22222222-2222-4222-8222-222222222222' }
+                    }
+                    'Azure provider registration' = [ordered]@{
+                        status = 'Completed'
+                        sourceFingerprint = $script:whatIfSourceFingerprint
+                        evidence = [ordered]@{ registered = $true }
+                    }
                     'Azure foundation' = [ordered]@{
                         status = 'Completed'
                         sourceFingerprint = $script:whatIfSourceFingerprint
@@ -918,6 +1027,7 @@ Describe 'Azure What-If result boundary' {
                 }
             }
             Mock Get-GatewayInertWhatIfRecoveryBoundary { return $script:recoveryResult }
+            Mock Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension { return $script:sqlPrivateEndpointExtension }
             Mock Test-GatewayGroupDeploymentEvidence { return $true }
         }
 
@@ -981,8 +1091,8 @@ Describe 'Azure What-If result boundary' {
                 -State $script:recoveryState
 
             $result.applyReady | Should -BeTrue
-            $result.changeCounts['Ignore'] | Should -Be 25
-            @($result.changes | Where-Object changeType -eq 'Ignore').Count | Should -Be 25
+            $result.changeCounts['Ignore'] | Should -Be 26
+            @($result.changes | Where-Object changeType -eq 'Ignore').Count | Should -Be 26
             $result.recoveryIgnoreBoundary.boundaryFingerprint |
                 Should -BeExactly $script:recoveryBoundary.boundaryFingerprint
             Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 1 -Exactly -ParameterFilter {
@@ -1023,12 +1133,119 @@ Describe 'Azure What-If result boundary' {
             Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
         }
 
-        It 'rejects Ignore after any later phase started' {
+        It 'accepts the exact inert Ignore graph after a contiguous tenant-only phase starts' {
             Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
+            $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
             $script:recoveryState.steps['Agent 365 seed blueprint'] = [ordered]@{
                 status = 'Running'
                 sourceFingerprint = $script:whatIfSourceFingerprint
             }
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeTrue
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 1 -Exactly
+        }
+
+        It 'accepts only the exact 30-resource graph after completed SQL private endpoint and a later failure' {
+            $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
+            $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
+            foreach ($stepName in @('Agent 365 seed blueprint', 'Workflow v3 Entra configuration')) {
+                $script:recoveryState.steps[$stepName] = [ordered]@{
+                    status = 'Completed'
+                    sourceFingerprint = $script:whatIfSourceFingerprint
+                    evidence = [ordered]@{ verified = $true }
+                }
+            }
+            $script:recoveryState.steps['SQL private endpoint'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+                evidence = [ordered]@{ deploymentName = 'a365gw-safe-bootstrap-sql-private-dev' }
+            }
+            $script:recoveryState.steps['Gateway database'] = [ordered]@{
+                status = 'Failed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+            }
+            Set-TestRecoveryWhatIf -IgnoreIds @(
+                $script:recoveryBoundary.resourceIds + $script:sqlPrivateEndpointExtension.resourceIds)
+
+            $result = Invoke-GatewayFoundationWhatIf `
+                -Config $script:config -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint `
+                -State $script:recoveryState
+
+            $result.applyReady | Should -BeTrue
+            $result.changeCounts['Ignore'] | Should -Be 30
+            $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 3
+            $result.recoveryIgnoreBoundary.phase | Should -BeExactly 'InertIdentityDeployment+SqlPrivateEndpoint'
+            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 30
+            $result.recoveryIgnoreBoundary.boundaryFingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
+            Should -Invoke Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension -Times 1 -Exactly
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 1 -Exactly -ParameterFilter {
+                $AdditionalTypeInventoryResourceIds -eq $script:sqlPrivateEndpointExtension.typeInventoryResourceIds
+            }
+        }
+
+        It 'rejects a non-contiguous later recovery state before any provider readback' {
+            $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
+            $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
+            $script:recoveryState.steps['Workflow v3 Entra configuration'] = [ordered]@{
+                status = 'Running'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+            }
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+            Should -Invoke Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension -Times 0 -Exactly
+        }
+
+        It 'rejects a non-completed SQL private-endpoint step because its ARM footprint is ambiguous' {
+            $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
+            $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
+            foreach ($stepName in @('Agent 365 seed blueprint', 'Workflow v3 Entra configuration')) {
+                $script:recoveryState.steps[$stepName] = [ordered]@{
+                    status = 'Completed'
+                    sourceFingerprint = $script:whatIfSourceFingerprint
+                    evidence = [ordered]@{ verified = $true }
+                }
+            }
+            $script:recoveryState.steps['SQL private endpoint'] = [ordered]@{
+                status = 'Failed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+            }
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+
+            (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                Should -BeFalse
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+            Should -Invoke Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension -Times 0 -Exactly
+        }
+
+        It 'rejects a tampered SQL private-endpoint recovery extension' {
+            $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
+            $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
+            foreach ($stepName in @('Agent 365 seed blueprint', 'Workflow v3 Entra configuration')) {
+                $script:recoveryState.steps[$stepName] = [ordered]@{
+                    status = 'Completed'
+                    sourceFingerprint = $script:whatIfSourceFingerprint
+                    evidence = [ordered]@{ verified = $true }
+                }
+            }
+            $script:recoveryState.steps['SQL private endpoint'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+                evidence = [ordered]@{ deploymentName = 'a365gw-safe-bootstrap-sql-private-dev' }
+            }
+            $script:recoveryState.steps['Gateway database'] = [ordered]@{
+                status = 'Failed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+            }
+            $script:sqlPrivateEndpointExtension.boundaryFingerprint = "sha256:$('f' * 64)"
+            Set-TestRecoveryWhatIf -IgnoreIds @(
+                $script:recoveryBoundary.resourceIds + $script:sqlPrivateEndpointExtension.resourceIds)
 
             (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
                 Should -BeFalse
@@ -1098,6 +1315,24 @@ Describe 'Azure What-If result boundary' {
 
             (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
                 Should -BeFalse
+            Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+        }
+
+        It 'permits spaces only in the exact deterministic Failure Anomalies resource ID' {
+            foreach ($resourceId in @(
+                '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.Test/resources/unexpected name',
+                '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.AlertsManagement/smartDetectorAlertRules/Failure Anomalies - ai-other-dev',
+                "/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.Test/resources/unexpected`tname"
+            )) {
+                $script:whatIfResult = [pscustomobject]@{
+                    status = 'Succeeded'
+                    error = $null
+                    changes = @([pscustomobject]@{ changeType = 'Create'; resourceId = $resourceId })
+                }
+
+                (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
+                    Should -BeFalse
+            }
             Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
         }
 
@@ -1233,6 +1468,134 @@ Describe 'Azure What-If result boundary' {
             })
             (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint).applyReady |
                 Should -BeFalse
+        }
+    }
+}
+
+Describe 'SQL private-endpoint What-If recovery extension' {
+    InModuleScope Experience {
+        BeforeEach {
+            $script:sqlExtensionSubscriptionId = '11111111-1111-4111-8111-111111111111'
+            $script:sqlExtensionOwnershipId = '22222222-2222-4222-8222-222222222222'
+            $script:sqlExtensionSourceFingerprint = "sha256:$('a' * 64)"
+            $script:sqlExtensionConfig = [pscustomobject]@{
+                subscriptionId = $script:sqlExtensionSubscriptionId
+                resourceGroupName = 'rg-safe-dev'
+                projectName = 'safe'
+                environment = 'dev'
+                location = 'koreacentral'
+            }
+            $providerPrefix = "/subscriptions/$($script:sqlExtensionSubscriptionId)/resourceGroups/rg-safe-dev/providers"
+            $script:sqlExtensionPrivateEndpointId = "$providerPrefix/Microsoft.Network/privateEndpoints/pe-sql-safe-dev"
+            $script:sqlExtensionNicId = "$providerPrefix/Microsoft.Network/networkInterfaces/pe-sql-safe-dev.nic.33333333-3333-4333-8333-333333333333"
+            $script:sqlExtensionZoneId = "$providerPrefix/Microsoft.Network/privateDnsZones/privatelink.database.windows.net"
+            $script:sqlExtensionLinkId = "$($script:sqlExtensionZoneId)/virtualNetworkLinks/link-safe-dev-sql"
+            $script:sqlExtensionZoneGroupId = "$($script:sqlExtensionPrivateEndpointId)/privateDnsZoneGroups/sqlDnsGroup"
+            $script:sqlExtensionSubnetId = "$providerPrefix/Microsoft.Network/virtualNetworks/vnet-safe-dev/subnets/snet-private-endpoints"
+            $script:sqlExtensionFoundation = [pscustomobject]@{
+                privateEndpointSubnetId = $script:sqlExtensionSubnetId
+            }
+            $script:sqlExtensionEvidence = [ordered]@{
+                privateEndpointId = $script:sqlExtensionPrivateEndpointId
+                privateDnsZoneId = $script:sqlExtensionZoneId
+                virtualNetworkLinkId = $script:sqlExtensionLinkId
+                privateDnsZoneGroupId = $script:sqlExtensionZoneGroupId
+            }
+            $script:sqlExtensionNetworkInterfaces = @([pscustomobject]@{ id = $script:sqlExtensionNicId })
+            $script:sqlExtensionNicPrivateEndpointId = $script:sqlExtensionPrivateEndpointId
+            Mock Test-GatewaySqlPrivateEndpointEvidence { return $true }
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'network') {
+                    return [pscustomobject]@{
+                        id = $script:sqlExtensionPrivateEndpointId
+                        name = 'pe-sql-safe-dev'
+                        location = 'koreacentral'
+                        provisioningState = 'Succeeded'
+                        subnet = [pscustomobject]@{ id = $script:sqlExtensionSubnetId }
+                        networkInterfaces = $script:sqlExtensionNetworkInterfaces
+                    }
+                }
+                if ([string]$Arguments[0] -ceq 'resource') {
+                    return [pscustomobject]@{
+                        id = $script:sqlExtensionNicId
+                        type = 'Microsoft.Network/networkInterfaces'
+                        name = 'pe-sql-safe-dev.nic.33333333-3333-4333-8333-333333333333'
+                        location = 'koreacentral'
+                        properties = [pscustomobject]@{
+                            provisioningState = 'Succeeded'
+                            privateEndpoint = [pscustomobject]@{ id = $script:sqlExtensionNicPrivateEndpointId }
+                            ipConfigurations = @([pscustomobject]@{
+                                properties = [pscustomobject]@{
+                                    subnet = [pscustomobject]@{ id = $script:sqlExtensionSubnetId }
+                                }
+                            })
+                        }
+                    }
+                }
+                throw 'Unexpected SQL recovery extension readback.'
+            }
+        }
+
+        It 'derives one fingerprinted four-resource extension with an exact generated-NIC reverse binding' {
+            $extension = Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension `
+                -Config $script:sqlExtensionConfig `
+                -Foundation $script:sqlExtensionFoundation `
+                -SqlServerFqdn 'sql-safe-dev.database.windows.net' `
+                -Evidence $script:sqlExtensionEvidence `
+                -DeploymentOwnershipId $script:sqlExtensionOwnershipId `
+                -SourceFingerprint $script:sqlExtensionSourceFingerprint
+
+            $validated = Assert-GatewaySqlPrivateEndpointWhatIfRecoveryExtension `
+                -Extension $extension `
+                -Config $script:sqlExtensionConfig `
+                -DeploymentOwnershipId $script:sqlExtensionOwnershipId `
+                -SourceFingerprint $script:sqlExtensionSourceFingerprint
+            $extension.resourceIds.Count | Should -Be 4
+            $validated.resourceIds.Count | Should -Be 4
+            $extension.generatedNicBinding.nicId | Should -BeExactly $script:sqlExtensionNicId.ToLowerInvariant()
+            $extension.boundaryFingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
+            Should -Invoke Test-GatewaySqlPrivateEndpointEvidence -Times 1 -Exactly
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'network' -and [string]$Arguments[1] -ceq 'private-endpoint'
+            }
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'resource' -and $Arguments -contains '2023-11-01'
+            }
+        }
+
+        It 'rejects zero or multiple generated network interfaces' {
+            foreach ($interfaces in @(
+                @(),
+                @([pscustomobject]@{ id = $script:sqlExtensionNicId }, [pscustomobject]@{ id = $script:sqlExtensionNicId })
+            )) {
+                $script:sqlExtensionNetworkInterfaces = $interfaces
+                { Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension `
+                        -Config $script:sqlExtensionConfig `
+                        -Foundation $script:sqlExtensionFoundation `
+                        -SqlServerFqdn 'sql-safe-dev.database.windows.net' `
+                        -Evidence $script:sqlExtensionEvidence `
+                        -DeploymentOwnershipId $script:sqlExtensionOwnershipId `
+                        -SourceFingerprint $script:sqlExtensionSourceFingerprint } |
+                    Should -Throw '*one exact generated network interface*'
+            }
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly -ParameterFilter {
+                [string]$Arguments[0] -ceq 'resource'
+            }
+        }
+
+        It 'rejects a generated NIC that does not reverse-bind to the exact SQL endpoint' {
+            $script:sqlExtensionNicPrivateEndpointId =
+                $script:sqlExtensionPrivateEndpointId.Replace('/pe-sql-safe-dev', '/pe-other')
+
+            { Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension `
+                    -Config $script:sqlExtensionConfig `
+                    -Foundation $script:sqlExtensionFoundation `
+                    -SqlServerFqdn 'sql-safe-dev.database.windows.net' `
+                    -Evidence $script:sqlExtensionEvidence `
+                    -DeploymentOwnershipId $script:sqlExtensionOwnershipId `
+                    -SourceFingerprint $script:sqlExtensionSourceFingerprint } |
+                Should -Throw '*does not exactly reverse-bind*'
         }
     }
 }

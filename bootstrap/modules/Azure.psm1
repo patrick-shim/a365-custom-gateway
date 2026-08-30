@@ -60,6 +60,7 @@ function Assert-BootstrapAzureContext {
 
 function Register-BootstrapResourceProviders {
     foreach ($provider in @(
+        'Microsoft.AlertsManagement',
         'Microsoft.App',
         'Microsoft.ContainerRegistry',
         'Microsoft.Insights',
@@ -1459,10 +1460,11 @@ function New-GatewayInertWhatIfRecoveryBoundary {
         [Parameter(Mandatory)][string]$ApiImage,
         [Parameter(Mandatory)][string]$WorkerImage,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [AllowNull()][System.Collections.IDictionary]$AdditionalTypeInventoryResourceIds
     )
     if ($Config.promptShield.enabled -eq $true) {
-        throw 'The exact 25-resource inert What-If recovery boundary does not include optional Prompt Shields resources.'
+        throw 'The exact 26-resource inert What-If recovery boundary does not include optional Prompt Shields resources.'
     }
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Inert What-If recovery source fingerprint'
@@ -1473,6 +1475,34 @@ function New-GatewayInertWhatIfRecoveryBoundary {
         [string]$Evidence.sourceFingerprint -cne $SourceFingerprint -or
         [string]$Evidence.apiImage -cne $ApiImage -or [string]$Evidence.workerImage -cne $WorkerImage) {
         throw 'Succeeded inert evidence is not bound to the exact deployment, owner, source, and images.'
+    }
+
+    $additionalInventory = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    if ($null -ne $AdditionalTypeInventoryResourceIds) {
+        [string[]]$expectedAdditionalTypes = @(
+            'Microsoft.Network/networkInterfaces',
+            'Microsoft.Network/privateDnsZones',
+            'Microsoft.Network/privateDnsZones/virtualNetworkLinks',
+            'Microsoft.Network/privateEndpoints'
+        )
+        [string[]]$actualAdditionalTypes = @($AdditionalTypeInventoryResourceIds.Keys | ForEach-Object { [string]$_ })
+        [Array]::Sort($expectedAdditionalTypes, [StringComparer]::Ordinal)
+        [Array]::Sort($actualAdditionalTypes, [StringComparer]::Ordinal)
+        if ($actualAdditionalTypes.Count -ne $expectedAdditionalTypes.Count -or
+            ($actualAdditionalTypes -join "`n") -cne ($expectedAdditionalTypes -join "`n")) {
+            throw 'The inert recovery inventory extension does not match the exact SQL private-endpoint type surface.'
+        }
+        foreach ($resourceType in $expectedAdditionalTypes) {
+            $rawIds = $AdditionalTypeInventoryResourceIds[$resourceType]
+            if ($rawIds -isnot [System.Collections.IList] -or @($rawIds).Count -ne 1) {
+                throw 'The inert recovery inventory extension must contain exactly one SQL private-endpoint resource per reviewed type.'
+            }
+            $canonicalId = ConvertTo-GatewayCanonicalArmResourceId `
+                -ResourceId ([string]@($rawIds)[0]) `
+                -Config $Config `
+                -Label 'SQL private-endpoint recovery inventory extension'
+            $additionalInventory[$resourceType] = @($canonicalId)
+        }
     }
 
     $providerPrefix = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers"
@@ -1502,6 +1532,8 @@ function New-GatewayInertWhatIfRecoveryBoundary {
     $workerName = "ca-gateway-worker-$($Config.environment)-v3"
     $actionGroupId = "$providerPrefix/Microsoft.Insights/actionGroups/ag-gateway-alerts"
     $appInsightsId = "$providerPrefix/Microsoft.Insights/components/ai-$($Config.projectName)-$($Config.environment)"
+    $smartDetectorName = "Failure Anomalies - ai-$($Config.projectName)-$($Config.environment)"
+    $smartDetectorId = "$providerPrefix/Microsoft.AlertsManagement/smartDetectorAlertRules/$smartDetectorName"
     $sharedVaultId = "$providerPrefix/Microsoft.KeyVault/vaults/kv-$($Config.projectName)-$($Config.environment)"
     $provisioningVaultId = "$providerPrefix/Microsoft.KeyVault/vaults/kv-$($Config.projectName)-$($Config.environment)-prov"
     $storageId = "$providerPrefix/Microsoft.Storage/storageAccounts/$storageName"
@@ -1542,6 +1574,7 @@ function New-GatewayInertWhatIfRecoveryBoundary {
         [ordered]@{ id = $workerId; type = 'Microsoft.App/containerApps'; name = $workerName; apiVersion = '2025-01-01'; location = [string]$Config.location; tags = $baseTags; alreadyValidated = $true },
         [ordered]@{ id = $actionGroupId; type = 'Microsoft.Insights/actionGroups'; name = 'ag-gateway-alerts'; apiVersion = '2023-01-01'; location = 'global'; tags = $baseTags },
         [ordered]@{ id = $appInsightsId; type = 'Microsoft.Insights/components'; name = "ai-$($Config.projectName)-$($Config.environment)"; apiVersion = '2020-02-02'; location = [string]$Config.location; tags = $baseTags },
+        [ordered]@{ id = $smartDetectorId; type = 'Microsoft.AlertsManagement/smartDetectorAlertRules'; name = $smartDetectorName; apiVersion = '2021-04-01'; location = 'global'; tags = $baseTags },
         [ordered]@{ id = $sharedVaultId; type = 'Microsoft.KeyVault/vaults'; name = "kv-$($Config.projectName)-$($Config.environment)"; apiVersion = '2023-07-01'; location = [string]$Config.location; tags = $baseTags },
         [ordered]@{ id = $provisioningVaultId; type = 'Microsoft.KeyVault/vaults'; name = "kv-$($Config.projectName)-$($Config.environment)-prov"; apiVersion = '2023-07-01'; location = [string]$Config.location; tags = $provisioningTags },
         [ordered]@{ id = $privateDnsZoneId; type = 'Microsoft.Network/privateDnsZones'; name = 'privatelink.blob.core.windows.net'; apiVersion = '2020-06-01'; location = 'global'; tags = ([ordered]@{}) },
@@ -1618,6 +1651,31 @@ function New-GatewayInertWhatIfRecoveryBoundary {
             -Config $Config -Label 'Alert action-group relationship' | Out-Null
     }
 
+    $smartDetector = $resourcesById[(ConvertTo-GatewayCanonicalArmResourceId `
+        -ResourceId $smartDetectorId -Config $Config -Label 'Failure Anomalies smart-detector rule')].resource
+    $smartDetectorProperties = $smartDetector.properties
+    if ([string]$smartDetectorProperties.description -cne 'Failure Anomalies for the A365 Gateway Application Insights resource.' -or
+        [string]$smartDetectorProperties.state -cne 'Enabled' -or
+        [string]$smartDetectorProperties.severity -cne 'Sev3' -or
+        [string]$smartDetectorProperties.frequency -cne 'PT1M' -or
+        [string]$smartDetectorProperties.detector.id -cne 'FailureAnomaliesDetector' -or
+        -not [string]::IsNullOrEmpty([string]$smartDetectorProperties.actionGroups.customEmailSubject) -or
+        -not [string]::IsNullOrEmpty([string]$smartDetectorProperties.actionGroups.customWebhookPayload)) {
+        throw 'The Failure Anomalies smart-detector rule does not match the exact enabled detector contract.'
+    }
+    Assert-GatewayExactArmIdCollection `
+        -Items @($smartDetectorProperties.scope | ForEach-Object { [ordered]@{ id = $_ } }) `
+        -ExpectedIds @($appInsightsId) `
+        -PropertyName 'id' `
+        -Config $Config `
+        -Label 'Failure Anomalies Application Insights scope' | Out-Null
+    Assert-GatewayExactArmIdCollection `
+        -Items @($smartDetectorProperties.actionGroups.groupIds | ForEach-Object { [ordered]@{ id = $_ } }) `
+        -ExpectedIds @($actionGroupId) `
+        -PropertyName 'id' `
+        -Config $Config `
+        -Label 'Failure Anomalies action-group binding' | Out-Null
+
     $dnsLink = $resourcesById[(ConvertTo-GatewayCanonicalArmResourceId -ResourceId $privateDnsLinkId -Config $Config -Label 'Private DNS link')].resource
     if ($dnsLink.properties.registrationEnabled -ne $false -or
         -not ([string]$dnsLink.properties.virtualNetwork.id).Equals([string]$Foundation.virtualNetworkId, [StringComparison]::OrdinalIgnoreCase)) {
@@ -1678,15 +1736,22 @@ function New-GatewayInertWhatIfRecoveryBoundary {
         throw 'The Storage private endpoint DNS group is not exactly bound to the Blob private DNS zone.'
     }
 
-    if ($descriptors.Count -ne 25 -or $resourcesById.Count -ne 25) {
-        throw 'The inert recovery graph is not the exact reviewed 25-resource What-If Ignore boundary.'
+    if ($descriptors.Count -ne 26 -or $resourcesById.Count -ne 26) {
+        throw 'The inert recovery graph is not the exact reviewed 26-resource What-If Ignore boundary.'
     }
     foreach ($typeGroup in @($descriptors | Group-Object -Property {
         [string](Get-GatewayArmObjectProperty -Object $_ -Name 'type')
     })) {
         $expectedTypeIds = @($typeGroup.Group | ForEach-Object {
             ConvertTo-GatewayCanonicalArmResourceId -ResourceId ([string]$_.id) -Config $Config -Label 'Inert type inventory'
-        } | Sort-Object -CaseSensitive)
+        })
+        if ($additionalInventory.ContainsKey([string]$typeGroup.Name)) {
+            $expectedTypeIds += @($additionalInventory[[string]$typeGroup.Name])
+        }
+        $expectedTypeIds = @($expectedTypeIds | Sort-Object -CaseSensitive)
+        if (@($expectedTypeIds | Sort-Object -Unique -CaseSensitive).Count -ne $expectedTypeIds.Count) {
+            throw 'The inert recovery inventory extension overlaps the exact inert resource graph.'
+        }
         $inventory = @(Get-GatewayInertBoundaryTypeInventory -Config $Config -ResourceType ([string]$typeGroup.Name))
         $seenInventoryIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         $actualTypeIds = @()
@@ -1707,7 +1772,7 @@ function New-GatewayInertWhatIfRecoveryBoundary {
 
     $resourceIds = @($resourcesById.Keys | Sort-Object -CaseSensitive)
     $boundary = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         phase = 'InertIdentityDeployment'
         deploymentName = $deploymentName
         deploymentOwnershipId = $canonicalOwnershipId
@@ -1736,7 +1801,8 @@ function Get-GatewayInertWhatIfRecoveryBoundary {
         [Parameter(Mandatory)][string]$ApiImage,
         [Parameter(Mandatory)][string]$WorkerImage,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [AllowNull()][System.Collections.IDictionary]$AdditionalTypeInventoryResourceIds
     )
     $evidence = Deploy-GatewayCore -Config $Config -Foundation $Foundation -Identity $Identity `
         -ApiImage $ApiImage -WorkerImage $WorkerImage -WorkerPrincipalId '' -ManagerApplicationIds @() `
@@ -1744,7 +1810,8 @@ function Get-GatewayInertWhatIfRecoveryBoundary {
         -Initial -SucceededRecoveryOnly
     $boundary = New-GatewayInertWhatIfRecoveryBoundary -Config $Config -Foundation $Foundation `
         -Evidence $evidence -ApiImage $ApiImage -WorkerImage $WorkerImage `
-        -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint
+        -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
+        -AdditionalTypeInventoryResourceIds $AdditionalTypeInventoryResourceIds
     return [ordered]@{ evidence = $evidence; boundary = $boundary }
 }
 
