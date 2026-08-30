@@ -94,13 +94,17 @@ bootstrap may install Git, Azure CLI, the .NET 10 SDK, or Bicep, and install
 process owns those changes; missing or mismatched tools will then fail with
 remediation instead of being installed.
 
-Before setup, independently verify the one-to-ten Microsoft first-party Agent 365
-manager application IDs for the target tenant/provider. The wizard writes these to
-`agent365.reviewedManagerApplicationIds`; the terminal plan displays the exact sorted
-set and binds it into the accepted fingerprint. Replace the dummy GUID in
-`config.example.json`. Blueprint or provider discovery is readback evidence only:
-it must exactly match the reviewed set and never grants authority by itself. Follow
-the review boundary in
+After you select the exact subscription, guided setup can perform bounded read-only
+discovery of typed Agent ID blueprint `managerApplications` and exact tenant service-
+principal metadata. It shows every candidate and its provenance, but copies nothing
+into configuration until you explicitly accept that exact set. If the tenant has no
+usable provider evidence or the result is partial/ambiguous, setup stops and asks for
+an independently reviewed provider result instead of guessing. The terminal wizard
+still accepts an independently reviewed one-to-ten ID set. The resulting sorted set
+is written to `agent365.reviewedManagerApplicationIds`, displayed by Plan, and bound
+into the accepted fingerprint. Replace the dummy GUID in `config.example.json` when
+using a hand-authored configuration. Discovery is readback evidence only and never
+grants authority by itself. Follow the review boundary in
 [`docs/operations/entra-setup-runbook.md`](../docs/operations/entra-setup-runbook.md#43-agent-365-managerapplications-provider-prerequisite).
 
 On macOS, Homebrew can install the base command-line tools:

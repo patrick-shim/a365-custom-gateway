@@ -19,6 +19,11 @@ dependency and the production-readiness reviews below.
 
 The guided setup is the shortest supported path:
 
+This clean-subscription path assumes the selected subscription belongs to an
+Agent-365-enabled tenant with usable typed-blueprint `managerApplications`
+evidence. Setup stops instead of guessing when that tenant-level prerequisite is
+absent.
+
 ```bash
 git clone https://github.com/patrick-shim/a365-custom-gateway.git
 cd a365-custom-gateway
@@ -27,24 +32,33 @@ az login
 ```
 
 On Windows, run `gateway.cmd setup`. The command opens a temporary Fluent UI on
-`127.0.0.1`, discovers the current Azure CLI subscription, writes only the ignored
-non-secret `bootstrap/config.json`, shows a source-validated Azure What-If plan,
-requires explicit confirmation, and delegates deployment to the same resumable
-bootstrap engine used by automation. The local setup server exits when setup is
-finished or idle. It never asks for or stores cloud credentials. Setup does require
-the exact one-to-ten Agent 365 manager application IDs that the operator has
-independently reviewed; values returned by blueprint discovery are compared with
-that approved set and are never treated as authority by themselves.
+`127.0.0.1`. Before it launches, it checks the .NET 10 SDK, PowerShell 7, and Azure
+CLI and gives a direct remediation if one is missing.
 
-Plan shows the exact tenant, subscription, deployment ownership, source fingerprint,
-and SQL bootstrap IPv4 before approval. It corroborates that IPv4 through bounded
-HTTPS requests to both ipify and AWS Check IP; disagreement or a non-canonical IPv4
-stops before any SQL network change. Every Azure CLI/Graph operation during
-execution remains pinned to the reviewed tenant and subscription.
-For the seed blueprint, Plan also states whether the run is a fresh one-POST
-creation, GET-only reconciliation of a previously started outcome, or read-only
-revalidation of completed evidence. That disposition is part of the plan
-fingerprint, so Resume cannot silently authorize a second create.
+The wizard then does four things:
+
+1. makes you select the exact Azure subscription when more than one is available;
+2. collects the project, region, alert email, and deployment profile;
+3. derives any Agent 365 manager-application candidate through bounded read-only
+   tenant inventory, shows its provenance, and requires explicit acceptance rather
+   than treating discovery as authority; and
+4. shows the complete Azure What-If and permission plan before one **Deploy** action.
+
+The wizard stores only ignored, non-secret configuration and never asks for a cloud
+password or token. Deployment is considered finished only after authenticated
+read-back verification emits one consistent Admin UI URL and API URL. The finish
+page opens the hosted Setup Center.
+
+To use the deployed Gateway:
+
+1. sign in to the Admin UI as the bootstrap administrator;
+2. open **Setup Center** and register the first agent; and
+3. save the one-time Gateway key when it is shown, then give the external agent its
+   generated external ID, Gateway API URL, and that key.
+
+Quick Development can explicitly enable the Registry beta needed to take a demo
+registration through `Active`. Staging and production keep that preview boundary
+closed. Prompt Shields, Purview, and paid SKU choices remain opt-in.
 
 The terminal-only equivalent is:
 
@@ -60,16 +74,10 @@ Container Registry, and the seed blueprint is created directly through Microsoft
 Graph v1.0 without creating a blueprint credential. Azure, Entra, Agent ID, and
 optional Purview authentication remain in their official signed-in flows.
 
-Automatic prerequisite installation is a local mutation. When it is enabled, the
-bootstrap may install Git, Azure CLI, the .NET 10 SDK, or Bicep where the platform
-supports that path, and install the optional Exchange Online module for Purview.
-Use `--no-install` when those
-workstation changes must be managed separately.
-
-Setup deliberately has no destroy, retained-message, Registry-replay, historical
-cleanup, or SQL-finalization command. Development Registry preview, Prompt Shields,
-Purview, and paid SKU choices are off unless explicitly selected. Staging and
-production keep the beta Registry creation boundary closed.
+For automation, recovery rules, exact permissions, and the terminal command
+reference, see [`bootstrap/README.md`](bootstrap/README.md). Setup deliberately has
+no destroy, retained-message replay, historical cleanup, or SQL-finalization
+command.
 
 ## Start here
 

@@ -958,6 +958,37 @@ validation only, not live proof. The next isolated generation is `a365gw24` /
 `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`; protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
 
+The current local source now presents the clean-subscription bootstrap as the
+audience workflow: clone, run `./gateway setup` (`gateway.cmd setup` on Windows),
+select the exact subscription, configure public values, accept the bounded
+tenant-derived manager application set, review one typed Plan, and choose one
+Deploy action. The launchers preflight .NET 10, PowerShell 7, and Azure CLI. The UI
+does not inherit the Azure CLI default when multiple enabled subscriptions exist,
+does not auto-enable Registry beta, and does not copy discovery into configuration
+until explicit acceptance. Apply/Resume success requires one exact typed deployment
+verification result carrying deterministic Admin UI, API, and health URLs; Resume
+is unavailable until a real execution failure or cancellation. Finish opens the
+hosted Setup Center and does not conflate deployment with open admission, an Active
+registration, a canary, or retention of the one-time Gateway key.
+
+Fresh desktop and 390-by-844 loopback checks show no horizontal overflow. A bounded
+read-only check against target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76` observed 25 typed blueprints, 20 carrying
+manager metadata, one distinct candidate, and one exact tenant service principal.
+No Azure, Entra, SQL, Agent 365, Registry, Service Bus, key, registration, or canary
+mutation followed. The Release build is zero-warning/zero-error and all
+**1,369/1,369** direct Release tests pass: unit 496, Admin UI 155, local Setup 118,
+observability/runtime 149, integration 92, end-to-end 106, architecture 120, and
+security 133. The canonical source gate discovers **520** Pester tests: **519**
+pass, none fail, and one Windows-only launcher test is skipped on macOS; it parses
+**19** PowerShell files and **2** JSON contracts and compiles all **26** Bicep
+templates plus **5** parameter files. Format and diff checks pass. This is local
+source/UI proof, not deployment evidence. The default-branch clone contract remains
+unpublished until the candidate is live-proven and fast-forwarded. The next live
+action is still fresh generation `a365gw24` / `rg-a365-custom-gw-phase6w` in the
+target subscription only; protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` remains completely outside the proof.
+
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local

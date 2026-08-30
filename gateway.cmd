@@ -204,13 +204,68 @@ echo Unknown setup option. Run gateway.cmd setup --help. 1>&2
 exit /b 2
 
 :run_setup
-where dotnet.exe >nul 2>nul
-if errorlevel 1 (
-  echo .NET 10 SDK is required for the guided setup UI: https://dotnet.microsoft.com/download/dotnet/10.0 1>&2
-  exit /b 1
-)
+call :check_setup_prerequisites
+if errorlevel 1 exit /b 1
 dotnet run --project "%~dp0tools\Gateway.Setup\Gateway.Setup.csproj" -- --repo-root "%~dp0" %SETUP_NO_OPEN%
 exit /b %errorlevel%
+
+:check_setup_prerequisites
+set "SETUP_PREREQUISITES_READY=1"
+set "GATEWAY_SETUP_PWSH=pwsh.exe"
+where pwsh.exe >nul 2>nul
+if errorlevel 1 (
+  if exist "%ProgramFiles%\PowerShell\7\pwsh.exe" (
+    set "GATEWAY_SETUP_PWSH=%ProgramFiles%\PowerShell\7\pwsh.exe"
+    set "PATH=%ProgramFiles%\PowerShell\7;%PATH%"
+  ) else (
+    echo Setup requires PowerShell 7 ^(pwsh^). Install: https://aka.ms/powershell-release?tag=stable 1>&2
+    set "SETUP_PREREQUISITES_READY=0"
+  )
+)
+if "%SETUP_PREREQUISITES_READY%"=="1" (
+  "%GATEWAY_SETUP_PWSH%" -NoLogo -NoProfile -NonInteractive -Command "if ($PSVersionTable.PSVersion.Major -ge 7) { exit 0 }; exit 1" >nul 2>nul
+  if errorlevel 1 (
+    echo Setup requires PowerShell 7 ^(pwsh^). Install: https://aka.ms/powershell-release?tag=stable 1>&2
+    set "SETUP_PREREQUISITES_READY=0"
+  )
+)
+
+where dotnet.exe >nul 2>nul
+if errorlevel 1 (
+  echo Setup requires the .NET 10 SDK. Install: https://dotnet.microsoft.com/download/dotnet/10.0 1>&2
+  set "SETUP_PREREQUISITES_READY=0"
+) else (
+  call :check_setup_dotnet_10
+  if errorlevel 1 (
+    echo Setup requires the .NET 10 SDK. Install: https://dotnet.microsoft.com/download/dotnet/10.0 1>&2
+    set "SETUP_PREREQUISITES_READY=0"
+  )
+)
+
+where az >nul 2>nul
+if errorlevel 1 (
+  echo Setup requires Azure CLI ^(az^). Install: https://learn.microsoft.com/cli/azure/install-azure-cli 1>&2
+  set "SETUP_PREREQUISITES_READY=0"
+) else (
+  call az version >nul 2>nul
+  if errorlevel 1 (
+    echo Setup requires Azure CLI ^(az^). Install: https://learn.microsoft.com/cli/azure/install-azure-cli 1>&2
+    set "SETUP_PREREQUISITES_READY=0"
+  )
+)
+
+if "%SETUP_PREREQUISITES_READY%"=="0" (
+  echo Install or repair the listed tools, open a new terminal, and rerun gateway.cmd setup. 1>&2
+  exit /b 1
+)
+exit /b 0
+
+:check_setup_dotnet_10
+set "GATEWAY_SETUP_DOTNET_VERSION="
+for /f "delims=" %%V in ('dotnet --version 2^>nul') do set "GATEWAY_SETUP_DOTNET_VERSION=%%V"
+if not defined GATEWAY_SETUP_DOTNET_VERSION exit /b 1
+if "%GATEWAY_SETUP_DOTNET_VERSION:~0,3%"=="10." exit /b 0
+exit /b 1
 
 :help_setup
 echo Usage: gateway.cmd setup [--no-open]

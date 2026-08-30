@@ -22,22 +22,29 @@ public sealed class BootstrapOutputSanitizerTests
         result.Message.Should().Be("Deploying resources for [email] from [local-path]");
         result.Step.Should().Be("Azure foundation");
         result.ProgressPercent.Should().Be(42);
-        result.AdminUiAddress.Should().BeNull("an arbitrary phase event is not verified endpoint evidence");
+        result.VerifiedEndpoints.Should().BeNull("an arbitrary phase event is not verified endpoint evidence");
+        result.DeploymentVerificationClaimObserved.Should().BeFalse();
         result.Message.Should().NotContain("unexpected");
         result.Message.Should().NotContain("do not render");
     }
 
     [Fact]
-    public void CanonicalCompletedVerificationEvent_ExposesOnlyTheScrubbedHttpsAdminAddress()
+    public void CanonicalCompletedVerificationEvent_ExposesOnlyValidatedHttpsEndpoints()
     {
         const string line = """
-            {"schemaVersion":1,"type":"Result","message":"Bootstrap completed and verified in 00:14:02. Admin UI: https://admin.example.test/setup?code=discard","data":{"step":"End-to-end deployment verification","category":"deploymentVerified","verified":true,"verificationMode":"Apply","index":19,"total":19,"adminUiUrl":"https://admin.example.test/setup?code=discard","apiHealthUrl":"https://api.example.test/health/checks","unexpected":"do not render"}}
+            {"schemaVersion":1,"type":"Result","message":"Bootstrap completed and verified in 00:14:02. Admin UI: https://admin.example.test/?code=discard","data":{"step":"End-to-end deployment verification","category":"deploymentVerified","verified":true,"verificationMode":"Apply","index":19,"total":19,"adminUiUrl":"https://ca-gateway-admin-dev.safe.azurecontainerapps.io/","apiUrl":"https://ca-gateway-api-dev.safe.azurecontainerapps.io/","apiHealthUrl":"https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks","unexpected":"do not render"}}
             """;
 
         var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
 
         result.Kind.Should().Be(BootstrapProgressKind.Success);
-        result.AdminUiAddress.Should().Be("https://admin.example.test/setup");
+        result.DeploymentVerificationClaimObserved.Should().BeTrue();
+        result.VerifiedEndpoints.Should().NotBeNull();
+        result.VerifiedEndpoints!.VerificationMode.Should().Be(BootstrapVerificationMode.Apply);
+        result.VerifiedEndpoints.AdminUiBaseAddress.Should().Be("https://ca-gateway-admin-dev.safe.azurecontainerapps.io/");
+        result.VerifiedEndpoints.AdminSetupAddress.Should().Be("https://ca-gateway-admin-dev.safe.azurecontainerapps.io/setup");
+        result.VerifiedEndpoints.ApiBaseAddress.Should().Be("https://ca-gateway-api-dev.safe.azurecontainerapps.io/");
+        result.VerifiedEndpoints.ApiHealthAddress.Should().Be("https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks");
         result.Message.Should().NotContain("?code=discard");
         result.Message.Should().NotContain("do not render");
     }
@@ -62,13 +69,20 @@ public sealed class BootstrapOutputSanitizerTests
                 verificationMode,
                 index = 19,
                 total = 19,
-                adminUiUrl = "https://admin.example.test/"
+                adminUiUrl = "https://ca-gateway-admin-dev.safe.azurecontainerapps.io/",
+                apiUrl = "https://ca-gateway-api-dev.safe.azurecontainerapps.io/",
+                apiHealthUrl = "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks"
             }
         });
 
         var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
 
-        result.AdminUiAddress.Should().Be("https://admin.example.test/");
+        result.DeploymentVerificationClaimObserved.Should().BeTrue();
+        result.VerifiedEndpoints.Should().NotBeNull();
+        result.VerifiedEndpoints!.VerificationMode.ToString().Should().Be(verificationMode);
+        result.VerifiedEndpoints.AdminUiBaseAddress.Should().Be("https://ca-gateway-admin-dev.safe.azurecontainerapps.io/");
+        result.VerifiedEndpoints.ApiBaseAddress.Should().Be("https://ca-gateway-api-dev.safe.azurecontainerapps.io/");
+        result.VerifiedEndpoints.ApiHealthAddress.Should().Be("https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks");
     }
 
     [Fact]
@@ -78,8 +92,73 @@ public sealed class BootstrapOutputSanitizerTests
             {"schemaVersion":1,"type":"Result","message":"Gateway deployment completed and verified.","data":{"step":"End-to-end deployment verification","index":19,"total":19,"adminUiUrl":"https://admin.example.test/"}}
             """;
 
-        BootstrapOutputSanitizer.Parse(line, standardError: false)
-            .AdminUiAddress.Should().BeNull();
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.DeploymentVerificationClaimObserved.Should().BeFalse();
+        result.VerifiedEndpoints.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("Apply", "http://ca-gateway-admin-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks")]
+    [InlineData("Apply", "https://ca-gateway-admin-dev.safe.azurecontainerapps.io/setup", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks")]
+    [InlineData("Apply", "https://user@ca-gateway-admin-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks")]
+    [InlineData("Apply", "https://ca-gateway-admin-dev.safe.azurecontainerapps.io/", "", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks")]
+    [InlineData("Apply", "https://ca-gateway-admin-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/?query=unsafe", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks")]
+    [InlineData("Apply", "https://ca-gateway-admin-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.other.azurecontainerapps.io/health/checks")]
+    [InlineData("Apply", "https://ca-gateway-admin-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health")]
+    [InlineData("Apply", "https://10.0.0.1/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks")]
+    [InlineData("Apply", "https://169.254.169.254/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks")]
+    [InlineData("Apply", "https://gateway/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks")]
+    [InlineData("Apply", "https://ca-gateway-admin-dev.safe.azurecontainerapps.io:8443/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks")]
+    [InlineData("Apply", "https://ca-gateway-admin-dev.example.test/", "https://ca-gateway-api-dev.example.test/", "https://ca-gateway-api-dev.example.test/health/checks")]
+    [InlineData("Apply", "https://ca-gateway-admin-staging.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks")]
+    [InlineData("Resume", "https://ca-gateway-admin-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/", "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks")]
+    public void InvalidTypedDeploymentVerificationClaim_IsObservedButCannotSupplyEndpoints(
+        string verificationMode,
+        string adminUiUrl,
+        string apiUrl,
+        string apiHealthUrl)
+    {
+        var line = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            type = "Result",
+            message = "Gateway deployment completed and verified.",
+            data = new
+            {
+                step = "End-to-end deployment verification",
+                category = "deploymentVerified",
+                verified = true,
+                verificationMode,
+                index = 19,
+                total = 19,
+                adminUiUrl,
+                apiUrl,
+                apiHealthUrl
+            }
+        });
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.DeploymentVerificationClaimObserved.Should().BeTrue();
+        result.VerifiedEndpoints.Should().BeNull();
+        result.Kind.Should().Be(BootstrapProgressKind.Error);
+        result.Message.Should().Be(BootstrapOutputSanitizer.InvalidVerificationMessage);
+    }
+
+    [Fact]
+    public void ConflictingDuplicateEndpointField_IsObservedButCannotSupplyEndpoints()
+    {
+        const string line = """
+            {"schemaVersion":1,"type":"Result","message":"Gateway deployment completed and verified.","data":{"step":"End-to-end deployment verification","category":"deploymentVerified","verified":true,"verificationMode":"Apply","index":19,"total":19,"adminUiUrl":"https://ca-gateway-admin-dev.safe.azurecontainerapps.io/","apiUrl":"https://ca-gateway-api-dev.other.azurecontainerapps.io/","apiUrl":"https://ca-gateway-api-dev.safe.azurecontainerapps.io/","apiHealthUrl":"https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks"}}
+            """;
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.DeploymentVerificationClaimObserved.Should().BeTrue();
+        result.VerifiedEndpoints.Should().BeNull();
+        result.Kind.Should().Be(BootstrapProgressKind.Error);
+        result.Message.Should().Be(BootstrapOutputSanitizer.InvalidVerificationMessage);
     }
 
     [Theory]
@@ -151,7 +230,6 @@ public sealed class BootstrapOutputSanitizerTests
     [InlineData("Info", "Features: Registry beta closed; Content Safety shields enabled (F0); Purview disabled.", "features")]
     [InlineData("Info", "Azure foundation What-If: Create=4, Modify=1; applyReady=True.", "whatIf")]
     [InlineData("Warning", "Boundaries: Azure charges may apply; Registry beta creation remains closed; Entra, Agent 365, and optional Purview require separate administrator handoffs.", "boundaries")]
-    [InlineData("Result", "Plan is ready for explicit acceptance.", "planResult")]
     public void RealPlanSummaryEnvelope_RemainsReviewable(
         string type,
         string message,
@@ -209,6 +287,7 @@ public sealed class BootstrapOutputSanitizerTests
 
         result.PlanFingerprint.Should().Be(ReviewedFingerprint);
         result.PlanApplyReady.Should().Be(applyReady);
+        result.PlanResultClaimObserved.Should().BeTrue();
         result.Message.Should().Be(message);
         result.Message.Should().NotContain("must not render");
     }
@@ -266,6 +345,38 @@ public sealed class BootstrapOutputSanitizerTests
 
         result.PlanFingerprint.Should().BeNull();
         result.PlanApplyReady.Should().BeNull();
+        result.PlanResultClaimObserved.Should().BeTrue();
+        result.Kind.Should().Be(BootstrapProgressKind.Error);
+        result.Message.Should().Be(BootstrapOutputSanitizer.InvalidPlanResultMessage);
+    }
+
+    [Fact]
+    public void TypedPlanClaimWithUnsafeMessage_IsStillObservedAndRejected()
+    {
+        var line = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            type = "Result",
+            message = "authorization token must never render",
+            data = new
+            {
+                step = "Plan review",
+                index = 1,
+                total = 19,
+                category = "planResult",
+                planFingerprint = ReviewedFingerprint,
+                applyReady = true
+            }
+        });
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.PlanResultClaimObserved.Should().BeTrue();
+        result.PlanFingerprint.Should().BeNull();
+        result.PlanApplyReady.Should().BeNull();
+        result.Kind.Should().Be(BootstrapProgressKind.Error);
+        result.Message.Should().Be(BootstrapOutputSanitizer.InvalidPlanResultMessage);
+        result.Message.Should().NotContain("token must never render");
     }
 
     [Theory]

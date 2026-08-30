@@ -35,12 +35,22 @@
             <div class="field">
                 <label for="subscription">Subscription</label>
                 <select id="subscription" class="control" value="@State.Form.SubscriptionId" @onchange="SelectSubscription" disabled="@State.ExistingConfigurationLoaded">
+                    <option value="@Guid.Empty" disabled>Choose an enabled subscription…</option>
                     @foreach (var subscription in State.Subscriptions)
                     {
-                        <option value="@subscription.SubscriptionId">@subscription.DisplayLabel@(subscription.IsDefault ? " · Current default" : string.Empty)</option>
+                        <option value="@subscription.SubscriptionId" disabled="@(!AzureAccountDiscovery.IsEnabled(subscription.State))">
+                            @subscription.DisplayLabel@(subscription.IsDefault ? " · CLI default" : string.Empty)@(!AzureAccountDiscovery.IsEnabled(subscription.State) ? $" · {subscription.State}" : string.Empty)
+                        </option>
                     }
                 </select>
-                <small>@(State.ExistingConfigurationLoaded ? "Locked to the imported deployment target. " : string.Empty)Tenant <code>@State.Form.TenantId</code></small>
+                @if (State.Form.SubscriptionId != Guid.Empty)
+                {
+                    <small>@(State.ExistingConfigurationLoaded ? "Locked to the imported deployment target. " : string.Empty)Tenant <code>@State.Form.TenantId</code></small>
+                }
+                else if (State.EnabledSubscriptionCount > 1)
+                {
+                    <small>The CLI default is labeled for orientation only. Setup requires you to choose explicitly when more than one enabled subscription is available.</small>
+                }
             </div>
         }
 
@@ -58,7 +68,7 @@
 
 <div class="page-actions">
     <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/welcome">Back</FluentAnchor>
-    <FluentButton Appearance="Appearance.Accent" Disabled="@(State.Form.SubscriptionId == Guid.Empty || State.AccountSelectionIssue is not null)" OnClick="Continue">Continue</FluentButton>
+    <FluentButton Appearance="Appearance.Accent" Disabled="@(!State.HasEnabledSelectedSubscription || State.AccountSelectionIssue is not null)" OnClick="Continue">Continue</FluentButton>
 </div>
 
 @code {
@@ -104,8 +114,10 @@
     {
         if (Guid.TryParse(args.Value?.ToString(), out var subscriptionId))
         {
-            State.SelectSubscription(subscriptionId);
-            Activity.Touch();
+            if (State.SelectSubscription(subscriptionId))
+            {
+                Activity.Touch();
+            }
         }
     }
 

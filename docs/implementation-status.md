@@ -1523,6 +1523,38 @@ validation only, not live proof. The next isolated generation is `a365gw24` /
 `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`; protected subscription
 `95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
 
+The current source also completes the audience-facing guided bootstrap candidate.
+From a clone, `./gateway setup` (`gateway.cmd setup` on Windows) preflights the
+.NET 10 SDK, PowerShell 7, and Azure CLI, then opens the loopback-only Setup UI.
+When more than one enabled subscription exists, the UI requires an explicit
+selection and blocks disabled subscriptions. It derives manager-application
+candidates only through bounded, exact-subscription Microsoft Graph v1.0 typed-
+blueprint inventory plus exact tenant service-principal readback; discovery and
+acceptance are separate, target changes invalidate acceptance, and absent,
+ambiguous, malformed, or off-origin evidence fails closed. Registry beta remains an
+explicit development-only choice. The execution UI exposes one Apply action after
+one valid typed Plan result, exposes Resume only after an actual failed or cancelled
+Apply/Resume, and treats deployment as successful only when one nonconflicting typed
+verification result proves the deterministic Admin UI, API, and health URLs. The
+finish page opens the hosted Setup Center and keeps deployment, admission, Active
+registration, canary, and one-time-key handling as distinct claims.
+
+Local visual proof covered the fresh path at desktop and 390-by-844 widths with no
+horizontal overflow. The exact target-only read proved 25 typed blueprints, 20 with
+manager metadata, one distinct candidate, and one exact tenant service principal;
+it made no Azure, Entra, SQL, Registry, or data-plane mutation. The zero-warning/
+zero-error Release build and all **1,369/1,369** direct Release tests pass: unit 496,
+Admin UI 155, local Setup 118, observability/runtime 149, integration 92,
+end-to-end 106, architecture 120, and security 133. The canonical source gate
+discovers **520** Pester tests: **519** pass, none fail, and one Windows-only launcher
+test is skipped on macOS; it parses **19** PowerShell files and **2** JSON contracts
+and compiles all **26** Bicep templates plus **5** parameter files. Format and diff
+checks pass. This is source/UI proof only. The README now states the required
+Agent-365-enabled tenant prerequisite, and the default-branch clone contract remains
+unpublished until this candidate is live-proven and fast-forwarded. The next live
+action remains the fresh `a365gw24` / `rg-a365-custom-gw-phase6w` Plan in target
+subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76` only.
+
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
 `Nullable<Guid>.Value` defect before any user action. The controller is fixed and an

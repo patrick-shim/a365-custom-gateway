@@ -15,6 +15,12 @@ internal static partial class BootstrapOutputSanitizer
     public const string StreamBudgetMessage =
         "Bootstrap output exceeded the setup safety budget; additional child-process output was discarded.";
 
+    public const string InvalidVerificationMessage =
+        "Bootstrap emitted an invalid deployment verification result. Endpoint proof was rejected.";
+
+    public const string InvalidPlanResultMessage =
+        "Bootstrap emitted an invalid Plan decision result. Mutation authorization was rejected.";
+
     public static BootstrapProgressEvent Parse(string? line, bool standardError)
     {
         var timestamp = DateTimeOffset.UtcNow;
@@ -76,25 +82,47 @@ internal static partial class BootstrapOutputSanitizer
                 return true;
             }
 
-            var discriminator = ReadBoundedString(root, "type");
-            var message = ReadBoundedString(root, "message");
-            if (!TryMapKind(discriminator, out var kind) ||
-                string.IsNullOrWhiteSpace(message) ||
-                !TrySanitizeRecognizedMessage(message, out var safeMessage))
-            {
-                return true;
-            }
-
             var data = root.TryGetProperty("data", out var dataElement) &&
                 dataElement.ValueKind == JsonValueKind.Object
                     ? dataElement
                     : default;
+            var discriminator = ReadBoundedString(root, "type");
             var category = data.ValueKind == JsonValueKind.Object
                 ? ReadBoundedString(data, "category")
                 : null;
             var step = data.ValueKind == JsonValueKind.Object
                 ? ReadBoundedString(data, "step")
                 : null;
+            var deploymentVerificationClaimObserved = IsDeploymentVerificationClaim(
+                discriminator,
+                step,
+                category);
+            var planResultClaimObserved = IsPlanResultClaim(discriminator, step, category);
+            if (!TryMapKind(discriminator, out var kind))
+            {
+                return true;
+            }
+
+            var message = ReadBoundedString(root, "message");
+            if (string.IsNullOrWhiteSpace(message) ||
+                !TrySanitizeRecognizedMessage(message, out var safeMessage))
+            {
+                if (deploymentVerificationClaimObserved || planResultClaimObserved)
+                {
+                    progressEvent = new BootstrapProgressEvent(
+                        TimestampUtc: fallbackTimestamp,
+                        Kind: BootstrapProgressKind.Error,
+                        Message: deploymentVerificationClaimObserved
+                            ? InvalidVerificationMessage
+                            : InvalidPlanResultMessage,
+                        Step: step,
+                        DeploymentVerificationClaimObserved: deploymentVerificationClaimObserved,
+                        PlanResultClaimObserved: planResultClaimObserved);
+                }
+
+                return true;
+            }
+
             if (step is not null && !TrySanitizeRecognizedMessage(step, out step))
             {
                 step = null;
@@ -104,20 +132,16 @@ internal static partial class BootstrapOutputSanitizer
                 ? CalculateProgress(discriminator!, data)
                 : null;
 
-            Uri? adminUiAddress = null;
-            var addressText = data.ValueKind == JsonValueKind.Object
-                ? ReadBoundedString(data, "adminUiUrl")
-                : null;
-            if (IsVerifiedAdminResult(discriminator, step, data) &&
-                Uri.TryCreate(addressText, UriKind.Absolute, out var parsedAddress) &&
-                parsedAddress.Scheme == Uri.UriSchemeHttps &&
-                string.IsNullOrEmpty(parsedAddress.UserInfo))
+            BootstrapVerifiedEndpoints? verifiedEndpoints = null;
+            if (deploymentVerificationClaimObserved &&
+                TryReadVerifiedEndpoints(root, data, out var parsedEndpoints))
             {
-                adminUiAddress = new UriBuilder(parsedAddress)
-                {
-                    Query = string.Empty,
-                    Fragment = string.Empty
-                }.Uri;
+                verifiedEndpoints = parsedEndpoints;
+            }
+            else if (deploymentVerificationClaimObserved)
+            {
+                kind = BootstrapProgressKind.Error;
+                safeMessage = InvalidVerificationMessage;
             }
 
             var timestamp = fallbackTimestamp;
@@ -129,38 +153,32 @@ internal static partial class BootstrapOutputSanitizer
 
             string? planFingerprint = null;
             bool? planApplyReady = null;
-            if (string.Equals(discriminator, "Result", StringComparison.Ordinal) &&
-                string.Equals(step, "Plan review", StringComparison.Ordinal) &&
-                data.ValueKind == JsonValueKind.Object &&
-                string.Equals(category, "planResult", StringComparison.Ordinal) &&
-                data.TryGetProperty("applyReady", out var applyReadyElement) &&
-                applyReadyElement.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            if (planResultClaimObserved &&
+                TryReadPlanResult(root, data, safeMessage, out var parsedFingerprint, out var parsedApplyReady))
             {
-                var applyReady = applyReadyElement.GetBoolean();
-                var expectedMessage = applyReady
-                    ? "Plan is ready for explicit acceptance."
-                    : "Plan is not apply-ready.";
-                var candidate = ReadBoundedString(data, "planFingerprint");
-                if (string.Equals(safeMessage, expectedMessage, StringComparison.Ordinal) &&
-                    PlanFingerprintPolicy.IsCanonical(candidate))
-                {
-                    planFingerprint = candidate;
-                    planApplyReady = applyReady;
-                }
+                planFingerprint = parsedFingerprint;
+                planApplyReady = parsedApplyReady;
+            }
+            else if (planResultClaimObserved)
+            {
+                kind = BootstrapProgressKind.Error;
+                safeMessage = InvalidPlanResultMessage;
             }
 
             progressEvent = new BootstrapProgressEvent(
-                timestamp,
-                kind,
-                safeMessage,
-                step,
-                progress,
-                adminUiAddress,
-                planFingerprint,
-                planApplyReady,
-                string.Equals(step, "Plan review", StringComparison.Ordinal)
+                TimestampUtc: timestamp,
+                Kind: kind,
+                Message: safeMessage,
+                Step: step,
+                ProgressPercent: progress,
+                PlanFingerprint: planFingerprint,
+                PlanApplyReady: planApplyReady,
+                DisplayLabel: string.Equals(step, "Plan review", StringComparison.Ordinal)
                     ? MapPlanReviewLabel(category)
-                    : null);
+                    : null,
+                VerifiedEndpoints: verifiedEndpoints,
+                DeploymentVerificationClaimObserved: deploymentVerificationClaimObserved,
+                PlanResultClaimObserved: planResultClaimObserved);
             return true;
         }
         catch (JsonException)
@@ -229,22 +247,252 @@ internal static partial class BootstrapOutputSanitizer
         _ => null
     };
 
-    private static bool IsVerifiedAdminResult(
+    private static bool IsDeploymentVerificationClaim(
         string? type,
         string? step,
-        JsonElement data) =>
+        string? category) =>
         string.Equals(type, "Result", StringComparison.Ordinal) &&
         string.Equals(step, "End-to-end deployment verification", StringComparison.Ordinal) &&
-        data.ValueKind == JsonValueKind.Object &&
-        string.Equals(ReadBoundedString(data, "category"), "deploymentVerified", StringComparison.Ordinal) &&
-        data.TryGetProperty("verified", out var verifiedElement) &&
-        verifiedElement.ValueKind == JsonValueKind.True &&
-        data.TryGetProperty("index", out var indexElement) &&
-        indexElement.TryGetInt32(out var index) &&
-        data.TryGetProperty("total", out var totalElement) &&
-        totalElement.TryGetInt32(out var total) &&
-        total is >= 1 and <= 10_000 &&
-        index == total;
+        string.Equals(category, "deploymentVerified", StringComparison.Ordinal);
+
+    private static bool IsPlanResultClaim(
+        string? type,
+        string? step,
+        string? category) =>
+        string.Equals(type, "Result", StringComparison.Ordinal) &&
+        string.Equals(step, "Plan review", StringComparison.Ordinal) &&
+        string.Equals(category, "planResult", StringComparison.Ordinal);
+
+    private static bool TryReadPlanResult(
+        JsonElement root,
+        JsonElement data,
+        string safeMessage,
+        out string planFingerprint,
+        out bool applyReady)
+    {
+        planFingerprint = string.Empty;
+        applyReady = false;
+        if (!HasExactlyOneProperty(root, "schemaVersion") ||
+            !HasExactlyOneProperty(root, "type") ||
+            !HasExactlyOneProperty(root, "message") ||
+            !HasExactlyOneProperty(root, "data") ||
+            data.ValueKind != JsonValueKind.Object ||
+            !HasExactlyOneProperty(data, "step") ||
+            !HasExactlyOneProperty(data, "category") ||
+            !HasExactlyOneProperty(data, "index") ||
+            !HasExactlyOneProperty(data, "total") ||
+            !HasExactlyOneProperty(data, "planFingerprint") ||
+            !HasExactlyOneProperty(data, "applyReady") ||
+            !data.TryGetProperty("index", out var indexElement) ||
+            !indexElement.TryGetInt32(out var index) ||
+            index != 1 ||
+            !data.TryGetProperty("total", out var totalElement) ||
+            !totalElement.TryGetInt32(out var total) ||
+            total is < 1 or > 10_000 ||
+            !data.TryGetProperty("applyReady", out var applyReadyElement) ||
+            applyReadyElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            return false;
+        }
+
+        applyReady = applyReadyElement.GetBoolean();
+        var expectedMessage = applyReady
+            ? "Plan is ready for explicit acceptance."
+            : "Plan is not apply-ready.";
+        var candidate = ReadBoundedString(data, "planFingerprint");
+        if (!string.Equals(safeMessage, expectedMessage, StringComparison.Ordinal) ||
+            !PlanFingerprintPolicy.IsCanonical(candidate))
+        {
+            applyReady = false;
+            return false;
+        }
+
+        planFingerprint = candidate!;
+        return true;
+    }
+
+    private static bool TryReadVerifiedEndpoints(
+        JsonElement root,
+        JsonElement data,
+        out BootstrapVerifiedEndpoints endpoints)
+    {
+        endpoints = null!;
+        if (!HasExactlyOneProperty(root, "schemaVersion") ||
+            !HasExactlyOneProperty(root, "type") ||
+            !HasExactlyOneProperty(root, "message") ||
+            !HasExactlyOneProperty(root, "data") ||
+            data.ValueKind != JsonValueKind.Object ||
+            !HasExactlyOneProperty(data, "step") ||
+            !HasExactlyOneProperty(data, "category") ||
+            !HasExactlyOneProperty(data, "verified") ||
+            !HasExactlyOneProperty(data, "verificationMode") ||
+            !HasExactlyOneProperty(data, "index") ||
+            !HasExactlyOneProperty(data, "total") ||
+            !HasExactlyOneProperty(data, "adminUiUrl") ||
+            !HasExactlyOneProperty(data, "apiUrl") ||
+            !HasExactlyOneProperty(data, "apiHealthUrl") ||
+            !data.TryGetProperty("verified", out var verifiedElement) ||
+            verifiedElement.ValueKind != JsonValueKind.True ||
+            !data.TryGetProperty("index", out var indexElement) ||
+            !indexElement.TryGetInt32(out var index) ||
+            !data.TryGetProperty("total", out var totalElement) ||
+            !totalElement.TryGetInt32(out var total) ||
+            total is < 1 or > 10_000 ||
+            index != total ||
+            !TryReadVerificationMode(ReadBoundedString(data, "verificationMode"), out var verificationMode) ||
+            !TryCreateHttpsBaseAddress(ReadBoundedString(data, "adminUiUrl"), out var adminUiBaseAddress) ||
+            !TryCreateHttpsBaseAddress(ReadBoundedString(data, "apiUrl"), out var apiBaseAddress) ||
+            !TryCreateApiHealthAddress(ReadBoundedString(data, "apiHealthUrl"), out var apiHealthAddress) ||
+            !TryReadGatewayContainerAppsAddress(
+                adminUiBaseAddress,
+                "ca-gateway-admin-",
+                out var adminEnvironment,
+                out var adminEnvironmentDomain) ||
+            !TryReadGatewayContainerAppsAddress(
+                apiBaseAddress,
+                "ca-gateway-api-",
+                out var apiEnvironment,
+                out var apiEnvironmentDomain) ||
+            !string.Equals(adminEnvironment, apiEnvironment, StringComparison.Ordinal) ||
+            !string.Equals(adminEnvironmentDomain, apiEnvironmentDomain, StringComparison.OrdinalIgnoreCase) ||
+            Uri.Compare(
+                apiBaseAddress,
+                apiHealthAddress,
+                UriComponents.SchemeAndServer,
+                UriFormat.SafeUnescaped,
+                StringComparison.OrdinalIgnoreCase) != 0)
+        {
+            return false;
+        }
+
+        endpoints = new BootstrapVerifiedEndpoints(
+            verificationMode,
+            adminUiBaseAddress,
+            apiBaseAddress,
+            apiHealthAddress);
+        return true;
+    }
+
+    private static bool TryReadGatewayContainerAppsAddress(
+        Uri address,
+        string expectedAppNamePrefix,
+        out string deploymentEnvironment,
+        out string environmentDomain)
+    {
+        deploymentEnvironment = string.Empty;
+        environmentDomain = string.Empty;
+        var host = address.IdnHost;
+        var firstSeparator = host.IndexOf('.');
+        if (firstSeparator <= expectedAppNamePrefix.Length ||
+            !host.EndsWith(".azurecontainerapps.io", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var appName = host[..firstSeparator];
+        if (!appName.StartsWith(expectedAppNamePrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        deploymentEnvironment = appName[expectedAppNamePrefix.Length..];
+        if (deploymentEnvironment is not ("dev" or "staging" or "prod"))
+        {
+            deploymentEnvironment = string.Empty;
+            return false;
+        }
+
+        environmentDomain = host[(firstSeparator + 1)..];
+        return true;
+    }
+
+    private static bool HasExactlyOneProperty(JsonElement element, string propertyName)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        var count = 0;
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, propertyName, StringComparison.Ordinal) &&
+                ++count > 1)
+            {
+                return false;
+            }
+        }
+
+        return count == 1;
+    }
+
+    private static bool TryReadVerificationMode(
+        string? value,
+        out BootstrapVerificationMode mode)
+    {
+        switch (value)
+        {
+            case "Apply":
+                mode = BootstrapVerificationMode.Apply;
+                return true;
+            case "Verify":
+                mode = BootstrapVerificationMode.Verify;
+                return true;
+            default:
+                mode = default;
+                return false;
+        }
+    }
+
+    private static bool TryCreateHttpsBaseAddress(string? value, out Uri address)
+    {
+        address = null!;
+        if (!TryCreateSafeHttpsAddress(value, out var parsedAddress) ||
+            !string.Equals(parsedAddress.AbsolutePath, "/", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        address = new UriBuilder(parsedAddress)
+        {
+            Path = "/",
+            Query = string.Empty,
+            Fragment = string.Empty
+        }.Uri;
+        return true;
+    }
+
+    private static bool TryCreateApiHealthAddress(string? value, out Uri address)
+    {
+        address = null!;
+        if (!TryCreateSafeHttpsAddress(value, out var parsedAddress) ||
+            !string.Equals(parsedAddress.AbsolutePath, "/health/checks", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        address = parsedAddress;
+        return true;
+    }
+
+    private static bool TryCreateSafeHttpsAddress(string? value, out Uri address)
+    {
+        address = null!;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var parsedAddress) ||
+            !string.Equals(parsedAddress.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            parsedAddress.HostNameType != UriHostNameType.Dns ||
+            !parsedAddress.IsDefaultPort ||
+            parsedAddress.IsLoopback ||
+            !string.IsNullOrEmpty(parsedAddress.UserInfo) ||
+            !string.IsNullOrEmpty(parsedAddress.Query) ||
+            !string.IsNullOrEmpty(parsedAddress.Fragment))
+        {
+            return false;
+        }
+
+        address = parsedAddress;
+        return true;
+    }
 
     private static bool TrySanitizeRecognizedMessage(string value, out string sanitized)
     {

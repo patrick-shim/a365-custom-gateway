@@ -615,6 +615,8 @@ try {
             step = 'End-to-end deployment verification'; index = $stepNames.Count; total = $stepNames.Count
             category = 'deploymentVerified'; verified = $true; verificationMode = 'Verify'
             adminUiUrl = [string]$adminUi.adminUiUrl
+            apiUrl = "https://$($runtime.apiFqdn)"
+            apiHealthUrl = "https://$($runtime.apiFqdn)/health/checks"
         }) -OutputFormat $OutputFormat
         return
     }
@@ -895,6 +897,7 @@ try {
         verified = $true
         verificationMode = 'Apply'
         adminUiUrl = [string]$adminUi.adminUiUrl
+        apiUrl = "https://$($runtime.apiFqdn)"
         apiHealthUrl = "https://$($runtime.apiFqdn)/health/checks"
         statePath = $statePath
         readiness = if ($provisioningAdmissionReady) { @('InfrastructureReady', 'ControlPlaneReady', 'ProvisioningReady') } else { @('InfrastructureReady', 'ControlPlaneReady') }

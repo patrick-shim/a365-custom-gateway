@@ -17,9 +17,14 @@ internal sealed record BootstrapExecutionSnapshot(
     IReadOnlyList<BootstrapProgressEvent> Events,
     int? ExitCode,
     bool PlanSucceeded,
-    Uri? AdminUiAddress)
+    BootstrapVerifiedEndpoints? VerifiedEndpoints)
 {
     public bool IsRunning => Status == BootstrapExecutionStatus.Running;
+
+    public bool HasVerifiedDeployment =>
+        Command is BootstrapCommand.Apply or BootstrapCommand.Resume &&
+        Status == BootstrapExecutionStatus.Succeeded &&
+        VerifiedEndpoints is { VerificationMode: BootstrapVerificationMode.Apply };
 }
 
 internal sealed class BootstrapExecutionCoordinator(
@@ -35,9 +40,11 @@ internal sealed class BootstrapExecutionCoordinator(
     private BootstrapExecutionStatus status = BootstrapExecutionStatus.NotStarted;
     private int? exitCode;
     private bool planSucceeded;
-    private Uri? adminUiAddress;
+    private BootstrapVerifiedEndpoints? verifiedEndpoints;
+    private int deploymentVerificationClaimCount;
+    private bool deploymentVerificationConflict;
     private string? reviewedPlanFingerprint;
-    private bool planResultObserved;
+    private int planResultClaimCount;
     private bool planApplyReady;
     private bool planFingerprintConflict;
 
@@ -53,7 +60,7 @@ internal sealed class BootstrapExecutionCoordinator(
                 events.ToArray(),
                 exitCode,
                 planSucceeded,
-                adminUiAddress);
+                verifiedEndpoints);
         }
     }
 
@@ -75,12 +82,14 @@ internal sealed class BootstrapExecutionCoordinator(
             command = requestedCommand;
             status = BootstrapExecutionStatus.Running;
             exitCode = null;
-            adminUiAddress = null;
+            verifiedEndpoints = null;
+            deploymentVerificationClaimCount = 0;
+            deploymentVerificationConflict = false;
             if (requestedCommand == BootstrapCommand.Plan)
             {
                 planSucceeded = false;
                 reviewedPlanFingerprint = null;
-                planResultObserved = false;
+                planResultClaimCount = 0;
                 planApplyReady = false;
                 planFingerprintConflict = false;
             }
@@ -137,6 +146,7 @@ internal sealed class BootstrapExecutionCoordinator(
             result = new BootstrapProcessResult(-1, false);
         }
 
+        bool operationCompletedSuccessfully;
         lock (sync)
         {
             exitCode = result.ExitCode;
@@ -144,12 +154,25 @@ internal sealed class BootstrapExecutionCoordinator(
             if (requestedCommand == BootstrapCommand.Plan)
             {
                 planSucceeded = result.Succeeded &&
-                    planResultObserved &&
+                    planResultClaimCount == 1 &&
                     planApplyReady &&
                     !planFingerprintConflict &&
                     PlanFingerprintPolicy.IsCanonical(reviewedPlanFingerprint);
                 completedSuccessfully = planSucceeded;
             }
+            else if (requestedCommand is BootstrapCommand.Apply or BootstrapCommand.Resume)
+            {
+                completedSuccessfully = result.Succeeded &&
+                    deploymentVerificationClaimCount == 1 &&
+                    !deploymentVerificationConflict &&
+                    verifiedEndpoints is { VerificationMode: BootstrapVerificationMode.Apply };
+                if (!completedSuccessfully)
+                {
+                    verifiedEndpoints = null;
+                }
+            }
+
+            operationCompletedSuccessfully = completedSuccessfully;
 
             status = result.WasCancelled
                 ? BootstrapExecutionStatus.Cancelled
@@ -166,12 +189,15 @@ internal sealed class BootstrapExecutionCoordinator(
                         ? $"{requestedCommand} was interrupted. The canonical bootstrap state remains the recovery authority."
                         : requestedCommand == BootstrapCommand.Plan && result.Succeeded
                             ? "Plan ended without one apply-ready canonical fingerprint. No mutation was authorized."
+                        : requestedCommand is BootstrapCommand.Apply or BootstrapCommand.Resume && result.Succeeded
+                            ? $"{requestedCommand} exited without exactly one nonconflicting typed deployment verification result. Setup did not mark the Gateway ready."
                         : $"{requestedCommand} stopped with exit category {NormalizeExitCategory(result.ExitCode)}."));
             TrimEvents();
         }
 
         activity.SetOperationActive(false);
-        if (result.Succeeded && requestedCommand is BootstrapCommand.Apply or BootstrapCommand.Resume)
+        if (operationCompletedSuccessfully &&
+            requestedCommand is BootstrapCommand.Apply or BootstrapCommand.Resume)
         {
             activity.MarkCompleted();
         }
@@ -183,27 +209,45 @@ internal sealed class BootstrapExecutionCoordinator(
     {
         lock (sync)
         {
+            if (command is BootstrapCommand.Apply or BootstrapCommand.Resume &&
+                status == BootstrapExecutionStatus.Running &&
+                progressEvent.DeploymentVerificationClaimObserved)
+            {
+                deploymentVerificationClaimCount++;
+                var candidate = progressEvent.VerifiedEndpoints;
+                if (candidate is not { VerificationMode: BootstrapVerificationMode.Apply })
+                {
+                    deploymentVerificationConflict = true;
+                }
+                else if (verifiedEndpoints is null)
+                {
+                    verifiedEndpoints = candidate;
+                }
+                else if (verifiedEndpoints != candidate)
+                {
+                    deploymentVerificationConflict = true;
+                }
+            }
+
             if (command == BootstrapCommand.Plan &&
                 status == BootstrapExecutionStatus.Running &&
-                progressEvent.PlanApplyReady is { } applyReady)
+                progressEvent.PlanResultClaimObserved)
             {
-                planResultObserved = true;
-                planApplyReady = applyReady;
-                if (!applyReady || !PlanFingerprintPolicy.IsCanonical(progressEvent.PlanFingerprint))
+                planResultClaimCount++;
+                if (planResultClaimCount != 1 ||
+                    progressEvent.PlanApplyReady is not { } applyReady)
                 {
                     reviewedPlanFingerprint = null;
-                }
-                else if (reviewedPlanFingerprint is null)
-                {
-                    reviewedPlanFingerprint = progressEvent.PlanFingerprint;
-                }
-                else if (!string.Equals(
-                    reviewedPlanFingerprint,
-                    progressEvent.PlanFingerprint,
-                    StringComparison.Ordinal))
-                {
-                    reviewedPlanFingerprint = null;
+                    planApplyReady = false;
                     planFingerprintConflict = true;
+                }
+                else
+                {
+                    planApplyReady = applyReady;
+                    reviewedPlanFingerprint = applyReady &&
+                        PlanFingerprintPolicy.IsCanonical(progressEvent.PlanFingerprint)
+                            ? progressEvent.PlanFingerprint
+                            : null;
                 }
             }
 
@@ -216,7 +260,6 @@ internal sealed class BootstrapExecutionCoordinator(
             }
 
             events.Add(progressEvent);
-            adminUiAddress = progressEvent.AdminUiAddress ?? adminUiAddress;
             TrimEvents();
         }
 

@@ -1,6 +1,8 @@
 @page "/setup/profile"
 @rendermode InteractiveServer
+@implements IDisposable
 @inject SetupWizardState State
+@inject IAzureAccountDiscovery Discovery
 @inject SetupActivityTracker Activity
 @inject NavigationManager Navigation
 
@@ -60,11 +62,66 @@
                 <ValidationMessage For="@(() => State.Form.AlertEmail)" />
                 <small>Stored only in ignored bootstrap configuration and Azure alert settings.</small>
             </div>
-            <div class="field">
-                <label for="manager-application-ids">Reviewed Agent 365 manager application IDs</label>
-                <InputTextArea id="manager-application-ids" class="control" rows="3" @bind-Value="State.Form.ReviewedManagerApplicationIds" disabled="@State.ExistingConfigurationLoaded" />
+            <div class="field full" role="group" aria-labelledby="manager-authority-heading">
+                <h3 id="manager-authority-heading">Agent 365 manager authority</h3>
+                <small>Setup reads existing typed Agent ID blueprints and exact tenant service-principal metadata through Microsoft Graph v1.0. Discovery is read-only; it never authorizes a returned ID.</small>
+
+                @if (managerDiscoveryRunning)
+                {
+                    <div class="loading-row" role="status"><FluentProgressRing /> <span>Reading the bounded typed-blueprint and service-principal inventory…</span></div>
+                }
+                else if (State.ManagerApplicationsAccepted)
+                {
+                    <div class="notice success" role="status">
+                        <strong>Exact manager application set accepted</strong>
+                        <span>@State.ManagerApplicationProvenance for subscription <code>@State.Form.SubscriptionId</code> and tenant <code>@State.Form.TenantId</code>. Bootstrap will still require exact seed-blueprint equality and later API/worker compatibility checks.</span>
+                    </div>
+                    <ul class="permission-list" aria-label="Accepted Agent 365 manager application IDs">
+                        @foreach (var managerId in State.Form.GetReviewedManagerApplicationIds())
+                        {
+                            <li><strong><code>@managerId</code></strong><span>Accepted for tenant <code>@State.Form.TenantId</code>; this is not a universal Gateway constant.</span></li>
+                        }
+                    </ul>
+                    @if (!State.ExistingConfigurationLoaded)
+                    {
+                        <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" OnClick="DiscoverManagerApplicationsAsync">Discover again</FluentButton>
+                    }
+                }
+                else
+                {
+                    @if (State.ManagerApplicationDiscoveryGuidance is not null)
+                    {
+                        <div class="notice warning" role="alert"><strong>Discovery did not produce an acceptable set</strong><span>@State.ManagerApplicationDiscoveryGuidance</span></div>
+                    }
+
+                    @if (State.ManagerApplicationCandidates.Count > 0)
+                    {
+                        <div class="notice neutral" role="status">
+                            <strong>Review the proposed tenant set</strong>
+                            <span>Provenance: @State.ManagerApplicationProvenance for subscription <code>@State.Form.SubscriptionId</code> and tenant <code>@State.Form.TenantId</code>. Confirm the provider identity below before accepting; observed blueprint values are evidence, not authority by themselves.</span>
+                        </div>
+                        <ul class="permission-list" aria-label="Discovered Agent 365 manager application candidates">
+                            @foreach (var candidate in State.ManagerApplicationCandidates)
+                            {
+                                <li>
+                                    <strong>@candidate.DisplayName · <code>@candidate.ApplicationId</code></strong>
+                                    <span>Tenant service principal <code>@candidate.ServicePrincipalObjectId</code>; @PublisherSummary(candidate); type @candidate.ServicePrincipalType; observed on @candidate.BlueprintReferenceCount typed blueprint(s)@BlueprintSummary(candidate).</span>
+                                </li>
+                            }
+                        </ul>
+                        <FluentButton Type="ButtonType.Button" Appearance="Appearance.Accent" OnClick="AcceptManagerApplications">Accept this exact reviewed set</FluentButton>
+                    }
+                    else
+                    {
+                        <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" OnClick="DiscoverManagerApplicationsAsync">Discover from selected tenant</FluentButton>
+                    }
+                }
+
                 <ValidationMessage For="@(() => State.Form.ReviewedManagerApplicationIds)" />
-                <small>Enter 1–10 GUIDs separated by commas or new lines. These grant first-party manager authority: validate them independently for this tenant/provider version using the Entra setup runbook. Setup never authorizes IDs merely because Graph returned them.</small>
+                @if (managerReviewRequired)
+                {
+                    <div class="notice error" role="alert"><strong>Explicit acceptance required</strong><span>Discover and accept the exact tenant manager application set before continuing.</span></div>
+                }
             </div>
         </div>
     </section>
@@ -74,7 +131,7 @@
         <div class="feature-grid">
             <label class="feature-card @(State.Form.AllowDevelopmentRegistryPreview ? "selected" : string.Empty)">
                 <InputCheckbox @bind-Value="State.Form.AllowDevelopmentRegistryPreview" disabled="@(State.ExistingConfigurationLoaded || State.Form.Profile != DeploymentProfile.QuickDevelopment)" />
-                <span><strong>Development Registry preview</strong><small>Allows the signed-in Administrator flow only in dev. The beta dependency remains unsupported for production.</small></span>
+                <span><strong>Enable the reviewed Registry beta demo path</strong><small>Explicit dev-only opt-in required for a demo registration to reach Active. The beta dependency remains unsupported for production.</small></span>
             </label>
             <label class="feature-card @(State.Form.PromptShieldEnabled ? "selected" : string.Empty)">
                 <InputCheckbox @bind-Value="State.Form.PromptShieldEnabled" disabled="@State.ExistingConfigurationLoaded" />
@@ -85,6 +142,16 @@
                 <span><strong>Microsoft Purview</strong><small>Authors reviewed blueprint-scoped collection/DLP configuration. Readback is not propagation proof.</small></span>
             </label>
         </div>
+
+        @if (State.Form.Profile == DeploymentProfile.QuickDevelopment)
+        {
+            <div class="notice @(State.Form.AllowDevelopmentRegistryPreview ? "warning" : "neutral")" role="note">
+                <strong>@(State.Form.AllowDevelopmentRegistryPreview ? "Demo preview explicitly selected" : "Foundation-only until you opt in")</strong>
+                <span>@(State.Form.AllowDevelopmentRegistryPreview
+                    ? "The signed-in Administrator demo flow may cross the one-POST Agent 365 Registry beta boundary after the normal identity, consent, locking, and recovery checks."
+                    : "The Gateway foundation can deploy, but Agent 365 registrations cannot reach Active while Registry beta remains off. Setup will never enable it automatically.")</span>
+            </div>
+        }
 
         @if (State.Form.PromptShieldEnabled)
         {
@@ -110,14 +177,18 @@
 
     <div class="form-footer">
         <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/account">Back</FluentAnchor>
-        <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent">Review permissions</FluentButton>
+        <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent" Disabled="@(!State.ManagerApplicationsAccepted || managerDiscoveryRunning)">Review permissions</FluentButton>
     </div>
 </EditForm>
 
 @code {
+    private readonly CancellationTokenSource disposeCts = new();
+    private bool managerDiscoveryRunning;
+    private bool managerReviewRequired;
+
     private string ProfileDescription => State.Form.Profile switch
     {
-        DeploymentProfile.QuickDevelopment => "Complete development foundation; Registry preview remains off unless you explicitly enable it below.",
+        DeploymentProfile.QuickDevelopment => "Complete development foundation; explicitly opt into the reviewed Registry beta demo path below if registrations must reach Active.",
         DeploymentProfile.StagingFoundation => "Staging foundation with Registry creation closed and no production-readiness claim.",
         DeploymentProfile.ProductionSafeFoundation => "Production-safe foundation only; the beta Registry boundary remains closed.",
         _ => string.Empty
@@ -125,7 +196,7 @@
 
     protected override void OnInitialized()
     {
-        if (State.Form.SubscriptionId == Guid.Empty)
+        if (!State.HasEnabledSelectedSubscription)
         {
             Navigation.NavigateTo("/setup/account");
         }
@@ -145,9 +216,58 @@
         State.Form.ApplyProjectName(args.Value?.ToString() ?? string.Empty);
     }
 
+    private async Task DiscoverManagerApplicationsAsync()
+    {
+        managerDiscoveryRunning = true;
+        managerReviewRequired = false;
+        State.BeginManagerApplicationDiscovery();
+        Activity.Touch();
+        try
+        {
+            var result = await Discovery.DiscoverManagerApplicationsAsync(
+                State.Form.SubscriptionId,
+                State.Form.TenantId,
+                disposeCts.Token);
+            State.ApplyManagerApplicationDiscovery(result);
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            managerDiscoveryRunning = false;
+        }
+    }
+
+    private void AcceptManagerApplications()
+    {
+        managerReviewRequired = !State.AcceptDiscoveredManagerApplications();
+        Activity.Touch();
+    }
+
+    private static string PublisherSummary(ManagerApplicationCandidate candidate) =>
+        $"publisher {candidate.PublisherName}; verified publisher {candidate.VerifiedPublisherName}";
+
+    private static string BlueprintSummary(ManagerApplicationCandidate candidate) =>
+        candidate.ReferencingBlueprintNames.Count == 0
+            ? string.Empty
+            : $" ({string.Join(", ", candidate.ReferencingBlueprintNames)})";
+
     private void Continue()
     {
+        if (!State.ManagerApplicationsAccepted)
+        {
+            managerReviewRequired = true;
+            return;
+        }
+
         Activity.Touch();
         Navigation.NavigateTo("/setup/permissions");
+    }
+
+    public void Dispose()
+    {
+        disposeCts.Cancel();
+        disposeCts.Dispose();
     }
 }

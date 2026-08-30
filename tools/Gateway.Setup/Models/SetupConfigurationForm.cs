@@ -88,6 +88,33 @@ internal sealed class SetupConfigurationForm : IValidatableObject
         TenantId = subscription.TenantId;
     }
 
+    public void ClearSubscription()
+    {
+        SubscriptionId = Guid.Empty;
+        TenantId = Guid.Empty;
+    }
+
+    public void SetReviewedManagerApplicationIds(IEnumerable<Guid> applicationIds)
+    {
+        ArgumentNullException.ThrowIfNull(applicationIds);
+        var values = applicationIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .OrderBy(id => id.ToString("D"), StringComparer.Ordinal)
+            .ToArray();
+        if (values.Length is < 1 or > 10)
+        {
+            throw new ValidationException(
+                "Agent 365 manager application discovery must produce one to ten unique non-empty application IDs.");
+        }
+
+        ReviewedManagerApplicationIds = string.Join(
+            System.Environment.NewLine,
+            values.Select(id => id.ToString("D")));
+    }
+
+    public void ClearReviewedManagerApplicationIds() => ReviewedManagerApplicationIds = string.Empty;
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (SubscriptionId == Guid.Empty)

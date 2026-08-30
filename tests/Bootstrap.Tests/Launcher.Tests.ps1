@@ -62,6 +62,146 @@ touch "$GATEWAY_TEST_MARKER"
             $env:GATEWAY_TEST_MARKER = $originalMarker
         }
     }
+
+    It 'reports each missing setup runtime before starting the UI host' {
+        $launcher = Join-Path $repositoryRoot 'gateway'
+        $bashPath = (Get-Command bash -ErrorAction Stop).Source
+        $chmodPath = (Get-Command chmod -ErrorAction Stop).Source
+        $originalPath = $env:PATH
+        $originalRepositoryRoot = $env:GATEWAY_TEST_REPOSITORY_ROOT
+        $originalMarker = $env:GATEWAY_TEST_DOTNET_HOST_MARKER
+        try {
+            foreach ($case in @(
+                @{ Missing = 'dotnet'; Message = 'Setup requires the .NET 10 SDK.' },
+                @{ Missing = 'pwsh'; Message = 'Setup requires PowerShell 7 (pwsh).' },
+                @{ Missing = 'az'; Message = 'Setup requires Azure CLI (az).' }
+            )) {
+                $stubDirectory = Join-Path $TestDrive "setup-missing-$($case.Missing)"
+                $null = New-Item -ItemType Directory -Path $stubDirectory -Force
+                @'
+#!/bin/sh
+printf '%s\n' "$GATEWAY_TEST_REPOSITORY_ROOT"
+'@ | Set-Content -LiteralPath (Join-Path $stubDirectory 'dirname') -Encoding utf8NoBOM
+
+                if ($case.Missing -ne 'dotnet') {
+                    @'
+#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+  printf '10.0.100\n'
+  exit 0
+fi
+: > "$GATEWAY_TEST_DOTNET_HOST_MARKER"
+'@ | Set-Content -LiteralPath (Join-Path $stubDirectory 'dotnet') -Encoding utf8NoBOM
+                }
+                if ($case.Missing -ne 'pwsh') {
+                    "#!/bin/sh`nexit 0`n" | Set-Content -LiteralPath (Join-Path $stubDirectory 'pwsh') -Encoding utf8NoBOM
+                }
+                if ($case.Missing -ne 'az') {
+                    "#!/bin/sh`nexit 0`n" | Set-Content -LiteralPath (Join-Path $stubDirectory 'az') -Encoding utf8NoBOM
+                }
+
+                Get-ChildItem -LiteralPath $stubDirectory -File | ForEach-Object {
+                    & $chmodPath 700 $_.FullName
+                    $LASTEXITCODE | Should -Be 0
+                }
+
+                $marker = Join-Path $stubDirectory 'dotnet-hosted-ui.txt'
+                $env:PATH = $stubDirectory
+                $env:GATEWAY_TEST_REPOSITORY_ROOT = $repositoryRoot
+                $env:GATEWAY_TEST_DOTNET_HOST_MARKER = $marker
+
+                $output = (& $bashPath $launcher setup 2>&1 | Out-String)
+
+                $LASTEXITCODE | Should -Be 1
+                $output | Should -Match ([regex]::Escape($case.Message))
+                $output | Should -Match ([regex]::Escape('Install or repair the listed tools'))
+                Test-Path -LiteralPath $marker | Should -BeFalse
+            }
+        }
+        finally {
+            $env:PATH = $originalPath
+            $env:GATEWAY_TEST_REPOSITORY_ROOT = $originalRepositoryRoot
+            $env:GATEWAY_TEST_DOTNET_HOST_MARKER = $originalMarker
+        }
+    }
+
+    It 'starts setup only after all three runtime probes succeed' {
+        $launcher = Join-Path $repositoryRoot 'gateway'
+        $bashPath = (Get-Command bash -ErrorAction Stop).Source
+        $chmodPath = (Get-Command chmod -ErrorAction Stop).Source
+        $stubDirectory = Join-Path $TestDrive 'setup-ready'
+        $null = New-Item -ItemType Directory -Path $stubDirectory -Force
+        @'
+#!/bin/sh
+printf '%s\n' "$GATEWAY_TEST_REPOSITORY_ROOT"
+'@ | Set-Content -LiteralPath (Join-Path $stubDirectory 'dirname') -Encoding utf8NoBOM
+        @'
+#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+  printf '10.0.100\n'
+  exit 0
+fi
+printf '%s\n' "$@" > "$GATEWAY_TEST_DOTNET_ARGUMENTS"
+'@ | Set-Content -LiteralPath (Join-Path $stubDirectory 'dotnet') -Encoding utf8NoBOM
+        "#!/bin/sh`nexit 0`n" | Set-Content -LiteralPath (Join-Path $stubDirectory 'pwsh') -Encoding utf8NoBOM
+        "#!/bin/sh`nexit 0`n" | Set-Content -LiteralPath (Join-Path $stubDirectory 'az') -Encoding utf8NoBOM
+        Get-ChildItem -LiteralPath $stubDirectory -File | ForEach-Object {
+            & $chmodPath 700 $_.FullName
+            $LASTEXITCODE | Should -Be 0
+        }
+
+        $argumentRecord = Join-Path $stubDirectory 'dotnet-arguments.txt'
+        $originalPath = $env:PATH
+        $originalRepositoryRoot = $env:GATEWAY_TEST_REPOSITORY_ROOT
+        $originalArguments = $env:GATEWAY_TEST_DOTNET_ARGUMENTS
+        try {
+            $env:PATH = $stubDirectory
+            $env:GATEWAY_TEST_REPOSITORY_ROOT = $repositoryRoot
+            $env:GATEWAY_TEST_DOTNET_ARGUMENTS = $argumentRecord
+
+            & $bashPath $launcher setup --no-open
+
+            $LASTEXITCODE | Should -Be 0
+            $arguments = @(Get-Content -LiteralPath $argumentRecord)
+            $arguments | Should -Contain 'run'
+            $arguments | Should -Contain '--project'
+            $arguments | Should -Contain (Join-Path $repositoryRoot 'tools/Gateway.Setup/Gateway.Setup.csproj')
+            $arguments | Should -Contain '--repo-root'
+            $arguments | Should -Contain $repositoryRoot
+            $arguments | Should -Contain '--no-open'
+        }
+        finally {
+            $env:PATH = $originalPath
+            $env:GATEWAY_TEST_REPOSITORY_ROOT = $originalRepositoryRoot
+            $env:GATEWAY_TEST_DOTNET_ARGUMENTS = $originalArguments
+        }
+    }
+}
+
+Describe 'Cross-platform guided setup prerequisite contract' {
+    BeforeAll {
+        $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+    }
+
+    It 'keeps the Windows launcher aligned with the POSIX runtime gate' {
+        $launcher = Get-Content -LiteralPath (Join-Path $repositoryRoot 'gateway.cmd') -Raw
+        $runSetup = $launcher.IndexOf(':run_setup', [StringComparison]::OrdinalIgnoreCase)
+        $preflight = $launcher.IndexOf('call :check_setup_prerequisites', $runSetup, [StringComparison]::OrdinalIgnoreCase)
+        $hostIndex = $launcher.IndexOf('dotnet run --project', $runSetup, [StringComparison]::OrdinalIgnoreCase)
+
+        $runSetup | Should -BeGreaterOrEqual 0
+        $preflight | Should -BeGreaterThan $runSetup
+        $hostIndex | Should -BeGreaterThan $preflight
+        $launcher | Should -Match 'where pwsh\.exe'
+        $launcher | Should -Match 'PSVersionTable\.PSVersion\.Major -ge 7'
+        $launcher | Should -Match 'where dotnet\.exe'
+        $launcher | Should -Match 'dotnet --version'
+        $launcher | Should -Match 'where az'
+        $launcher | Should -Match 'call az version'
+        $launcher | Should -Match 'Setup requires PowerShell 7'
+        $launcher | Should -Match 'Setup requires the \.NET 10 SDK'
+        $launcher | Should -Match 'Setup requires Azure CLI'
+    }
 }
 
 Describe 'Windows gateway launcher mutation boundary' -Skip:(-not $IsWindows) {

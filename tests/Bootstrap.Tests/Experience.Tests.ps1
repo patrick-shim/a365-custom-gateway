@@ -227,6 +227,19 @@ Describe 'Plan exact-account context boundary' {
     }
 }
 
+Describe 'Verified endpoint result contract' {
+    It 'emits the validated Admin UI, API base, and API health URLs for Apply and Verify' {
+        $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+        $source = Get-Content -LiteralPath (
+            Join-Path $repositoryRoot 'bootstrap/bootstrap.ps1') -Raw
+
+        ([regex]::Matches($source, "category = 'deploymentVerified'")).Count | Should -Be 2
+        ([regex]::Matches($source, 'adminUiUrl = \[string\]\$adminUi\.adminUiUrl')).Count | Should -Be 2
+        ([regex]::Matches($source, 'apiUrl = "https://\$\(\$runtime\.apiFqdn\)"')).Count | Should -Be 2
+        ([regex]::Matches($source, 'apiHealthUrl = "https://\$\(\$runtime\.apiFqdn\)/health/checks"')).Count | Should -Be 2
+    }
+}
+
 Describe 'Plan fingerprint recovery-Ignore binding' {
     BeforeAll {
         $bootstrapPath = [IO.Path]::GetFullPath((Join-Path (Split-Path (Get-Module Experience).Path -Parent) '../bootstrap.ps1'))

@@ -49,23 +49,14 @@
 @if (snapshot.Command == BootstrapCommand.Plan && snapshot.Status == BootstrapExecutionStatus.Succeeded)
 {
     <section class="setup-card confirmation-card">
-        <h2>The exact plan fingerprint passed. Choose the resumable mutation command.</h2>
-        <p><strong>Apply</strong> starts a new deployment or continues safe checkpoints. <strong>Resume</strong> explicitly continues previously recorded safe state. Setup supplies the reviewed fingerprint, and the bootstrap stops before mutation if source, configuration, or What-If predictions changed.</p>
+        <h2>The reviewed plan is ready to deploy</h2>
+        <p>Deploy / continue starts a new deployment or safely continues checkpoints already owned by this exact plan. Setup supplies the reviewed fingerprint, and bootstrap stops before mutation if source, configuration, or What-If predictions changed.</p>
         <label class="confirm-check">
             <InputCheckbox @bind-Value="mutationConfirmed" />
             <span><strong>I authorize Azure, Entra, Agent 365, SQL, and optional policy changes bound to this Plan fingerprint.</strong><small>I understand interactive administrator handoffs may appear and no production support claim is created.</small></span>
         </label>
         <div class="inline-actions">
-            @if (State.ExistingConfigurationLoaded)
-            {
-                <FluentButton Appearance="Appearance.Accent" Disabled="@(!mutationConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Resume)">Resume existing state</FluentButton>
-                <FluentButton Appearance="Appearance.Neutral" Disabled="@(!mutationConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Apply)">Apply / continue</FluentButton>
-            }
-            else
-            {
-                <FluentButton Appearance="Appearance.Accent" Disabled="@(!mutationConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Apply)">Apply</FluentButton>
-                <FluentButton Appearance="Appearance.Neutral" Disabled="@(!mutationConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Resume)">Resume existing state</FluentButton>
-            }
+            <FluentButton Appearance="Appearance.Accent" Disabled="@(!mutationConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Apply)">Deploy / continue</FluentButton>
         </div>
     </section>
 }
@@ -77,11 +68,11 @@ else if (snapshot.Command == BootstrapCommand.Plan && snapshot.Status is Bootstr
 else if (snapshot.Command is BootstrapCommand.Apply or BootstrapCommand.Resume && snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled)
 {
     <section class="setup-card confirmation-card">
-        <h2>The deployment stopped safely</h2>
-        <p>Do not delete <code>.bootstrap</code> state. Correct the cause, then authorize Resume only if the reviewed fingerprint is still current. The bootstrap stops before mutation on any plan drift; Setup never retries automatically.</p>
+        <h2>The deployment stopped</h2>
+        <p>Do not delete <code>.bootstrap</code> state. Resume asks the canonical bootstrap to reconcile this stopped run against the same reviewed fingerprint and decide whether a checkpoint can safely continue. Setup never retries automatically.</p>
         <label class="confirm-check">
             <InputCheckbox @bind-Value="resumeConfirmed" />
-            <span><strong>I reviewed the failure and authorize Resume.</strong><small>The bootstrap remains responsible for deciding which checkpoint can safely continue.</small></span>
+            <span><strong>I reviewed the safe status and authorize Resume.</strong><small>The bootstrap remains responsible for deciding which checkpoint can safely continue.</small></span>
         </label>
         <div class="inline-actions">
             <FluentButton Appearance="Appearance.Accent" Disabled="@(!resumeConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Resume)">Resume with reviewed fingerprint</FluentButton>
@@ -89,9 +80,9 @@ else if (snapshot.Command is BootstrapCommand.Apply or BootstrapCommand.Resume &
         </div>
     </section>
 }
-else if (snapshot.Command is BootstrapCommand.Apply or BootstrapCommand.Resume && snapshot.Status == BootstrapExecutionStatus.Succeeded)
+else if (snapshot.HasVerifiedDeployment)
 {
-    <div class="notice success" role="status"><strong>Deployment completed and verified</strong><span>The bootstrap reported success. Continue to open the hosted Admin UI and review first-run guidance.</span></div>
+    <div class="notice success" role="status"><strong>Deployment completed and verified</strong><span>Bootstrap exited successfully and supplied exactly one validated Admin UI/API endpoint result. Continue to the hosted Setup Center.</span></div>
     <div class="page-actions"><FluentButton Appearance="Appearance.Accent" OnClick="ContinueToFinish">Continue</FluentButton></div>
 }
 
@@ -99,7 +90,10 @@ else if (snapshot.Command is BootstrapCommand.Apply or BootstrapCommand.Resume &
     <strong>Terminal fallback</strong>
     <span>If this local UI closes, rerun it or use the same ignored configuration with the canonical commands:</span>
     <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Plan -Config ./bootstrap/config.json</code>
-    <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Resume -Config ./bootstrap/config.json</code>
+    @if (snapshot.Command is BootstrapCommand.Apply or BootstrapCommand.Resume && snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled)
+    {
+        <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Resume -Config ./bootstrap/config.json</code>
+    }
 </div>
 
 @code {

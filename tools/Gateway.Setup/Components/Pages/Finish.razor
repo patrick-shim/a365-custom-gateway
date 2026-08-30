@@ -7,57 +7,66 @@
 
 <PageTitle>Finish · A365 Gateway Setup</PageTitle>
 
-<div class="finish-hero">
-    <span class="finish-mark" aria-hidden="true">✓</span>
-    <p class="eyebrow">Step 6 of 6</p>
-    <h1>The Gateway foundation is ready</h1>
-    <p>The canonical bootstrap completed successfully. This confirms its configured readbacks—not production support for the beta Agent 365 Registry dependency.</p>
-</div>
+@if (snapshot.HasVerifiedDeployment && snapshot.VerifiedEndpoints is { } endpoints)
+{
+    <div class="finish-hero">
+        <span class="finish-mark" aria-hidden="true">✓</span>
+        <p class="eyebrow">Step 6 of 6</p>
+        <h1>Deployment readbacks are verified</h1>
+        <p>The canonical bootstrap exited successfully and supplied exactly one validated endpoint result. This confirms the configured infrastructure and control-plane readbacks; it does not prove registration admission, an Active agent, a canary, or production support for the beta Agent 365 Registry dependency.</p>
+    </div>
 
-<div class="review-grid finish-grid">
-    <section class="setup-card">
-        <div class="card-section">
-            <h2>Open the hosted Admin UI</h2>
-            <p>Sign in with the authorized Gateway Administrator. The portal will guide the delegated Agent 365 action when the deployment mode permits it.</p>
-            @if (snapshot.AdminUiAddress is not null)
-            {
-                <p>Verified endpoint: <code>@snapshot.AdminUiAddress.AbsoluteUri</code></p>
-                <FluentAnchor Appearance="Appearance.Accent" Href="@snapshot.AdminUiAddress.AbsoluteUri" Target="_blank" rel="noopener noreferrer">Open Admin UI</FluentAnchor>
-            }
-            else
-            {
-                <div class="notice neutral"><strong>Use the browser opened by bootstrap</strong><span>The structured stream did not include a safe Admin UI URL. Retrieve it from canonical safe bootstrap state or run Verify.</span></div>
-            }
-        </div>
-    </section>
-    <section class="setup-card">
-        <div class="card-section">
-            <h2>Readiness is layered</h2>
-            <ol class="next-list">
-                <li><strong>Infrastructure</strong><span>Bootstrap resource and identity readbacks passed.</span></li>
-                <li><strong>Control plane</strong><span>Sign in and confirm the deployed portal/API contract.</span></li>
-                <li><strong>Provisioning</strong><span>Create only an authorized development registration.</span></li>
-                <li><strong>Canary</strong><span>Capture bounded data-plane and policy evidence separately.</span></li>
-            </ol>
-        </div>
-    </section>
-</div>
+    <div class="review-grid finish-grid">
+        <section class="setup-card">
+            <div class="card-section">
+                <h2>Open Setup Center</h2>
+                <p>Continue in the hosted Admin UI to review API-advertised admission and the remaining administrator handoffs.</p>
+                <FluentAnchor Appearance="Appearance.Accent" Href="@endpoints.AdminSetupAddress.AbsoluteUri" Target="_blank" rel="noopener noreferrer">Open Setup Center</FluentAnchor>
+            </div>
+            <div class="card-section">
+                <dl class="summary-list">
+                    <div><dt>Admin UI base URL</dt><dd><code>@endpoints.AdminUiBaseAddress.AbsoluteUri</code></dd></div>
+                    <div><dt>Gateway API base URL</dt><dd><code>@endpoints.ApiBaseAddress.AbsoluteUri</code></dd></div>
+                    <div><dt>API health URL</dt><dd><code>@endpoints.ApiHealthAddress.AbsoluteUri</code></dd></div>
+                </dl>
+            </div>
+        </section>
 
-<div class="notice warning" role="note">
-    <strong>Do not use historical failures as new inputs.</strong>
-    <span>Never replay retained queues or repeat an ambiguous Registry create. The deployed API and bootstrap remain authoritative for allowed actions.</span>
-</div>
+        <section class="setup-card">
+            <div class="card-section">
+                <h2>First use</h2>
+                <ol class="next-list">
+                    <li><strong>Sign in as the bootstrap administrator</strong><span>Use the administrator account authorized during bootstrap.</span></li>
+                    <li><strong>Register the first agent when authorized</strong><span>Proceed only when Setup Center reports provisioning admission is open for this deployment.</span></li>
+                    <li><strong>Save the one-time Gateway key</strong><span>It is shown once and cannot be retrieved later.</span></li>
+                    <li><strong>Verify Active state and the canary separately</strong><span>A submitted registration is not proof of completed Agent 365 provisioning or data-plane behavior.</span></li>
+                </ol>
+            </div>
+        </section>
+    </div>
 
-<div class="terminal-fallback">
-    <strong>Read-only verification</strong>
-    <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Verify -Config ./bootstrap/config.json</code>
-    <span>The local setup server will shut down automatically after two minutes. Configuration and safe bootstrap state remain ignored on this computer.</span>
-</div>
+    <div class="terminal-fallback">
+        <strong>Read-only verification</strong>
+        <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Verify -Config ./bootstrap/config.json</code>
+        <span>The local setup server will shut down automatically after two minutes. Configuration and safe bootstrap state remain ignored on this computer.</span>
+    </div>
 
-<div class="page-actions">
-    <span>No cloud credentials or tokens were stored by this wizard.</span>
-    <FluentButton Appearance="Appearance.Neutral" OnClick="Close">Close local setup</FluentButton>
-</div>
+    <div class="page-actions">
+        <span>No cloud credentials, tokens, or one-time Gateway keys were stored by this wizard.</span>
+        <FluentButton Appearance="Appearance.Neutral" OnClick="Close">Close local setup</FluentButton>
+    </div>
+}
+else
+{
+    <div class="finish-hero">
+        <p class="eyebrow">Verification required</p>
+        <h1>The Gateway is not marked ready</h1>
+        <p>Finish requires a successful bootstrap exit plus exactly one validated deployment-endpoints result. Return to Progress to review the safe status.</p>
+    </div>
+    <div class="page-actions">
+        <FluentAnchor Appearance="Appearance.Accent" Href="/setup/progress">Return to Progress</FluentAnchor>
+    </div>
+}
 
 @code {
     private BootstrapExecutionSnapshot snapshot = new(null, BootstrapExecutionStatus.NotStarted, [], null, false, null);
@@ -65,8 +74,7 @@
     protected override void OnInitialized()
     {
         snapshot = Execution.Snapshot();
-        if (snapshot.Command is not (BootstrapCommand.Apply or BootstrapCommand.Resume) ||
-            snapshot.Status != BootstrapExecutionStatus.Succeeded)
+        if (!snapshot.HasVerifiedDeployment)
         {
             Navigation.NavigateTo("/setup/progress");
             return;
