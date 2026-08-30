@@ -317,13 +317,13 @@ reported as completion of the plan. The authoritative phase status is:
 
 | Phase | Current status | Remaining boundary |
 |---|---|---|
-| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. One live interruption after Prerequisites and exact-fingerprint Resume through Azure authentication is proven; an every-checkpoint interruption matrix and a completed disposable clean-subscription proof are still absent. |
+| 0 — Make the engine trustworthy | Partial | Schema/state/source binding, collision refusal, validators, Bicep compilation, and broad recovery tests are implemented. `a365gw20` proves a deliberate interruption after Prerequisites and exact-fingerprint Resume through the first ten deployment steps and the dormant database-Job deployment. An every-checkpoint interruption matrix and a completed disposable clean-subscription proof are still absent. |
 | 1 — One cross-platform front door | Source complete; proof incomplete | `gateway`/`gateway.cmd` and the terminal command surface are implemented. The current candidate has not completed Windows, macOS Intel, macOS Arm, and Linux execution evidence. |
 | 2 — Guided configuration | Partial | Quick Development, Staging Foundation, and Production-safe Foundation are implemented. The promised guided Connect Existing and Advanced profiles are not; existing-state import remains recovery-only and refuses unsafe adoption. Simulated Demo was explicitly optional-later and is absent. |
 | 3 — Plan as a deployment contract | Partial | ARM What-If, the imperative manifest, accepted-plan/source binding, and post-deployment readbacks are implemented. Regional quota/SKU availability, global-name availability, and Agent 365 eligibility/licensing remain truthfully `NotChecked`, not proven preflight results. |
 | 4 — Fluent progress and recovery | Partial | Structured redacted progress and safe diagnostics are implemented. Every error does not yet carry the complete requested mutation-occurred, retry-safe, exact-remediation, and resume-command contract. |
 | 5 — Visual setup experience | Source complete; deployment proof absent | The loopback Fluent wizard and hosted Admin Setup Center are implemented and locally tested. The wizard combines the planned content into six steps, and this work has not deployed or authenticated the new Admin route. |
-| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. Generations `a365gw6` through `a365gw17` exposed and bounded the image, identity, ARM-readback, recovery-graph, PowerShell, and provider-managed-resource defects recorded below. `a365gw18` then repeated the exact steps 1–10 prefix and proved the tenant management-group policy keeps SQL public network access `Disabled`; step 11 failed safely before any firewall, migrator, schema, Admin, runtime, registration, Registry, key, or canary action. The corrected candidate replaces that incompatible public path with one VNet-private, retry-disabled Container Apps Job and is locally reviewed only. A fresh `a365gw19` Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
+| 6 — Release-quality proof | Not done | Disposable-target runs accepted exact Plans and proved deliberate interruption/Resume. Generations `a365gw6` through `a365gw18` exposed and bounded the image, identity, ARM-readback, recovery-graph, PowerShell, provider-managed-resource, and SQL-policy defects recorded below. `a365gw19` then proved that an interrupted nonterminal foundation record with no exact ARM deployment is refused rather than replayed. `a365gw20` proved the private-job source through steps 1–10 and deployed its dormant Job, then failed safely on Azure's display-form region/provider-null readback before recording the Job principal, swapping SQL administrator, starting an execution, or changing schema. Commit `dc25132` contains the locally reviewed normalization. A fresh `a365gw21` Apply/Verify, cross-platform matrix, authenticated Admin sign-in, new registration through `Active`, and bounded canary/key-revocation proof remain absent. |
 
 The implemented Plan binds the full non-secret configuration, operation descriptor,
 sanitized ARM What-If, and deployment-affecting source into one canonical
@@ -1310,12 +1310,9 @@ identity as the singular SQL Entra administrator, restores the exact original
 administrator after the execution settles, validates exactly three evidence records
 from the exact Log Analytics stream, and verifies zero SQL firewall rules plus zero
 Azure RBAC/Graph application roles on the Job identity. Independent read-only
-review found no remaining correctness or safety blocker. This is local source/test
-evidence only; it has not changed Azure. The next live generation is reserved as
-`a365gw19` in absent resource group `rg-a365-custom-gw-phase6r`, only in target
-subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
-`95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
-+
+review found no remaining correctness or safety blocker. Commit
+`697119d5a62d0a9db3fcdc46e2179d4955ba4bf3` froze that candidate.
+
 The frozen local candidate gate is a zero-warning/zero-error Release build and
 **1,324/1,324** direct Release tests: unit 495, Admin UI 155, local Setup 75,
 observability/runtime 149, integration 92, end-to-end 106, architecture 119, and
@@ -1327,6 +1324,54 @@ templates plus **5** parameter files. `dotnet format --verify-no-changes`, `git 
 Independent review also passes 324 changed-bootstrap Pester tests, 55 targeted
 migrator/recovery unit tests, and four database-Job architecture tests. These are
 source-only results, not deployment evidence.
+
+Generation `a365gw19` then accepted Plan
+`sha256:2d2b23d350e2fa8bd5b2465b12634390ceec29fe95c055abd468a73be95edb8e`
+for resource group `rg-a365-custom-gw-phase6r`, deployment ownership
+`d19c1c56-6176-4ef3-8afb-d55f9bf14c68`, configuration
+`sha256:90990bc4e68ccd382cd29b7b20596ce2f4ea6933827d2fc67eff104855855eb6`,
+and source
+`sha256:ffc24a41a53ebcd5a8bcf52b1736fb049b642f0c79e61168855bd27625bcecac`.
+What-If contained exactly eight Creates and no Deletes. A raw Apply carrying an
+unsupported event-stream-only flag was rejected before mutation. The valid Apply
+was deliberately interrupted after provider registration while the foundation step
+was `Running`. Exact target-only readback found neither the deterministic foundation
+deployment nor the resource group. Same-source Resume recomputed the identical Plan
+and failed closed instead of blindly replaying the missing external mutation.
+Preserve `a365gw19`; edited source must never Resume it.
+
+Generation `a365gw20` accepted Plan
+`sha256:a17cf082f622342d20c6bd2bd20e153175bca50768567ed9f0320df49776271e`
+for resource group `rg-a365-custom-gw-phase6s`, deployment ownership
+`51368948-86e2-4bd4-9bec-9acac27937a2`, configuration
+`sha256:a4fdc29b6fabb3e3b7328a38a3e7e84807c9df351b44083c87c0efef4785a24e`,
+and the same source fingerprint. What-If again contained exactly eight Creates and
+no Deletes. Apply was deliberately interrupted at Azure authentication after
+Prerequisites; exact-fingerprint Resume then completed steps 1–10. The foundation,
+four immutable QuickRuns, inert deployment, seed blueprint, workflow-v3 Entra
+configuration, and SQL private endpoint all succeeded. Step 11 deployed dormant
+manual Job `job-a365gw20-db-init-dev`, then the exact post-deployment validator
+failed because Azure returned location `Korea Central` for configured
+`koreacentral` and returned absent optional arrays as provider `null`.
+
+The failure preceded Job-principal persistence, SQL-administrator swap intent, Job
+start intent, or any execution. Exact live readback proves zero Job executions and
+the original singular SQL Entra administrator remains unchanged. No database
+schema, Admin credential, runtime activation, registration, Registry action,
+Gateway key, canary, or Service Bus message-data-plane access followed. Preserve
+`a365gw20`; its immutable accepted source must never be altered or rebound.
+
+Commit `dc25132` normalizes only equal ASCII-alphanumeric Azure region display forms
+and actual null collection entries; every non-null unexpected entry remains visible
+to the exact cardinality/value checks. Independent review found no fail-open and
+confirmed that a fresh source generation is required. The zero-warning/zero-error
+Release build and all **1,324/1,324** direct Release tests pass. The canonical gate
+discovers **512** Pester tests: **511** pass, none fail, and one Windows-only launcher
+test is skipped on macOS; it parses **19** PowerShell files and **2** JSON contracts
+and compiles all **26** Bicep templates plus **5** parameter files. The next live
+generation is `a365gw21` in resource group `rg-a365-custom-gw-phase6t`, only in
+target subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
 
 
 The first live `OpenDelegatedCompletion` invocation exposed a controller
@@ -1674,7 +1719,11 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    6/19. Preserve `a365gw11`, `a365gw12`, and `a365gw13` with steps 1–6 complete
    and step 7 `Failed` after each inert deployment succeeded. Preserve `a365gw14`,
    `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with steps 1–10 complete and
-   step 11 `Failed` before database migration. In
+   step 11 `Failed` before database migration. Preserve `a365gw19` with provider
+   registration complete and the foundation step `Running`, but no exact foundation
+   deployment or resource group. Preserve `a365gw20` with steps 1–10 complete and
+   step 11 `Failed` after dormant Job deployment but before Job-principal persistence,
+   SQL-administrator mutation, Job execution, or schema initialization. In
    order, those generations preserve exact
    image-build recovery; the terminal inert-deployment/private-ACR first-pull
    failure; a succeeded
@@ -1707,6 +1756,12 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    keeps SQL public access `Disabled`, so the incompatible public migration path
    stopped safely. Preserve that generation; never Resume it with the private-Job
    correction.
+   `a365gw19` proved that same-source Resume refuses a nonterminal foundation state
+   when its deterministic ARM deployment and resource group are both absent.
+   `a365gw20` proved deliberate interrupt/Resume and the private path through dormant
+   Job deployment; Azure's display-form region and provider-null optional arrays
+   stopped its strict validator before any SQL mutation. Neither generation may
+   consume edited source or modified accepted snapshots.
    Commit `bb001483bae0577d7c29a9638c1c7275dae44525` implements and independently
    reviews the bounded, state-aware `Ignore` rule; its GET-only `a365gw10` smoke is
    recovery evidence, not authorization to Resume that frozen source generation.
@@ -1721,9 +1776,9 @@ managed-identity assertions, authorization headers, or raw dependency bodies.
    `61600ab86c721476d9b7b05121ce6a7d60e4e05a` implements and regression-tests the
    principal/bootstrap Boolean-array correction. Commit
    `bee437fe1e2a19976565777184f70f2bbf1319ec` implements the exact typed Defender
-   Storage system-topic recovery boundary. The next live generation is reserved as
-   `a365gw19` in absent resource group `rg-a365-custom-gw-phase6r`, only
-   in target subscription
+   Storage system-topic recovery boundary. Commit `dc25132` contains the independently
+   reviewed Container Apps Job readback normalization. The next live generation is
+   `a365gw21` in resource group `rg-a365-custom-gw-phase6t`, only in target subscription
    `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Until one disposable run completes
    Apply/Verify,
    distinguish locally validated corrected source and partial live recovery proof

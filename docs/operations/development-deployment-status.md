@@ -748,12 +748,9 @@ identity as the singular SQL Entra administrator, restores the exact original
 administrator after the execution settles, validates exactly three evidence records
 from the exact Log Analytics stream, and verifies zero SQL firewall rules plus zero
 Azure RBAC/Graph application roles on the Job identity. Independent read-only
-review found no remaining correctness or safety blocker. This is local source/test
-evidence only; it has not changed Azure. The next live generation is reserved as
-`a365gw19` in absent resource group `rg-a365-custom-gw-phase6r`, only in target
-subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
-`95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
-+
+review found no remaining correctness or safety blocker. Commit
+`697119d5a62d0a9db3fcdc46e2179d4955ba4bf3` froze that candidate.
+
 The frozen local candidate gate is a zero-warning/zero-error Release build and
 **1,324/1,324** direct Release tests: unit 495, Admin UI 155, local Setup 75,
 observability/runtime 149, integration 92, end-to-end 106, architecture 119, and
@@ -765,6 +762,62 @@ templates plus **5** parameter files. `dotnet format --verify-no-changes`, `git 
 Independent review also passes 324 changed-bootstrap Pester tests, 55 targeted
 migrator/recovery unit tests, and four database-Job architecture tests. These are
 source-only results, not deployment evidence.
+
+Generation `a365gw19` accepted Plan
+`sha256:2d2b23d350e2fa8bd5b2465b12634390ceec29fe95c055abd468a73be95edb8e`
+for resource group `rg-a365-custom-gw-phase6r`, deployment ownership
+`d19c1c56-6176-4ef3-8afb-d55f9bf14c68`, configuration
+`sha256:90990bc4e68ccd382cd29b7b20596ce2f4ea6933827d2fc67eff104855855eb6`,
+and source
+`sha256:ffc24a41a53ebcd5a8bcf52b1736fb049b642f0c79e61168855bd27625bcecac`.
+What-If contained exactly eight Creates and no Deletes. A raw Apply carrying an
+unsupported event-stream-only flag was rejected before mutation. The valid Apply
+was deliberately interrupted after provider registration while the foundation step
+was `Running`. Exact target-only readback found neither the deterministic foundation
+deployment nor the resource group. Same-source Resume recomputed the identical Plan
+and failed closed instead of blindly replaying the missing external mutation.
+Preserve `a365gw19`; edited source must never Resume it.
+
+Generation `a365gw20` accepted Plan
+`sha256:a17cf082f622342d20c6bd2bd20e153175bca50768567ed9f0320df49776271e`
+for resource group `rg-a365-custom-gw-phase6s`, deployment ownership
+`51368948-86e2-4bd4-9bec-9acac27937a2`, configuration
+`sha256:a4fdc29b6fabb3e3b7328a38a3e7e84807c9df351b44083c87c0efef4785a24e`,
+and the same source fingerprint. What-If again contained exactly eight Creates and
+no Deletes. Apply was deliberately interrupted at Azure authentication after
+Prerequisites; exact-fingerprint Resume then completed steps 1–10. Foundation
+deployment `a365gw-a365gw20-bootstrap-foundation-dev` succeeded under correlation
+`76f69efb-d2e5-42ee-9e73-e894e914cc2e`; all four ACR QuickRuns succeeded in
+`acra365gw20devqprwi7`. Inert deployment
+`a365gw-a365gw20-bootstrap-inert-dev` succeeded under correlation
+`f2c3ecab-7f64-431f-83dc-b30e3f0de907`, followed by the seed blueprint,
+workflow-v3 Entra configuration, and SQL private endpoint. The private-endpoint
+deployment succeeded under correlation `8c28b234-2be9-479c-872e-1c457e567e6e`.
+
+Step 11 deployed dormant manual Job `job-a365gw20-db-init-dev` through deployment
+`a365gw-a365gw20-bootstrap-database-job-dev`, correlation
+`7bc4f9a9-f68f-4692-b9a9-c399fa0ac6b5`. Its exact post-deployment validator then
+failed because Azure returned location `Korea Central` for configured
+`koreacentral` and returned absent optional arrays as provider `null`. The durable
+receipt contains the execution intent but no Job principal, deployment verification,
+administrator-swap intent, Job-start intent, execution, evidence recovery,
+administrator restoration, or completion. Exact live readback proves zero Job
+executions and the original singular SQL Entra administrator remains unchanged.
+No database schema, Admin credential, runtime activation, registration, Registry
+action, Gateway key, canary, or Service Bus message-data-plane access followed.
+Preserve `a365gw20`; its immutable accepted source must never be altered or rebound.
+
+Commit `dc25132` normalizes only equal ASCII-alphanumeric Azure region display forms
+and actual null collection entries; every non-null unexpected entry remains visible
+to exact cardinality/value checks. Independent review found no fail-open and
+confirmed that a fresh source generation is required. The zero-warning/zero-error
+Release build and all **1,324/1,324** direct Release tests pass. The canonical gate
+discovers **512** Pester tests: **511** pass, none fail, and one Windows-only launcher
+test is skipped on macOS; it parses **19** PowerShell files and **2** JSON contracts
+and compiles all **26** Bicep templates plus **5** parameter files. The next live
+generation is `a365gw21` / `rg-a365-custom-gw-phase6t`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` remains outside the proof.
 
 
 The first target-subscription Apply attempt used the earlier source generation
@@ -1897,12 +1950,15 @@ separate authorization entry here.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
 6. Continue the disposable clean-development-subscription proof in new isolated
-   generation `a365gw19` / `rg-a365-custom-gw-phase6r`. Preserve `a365gw11`,
+   generation `a365gw21` / `rg-a365-custom-gw-phase6t`. Preserve `a365gw11`,
    `a365gw12`, and `a365gw13` with steps 1–6 complete and step 7 `Failed`, and
    preserve `a365gw14`, `a365gw15`, `a365gw16`, `a365gw17`, and `a365gw18` with
    steps 1–10 complete and step 11 `Failed` before database migration. Their succeeded
    resources and GET-only diagnoses do not authorize Resume after any validator or
-   helper source change. Capture the fresh generation's safe state, template
+   helper source change. Preserve `a365gw19` at a nonterminal foundation checkpoint
+   with no exact ARM deployment/resource group and preserve `a365gw20` after dormant
+   Job deployment but before any SQL mutation or Job execution; neither may consume
+   commit `dc25132`. Capture the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, private database-Job execution and original SQL
    administrator restoration, zero-firewall empty-schema initialization, final
