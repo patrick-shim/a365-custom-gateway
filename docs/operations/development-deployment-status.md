@@ -19,8 +19,9 @@ or mutated by that bootstrap work.
 
 ## 2026-08-30 clean-subscription live bootstrap and recovery checkpoint
 
-The corrected Phase 6 candidate is frozen on branch `codex/phase6-candidate` at
-source commit `1cdd5eb2deaefa3ba6989308566806f0920c2305`. The exact-account boundary now
+The baseline Phase 6 candidate for this chronology was frozen on branch
+`codex/phase6-candidate` at source commit
+`1cdd5eb2deaefa3ba6989308566806f0920c2305`. The exact-account boundary now
 acquires Microsoft Graph access through `az account get-access-token` with the
 reviewed subscription, verifies returned subscription/tenant/type/lifetime
 metadata, and sends only bounded Graph v1.0 requests through an in-process,
@@ -28,7 +29,7 @@ no-redirect client. Supported post-authentication code rejects native `az ad` an
 `az rest`; the workflow-v3 helper also verifies that its loaded Common module is
 the accepted-source file or a byte-identical source-bound copy.
 
-The final local candidate gate is zero-warning/zero-error Release build and
+That baseline local candidate gate was a zero-warning/zero-error Release build and
 **1,304/1,304** direct Release tests: unit 479, Admin UI 155, local Setup 75,
 observability/runtime 149, integration 92, end-to-end 106, architecture 115, and
 security 133. Pester discovered **369** tests: **368** passed, none failed, and one
@@ -269,8 +270,68 @@ PowerShell and 2 JSON files, and compiled 25 Bicep templates plus 5 parameter fi
 Direct Release tests pass 1,304/1,304; the Release build has zero warnings/errors,
 format verification passes, and `git diff --check` is clean.
 
-The next live action is a new isolated `a365gw11` generation and absent resource
-group only in target subscription `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`.
+Fresh generation `a365gw11-dev` used absent resource group
+`rg-a365-custom-gw-phase6j`, ownership
+`593edace-3230-4c77-b648-e8d6a163d965`, and ACR
+`acra365gw11devlumzmj`, only in target subscription `internal-security-lab-02`
+(`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`). Its accepted Plan
+`sha256:82fc6bf0368ed1fd52b7d118d21848dce834c51f261363e187a3b2b90f101e86`
+bound configuration
+`sha256:a8ac824b365aa0243900b53df1cb3d453d1feaa5ab3e89bba4f17f52534dfc4d`
+and source
+`sha256:4428dc6da2b894b0e986938b35dc1f2786e1a4f805bf92b4c0c2306fda9d226a`;
+authenticated What-If reported exactly eight `Create` predictions and zero other
+changes, all in that target subscription. The run window was
+`2026-08-30T00:26:07Z` through `2026-08-30T00:51:22Z` (09:26–09:51 KST).
+
+Apply completed durable steps 1–6: Prerequisites, exact Azure authentication,
+provider registration, foundation, Gateway API identity, and immutable images.
+API, worker, and Admin UI ACR `QuickRun`s `de1`, `de2`, and `de3` all reached
+`Succeeded` and were digest-checkpointed as respectively
+`sha256:429177cfb745fe3cae122fae5e51d676699709faf0f6340097566aa10e67c274`,
+`sha256:1f989a3f6945ef4470a39aa967262154feedb8e8b91422b2b8977849d3bc0dba`,
+and
+`sha256:f5a1c9786f05c041f59e5b1e8fbfcf411d024457bb78b440303c67736da03ead`.
+Foundation deployment `a365gw-a365gw11-bootstrap-foundation-dev`, inert deployment
+`a365gw-a365gw11-bootstrap-inert-dev`, and every observed nested deployment reached
+`Succeeded`.
+
+Bootstrap nevertheless failed closed during step 7's immediate strict readback.
+For the fourteen Container App environment values produced from Bicep
+`string(bool)`, ARM returned `True` or `False`, while the validator required
+lowercase `true` or `false`; the first mismatch was
+`Provisioning__ExecutionEnabled` (`False` deployed versus `false` expected). All
+earlier provider-shape predicates passed. State therefore records steps 1–6
+completed, step 7 `Failed`, and no step 8 or later state. No database
+initialization, seed blueprint, workflow identity, Admin UI identity/credential,
+runtime activation, registration, canary, Gateway key, Registry, Purview, or later
+phase followed.
+
+Independent GET-only provider-shape and recovery audits corroborated the bounded
+diagnosis without deployment mutation. A second no-queue exact environment check
+with the corrected validator passed both complete API/worker environment sets and
+all **14/14** Boolean values. This read-only evidence does not authorize Resume:
+correcting the validator changes the accepted source fingerprint. Preserve the
+`a365gw11` state, accepted snapshot, deployed graph, identities, and images; never
+reconstruct acceptance or Resume it under edited source.
+
+Commit `a8d5a427f6728ff366a839f99aa9356aabd90254` centralizes the observed ARM
+Boolean projection for inert recovery, immediate deployment validation, and final
+Verify, while preserving ordinal name/value matching and the separate literal
+lowercase `OutboxRelay__Enabled` contract. Both independent reviews approved the
+settled correction. Focused tests pass **278/278**. The canonical source gate
+discovered **433** Pester tests: **432** passed, none failed, and one Windows-only
+launcher test was skipped on macOS; it parsed **19** PowerShell and **2** JSON files
+and compiled all **25** Bicep templates plus **5** parameter files. Direct Release
+tests remain **1,304/1,304**, the Release build has zero warnings/errors, and
+format/diff checks pass.
+
+The next live generation is reserved as `a365gw12` in absent resource group
+`rg-a365-custom-gw-phase6k`, only in target subscription
+`6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`. Protected subscription
+`95bedc30-f6ac-481b-a3a6-588d2883c216` was neither selected nor mutated; none of
+its queues or messages were accessed. No target Service Bus message was read,
+received, peeked, replayed, or settled.
 
 The first target-subscription Apply attempt used the earlier source generation
 `560bcd8e6a735c4d7bb4bb2695622a0ba17b90d6`. It completed only local
@@ -1397,8 +1458,11 @@ separate authorization entry here.
    policy and do not infer response-side inline enforcement from that result.
 5. Apply SQL finalization and perform any production rollout only as separate,
    reviewed workstreams.
-6. Prove `bootstrap/bootstrap.ps1` in a disposable clean development subscription,
-   not this evidence-bearing resource group. Capture its safe state, template
+6. Continue the disposable clean-development-subscription proof in new isolated
+   generation `a365gw12` / `rg-a365-custom-gw-phase6k`. Preserve `a365gw11` with
+   steps 1–6 complete and step 7 `Failed`; its succeeded inert graph and GET-only
+   diagnosis do not authorize Resume after the validator source change. Capture
+   the fresh generation's safe state, template
    ownership/source-fingerprint outputs, accepted-source snapshot provenance, image
    digests, exact Key Vault scopes, temporary SQL-rule cleanup, empty-schema
    initialization, final preflight, one real registration/data-plane canary, and
