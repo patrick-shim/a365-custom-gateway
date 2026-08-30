@@ -348,6 +348,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             normalBootstrapStart - diagnosticStart);
         Regex.Matches(diagnosticBody, "AcquireDatabaseInitializationLockAsync", RegexOptions.CultureInvariant)
             .Count.Should().Be(1);
+        Regex.Matches(diagnosticBody, "ReadAzureSqlPristinePlatformDiagnosticAsync", RegexOptions.CultureInvariant)
+            .Count.Should().Be(1);
         Regex.Matches(diagnosticBody, "ReadPristineDatabaseSurfaceAsync", RegexOptions.CultureInvariant)
             .Count.Should().Be(1);
         Regex.Matches(diagnosticBody, "DatabaseBootstrapRecoveryContract.AssertPristine", RegexOptions.CultureInvariant)
@@ -359,6 +361,10 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
         diagnosticBody.Should().NotContain("EnsureEmptyDatabaseInitialized");
         diagnosticBody.Should().NotContain("BootstrapDatabaseAsync");
         diagnosticBody.Should().NotContain("EnsureRuntimePrincipalAsync");
+        source.Should().Contain("OBJECT_ID(N'sys.database_firewall_rules')");
+        source.Should().Contain("N'SqlDbAuditing_ServerAuditSpec'");
+        source.Should().Contain("N'SqlDbAuditing_AuditSpec'");
+        source.Should().Contain("AS dboConnectExact");
     }
 
     [Fact]

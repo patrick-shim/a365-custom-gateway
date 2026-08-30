@@ -276,6 +276,9 @@ if (pristineDiagnosticOnly)
     await AcquireDatabaseInitializationLockAsync(connection, diagnosticLockResource);
     try
     {
+        var platformDiagnostic = await ReadAzureSqlPristinePlatformDiagnosticAsync(connection);
+        Console.WriteLine(
+            $"Pristine Azure SQL platform diagnostic=[{platformDiagnostic.ToSafeSummary()}].");
         var pristineSurface = await ReadPristineDatabaseSurfaceAsync(connection);
         DatabaseBootstrapRecoveryContract.AssertPristine(pristineSurface);
         Console.WriteLine(
@@ -1412,6 +1415,108 @@ static async Task<PristineDatabaseSurfaceSnapshot> ReadPristineDatabaseSurfaceAs
     if (await reader.ReadAsync())
         throw new InvalidOperationException("Azure SQL returned duplicate pristine database-surface rows.");
     return snapshot;
+}
+
+static async Task<AzureSqlPristinePlatformDiagnostic> ReadAzureSqlPristinePlatformDiagnosticAsync(
+    SqlConnection connection)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandTimeout = 60;
+    command.CommandText = """
+        SELECT
+          (SELECT COUNT(*) FROM sys.database_audit_specifications) AS auditSpecificationsTotal,
+          (SELECT COUNT(*) FROM sys.database_audit_specifications
+           WHERE name = N'SqlDbAuditing_ServerAuditSpec') AS auditSpecificationsServerNameMatches,
+          (SELECT COUNT(*) FROM sys.database_audit_specifications
+           WHERE name = N'SqlDbAuditing_AuditSpec') AS auditSpecificationsDatabaseNameMatches,
+          (SELECT COUNT(*) FROM sys.database_audit_specifications
+           WHERE name NOT IN (N'SqlDbAuditing_ServerAuditSpec', N'SqlDbAuditing_AuditSpec')) AS auditSpecificationsOtherName,
+          (SELECT COUNT(*) FROM sys.database_audit_specifications
+           WHERE is_state_enabled = 1) AS auditSpecificationsEnabled,
+          (SELECT COUNT(*) FROM sys.database_audit_specifications
+           WHERE is_state_enabled = 0) AS auditSpecificationsDisabled,
+          (SELECT COUNT(*) FROM sys.database_audit_specifications
+           WHERE audit_guid IS NULL) AS auditSpecificationsNullGuid,
+          (SELECT COUNT(*) FROM sys.database_audit_specifications
+           WHERE audit_guid IS NOT NULL) AS auditSpecificationsNonNullGuid,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details) AS auditDetailsTotal,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details
+           WHERE audit_action_name = N'BATCH_COMPLETED_GROUP') AS auditDetailsBatchCompleted,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details
+           WHERE audit_action_name = N'SUCCESSFUL_DATABASE_AUTHENTICATION_GROUP') AS auditDetailsSuccessfulAuthentication,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details
+           WHERE audit_action_name = N'FAILED_DATABASE_AUTHENTICATION_GROUP') AS auditDetailsFailedAuthentication,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details
+           WHERE audit_action_name NOT IN
+                 (N'BATCH_COMPLETED_GROUP', N'SUCCESSFUL_DATABASE_AUTHENTICATION_GROUP',
+                  N'FAILED_DATABASE_AUTHENTICATION_GROUP')) AS auditDetailsOtherAction,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details
+           WHERE is_group = 1) AS auditDetailsGroup,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details
+           WHERE is_group = 0) AS auditDetailsNonGroup,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details
+           WHERE class = 0 AND major_id = 0 AND minor_id = 0) AS auditDetailsDatabaseAddress,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details
+           WHERE NOT (class = 0 AND major_id = 0 AND minor_id = 0)) AS auditDetailsOtherAddress,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details
+           WHERE audited_principal_id = 0) AS auditDetailsZeroPrincipal,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details
+           WHERE audited_principal_id = DATABASE_PRINCIPAL_ID(N'public')) AS auditDetailsPublicPrincipal,
+          (SELECT COUNT(*) FROM sys.database_audit_specification_details
+           WHERE audited_principal_id <> 0
+             AND audited_principal_id <> DATABASE_PRINCIPAL_ID(N'public')) AS auditDetailsOtherPrincipal,
+          (SELECT COUNT(*)
+           FROM sys.all_objects
+           WHERE object_id = OBJECT_ID(N'sys.database_firewall_rules')
+             AND schema_id = SCHEMA_ID(N'sys')
+             AND type = N'V'
+             AND is_ms_shipped = 1) AS databaseFirewallRulesExactObject,
+          (SELECT COUNT(*)
+           FROM sys.database_permissions AS permissions
+           INNER JOIN sys.database_principals AS grantees
+             ON grantees.principal_id = permissions.grantee_principal_id
+           WHERE permissions.class = 1
+             AND permissions.major_id = OBJECT_ID(N'sys.database_firewall_rules')
+             AND permissions.minor_id = 0
+             AND permissions.permission_name = N'SELECT'
+             AND permissions.state = N'G'
+             AND grantees.name = N'public') AS databaseFirewallRulesPublicSelect,
+          (SELECT COUNT(*)
+           FROM sys.database_permissions AS permissions
+           INNER JOIN sys.database_principals AS grantees
+             ON grantees.principal_id = permissions.grantee_principal_id
+           WHERE permissions.class = 1
+             AND permissions.major_id > 0
+             AND permissions.minor_id = 0
+             AND permissions.permission_name = N'SELECT'
+             AND permissions.state = N'G'
+             AND grantees.name = N'public'
+             AND permissions.major_id <> OBJECT_ID(N'sys.database_firewall_rules')) AS otherPositivePublicSelect,
+          (SELECT COUNT(*)
+           FROM sys.database_permissions AS permissions
+           INNER JOIN sys.database_principals AS grantees
+             ON grantees.principal_id = permissions.grantee_principal_id
+           WHERE permissions.class = 0
+             AND permissions.major_id = 0
+             AND permissions.minor_id = 0
+             AND permissions.permission_name = N'CONNECT'
+             AND permissions.state = N'G'
+             AND grantees.name = N'dbo'
+             AND permissions.grantor_principal_id = DATABASE_PRINCIPAL_ID(N'dbo')) AS dboConnectExact;
+        """;
+    await using var reader = await command.ExecuteReaderAsync();
+    AssertExactSqlFieldContract(
+        reader,
+        AzureSqlPristinePlatformDiagnostic.SqlFieldNames,
+        "Azure SQL pristine-platform diagnostic");
+    if (!await reader.ReadAsync())
+        throw new InvalidOperationException("Azure SQL returned no pristine-platform diagnostic row.");
+    var counts = Enumerable.Range(0, AzureSqlPristinePlatformDiagnostic.SqlFieldNames.Count)
+        .Select(reader.GetInt32)
+        .ToArray();
+    if (await reader.ReadAsync())
+        throw new InvalidOperationException("Azure SQL returned duplicate pristine-platform diagnostic rows.");
+    return AzureSqlPristinePlatformDiagnostic.FromOrderedCounts(counts);
 }
 
 static async Task AcquireDatabaseInitializationLockAsync(
@@ -2962,6 +3067,59 @@ internal sealed record InitializationIntentEvidence(
     string DatabaseOwnerSidSha256,
     string RecoveryMode,
     bool ExactReadbackVerified);
+
+internal sealed class AzureSqlPristinePlatformDiagnostic
+{
+    private static readonly string[] FixedSqlFieldNames =
+    [
+        "auditSpecificationsTotal",
+        "auditSpecificationsServerNameMatches",
+        "auditSpecificationsDatabaseNameMatches",
+        "auditSpecificationsOtherName",
+        "auditSpecificationsEnabled",
+        "auditSpecificationsDisabled",
+        "auditSpecificationsNullGuid",
+        "auditSpecificationsNonNullGuid",
+        "auditDetailsTotal",
+        "auditDetailsBatchCompleted",
+        "auditDetailsSuccessfulAuthentication",
+        "auditDetailsFailedAuthentication",
+        "auditDetailsOtherAction",
+        "auditDetailsGroup",
+        "auditDetailsNonGroup",
+        "auditDetailsDatabaseAddress",
+        "auditDetailsOtherAddress",
+        "auditDetailsZeroPrincipal",
+        "auditDetailsPublicPrincipal",
+        "auditDetailsOtherPrincipal",
+        "databaseFirewallRulesExactObject",
+        "databaseFirewallRulesPublicSelect",
+        "otherPositivePublicSelect",
+        "dboConnectExact"
+    ];
+
+    private AzureSqlPristinePlatformDiagnostic(IReadOnlyList<int> counts) => Counts = counts;
+
+    public static IReadOnlyList<string> SqlFieldNames => Array.AsReadOnly(FixedSqlFieldNames);
+
+    public IReadOnlyList<int> Counts { get; }
+
+    public static AzureSqlPristinePlatformDiagnostic FromOrderedCounts(IReadOnlyList<int> counts)
+    {
+        ArgumentNullException.ThrowIfNull(counts);
+        if (counts.Count != FixedSqlFieldNames.Length)
+        {
+            throw new InvalidOperationException(
+                $"Azure SQL returned {counts.Count} pristine-platform counters; exactly {FixedSqlFieldNames.Length} are required.");
+        }
+        if (counts.Any(count => count < 0))
+            throw new InvalidOperationException("Azure SQL returned a negative pristine-platform counter.");
+        return new AzureSqlPristinePlatformDiagnostic(Array.AsReadOnly(counts.ToArray()));
+    }
+
+    public string ToSafeSummary() =>
+        string.Join(',', FixedSqlFieldNames.Select((name, index) => $"{name}={Counts[index]}"));
+}
 
 namespace Gateway.DatabaseMigrator
 {
