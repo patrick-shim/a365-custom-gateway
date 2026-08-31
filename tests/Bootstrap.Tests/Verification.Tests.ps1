@@ -250,6 +250,109 @@ Describe 'Final Entra and runtime admission boundaries' {
     }
 }
 
+Describe 'Final verification API-attestation correction projection' {
+    InModuleScope Verification {
+        BeforeEach {
+            $script:baselineApi = "acrsafe.azurecr.io/gateway-api@sha256:$('a' * 64)"
+            $script:targetApi = "acrsafe.azurecr.io/gateway-api@sha256:$('b' * 64)"
+            $script:baselineWorker = "acrsafe.azurecr.io/gateway-worker@sha256:$('c' * 64)"
+            $script:runtime = [pscustomobject]@{ acrLoginServer = 'acrsafe.azurecr.io' }
+            $script:images = [pscustomobject]@{
+                api = $script:baselineApi
+                worker = $script:baselineWorker
+            }
+            $script:correction = [ordered]@{
+                receiptFingerprint = "sha256:$('d' * 64)"
+                contractFingerprint = "sha256:$('e' * 64)"
+                baselineApiImage = $script:baselineApi
+                baselineWorkerImage = $script:baselineWorker
+                targetApiImage = $script:targetApi
+                targetRevisionName = 'ca-gateway-api-dev--attest123456'
+                synthesizedBuildSourceFingerprint = "sha256:$('f' * 64)"
+                verifiedAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(-1).ToString('O')
+            }
+        }
+
+        It 'accepts one exact receipt-derived immutable API supersession projection' {
+            $result = Assert-GatewayApiAttestationCorrectionProjection `
+                -Correction $script:correction `
+                -Runtime $script:runtime `
+                -Images $script:images
+
+            $result.applied | Should -BeTrue
+            $result.effectiveApiImage | Should -BeExactly $script:targetApi
+            $result.receiptFingerprint | Should -BeExactly $script:correction.receiptFingerprint
+        }
+
+        It 'keeps the baseline API image when no correction receipt exists' {
+            $result = Get-GatewayVerifiedApiAttestationCorrectionProjection `
+                -State ([ordered]@{}) `
+                -Config ([pscustomobject]@{ resourceGroupName = 'unit-no-correction' }) `
+                -Runtime $script:runtime `
+                -Images $script:images
+
+            $result.applied | Should -BeFalse
+            $result.effectiveApiImage | Should -BeExactly $script:baselineApi
+        }
+
+        It 'does not expose a caller-supplied receipt or projection parameter' {
+            $command = Get-Command Get-GatewayVerifiedApiAttestationCorrectionProjection
+            $command.Parameters.Keys | Should -Contain 'State'
+            $command.Parameters.Keys | Should -Not -Contain 'Receipt'
+            $command.Parameters.Keys | Should -Not -Contain 'Correction'
+        }
+
+        It 'rejects drift in every receipt-bound baseline or target image field' {
+            foreach ($mutation in @(
+                { $script:correction.baselineApiImage = $script:targetApi },
+                { $script:correction.baselineWorkerImage = "acrsafe.azurecr.io/gateway-worker@sha256:$('9' * 64)" },
+                { $script:correction.targetApiImage = 'other.azurecr.io/gateway-api@sha256:' + ('b' * 64) },
+                { $script:correction.targetApiImage = $script:baselineApi }
+            )) {
+                & $mutation
+                { Assert-GatewayApiAttestationCorrectionProjection `
+                    -Correction $script:correction `
+                    -Runtime $script:runtime `
+                    -Images $script:images } |
+                    Should -Throw '*correction projection*'
+                $script:correction.baselineApiImage = $script:baselineApi
+                $script:correction.baselineWorkerImage = $script:baselineWorker
+                $script:correction.targetApiImage = $script:targetApi
+            }
+        }
+    }
+
+
+    It 'binds the deployment verifier to a full receipt and state instead of a caller projection' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            (Get-Module Verification).Path, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $function = $ast.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Test-GatewayBootstrapDeployment'
+        }, $true)
+        $source = $function.Extent.Text
+
+        $source | Should -Match '\$State'
+        $source | Should -Match 'Get-GatewayVerifiedApiAttestationCorrectionProjection'
+        $source | Should -Not -Match '\$ApiAttestationCorrectionReceipt'
+        $source | Should -Not -Match '\$ApiAttestationCorrection(?:\s|,)'
+
+        $helper = $ast.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Get-GatewayVerifiedApiAttestationCorrectionProjection'
+        }, $true)
+        $helperSource = $helper.Extent.Text
+        $helperSource | Should -Match '& \{'
+        $helperSource | Should -Match '\. \$ToolPath -Config'
+        $helperSource | Should -Match 'Get-BootstrapApiAttestationCorrectionReceiptPath'
+        $helperSource | Should -Match 'Read-BootstrapApiAttestationCorrectionReceipt'
+        $helperSource | Should -Match 'Assert-BootstrapApiAttestationCorrectionReceipt'
+    }
+}
+
 Describe 'Current private-runtime database attestation boundary' {
     InModuleScope Verification {
         BeforeEach {

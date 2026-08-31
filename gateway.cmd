@@ -17,6 +17,7 @@ if /I "%COMMAND%"=="recover-database" set "GATEWAY_MODE=RecoverDatabase"
 if /I "%COMMAND%"=="repair-database" set "GATEWAY_MODE=RepairDatabase"
 if /I "%COMMAND%"=="continue-bootstrap" set "GATEWAY_MODE=ContinueBootstrap"
 if /I "%COMMAND%"=="upgrade-admin-ui" set "GATEWAY_MODE=UpgradeAdminUi"
+if /I "%COMMAND%"=="repair-api-attestation" set "GATEWAY_MODE=RepairApiAttestation"
 if /I "%COMMAND%"=="status" set "GATEWAY_MODE=Status"
 if /I "%COMMAND%"=="verify" set "GATEWAY_MODE=Verify"
 if /I "%COMMAND%"=="open" set "GATEWAY_MODE=Open"
@@ -27,6 +28,7 @@ if /I "%COMMAND%"=="--help" goto help
 if /I "%GATEWAY_MODE%"=="Setup" goto parse_setup
 if /I "%GATEWAY_MODE%"=="ContinueBootstrap" goto parse_continuation
 if /I "%GATEWAY_MODE%"=="UpgradeAdminUi" goto parse_upgrade
+if /I "%GATEWAY_MODE%"=="RepairApiAttestation" goto parse_api_attestation_repair
 if defined GATEWAY_MODE goto parse
 
 echo Unknown command. Run gateway.cmd --help for the supported surface. 1>&2
@@ -319,6 +321,59 @@ if errorlevel 1 exit /b %errorlevel%
 "%GATEWAY_PWSH%" -NoLogo -NoProfile -Command "$ErrorActionPreference='Stop'; try { $p=@{}; if($env:GATEWAY_CONFIG_SET -eq '1'){$p.Config=$env:GATEWAY_CONFIG}; if($env:GATEWAY_NONINTERACTIVE -eq '1'){$p.NonInteractive=$true}; if($env:GATEWAY_YES -eq '1'){$p.Yes=$true}; & (Join-Path $env:GATEWAY_ROOT 'operations\upgrade-bootstrap-admin-ui.ps1') @p; exit 0 } catch { [Console]::Error.WriteLine('Gateway Admin UI upgrade could not complete safely. Dependency details were withheld.'); exit 1 }"
 exit /b %errorlevel%
 
+:parse_api_attestation_repair
+set "GATEWAY_ROOT=%~dp0"
+set "GATEWAY_CONFIG_SET=0"
+set "GATEWAY_NONINTERACTIVE=0"
+set "GATEWAY_YES=0"
+
+:parse_api_attestation_repair_next
+if "%~1"=="" goto run_api_attestation_repair
+if /I "%~1"=="--config" goto api_attestation_repair_option_config
+if /I "%~1"=="-Config" goto api_attestation_repair_option_config
+if /I "%~1"=="--yes" (
+  set "GATEWAY_YES=1"
+  shift
+  goto parse_api_attestation_repair_next
+)
+if /I "%~1"=="-Yes" (
+  set "GATEWAY_YES=1"
+  shift
+  goto parse_api_attestation_repair_next
+)
+if /I "%~1"=="--non-interactive" (
+  set "GATEWAY_NONINTERACTIVE=1"
+  shift
+  goto parse_api_attestation_repair_next
+)
+if /I "%~1"=="-NonInteractive" (
+  set "GATEWAY_NONINTERACTIVE=1"
+  shift
+  goto parse_api_attestation_repair_next
+)
+if /I "%~1"=="-h" goto help_api_attestation_repair
+if /I "%~1"=="--help" goto help_api_attestation_repair
+echo Unknown repair-api-attestation option. Run gateway.cmd repair-api-attestation --help. 1>&2
+exit /b 2
+
+:api_attestation_repair_option_config
+if "%~2"=="" (
+  echo --config requires a path. 1>&2
+  exit /b 2
+)
+set "GATEWAY_CONFIG=%~2"
+set "GATEWAY_CONFIG_SET=1"
+shift
+shift
+goto parse_api_attestation_repair_next
+
+:run_api_attestation_repair
+set "GATEWAY_NO_INSTALL=1"
+call :find_pwsh
+if errorlevel 1 exit /b %errorlevel%
+"%GATEWAY_PWSH%" -NoLogo -NoProfile -Command "$ErrorActionPreference='Stop'; try { $p=@{}; if($env:GATEWAY_CONFIG_SET -eq '1'){$p.Config=$env:GATEWAY_CONFIG}; if($env:GATEWAY_NONINTERACTIVE -eq '1'){$p.NonInteractive=$true}; if($env:GATEWAY_YES -eq '1'){$p.Yes=$true}; & (Join-Path $env:GATEWAY_ROOT 'operations\repair-bootstrap-api-attestation.ps1') @p; exit 0 } catch { [Console]::Error.WriteLine('Gateway API attestation correction could not complete safely. Dependency details were withheld.'); exit 1 }"
+exit /b %errorlevel%
+
 :parse_continuation
 set "GATEWAY_ROOT=%~dp0"
 set "GATEWAY_CONFIG_SET=0"
@@ -398,6 +453,10 @@ exit /b 0
 echo Usage: gateway.cmd upgrade-admin-ui --config PATH --yes [--non-interactive]
 exit /b 0
 
+:help_api_attestation_repair
+echo Usage: gateway.cmd repair-api-attestation --config PATH --yes [--non-interactive]
+exit /b 0
+
 :check_setup_dotnet_10
 set "GATEWAY_SETUP_DOTNET_VERSION="
 for /f "delims=" %%V in ('dotnet --version 2^>nul') do set "GATEWAY_SETUP_DOTNET_VERSION=%%V"
@@ -430,6 +489,8 @@ echo   continue-bootstrap
 echo               Continue only pending steps after an exact completed database recovery
 echo   upgrade-admin-ui
 echo               Build and promote only the Admin UI of a completed bootstrap deployment
+echo   repair-api-attestation
+echo               Build and deploy only the reviewed API attestation correction, then verify
 echo   status      Show checkpoint and truthful readiness status
 echo   verify      Rerun read-only deployment verification
 echo   open        Open the recorded verified Admin UI

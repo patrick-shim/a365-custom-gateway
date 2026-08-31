@@ -28,6 +28,33 @@ Describe 'Experience database Job execution-intent propagation' {
     }
 }
 
+Describe 'Experience API correction image boundary' {
+    It 'keeps the original deployment receipt immutable while allowing one exact digest-pinned live API supersession' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            (Get-Module Experience).Path, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $function = $ast.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Test-GatewayGroupDeploymentEvidence'
+        }, $true)
+        $source = $function.Extent.Text
+
+        $source | Should -Match '\[System\.Collections\.IDictionary\]\$ApiImageSupersession'
+        $source | Should -Match 'receiptFingerprint\|targetApiImage\|targetRevisionName'
+        $source | Should -Match 'gateway-api@sha256:\[0-9a-f\]\{64\}'
+        $source | Should -Match 'ApiImageSupersession\.targetApiImage -ceq \$ApiImage'
+        $source | Should -Match 'deployment\.parameters\.apiContainerImage\.value -cne \$ApiImage'
+        $source | Should -Match 'deployment\.outputs\.apiContainerImage\.value -cne \$ApiImage'
+        $source | Should -Match 'api\.properties\.template\.containers\[0\]\.image -cne \$effectiveApiImage'
+        $source | Should -Match '-ExpectedImage \$effectiveApiImage -ExternalIngress'
+        $source | Should -Match 'latestReadyRevisionName -cne \$supersedingApiRevision'
+        $source | Should -Match "containerapp', 'revision', 'list'"
+        $source | Should -Not -Match 'deployment\.parameters\.apiContainerImage\.value -cne \$effectiveApiImage'
+    }
+}
+
 Describe 'Experience strict-mode array cardinality boundaries' {
     BeforeAll {
         $tokens = $null

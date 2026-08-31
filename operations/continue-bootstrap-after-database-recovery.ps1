@@ -890,7 +890,7 @@ try {
     }
 
     $verification = Invoke-ContinuationStateStep -Name 'End-to-end deployment verification' -AlwaysRun -Action {
-        Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId $ownershipId -DatabaseRecoveryPlan $databaseRecoveryPlan -ManualDatabaseRepairPlan $manualDatabaseRepairPlan -NonInteractive:$NonInteractive
+        Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId $ownershipId -DatabaseRecoveryPlan $databaseRecoveryPlan -ManualDatabaseRepairPlan $manualDatabaseRepairPlan -State $state -NonInteractive:$NonInteractive
     }
 
     $state.outputs['adminUiUrl'] = [string]$adminUi.adminUiUrl

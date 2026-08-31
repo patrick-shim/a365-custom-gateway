@@ -2901,6 +2901,7 @@ function Test-GatewayGroupDeploymentEvidence {
         [Parameter(Mandatory)][string]$ApiImage,
         [Parameter(Mandatory)][string]$WorkerImage,
         [Parameter()]$Database,
+        [Parameter()][AllowNull()][System.Collections.IDictionary]$ApiImageSupersession,
         [switch]$AllowRuntimeSupersession
     )
     if (-not $Evidence -or [string]::IsNullOrWhiteSpace([string]$Evidence.deploymentName)) { throw 'Deployment evidence is incomplete; refusing automatic replay.' }
@@ -2917,6 +2918,26 @@ function Test-GatewayGroupDeploymentEvidence {
             [string]$Evidence.runtimeImagePullIdentityId -cne [string]$Foundation.runtimeImagePullIdentityId -or
             [string]$Evidence.runtimeImagePullIdentityPrincipalId -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId -or
             [string]$Evidence.runtimeImagePullAcrPullRoleAssignmentId -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId) { throw 'mismatch' }
+        $effectiveApiImage = $ApiImage
+        $supersedingApiRevision = ''
+        if ($null -ne $ApiImageSupersession) {
+            if ((@($ApiImageSupersession.Keys | Sort-Object) -join '|') -cne
+                'receiptFingerprint|targetApiImage|targetRevisionName') {
+                throw 'mismatch'
+            }
+            Assert-BootstrapFingerprintValue `
+                -Value ([string]$ApiImageSupersession.receiptFingerprint) `
+                -Label 'API image-supersession receipt fingerprint'
+            $expectedSupersedingImagePattern = "^$([regex]::Escape([string]$Evidence.acrLoginServer))/gateway-api@sha256:[0-9a-f]{64}$"
+            if ([string]$ApiImageSupersession.targetApiImage -ceq $ApiImage -or
+                [string]$ApiImageSupersession.targetApiImage -cnotmatch $expectedSupersedingImagePattern -or
+                [string]$ApiImageSupersession.targetRevisionName -cnotmatch
+                    "^ca-gateway-api-$([regex]::Escape([string]$Config.environment))--[a-z0-9-]{1,64}$") {
+                throw 'mismatch'
+            }
+            $effectiveApiImage = [string]$ApiImageSupersession.targetApiImage
+            $supersedingApiRevision = [string]$ApiImageSupersession.targetRevisionName
+        }
         $inertDeploymentName = "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)"
         $runtimeDeploymentName = "a365gw-$($Config.projectName)-bootstrap-runtime-$($Config.environment)"
         if ([string]$Evidence.deploymentName -notin @($inertDeploymentName, $runtimeDeploymentName)) { throw 'mismatch' }
@@ -3030,13 +3051,32 @@ function Test-GatewayGroupDeploymentEvidence {
             [string]$api.properties.provisioningState -ne 'Succeeded' -or
             [string]$api.tags.bootstrapOwnershipId -cne $canonicalOwnershipId -or
             [string]$api.tags.bootstrapSourceFingerprint -cne $SourceFingerprint -or
-            [string]$api.properties.template.containers[0].image -cne $ApiImage -or
+            [string]$api.properties.template.containers[0].image -cne $effectiveApiImage -or
+            (-not [string]::IsNullOrWhiteSpace($supersedingApiRevision) -and (
+                [string]$api.properties.latestRevisionName -cne $supersedingApiRevision -or
+                [string]$api.properties.latestReadyRevisionName -cne $supersedingApiRevision)) -or
             [string]$worker.name -ne "ca-gateway-worker-$($Config.environment)-v3" -or
             [string]$worker.identity.principalId -ne [string]$Evidence.workerPrincipalId -or
             [string]$worker.properties.provisioningState -ne 'Succeeded' -or
             [string]$worker.tags.bootstrapOwnershipId -cne $canonicalOwnershipId -or
             [string]$worker.tags.bootstrapSourceFingerprint -cne $SourceFingerprint -or
             [string]$worker.properties.template.containers[0].image -cne $WorkerImage) { throw 'mismatch' }
+
+        if (-not [string]::IsNullOrWhiteSpace($supersedingApiRevision)) {
+            $activeApiRevisions = @(Invoke-AzJson -Arguments @(
+                'containerapp', 'revision', 'list',
+                '--resource-group', [string]$Config.resourceGroupName,
+                '--name', "ca-gateway-api-$($Config.environment)",
+                '--query', '[?properties.active==`true`].{name:name,healthState:properties.healthState,runningState:properties.runningState,replicas:properties.replicas}'
+            ))
+            if ($activeApiRevisions.Count -ne 1 -or
+                [string]$activeApiRevisions[0].name -cne $supersedingApiRevision -or
+                [string]$activeApiRevisions[0].healthState -cne 'Healthy' -or
+                [string]$activeApiRevisions[0].runningState -cne 'Running' -or
+                [int]$activeApiRevisions[0].replicas -lt 1) {
+                throw 'mismatch'
+            }
+        }
 
         if ($isRuntime -or -not $AllowRuntimeSupersession) {
             $expectedManagerIds = @(
@@ -3144,7 +3184,7 @@ function Test-GatewayGroupDeploymentEvidence {
                 -ExpectedLocation ([string]$Config.location) -ExpectedPrincipalId ([string]$Evidence.apiPrincipalId) `
                 -ExpectedImagePullIdentityResourceId ([string]$Evidence.runtimeImagePullIdentityId) `
                 -ExpectedManagedEnvironmentId ([string]$Foundation.containerAppsEnvironmentId) -ExpectedRegistryServer ([string]$Evidence.acrLoginServer) `
-                -ExpectedImage $ApiImage -ExternalIngress $true -ExpectedFqdn ([string]$Evidence.apiFqdn) | Out-Null
+                -ExpectedImage $effectiveApiImage -ExternalIngress $true -ExpectedFqdn ([string]$Evidence.apiFqdn) | Out-Null
             Assert-GatewayExactSystemContainerAppEnvelope -App $worker -ExpectedName "ca-gateway-worker-$($Config.environment)-v3" `
                 -ExpectedLocation ([string]$Config.location) -ExpectedPrincipalId ([string]$Evidence.workerPrincipalId) `
                 -ExpectedImagePullIdentityResourceId ([string]$Evidence.runtimeImagePullIdentityId) `

@@ -27,6 +27,8 @@ Commands:
               Continue only pending steps after an exact completed database recovery
   upgrade-admin-ui
               Build and promote only the Admin UI of a completed bootstrap deployment
+  repair-api-attestation
+              Build and deploy only the reviewed API attestation correction, then verify
   status      Show checkpoint and truthful readiness status without Azure calls
   verify      Rerun the read-only deployment verification gate
   open        Open the recorded verified Admin UI HTTPS endpoint
@@ -136,6 +138,31 @@ if [[ "$command_name" == 'upgrade-admin-ui' ]]; then
     exit 1
   fi
   exec pwsh "${upgrade_args[@]}"
+fi
+if [[ "$command_name" == 'repair-api-attestation' ]]; then
+  correction_entry="$gateway_root/operations/repair-bootstrap-api-attestation.ps1"
+  correction_args=(-NoLogo -NoProfile -File "$correction_entry")
+  while (($# > 0)); do
+    case "$1" in
+      --config)
+        (($# >= 2)) || { echo '--config requires a path.' >&2; exit 2; }
+        correction_args+=(-Config "$2")
+        shift 2
+        ;;
+      --yes) correction_args+=(-Yes); shift ;;
+      --non-interactive) correction_args+=(-NonInteractive); shift ;;
+      -h|--help)
+        printf 'Usage: ./gateway repair-api-attestation --config PATH --yes [--non-interactive]\n'
+        exit 0
+        ;;
+      *) printf 'Unknown repair-api-attestation option: %s\n' "$1" >&2; exit 2 ;;
+    esac
+  done
+  if ! command -v pwsh >/dev/null 2>&1; then
+    printf 'PowerShell 7 is required to run the API attestation correction.\n' >&2
+    exit 1
+  fi
+  exec pwsh "${correction_args[@]}"
 fi
 case "$command_name" in
   setup)

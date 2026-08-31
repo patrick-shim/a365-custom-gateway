@@ -1236,7 +1236,7 @@ try {
         $adminCredential = Get-Evidence 'Admin UI Key Vault credential'
         $verifyDatabaseValidationPlans = Get-BootstrapCompletedDatabaseValidationPlans -State $state
         $verification = Invoke-GatewayStateStep -Name 'End-to-end deployment verification' -AlwaysRun -Action {
-            Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -DatabaseRecoveryPlan $verifyDatabaseValidationPlans.databaseRecoveryPlan -ManualDatabaseRepairPlan $verifyDatabaseValidationPlans.manualDatabaseRepairPlan -NonInteractive:$NonInteractive
+            Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -DatabaseRecoveryPlan $verifyDatabaseValidationPlans.databaseRecoveryPlan -ManualDatabaseRepairPlan $verifyDatabaseValidationPlans.manualDatabaseRepairPlan -State $state -NonInteractive:$NonInteractive
         }
         Save-Output -Name 'verification' -Value $verification
         Write-GatewayExperienceEvent -Type Result -Message "Verification passed. Admin UI: $($adminUi.adminUiUrl)" -Data ([ordered]@{
@@ -1505,7 +1505,7 @@ try {
     } | Out-Null
 
     $verification = Invoke-GatewayStateStep -Name 'End-to-end deployment verification' -AlwaysRun -Action {
-        Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -DatabaseRecoveryPlan $databaseRecoveryPlan -ManualDatabaseRepairPlan $manualDatabaseRepairPlan -NonInteractive:$NonInteractive
+        Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -DatabaseRecoveryPlan $databaseRecoveryPlan -ManualDatabaseRepairPlan $manualDatabaseRepairPlan -State $state -NonInteractive:$NonInteractive
     }
 
     Save-Output -Name 'adminUiUrl' -Value ([string]$adminUi.adminUiUrl)

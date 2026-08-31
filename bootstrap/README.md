@@ -136,6 +136,7 @@ render those credentials. A cached sign-in is required for non-interactive use.
 | `gateway recover-database` | Run the separately reviewed one-time recovery for the exact eligible failed database bootstrap. |
 | `gateway repair-database --yes` | Run one new one-shot repair Job after both automatic database recoveries are terminal `Failed`/`manualOnly`; there is no Plan or What-If mode. |
 | `gateway upgrade-admin-ui` | Promote only the Admin UI in an already completed and verified bootstrap deployment. |
+| `gateway repair-api-attestation --yes` | Apply only the reviewed, receipt-bound API attestation correction to its exact eligible failed bootstrap, then run canonical final verification. |
 | `gateway status` | Show local checkpoint and layered readiness status without Azure calls. |
 | `gateway verify` | Rerun authenticated, read-only deployment verification. |
 | `gateway open` | Open only a recorded, verified HTTPS Admin UI endpoint. |
@@ -184,6 +185,34 @@ versionless Key Vault access, health, and the Entra sign-in redirect. It finishe
 only when the API, worker, queue counts, ownership, and original accepted bootstrap
 plan are unchanged. The receipt records the prior Admin UI digest as the rollback
 boundary; rollback remains a separately reviewed operation.
+
+### Repair only the bootstrap API attestation contract
+
+When the completed manual database repair is exact and the only remaining clean-
+bootstrap failure is the original API image's database-attestation contract, run:
+
+```bash
+./gateway repair-api-attestation --config bootstrap/config.json --yes
+```
+
+On Windows, use `gateway.cmd repair-api-attestation` with the same options. This is
+a separately guarded correction, not a bootstrap mode. It accepts no Plan,
+What-If, dry-run, or Bicep/resource replay. The command preserves the original
+accepted plan and every completed prior step, reconstructs source from that
+content-addressed snapshot, overlays exactly the two reviewed hash-pinned API
+attestation files, builds only `gateway-api`, and directly updates only the existing
+API Container App with an immutable digest and receipt-bound revision suffix.
+
+The additive receipt lives under
+`.bootstrap/evidence/<resource-group>/api-attestation-correction/` and is saved
+before external mutation so rerunning the same command reconciles the one ACR run
+and one Container Apps update instead of resubmitting them. Success requires exact
+ACR run/tag/digest readback, one healthy active target revision, unchanged API
+identity/configuration/environment/ingress/registry/secrets/tags, an unchanged
+workflow-v3 worker and Service Bus queue counts, HTTP 2xx health, exact `Ready`, and
+the exact v1 `Attested` response. The command then reruns only the canonical
+`End-to-end deployment verification` step and records the verified Admin UI/API
+URLs; it never replays earlier resources.
 
 For controlled automation, separate review from authorization. Preserve the JSON
 Lines Plan result, extract the one top-level object whose `applyReady` is `true`,

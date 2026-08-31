@@ -147,6 +147,106 @@ function Get-GatewayCurrentDatabaseAttestationEvidence {
     throw 'The private-runtime database attestation endpoint did not return the exact bounded v1 success contract.'
 }
 
+function Assert-GatewayApiAttestationCorrectionProjection {
+    [CmdletBinding()]
+    param(
+        [Parameter()][AllowNull()][System.Collections.IDictionary]$Correction,
+        [Parameter(Mandatory)]$Runtime,
+        [Parameter(Mandatory)]$Images
+    )
+
+    if ($null -eq $Correction) {
+        return [ordered]@{
+            applied = $false
+            effectiveApiImage = [string]$Images.api
+        }
+    }
+    try {
+        $expectedProperties = @(
+            'baselineApiImage', 'baselineWorkerImage', 'contractFingerprint',
+            'receiptFingerprint', 'synthesizedBuildSourceFingerprint', 'targetApiImage',
+            'targetRevisionName', 'verifiedAtUtc'
+        )
+        if ((@($Correction.Keys | Sort-Object) -join '|') -cne ($expectedProperties -join '|')) {
+            throw 'mismatch'
+        }
+        foreach ($name in @('contractFingerprint', 'receiptFingerprint', 'synthesizedBuildSourceFingerprint')) {
+            Assert-BootstrapFingerprintValue -Value ([string]$Correction[$name]) -Label "API correction $name"
+        }
+        $verifiedAt = [DateTimeOffset]::MinValue
+        $targetPattern = "^$([regex]::Escape([string]$Runtime.acrLoginServer))/gateway-api@sha256:[0-9a-f]{64}$"
+        if ([string]$Correction.baselineApiImage -cne [string]$Images.api -or
+            [string]$Correction.baselineWorkerImage -cne [string]$Images.worker -or
+            [string]$Correction.targetApiImage -ceq [string]$Images.api -or
+            [string]$Correction.targetApiImage -cnotmatch $targetPattern -or
+            [string]$Correction.targetRevisionName -cnotmatch "^ca-gateway-api-[a-z0-9-]+--[a-z0-9-]{1,64}$" -or
+            -not [DateTimeOffset]::TryParse(
+                [string]$Correction.verifiedAtUtc,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref]$verifiedAt) -or
+            $verifiedAt -gt [DateTimeOffset]::UtcNow.AddMinutes(5)) {
+            throw 'mismatch'
+        }
+        return [ordered]@{
+            applied = $true
+            effectiveApiImage = [string]$Correction.targetApiImage
+            receiptFingerprint = [string]$Correction.receiptFingerprint
+            contractFingerprint = [string]$Correction.contractFingerprint
+            synthesizedBuildSourceFingerprint = [string]$Correction.synthesizedBuildSourceFingerprint
+            targetRevisionName = [string]$Correction.targetRevisionName
+            verifiedAtUtc = $verifiedAt.ToUniversalTime().ToString('O')
+        }
+    }
+    catch {
+        throw 'The API-attestation correction projection is absent, malformed, or not bound to the recorded baseline and immutable target digest.'
+    }
+}
+
+function Get-GatewayVerifiedApiAttestationCorrectionProjection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Runtime,
+        [Parameter(Mandatory)]$Images
+    )
+
+    $expectedToolPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../operations/repair-bootstrap-api-attestation.ps1'))
+    if (-not (Test-Path -LiteralPath $expectedToolPath -PathType Leaf)) {
+        throw 'The supported API-attestation correction receipt validator is absent.'
+    }
+    return & {
+        param($ToolPath, $InnerConfig, $InnerState, $InnerRuntime, $InnerImages)
+
+        # Keep the operation script's parameters/preferences/functions inside this
+        # child scope. The script is dot-sourced only to load its receipt helpers;
+        # its mutation entry point is guarded by InvocationName and is not called.
+        . $ToolPath -Config ''
+        $receiptPath = Get-BootstrapApiAttestationCorrectionReceiptPath `
+            -Config $InnerConfig `
+            -State $InnerState
+        if ([string]::IsNullOrWhiteSpace([string]$receiptPath)) {
+            return Assert-GatewayApiAttestationCorrectionProjection `
+                -Correction $null `
+                -Runtime $InnerRuntime `
+                -Images $InnerImages
+        }
+        $receipt = Read-BootstrapApiAttestationCorrectionReceipt -Path $receiptPath
+        if ($receipt -isnot [System.Collections.IDictionary]) {
+            throw 'The discovered API-attestation correction receipt is absent or malformed.'
+        }
+        $projection = Assert-BootstrapApiAttestationCorrectionReceipt `
+            -Config $InnerConfig `
+            -State $InnerState `
+            -Receipt $receipt
+        return Assert-GatewayApiAttestationCorrectionProjection `
+            -Correction $projection `
+            -Runtime $InnerRuntime `
+            -Images $InnerImages
+    } $expectedToolPath $Config $State $Runtime $Images
+}
+
 function Test-ExactAdminUiRuntimeApplicationSurface {
     param(
         [Parameter(Mandatory)]$Application,
@@ -766,6 +866,7 @@ function Test-GatewayBootstrapDeployment {
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter()][AllowNull()][System.Collections.IDictionary]$DatabaseRecoveryPlan,
         [Parameter()][AllowNull()][System.Collections.IDictionary]$ManualDatabaseRepairPlan,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
         [switch]$NonInteractive
     )
     $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
@@ -816,6 +917,20 @@ function Test-GatewayBootstrapDeployment {
     }
     Assert-BootstrapFingerprintValue -Value ([string]$Images.sourceFingerprint) -Label 'Recorded image source fingerprint'
     Test-GatewayImmutableImageEvidence -Evidence $Images -SourceFingerprint ([string]$Images.sourceFingerprint) -DeploymentOwnershipId $DeploymentOwnershipId | Out-Null
+    $apiCorrection = Get-GatewayVerifiedApiAttestationCorrectionProjection `
+        -State $State `
+        -Config $Config `
+        -Runtime $Runtime `
+        -Images $Images
+    $effectiveApiImage = [string]$apiCorrection.effectiveApiImage
+    $apiImageSupersession = if ($apiCorrection.applied) {
+        [ordered]@{
+            receiptFingerprint = [string]$apiCorrection.receiptFingerprint
+            targetApiImage = $effectiveApiImage
+            targetRevisionName = [string]$apiCorrection.targetRevisionName
+        }
+    }
+    else { $null }
     Test-GatewayRecordedDatabaseAttestationBoundary `
         -Config $Config `
         -Runtime $Runtime `
@@ -927,16 +1042,21 @@ function Test-GatewayBootstrapDeployment {
             throw 'The complete preserved failure chain changed after manual database repair.'
         }
     }
-    Test-GatewayGroupDeploymentEvidence `
-        -Config $Config `
-        -Foundation $Foundation `
-        -Identity $Identity `
-        -Evidence $Runtime `
-        -DeploymentOwnershipId $DeploymentOwnershipId `
-        -SourceFingerprint ([string]$Images.sourceFingerprint) `
-        -ApiImage ([string]$Images.api) `
-        -WorkerImage ([string]$Images.worker) `
-        -Database $Database | Out-Null
+    $runtimeEvidenceParameters = @{
+        Config = $Config
+        Foundation = $Foundation
+        Identity = $Identity
+        Evidence = $Runtime
+        DeploymentOwnershipId = $DeploymentOwnershipId
+        SourceFingerprint = [string]$Images.sourceFingerprint
+        ApiImage = [string]$Images.api
+        WorkerImage = [string]$Images.worker
+        Database = $Database
+    }
+    if ($apiCorrection.applied) {
+        $runtimeEvidenceParameters['ApiImageSupersession'] = $apiImageSupersession
+    }
+    Test-GatewayGroupDeploymentEvidence @runtimeEvidenceParameters | Out-Null
     Test-GatewayNamedGroupDeployment `
         -Config $Config `
         -Foundation $Foundation `
@@ -1028,12 +1148,12 @@ function Test-GatewayBootstrapDeployment {
         $public = Invoke-AzTsv -Arguments @('keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $vault, '--query', 'properties.publicNetworkAccess')
         if ($public -ne 'Disabled') { throw "Key Vault '$vault' public network access is not Disabled." }
     }
-    $expectedImages = [ordered]@{
-        "ca-gateway-api-$($Config.environment)" = [string]$Images.api
+    $deployedImages = [ordered]@{
+        "ca-gateway-api-$($Config.environment)" = $effectiveApiImage
         "ca-gateway-worker-$($Config.environment)-v3" = [string]$Images.worker
         "ca-gateway-admin-$($Config.environment)" = [string]$Images.adminUi
     }
-    foreach ($entry in $expectedImages.GetEnumerator()) {
+    foreach ($entry in $deployedImages.GetEnumerator()) {
         $actualImage = Invoke-AzTsv -Arguments @('containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $entry.Key, '--query', 'properties.template.containers[0].image')
         if ($actualImage -ne $entry.Value) { throw "Container App '$($entry.Key)' is not running the recorded immutable image digest." }
     }
@@ -1161,7 +1281,13 @@ function Test-GatewayBootstrapDeployment {
         keyVaultPublicNetworkAccess = 'Disabled'
         sqlPrivateEndpoint = 'Passed'
         databaseAttestation = $databaseAttestation
-        immutableImages = $expectedImages
+        apiAttestationCorrection = $apiCorrection
+        immutableImages = [ordered]@{
+            "ca-gateway-api-$($Config.environment)" = [string]$Images.api
+            "ca-gateway-worker-$($Config.environment)-v3" = [string]$Images.worker
+            "ca-gateway-admin-$($Config.environment)" = [string]$Images.adminUi
+        }
+        deployedImages = $deployedImages
         azureRbac = 'Passed'
         azureLocalCredentialControls = 'Passed'
         purviewGraphRoles = if ($Config.purview.enabled -eq $true) { 'Passed' } else { 'NotConfigured' }
