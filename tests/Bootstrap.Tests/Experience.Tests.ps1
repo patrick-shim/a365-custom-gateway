@@ -51,6 +51,7 @@ Describe 'Experience API correction image boundary' {
         $source | Should -Match '-ExpectedImage \$effectiveApiImage -ExternalIngress'
         $source | Should -Match 'latestReadyRevisionName -cne \$supersedingApiRevision'
         $source | Should -Match "containerapp', 'revision', 'list'"
+        $source | Should -Match "runningState -notin @\('Running', 'RunningAtMaxScale'\)"
         $source | Should -Not -Match 'deployment\.parameters\.apiContainerImage\.value -cne \$effectiveApiImage'
     }
 }

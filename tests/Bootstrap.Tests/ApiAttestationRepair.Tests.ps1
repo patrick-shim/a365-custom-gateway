@@ -67,6 +67,132 @@ Describe 'Bounded bootstrap API-attestation correction' {
             Should -Throw '*executable dependency contract changed*'
     }
 
+    It 'accepts only the exact predecessor one-level nested dependency shape and binds current reconciliation additively' {
+        [object[]]$predecessorEntries = @($ApiAttestationCorrectionPredecessorResume.executionDependencies)
+        [object[]]$legacyOuter = [object[]]::new(1)
+        $legacyOuter[0] = $predecessorEntries
+        $legacySource = [ordered]@{ executionDependencies = $legacyOuter }
+        $binding = Get-ApiAttestationCorrectionAcceptedDependencyBinding -SourceContract $legacySource
+        $binding.mode | Should -BeExactly 'ExactPredecessorNested'
+        $binding.rawFingerprint | Should -BeExactly $ApiAttestationCorrectionPredecessorResume.nestedDependenciesFingerprint
+        $binding.normalizedFingerprint | Should -BeExactly $ApiAttestationCorrectionPredecessorResume.normalizedDependenciesFingerprint
+
+        [object[]]$predecessorOverlays = @($ApiAttestationCorrectionOverlayContract)
+        [object[]]$legacyOverlayOuter = [object[]]::new(1)
+        $legacyOverlayOuter[0] = $predecessorOverlays
+        $legacySource.overlays = $legacyOverlayOuter
+        $overlayBinding = Get-ApiAttestationCorrectionAcceptedOverlayBinding -SourceContract $legacySource
+        $overlayBinding.mode | Should -BeExactly 'ExactPredecessorNested'
+        $overlayBinding.rawFingerprint | Should -BeExactly $ApiAttestationCorrectionPredecessorResume.nestedOverlaysFingerprint
+        $overlayBinding.normalizedFingerprint | Should -BeExactly $ApiAttestationCorrectionPredecessorResume.normalizedOverlaysFingerprint
+
+        [object[]]$tripleInner = [object[]]::new(1)
+        $tripleInner[0] = $predecessorEntries
+        [object[]]$tripleOuter = [object[]]::new(1)
+        $tripleOuter[0] = $tripleInner
+        { Get-ApiAttestationCorrectionAcceptedDependencyBinding `
+                -SourceContract ([ordered]@{ executionDependencies = $tripleOuter }) } |
+            Should -Throw '*unsupported nesting*'
+
+        $flatSource = [ordered]@{
+            executionDependencies = ConvertTo-BootstrapCanonicalValue -Value (Get-ApiAttestationCorrectionExecutionDependencyMetadata)
+            overlays = ConvertTo-BootstrapCanonicalValue -Value $ApiAttestationCorrectionOverlayContract
+        }
+        (Get-ApiAttestationCorrectionAcceptedDependencyBinding -SourceContract $flatSource).mode |
+            Should -BeExactly 'CurrentFlat'
+        (Get-ApiAttestationCorrectionAcceptedOverlayBinding -SourceContract $flatSource).mode |
+            Should -BeExactly 'CurrentFlat'
+        @($flatSource.executionDependencies) | Should -HaveCount 10
+        @($flatSource.overlays) | Should -HaveCount 2
+        $script:OperationText | Should -Not -Match 'overlays = @\(ConvertTo-BootstrapCanonicalValue'
+        $script:OperationText | Should -Not -Match 'executionDependencies = @\(ConvertTo-BootstrapCanonicalValue'
+
+        $currentDependencies = @(Get-ApiAttestationCorrectionExecutionDependencyMetadata)
+        $currentSource = [ordered]@{
+            sourceContractFingerprint = "sha256:$('a' * 64)"
+            toolFingerprint = "sha256:$((Get-FileHash -LiteralPath $script:OperationPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+            executionDependencies = $currentDependencies
+        }
+        $reconciliation = New-ApiAttestationCorrectionResumeReconciliation -CurrentSource $currentSource
+        { Assert-ApiAttestationCorrectionResumeReconciliation `
+                -Reconciliation $reconciliation -CurrentSource $currentSource } |
+            Should -Not -Throw
+        $changedSource = ConvertTo-BootstrapCanonicalValue -Value $currentSource
+        $changedSource.toolFingerprint = "sha256:$('b' * 64)"
+        { Assert-ApiAttestationCorrectionResumeReconciliation `
+                -Reconciliation $reconciliation -CurrentSource $changedSource } |
+            Should -Throw '*outside its exact predecessor and current execution contract*'
+    }
+
+    It 'upgrades only the exact reconciled predecessor receipt to top-level schema version 2' {
+        [object[]]$legacyDependencies = [object[]]::new(1)
+        $legacyDependencies[0] = [object[]]@($ApiAttestationCorrectionPredecessorResume.executionDependencies)
+        [object[]]$legacyOverlays = [object[]]::new(1)
+        $legacyOverlays[0] = [object[]]@($ApiAttestationCorrectionOverlayContract)
+        $sourceContract = [ordered]@{
+            originalSourceFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.originalSourceFingerprint
+            overlays = $legacyOverlays
+            synthesizedBuildSourceFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.synthesizedBuildSourceFingerprint
+            toolFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.toolFingerprint
+            executionDependencies = $legacyDependencies
+        }
+        (Get-BootstrapObjectFingerprint -InputObject $sourceContract) |
+            Should -BeExactly $ApiAttestationCorrectionPredecessorResume.sourceContractFingerprint
+        $receipt = [ordered]@{
+            schemaVersion = 2
+            locatorFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.locatorFingerprint
+            contractFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.contractFingerprint
+            acceptedContract = [ordered]@{
+                source = $sourceContract
+                build = [ordered]@{ tag = [string]$ApiAttestationCorrectionPredecessorResume.tag }
+                deployment = [ordered]@{ targetRevisionName = [string]$ApiAttestationCorrectionPredecessorResume.targetRevisionName }
+            }
+            status = 'NeedsAttention'
+            build = [ordered]@{
+                tag = [string]$ApiAttestationCorrectionPredecessorResume.tag
+                runId = [string]$ApiAttestationCorrectionPredecessorResume.runId
+                digest = [string]$ApiAttestationCorrectionPredecessorResume.digest
+                image = "safe.azurecr.io/gateway-api@$($ApiAttestationCorrectionPredecessorResume.digest)"
+                state = 'DigestCheckpointed'
+            }
+            deployment = [ordered]@{
+                targetImage = "safe.azurecr.io/gateway-api@$($ApiAttestationCorrectionPredecessorResume.digest)"
+                targetRevisionName = [string]$ApiAttestationCorrectionPredecessorResume.targetRevisionName
+                state = 'IntentRecorded'
+            }
+            verification = [ordered]@{ state = 'Pending' }
+        }
+        $currentDependencies = @(Get-ApiAttestationCorrectionExecutionDependencyMetadata)
+        $currentSource = [ordered]@{
+            sourceContractFingerprint = "sha256:$('a' * 64)"
+            toolFingerprint = "sha256:$((Get-FileHash -LiteralPath $script:OperationPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+            executionDependencies = $currentDependencies
+        }
+        $receipt.resumeReconciliation = New-ApiAttestationCorrectionResumeReconciliation -CurrentSource $currentSource
+        $dependencyBinding = Get-ApiAttestationCorrectionAcceptedDependencyBinding -SourceContract $sourceContract
+        $overlayBinding = Get-ApiAttestationCorrectionAcceptedOverlayBinding -SourceContract $sourceContract
+        { Assert-ApiAttestationCorrectionExactPredecessorReceipt `
+                -Receipt $receipt -DependencyBinding $dependencyBinding -OverlayBinding $overlayBinding `
+                -CurrentSource $currentSource } |
+            Should -Not -Throw
+        $receipt.schemaVersion = 1
+        { Assert-ApiAttestationCorrectionExactPredecessorReceipt `
+                -Receipt $receipt -DependencyBinding $dependencyBinding -OverlayBinding $overlayBinding `
+                -CurrentSource $currentSource } |
+            Should -Throw '*must use top-level schema version 2*'
+    }
+
+    It 'accepts only the exact one-property readiness JSON contract' {
+        $exact = [Text.Encoding]::UTF8.GetBytes('{"status":"Ready"}')
+        Assert-ApiAttestationCorrectionReadyContract -StatusCode 200 -Body $exact |
+            Should -BeExactly 'Ready'
+        foreach ($invalid in @('Ready', '{"status":"Wrong"}', '{"status":"Ready","extra":true}')) {
+            { Assert-ApiAttestationCorrectionReadyContract `
+                    -StatusCode 200 -Body ([Text.Encoding]::UTF8.GetBytes($invalid)) } |
+                Should -Throw '*exact one-field Ready JSON contract*'
+        }
+    }
+
     It 'persists source tool and build intent before the sole gateway-api build' {
         $acceptIndex = $script:OperationText.LastIndexOf("acceptedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')")
         $resolveIndex = $script:OperationText.LastIndexOf('Resolve-ApiAttestationCorrectionBuild')
@@ -179,6 +305,7 @@ Describe 'Bounded bootstrap API-attestation correction' {
             }
             Mock Assert-GatewayAcrCompletedBuildContract { $Run }
             Mock Get-GatewayAcrExactTagDigest { [pscustomobject]@{ digest = $script:BuildDigest } }
+            Mock Invoke-AzJson { throw 'An ACR build replay was attempted.' }
         }
 
         It 'never rebinds a RunQueued receipt to a different exact-tag run' {
@@ -210,6 +337,71 @@ Describe 'Bounded bootstrap API-attestation correction' {
                 Should -Throw '*QuickRun output digest*'
             Should -Invoke Get-GatewayAcrExactImageRuns -Times 1 -Exactly
             Should -Invoke Get-GatewayAcrExactRunById -Times 1 -Exactly
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly
+        }
+    }
+
+    Context 'deployed revision resume reconciliation' {
+        BeforeEach {
+            $script:ResumeImage = "acrsafedev.azurecr.io/gateway-api@sha256:$('1' * 64)"
+            $script:ResumeRevision = 'ca-gateway-api-dev--attest-cdd5f598eaef'
+            $script:ResumeReceipt = [ordered]@{
+                acceptedContract = [ordered]@{
+                    baseline = [ordered]@{ api = [ordered]@{ normalizedEnvelopeFingerprint = "sha256:$('2' * 64)" } }
+                }
+                build = [ordered]@{ state = 'DigestCheckpointed'; image = $script:ResumeImage }
+                deployment = [ordered]@{
+                    appName = 'ca-gateway-api-dev'; containerName = 'ca-gateway-api-dev'
+                    revisionSuffix = 'attest-cdd5f598eaef'; targetRevisionName = $script:ResumeRevision
+                    targetImage = $script:ResumeImage; state = 'IntentRecorded'; completedAtUtc = ''
+                }
+            }
+            Mock Get-ApiAttestationCorrectionExactRevision {
+                @([pscustomobject]@{ name = $script:ResumeRevision; image = $script:ResumeImage; active = $true })
+            }
+            Mock Save-ApiAttestationCorrectionReceipt {}
+            Mock Invoke-AzJson { throw 'A Container App update replay was attempted.' }
+        }
+
+        It 'reconciles the existing exact revision without a second Container App update' {
+            Mock Get-ApiAttestationCorrectionActiveRevision {
+                [ordered]@{
+                    name = $script:ResumeRevision; image = $script:ResumeImage; replicas = 1
+                    healthState = 'Healthy'; runningState = 'RunningAtMaxScale'
+                }
+            }
+            $result = Deploy-ApiAttestationCorrection `
+                -Config ([pscustomobject]@{}) -Boundary ([ordered]@{}) -Receipt $script:ResumeReceipt `
+                -ReceiptPath (Join-Path $TestDrive 'receipt.json') -TargetImage $script:ResumeImage
+            $result.name | Should -BeExactly $script:ResumeRevision
+            $result.runningState | Should -BeExactly 'RunningAtMaxScale'
+            $script:ResumeReceipt.deployment.state | Should -BeExactly 'Succeeded'
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly
+            Should -Invoke Save-ApiAttestationCorrectionReceipt -Times 1 -Exactly
+        }
+
+        It 'accepts only Running and RunningAtMaxScale as healthy provider running states' {
+            $script:ProviderRunningState = ''
+            Mock Invoke-AzJson {
+                @([pscustomobject]@{
+                    name = $script:ResumeRevision; active = $true; healthState = 'Healthy'
+                    runningState = $script:ProviderRunningState; replicas = 1; image = $script:ResumeImage
+                })
+            }
+            foreach ($runningState in @('Running', 'RunningAtMaxScale')) {
+                $script:ProviderRunningState = $runningState
+                (Get-ApiAttestationCorrectionActiveRevision `
+                        -Config ([pscustomobject]@{ subscriptionId = 'safe'; resourceGroupName = 'safe' }) `
+                        -AppName 'ca-gateway-api-dev' -TargetRevisionName $script:ResumeRevision `
+                        -TargetImage $script:ResumeImage -MaximumAttempts 1).runningState |
+                    Should -BeExactly $runningState
+            }
+            $script:ProviderRunningState = 'Scaling'
+            { Get-ApiAttestationCorrectionActiveRevision `
+                    -Config ([pscustomobject]@{ subscriptionId = 'safe'; resourceGroupName = 'safe' }) `
+                    -AppName 'ca-gateway-api-dev' -TargetRevisionName $script:ResumeRevision `
+                    -TargetImage $script:ResumeImage -MaximumAttempts 1 } |
+                Should -Throw '*exactly one active, healthy, running, ready target revision*'
         }
     }
 

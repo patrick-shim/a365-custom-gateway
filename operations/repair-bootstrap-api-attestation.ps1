@@ -47,6 +47,35 @@ $ApiAttestationCorrectionExecutionDependencyPaths = @(
     'bootstrap/modules/Verification.psm1'
     'operations/test-provisioning-prerequisites.ps1'
 )
+$ApiAttestationCorrectionPredecessorResume = [ordered]@{
+    locatorFingerprint = 'sha256:cdd5f598eaef9412e78e30c4a45008742b47de82af9179daa8c8518e7f6cf582'
+    receiptFingerprint = 'sha256:829f814305c31f5af2659c3127243cfe99e2fa287a3e18adac3ec9e962cccbe8'
+    contractFingerprint = 'sha256:a41dfefa5253e5dd14e7c0af54651118acaf3abfec57b82194bcc825ab4e015c'
+    sourceContractFingerprint = 'sha256:3d16a0d6461b843dfcd10761554382b683d3397c610c9cffc2a8e7c707bab20a'
+    originalSourceFingerprint = 'sha256:fb259d102fffe19da629a13eb4b3a84e385c978e2e2166d4171ddcb9566ec23c'
+    synthesizedBuildSourceFingerprint = 'sha256:bdeb375ec0ce1b22cc5d7f5039cecc808b12b16cf171d356d7110843859e32df'
+    toolFingerprint = 'sha256:c3c3275329b7dbdebc94a98c4543fd0ca7461c80afd15b21561c7231787808cc'
+    nestedOverlaysFingerprint = 'sha256:a2ad0594eae88fcc112a4deef6c3eeed42c0dc33bb6da7a4d93ace0e9e0b527e'
+    normalizedOverlaysFingerprint = 'sha256:16a76ed7e09f4ecdb3f15134cbc419652c60365750d133e2920e9e8fbfd3ded5'
+    nestedDependenciesFingerprint = 'sha256:eb8bea500ea72de7e5b6e6f262ca9b4576390aab29f92f0be8c666f62f050b77'
+    normalizedDependenciesFingerprint = 'sha256:97160cdcb38437c7cc3739993da99e576b4cb56b3c8e55c15de83c84120ceef0'
+    runId = 'de9'
+    tag = 'bootstrap-ac7c916d8bc848e89b26d4c8fdac73bf-bdeb375ec0ce1b22cc5d7f5039cecc80-0bab79ccab7d570799d87c337dac6db9'
+    digest = 'sha256:adffb7076989d50a82a1067d3558e1bc4ac029305278c4bbb432a3bec9a5c6e0'
+    targetRevisionName = 'ca-gateway-api-dev--attest-cdd5f598eaef'
+    executionDependencies = @(
+        [ordered]@{ path = 'bootstrap/modules/Agent365.psm1'; sha256 = 'f857bbdd8f12116e1610cdf4250a6eca473726cc2bd64ce6910edfb3ce80edc2' }
+        [ordered]@{ path = 'bootstrap/modules/Azure.psm1'; sha256 = 'f996fa44ea3a7ba6dc1d69b3c70cc17fce54662ca260680b2f402919c317acd1' }
+        [ordered]@{ path = 'bootstrap/modules/Common.psm1'; sha256 = '24ed938b8790defdda979f786ea907f25fb218bb01bf76d5db5f219d2671315b' }
+        [ordered]@{ path = 'bootstrap/modules/Database.psm1'; sha256 = '098d33b73ee12c2d802b85bc7e7c58c08df160d3e343a81de4a7cb7e84394415' }
+        [ordered]@{ path = 'bootstrap/modules/Entra.psm1'; sha256 = '21d3d9d128cc314378a82e210addd7910957c944813c151b9fe27bc4b774ebac' }
+        [ordered]@{ path = 'bootstrap/modules/Experience.psm1'; sha256 = '87c299de3f3720965911576c9b0ca2835e0c0ebe9134baf7372282fcf25f9ef3' }
+        [ordered]@{ path = 'bootstrap/modules/Prerequisites.psm1'; sha256 = '5b693fa4bef406e66fbed6e5b7b76761a223bc1ba5f653ea5c2e6407af7e82cb' }
+        [ordered]@{ path = 'bootstrap/modules/Purview.psm1'; sha256 = 'f93289faddce31062f1f032090434d82ba3e8952619866082c5351ada05cd649' }
+        [ordered]@{ path = 'bootstrap/modules/Verification.psm1'; sha256 = '4268f49387e251f2a623bfbe2f111754d939ba614c1e460c57af0494467bf526' }
+        [ordered]@{ path = 'operations/test-provisioning-prerequisites.ps1'; sha256 = '58d00078577cf08d7201a2221faa5c88eb76c7955503292a60e6f94c41c9cf84' }
+    )
+}
 $ApiAttestationCorrectionOverlayContract = @(
     [ordered]@{
         path = 'src/Gateway.Infrastructure/Persistence/DatabaseBootstrapAttestationService.cs'
@@ -141,6 +170,231 @@ function Assert-ApiAttestationCorrectionExactKeys {
     if (($actual -join '|') -cne ($expectedSorted -join '|')) {
         throw "$Label has an unsupported field surface."
     }
+}
+
+function Get-ApiAttestationCorrectionAcceptedDependencyBinding {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$SourceContract)
+
+    if (-not $SourceContract.Contains('executionDependencies')) {
+        throw 'The accepted API correction source contract has no executable dependency binding.'
+    }
+    $outer = @($SourceContract.executionDependencies)
+    $mode = ''
+    $entries = @()
+    if ($outer.Count -eq $ApiAttestationCorrectionExecutionDependencyPaths.Count -and
+        @($outer | Where-Object { $_ -isnot [System.Collections.IDictionary] }).Count -eq 0) {
+        $mode = 'CurrentFlat'
+        $entries = $outer
+    }
+    elseif ($outer.Count -eq 1 -and $outer[0] -is [System.Array]) {
+        $inner = @($outer[0])
+        if ($inner.Count -ne $ApiAttestationCorrectionExecutionDependencyPaths.Count -or
+            @($inner | Where-Object { $_ -isnot [System.Collections.IDictionary] }).Count -ne 0) {
+            throw 'The legacy API correction execution dependencies have unsupported nesting.'
+        }
+        $mode = 'ExactPredecessorNested'
+        $entries = $inner
+    }
+    else {
+        throw 'The accepted API correction execution dependencies have unsupported cardinality or nesting.'
+    }
+
+    for ($index = 0; $index -lt $entries.Count; $index++) {
+        Assert-ApiAttestationCorrectionExactKeys `
+            -Value $entries[$index] `
+            -Label 'Accepted API correction execution dependency' `
+            -Expected @('path', 'sha256')
+        if ([string]$entries[$index].path -cne [string]$ApiAttestationCorrectionExecutionDependencyPaths[$index] -or
+            [string]$entries[$index].sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'The accepted API correction execution-dependency order or SHA256 is not exact.'
+        }
+    }
+    return [ordered]@{
+        mode = $mode
+        entries = $entries
+        rawFingerprint = Get-BootstrapObjectFingerprint -InputObject $SourceContract.executionDependencies
+        normalizedFingerprint = Get-BootstrapObjectFingerprint -InputObject $entries
+    }
+}
+
+function Get-ApiAttestationCorrectionAcceptedOverlayBinding {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$SourceContract)
+
+    if (-not $SourceContract.Contains('overlays')) {
+        throw 'The accepted API correction source contract has no reviewed overlay binding.'
+    }
+    $outer = @($SourceContract.overlays)
+    $mode = ''
+    $entries = @()
+    if ($outer.Count -eq $ApiAttestationCorrectionOverlayContract.Count -and
+        @($outer | Where-Object { $_ -isnot [System.Collections.IDictionary] }).Count -eq 0) {
+        $mode = 'CurrentFlat'
+        $entries = $outer
+    }
+    elseif ($outer.Count -eq 1 -and $outer[0] -is [System.Array]) {
+        $inner = @($outer[0])
+        if ($inner.Count -ne $ApiAttestationCorrectionOverlayContract.Count -or
+            @($inner | Where-Object { $_ -isnot [System.Collections.IDictionary] }).Count -ne 0) {
+            throw 'The legacy API correction reviewed overlays have unsupported nesting.'
+        }
+        $mode = 'ExactPredecessorNested'
+        $entries = $inner
+    }
+    else {
+        throw 'The accepted API correction reviewed overlays have unsupported cardinality or nesting.'
+    }
+    foreach ($entry in $entries) {
+        Assert-ApiAttestationCorrectionExactKeys -Value $entry -Label 'Accepted API correction overlay' -Expected @(
+            'path', 'acceptedSha256', 'correctedSha256')
+    }
+    $normalizedFingerprint = Get-BootstrapObjectFingerprint -InputObject $entries
+    if ($normalizedFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject @($ApiAttestationCorrectionOverlayContract))) {
+        throw 'The accepted API correction reviewed overlay contract is not exact.'
+    }
+    return [ordered]@{
+        mode = $mode
+        entries = $entries
+        rawFingerprint = Get-BootstrapObjectFingerprint -InputObject $SourceContract.overlays
+        normalizedFingerprint = $normalizedFingerprint
+    }
+}
+
+function New-ApiAttestationCorrectionResumeReconciliation {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$CurrentSource)
+
+    $currentDependencies = @(Get-ApiAttestationCorrectionExecutionDependencyMetadata)
+    $contract = [ordered]@{
+        schemaVersion = 1
+        mode = 'ExactPredecessorReceiptResume'
+        predecessorReceiptFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.receiptFingerprint
+        predecessorContractFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.contractFingerprint
+        predecessorSourceContractFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.sourceContractFingerprint
+        predecessorToolFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.toolFingerprint
+        predecessorNestedOverlaysFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.nestedOverlaysFingerprint
+        predecessorNormalizedOverlaysFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.normalizedOverlaysFingerprint
+        predecessorNestedDependenciesFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.nestedDependenciesFingerprint
+        predecessorNormalizedDependenciesFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.normalizedDependenciesFingerprint
+        currentSourceContractFingerprint = [string]$CurrentSource.sourceContractFingerprint
+        currentToolFingerprint = [string]$CurrentSource.toolFingerprint
+        currentExecutionDependencies = ConvertTo-BootstrapCanonicalValue -Value $currentDependencies
+        currentExecutionDependenciesFingerprint = Get-BootstrapObjectFingerprint -InputObject $currentDependencies
+    }
+    return [ordered]@{
+        schemaVersion = 1
+        acceptedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        contract = $contract
+        contractFingerprint = Get-BootstrapObjectFingerprint -InputObject $contract
+    }
+}
+
+function Assert-ApiAttestationCorrectionResumeReconciliation {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Reconciliation,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$CurrentSource
+    )
+
+    Assert-ApiAttestationCorrectionExactKeys -Value $Reconciliation -Label 'API correction resume reconciliation' -Expected @(
+        'schemaVersion', 'acceptedAtUtc', 'contract', 'contractFingerprint')
+    if ($Reconciliation.contract -isnot [System.Collections.IDictionary]) {
+        throw 'The API correction resume reconciliation contract is malformed.'
+    }
+    $contract = $Reconciliation.contract
+    Assert-ApiAttestationCorrectionExactKeys -Value $contract -Label 'API correction resume reconciliation contract' -Expected @(
+        'schemaVersion', 'mode', 'predecessorReceiptFingerprint', 'predecessorContractFingerprint',
+        'predecessorSourceContractFingerprint', 'predecessorToolFingerprint',
+        'predecessorNestedOverlaysFingerprint', 'predecessorNormalizedOverlaysFingerprint',
+        'predecessorNestedDependenciesFingerprint', 'predecessorNormalizedDependenciesFingerprint',
+        'currentSourceContractFingerprint', 'currentToolFingerprint', 'currentExecutionDependencies',
+        'currentExecutionDependenciesFingerprint')
+    foreach ($name in @(
+        'contractFingerprint',
+        'predecessorReceiptFingerprint', 'predecessorContractFingerprint', 'predecessorSourceContractFingerprint',
+        'predecessorToolFingerprint', 'predecessorNestedOverlaysFingerprint',
+        'predecessorNormalizedOverlaysFingerprint', 'predecessorNestedDependenciesFingerprint',
+        'predecessorNormalizedDependenciesFingerprint', 'currentSourceContractFingerprint',
+        'currentToolFingerprint', 'currentExecutionDependenciesFingerprint')) {
+        $value = if ($name -ceq 'contractFingerprint') { [string]$Reconciliation[$name] } else { [string]$contract[$name] }
+        Assert-BootstrapFingerprintValue -Value $value -Label "API correction resume reconciliation $name"
+    }
+    $acceptedAt = [DateTimeOffset]::MinValue
+    $dependencySource = [ordered]@{ executionDependencies = $contract.currentExecutionDependencies }
+    $dependencyBinding = Get-ApiAttestationCorrectionAcceptedDependencyBinding -SourceContract $dependencySource
+    if ([int]$Reconciliation.schemaVersion -ne 1 -or
+        [int]$contract.schemaVersion -ne 1 -or
+        [string]$contract.mode -cne 'ExactPredecessorReceiptResume' -or
+        (Get-BootstrapObjectFingerprint -InputObject $contract) -cne [string]$Reconciliation.contractFingerprint -or
+        [string]$contract.predecessorReceiptFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.receiptFingerprint -or
+        [string]$contract.predecessorContractFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.contractFingerprint -or
+        [string]$contract.predecessorSourceContractFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.sourceContractFingerprint -or
+        [string]$contract.predecessorToolFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.toolFingerprint -or
+        [string]$contract.predecessorNestedOverlaysFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.nestedOverlaysFingerprint -or
+        [string]$contract.predecessorNormalizedOverlaysFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.normalizedOverlaysFingerprint -or
+        [string]$contract.predecessorNestedDependenciesFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.nestedDependenciesFingerprint -or
+        [string]$contract.predecessorNormalizedDependenciesFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.normalizedDependenciesFingerprint -or
+        [string]$contract.currentSourceContractFingerprint -cne [string]$CurrentSource.sourceContractFingerprint -or
+        [string]$contract.currentToolFingerprint -cne [string]$CurrentSource.toolFingerprint -or
+        [string]$dependencyBinding.mode -cne 'CurrentFlat' -or
+        [string]$dependencyBinding.normalizedFingerprint -cne [string]$contract.currentExecutionDependenciesFingerprint -or
+        [string]$contract.currentExecutionDependenciesFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject @($CurrentSource.executionDependencies)) -or
+        -not [DateTimeOffset]::TryParse([string]$Reconciliation.acceptedAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$acceptedAt) -or
+        $acceptedAt -gt [DateTimeOffset]::UtcNow.AddMinutes(5)) {
+        throw 'The API correction resume reconciliation is outside its exact predecessor and current execution contract.'
+    }
+    $null = Assert-ApiAttestationCorrectionExecutionDependencyContract -Expected @($dependencyBinding.entries)
+    return $true
+}
+
+function Assert-ApiAttestationCorrectionExactPredecessorReceipt {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Receipt,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$DependencyBinding,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$OverlayBinding,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$CurrentSource,
+        [switch]$AllowUnreconciled
+    )
+
+    $contract = $Receipt.acceptedContract
+    if ([string]$DependencyBinding.mode -cne 'ExactPredecessorNested' -or
+        [string]$OverlayBinding.mode -cne 'ExactPredecessorNested' -or
+        [string]$Receipt.locatorFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.locatorFingerprint -or
+        [string]$Receipt.contractFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.contractFingerprint -or
+        [string]$contract.source.toolFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.toolFingerprint -or
+        [string]$contract.source.originalSourceFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.originalSourceFingerprint -or
+        [string]$contract.source.synthesizedBuildSourceFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.synthesizedBuildSourceFingerprint -or
+        (Get-BootstrapObjectFingerprint -InputObject $contract.source) -cne [string]$ApiAttestationCorrectionPredecessorResume.sourceContractFingerprint -or
+        [string]$OverlayBinding.rawFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.nestedOverlaysFingerprint -or
+        [string]$OverlayBinding.normalizedFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.normalizedOverlaysFingerprint -or
+        [string]$DependencyBinding.rawFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.nestedDependenciesFingerprint -or
+        [string]$DependencyBinding.normalizedFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.normalizedDependenciesFingerprint -or
+        [string]$DependencyBinding.normalizedFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject @($ApiAttestationCorrectionPredecessorResume.executionDependencies)) -or
+        [string]$contract.build.tag -cne [string]$ApiAttestationCorrectionPredecessorResume.tag -or
+        [string]$Receipt.build.tag -cne [string]$ApiAttestationCorrectionPredecessorResume.tag -or
+        [string]$Receipt.build.runId -cne [string]$ApiAttestationCorrectionPredecessorResume.runId -or
+        [string]$Receipt.build.digest -cne [string]$ApiAttestationCorrectionPredecessorResume.digest -or
+        [string]$Receipt.build.state -cne 'DigestCheckpointed' -or
+        [string]$Receipt.build.image -cne [string]$Receipt.deployment.targetImage -or
+        [string]$Receipt.build.image -cnotmatch "@$([regex]::Escape([string]$ApiAttestationCorrectionPredecessorResume.digest))$" -or
+        [string]$contract.deployment.targetRevisionName -cne [string]$ApiAttestationCorrectionPredecessorResume.targetRevisionName -or
+        [string]$Receipt.deployment.targetRevisionName -cne [string]$ApiAttestationCorrectionPredecessorResume.targetRevisionName -or
+        [string]$Receipt.deployment.state -notin @('IntentRecorded', 'Succeeded')) {
+        throw 'The receipt is not the exact reviewed predecessor API-correction execution.'
+    }
+    if ($Receipt.Contains('resumeReconciliation')) {
+        if ([int]$Receipt.schemaVersion -ne 2) {
+            throw 'The reconciled predecessor API-correction receipt must use top-level schema version 2.'
+        }
+        $null = Assert-ApiAttestationCorrectionResumeReconciliation `
+            -Reconciliation $Receipt.resumeReconciliation -CurrentSource $CurrentSource
+    }
+    elseif ([int]$Receipt.schemaVersion -ne 1 -or
+        -not $AllowUnreconciled -or
+        [string]$Receipt.receiptFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.receiptFingerprint -or
+        [string]$Receipt.status -cne 'NeedsAttention' -or
+        [string]$Receipt.deployment.state -cne 'IntentRecorded' -or
+        [string]$Receipt.verification.state -cne 'Pending') {
+        throw 'The exact predecessor API-correction receipt has not been additively bound to the current reconciliation code.'
+    }
+    return $true
 }
 
 function Get-BootstrapApiAttestationCorrectionReceiptFingerprint {
@@ -425,10 +679,10 @@ function Get-ApiAttestationCorrectionSourceMetadata {
     Assert-BootstrapFingerprintValue -Value $synthesizedFingerprint -Label 'Synthesized API build-source fingerprint'
     $sourceContract = [ordered]@{
         originalSourceFingerprint = [string]$State.acceptedPlan.sourceFingerprint
-        overlays = @(ConvertTo-BootstrapCanonicalValue -Value $ApiAttestationCorrectionOverlayContract)
+        overlays = ConvertTo-BootstrapCanonicalValue -Value $ApiAttestationCorrectionOverlayContract
         synthesizedBuildSourceFingerprint = $synthesizedFingerprint
         toolFingerprint = $toolFingerprint
-        executionDependencies = @(ConvertTo-BootstrapCanonicalValue -Value $executionDependencies)
+        executionDependencies = ConvertTo-BootstrapCanonicalValue -Value $executionDependencies
     }
     return [ordered]@{
         acceptedSourceRoot = $acceptedRoot
@@ -653,6 +907,37 @@ function Get-ApiAttestationCorrectionQueueCounts {
     return @($result)
 }
 
+function Assert-ApiAttestationCorrectionReadyContract {
+    param(
+        [Parameter(Mandatory)][int]$StatusCode,
+        [Parameter(Mandatory)][byte[]]$Body
+    )
+
+    if ($StatusCode -ne 200 -or $Body.Length -gt 128) {
+        throw 'Gateway API readiness did not return HTTP 200 within the bounded response size.'
+    }
+    $json = $null
+    $statusElement = [Text.Json.JsonElement]::new()
+    try {
+        $json = [Text.Json.JsonDocument]::Parse([ReadOnlyMemory[byte]]::new($Body))
+        $properties = @($json.RootElement.EnumerateObject())
+        if ($json.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Object -or
+            $properties.Count -ne 1 -or
+            -not $json.RootElement.TryGetProperty('status', [ref]$statusElement) -or
+            $statusElement.ValueKind -ne [Text.Json.JsonValueKind]::String -or
+            $statusElement.GetString() -cne 'Ready') {
+            throw 'mismatch'
+        }
+    }
+    catch {
+        throw 'Gateway API readiness did not return the exact one-field Ready JSON contract.'
+    }
+    finally {
+        if ($json) { $json.Dispose() }
+    }
+    return 'Ready'
+}
+
 function Test-ApiAttestationCorrectionHttp {
     param(
         [Parameter(Mandatory)][string]$Fqdn,
@@ -675,10 +960,8 @@ function Test-ApiAttestationCorrectionHttp {
 
         $ready = $client.GetAsync("https://$Fqdn/health/ready").GetAwaiter().GetResult()
         $readyBody = $ready.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
-        if ([int]$ready.StatusCode -ne 200 -or $readyBody.Length -gt 64 -or
-            [Text.Encoding]::UTF8.GetString($readyBody) -cne 'Ready') {
-            throw 'Gateway API readiness did not return the exact bounded Ready contract.'
-        }
+        $readyValue = Assert-ApiAttestationCorrectionReadyContract `
+            -StatusCode ([int]$ready.StatusCode) -Body $readyBody
 
         $attestation = $client.GetAsync("https://$Fqdn/health/bootstrap-attestation").GetAwaiter().GetResult()
         $body = $attestation.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
@@ -689,7 +972,7 @@ function Test-ApiAttestationCorrectionHttp {
         $statusElement = [Text.Json.JsonElement]::new()
         $contractElement = [Text.Json.JsonElement]::new()
         try {
-            $json = [Text.Json.JsonDocument]::Parse($body)
+            $json = [Text.Json.JsonDocument]::Parse([ReadOnlyMemory[byte]]::new($body))
             $properties = @($json.RootElement.EnumerateObject())
             if ($json.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Object -or
                 $properties.Count -ne 2 -or
@@ -711,7 +994,7 @@ function Test-ApiAttestationCorrectionHttp {
         return [ordered]@{
             checksStatus = [int]$checks.StatusCode
             readyStatus = 200
-            ready = 'Ready'
+            ready = $readyValue
             attestationStatus = 200
             attestation = 'Attested'
             contractVersion = 1
@@ -741,7 +1024,7 @@ function Get-ApiAttestationCorrectionActiveRevision {
             [string]$revisions[0].name -ceq $TargetRevisionName -and
             $revisions[0].active -eq $true -and
             [string]$revisions[0].healthState -ceq 'Healthy' -and
-            [string]$revisions[0].runningState -ceq 'Running' -and
+            [string]$revisions[0].runningState -in @('Running', 'RunningAtMaxScale') -and
             [int]$revisions[0].replicas -ge 1 -and
             [string]$revisions[0].image -ceq $TargetImage) {
             return [ordered]@{
@@ -749,7 +1032,7 @@ function Get-ApiAttestationCorrectionActiveRevision {
                 image = $TargetImage
                 replicas = [int]$revisions[0].replicas
                 healthState = 'Healthy'
-                runningState = 'Running'
+                runningState = [string]$revisions[0].runningState
             }
         }
         if ($attempt -lt $MaximumAttempts) { Start-Sleep -Seconds 5 }
@@ -1039,6 +1322,7 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)][System.Collections.IDictionary]$State,
         [Parameter()][AllowNull()][System.Collections.IDictionary]$Receipt,
+        [switch]$AllowUnreconciledPredecessor,
         [switch]$RequireVerified
     )
 
@@ -1048,13 +1332,15 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
     if ($Receipt -isnot [System.Collections.IDictionary]) {
         throw 'No API-attestation correction receipt exists for this bootstrap state.'
     }
-    Assert-ApiAttestationCorrectionExactKeys -Value $Receipt -Label 'API-attestation correction receipt' -Expected @(
+    $receiptKeys = @(
         'schemaVersion', 'operation', 'locatorFingerprint', 'contractFingerprint', 'receiptFingerprint',
         'acceptedContract', 'status', 'acceptedAtUtc', 'updatedAtUtc', 'verifiedAtUtc', 'build', 'deployment', 'verification')
+    if ($Receipt.Contains('resumeReconciliation')) { $receiptKeys += 'resumeReconciliation' }
+    Assert-ApiAttestationCorrectionExactKeys -Value $Receipt -Label 'API-attestation correction receipt' -Expected $receiptKeys
     foreach ($name in @('locatorFingerprint', 'contractFingerprint', 'receiptFingerprint')) {
         Assert-BootstrapFingerprintValue -Value ([string]$Receipt[$name]) -Label "API-attestation correction $name"
     }
-    if ([int]$Receipt.schemaVersion -ne 1 -or
+    if ([int]$Receipt.schemaVersion -notin @(1, 2) -or
         [string]$Receipt.operation -cne $ApiAttestationCorrectionOperation -or
         $Receipt.acceptedContract -isnot [System.Collections.IDictionary] -or
         $Receipt.build -isnot [System.Collections.IDictionary] -or
@@ -1067,7 +1353,6 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
 
     $boundary = Get-ApiAttestationCorrectionStateBoundary -Config $Config -State $State
     $source = Get-ApiAttestationCorrectionSourceMetadata -State $State
-    $descriptor = Get-ApiAttestationCorrectionDescriptor -Config $Config -State $State -Boundary $boundary -SourceMetadata $source
     $contract = $Receipt.acceptedContract
     $baseline = $contract.baseline
     Assert-ApiAttestationCorrectionExactKeys -Value $contract -Label 'Accepted API-attestation correction contract' -Expected @(
@@ -1080,24 +1365,31 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
     Assert-ApiAttestationCorrectionExactKeys -Value $contract.source -Label 'Accepted API correction source contract' -Expected @(
         'originalSourceFingerprint', 'overlays', 'synthesizedBuildSourceFingerprint', 'toolFingerprint',
         'executionDependencies')
-    $sourceDependencies = @($contract.source.executionDependencies)
-    if ($sourceDependencies.Count -ne $ApiAttestationCorrectionExecutionDependencyPaths.Count) {
-        throw 'The accepted API correction source contract does not bind every executable dependency.'
-    }
-    for ($index = 0; $index -lt $sourceDependencies.Count; $index++) {
-        if ($sourceDependencies[$index] -isnot [System.Collections.IDictionary]) {
-            throw 'The accepted API correction execution-dependency entry is not canonical.'
-        }
-        Assert-ApiAttestationCorrectionExactKeys `
-            -Value $sourceDependencies[$index] `
-            -Label 'Accepted API correction execution dependency' `
-            -Expected @('path', 'sha256')
-        if ([string]$sourceDependencies[$index].path -cne [string]$ApiAttestationCorrectionExecutionDependencyPaths[$index] -or
-            [string]$sourceDependencies[$index].sha256 -cnotmatch '^[0-9a-f]{64}$') {
-            throw 'The accepted API correction execution-dependency order or SHA256 is not exact.'
+    $dependencyBinding = Get-ApiAttestationCorrectionAcceptedDependencyBinding -SourceContract $contract.source
+    $overlayBinding = Get-ApiAttestationCorrectionAcceptedOverlayBinding -SourceContract $contract.source
+    $isPredecessorResume = [string]$dependencyBinding.mode -ceq 'ExactPredecessorNested' -and
+        [string]$overlayBinding.mode -ceq 'ExactPredecessorNested'
+    if ($isPredecessorResume) {
+        $null = Assert-ApiAttestationCorrectionExactPredecessorReceipt `
+            -Receipt $Receipt -DependencyBinding $dependencyBinding -OverlayBinding $overlayBinding -CurrentSource $source `
+            -AllowUnreconciled:$AllowUnreconciledPredecessor
+        $descriptorSource = [ordered]@{
+            sourceContractFingerprint = Get-BootstrapObjectFingerprint -InputObject $contract.source
+            synthesizedBuildSourceFingerprint = [string]$contract.source.synthesizedBuildSourceFingerprint
         }
     }
-    $null = Assert-ApiAttestationCorrectionExecutionDependencyContract -Expected $sourceDependencies
+    else {
+        if ([string]$dependencyBinding.mode -cne 'CurrentFlat' -or
+            [string]$overlayBinding.mode -cne 'CurrentFlat' -or
+            [int]$Receipt.schemaVersion -ne 1 -or
+            $Receipt.Contains('resumeReconciliation')) {
+            throw 'A current-source API correction receipt cannot carry predecessor resume reconciliation.'
+        }
+        $null = Assert-ApiAttestationCorrectionExecutionDependencyContract -Expected @($dependencyBinding.entries)
+        $descriptorSource = $source
+    }
+    $descriptor = Get-ApiAttestationCorrectionDescriptor `
+        -Config $Config -State $State -Boundary $boundary -SourceMetadata $descriptorSource
     Assert-ApiAttestationCorrectionExactKeys -Value $contract.foundation -Label 'Accepted API correction foundation' -Expected @(
         'acrName', 'acrLoginServer')
     Assert-ApiAttestationCorrectionExactKeys -Value $baseline -Label 'Accepted API correction baseline' -Expected @(
@@ -1115,6 +1407,17 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
     Assert-ApiAttestationCorrectionExactKeys -Value $Receipt.verification -Label 'API correction verification checkpoint' -Expected @(
         'state', 'completedAtUtc', 'stateBoundaryFingerprint', 'targetApiImage', 'targetRevisionName',
         'apiSnapshot', 'workerSnapshot', 'queueCountsAfter', 'http')
+    $sourceContractMatches = if ($isPredecessorResume) {
+        [string]$contract.source.originalSourceFingerprint -ceq [string]$State.acceptedPlan.sourceFingerprint -and
+        [string]$contract.source.synthesizedBuildSourceFingerprint -ceq [string]$source.synthesizedBuildSourceFingerprint -and
+        [string]$overlayBinding.normalizedFingerprint -ceq
+            (Get-BootstrapObjectFingerprint -InputObject @($ApiAttestationCorrectionOverlayContract))
+    }
+    else {
+        (Get-BootstrapObjectFingerprint -InputObject $contract.source) -ceq [string]$source.sourceContractFingerprint -and
+        [string]$contract.source.synthesizedBuildSourceFingerprint -ceq [string]$source.synthesizedBuildSourceFingerprint -and
+        [string]$contract.source.toolFingerprint -ceq [string]$source.toolFingerprint
+    }
     if ([int]$contract.schemaVersion -ne 1 -or
         [string]$Receipt.locatorFingerprint -cne [string]$descriptor.locatorFingerprint -or
         [string]$contract.operation -cne $ApiAttestationCorrectionOperation -or
@@ -1134,9 +1437,7 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
         [string]$contract.imagesEvidenceFingerprint -cne [string]$boundary.imagesEvidenceFingerprint -or
         [string]$contract.runtimeEvidenceFingerprint -cne [string]$boundary.runtimeEvidenceFingerprint -or
         [string]$contract.databaseEvidenceFingerprint -cne [string]$boundary.databaseEvidenceFingerprint -or
-        (Get-BootstrapObjectFingerprint -InputObject $contract.source) -cne [string]$source.sourceContractFingerprint -or
-        [string]$contract.source.synthesizedBuildSourceFingerprint -cne [string]$source.synthesizedBuildSourceFingerprint -or
-        [string]$contract.source.toolFingerprint -cne [string]$source.toolFingerprint -or
+        -not $sourceContractMatches -or
         [string]$contract.foundation.acrName -cne [string]$boundary.foundation.acrName -or
         [string]$contract.foundation.acrLoginServer -cne [string]$boundary.foundation.acrLoginServer -or
         [string]$baseline.api.image -cne [string]$boundary.images.api -or
@@ -1203,6 +1504,7 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
             descriptor = $descriptor
             contract = $contract
             baseline = $baseline
+            isPredecessorResume = $isPredecessorResume
         }
     }
     if ([string]$Receipt.status -cne 'Verified') {
@@ -1246,6 +1548,26 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
         synthesizedBuildSourceFingerprint = [string]$contract.source.synthesizedBuildSourceFingerprint
         verifiedAtUtc = $verifiedAt.ToUniversalTime().ToString('O')
     }
+}
+
+function Initialize-ApiAttestationCorrectionResumeReconciliation {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Receipt,
+        [Parameter(Mandatory)][string]$ReceiptPath
+    )
+
+    $binding = Assert-ApiAttestationCorrectionReceiptBoundary `
+        -Config $Config -State $State -Receipt $Receipt -AllowUnreconciledPredecessor
+    if ([bool]$binding.isPredecessorResume -and -not $Receipt.Contains('resumeReconciliation')) {
+        $reconciliation = New-ApiAttestationCorrectionResumeReconciliation -CurrentSource $binding.source
+        $Receipt['schemaVersion'] = 2
+        $Receipt['resumeReconciliation'] = $reconciliation
+        Save-ApiAttestationCorrectionReceipt -Receipt $Receipt -Path $ReceiptPath
+        $binding = Assert-ApiAttestationCorrectionReceiptBoundary -Config $Config -State $State -Receipt $Receipt
+    }
+    return $binding
 }
 
 function Assert-BootstrapApiAttestationCorrectionReceipt {
@@ -1323,16 +1645,28 @@ function Invoke-BootstrapApiAttestationCorrection {
         $state = Read-BootstrapState -Path $statePath -Config $configuration
         $boundary = Get-ApiAttestationCorrectionStateBoundary -Config $configuration -State $state
         $source = Get-ApiAttestationCorrectionSourceMetadata -State $state
-        $descriptor = Get-ApiAttestationCorrectionDescriptor -Config $configuration -State $state -Boundary $boundary -SourceMetadata $source
-        $receiptPath = Get-BootstrapApiAttestationCorrectionReceiptPath `
-            -Config $configuration -State $state -LocatorFingerprint ([string]$descriptor.locatorFingerprint)
         $discoveredReceiptPath = Get-BootstrapApiAttestationCorrectionReceiptPath -Config $configuration -State $state
-        if ($discoveredReceiptPath -and [IO.Path]::GetFullPath($discoveredReceiptPath) -cne [IO.Path]::GetFullPath($receiptPath)) {
-            throw 'An API-attestation correction receipt exists outside the exact deterministic locator.'
+        if ($discoveredReceiptPath) {
+            $receiptPath = $discoveredReceiptPath
+            $receipt = Read-BootstrapApiAttestationCorrectionReceipt -Path $receiptPath
+            $resumeBinding = Initialize-ApiAttestationCorrectionResumeReconciliation `
+                -Config $configuration -State $state -Receipt $receipt -ReceiptPath $receiptPath
+            $source = $resumeBinding.source
+            $descriptor = $resumeBinding.descriptor
+            $expectedReceiptPath = Get-BootstrapApiAttestationCorrectionReceiptPath `
+                -Config $configuration -State $state -LocatorFingerprint ([string]$receipt.locatorFingerprint)
+            if ([IO.Path]::GetFullPath($receiptPath) -cne [IO.Path]::GetFullPath($expectedReceiptPath)) {
+                throw 'The API-attestation correction receipt exists outside its exact preserved locator.'
+            }
+        }
+        else {
+            $descriptor = Get-ApiAttestationCorrectionDescriptor `
+                -Config $configuration -State $state -Boundary $boundary -SourceMetadata $source
+            $receiptPath = Get-BootstrapApiAttestationCorrectionReceiptPath `
+                -Config $configuration -State $state -LocatorFingerprint ([string]$descriptor.locatorFingerprint)
         }
 
         $finalStep = $state.steps['End-to-end deployment verification']
-        $receipt = Read-BootstrapApiAttestationCorrectionReceipt -Path $receiptPath
         if (-not $receipt -and
             ($finalStep -isnot [System.Collections.IDictionary] -or [string]$finalStep.status -cne 'Failed' -or
                 ($state.outputs -is [System.Collections.IDictionary] -and $state.outputs.Contains('verification')))) {

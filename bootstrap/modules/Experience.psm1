@@ -3072,7 +3072,7 @@ function Test-GatewayGroupDeploymentEvidence {
             if ($activeApiRevisions.Count -ne 1 -or
                 [string]$activeApiRevisions[0].name -cne $supersedingApiRevision -or
                 [string]$activeApiRevisions[0].healthState -cne 'Healthy' -or
-                [string]$activeApiRevisions[0].runningState -cne 'Running' -or
+                [string]$activeApiRevisions[0].runningState -notin @('Running', 'RunningAtMaxScale') -or
                 [int]$activeApiRevisions[0].replicas -lt 1) {
                 throw 'mismatch'
             }
