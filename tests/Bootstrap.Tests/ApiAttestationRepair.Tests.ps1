@@ -179,7 +179,128 @@ Describe 'Bounded bootstrap API-attestation correction' {
         { Assert-ApiAttestationCorrectionExactPredecessorReceipt `
                 -Receipt $receipt -DependencyBinding $dependencyBinding -OverlayBinding $overlayBinding `
                 -CurrentSource $currentSource } |
-            Should -Throw '*must use top-level schema version 2*'
+            Should -Throw '*not been additively bound*'
+    }
+
+    Context 'schema-3 ACR projection reconciliation' {
+        BeforeEach {
+            $script:SavedAcrProjectionResume = ConvertTo-BootstrapCanonicalValue -Value $ApiAttestationCorrectionAcrProjectionResume
+            $script:AcrProjectionResumeReference = $ApiAttestationCorrectionAcrProjectionResume
+            $script:Schema3CurrentDependencies = @(Get-ApiAttestationCorrectionExecutionDependencyMetadata)
+            $script:Schema3CurrentSource = [ordered]@{
+                sourceContractFingerprint = "sha256:$('a' * 64)"
+                toolFingerprint = "sha256:$('b' * 64)"
+                executionDependencies = $script:Schema3CurrentDependencies
+            }
+            $schema2Source = [ordered]@{
+                sourceContractFingerprint = "sha256:$('c' * 64)"
+                toolFingerprint = "sha256:$('d' * 64)"
+                executionDependencies = $script:Schema3CurrentDependencies
+            }
+            $resume = New-ApiAttestationCorrectionResumeReconciliation -CurrentSource $schema2Source
+            $script:AcrProjectionResumeReference['schema2ReceiptFingerprint'] = ''
+            $script:AcrProjectionResumeReference['schema2ReconciliationFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $resume
+            $script:AcrProjectionResumeReference['schema2ReconciliationContractFingerprint'] = [string]$resume.contractFingerprint
+            $script:AcrProjectionResumeReference['schema2CurrentSourceContractFingerprint'] = [string]$schema2Source.sourceContractFingerprint
+            $script:AcrProjectionResumeReference['schema2CurrentToolFingerprint'] = [string]$schema2Source.toolFingerprint
+            $script:AcrProjectionResumeReference['schema2CurrentExecutionDependenciesFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $script:Schema3CurrentDependencies
+            $script:Schema2Receipt = [ordered]@{
+                schemaVersion = 2
+                operation = $ApiAttestationCorrectionOperation
+                locatorFingerprint = [string]$ApiAttestationCorrectionPredecessorResume.locatorFingerprint
+                contractFingerprint = "sha256:$('e' * 64)"
+                receiptFingerprint = ''
+                acceptedContract = [ordered]@{ preserved = 'accepted-contract' }
+                status = 'NeedsAttention'
+                acceptedAtUtc = '2026-08-31T00:00:00.0000000+00:00'
+                updatedAtUtc = '2026-08-31T00:01:00.0000000+00:00'
+                verifiedAtUtc = ''
+                build = [ordered]@{ state = 'DigestCheckpointed' }
+                deployment = [ordered]@{ state = 'IntentRecorded' }
+                verification = [ordered]@{ state = 'Pending' }
+                resumeReconciliation = $resume
+            }
+            $script:Schema2Receipt.receiptFingerprint = Get-BootstrapApiAttestationCorrectionReceiptFingerprint -Receipt $script:Schema2Receipt
+            $script:AcrProjectionResumeReference['schema2ReceiptFingerprint'] = [string]$script:Schema2Receipt.receiptFingerprint
+            $script:Schema2AcceptedFingerprint = Get-BootstrapObjectFingerprint -InputObject $script:Schema2Receipt.acceptedContract
+            $script:Schema2ResumeFingerprint = Get-BootstrapObjectFingerprint -InputObject $script:Schema2Receipt.resumeReconciliation
+        }
+
+        AfterEach {
+            foreach ($name in @($script:SavedAcrProjectionResume.Keys)) {
+                $script:AcrProjectionResumeReference[$name] = $script:SavedAcrProjectionResume[$name]
+            }
+        }
+
+        It 'literal-pins the one live schema-2 receipt and its whole and contract reconciliation fingerprints' {
+            $script:SavedAcrProjectionResume.schema2ReceiptFingerprint |
+                Should -BeExactly 'sha256:b080dbff2513d36951e141569f771f18a23f6e244688883e92c2a42ad8ca1365'
+            $script:SavedAcrProjectionResume.schema2ReconciliationFingerprint |
+                Should -BeExactly 'sha256:dbf4190280614b69c98f11afd083634f71c44ed80d578fa5a91b306eaba96723'
+            $script:SavedAcrProjectionResume.schema2ReconciliationContractFingerprint |
+                Should -BeExactly 'sha256:730803804f17fbe111755f480f2b2ef2ecd9bc51c4fe85d02ea06d8288467483'
+        }
+
+        It 'upgrades a deep canonical copy and leaves the original object and disk unchanged when atomic save fails' {
+            $path = Join-Path $TestDrive 'schema2-receipt.json'
+            ConvertTo-Json -InputObject (ConvertTo-BootstrapCanonicalValue -Value $script:Schema2Receipt) -Depth 100 |
+                Set-Content -LiteralPath $path -Encoding utf8NoBOM
+            $fileHashBefore = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $objectFingerprintBefore = Get-BootstrapObjectFingerprint -InputObject $script:Schema2Receipt
+            Mock Assert-ApiAttestationCorrectionReceiptBoundary {
+                [ordered]@{
+                    isPredecessorResume = $true
+                    source = $script:Schema3CurrentSource
+                    receipt = $Receipt
+                }
+            }
+            Mock Write-ApiAttestationCorrectionReceiptAtomic { throw 'simulated atomic save failure' }
+
+            { Initialize-ApiAttestationCorrectionResumeReconciliation `
+                    -Config ([pscustomobject]@{}) -State ([ordered]@{}) `
+                    -Receipt $script:Schema2Receipt -ReceiptPath $path } |
+                Should -Throw '*simulated atomic save failure*'
+
+            $script:Schema2Receipt.schemaVersion | Should -Be 2
+            $script:Schema2Receipt.Contains('acrProjectionReconciliation') | Should -BeFalse
+            (Get-BootstrapObjectFingerprint -InputObject $script:Schema2Receipt) | Should -BeExactly $objectFingerprintBefore
+            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash | Should -BeExactly $fileHashBefore
+        }
+
+        It 'adds schema 3 once, preserves both prior authority objects, and performs no build or Container App update' {
+            Mock Assert-ApiAttestationCorrectionReceiptBoundary {
+                [ordered]@{
+                    isPredecessorResume = $true
+                    source = $script:Schema3CurrentSource
+                    receipt = $Receipt
+                }
+            }
+            Mock Write-ApiAttestationCorrectionReceiptAtomic {}
+            Mock Invoke-AzJson { throw 'Schema reconciliation must not invoke Azure.' }
+
+            $first = Initialize-ApiAttestationCorrectionResumeReconciliation `
+                -Config ([pscustomobject]@{}) -State ([ordered]@{}) `
+                -Receipt $script:Schema2Receipt -ReceiptPath (Join-Path $TestDrive 'receipt.json')
+            $first.receipt.schemaVersion | Should -Be 3
+            $first.receipt.Contains('acrProjectionReconciliation') | Should -BeTrue
+            (Get-BootstrapObjectFingerprint -InputObject $first.receipt.acceptedContract) |
+                Should -BeExactly $script:Schema2AcceptedFingerprint
+            (Get-BootstrapObjectFingerprint -InputObject $first.receipt.resumeReconciliation) |
+                Should -BeExactly $script:Schema2ResumeFingerprint
+            { Assert-ApiAttestationCorrectionAcrProjectionReconciliation `
+                    -Reconciliation $first.receipt.acrProjectionReconciliation `
+                    -CurrentSource $script:Schema3CurrentSource } |
+                Should -Not -Throw
+
+            $second = Initialize-ApiAttestationCorrectionResumeReconciliation `
+                -Config ([pscustomobject]@{}) -State ([ordered]@{}) `
+                -Receipt $first.receipt -ReceiptPath (Join-Path $TestDrive 'receipt.json')
+            [object]::ReferenceEquals($second.receipt, $first.receipt) | Should -BeTrue
+            Should -Invoke Write-ApiAttestationCorrectionReceiptAtomic -Times 1 -Exactly
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly
+            $script:Schema2Receipt.schemaVersion | Should -Be 2
+            $script:Schema2Receipt.Contains('acrProjectionReconciliation') | Should -BeFalse
+        }
     }
 
     It 'accepts only the exact one-property readiness JSON contract' {

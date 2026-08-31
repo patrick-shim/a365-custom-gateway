@@ -76,6 +76,14 @@ $ApiAttestationCorrectionPredecessorResume = [ordered]@{
         [ordered]@{ path = 'operations/test-provisioning-prerequisites.ps1'; sha256 = '58d00078577cf08d7201a2221faa5c88eb76c7955503292a60e6f94c41c9cf84' }
     )
 }
+$ApiAttestationCorrectionAcrProjectionResume = [ordered]@{
+    schema2ReceiptFingerprint = 'sha256:b080dbff2513d36951e141569f771f18a23f6e244688883e92c2a42ad8ca1365'
+    schema2ReconciliationFingerprint = 'sha256:dbf4190280614b69c98f11afd083634f71c44ed80d578fa5a91b306eaba96723'
+    schema2ReconciliationContractFingerprint = 'sha256:730803804f17fbe111755f480f2b2ef2ecd9bc51c4fe85d02ea06d8288467483'
+    schema2CurrentSourceContractFingerprint = 'sha256:4686b4a76bacb4ce9f5d69cba9c430cfd2ee53269be31c78b1a14b0b32b9a5f5'
+    schema2CurrentToolFingerprint = 'sha256:0954527472b8d420aa8e62e09066bb4b9f862314b030bf20ec053242c7318b63'
+    schema2CurrentExecutionDependenciesFingerprint = 'sha256:472866712266d3d65f135e39f3128ebde7046ac26960c446347f368113f841a3'
+}
 $ApiAttestationCorrectionOverlayContract = @(
     [ordered]@{
         path = 'src/Gateway.Infrastructure/Persistence/DatabaseBootstrapAttestationService.cs'
@@ -344,13 +352,168 @@ function Assert-ApiAttestationCorrectionResumeReconciliation {
     return $true
 }
 
+function Assert-ApiAttestationCorrectionHistoricalSchema2Reconciliation {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Reconciliation)
+
+    Assert-ApiAttestationCorrectionExactKeys -Value $Reconciliation -Label 'Historical schema-2 API correction resume reconciliation' -Expected @(
+        'schemaVersion', 'acceptedAtUtc', 'contract', 'contractFingerprint')
+    if ($Reconciliation.contract -isnot [System.Collections.IDictionary]) {
+        throw 'The historical schema-2 API correction resume reconciliation is malformed.'
+    }
+    $contract = $Reconciliation.contract
+    Assert-ApiAttestationCorrectionExactKeys -Value $contract -Label 'Historical schema-2 API correction resume reconciliation contract' -Expected @(
+        'schemaVersion', 'mode', 'predecessorReceiptFingerprint', 'predecessorContractFingerprint',
+        'predecessorSourceContractFingerprint', 'predecessorToolFingerprint',
+        'predecessorNestedOverlaysFingerprint', 'predecessorNormalizedOverlaysFingerprint',
+        'predecessorNestedDependenciesFingerprint', 'predecessorNormalizedDependenciesFingerprint',
+        'currentSourceContractFingerprint', 'currentToolFingerprint', 'currentExecutionDependencies',
+        'currentExecutionDependenciesFingerprint')
+    $dependencySource = [ordered]@{ executionDependencies = $contract.currentExecutionDependencies }
+    $dependencyBinding = Get-ApiAttestationCorrectionAcceptedDependencyBinding -SourceContract $dependencySource
+    $acceptedAt = [DateTimeOffset]::MinValue
+    if ([int]$Reconciliation.schemaVersion -ne 1 -or
+        [int]$contract.schemaVersion -ne 1 -or
+        [string]$contract.mode -cne 'ExactPredecessorReceiptResume' -or
+        (Get-BootstrapObjectFingerprint -InputObject $Reconciliation) -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReconciliationFingerprint -or
+        (Get-BootstrapObjectFingerprint -InputObject $contract) -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReconciliationContractFingerprint -or
+        [string]$Reconciliation.contractFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReconciliationContractFingerprint -or
+        [string]$contract.predecessorReceiptFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.receiptFingerprint -or
+        [string]$contract.predecessorContractFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.contractFingerprint -or
+        [string]$contract.predecessorSourceContractFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.sourceContractFingerprint -or
+        [string]$contract.predecessorToolFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.toolFingerprint -or
+        [string]$contract.predecessorNestedOverlaysFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.nestedOverlaysFingerprint -or
+        [string]$contract.predecessorNormalizedOverlaysFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.normalizedOverlaysFingerprint -or
+        [string]$contract.predecessorNestedDependenciesFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.nestedDependenciesFingerprint -or
+        [string]$contract.predecessorNormalizedDependenciesFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.normalizedDependenciesFingerprint -or
+        [string]$contract.currentSourceContractFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2CurrentSourceContractFingerprint -or
+        [string]$contract.currentToolFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2CurrentToolFingerprint -or
+        [string]$contract.currentExecutionDependenciesFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2CurrentExecutionDependenciesFingerprint -or
+        [string]$dependencyBinding.mode -cne 'CurrentFlat' -or
+        [string]$dependencyBinding.normalizedFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2CurrentExecutionDependenciesFingerprint -or
+        -not [DateTimeOffset]::TryParse([string]$Reconciliation.acceptedAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$acceptedAt) -or
+        $acceptedAt -gt [DateTimeOffset]::UtcNow.AddMinutes(5)) {
+        throw 'The historical schema-2 API correction resume reconciliation is not the exact reviewed predecessor.'
+    }
+    return $true
+}
+
+function New-ApiAttestationCorrectionAcrProjectionReconciliation {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$CurrentSource)
+
+    $currentDependencies = @(Get-ApiAttestationCorrectionExecutionDependencyMetadata)
+    $contract = [ordered]@{
+        schemaVersion = 1
+        mode = 'ExactSchema2AcrOutputProjectionResume'
+        schema2ReceiptFingerprint = [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReceiptFingerprint
+        schema2ReconciliationFingerprint = [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReconciliationFingerprint
+        schema2ReconciliationContractFingerprint = [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReconciliationContractFingerprint
+        schema2CurrentSourceContractFingerprint = [string]$ApiAttestationCorrectionAcrProjectionResume.schema2CurrentSourceContractFingerprint
+        schema2CurrentToolFingerprint = [string]$ApiAttestationCorrectionAcrProjectionResume.schema2CurrentToolFingerprint
+        schema2CurrentExecutionDependenciesFingerprint = [string]$ApiAttestationCorrectionAcrProjectionResume.schema2CurrentExecutionDependenciesFingerprint
+        currentSourceContractFingerprint = [string]$CurrentSource.sourceContractFingerprint
+        currentToolFingerprint = [string]$CurrentSource.toolFingerprint
+        currentExecutionDependencies = ConvertTo-BootstrapCanonicalValue -Value $currentDependencies
+        currentExecutionDependenciesFingerprint = Get-BootstrapObjectFingerprint -InputObject $currentDependencies
+    }
+    return [ordered]@{
+        schemaVersion = 1
+        acceptedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        contract = $contract
+        contractFingerprint = Get-BootstrapObjectFingerprint -InputObject $contract
+    }
+}
+
+function Assert-ApiAttestationCorrectionAcrProjectionReconciliation {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Reconciliation,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$CurrentSource
+    )
+
+    Assert-ApiAttestationCorrectionExactKeys -Value $Reconciliation -Label 'API correction ACR projection reconciliation' -Expected @(
+        'schemaVersion', 'acceptedAtUtc', 'contract', 'contractFingerprint')
+    if ($Reconciliation.contract -isnot [System.Collections.IDictionary]) {
+        throw 'The API correction ACR projection reconciliation is malformed.'
+    }
+    $contract = $Reconciliation.contract
+    Assert-ApiAttestationCorrectionExactKeys -Value $contract -Label 'API correction ACR projection reconciliation contract' -Expected @(
+        'schemaVersion', 'mode', 'schema2ReceiptFingerprint', 'schema2ReconciliationFingerprint',
+        'schema2ReconciliationContractFingerprint', 'schema2CurrentSourceContractFingerprint',
+        'schema2CurrentToolFingerprint', 'schema2CurrentExecutionDependenciesFingerprint',
+        'currentSourceContractFingerprint', 'currentToolFingerprint', 'currentExecutionDependencies',
+        'currentExecutionDependenciesFingerprint')
+    foreach ($name in @(
+        'contractFingerprint', 'schema2ReceiptFingerprint', 'schema2ReconciliationFingerprint',
+        'schema2ReconciliationContractFingerprint', 'schema2CurrentSourceContractFingerprint',
+        'schema2CurrentToolFingerprint', 'schema2CurrentExecutionDependenciesFingerprint',
+        'currentSourceContractFingerprint', 'currentToolFingerprint', 'currentExecutionDependenciesFingerprint')) {
+        $value = if ($name -ceq 'contractFingerprint') { [string]$Reconciliation[$name] } else { [string]$contract[$name] }
+        Assert-BootstrapFingerprintValue -Value $value -Label "API correction ACR projection reconciliation $name"
+    }
+    $dependencySource = [ordered]@{ executionDependencies = $contract.currentExecutionDependencies }
+    $dependencyBinding = Get-ApiAttestationCorrectionAcceptedDependencyBinding -SourceContract $dependencySource
+    $acceptedAt = [DateTimeOffset]::MinValue
+    if ([int]$Reconciliation.schemaVersion -ne 1 -or
+        [int]$contract.schemaVersion -ne 1 -or
+        [string]$contract.mode -cne 'ExactSchema2AcrOutputProjectionResume' -or
+        (Get-BootstrapObjectFingerprint -InputObject $contract) -cne [string]$Reconciliation.contractFingerprint -or
+        [string]$contract.schema2ReceiptFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReceiptFingerprint -or
+        [string]$contract.schema2ReconciliationFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReconciliationFingerprint -or
+        [string]$contract.schema2ReconciliationContractFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReconciliationContractFingerprint -or
+        [string]$contract.schema2CurrentSourceContractFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2CurrentSourceContractFingerprint -or
+        [string]$contract.schema2CurrentToolFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2CurrentToolFingerprint -or
+        [string]$contract.schema2CurrentExecutionDependenciesFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2CurrentExecutionDependenciesFingerprint -or
+        [string]$contract.currentSourceContractFingerprint -cne [string]$CurrentSource.sourceContractFingerprint -or
+        [string]$contract.currentToolFingerprint -cne [string]$CurrentSource.toolFingerprint -or
+        [string]$dependencyBinding.mode -cne 'CurrentFlat' -or
+        [string]$dependencyBinding.normalizedFingerprint -cne [string]$contract.currentExecutionDependenciesFingerprint -or
+        [string]$contract.currentExecutionDependenciesFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject @($CurrentSource.executionDependencies)) -or
+        -not [DateTimeOffset]::TryParse([string]$Reconciliation.acceptedAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$acceptedAt) -or
+        $acceptedAt -gt [DateTimeOffset]::UtcNow.AddMinutes(5)) {
+        throw 'The API correction ACR projection reconciliation is outside its exact schema-2 predecessor and current execution contract.'
+    }
+    $null = Assert-ApiAttestationCorrectionExecutionDependencyContract -Expected @($dependencyBinding.entries)
+    return $true
+}
+
+function ConvertTo-ApiAttestationCorrectionSchema3Receipt {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Receipt,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$CurrentSource
+    )
+
+    Assert-ApiAttestationCorrectionExactKeys -Value $Receipt -Label 'Exact schema-2 API correction receipt' -Expected @(
+        'schemaVersion', 'operation', 'locatorFingerprint', 'contractFingerprint', 'receiptFingerprint',
+        'acceptedContract', 'status', 'acceptedAtUtc', 'updatedAtUtc', 'verifiedAtUtc', 'build', 'deployment',
+        'verification', 'resumeReconciliation')
+    if ([int]$Receipt.schemaVersion -ne 2 -or
+        [string]$Receipt.receiptFingerprint -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReceiptFingerprint -or
+        (Get-BootstrapApiAttestationCorrectionReceiptFingerprint -Receipt $Receipt) -cne [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReceiptFingerprint) {
+        throw 'Only the exact reviewed schema-2 API correction receipt may enter ACR projection reconciliation.'
+    }
+    $null = Assert-ApiAttestationCorrectionHistoricalSchema2Reconciliation -Reconciliation $Receipt.resumeReconciliation
+    $acceptedContractFingerprint = Get-BootstrapObjectFingerprint -InputObject $Receipt.acceptedContract
+    $resumeReconciliationFingerprint = Get-BootstrapObjectFingerprint -InputObject $Receipt.resumeReconciliation
+    $copy = ConvertTo-BootstrapCanonicalValue -Value $Receipt
+    if ($copy -isnot [System.Collections.IDictionary]) {
+        throw 'The exact schema-2 API correction receipt could not be copied canonically.'
+    }
+    $copy['schemaVersion'] = 3
+    $copy['acrProjectionReconciliation'] = New-ApiAttestationCorrectionAcrProjectionReconciliation -CurrentSource $CurrentSource
+    if ((Get-BootstrapObjectFingerprint -InputObject $copy.acceptedContract) -cne $acceptedContractFingerprint -or
+        (Get-BootstrapObjectFingerprint -InputObject $copy.resumeReconciliation) -cne $resumeReconciliationFingerprint) {
+        throw 'Schema-3 API correction reconciliation changed preserved receipt authority.'
+    }
+    return $copy
+}
+
 function Assert-ApiAttestationCorrectionExactPredecessorReceipt {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Receipt,
         [Parameter(Mandatory)][System.Collections.IDictionary]$DependencyBinding,
         [Parameter(Mandatory)][System.Collections.IDictionary]$OverlayBinding,
         [Parameter(Mandatory)][System.Collections.IDictionary]$CurrentSource,
-        [switch]$AllowUnreconciled
+        [switch]$AllowUnreconciled,
+        [switch]$AllowSchema2ProjectionUpgrade
     )
 
     $contract = $Receipt.acceptedContract
@@ -379,14 +542,33 @@ function Assert-ApiAttestationCorrectionExactPredecessorReceipt {
         [string]$Receipt.deployment.state -notin @('IntentRecorded', 'Succeeded')) {
         throw 'The receipt is not the exact reviewed predecessor API-correction execution.'
     }
-    if ($Receipt.Contains('resumeReconciliation')) {
-        if ([int]$Receipt.schemaVersion -ne 2) {
-            throw 'The reconciled predecessor API-correction receipt must use top-level schema version 2.'
+    if ([int]$Receipt.schemaVersion -eq 3) {
+        if (-not $Receipt.Contains('resumeReconciliation') -or
+            -not $Receipt.Contains('acrProjectionReconciliation')) {
+            throw 'The schema-3 predecessor API-correction receipt is missing an additive reconciliation contract.'
         }
-        $null = Assert-ApiAttestationCorrectionResumeReconciliation `
-            -Reconciliation $Receipt.resumeReconciliation -CurrentSource $CurrentSource
+        $null = Assert-ApiAttestationCorrectionHistoricalSchema2Reconciliation `
+            -Reconciliation $Receipt.resumeReconciliation
+        $null = Assert-ApiAttestationCorrectionAcrProjectionReconciliation `
+            -Reconciliation $Receipt.acrProjectionReconciliation -CurrentSource $CurrentSource
+    }
+    elseif ([int]$Receipt.schemaVersion -eq 2 -and $Receipt.Contains('resumeReconciliation')) {
+        if ($Receipt.Contains('acrProjectionReconciliation')) {
+            throw 'The schema-2 predecessor API-correction receipt carries an unsupported projection reconciliation.'
+        }
+        if ($AllowSchema2ProjectionUpgrade -and
+            [string]$Receipt.receiptFingerprint -ceq [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReceiptFingerprint) {
+            $null = Assert-ApiAttestationCorrectionHistoricalSchema2Reconciliation `
+                -Reconciliation $Receipt.resumeReconciliation
+        }
+        else {
+            $null = Assert-ApiAttestationCorrectionResumeReconciliation `
+                -Reconciliation $Receipt.resumeReconciliation -CurrentSource $CurrentSource
+        }
     }
     elseif ([int]$Receipt.schemaVersion -ne 1 -or
+        $Receipt.Contains('resumeReconciliation') -or
+        $Receipt.Contains('acrProjectionReconciliation') -or
         -not $AllowUnreconciled -or
         [string]$Receipt.receiptFingerprint -cne [string]$ApiAttestationCorrectionPredecessorResume.receiptFingerprint -or
         [string]$Receipt.status -cne 'NeedsAttention' -or
@@ -409,14 +591,15 @@ function Get-BootstrapApiAttestationCorrectionReceiptFingerprint {
     return Get-BootstrapObjectFingerprint -InputObject $copy
 }
 
-function Save-ApiAttestationCorrectionReceipt {
+function Write-ApiAttestationCorrectionReceiptAtomic {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Receipt,
         [Parameter(Mandatory)][string]$Path
     )
 
-    $Receipt['updatedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
-    $Receipt['receiptFingerprint'] = Get-BootstrapApiAttestationCorrectionReceiptFingerprint -Receipt $Receipt
+    if ((Get-BootstrapApiAttestationCorrectionReceiptFingerprint -Receipt $Receipt) -cne [string]$Receipt.receiptFingerprint) {
+        throw 'The prepared API-attestation correction receipt fingerprint is invalid.'
+    }
     $directory = Split-Path -Parent $Path
     [IO.Directory]::CreateDirectory($directory) | Out-Null
     $temporary = Join-Path $directory ".api-attestation-$([guid]::NewGuid().ToString('N')).tmp"
@@ -444,6 +627,17 @@ function Save-ApiAttestationCorrectionReceipt {
     finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
     }
+}
+
+function Save-ApiAttestationCorrectionReceipt {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Receipt,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $Receipt['updatedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+    $Receipt['receiptFingerprint'] = Get-BootstrapApiAttestationCorrectionReceiptFingerprint -Receipt $Receipt
+    Write-ApiAttestationCorrectionReceiptAtomic -Receipt $Receipt -Path $Path
 }
 
 function Get-BootstrapApiAttestationCorrectionReceiptPath {
@@ -1323,6 +1517,7 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
         [Parameter(Mandatory)][System.Collections.IDictionary]$State,
         [Parameter()][AllowNull()][System.Collections.IDictionary]$Receipt,
         [switch]$AllowUnreconciledPredecessor,
+        [switch]$AllowSchema2ProjectionUpgrade,
         [switch]$RequireVerified
     )
 
@@ -1336,11 +1531,12 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
         'schemaVersion', 'operation', 'locatorFingerprint', 'contractFingerprint', 'receiptFingerprint',
         'acceptedContract', 'status', 'acceptedAtUtc', 'updatedAtUtc', 'verifiedAtUtc', 'build', 'deployment', 'verification')
     if ($Receipt.Contains('resumeReconciliation')) { $receiptKeys += 'resumeReconciliation' }
+    if ($Receipt.Contains('acrProjectionReconciliation')) { $receiptKeys += 'acrProjectionReconciliation' }
     Assert-ApiAttestationCorrectionExactKeys -Value $Receipt -Label 'API-attestation correction receipt' -Expected $receiptKeys
     foreach ($name in @('locatorFingerprint', 'contractFingerprint', 'receiptFingerprint')) {
         Assert-BootstrapFingerprintValue -Value ([string]$Receipt[$name]) -Label "API-attestation correction $name"
     }
-    if ([int]$Receipt.schemaVersion -notin @(1, 2) -or
+    if ([int]$Receipt.schemaVersion -notin @(1, 2, 3) -or
         [string]$Receipt.operation -cne $ApiAttestationCorrectionOperation -or
         $Receipt.acceptedContract -isnot [System.Collections.IDictionary] -or
         $Receipt.build -isnot [System.Collections.IDictionary] -or
@@ -1372,7 +1568,8 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
     if ($isPredecessorResume) {
         $null = Assert-ApiAttestationCorrectionExactPredecessorReceipt `
             -Receipt $Receipt -DependencyBinding $dependencyBinding -OverlayBinding $overlayBinding -CurrentSource $source `
-            -AllowUnreconciled:$AllowUnreconciledPredecessor
+            -AllowUnreconciled:$AllowUnreconciledPredecessor `
+            -AllowSchema2ProjectionUpgrade:$AllowSchema2ProjectionUpgrade
         $descriptorSource = [ordered]@{
             sourceContractFingerprint = Get-BootstrapObjectFingerprint -InputObject $contract.source
             synthesizedBuildSourceFingerprint = [string]$contract.source.synthesizedBuildSourceFingerprint
@@ -1382,7 +1579,8 @@ function Assert-ApiAttestationCorrectionReceiptBoundary {
         if ([string]$dependencyBinding.mode -cne 'CurrentFlat' -or
             [string]$overlayBinding.mode -cne 'CurrentFlat' -or
             [int]$Receipt.schemaVersion -ne 1 -or
-            $Receipt.Contains('resumeReconciliation')) {
+            $Receipt.Contains('resumeReconciliation') -or
+            $Receipt.Contains('acrProjectionReconciliation')) {
             throw 'A current-source API correction receipt cannot carry predecessor resume reconciliation.'
         }
         $null = Assert-ApiAttestationCorrectionExecutionDependencyContract -Expected @($dependencyBinding.entries)
@@ -1559,13 +1757,28 @@ function Initialize-ApiAttestationCorrectionResumeReconciliation {
     )
 
     $binding = Assert-ApiAttestationCorrectionReceiptBoundary `
-        -Config $Config -State $State -Receipt $Receipt -AllowUnreconciledPredecessor
+        -Config $Config -State $State -Receipt $Receipt -AllowUnreconciledPredecessor `
+        -AllowSchema2ProjectionUpgrade
     if ([bool]$binding.isPredecessorResume -and -not $Receipt.Contains('resumeReconciliation')) {
+        $candidate = ConvertTo-BootstrapCanonicalValue -Value $Receipt
         $reconciliation = New-ApiAttestationCorrectionResumeReconciliation -CurrentSource $binding.source
-        $Receipt['schemaVersion'] = 2
-        $Receipt['resumeReconciliation'] = $reconciliation
-        Save-ApiAttestationCorrectionReceipt -Receipt $Receipt -Path $ReceiptPath
-        $binding = Assert-ApiAttestationCorrectionReceiptBoundary -Config $Config -State $State -Receipt $Receipt
+        $candidate['schemaVersion'] = 2
+        $candidate['resumeReconciliation'] = $reconciliation
+        $candidate['updatedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+        $candidate['receiptFingerprint'] = Get-BootstrapApiAttestationCorrectionReceiptFingerprint -Receipt $candidate
+        $binding = Assert-ApiAttestationCorrectionReceiptBoundary -Config $Config -State $State -Receipt $candidate
+        Write-ApiAttestationCorrectionReceiptAtomic -Receipt $candidate -Path $ReceiptPath
+    }
+    elseif ([bool]$binding.isPredecessorResume -and
+        [int]$Receipt.schemaVersion -eq 2 -and
+        $Receipt.Contains('resumeReconciliation') -and
+        -not $Receipt.Contains('acrProjectionReconciliation') -and
+        [string]$Receipt.receiptFingerprint -ceq [string]$ApiAttestationCorrectionAcrProjectionResume.schema2ReceiptFingerprint) {
+        $candidate = ConvertTo-ApiAttestationCorrectionSchema3Receipt -Receipt $Receipt -CurrentSource $binding.source
+        $candidate['updatedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+        $candidate['receiptFingerprint'] = Get-BootstrapApiAttestationCorrectionReceiptFingerprint -Receipt $candidate
+        $binding = Assert-ApiAttestationCorrectionReceiptBoundary -Config $Config -State $State -Receipt $candidate
+        Write-ApiAttestationCorrectionReceiptAtomic -Receipt $candidate -Path $ReceiptPath
     }
     return $binding
 }
@@ -1648,9 +1861,10 @@ function Invoke-BootstrapApiAttestationCorrection {
         $discoveredReceiptPath = Get-BootstrapApiAttestationCorrectionReceiptPath -Config $configuration -State $state
         if ($discoveredReceiptPath) {
             $receiptPath = $discoveredReceiptPath
-            $receipt = Read-BootstrapApiAttestationCorrectionReceipt -Path $receiptPath
+            $loadedReceipt = Read-BootstrapApiAttestationCorrectionReceipt -Path $receiptPath
             $resumeBinding = Initialize-ApiAttestationCorrectionResumeReconciliation `
-                -Config $configuration -State $state -Receipt $receipt -ReceiptPath $receiptPath
+                -Config $configuration -State $state -Receipt $loadedReceipt -ReceiptPath $receiptPath
+            $receipt = $resumeBinding.receipt
             $source = $resumeBinding.source
             $descriptor = $resumeBinding.descriptor
             $expectedReceiptPath = Get-BootstrapApiAttestationCorrectionReceiptPath `

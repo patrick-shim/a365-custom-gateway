@@ -2190,7 +2190,7 @@ function Get-GatewayAcrExactRunById {
     }
     $raw = Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @(
         'acr', 'task', 'show-run', '--registry', $Registry, '--run-id', $RunId,
-        '--query', '{runId:runId,status:status,runType:runType,outputImages:outputImages}',
+        '--query', '{runId:runId,status:status,runType:runType,outputImages:not_null(outputImages, `[]`)[].{repository:repository,tag:tag,digest:digest}}',
         '--output', 'json', '--only-show-errors'
     )
     if ([string]::IsNullOrWhiteSpace($raw)) {

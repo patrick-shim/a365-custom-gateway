@@ -420,7 +420,7 @@ Describe 'Deterministic resumable ACR image builds' {
                 $FilePath -ceq 'az' -and
                 ((@($ArgumentList) -join ' ') -ceq (
                     'acr task show-run --registry acrsafe --run-id run-api ' +
-                    '--query {runId:runId,status:status,runType:runType,outputImages:outputImages} ' +
+                    '--query {runId:runId,status:status,runType:runType,outputImages:not_null(outputImages, `[]`)[].{repository:repository,tag:tag,digest:digest}} ' +
                     '--output json --only-show-errors'))
             }
         }
@@ -513,6 +513,13 @@ Describe 'Deterministic resumable ACR image builds' {
                 [pscustomobject]@{
                     runId = 'bad/run'; status = 'Succeeded'; runType = 'QuickRun'
                     outputImages = $validRun.outputImages
+                },
+                [pscustomobject]@{
+                    runId = 'de1'; status = 'Succeeded'; runType = 'QuickRun'
+                    outputImages = @([pscustomobject]@{
+                        repository = 'gateway-api'; tag = $tag; digest = "sha256:$('1' * 64)"
+                        registry = 'private-provider-registry-marker'
+                    })
                 },
                 [pscustomobject]@{
                     runId = 'de1'; status = 'Succeeded'; runType = 'QuickRun'
