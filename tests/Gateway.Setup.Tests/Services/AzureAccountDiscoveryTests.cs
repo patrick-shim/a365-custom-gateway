@@ -7,6 +7,21 @@ namespace Gateway.Setup.Tests.Services;
 public sealed class AzureAccountDiscoveryTests
 {
     [Fact]
+    public async Task DiscoverAsync_ReportsProcessLaunchFailureWithoutClaimingCliIsNotInstalled()
+    {
+        var runner = new StubAzureCliRunner(new AzureCliInvocationResult(
+            AzureCliInvocationStatus.Unavailable,
+            -1,
+            string.Empty));
+
+        var result = await new AzureAccountDiscovery(runner).DiscoverAsync();
+
+        result.Succeeded.Should().BeFalse();
+        result.Guidance.Should().Contain("could not safely start Azure CLI");
+        result.Guidance.Should().NotContain("not installed");
+    }
+
+    [Fact]
     public async Task DiscoverAsync_RequestsAllSubscriptionsAndPreservesDisabledRows()
     {
         var enabledId = Guid.NewGuid();

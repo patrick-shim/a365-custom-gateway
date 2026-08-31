@@ -45,7 +45,7 @@ internal interface IAzureAccountDiscovery
 internal enum AzureCliInvocationStatus
 {
     Completed,
-    Missing,
+    Unavailable,
     TimedOut,
     OutputRejected
 }
@@ -63,41 +63,116 @@ internal interface IAzureCliRunner
         CancellationToken cancellationToken);
 }
 
+internal sealed record AzureCliExecutable(
+    string FileName,
+    IReadOnlyList<string> PrefixArguments);
+
+internal interface IAzureCliExecutableResolver
+{
+    AzureCliExecutable? Resolve();
+}
+
+internal sealed class AzureCliExecutableResolver : IAzureCliExecutableResolver
+{
+    public AzureCliExecutable? Resolve() => Resolve(
+        OperatingSystem.IsWindows(),
+        Environment.GetEnvironmentVariable("PATH"));
+
+    internal static AzureCliExecutable? Resolve(bool isWindows, string? searchPath)
+    {
+        if (!isWindows)
+        {
+            return new AzureCliExecutable("az", []);
+        }
+
+        foreach (var rawDirectory in (searchPath ?? string.Empty).Split(
+            Path.PathSeparator,
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var directory = rawDirectory.Trim('"');
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                continue;
+            }
+
+            var executablePath = GetFullPath(directory, "az.exe");
+            if (executablePath is not null && File.Exists(executablePath))
+            {
+                return new AzureCliExecutable(executablePath, []);
+            }
+
+            var commandPath = GetFullPath(directory, "az.cmd");
+            if (commandPath is null || !File.Exists(commandPath))
+            {
+                continue;
+            }
+
+            var pythonPath = GetFullPath(directory, "..", "python.exe");
+            return pythonPath is not null && File.Exists(pythonPath)
+                ? new AzureCliExecutable(pythonPath, ["-IBm", "azure.cli"])
+                : null;
+        }
+
+        return null;
+    }
+
+    private static string? GetFullPath(params string[] parts)
+    {
+        try
+        {
+            return Path.GetFullPath(Path.Combine(parts));
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or IOException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+}
+
 internal sealed class AzureCliRunner : IAzureCliRunner
 {
     private const int MaximumOutputCharacters = 256 * 1024;
+    private readonly IAzureCliExecutableResolver executableResolver;
+
+    public AzureCliRunner()
+        : this(new AzureCliExecutableResolver())
+    {
+    }
+
+    internal AzureCliRunner(IAzureCliExecutableResolver executableResolver)
+    {
+        this.executableResolver = executableResolver ??
+            throw new ArgumentNullException(nameof(executableResolver));
+    }
 
     public async Task<AzureCliInvocationResult> RunAsync(
         IReadOnlyList<string> arguments,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        var startInfo = new ProcessStartInfo
+        var executable = executableResolver.Resolve();
+        if (executable is null)
         {
-            FileName = "az",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
+            return new AzureCliInvocationResult(
+                AzureCliInvocationStatus.Unavailable,
+                -1,
+                string.Empty);
         }
 
-        startInfo.Environment["AZURE_CORE_NO_COLOR"] = "1";
+        var startInfo = CreateStartInfo(executable, arguments);
         using var process = new Process { StartInfo = startInfo };
         try
         {
             if (!process.Start())
             {
-                return new AzureCliInvocationResult(AzureCliInvocationStatus.Missing, -1, string.Empty);
+                return new AzureCliInvocationResult(AzureCliInvocationStatus.Unavailable, -1, string.Empty);
             }
         }
         catch (Exception exception) when (
             exception is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            return new AzureCliInvocationResult(AzureCliInvocationStatus.Missing, -1, string.Empty);
+            return new AzureCliInvocationResult(AzureCliInvocationStatus.Unavailable, -1, string.Empty);
         }
 
         using var boundedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -130,6 +205,31 @@ internal sealed class AzureCliRunner : IAzureCliRunner
             TryKill(process);
             return new AzureCliInvocationResult(AzureCliInvocationStatus.OutputRejected, -1, string.Empty);
         }
+    }
+
+    internal static ProcessStartInfo CreateStartInfo(
+        AzureCliExecutable executable,
+        IReadOnlyList<string> arguments)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executable.FileName,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        foreach (var prefixArgument in executable.PrefixArguments)
+        {
+            startInfo.ArgumentList.Add(prefixArgument);
+        }
+        foreach (var argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        startInfo.Environment["AZURE_CORE_NO_COLOR"] = "1";
+        return startInfo;
     }
 
     private static async Task<string> ReadBoundedAsync(
@@ -207,9 +307,9 @@ internal sealed class AzureAccountDiscovery : IAzureAccountDiscovery
             AccountDiscoveryTimeout,
             cancellationToken);
 
-        if (invocation.Status == AzureCliInvocationStatus.Missing)
+        if (invocation.Status == AzureCliInvocationStatus.Unavailable)
         {
-            return MissingCli();
+            return UnavailableCli();
         }
 
         if (invocation.Status == AzureCliInvocationStatus.TimedOut)
@@ -634,8 +734,8 @@ internal sealed class AzureAccountDiscovery : IAzureAccountDiscovery
         AzureCliInvocationResult invocation,
         string operation) => invocation.Status switch
         {
-            AzureCliInvocationStatus.Missing =>
-                "Azure CLI is not installed or not on PATH. Run `gateway doctor`, then retry.",
+            AzureCliInvocationStatus.Unavailable =>
+                "Setup could not safely start Azure CLI from its current process environment. Close Setup, run the root launcher's `doctor` command, then restart Setup.",
             AzureCliInvocationStatus.TimedOut =>
                 $"Azure CLI timed out while reading the {operation}. Retry after confirming the signed-in session.",
             AzureCliInvocationStatus.OutputRejected =>
@@ -664,9 +764,9 @@ internal sealed class AzureAccountDiscovery : IAzureAccountDiscovery
                 : value;
     }
 
-    private static AzureAccountDiscoveryResult MissingCli() => new(
+    private static AzureAccountDiscoveryResult UnavailableCli() => new(
         [],
-        "Azure CLI is not installed or not on PATH. Run `gateway doctor` or install Azure CLI, then try again.");
+        "Setup could not safely start Azure CLI from its current process environment. Close Setup, run the root launcher's `doctor` command, then restart Setup.");
 
     private static AzureAccountDiscoveryResult LoginGuidance() => new(
         [],
