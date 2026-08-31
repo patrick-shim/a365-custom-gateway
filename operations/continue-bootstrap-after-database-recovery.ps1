@@ -120,7 +120,45 @@ function Assert-BoundedAdminUiVerifierCompatibility {
     if (-not [string]::Equals($legacyEquivalent, $recoveryText, [StringComparison]::Ordinal)) {
         throw 'The current Admin UI verifier differs from the recovery snapshot beyond the reviewed Azure-resource-ID casing correction.'
     }
-    return "sha256:$((Get-FileHash -LiteralPath $currentPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+    $recoveryRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $recoveryPath))
+    $relativeVerifierPath = 'bootstrap/modules/Experience.psm1'
+    if (-not ([IO.Path]::GetFullPath((Join-Path $recoveryRoot $relativeVerifierPath))).Equals(
+            $recoveryPath,
+            [StringComparison]::Ordinal)) {
+        throw 'The recovery Admin UI verifier is outside its exact accepted-source location.'
+    }
+    $currentManifest = @(Get-BootstrapSourceManifest -Root (Get-RepositoryRoot))
+    $recoveryManifest = @(Get-BootstrapSourceManifest -Root $recoveryRoot)
+    $currentByPath = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+    $recoveryByPath = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+    foreach ($entry in $currentManifest) {
+        if (-not $currentByPath.TryAdd([string]$entry.path, [string]$entry.sha256)) {
+            throw 'The current bootstrap source manifest contains a duplicate path.'
+        }
+    }
+    foreach ($entry in $recoveryManifest) {
+        if (-not $recoveryByPath.TryAdd([string]$entry.path, [string]$entry.sha256)) {
+            throw 'The recovery bootstrap source manifest contains a duplicate path.'
+        }
+    }
+    if ($currentByPath.Count -ne $recoveryByPath.Count) {
+        throw 'The current bootstrap source differs from the recovery snapshot beyond the reviewed verifier correction.'
+    }
+    foreach ($path in $currentByPath.Keys) {
+        if (-not $recoveryByPath.ContainsKey($path)) {
+            throw 'The current bootstrap source differs from the recovery snapshot beyond the reviewed verifier correction.'
+        }
+        if ($path -cne $relativeVerifierPath -and $currentByPath[$path] -cne $recoveryByPath[$path]) {
+            throw 'The current bootstrap source differs from the recovery snapshot beyond the reviewed verifier correction.'
+        }
+    }
+    $currentVerifierSha256 = (Get-FileHash -LiteralPath $currentPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $recoveryVerifierSha256 = (Get-FileHash -LiteralPath $recoveryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($currentByPath[$relativeVerifierPath] -cne $currentVerifierSha256 -or
+        $recoveryByPath[$relativeVerifierPath] -cne $recoveryVerifierSha256) {
+        throw 'The reviewed Admin UI verifier hashes do not match their exact source manifests.'
+    }
+    return "sha256:$currentVerifierSha256"
 }
 
 function Enable-BoundedAdminUiRegistryIdentityCasingCorrection {
@@ -177,6 +215,36 @@ function Enable-BoundedAdminUiRegistryIdentityCasingCorrection {
     return $true
 }
 
+function Assert-ContinuationCompletedManualDatabaseRepairBoundary {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Plan
+    )
+
+    Assert-BootstrapManualDatabaseRepairPrerequisite -State $State | Out-Null
+    Assert-BootstrapFingerprintValue -Value ([string]$Plan.planFingerprint) -Label 'Manual database repair plan fingerprint'
+    $contract = Get-GatewayManualDatabaseRepairContract -Config ([pscustomobject]@{
+        projectName = [string]$State.configuration.projectName
+        environment = [string]$State.configuration.environment
+    })
+    if ([string]$Plan.status -cne 'Completed' -or
+        [string]$Plan.planFingerprint -cne [string]$State.manualDatabaseRepairPlan.planFingerprint -or
+        [string]$Plan.configurationFingerprint -cne [string]$State.configurationFingerprint -or
+        [string]$Plan.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D') -or
+        $Plan.originalAcceptedPlan -isnot [System.Collections.IDictionary] -or
+        $State.acceptedPlan -isnot [System.Collections.IDictionary] -or
+        (Get-BootstrapObjectFingerprint -InputObject $Plan.originalAcceptedPlan) -cne
+            (Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan) -or
+        [string]$Plan.exhaustedRecoveryPlanFingerprint -cne [string]$State.databaseRecoveryPlan.planFingerprint -or
+        [string]$Plan.repairJob.name -cne [string]$contract.jobName -or
+        [string]$Plan.repairJob.repairMode -cne 'ResumeAfterSchemaCompleted' -or
+        [int]$Plan.repairJob.replicaRetryLimit -ne 0 -or
+        [int]$Plan.repairJob.maximumExecutions -ne 1) {
+        throw 'The completed manual database repair plan no longer matches its exact state, ownership, failure chain, or one-shot Job contract.'
+    }
+    return Resolve-BootstrapManualDatabaseRepairPlanSourceRoot -State $State -Plan $Plan
+}
+
 function Get-ContinuationBoundary {
     param(
         [Parameter(Mandatory)]$Configuration,
@@ -200,10 +268,7 @@ function Get-ContinuationBoundary {
     $recoveryPlan = if ($manualCompleted) { $State.manualDatabaseRepairPlan } else { $State.databaseRecoveryPlan }
     $attemptNumber = if ($manualCompleted) { 0 } else { Get-BootstrapDatabaseRecoveryAttemptNumber -Plan $recoveryPlan }
     if ($manualCompleted) {
-        Assert-BootstrapManualDatabaseRepairPrerequisite -State $State | Out-Null
-        Assert-BootstrapAcceptedManualDatabaseRepairPlan `
-            -State $State -PlanFingerprint ([string]$recoveryPlan.planFingerprint) -AllowCompleted | Out-Null
-        $recoverySourceRoot = Resolve-BootstrapManualDatabaseRepairPlanSourceRoot -State $State -Plan $recoveryPlan
+        $recoverySourceRoot = Assert-ContinuationCompletedManualDatabaseRepairBoundary -State $State -Plan $recoveryPlan
     }
     else {
         Assert-BootstrapAcceptedDatabaseRecoveryPlan `

@@ -234,10 +234,18 @@ Describe 'Recovered bootstrap continuation state contract' {
     It 'accepts only the one reviewed Admin UI resource-ID casing correction' {
         $legacy = '        [string]$entries[0].identity -cne $ExpectedIdentity -or'
         $corrected = '        -not ([string]$entries[0].identity).Equals($ExpectedIdentity, [StringComparison]::OrdinalIgnoreCase) -or'
-        $recoveryPath = Join-Path $TestDrive 'recovery-experience.psm1'
-        $currentPath = Join-Path $TestDrive 'current-experience.psm1'
+        $currentRoot = Join-Path $TestDrive 'current'
+        $recoveryRoot = Join-Path $TestDrive 'recovery'
+        $currentPath = Join-Path $currentRoot 'bootstrap/modules/Experience.psm1'
+        $recoveryPath = Join-Path $recoveryRoot 'bootstrap/modules/Experience.psm1'
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $currentPath)) | Out-Null
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $recoveryPath)) | Out-Null
         [IO.File]::WriteAllText($recoveryPath, "before`n$legacy`nafter`n")
         [IO.File]::WriteAllText($currentPath, "before`n$corrected`nafter`n")
+        Mock Get-RepositoryRoot { $currentRoot }
+        Mock Get-BootstrapSourceManifest {
+            @([ordered]@{ path = 'bootstrap/modules/Experience.psm1'; sha256 = ('8' * 64) })
+        }
         $previousPath = $script:adminUiVerifierModulePath
         try {
             $script:adminUiVerifierModulePath = $currentPath
