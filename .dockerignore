@@ -36,10 +36,7 @@
 bootstrap/config.json
 **/appsettings.Development.json
 **/appsettings.Local.json
-.claude
-.agents
-.codex
-.github
+.*
 docs
 tests
 tests/**

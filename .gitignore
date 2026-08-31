@@ -63,17 +63,6 @@ PublishScripts/
 appsettings.Development.json
 appsettings.Local.json
 .secrets
-
-## Local-only repository tooling and metadata
-/.agents/skills/
-/.claude/
-/.codex/agents/
-/.devcontainer/
-/.github/
-/AGENTS.md
-/CLAUDE.md
-/CONTRIBUTING.md
-/SECURITY.md
 .secret
 .secret.*
 
