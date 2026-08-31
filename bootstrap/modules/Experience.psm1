@@ -2832,7 +2832,7 @@ function Assert-GatewayExactContainerRegistry {
     )
     $entries = @($Registries)
     if ($entries.Count -ne 1 -or [string]$entries[0].server -cne $ExpectedServer -or
-        [string]$entries[0].identity -cne $ExpectedIdentity -or
+        -not ([string]$entries[0].identity).Equals($ExpectedIdentity, [StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $entries[0] -Name 'username')) -or
         -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $entries[0] -Name 'passwordSecretRef'))) {
         throw 'Container registry configuration is not the one exact managed-identity-backed registry contract.'

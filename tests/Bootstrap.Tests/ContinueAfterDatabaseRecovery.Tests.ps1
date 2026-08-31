@@ -132,6 +132,7 @@ Describe 'Recovered bootstrap continuation state contract' {
     BeforeAll {
         $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
         . (Join-Path $repositoryRoot 'operations/continue-bootstrap-after-database-recovery.ps1')
+        $boundedVerifierImplementation = ${function:Assert-BoundedAdminUiVerifierCompatibility}
 
         function New-TestRecoveredBoundary {
             $originalSource = 'sha256:' + ('1' * 64)
@@ -201,6 +202,8 @@ Describe 'Recovered bootstrap continuation state contract' {
         Mock Assert-BootstrapDatabaseRecoveryHistory { }
         Mock Resolve-BootstrapDatabaseRecoveryPlanSourceRoot { '/safe/corrected' }
         Mock Resolve-BootstrapAcceptedSourceRoot { '/safe/original' }
+        Mock Assert-BoundedAdminUiVerifierCompatibility { 'sha256:' + ('7' * 64) }
+        Mock Get-FileHash { [pscustomobject]@{ Hash = ('8' * 64) } }
     }
 
     It 'binds attempt two and its history without hard-coding attempt one' {
@@ -210,6 +213,9 @@ Describe 'Recovered bootstrap continuation state contract' {
         $boundary.contract.recoveryHistoryFingerprint | Should -Be ('sha256:' + ('6' * 64))
         @($boundary.contract.validatedSteps) | Should -HaveCount 11
         @($boundary.contract.continuationSteps) | Should -HaveCount 8
+        $boundary.contract.adminUiVerifierFingerprint | Should -Be ('sha256:' + ('7' * 64))
+        $boundary.contract.adminUiRecoveryExperienceFingerprint | Should -Be ('sha256:' + ('8' * 64))
+        $boundary.contract.adminUiVerifierCorrection | Should -Be 'AzureResourceIdOrdinalIgnoreCaseV1'
         Should -Invoke Assert-BootstrapDatabaseRecoveryHistory -Times 1 -Exactly
     }
 
@@ -223,6 +229,27 @@ Describe 'Recovered bootstrap continuation state contract' {
         $testBoundary = New-TestRecoveredBoundary
         $testBoundary.configuration.purview.enabled = $true
         { Get-ContinuationBoundary -Configuration $testBoundary.configuration -State $testBoundary.state } | Should -Throw '*requires Purview*disabled*'
+    }
+
+    It 'accepts only the one reviewed Admin UI resource-ID casing correction' {
+        $legacy = '        [string]$entries[0].identity -cne $ExpectedIdentity -or'
+        $corrected = '        -not ([string]$entries[0].identity).Equals($ExpectedIdentity, [StringComparison]::OrdinalIgnoreCase) -or'
+        $recoveryPath = Join-Path $TestDrive 'recovery-experience.psm1'
+        $currentPath = Join-Path $TestDrive 'current-experience.psm1'
+        [IO.File]::WriteAllText($recoveryPath, "before`n$legacy`nafter`n")
+        [IO.File]::WriteAllText($currentPath, "before`n$corrected`nafter`n")
+        $previousPath = $script:adminUiVerifierModulePath
+        try {
+            $script:adminUiVerifierModulePath = $currentPath
+            & $boundedVerifierImplementation -RecoveryExperiencePath $recoveryPath |
+                Should -Match '^sha256:[0-9a-f]{64}$'
+            [IO.File]::AppendAllText($currentPath, "unreviewed`n")
+            { & $boundedVerifierImplementation -RecoveryExperiencePath $recoveryPath } |
+                Should -Throw '*differs*reviewed*correction*'
+        }
+        finally {
+            $script:adminUiVerifierModulePath = $previousPath
+        }
     }
 
     It 'writes the safe continuation receipt with owner-only Unix permissions' {

@@ -72,6 +72,23 @@ Describe 'Exact live Container App configuration contracts' {
                 Should -Throw '*managed-identity-backed*'
         }
 
+        It 'accepts equivalent managed-identity resource ID casing and rejects a different identity' {
+            $providerCasedIdentity = $script:runtimePullIdentityId.ToUpperInvariant()
+
+            Assert-GatewayExactContainerRegistry -Registries @(
+                [pscustomobject]@{ server = 'safe.azurecr.io'; identity = $providerCasedIdentity }
+            ) -ExpectedServer 'safe.azurecr.io' -ExpectedIdentity $script:runtimePullIdentityId |
+                Should -BeTrue
+
+            $differentIdentity = $script:runtimePullIdentityId.Replace(
+                'id-gateway-runtime-pull-dev',
+                'id-gateway-runtime-pull-other')
+            { Assert-GatewayExactContainerRegistry -Registries @(
+                    [pscustomobject]@{ server = 'safe.azurecr.io'; identity = $differentIdentity }
+                ) -ExpectedServer 'safe.azurecr.io' -ExpectedIdentity $script:runtimePullIdentityId } |
+                Should -Throw '*managed-identity-backed*'
+        }
+
         It 'normalizes only nonempty ASCII alphanumeric Container App region names and display forms' {
             foreach ($actual in @('koreacentral', 'Korea Central', 'KOREA CENTRAL', 'K o r e a C e n t r a l')) {
                 Test-GatewayContainerAppLocationEquivalent -ActualLocation $actual -ExpectedLocation 'koreacentral' |

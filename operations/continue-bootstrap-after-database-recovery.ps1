@@ -33,6 +33,7 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $repositoryRoot 'bootstrap/modules/Common.psm1') -Force -DisableNameChecking
 
 $script:continuationToolPath = $PSCommandPath
+$script:adminUiVerifierModulePath = Join-Path $repositoryRoot 'bootstrap/modules/Experience.psm1'
 $script:continuationReceipt = $null
 $script:continuationReceiptPath = ''
 $script:continuationState = $null
@@ -101,6 +102,81 @@ function Read-ContinuationReceipt {
     }
 }
 
+function Assert-BoundedAdminUiVerifierCompatibility {
+    param([Parameter(Mandatory)][string]$RecoveryExperiencePath)
+
+    $currentPath = [IO.Path]::GetFullPath($script:adminUiVerifierModulePath)
+    $recoveryPath = [IO.Path]::GetFullPath($RecoveryExperiencePath)
+    $currentText = [IO.File]::ReadAllText($currentPath)
+    $recoveryText = [IO.File]::ReadAllText($recoveryPath)
+    $legacyClause = '        [string]$entries[0].identity -cne $ExpectedIdentity -or'
+    $correctedClause = '        -not ([string]$entries[0].identity).Equals($ExpectedIdentity, [StringComparison]::OrdinalIgnoreCase) -or'
+    $first = $currentText.IndexOf($correctedClause, [StringComparison]::Ordinal)
+    if ($first -lt 0 -or
+        $currentText.IndexOf($correctedClause, $first + $correctedClause.Length, [StringComparison]::Ordinal) -ge 0) {
+        throw 'The current Admin UI verifier does not contain exactly one reviewed Azure-resource-ID casing correction.'
+    }
+    $legacyEquivalent = $currentText.Remove($first, $correctedClause.Length).Insert($first, $legacyClause)
+    if (-not [string]::Equals($legacyEquivalent, $recoveryText, [StringComparison]::Ordinal)) {
+        throw 'The current Admin UI verifier differs from the recovery snapshot beyond the reviewed Azure-resource-ID casing correction.'
+    }
+    return "sha256:$((Get-FileHash -LiteralPath $currentPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+}
+
+function Enable-BoundedAdminUiRegistryIdentityCasingCorrection {
+    param([Parameter(Mandatory)][System.Management.Automation.PSModuleInfo]$ExperienceModule)
+
+    $result = & $ExperienceModule {
+        function script:Assert-GatewayExactContainerRegistry {
+            param(
+                [Parameter(Mandatory)]$Registries,
+                [Parameter(Mandatory)][string]$ExpectedServer,
+                [Parameter(Mandatory)][string]$ExpectedIdentity
+            )
+            $entries = @($Registries)
+            if ($entries.Count -ne 1 -or [string]$entries[0].server -cne $ExpectedServer -or
+                -not ([string]$entries[0].identity).Equals($ExpectedIdentity, [StringComparison]::OrdinalIgnoreCase) -or
+                -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $entries[0] -Name 'username')) -or
+                -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $entries[0] -Name 'passwordSecretRef'))) {
+                throw 'Container registry configuration is not the one exact managed-identity-backed registry contract.'
+            }
+            return $true
+        }
+
+        $expectedIdentity = '/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-reviewed'
+        $caseVariant = $expectedIdentity.Replace('/resourceGroups/', '/resourcegroups/')
+        $accepted = Assert-GatewayExactContainerRegistry `
+            -Registries @([pscustomobject]@{ server = 'reviewed.azurecr.io'; identity = $caseVariant }) `
+            -ExpectedServer 'reviewed.azurecr.io' `
+            -ExpectedIdentity $expectedIdentity
+        $differentIdentityRejected = $false
+        try {
+            Assert-GatewayExactContainerRegistry `
+                -Registries @([pscustomobject]@{ server = 'reviewed.azurecr.io'; identity = "$expectedIdentity-other" }) `
+                -ExpectedServer 'reviewed.azurecr.io' `
+                -ExpectedIdentity $expectedIdentity | Out-Null
+        }
+        catch { $differentIdentityRejected = $true }
+        $passwordFallbackRejected = $false
+        try {
+            Assert-GatewayExactContainerRegistry `
+                -Registries @([pscustomobject]@{
+                    server = 'reviewed.azurecr.io'
+                    identity = $expectedIdentity
+                    passwordSecretRef = 'forbidden'
+                }) `
+                -ExpectedServer 'reviewed.azurecr.io' `
+                -ExpectedIdentity $expectedIdentity | Out-Null
+        }
+        catch { $passwordFallbackRejected = $true }
+        return $accepted -eq $true -and $differentIdentityRejected -and $passwordFallbackRejected
+    }
+    if ($result -isnot [bool] -or $result -ne $true) {
+        throw 'The bounded Admin UI registry-identity casing correction failed its exact local contract self-test.'
+    }
+    return $true
+}
+
 function Get-ContinuationBoundary {
     param(
         [Parameter(Mandatory)]$Configuration,
@@ -135,6 +211,11 @@ function Get-ContinuationBoundary {
         Assert-BootstrapDatabaseRecoveryHistory -State $State -CurrentPlan $recoveryPlan | Out-Null
         $recoverySourceRoot = Resolve-BootstrapDatabaseRecoveryPlanSourceRoot -State $State -Plan $recoveryPlan
     }
+    $recoveryExperiencePath = Join-Path $recoverySourceRoot 'bootstrap/modules/Experience.psm1'
+    $adminUiVerifierFingerprint = Assert-BoundedAdminUiVerifierCompatibility -RecoveryExperiencePath $recoveryExperiencePath
+    Assert-BootstrapFingerprintValue -Value $adminUiVerifierFingerprint -Label 'Admin UI verifier fingerprint'
+    $adminUiRecoveryExperienceFingerprint = "sha256:$((Get-FileHash -LiteralPath $recoveryExperiencePath -Algorithm SHA256).Hash.ToLowerInvariant())"
+    Assert-BootstrapFingerprintValue -Value $adminUiRecoveryExperienceFingerprint -Label 'Admin UI recovery verifier fingerprint'
     $originalSourceRoot = Resolve-BootstrapAcceptedSourceRoot -State $State
     if ([string]$State.acceptedPlan.sourceFingerprint -cne [string]$recoveryPlan.originalSourceFingerprint -or
         (Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan) -cne
@@ -239,6 +320,9 @@ function Get-ContinuationBoundary {
         manualDatabaseRepairSourceFingerprint = if ($manualCompleted) { [string]$recoveryPlan.repairSourceFingerprint } else { '' }
         exhaustedRecoveryPlanFingerprint = if ($manualCompleted) { [string]$recoveryPlan.exhaustedRecoveryPlanFingerprint } else { '' }
         toolFingerprint = $toolFingerprint
+        adminUiVerifierFingerprint = $adminUiVerifierFingerprint
+        adminUiRecoveryExperienceFingerprint = $adminUiRecoveryExperienceFingerprint
+        adminUiVerifierCorrection = 'AzureResourceIdOrdinalIgnoreCaseV1'
         validatedSteps = @($completedBoundary)
         continuationSteps = $continuationStepNames
         purviewDisabled = $true
@@ -441,6 +525,23 @@ try {
     foreach ($module in @('Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'Verification')) {
         Import-Module (Join-Path $recoverySourceRoot "bootstrap/modules/$module.psm1") -Force -DisableNameChecking
     }
+    $runtimeAdminUiVerifierFingerprint = Assert-BoundedAdminUiVerifierCompatibility `
+        -RecoveryExperiencePath (Join-Path $recoverySourceRoot 'bootstrap/modules/Experience.psm1')
+    if ($runtimeAdminUiVerifierFingerprint -cne [string]$boundary.contract.adminUiVerifierFingerprint) {
+        throw 'The bounded Admin UI verifier changed after continuation authorization.'
+    }
+    $recoveryExperiencePath = [IO.Path]::GetFullPath((Join-Path $recoverySourceRoot 'bootstrap/modules/Experience.psm1'))
+    $runtimeRecoveryExperienceFingerprint = "sha256:$((Get-FileHash -LiteralPath $recoveryExperiencePath -Algorithm SHA256).Hash.ToLowerInvariant())"
+    $experienceModules = @(Get-Module Experience -All | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_.Path) -and
+        ([IO.Path]::GetFullPath([string]$_.Path)).Equals($recoveryExperiencePath, [StringComparison]::Ordinal)
+    })
+    if ($runtimeRecoveryExperienceFingerprint -cne [string]$boundary.contract.adminUiRecoveryExperienceFingerprint -or
+        [string]$boundary.contract.adminUiVerifierCorrection -cne 'AzureResourceIdOrdinalIgnoreCaseV1' -or
+        $experienceModules.Count -ne 1) {
+        throw 'The exact recovery Experience module is absent, ambiguous, modified, or outside the reviewed correction contract.'
+    }
+    Enable-BoundedAdminUiRegistryIdentityCasingCorrection -ExperienceModule $experienceModules[0] | Out-Null
     $originalSourceRoot = [string]$boundary.originalSourceRoot
     Set-BootstrapExecutionSourceRoot -Path $originalSourceRoot
     if ((Get-BootstrapSourceFingerprint -Root (Get-BootstrapExecutionSourceRoot)) -cne [string]$boundary.contract.originalSourceFingerprint) {
