@@ -75,10 +75,9 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
                     MaxDepth = 12
                 },
                 cancellationToken);
-            if (document.RootElement.ValueKind != JsonValueKind.Object ||
-                ContainsUnsafeString(document.RootElement))
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
-                return Rejected("The existing configuration contains unsupported or credential-like content.");
+                return Rejected("The existing configuration does not contain a supported JSON object.");
             }
 
             var configuration = document.RootElement.Deserialize<BootstrapConfiguration>(SerializerOptions);
@@ -120,7 +119,6 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
             configuration.Agent365.ReviewedManagerApplicationIds is null ||
             configuration.PromptShield is null ||
             configuration.Purview is null ||
-            configuration.Purview.ActivateGatewayAdapterAfterPolicyReadback ||
             configuration.Purview.PolicyProvisioningEnabled ||
             configuration.Purview.PolicyProvisioningOrganization != string.Empty ||
             configuration.Purview.PolicyProvisioningApplicationId != string.Empty ||
@@ -165,37 +163,6 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
             PurviewDlpPolicyName = configuration.Purview.DlpPolicyName,
             PurviewDlpRuleName = configuration.Purview.DlpRuleName
         };
-    }
-
-    private static bool ContainsUnsafeString(JsonElement element)
-    {
-        switch (element.ValueKind)
-        {
-            case JsonValueKind.String:
-                return !SafePublicValuePolicy.IsAllowed(element.GetString());
-            case JsonValueKind.Object:
-                foreach (var property in element.EnumerateObject())
-                {
-                    if (ContainsUnsafeString(property.Value))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-            case JsonValueKind.Array:
-                foreach (var item in element.EnumerateArray())
-                {
-                    if (ContainsUnsafeString(item))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-            default:
-                return false;
-        }
     }
 
     private static ExistingConfigurationResult Rejected(string guidance) => new(

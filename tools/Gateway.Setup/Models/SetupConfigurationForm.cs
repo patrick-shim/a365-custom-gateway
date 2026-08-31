@@ -152,19 +152,6 @@ internal sealed class SetupConfigurationForm : IValidatableObject
                 [nameof(PurviewSensitiveInformationType)]);
         }
 
-        if (!SafePublicValuePolicy.IsAllowed(SeedBlueprintName))
-        {
-            yield return new ValidationResult(
-                "The seed blueprint name contains content that cannot be written to public bootstrap configuration.",
-                [nameof(SeedBlueprintName)]);
-        }
-
-        if (!SafePublicValuePolicy.IsAllowed(PurviewSensitiveInformationType))
-        {
-            yield return new ValidationResult(
-                "The Purview classifier name contains content that cannot be written to public bootstrap configuration.",
-                [nameof(PurviewSensitiveInformationType)]);
-        }
     }
 
     public Guid[] GetReviewedManagerApplicationIds()

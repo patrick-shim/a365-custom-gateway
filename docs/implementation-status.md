@@ -53,6 +53,11 @@ identifiers only. The tool has no destroy mode. If a completed resource group wa
 deleted, do not replay its preserved state; use a new isolated deployment identity
 or an independently reviewed recovery procedure.
 
+Setup validates the typed bootstrap schema and field-specific Azure constraints; it
+does not infer whether a deployment name is credential-like from the name's text.
+Unknown properties and unsupported advanced configuration remain rejected. Azure
+CLI and child-process output are still sanitized before the UI renders them.
+
 ## Provisioning contract
 
 The v3 worker performs blueprint resolution, principal creation, Gateway federation,
@@ -95,13 +100,13 @@ The consolidated source gate completed on 2026-08-31:
 |---|---:|---:|---:|
 | Gateway.UnitTests | 632 | 0 | 0 |
 | Gateway.AdminUi.Tests | 157 | 0 | 0 |
-| Gateway.Setup.Tests | 131 | 0 | 0 |
+| Gateway.Setup.Tests | 132 | 0 | 0 |
 | Gateway.ObservabilityRuntime.Tests | 158 | 0 | 0 |
 | Gateway.ArchitectureTests | 115 | 0 | 0 |
 | Gateway.IntegrationTests | 85 | 0 | 0 |
 | Gateway.EndToEndTests | 102 | 0 | 0 |
 | Gateway.SecurityTests | 126 | 0 | 0 |
-| **.NET total** | **1,506** | **0** | **0** |
+| **.NET total** | **1,507** | **0** | **0** |
 
 The PowerShell source gate discovered 566 tests in 22 files: 565 passed, none
 failed, and one Windows-only launcher case was intentionally skipped on macOS. It

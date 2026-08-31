@@ -54,20 +54,23 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
     }
 
     [Fact]
-    public async Task LoadAsync_RejectsCredentialLikeValues()
+    public async Task LoadAsync_DoesNotGuessWhetherAConfigurationNameResemblesCredentialMaterial()
     {
         await WriteValidAsync(ValidForm());
         var path = Path.Combine(root, "bootstrap", "config.json");
         var json = await File.ReadAllTextAsync(path);
         await File.WriteAllTextAsync(path, json.Replace(
             "A365 Gateway Seed dev",
-            "Bearer eyJaaaaaaaaaaa.bbbbbbbbbbb.cccccccc",
+            "Bearer Credential Blueprint",
             StringComparison.Ordinal));
 
         var result = await NewLoader().LoadAsync();
 
-        result.Status.Should().Be(ExistingConfigurationStatus.Rejected);
-        result.Guidance.Should().NotBeNullOrWhiteSpace();
+        result.Status.Should().Be(ExistingConfigurationStatus.Loaded);
+        result.Guidance.Should().BeNull();
+        result.Form.Should().NotBeNull();
+        result.Form!.SeedBlueprintName.Should().Be(
+            "Bearer Credential Blueprint");
     }
 
     [Fact]

@@ -48,7 +48,6 @@ internal sealed record BootstrapConfiguration
             form.PromptShieldSkuName),
         Purview = new BootstrapPurviewConfiguration(
             form.PurviewEnabled,
-            false,
             form.PurviewCollectionPolicyName,
             form.PurviewDlpPolicyName,
             form.PurviewDlpRuleName,
@@ -71,7 +70,6 @@ internal sealed record BootstrapPromptShieldConfiguration(bool Enabled, string S
 
 internal sealed record BootstrapPurviewConfiguration(
     bool Enabled,
-    bool ActivateGatewayAdapterAfterPolicyReadback,
     string CollectionPolicyName,
     string DlpPolicyName,
     string DlpRuleName,

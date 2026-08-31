@@ -31,6 +31,7 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         var json = await File.ReadAllTextAsync(target);
         json.Should().NotContain("Bearer ");
         json.Contains("client_secret", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
+        json.Should().NotContain("activateGatewayAdapterAfterPolicyReadback");
         using var document = JsonDocument.Parse(json);
         document.RootElement.GetProperty("subscriptionId").GetGuid().Should().NotBe(Guid.Empty);
         document.RootElement.GetProperty("tenantId").GetGuid().Should().NotBe(Guid.Empty);
@@ -46,6 +47,18 @@ public sealed class BootstrapConfigWriterTests : IDisposable
             .GetProperty("collectionPolicyName")
             .GetString()
             .Should().Be("A365 Gateway a365gw AI collection");
+    }
+
+    [Fact]
+    public void SerializeForTest_UsesOnlyPropertiesDeclaredByBootstrapSchema()
+    {
+        using var configuration = JsonDocument.Parse(
+            BootstrapConfigWriter.SerializeForTest(BootstrapConfiguration.From(ValidForm())));
+        using var schema = JsonDocument.Parse(File.ReadAllText(FindRepositoryFile(
+            "bootstrap",
+            "config.schema.json")));
+
+        AssertOnlyDeclaredProperties(configuration.RootElement, schema.RootElement);
     }
 
     [Fact]
@@ -81,21 +94,17 @@ public sealed class BootstrapConfigWriterTests : IDisposable
     }
 
     [Fact]
-    public async Task WriteAsync_RejectsCredentialLikeContentBeforeReplacingExistingFile()
+    public async Task WriteAsync_DoesNotGuessWhetherAConfigurationNameResemblesCredentialMaterial()
     {
         Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
-        var target = Path.Combine(root, "bootstrap", "config.json");
-        await File.WriteAllTextAsync(target, "preserve-me");
         var form = ValidForm();
         form.PurviewEnabled = true;
-        form.PurviewSensitiveInformationType = "Bearer eyJaaaaaaaaaaa.bbbbbbbbbbb.cccccccc";
+        form.PurviewSensitiveInformationType = "Bearer Classification Name";
 
-        var action = () => NewWriter().WriteAsync(form);
+        var result = await NewWriter().WriteAsync(form);
 
-        await action.Should().ThrowAsync<ValidationException>();
-        (await File.ReadAllTextAsync(target)).Should().Be("preserve-me");
-        Directory.GetFiles(Path.Combine(root, "bootstrap"), "*.tmp")
-            .Should().BeEmpty();
+        result.Configuration.Purview.SensitiveInformationType.Should().Be(
+            "Bearer Classification Name");
     }
 
     [Fact]
@@ -135,6 +144,38 @@ public sealed class BootstrapConfigWriterTests : IDisposable
     private BootstrapConfigWriter NewWriter() => new(
         new RepositoryLayout(root),
         new AtomicFileWriter());
+
+    private static void AssertOnlyDeclaredProperties(JsonElement value, JsonElement schema)
+    {
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        schema.TryGetProperty("properties", out var declaredProperties).Should().BeTrue();
+        foreach (var property in value.EnumerateObject())
+        {
+            declaredProperties.TryGetProperty(property.Name, out var propertySchema)
+                .Should().BeTrue($"'{property.Name}' must be declared by bootstrap/config.schema.json");
+            AssertOnlyDeclaredProperties(property.Value, propertySchema);
+        }
+    }
+
+    private static string FindRepositoryFile(params string[] segments)
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
+             directory is not null;
+             directory = directory.Parent)
+        {
+            var candidate = Path.Combine([directory.FullName, .. segments]);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        throw new FileNotFoundException("Could not locate a repository file for the schema contract test.");
+    }
 
     private static SetupConfigurationForm ValidForm() => new()
     {

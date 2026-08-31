@@ -40,16 +40,6 @@ internal sealed class BootstrapConfigWriter(
             throw new ValidationException(message);
         }
 
-        foreach (var value in EnumeratePublicValues(form))
-        {
-            if (!SafePublicValuePolicy.IsAllowed(value))
-            {
-                throw new ValidationException(
-                    "Bootstrap configuration contains content that resembles credential material. " +
-                    "Use only public deployment names and identifiers.");
-            }
-        }
-
         var configuration = BootstrapConfiguration.From(form);
         var json = JsonSerializer.Serialize(configuration, SerializerOptions) + Environment.NewLine;
         var targetPath = Path.GetFullPath(repository.BootstrapConfigPath);
@@ -69,28 +59,6 @@ internal sealed class BootstrapConfigWriter(
 
     internal static string SerializeForTest(BootstrapConfiguration configuration) =>
         JsonSerializer.Serialize(configuration, SerializerOptions);
-
-    private static IEnumerable<string?> EnumeratePublicValues(SetupConfigurationForm form)
-    {
-        yield return form.Environment;
-        yield return form.Location;
-        yield return form.ProjectName;
-        yield return form.ResourceGroupName;
-        yield return form.AlertEmail;
-        yield return form.SeedBlueprintName;
-        // The form renders reviewed manager application IDs one per line. They
-        // have already passed strict GUID parsing in SetupConfigurationForm, so
-        // scan their canonical values instead of the newline-delimited UI text.
-        foreach (var applicationId in form.GetReviewedManagerApplicationIds())
-        {
-            yield return applicationId.ToString("D");
-        }
-        yield return form.PromptShieldSkuName;
-        yield return form.PurviewSensitiveInformationType;
-        yield return form.PurviewCollectionPolicyName;
-        yield return form.PurviewDlpPolicyName;
-        yield return form.PurviewDlpRuleName;
-    }
 
     private static async Task EnsureExistingConfigurationMatchesAsync(
         string targetPath,
