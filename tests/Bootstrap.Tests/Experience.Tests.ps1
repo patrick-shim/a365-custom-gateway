@@ -1277,6 +1277,11 @@ Describe 'Azure What-If result boundary' {
                 '/subscriptions/11111111-1111-4111-8111-111111111111/resourcegroups/rg-safe-dev/providers/microsoft.operationalinsights/workspaces/log-safe-dev'
             )
             [Array]::Sort($script:foundationIgnoreResourceIds, [StringComparer]::Ordinal)
+            [string[]]$script:foundationGovernanceNsgIds = @(
+                '/subscriptions/11111111-1111-4111-8111-111111111111/resourcegroups/rg-safe-dev/providers/microsoft.network/networksecuritygroups/vnet-safe-dev-snet-container-apps-nsg-koreacentral'
+                '/subscriptions/11111111-1111-4111-8111-111111111111/resourcegroups/rg-safe-dev/providers/microsoft.network/networksecuritygroups/vnet-safe-dev-snet-private-endpoints-nsg-koreacentral'
+            )
+            [Array]::Sort($script:foundationGovernanceNsgIds, [StringComparer]::Ordinal)
             function Set-TestRecoveryWhatIf {
                 param([Parameter(Mandatory)][string[]]$IgnoreIds)
                 [object[]]$changes = @(
@@ -1300,9 +1305,14 @@ Describe 'Azure What-If result boundary' {
                     status = 'Succeeded'
                     error = $null
                     properties = [pscustomobject]@{
-                        changes = @($ResourceIds | ForEach-Object {
-                            [pscustomobject]@{ changeType = 'Ignore'; resourceId = $_ }
-                        })
+                        changes = @(
+                            $ResourceIds | ForEach-Object {
+                                [pscustomobject]@{ changeType = 'Deploy'; resourceId = $_ }
+                            }
+                            $script:foundationGovernanceNsgIds | ForEach-Object {
+                                [pscustomobject]@{ changeType = 'Ignore'; resourceId = $_ }
+                            }
+                        )
                     }
                 }
             }
@@ -1391,11 +1401,15 @@ Describe 'Azure What-If result boundary' {
                 -State $script:recoveryState
 
             $result.applyReady | Should -BeTrue
-            $result.changeCounts.Ignore | Should -Be 8
+            $result.changeCounts.Deploy | Should -Be 8
+            $result.changeCounts.Ignore | Should -Be 2
             $result.recoveryIgnoreBoundary.boundaryKind | Should -BeExactly 'PreInertSourceCorrectionFoundationWhatIf'
             $result.recoveryIgnoreBoundary.deploymentSourceFingerprint | Should -BeExactly $script:whatIfSourceFingerprint
             $result.recoveryIgnoreBoundary.executionSourceFingerprint | Should -BeExactly $executionSourceFingerprint
-            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 8
+            $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 2
+            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 10
+            $result.recoveryIgnoreBoundary.foundationDeployResourceIds.Count | Should -Be 8
+            $result.recoveryIgnoreBoundary.externalGovernanceIgnoreResourceIds.Count | Should -Be 2
             $result.recoveryIgnoreBoundary.inertDeployment.count | Should -Be 0
             @($result.recoveryIgnoreBoundary.targetContainerApps.Values | Where-Object { $_ -ne 0 }).Count |
                 Should -Be 0

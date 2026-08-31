@@ -28,6 +28,11 @@ $script:BootstrapPreInertCorrectionChangedPaths = @(
     'bootstrap/modules/Experience.psm1',
     'infrastructure/bicep/main.bicep'
 )
+$script:BootstrapPreInertCorrectionAmendableSourceFingerprint = 'sha256:4bf5bd7cc1feb19f40f1c5f2185050893c896047272fe6418f5636d37658796a'
+$script:BootstrapPreInertCorrectionAmendmentChangedPaths = @(
+    'bootstrap/modules/Common.psm1',
+    'bootstrap/modules/Experience.psm1'
+)
 $script:BootstrapPreInertCorrectionBicepPath = 'infrastructure/bicep/main.bicep'
 $script:BootstrapPreInertCorrectionOriginalBicepLine = '  name: contentSafety!.outputs.accountName'
 $script:BootstrapPreInertCorrectionCorrectedBicepLine = '  name: names.contentSafety'
@@ -1293,6 +1298,57 @@ function Get-BootstrapPreInertSourceCorrectionDelta {
     return @($delta | Sort-Object { [string]$_.path })
 }
 
+function Get-BootstrapPreInertSourceCorrectionAmendmentDelta {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$PriorCorrectedRoot,
+        [Parameter(Mandatory)][string]$AmendedRoot
+    )
+
+    $prior = [ordered]@{}
+    foreach ($entry in @(Get-BootstrapSourceManifest -Root $PriorCorrectedRoot)) {
+        $path = [string]$entry.path
+        $hash = [string]$entry.sha256
+        if ([string]::IsNullOrWhiteSpace($path) -or $hash -cnotmatch '^[0-9a-f]{64}$' -or $prior.Contains($path)) {
+            throw 'The prior corrected source manifest is malformed or contains duplicate paths.'
+        }
+        $prior[$path] = $hash
+    }
+    $amended = [ordered]@{}
+    foreach ($entry in @(Get-BootstrapSourceManifest -Root $AmendedRoot)) {
+        $path = [string]$entry.path
+        $hash = [string]$entry.sha256
+        if ([string]::IsNullOrWhiteSpace($path) -or $hash -cnotmatch '^[0-9a-f]{64}$' -or $amended.Contains($path)) {
+            throw 'The amended corrected source manifest is malformed or contains duplicate paths.'
+        }
+        $amended[$path] = $hash
+    }
+
+    [string[]]$allPaths = @($prior.Keys + $amended.Keys | Sort-Object -Unique)
+    $delta = [Collections.Generic.List[object]]::new()
+    foreach ($path in $allPaths) {
+        if (-not $prior.Contains($path) -or -not $amended.Contains($path)) {
+            throw 'The pre-inert source amendment may not add or remove deployment source files.'
+        }
+        if ([string]$prior[$path] -cne [string]$amended[$path]) {
+            if ($script:BootstrapPreInertCorrectionAmendmentChangedPaths -cnotcontains $path) {
+                throw "The pre-inert source amendment changed non-allowlisted deployment source '$path'."
+            }
+            $delta.Add([ordered]@{
+                path = $path
+                priorSha256 = [string]$prior[$path]
+                amendedSha256 = [string]$amended[$path]
+            })
+        }
+    }
+    [string[]]$changedPaths = @($delta | ForEach-Object { [string]$_.path } | Sort-Object -CaseSensitive)
+    [string[]]$expectedPaths = @($script:BootstrapPreInertCorrectionAmendmentChangedPaths | Sort-Object -CaseSensitive)
+    if (($changedPaths -join "`n") -cne ($expectedPaths -join "`n")) {
+        throw 'The pre-inert source amendment must change exactly Common.psm1 and Experience.psm1.'
+    }
+    return @($delta | Sort-Object { [string]$_.path })
+}
+
 function Get-BootstrapPreInertSourceCorrectionBoundaryFingerprint {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$State,
@@ -1399,10 +1455,61 @@ function Assert-BootstrapPreInertSourceCorrectionCreationBoundary {
     }
 }
 
+function Assert-BootstrapPreInertSourceCorrectionAmendmentBoundary {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Plan
+    )
+
+    if ($State.Contains('acceptedPlan') -or
+        $State.Contains('databaseRecoveryPlan') -or
+        $State.Contains('manualDatabaseRepairPlan') -or
+        [string]$Plan.status -cne 'Accepted' -or
+        [int]$Plan.schemaVersion -ne 1 -or
+        [int]$Plan.generation -ne 1 -or
+        [string]$Plan.correctedExecutionSourceFingerprint -cne $script:BootstrapPreInertCorrectionAmendableSourceFingerprint) {
+        throw 'Pre-inert source amendment is allowed only for the exact accepted failed-Plan correction generation.'
+    }
+
+    [string[]]$actualSteps = @($State.steps.Keys | ForEach-Object { [string]$_ })
+    [Array]::Sort($actualSteps, [StringComparer]::Ordinal)
+    [string[]]$expectedSteps = @($script:BootstrapPreInertCorrectionStepNames)
+    [Array]::Sort($expectedSteps, [StringComparer]::Ordinal)
+    if (($actualSteps -join "`n") -cne ($expectedSteps -join "`n") -or
+        $State.outputs -isnot [System.Collections.IDictionary] -or
+        $State.outputs.Count -ne 0) {
+        throw 'Pre-inert source amendment requires exactly failed Plan state at steps 1-7 with no deployment outputs.'
+    }
+    for ($index = 0; $index -lt 6; $index++) {
+        $step = $State.steps[[string]$script:BootstrapPreInertCorrectionStepNames[$index]]
+        if ($step -isnot [System.Collections.IDictionary] -or
+            [string]$step.status -cne 'Completed' -or
+            [string]$step.sourceFingerprint -cne [string]$Plan.originalDeploymentSourceFingerprint -or
+            -not $step.Contains('evidence') -or $null -eq $step.evidence) {
+            throw 'Pre-inert source amendment requires unchanged original-source evidence for steps 1-6.'
+        }
+    }
+    $inertStep = $State.steps['Inert identity deployment']
+    if ($inertStep -isnot [System.Collections.IDictionary] -or
+        [string]$inertStep.status -cne 'Failed' -or
+        [string]$inertStep.sourceFingerprint -cne [string]$Plan.originalDeploymentSourceFingerprint -or
+        $inertStep.Contains('evidence')) {
+        throw 'Pre-inert source amendment requires the unchanged original-source step-7 failure without evidence.'
+    }
+    if ($State.source -isnot [System.Collections.IDictionary] -or
+        $State.source.created -isnot [System.Collections.IDictionary] -or
+        $State.source.lastWritten -isnot [System.Collections.IDictionary] -or
+        [string]$State.source.created.bootstrapSourceFingerprint -cne [string]$Plan.originalDeploymentSourceFingerprint -or
+        [string]$State.source.lastWritten.bootstrapSourceFingerprint -cne [string]$Plan.correctedExecutionSourceFingerprint) {
+        throw 'Pre-inert source amendment requires the exact original-to-corrected source provenance pair.'
+    }
+    return $true
+}
+
 function Get-BootstrapPreInertSourceCorrectionPlanCore {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Plan)
 
-    return [ordered]@{
+    $core = [ordered]@{
         schemaVersion = [int]$Plan.schemaVersion
         correctionKind = [string]$Plan.correctionKind
         generation = [int]$Plan.generation
@@ -1417,6 +1524,13 @@ function Get-BootstrapPreInertSourceCorrectionPlanCore {
         sourceDelta = ConvertTo-BootstrapCanonicalValue -Value $Plan.sourceDelta
         semanticCorrection = ConvertTo-BootstrapCanonicalValue -Value $Plan.semanticCorrection
     }
+    if ([int]$Plan.schemaVersion -eq 2 -and [int]$Plan.generation -eq 2) {
+        $core['supersededCorrectionPlanFingerprint'] = [string]$Plan.supersededCorrectionPlanFingerprint
+        $core['supersededCorrectionPlan'] = ConvertTo-BootstrapCanonicalValue -Value $Plan.supersededCorrectionPlan
+        $core['amendmentChangedPaths'] = @($Plan.amendmentChangedPaths)
+        $core['amendmentSourceDelta'] = ConvertTo-BootstrapCanonicalValue -Value $Plan.amendmentSourceDelta
+    }
+    return $core
 }
 
 function Assert-BootstrapPendingPreInertSourceCorrectionBoundary {

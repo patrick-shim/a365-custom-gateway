@@ -2131,7 +2131,7 @@ function New-GatewayPreInertFoundationWhatIfBoundary {
         }
     }
 
-    [string[]]$expectedResourceIds = @(
+    [string[]]$expectedDeployResourceIds = @(
         $resourceGroupId
         $expectedEnvironmentId
         $registryId
@@ -2141,22 +2141,41 @@ function New-GatewayPreInertFoundationWhatIfBoundary {
         $expectedVirtualNetworkId
         "$providerBase/microsoft.operationalinsights/workspaces/$expectedLogAnalyticsName"
     )
-    [Array]::Sort($expectedResourceIds, [StringComparer]::Ordinal)
-    if ($Changes.Count -ne $expectedResourceIds.Count -or
-        @($Changes | Where-Object { [string]$_.changeType -cne 'Ignore' }).Count -ne 0) {
-        throw 'The pending correction What-If must contain exactly the eight reviewed foundation Ignore resources.'
-    }
-    [string[]]$observedResourceIds = @($Changes | ForEach-Object {
+    [Array]::Sort($expectedDeployResourceIds, [StringComparer]::Ordinal)
+    [string[]]$expectedGovernanceIgnoreResourceIds = @(
+        "$providerBase/microsoft.network/networksecuritygroups/$expectedVirtualNetworkName-snet-container-apps-nsg-$($Config.location)"
+        "$providerBase/microsoft.network/networksecuritygroups/$expectedVirtualNetworkName-snet-private-endpoints-nsg-$($Config.location)"
+    )
+    [Array]::Sort($expectedGovernanceIgnoreResourceIds, [StringComparer]::Ordinal)
+
+    [string[]]$observedDeployResourceIds = @($Changes | Where-Object {
+        [string]$_.changeType -ceq 'Deploy'
+    } | ForEach-Object {
+        if (-not (Test-GatewayRecoveryWhatIfResourceIdLexicalBoundary `
+            -ResourceId ([string]$_.resourceId) -Config $Config)) {
+            throw 'The pending correction What-If contains a malformed Deploy resource ID.'
+        }
+        ([string]$_.resourceId).ToLowerInvariant()
+    })
+    [Array]::Sort($observedDeployResourceIds, [StringComparer]::Ordinal)
+    [string[]]$observedIgnoreResourceIds = @($Changes | Where-Object {
+        [string]$_.changeType -ceq 'Ignore'
+    } | ForEach-Object {
         if (-not (Test-GatewayRecoveryWhatIfResourceIdLexicalBoundary `
             -ResourceId ([string]$_.resourceId) -Config $Config)) {
             throw 'The pending correction What-If contains a malformed Ignore resource ID.'
         }
         ([string]$_.resourceId).ToLowerInvariant()
     })
-    [Array]::Sort($observedResourceIds, [StringComparer]::Ordinal)
-    if (@($observedResourceIds | Sort-Object -Unique -CaseSensitive).Count -ne $observedResourceIds.Count -or
-        ($observedResourceIds -join "`n") -cne ($expectedResourceIds -join "`n")) {
-        throw 'The pending correction What-If does not exactly match the eight-resource foundation graph.'
+    [Array]::Sort($observedIgnoreResourceIds, [StringComparer]::Ordinal)
+    if (@($Changes | Where-Object { [string]$_.changeType -cnotin @('Deploy', 'Ignore') }).Count -ne 0 -or
+        @($observedDeployResourceIds | Sort-Object -Unique -CaseSensitive).Count -ne $observedDeployResourceIds.Count -or
+        @($observedIgnoreResourceIds | Sort-Object -Unique -CaseSensitive).Count -ne $observedIgnoreResourceIds.Count -or
+        ($observedDeployResourceIds -join "`n") -cne ($expectedDeployResourceIds -join "`n") -or
+        ($observedIgnoreResourceIds.Count -ne 0 -and
+            ($observedIgnoreResourceIds -join "`n") -cne ($expectedGovernanceIgnoreResourceIds -join "`n")) -or
+        $Changes.Count -ne $observedDeployResourceIds.Count + $observedIgnoreResourceIds.Count) {
+        throw 'The pending correction What-If does not exactly match the reviewed foundation Deploy graph and optional governance NSG Ignore extension.'
     }
 
     $inertDeploymentName = "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)"
@@ -2188,7 +2207,7 @@ function New-GatewayPreInertFoundationWhatIfBoundary {
     }
 
     $boundary = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         boundaryKind = 'PreInertSourceCorrectionFoundationWhatIf'
         correctionKind = [string]$SourceCorrectionBoundary.correctionKind
         correctionPlanFingerprint = [string]$SourceCorrectionBoundary.correctionPlanFingerprint
@@ -2200,7 +2219,9 @@ function New-GatewayPreInertFoundationWhatIfBoundary {
         foundationEvidenceFingerprint = Get-BootstrapObjectFingerprint -InputObject $Foundation
         inertDeployment = [ordered]@{ name = $inertDeploymentName; count = $deploymentCount }
         targetContainerApps = $targetContainerApps
-        resourceIds = $expectedResourceIds
+        resourceIds = @($observedDeployResourceIds + $observedIgnoreResourceIds | Sort-Object -CaseSensitive)
+        foundationDeployResourceIds = $expectedDeployResourceIds
+        externalGovernanceIgnoreResourceIds = $observedIgnoreResourceIds
     }
     $boundary['boundaryFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $boundary
     return $boundary

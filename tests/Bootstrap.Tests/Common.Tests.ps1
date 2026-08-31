@@ -1427,6 +1427,7 @@ Describe 'Bounded pre-inert Prompt Shields source correction' {
 
                 $originalRoot = Join-Path $BasePath 'original'
                 $correctedRoot = Join-Path $BasePath 'corrected'
+                $amendedRoot = Join-Path $BasePath 'amended'
                 $changedPaths = @(
                     'bootstrap/bootstrap.ps1',
                     'bootstrap/modules/Azure.psm1',
@@ -1436,7 +1437,7 @@ Describe 'Bounded pre-inert Prompt Shields source correction' {
                     'infrastructure/bicep/main.bicep'
                 )
                 foreach ($path in $changedPaths) {
-                    foreach ($root in @($originalRoot, $correctedRoot)) {
+                    foreach ($root in @($originalRoot, $correctedRoot, $amendedRoot)) {
                         $target = Join-Path $root $path
                         New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
                     }
@@ -1451,15 +1452,28 @@ Describe 'Bounded pre-inert Prompt Shields source correction' {
                             '  name: names.contentSafety',
                             '}'
                         ) -join "`n" | Set-Content -LiteralPath (Join-Path $correctedRoot $path) -Encoding utf8NoBOM -NoNewline
+                        @(
+                            'resource deployedContentSafety existing = {',
+                            '  name: names.contentSafety',
+                            '}'
+                        ) -join "`n" | Set-Content -LiteralPath (Join-Path $amendedRoot $path) -Encoding utf8NoBOM -NoNewline
                     }
                     else {
                         "original-$path" | Set-Content -LiteralPath (Join-Path $originalRoot $path) -Encoding utf8NoBOM -NoNewline
                         "corrected-$path" | Set-Content -LiteralPath (Join-Path $correctedRoot $path) -Encoding utf8NoBOM -NoNewline
+                        $amendedContent = if ($path -cin @(
+                            'bootstrap/modules/Common.psm1',
+                            'bootstrap/modules/Experience.psm1')) {
+                            "amended-$path"
+                        }
+                        else { "corrected-$path" }
+                        $amendedContent | Set-Content -LiteralPath (Join-Path $amendedRoot $path) -Encoding utf8NoBOM -NoNewline
                     }
                 }
                 return [ordered]@{
                     originalRoot = $originalRoot
                     correctedRoot = $correctedRoot
+                    amendedRoot = $amendedRoot
                     changedPaths = $changedPaths
                 }
             }
@@ -1471,7 +1485,11 @@ Describe 'Bounded pre-inert Prompt Shields source correction' {
                 @(Get-BootstrapSourceManifest -Root $script:correctionRoots.originalRoot)
             $script:correctedSourceFingerprint = Get-BootstrapObjectFingerprint -InputObject `
                 @(Get-BootstrapSourceManifest -Root $script:correctionRoots.correctedRoot)
+            $script:amendedSourceFingerprint = Get-BootstrapObjectFingerprint -InputObject `
+                @(Get-BootstrapSourceManifest -Root $script:correctionRoots.amendedRoot)
             $script:currentSourceFingerprint = $script:correctedSourceFingerprint
+            $script:currentCorrectionRoot = $script:correctionRoots.correctedRoot
+            $script:BootstrapPreInertCorrectionAmendableSourceFingerprint = $script:correctedSourceFingerprint
             $script:configurationFingerprint = 'sha256:' + ('c' * 64)
             $script:ownershipId = '11111111-1111-4111-8111-111111111111'
             $script:originalPlanFingerprint = 'sha256:' + ('a' * 64)
@@ -1524,12 +1542,15 @@ Describe 'Bounded pre-inert Prompt Shields source correction' {
                 message = 'Bootstrap step failed.'
             }
 
-            Mock Get-RepositoryRoot { return $script:correctionRoots.correctedRoot }
+            Mock Get-RepositoryRoot { return $script:currentCorrectionRoot }
             Mock Get-BootstrapSourceFingerprint {
                 param([string]$Root = '')
                 if ([string]::IsNullOrWhiteSpace($Root)) { return $script:currentSourceFingerprint }
                 if ([IO.Path]::GetFullPath($Root) -ceq [IO.Path]::GetFullPath($script:correctionRoots.originalRoot)) {
                     return $script:originalSourceFingerprint
+                }
+                if ([IO.Path]::GetFullPath($Root) -ceq [IO.Path]::GetFullPath($script:correctionRoots.amendedRoot)) {
+                    return $script:amendedSourceFingerprint
                 }
                 return $script:correctedSourceFingerprint
             }
@@ -1541,6 +1562,7 @@ Describe 'Bounded pre-inert Prompt Shields source correction' {
             Mock Get-BootstrapPreInertSourceCorrectionSnapshotRoot {
                 param($State, $Plan, $Generation)
                 if ([string]$Generation -ceq 'Original') { return $script:correctionRoots.originalRoot }
+                if ([int]$Plan.generation -eq 2) { return $script:correctionRoots.amendedRoot }
                 return $script:correctionRoots.correctedRoot
             }
             Mock Save-BootstrapState { }
@@ -1571,6 +1593,40 @@ Describe 'Bounded pre-inert Prompt Shields source correction' {
                 -StatePath (Join-Path $TestDrive 'state.json')
             $second.planFingerprint | Should -BeExactly $plan.planFingerprint
             Should -Invoke Save-BootstrapState -Times 1 -Exactly
+        }
+
+        It 'amends the exact failed-Plan generation once and maps C back to original deployment source' {
+            $first = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-one.json')
+            $script:correctionState.Remove('acceptedPlan')
+            $script:correctionState.source.lastWritten.bootstrapSourceFingerprint = $script:correctedSourceFingerprint
+            $script:currentSourceFingerprint = $script:amendedSourceFingerprint
+            $script:currentCorrectionRoot = $script:correctionRoots.amendedRoot
+
+            $second = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-two.json')
+
+            $second.generation | Should -Be 2
+            $second.schemaVersion | Should -Be 2
+            $second.correctedExecutionSourceFingerprint | Should -BeExactly $script:amendedSourceFingerprint
+            $second.supersededCorrectionPlan.planFingerprint | Should -BeExactly $first.planFingerprint
+            @($second.amendmentChangedPaths) | Should -Be @(
+                'bootstrap/modules/Common.psm1',
+                'bootstrap/modules/Experience.psm1')
+            $script:correctionState.source.lastWritten.bootstrapSourceFingerprint = $script:amendedSourceFingerprint
+            Assert-BootstrapStateAllowsSourcePlan -State $script:correctionState | Should -BeTrue
+            Get-BootstrapEffectiveDeploymentSourceFingerprint `
+                -State $script:correctionState `
+                -ExecutionSourceFingerprint $script:amendedSourceFingerprint |
+                Should -BeExactly $script:originalSourceFingerprint
+
+            { $script:currentSourceFingerprint = 'sha256:' + ('f' * 64)
+                Set-BootstrapPreInertSourceCorrectionPlan `
+                    -State $script:correctionState `
+                    -StatePath (Join-Path $TestDrive 'generation-three.json') } |
+                Should -Throw '*does not authorize this source generation*'
         }
 
         It 'does not create a correction plan for ordinary source refresh before any durable evidence' {
