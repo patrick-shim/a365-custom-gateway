@@ -732,17 +732,11 @@ function Get-GatewayInertPartialEnvironmentContract {
             'KeyVault__VaultUri' = "https://kv-$($Config.projectName)-$($Config.environment).vault.azure.net/"
             'Agent365__TenantId' = [string]$Config.tenantId
             'Agent365__ObservabilityServerAddress' = $apiFqdn
-            'Agent365__GatewayApiApplicationClientId' = [string]$Identity.gatewayApiClientId
-            'Agent365__GatewayApiAudience' = [string]$Identity.gatewayApiTokenAudience
-            'Agent365__GatewayApiBaseUrl' = "https://$apiFqdn/"
-            'Agent365__CredentialKeyVaultUri' = "https://kv-$($Config.projectName)-$($Config.environment)-prov.vault.azure.net/"
             'Agent365__ProvisioningManagedIdentityPrincipalId' = ''
             'ProvisioningWorker__QueueName' = 'gateway-provisioning-v3'
             'ProvisioningWorker__MaxConcurrentCalls' = '5'
             'ProvisioningWorker__ProcessingEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProcessingEnabled']
             'ProvisioningWorker__ProvisioningExecutionEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProvisioningExecutionEnabled']
-            'Agent365__RegistryProvider' = 'Disabled'
-            'Agent365__DirectRegistryPreviewEnabled' = $booleanEnvironment.Worker['Agent365__DirectRegistryPreviewEnabled']
             'Purview__Enabled' = $booleanEnvironment.Worker['Purview__Enabled']
             'Purview__PolicyProvisioningEnabled' = $booleanEnvironment.Worker['Purview__PolicyProvisioningEnabled']
             'Purview__PolicyProvisioningOrganization' = [string]$Config.purview.policyProvisioningOrganization
@@ -782,7 +776,6 @@ function Get-GatewayInertPartialEnvironmentContract {
         'ServiceBus__FullyQualifiedNamespace' = $serviceBusNamespace
         'ServiceBus__QueueName' = 'gateway-provisioning-v3'
         'Provisioning__ExecutionEnabled' = $booleanEnvironment.Api['Provisioning__ExecutionEnabled']
-        'Provisioning__RequireExactAdmissionBinding' = $booleanEnvironment.Api['Provisioning__RequireExactAdmissionBinding']
         'Provisioning__AllowContinuousDevelopmentAccess' = $booleanEnvironment.Api['Provisioning__AllowContinuousDevelopmentAccess']
         'BlobStorage__ServiceUri' = "https://$storageName.blob.core.windows.net/"
         'BlobStorage__ContainerName' = 'a365-gateway-interactions'
@@ -795,7 +788,6 @@ function Get-GatewayInertPartialEnvironmentContract {
         'KeyVault__VaultUri' = "https://kv-$($Config.projectName)-$($Config.environment).vault.azure.net/"
         'Agent365__TenantId' = [string]$Config.tenantId
         'Agent365__DelegatedRegistry__Enabled' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__Enabled']
-        'Agent365__DelegatedRegistry__RequireExactActionBinding' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__RequireExactActionBinding']
         'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess']
         'Agent365__DelegatedRegistry__Scopes__0' = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All'
         'Agent365__DelegatedRegistry__Scopes__1' = 'https://graph.microsoft.com/AgentRegistration.Read.All'
@@ -865,7 +857,7 @@ function New-GatewayCoreEvidence {
         @('storageBlobPrivateEndpointId', 'storageBlobPrivateEndpointId'),
         @('storageBlobPrivateDnsZoneId', 'storageBlobPrivateDnsZoneId'),
         @('sqlServerFqdn', 'sqlServerFqdn'), @('serviceBusQueueName', 'serviceBusQueueName'), @('serviceBusQueueId', 'serviceBusQueueId'),
-        @('agent365RegistryProvider', 'registryProvider'), @('promptShieldEndpoint', 'promptShieldEndpoint'),
+        @('promptShieldEndpoint', 'promptShieldEndpoint'),
         @('promptShieldAccountId', 'promptShieldAccountId'), @('promptShieldAccountName', 'promptShieldAccountName'),
         @('databaseAttestationExpectedSchemaFingerprint', 'databaseAttestationExpectedSchemaFingerprint'),
         @('databaseAttestationApiPrincipalName', 'databaseAttestationApiPrincipalName'),
@@ -1155,17 +1147,9 @@ function Deploy-GatewayCore {
         preserveExistingApiSecrets = -not $Initial
         allowLegacySystemAssignedImagePull = $false
         workerProcessingEnabled = [bool]$EnableWorkerProcessing
-        enableLegacyWorkerCredentialKeyVaultSecretsOfficer = $false
         provisioningExecutionEnabled = [bool]$EnableProvisioning
         continuousDevelopmentProvisioningEnabled = [bool]$enablePreview
-        provisioningAdmissionExpiresAtUtc = ''
-        provisioningAuthorizedExternalAgentId = ''
-        provisioningAuthorizedRetryAgentId = ''
-        agent365RegistryProvider = if ($enablePreview) { 'DirectRegistryPreview' } else { 'Disabled' }
-        agent365DirectRegistryPreviewEnabled = [bool]$enablePreview
         agent365DelegatedRegistryEnabled = [bool]$enablePreview
-        agent365DelegatedRegistryActionExpiresAtUtc = ''
-        agent365DelegatedRegistryAuthorizedOperationId = ''
         agent365ManagerApplicationsPreflightConfirmed = [bool](-not $Initial -and $ManagerApplicationIds.Count -gt 0)
         agent365ManagerApplicationIds = @($canonicalManagerApplicationIds)
         purviewEnabled = [bool]$EnablePurview
@@ -1465,7 +1449,7 @@ function New-GatewayInertWhatIfRecoveryBoundary {
         [AllowNull()][System.Collections.IDictionary]$AdditionalTypeInventoryResourceIds
     )
     if ($Config.promptShield.enabled -eq $true) {
-        throw 'The exact 26-resource inert What-If recovery boundary does not include optional Prompt Shields resources.'
+        throw 'The exact 25-resource inert What-If recovery boundary does not include optional Prompt Shields resources.'
     }
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Inert What-If recovery source fingerprint'
@@ -1516,9 +1500,6 @@ function New-GatewayInertWhatIfRecoveryBoundary {
         bootstrapOwnershipId = $canonicalOwnershipId
         bootstrapSourceFingerprint = $SourceFingerprint
     }
-    $provisioningTags = [ordered]@{}
-    foreach ($entry in $baseTags.GetEnumerator()) { $provisioningTags[$entry.Key] = $entry.Value }
-    $provisioningTags.workload = 'provisioning-credentials'
     $privateEndpointTags = [ordered]@{}
     foreach ($entry in $baseTags.GetEnumerator()) { $privateEndpointTags[$entry.Key] = $entry.Value }
     $privateEndpointTags.workload = 'interaction-content'
@@ -1536,7 +1517,6 @@ function New-GatewayInertWhatIfRecoveryBoundary {
     $smartDetectorName = "Failure Anomalies - ai-$($Config.projectName)-$($Config.environment)"
     $smartDetectorId = "$providerPrefix/Microsoft.AlertsManagement/smartDetectorAlertRules/$smartDetectorName"
     $sharedVaultId = "$providerPrefix/Microsoft.KeyVault/vaults/kv-$($Config.projectName)-$($Config.environment)"
-    $provisioningVaultId = "$providerPrefix/Microsoft.KeyVault/vaults/kv-$($Config.projectName)-$($Config.environment)-prov"
     $storageId = "$providerPrefix/Microsoft.Storage/storageAccounts/$storageName"
     $privateEndpointName = "pe-$storageName-blob"
     $privateEndpointId = "$providerPrefix/Microsoft.Network/privateEndpoints/$privateEndpointName"
@@ -1577,7 +1557,6 @@ function New-GatewayInertWhatIfRecoveryBoundary {
         [ordered]@{ id = $appInsightsId; type = 'Microsoft.Insights/components'; name = "ai-$($Config.projectName)-$($Config.environment)"; apiVersion = '2020-02-02'; location = [string]$Config.location; tags = $baseTags },
         [ordered]@{ id = $smartDetectorId; type = 'Microsoft.AlertsManagement/smartDetectorAlertRules'; name = $smartDetectorName; apiVersion = '2021-04-01'; location = 'global'; tags = $baseTags },
         [ordered]@{ id = $sharedVaultId; type = 'Microsoft.KeyVault/vaults'; name = "kv-$($Config.projectName)-$($Config.environment)"; apiVersion = '2023-07-01'; location = [string]$Config.location; tags = $baseTags },
-        [ordered]@{ id = $provisioningVaultId; type = 'Microsoft.KeyVault/vaults'; name = "kv-$($Config.projectName)-$($Config.environment)-prov"; apiVersion = '2023-07-01'; location = [string]$Config.location; tags = $provisioningTags },
         [ordered]@{ id = $privateDnsZoneId; type = 'Microsoft.Network/privateDnsZones'; name = 'privatelink.blob.core.windows.net'; apiVersion = '2020-06-01'; location = 'global'; tags = ([ordered]@{}) },
         [ordered]@{ id = $privateDnsLinkId; type = 'Microsoft.Network/privateDnsZones/virtualNetworkLinks'; name = $privateDnsLinkName; apiVersion = '2020-06-01'; location = 'global'; tags = ([ordered]@{}) },
         [ordered]@{ id = $privateEndpointId; type = 'Microsoft.Network/privateEndpoints'; name = $privateEndpointName; apiVersion = '2023-11-01'; location = [string]$Config.location; tags = $privateEndpointTags },
@@ -1737,8 +1716,8 @@ function New-GatewayInertWhatIfRecoveryBoundary {
         throw 'The Storage private endpoint DNS group is not exactly bound to the Blob private DNS zone.'
     }
 
-    if ($descriptors.Count -ne 26 -or $resourcesById.Count -ne 26) {
-        throw 'The inert recovery graph is not the exact reviewed 26-resource What-If Ignore boundary.'
+    if ($descriptors.Count -ne 25 -or $resourcesById.Count -ne 25) {
+        throw 'The inert recovery graph is not the exact reviewed 25-resource What-If Ignore boundary.'
     }
     foreach ($typeGroup in @($descriptors | Group-Object -Property {
         [string](Get-GatewayArmObjectProperty -Object $_ -Name 'type')
@@ -2917,23 +2896,16 @@ function Get-GatewayAdminUiDeploymentEvidence {
 function Set-GatewayNetworkHardening {
     param([Parameter(Mandatory)]$Config)
     $sharedVault = "kv-$($Config.projectName)-$($Config.environment)"
-    $provisioningVault = "kv-$($Config.projectName)-$($Config.environment)-prov"
     Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @('keyvault', 'update', '--resource-group', [string]$Config.resourceGroupName, '--name', $sharedVault, '--public-network-access', 'Disabled', '--only-show-errors') | Out-Null
-    # Workflow v3 does not use the provisioning vault. Closing its public endpoint is
-    # safe even though it intentionally has no private endpoint.
-    Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @('keyvault', 'update', '--resource-group', [string]$Config.resourceGroupName, '--name', $provisioningVault, '--public-network-access', 'Disabled', '--only-show-errors') | Out-Null
-    foreach ($vault in @($sharedVault, $provisioningVault)) {
-        $actual = Invoke-AzTsv -Arguments @(
-            'keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName,
-            '--name', $vault, '--query', 'properties.publicNetworkAccess'
-        )
-        if ($actual -cne 'Disabled') {
-            throw "Key Vault network hardening was not independently read back as Disabled for the expected project vault category."
-        }
+    $actual = Invoke-AzTsv -Arguments @(
+        'keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName,
+        '--name', $sharedVault, '--query', 'properties.publicNetworkAccess'
+    )
+    if ($actual -cne 'Disabled') {
+        throw 'Shared Key Vault network hardening was not independently read back as Disabled.'
     }
     return [ordered]@{
         sharedKeyVault = $sharedVault
-        provisioningKeyVault = $provisioningVault
         publicNetworkAccess = 'Disabled'
         exactPostMutationReadback = $true
     }

@@ -1,5 +1,10 @@
 namespace Gateway.Contracts.Requests;
 
+/// <summary>
+/// A partial update of implemented registration defaults, idempotency lifetime,
+/// and ingress rate limits. Compatibility-only members remain in the wire shape;
+/// callers must omit them or send <see langword="null"/>.
+/// </summary>
 public record UpdateSystemConfigRequest(
     string? ProvisioningMode,
     string? DefaultObservabilityMode,

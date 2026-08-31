@@ -10,8 +10,7 @@ using Microsoft.Extensions.Options;
 namespace Gateway.Agent365;
 
 internal sealed class DefaultAzureObservabilityTokenProvider :
-    IAgent365ObservabilityTokenProvider,
-    IAgentIdentityTokenProvider
+    IAgent365ObservabilityTokenProvider
 {
     internal const string TokenExchangeAudience = "api://AzureADTokenExchange";
     internal const string TokenExchangeResourceId = "fb60f99c-7a34-4190-8149-302f77469936";
@@ -27,10 +26,11 @@ internal sealed class DefaultAzureObservabilityTokenProvider :
     private static readonly TokenRequestContext ManagedIdentityTokenRequest =
         new([TokenExchangeScope]);
 
-    private static readonly AgentIdentityResourceTokenRequest ObservabilityResource = new(
+    private static readonly ValidatedResourceTokenRequest ObservabilityResource = new(
         ObservabilityScope,
         [ObservabilityAudience, $"api://{ObservabilityAudience}"],
-        [ObservabilityRole]);
+        [ObservabilityRole],
+        "MissingOtelWriteRole");
 
     private static readonly TimeSpan RefreshBeforeExpiry = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan MinimumTokenLifetime = TimeSpan.FromMinutes(1);
@@ -79,22 +79,7 @@ internal sealed class DefaultAzureObservabilityTokenProvider :
             agentIdentityClientId,
             blueprintClientId,
             expectedTenantId,
-            ValidateResourceRequest(ObservabilityResource, "MissingOtelWriteRole"),
-            cancellationToken);
-    }
-
-    public ValueTask<AccessToken> GetResourceTokenAsync(
-        string agentIdentityClientId,
-        string blueprintClientId,
-        string expectedTenantId,
-        AgentIdentityResourceTokenRequest resource,
-        CancellationToken cancellationToken)
-    {
-        return GetResourceTokenCoreAsync(
-            agentIdentityClientId,
-            blueprintClientId,
-            expectedTenantId,
-            ValidateResourceRequest(resource, "MissingRequiredApplicationRole"),
+            ObservabilityResource,
             cancellationToken);
     }
 
@@ -582,60 +567,6 @@ internal sealed class DefaultAzureObservabilityTokenProvider :
             return null;
 
         return ParseRequiredGuid(value, errorCode);
-    }
-
-    private static ValidatedResourceTokenRequest ValidateResourceRequest(
-        AgentIdentityResourceTokenRequest? resource,
-        string missingRoleErrorCode)
-    {
-        if (resource is null)
-            throw new Agent365ObservabilityConfigurationException("MissingResourceTokenRequest");
-
-        var scope = ValidateResourceValue(
-            resource.ResourceScope,
-            "InvalidResourceScope",
-            maximumLength: 2048);
-        if (!scope.EndsWith("/.default", StringComparison.OrdinalIgnoreCase))
-            throw new Agent365ObservabilityConfigurationException("InvalidResourceScope");
-
-        var audiences = (resource.AllowedAudiences ?? [])
-            .Select(audience => ValidateResourceValue(
-                audience,
-                "InvalidResourceAudience",
-                maximumLength: 2048))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (audiences.Length == 0)
-            throw new Agent365ObservabilityConfigurationException("MissingResourceAudience");
-
-        var roles = (resource.RequiredApplicationRoles ?? [])
-            .Select(role => ValidateResourceValue(
-                role,
-                "InvalidRequiredApplicationRole",
-                maximumLength: 256))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-
-        return new ValidatedResourceTokenRequest(
-            scope,
-            audiences,
-            roles,
-            missingRoleErrorCode);
-    }
-
-    private static string ValidateResourceValue(
-        string? value,
-        string errorCode,
-        int maximumLength)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            throw new Agent365ObservabilityConfigurationException(errorCode);
-
-        var trimmed = value.Trim();
-        if (trimmed.Length > maximumLength || trimmed.Any(char.IsControl))
-            throw new Agent365ObservabilityConfigurationException(errorCode);
-
-        return trimmed;
     }
 
     private static bool IsTransient(HttpStatusCode statusCode)

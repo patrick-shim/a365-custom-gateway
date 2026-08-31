@@ -1,38 +1,12 @@
 namespace Gateway.Infrastructure.Persistence;
 
 /// <summary>
-/// Pure, testable guards for the clean-database bootstrap boundary.
-/// Provider reads are projected into a bounded schema snapshot before this
-/// contract is evaluated; no provider absence is inferred from exceptions.
+/// Pure guard for the exact runtime database-principal authority accepted by the
+/// database migrator. Provider reads are projected before this contract is
+/// evaluated; no provider absence is inferred from exceptions.
 /// </summary>
 public static class DatabaseBootstrapContract
 {
-    public static void AssertEmptyUserTableCount(int userTableCount)
-    {
-        if (userTableCount != 0)
-        {
-            throw new InvalidOperationException(
-                "Clean bootstrap requires exactly zero user tables before initialization; an existing database is never adopted.");
-        }
-    }
-
-    public static void AssertExactCurrentSchema(
-        DatabaseSchemaContractSnapshot expected,
-        DatabaseSchemaContractSnapshot actual)
-    {
-        ArgumentNullException.ThrowIfNull(expected);
-        ArgumentNullException.ThrowIfNull(actual);
-
-        if (!ExactSet(expected.Tables, actual.Tables) ||
-            !ExactSet(expected.Columns, actual.Columns) ||
-            !ExactSet(expected.Indexes, actual.Indexes) ||
-            actual.ProgrammableObjectCount != 0)
-        {
-            throw new InvalidOperationException(
-                "GatewayDb does not exactly match the reviewed current EF table, column, and index contract, or contains an unreviewed programmable object.");
-        }
-    }
-
     public static void AssertRuntimePrincipalAuthority(
         IReadOnlyCollection<string> observedRoles,
         IReadOnlyCollection<string> expectedRoles,
@@ -66,9 +40,3 @@ public static class DatabaseBootstrapContract
                expectedValues.SequenceEqual(actualValues, StringComparer.Ordinal);
     }
 }
-
-public sealed record DatabaseSchemaContractSnapshot(
-    IReadOnlyCollection<string> Tables,
-    IReadOnlyCollection<string> Columns,
-    IReadOnlyCollection<string> Indexes,
-    int ProgrammableObjectCount);

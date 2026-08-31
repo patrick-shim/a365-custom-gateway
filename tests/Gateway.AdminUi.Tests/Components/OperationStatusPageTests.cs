@@ -92,7 +92,7 @@ public sealed class OperationStatusPageTests : BunitContext
     }
 
     [Fact]
-    public void CurrentWorkflow_GroupsVerifiedSubstepsIntoThreeProductPhases()
+    public void CurrentWorkflow_GroupsVerifiedStepsIntoThreeFunctionalAreas()
     {
         var operationId = Guid.NewGuid();
         var agentId = Guid.NewGuid();

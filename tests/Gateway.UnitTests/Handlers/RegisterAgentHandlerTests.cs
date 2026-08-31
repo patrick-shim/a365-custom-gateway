@@ -443,6 +443,35 @@ public class RegisterAgentHandlerTests
     }
 
     [Fact]
+    public async Task Handle_ShouldRegisterWithoutCallingPurviewDependencies_WhenPurviewIsOff()
+    {
+        AgentRegistration? createdAgent = null;
+        _purviewPolicyClient.IsEnabled.Returns(false);
+        _purviewPolicyProvisioningClient.IsEnabled.Returns(false);
+        _purviewPolicyClient.ClearReceivedCalls();
+        _purviewPolicyProfileRepository.ClearReceivedCalls();
+        _purviewPolicyProvisioningClient.ClearReceivedCalls();
+        _agentRepository.AddAsync(
+                Arg.Do<AgentRegistration>(agent => createdAgent = agent),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+        var command = CreateValidCommand() with
+        {
+            Features = new AgentFeaturesDto("Agent365", false, null)
+        };
+
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        result.Should().NotBeNull();
+        createdAgent.Should().NotBeNull();
+        createdAgent!.FeatureConfiguration.PurviewEnabled.Should().BeFalse();
+        createdAgent.PurviewPolicyProfileId.Should().BeNull();
+        _purviewPolicyClient.ReceivedCalls().Should().BeEmpty();
+        _purviewPolicyProfileRepository.ReceivedCalls().Should().BeEmpty();
+        _purviewPolicyProvisioningClient.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Handle_ShouldRejectPurviewBeforeCreatingAgent_WhenAdapterIsDisabled()
     {
         _purviewPolicyClient.IsEnabled.Returns(false);

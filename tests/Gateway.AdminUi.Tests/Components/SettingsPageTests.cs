@@ -36,7 +36,6 @@ public sealed class SettingsPageTests : BunitContext
             TaskCreationOptions.RunContinuationsAsynchronously);
         _api.UpdateSystemConfigAsync(
                 Arg.Any<UpdateSystemConfigRequest>(),
-                Arg.Any<string?>(),
                 Arg.Any<CancellationToken>())
             .Returns(completion.Task);
         var cut = Render<Settings>();
@@ -50,16 +49,19 @@ public sealed class SettingsPageTests : BunitContext
         {
             _api.Received(1).UpdateSystemConfigAsync(
                 Arg.Is<UpdateSystemConfigRequest>(request =>
-                    request.ProvisioningMode == config.ProvisioningMode &&
+                    request.ProvisioningMode == null &&
                     request.RateLimitGlobal == config.RateLimitGlobal &&
                     request.DefaultObservabilityMode == "Agent365" &&
                     request.DefaultAgent365ObservabilityEnabled == true &&
                     request.DefaultAzureMonitorExportEnabled == false &&
                     request.ReconciliationEnabled == null &&
                     request.ReconciliationIntervalHours == null &&
+                    request.RetentionDaysActivityReceipts == null &&
+                    request.RetentionDaysAuditEvents == null &&
+                    request.RetentionDaysOutboxMessages == null &&
+                    request.StuckTransitionTimeoutDays == null &&
                     request.UseGraphAgentRegistration == null &&
                     request.UseCliProvisioningFallback == null),
-                Arg.Any<string?>(),
                 Arg.Any<CancellationToken>());
             cut.Markup.Should().Contain("Working…");
         });
@@ -69,7 +71,6 @@ public sealed class SettingsPageTests : BunitContext
 
         _ = _api.Received(1).UpdateSystemConfigAsync(
             Arg.Any<UpdateSystemConfigRequest>(),
-            Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
 
         completion.SetResult(config);
@@ -139,7 +140,6 @@ public sealed class SettingsPageTests : BunitContext
         _api.GetSystemConfigAsync(Arg.Any<CancellationToken>()).Returns(config);
         _api.UpdateSystemConfigAsync(
                 Arg.Any<UpdateSystemConfigRequest>(),
-                Arg.Any<string?>(),
                 Arg.Any<CancellationToken>())
             .Returns(CreateConfig(expectedLegacyMode, agent365Enabled, azureMonitorEnabled));
         var cut = Render<Settings>();
@@ -155,21 +155,25 @@ public sealed class SettingsPageTests : BunitContext
                 request.DefaultObservabilityMode == expectedLegacyMode &&
                 request.DefaultAgent365ObservabilityEnabled == agent365Enabled &&
                 request.DefaultAzureMonitorExportEnabled == azureMonitorEnabled),
-            Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public void ProvisioningExecution_IsDescribedAsDeploymentGatedWithoutCliFallbackControls()
+    public void CompatibilityOnlySettings_AreNotEditable()
     {
         _api.GetSystemConfigAsync(Arg.Any<CancellationToken>()).Returns(CreateConfig());
 
         var cut = Render<Settings>();
         cut.WaitForElement("form");
 
-        cut.Markup.Should().Contain("deployment-gated");
-        cut.Markup.Should().Contain("There is no unattended CLI fallback");
-        cut.Markup.Should().Contain("reconciliation is not implemented");
+        cut.Markup.Should().Contain("do not have a cleanup worker and are not editable");
+        cut.Markup.Should().Contain("Registration defaults");
+        cut.Markup.Should().NotContain("Provisioning mode");
+        cut.Markup.Should().NotContain("id=\"provisioning-mode\"");
+        cut.Markup.Should().NotContain("id=\"retention-receipts\"");
+        cut.Markup.Should().NotContain("id=\"retention-audit\"");
+        cut.Markup.Should().NotContain("id=\"retention-outbox\"");
+        cut.Markup.Should().NotContain("id=\"transition-timeout\"");
         cut.Markup.Should().NotContain("id=\"reconciliation-enabled\"");
         cut.Markup.Should().NotContain("id=\"reconciliation-hours\"");
         cut.Markup.Should().NotContain("id=\"graph-registration\"");

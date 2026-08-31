@@ -393,8 +393,8 @@ function Invoke-GatewayPlanWorkflow {
         }) -OutputFormat Json
         $registryFlag = if ($descriptor.features.developmentRegistryPreview) { 'enabled for acknowledged development' } else { 'closed' }
         $shieldFlag = if ($descriptor.features.promptShields) { "enabled ($($descriptor.features.promptShieldSku))" } else { 'disabled' }
-        $purviewFlag = if ($descriptor.features.purview) { 'enabled' } else { 'disabled' }
-        Write-GatewayExperienceEvent -Type Info -Message "Features: Registry beta $registryFlag; Content Safety shields $shieldFlag; Purview $purviewFlag." -Data ([ordered]@{
+        $purviewFlag = if ($descriptor.features.purview) { 'policy authoring requested; runtime disabled' } else { 'not requested' }
+        Write-GatewayExperienceEvent -Type Info -Message "Features: Registry preview $registryFlag; Content Safety shields $shieldFlag; Purview $purviewFlag." -Data ([ordered]@{
             step = $planEventBase.step; index = $planEventBase.index; total = $planEventBase.total
             category = 'features'; features = $descriptor.features
         }) -OutputFormat Json
@@ -481,7 +481,7 @@ function Invoke-GatewayPlanWorkflow {
             }) -OutputFormat Json
         }
 
-        $registryBoundary = if ($descriptor.features.developmentRegistryPreview) { 'Registry beta development opt-in is enabled' } else { 'Registry beta creation remains closed' }
+        $registryBoundary = if ($descriptor.features.developmentRegistryPreview) { 'Registry preview development opt-in is enabled' } else { 'Registry preview creation remains closed' }
         Write-GatewayExperienceEvent -Type Warning -Message "Boundaries: Azure charges may apply; $registryBoundary; Entra, Agent 365, and optional Purview require separate administrator handoffs." -Data ([ordered]@{
             step = $planEventBase.step; index = $planEventBase.index; total = $planEventBase.total
             category = 'boundaries'; cost = $descriptor.costClasses; preview = [string]$descriptor.previewWarning
@@ -724,7 +724,7 @@ try {
             [string]$state.manualDatabaseRepairPlan.status -ceq 'Completed') {
             Assert-BootstrapAcceptedManualDatabaseRepairPlan `
                 -State $state -PlanFingerprint ([string]$state.manualDatabaseRepairPlan.planFingerprint) -AllowCompleted | Out-Null
-            Write-GatewayExperienceEvent -Type Result -Message 'The one-shot manual database repair is already complete. The two automatic recovery failures remain preserved; run gateway continue-bootstrap.' -Data ([ordered]@{
+            Write-GatewayExperienceEvent -Type Result -Message 'The one-shot manual database repair is already complete. The two automatic recovery failures remain preserved; run gateway resume.' -Data ([ordered]@{
                 step = 'Gateway database'; index = 11; total = $stepNames.Count
                 manualDatabaseRepairPlanFingerprint = [string]$state.manualDatabaseRepairPlan.planFingerprint
                 repaired = $true; runOnce = $true
@@ -834,7 +834,7 @@ try {
         }
         $null = Complete-BootstrapManualDatabaseRepairPlan `
             -State $state -StatePath $statePath -PlanFingerprint $planFingerprint -DatabaseEvidence $database
-        Write-GatewayExperienceEvent -Type Result -Message 'Manual database repair completed through one new one-shot Job. The original and both recovery Jobs remain preserved. Run gateway continue-bootstrap.' -Data ([ordered]@{
+        Write-GatewayExperienceEvent -Type Result -Message 'Manual database repair completed through one new one-shot Job. The original and both recovery Jobs remain preserved. Run gateway resume.' -Data ([ordered]@{
             step = 'Gateway database'; index = 11; total = $stepNames.Count
             manualDatabaseRepairPlanFingerprint = $planFingerprint; repaired = $true; runOnce = $true
             repairJob = [string]$database.databaseBootstrapJobName
@@ -854,7 +854,7 @@ try {
             [string]$state.databaseRecoveryPlan.status -ceq 'Completed') {
             Assert-BootstrapAcceptedDatabaseRecoveryPlan `
                 -State $state -PlanFingerprint ([string]$state.databaseRecoveryPlan.planFingerprint) -AllowCompleted | Out-Null
-            Write-GatewayExperienceEvent -Type Result -Message 'Database recovery is already complete and reconciled. Run gateway continue-bootstrap to execute only the remaining deployment steps.' -Data ([ordered]@{
+            Write-GatewayExperienceEvent -Type Result -Message 'Database recovery is already complete and reconciled. Run gateway resume to revalidate state and execute only the remaining deployment steps.' -Data ([ordered]@{
                 step = 'Gateway database'; index = 11; total = $stepNames.Count
                 recoveryPlanFingerprint = [string]$state.databaseRecoveryPlan.planFingerprint
                 recovered = $true; runOnce = $true
@@ -1087,7 +1087,7 @@ try {
         }
         $null = Complete-BootstrapDatabaseRecoveryPlan `
             -State $state -StatePath $statePath -PlanFingerprint $planFingerprint -DatabaseEvidence $database
-        Write-GatewayExperienceEvent -Type Result -Message 'Database recovery completed with exactly one separate recovery Job execution; the original failed Job remains preserved. Run gateway continue-bootstrap to execute only the remaining deployment steps.' -Data ([ordered]@{
+        Write-GatewayExperienceEvent -Type Result -Message 'Database recovery completed with exactly one separate recovery Job execution; the original failed Job remains preserved. Run gateway resume to revalidate state and execute only the remaining deployment steps.' -Data ([ordered]@{
             step = 'Gateway database'; index = 11; total = $stepNames.Count
             recoveryPlanFingerprint = $planFingerprint; recovered = $true; runOnce = $true
             recoveryJob = [string]$database.databaseBootstrapJobName
@@ -1095,19 +1095,6 @@ try {
             originalAdministratorRestored = [bool]$database.originalSqlAdministratorRestored
         }) -OutputFormat $OutputFormat
         return
-    }
-
-    $continuationStepNames = @($stepNames | Select-Object -Skip 11)
-    if ($Mode -in @('Plan', 'Apply', 'Up', 'Resume') -and
-        (Test-BootstrapDatabaseRecoveryRequiresNarrowContinuation -State $state -ContinuationStepNames $continuationStepNames)) {
-        Write-GatewayExperienceEvent -Type Warning -Message 'Normal plan/apply/up/resume is permanently blocked after completed database recovery because it would bypass or replace the preserved recovery boundary. Run gateway continue-bootstrap instead.' -Data ([ordered]@{
-            step = 'Recovered bootstrap continuation'
-            index = 12
-            total = $stepNames.Count
-            resumable = $true
-            requiredCommand = 'gateway continue-bootstrap'
-        }) -OutputFormat $OutputFormat
-        throw 'Completed database recovery requires the narrow continue-bootstrap command for continuation and final reconciliation.'
     }
 
     if ($Mode -in @('Plan', 'Up', 'Resume')) {
@@ -1466,10 +1453,9 @@ try {
     }
 
     $developmentPreviewRequested = [string]$configuration.environment -eq 'dev' -and $configuration.agent365.allowDevelopmentRegistryPreview -eq $true
-    # Policy-profile application/certificate/RBAC authority is deliberately not
-    # mutated by clean bootstrap. Keep both worker execution and API admission
-    # physically closed until the separate runbook proof exists.
-    $enableProvisioning = $developmentPreviewRequested -and $configuration.purview.policyProvisioningEnabled -ne $true
+    # Purview protection profiles are optional registration-level controls. Their
+    # independent authority/readback boundary must not close ordinary registration.
+    $enableProvisioning = $developmentPreviewRequested
     $runtime = Invoke-GatewayStateStep -Name 'Gateway runtime deployment' -Validate {
         Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $state.steps['Gateway runtime deployment'].evidence -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database
     } -Action {
@@ -1534,15 +1520,11 @@ try {
         statePath = $statePath
         readiness = if ($provisioningAdmissionReady) { @('InfrastructureReady', 'ControlPlaneReady', 'ProvisioningReady') } else { @('InfrastructureReady', 'ControlPlaneReady') }
         provisioningAdmission = if ($provisioningAdmissionReady) { 'OpenDevelopmentPreview' } else { [string]$verification.registrationMode }
-        notProven = @('FirstAgentActive')
     }) -OutputFormat $OutputFormat
 
     if (-not $provisioningAdmissionReady) {
-        # Agent Registration is development-only while the Registry create API is beta.
-        $closedReason = if ($developmentPreviewRequested -and $configuration.purview.policyProvisioningEnabled -eq $true) {
-            'Agent creation remains closed because Purview protection-profile automation application/certificate binding and Security & Compliance RBAC are NotChecked; complete the runbook proof before opening admission.'
-        }
-        else { 'Agent creation remains closed because Registry create is unsupported for production outside the explicitly acknowledged development preview.' }
+        # Agent Registration is development-only while the Registry create API is preview.
+        $closedReason = 'Agent creation remains closed because Registry create is unsupported for production outside the explicitly acknowledged development preview.'
         Write-GatewayExperienceEvent -Type Warning -Message $closedReason -Data ([ordered]@{
             step = 'End-to-end deployment verification'; index = $stepNames.Count; total = $stepNames.Count
         }) -OutputFormat $OutputFormat

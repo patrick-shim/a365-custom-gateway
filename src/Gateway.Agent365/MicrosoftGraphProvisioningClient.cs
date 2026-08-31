@@ -65,17 +65,17 @@ internal sealed class MicrosoftGraphProvisioningClient
         }
     }
 
-    public Task<GraphApplication?> FindApplicationAsync(
+    public Task<GraphApplication?> FindBlueprintAsync(
         string displayName,
-        bool isBlueprint,
         CancellationToken cancellationToken)
     {
-        var collection = isBlueprint
-            ? "v1.0/applications/microsoft.graph.agentIdentityBlueprint"
-            : "v1.0/applications";
         var filter = Uri.EscapeDataString($"displayName eq '{EscapeODataString(displayName)}'");
-        var path = $"{collection}?$filter={filter}&$select=id,appId,displayName,tags&$top=2";
-        return FindSingleAsync<GraphApplication>(path, "GRAPH_APPLICATION_LOOKUP_AMBIGUOUS", cancellationToken);
+        var path = "v1.0/applications/microsoft.graph.agentIdentityBlueprint"
+            + $"?$filter={filter}&$select=id,appId,displayName,tags&$top=2";
+        return FindSingleAsync<GraphApplication>(
+            path,
+            "GRAPH_APPLICATION_LOOKUP_AMBIGUOUS",
+            cancellationToken);
     }
 
     public async Task<IReadOnlyList<AgentIdentityBlueprintCatalogItem>> ListAgentIdentityBlueprintsAsync(
@@ -148,52 +148,18 @@ internal sealed class MicrosoftGraphProvisioningClient
             .ToArray();
     }
 
-    public Task<GraphApplication?> GetApplicationAsync(
+    public Task<GraphApplication?> GetBlueprintAsync(
         string applicationObjectId,
-        bool isBlueprint,
-        bool includePasswordCredentials,
         CancellationToken cancellationToken)
     {
         var objectId = RequiredGuid(applicationObjectId, "APPLICATION_OBJECT_ID_INVALID");
-        var cast = isBlueprint ? "/microsoft.graph.agentIdentityBlueprint" : string.Empty;
-        var select = isBlueprint
-            ? includePasswordCredentials
-                ? "id,appId,displayName,tags,managerApplications,keyCredentials,passwordCredentials"
-                : "id,appId,displayName,tags,managerApplications"
-            : includePasswordCredentials
-                ? "id,appId,displayName,tags,passwordCredentials"
-                : "id,appId,displayName,tags";
-
         return SendJsonAsync<GraphApplication>(
             HttpMethod.Get,
-            $"v1.0/applications/{objectId:D}{cast}?$select={select}",
+            $"v1.0/applications/{objectId:D}/microsoft.graph.agentIdentityBlueprint"
+                + "?$select=id,appId,displayName,tags,managerApplications",
             body: null,
             allowNotFound: true,
             mutation: false,
-            cancellationToken);
-    }
-
-    public Task<GraphApplication> CreateApplicationAsync(
-        string displayName,
-        Guid agentRegistrationId,
-        CancellationToken cancellationToken)
-    {
-        var body = new
-        {
-            displayName,
-            signInAudience = "AzureADMyOrg",
-            tags = new[]
-            {
-                "A365CustomGateway",
-                $"AgentRegistration:{agentRegistrationId:D}"
-            }
-        };
-
-        return SendRequiredJsonAsync<GraphApplication>(
-            HttpMethod.Post,
-            "v1.0/applications",
-            body,
-            mutation: true,
             cancellationToken);
     }
 
@@ -273,41 +239,30 @@ internal sealed class MicrosoftGraphProvisioningClient
             cancellationToken);
     }
 
-    public Task<GraphServicePrincipal?> GetServicePrincipalAsync(
+    public Task<GraphServicePrincipal?> GetAgentIdentityAsync(
         string servicePrincipalObjectId,
-        bool isAgentIdentity,
         CancellationToken cancellationToken)
     {
         var objectId = RequiredGuid(servicePrincipalObjectId, "SERVICE_PRINCIPAL_OBJECT_ID_INVALID");
-        var cast = isAgentIdentity ? "/microsoft.graph.agentIdentity" : string.Empty;
-        var select = isAgentIdentity
-            ? "id,appId,displayName,appRoles,agentIdentityBlueprintId"
-            : "id,appId,displayName,appRoles";
-        var expand = isAgentIdentity
-            ? "&$expand=sponsors($select=id)"
-            : string.Empty;
         return SendJsonAsync<GraphServicePrincipal>(
             HttpMethod.Get,
-            $"v1.0/servicePrincipals/{objectId:D}{cast}?$select={select}{expand}",
+            $"v1.0/servicePrincipals/{objectId:D}/microsoft.graph.agentIdentity"
+                + "?$select=id,appId,displayName,appRoles,agentIdentityBlueprintId"
+                + "&$expand=sponsors($select=id)",
             body: null,
             allowNotFound: true,
             mutation: false,
             cancellationToken);
     }
 
-    public Task<GraphServicePrincipal> CreateServicePrincipalAsync(
+    public Task<GraphServicePrincipal> CreateBlueprintPrincipalAsync(
         string applicationClientId,
-        bool isBlueprintPrincipal,
         CancellationToken cancellationToken)
     {
         var appId = RequiredGuid(applicationClientId, "APPLICATION_CLIENT_ID_INVALID");
-        var path = isBlueprintPrincipal
-            ? "v1.0/servicePrincipals/microsoft.graph.agentIdentityBlueprintPrincipal"
-            : "v1.0/servicePrincipals";
-
         return SendRequiredJsonAsync<GraphServicePrincipal>(
             HttpMethod.Post,
-            path,
+            "v1.0/servicePrincipals/microsoft.graph.agentIdentityBlueprintPrincipal",
             new { appId = appId.ToString("D") },
             mutation: true,
             cancellationToken);
@@ -345,43 +300,6 @@ internal sealed class MicrosoftGraphProvisioningClient
                 resourceId,
                 appRoleId
             },
-            mutation: true,
-            cancellationToken);
-    }
-
-    public Task<GraphPasswordCredential> AddPasswordAsync(
-        string applicationObjectId,
-        string displayName,
-        DateTimeOffset expiresAtUtc,
-        CancellationToken cancellationToken)
-    {
-        var objectId = RequiredGuid(applicationObjectId, "APPLICATION_OBJECT_ID_INVALID");
-        return SendRequiredJsonAsync<GraphPasswordCredential>(
-            HttpMethod.Post,
-            $"v1.0/applications/{objectId:D}/addPassword",
-            new
-            {
-                passwordCredential = new
-                {
-                    displayName,
-                    endDateTime = expiresAtUtc
-                }
-            },
-            mutation: true,
-            cancellationToken);
-    }
-
-    public Task RemovePasswordAsync(
-        string applicationObjectId,
-        string passwordCredentialKeyId,
-        CancellationToken cancellationToken)
-    {
-        var objectId = RequiredGuid(applicationObjectId, "APPLICATION_OBJECT_ID_INVALID");
-        var keyId = RequiredGuid(passwordCredentialKeyId, "PASSWORD_CREDENTIAL_KEY_ID_INVALID");
-        return SendNoContentAsync(
-            HttpMethod.Post,
-            $"v1.0/applications/{objectId:D}/removePassword",
-            new { keyId },
             mutation: true,
             cancellationToken);
     }
@@ -489,59 +407,6 @@ internal sealed class MicrosoftGraphProvisioningClient
             cancellationToken);
     }
 
-    public Task<GraphAgentRegistration> CreateAgentRegistrationAsync(
-        Guid agentRegistrationId,
-        string displayName,
-        string? description,
-        Guid ownerObjectId,
-        Guid managedByApplicationClientId,
-        string sourceAgentId,
-        string originatingStore,
-        string agentIdentityObjectId,
-        string blueprintClientId,
-        CancellationToken cancellationToken)
-    {
-        var agentIdentityId = RequiredGuid(agentIdentityObjectId, "AGENT_IDENTITY_OBJECT_ID_INVALID");
-        var blueprintAppId = RequiredGuid(blueprintClientId, "BLUEPRINT_CLIENT_ID_INVALID");
-        var now = DateTimeOffset.UtcNow;
-        var body = new
-        {
-            id = agentRegistrationId.ToString("D"),
-            displayName,
-            description,
-            ownerIds = new[] { ownerObjectId.ToString("D") },
-            sourceAgentId,
-            originatingStore,
-            managedByAppId = managedByApplicationClientId.ToString("D"),
-            agentIdentityId = agentIdentityId.ToString("D"),
-            agentIdentityBlueprintId = blueprintAppId.ToString("D"),
-            createdBy = ownerObjectId.ToString("D"),
-            sourceCreatedDateTime = now,
-            sourceLastModifiedDateTime = now
-        };
-
-        return SendRequiredJsonAsync<GraphAgentRegistration>(
-            HttpMethod.Post,
-            "beta/copilot/agentRegistrations",
-            body,
-            mutation: true,
-            cancellationToken);
-    }
-
-    public Task<GraphAgentRegistration?> GetAgentRegistrationAsync(
-        string agentRegistrationId,
-        CancellationToken cancellationToken)
-    {
-        var registrationId = RequiredPathSegment(agentRegistrationId);
-        return SendJsonAsync<GraphAgentRegistration>(
-            HttpMethod.Get,
-            $"beta/copilot/agentRegistrations/{Uri.EscapeDataString(registrationId)}",
-            body: null,
-            allowNotFound: true,
-            mutation: false,
-            cancellationToken);
-    }
-
     private async Task<T?> FindSingleAsync<T>(
         string path,
         string ambiguousCode,
@@ -638,18 +503,6 @@ internal sealed class MicrosoftGraphProvisioningClient
                 "Microsoft Graph returned an invalid success response.",
                 requiresManualIntervention: mutation);
         }
-    }
-
-    private async Task SendNoContentAsync(
-        HttpMethod method,
-        string path,
-        object? body,
-        bool mutation,
-        CancellationToken cancellationToken)
-    {
-        using var request = await CreateRequestAsync(method, path, body, cancellationToken);
-        using var response = await SendAsync(request, mutation, cancellationToken);
-        EnsureSuccess(response.StatusCode, mutation);
     }
 
     private async Task<HttpRequestMessage> CreateRequestAsync(
@@ -890,22 +743,6 @@ internal sealed class MicrosoftGraphProvisioningClient
         return parsed;
     }
 
-    private static string RequiredPathSegment(string? value)
-    {
-        var normalized = value?.Trim();
-        if (string.IsNullOrEmpty(normalized) ||
-            normalized.Length > 512 ||
-            normalized.Any(char.IsControl))
-        {
-            throw Failure(
-                "AGENT365_REGISTRATION_ID_INVALID",
-                "A required provisioning identifier is missing or invalid.",
-                requiresManualIntervention: true);
-        }
-
-        return normalized;
-    }
-
     private static Agent365ProvisioningException Failure(
         string code,
         string summary,
@@ -936,8 +773,6 @@ internal sealed record GraphApplication
     public string? DisplayName { get; init; }
     public List<string>? Tags { get; init; }
     public List<Guid>? ManagerApplications { get; init; }
-    public List<GraphKeyCredential>? KeyCredentials { get; init; }
-    public List<GraphPasswordCredential>? PasswordCredentials { get; init; }
 }
 
 internal sealed record GraphServicePrincipal
@@ -966,21 +801,6 @@ internal sealed record GraphAppRoleAssignment
     public Guid? AppRoleId { get; init; }
 }
 
-internal sealed record GraphPasswordCredential
-{
-    public Guid? KeyId { get; init; }
-    public string? DisplayName { get; init; }
-    public DateTimeOffset? EndDateTime { get; init; }
-    public string? SecretText { get; init; }
-}
-
-internal sealed record GraphKeyCredential
-{
-    public Guid? KeyId { get; init; }
-    public DateTimeOffset? StartDateTime { get; init; }
-    public DateTimeOffset? EndDateTime { get; init; }
-}
-
 internal sealed record GraphFederatedIdentityCredential
 {
     public string? Id { get; init; }
@@ -988,17 +808,6 @@ internal sealed record GraphFederatedIdentityCredential
     public string? Issuer { get; init; }
     public string? Subject { get; init; }
     public List<string>? Audiences { get; init; }
-}
-
-internal sealed record GraphAgentRegistration
-{
-    public string? Id { get; init; }
-    public string? SourceAgentId { get; init; }
-    public string? ManagedByAppId { get; init; }
-    public string? AgentIdentityId { get; init; }
-    public string? AgentIdentityBlueprintId { get; init; }
-    public List<string>? OwnerIds { get; init; }
-    public string? CreatedBy { get; init; }
 }
 
 internal sealed record GraphDirectoryObject

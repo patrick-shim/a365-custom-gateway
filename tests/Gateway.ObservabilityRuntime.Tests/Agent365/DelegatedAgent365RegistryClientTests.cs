@@ -177,7 +177,7 @@ public sealed class DelegatedAgent365RegistryClientTests
     private static Agent365DelegatedRegistryRequest CreateRequest() => new(
         Guid.Parse("06060606-0606-4606-8606-060606060606"),
         RegistrationId,
-        "Delegated canary",
+        "Delegated verification",
         "Safe description",
         AgentIdentityObjectId.ToString("D"),
         OwnerObjectId,

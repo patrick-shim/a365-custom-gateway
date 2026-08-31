@@ -1,10 +1,15 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# Purview's KYD enterprise-AI-apps collection uses this tenant-wide group
+# location. It is not the selected blueprint application ID.
+$script:BootstrapPurviewEnterpriseAiAppsCollectionLocationId = 'ee1680d0-702f-4090-b26c-c49091e86531'
 
 function Connect-BootstrapPurview {
     param(
         [Parameter(Mandatory)][string]$UserPrincipalName,
-        [Parameter(Mandatory)][string]$TenantId
+        [Parameter(Mandatory)][string]$TenantId,
+        [AllowEmptyString()][string]$AccessToken = '',
+        [switch]$Device
     )
     Assert-GuidValue -Value $TenantId -Label 'Purview tenant ID'
     $canonicalTenantId = ([guid]$TenantId).ToString('D')
@@ -12,6 +17,13 @@ function Connect-BootstrapPurview {
         [string]::IsNullOrWhiteSpace($UserPrincipalName) -or
         $UserPrincipalName -match '[\x00-\x1f\x7f]') {
         throw 'Purview connection identity must use the canonical reviewed tenant and signed-in user.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($AccessToken) -and
+        ($AccessToken -match '[\x00-\x20\x7f]' -or $AccessToken.Split('.').Count -ne 3)) {
+        throw 'The externally acquired Purview access token is malformed.'
+    }
+    if ($Device -and -not [string]::IsNullOrWhiteSpace($AccessToken)) {
+        throw 'Purview device authentication and external-token authentication cannot be combined.'
     }
     Import-Module ExchangeOnlineManagement -ErrorAction Stop
     $existingConnections = @(Get-ConnectionInformation -ErrorAction Stop)
@@ -23,10 +35,25 @@ function Connect-BootstrapPurview {
     $authorizationEndpoint = "https://login.microsoftonline.com/$canonicalTenantId"
     $newConnectionIds = @()
     try {
-        Connect-IPPSSession `
-            -UserPrincipalName $UserPrincipalName `
-            -AzureADAuthorizationEndpointUri $authorizationEndpoint `
-            -ShowBanner:$false | Out-Null
+        if ($Device) {
+            Connect-ExchangeOnline `
+                -ConnectionUri 'https://ps.compliance.protection.outlook.com/PowerShell-LiveId' `
+                -AzureADAuthorizationEndpointUri $authorizationEndpoint `
+                -UserPrincipalName $UserPrincipalName `
+                -Device `
+                -ShowBanner:$false | Out-Null
+        }
+        else {
+            $connectionParameters = @{
+                UserPrincipalName = $UserPrincipalName
+                AzureADAuthorizationEndpointUri = $authorizationEndpoint
+                ShowBanner = $false
+            }
+            if (-not [string]::IsNullOrWhiteSpace($AccessToken)) {
+                $connectionParameters.AccessToken = $AccessToken
+            }
+            Connect-IPPSSession @connectionParameters | Out-Null
+        }
         $connections = @(Get-ConnectionInformation -ErrorAction Stop)
         $newConnections = @($connections | Where-Object { [string]$_.ConnectionId -notin $existingIds })
         $newConnectionIds = @($newConnections | ForEach-Object { [string]$_.ConnectionId })
@@ -74,6 +101,36 @@ function Disconnect-BootstrapPurview {
     param([Parameter(Mandatory)][string]$ConnectionId)
     Assert-GuidValue -Value $ConnectionId -Label 'Owned Security & Compliance connection ID'
     Disconnect-ExchangeOnline -ConnectionId $ConnectionId -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+}
+
+function ConvertTo-BootstrapPurviewCollectionLocationsJson {
+    return ConvertTo-Json -InputObject @(@{
+        Workload = 'Applications'
+        Location = $script:BootstrapPurviewEnterpriseAiAppsCollectionLocationId
+        LocationSource = 'Entra'
+        LocationType = 'Group'
+        Inclusions = @(@{ Type = 'Tenant'; Identity = 'All' })
+    }) -Depth 10 -Compress
+}
+
+function ConvertTo-BootstrapPurviewDlpLocationsJson {
+    param(
+        [Parameter(Mandatory)][string]$BlueprintApplicationId,
+        [Parameter(Mandatory)][string]$BlueprintDisplayName
+    )
+    Assert-GuidValue -Value $BlueprintApplicationId -Label 'Purview blueprint application ID'
+    if ([string]::IsNullOrWhiteSpace($BlueprintDisplayName) -or
+        $BlueprintDisplayName -match '[\x00-\x1f\x7f]') {
+        throw 'Purview blueprint display name is invalid.'
+    }
+    return ConvertTo-Json -InputObject @(@{
+        Workload = 'Applications'
+        Location = $BlueprintApplicationId
+        LocationDisplayName = $BlueprintDisplayName
+        LocationSource = 'Entra'
+        LocationType = 'Individual'
+        Inclusions = @(@{ Type = 'Tenant'; Identity = 'All' })
+    }) -Depth 10 -Compress
 }
 
 function Get-BootstrapPurviewProperty {
@@ -177,28 +234,51 @@ function Get-BootstrapPurviewProviderMetadataPropertyNames {
         'WhenCreatedUTC', 'WhenChanged', 'WhenChangedUTC', 'ExchangeVersion',
         'ObjectState', 'OrganizationId', 'DistinguishedName', 'IsValid',
         'ObjectCategory', 'ObjectClass', 'Status', 'Workload', 'Version',
+        'Id', 'CreationTimeUtc', 'ModificationTimeUtc', 'DirectoryObjectVersion',
+        'ExchangeObjectId', 'ExternalIdentity', 'LastStatusUpdateTime',
+        'ObjectVersion', 'OrganizationalUnitRoot', 'OriginatingServer',
         'RunspaceId', 'PSComputerName', 'PSShowComputerName',
         'PSSourceJobInstanceId', 'SerializationData'
     )
 }
 
 function Assert-BootstrapPurviewApplicationLocations {
-    param([Parameter(Mandatory)]$Value, [Parameter(Mandatory)][string]$BlueprintApplicationId)
+    param(
+        [Parameter(Mandatory)]$Value,
+        [Parameter(Mandatory)][string]$ExpectedLocationId,
+        [Parameter(Mandatory)][ValidateSet('Group', 'Individual')][string]$ExpectedLocationType
+    )
     $locations = @(ConvertFrom-BootstrapPurviewStructuredValue -Value $Value -Label 'Locations')
     if ($locations.Count -ne 1) { throw 'Purview policy must contain exactly one application location.' }
     $location = $locations[0]
     if ([string](Get-BootstrapPurviewProperty -InputObject $location -Names @('Workload')) -cne 'Applications' -or
-        -not ([string](Get-BootstrapPurviewProperty -InputObject $location -Names @('Location'))).Equals($BlueprintApplicationId, [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([string](Get-BootstrapPurviewProperty -InputObject $location -Names @('Location'))).Equals($ExpectedLocationId, [StringComparison]::OrdinalIgnoreCase) -or
         [string](Get-BootstrapPurviewProperty -InputObject $location -Names @('LocationSource')) -cne 'Entra' -or
-        [string](Get-BootstrapPurviewProperty -InputObject $location -Names @('LocationType')) -cne 'Individual') {
-        throw 'Purview policy application location does not exactly match the selected blueprint/Entra scope.'
+        [string](Get-BootstrapPurviewProperty -InputObject $location -Names @('LocationType')) -cne $ExpectedLocationType) {
+        throw 'Purview policy application location does not exactly match the reviewed location/Entra scope.'
     }
     $inclusions = @(ConvertFrom-BootstrapPurviewStructuredValue -Value (Get-BootstrapPurviewProperty -InputObject $location -Names @('Inclusions')) -Label 'location inclusions')
     if ($inclusions.Count -ne 1 -or
         [string](Get-BootstrapPurviewProperty -InputObject $inclusions[0] -Names @('Type')) -cne 'Tenant' -or
         [string](Get-BootstrapPurviewProperty -InputObject $inclusions[0] -Names @('Identity')) -cne 'All') {
-        throw 'Purview policy location inclusions are not exactly tenant-wide for the selected application.'
+        throw 'Purview policy location inclusions are not exactly tenant-wide for the reviewed application location.'
     }
+    foreach ($providerDefault in @(
+        @{ Name = 'DisplayName'; Value = 'All' },
+        @{ Name = 'Name'; Value = 'All' },
+        @{ Name = 'ScopingGroup'; Value = 'Unknown' },
+        @{ Name = 'LocationType'; Value = 'Unknown' },
+        @{ Name = 'LocationSource'; Value = 'Unknown' }
+    )) {
+        $actual = Get-BootstrapPurviewProperty -InputObject $inclusions[0] -Names @($providerDefault.Name) -Optional
+        if ($null -ne $actual -and [string]$actual -cne [string]$providerDefault.Value) {
+            throw "Purview policy location inclusion returned unexpected provider field '$($providerDefault.Name)'."
+        }
+    }
+    Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $inclusions[0] -AllowedNames @(
+        'Type', 'Identity', 'DisplayName', 'Name', 'ScopingGroup',
+        'LocationType', 'LocationSource'
+    ) -Label 'application location inclusion'
     $exclusions = Get-BootstrapPurviewProperty -InputObject $location -Names @('Exclusions') -Optional
     if ($null -ne $exclusions -and @(ConvertFrom-BootstrapPurviewStructuredValue -Value $exclusions -Label 'location exclusions').Count -gt 0) {
         throw 'Purview policy location contains unreviewed exclusions.'
@@ -215,10 +295,37 @@ function Assert-BootstrapPurviewApplicationLocations {
 }
 
 function Assert-BootstrapPurviewCollectionObject {
-    param([Parameter(Mandatory)]$Collection, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$BlueprintApplicationId)
+    param([Parameter(Mandatory)]$Collection, [Parameter(Mandatory)][string]$Name)
     $actualName = [string](Get-BootstrapPurviewProperty -InputObject $Collection -Names @('Name', 'Identity'))
     $mode = [string](Get-BootstrapPurviewProperty -InputObject $Collection -Names @('Mode'))
     if ($actualName -cne $Name -or $mode -cne 'Enable') { throw 'Purview collection policy name or mode does not exactly match the reviewed configuration.' }
+    if ([string](Get-BootstrapPurviewProperty -InputObject $Collection -Names @('Type')) -cne 'KnowYourData' -or
+        [string](Get-BootstrapPurviewProperty -InputObject $Collection -Names @('Scenario', 'FeatureScenario')) -cne 'KnowYourData' -or
+        (Get-BootstrapPurviewProperty -InputObject $Collection -Names @('Enabled')) -ne $true -or
+        (Get-BootstrapPurviewProperty -InputObject $Collection -Names @('ReadOnly')) -ne $false -or
+        [string](Get-BootstrapPurviewProperty -InputObject $Collection -Names @('Workload')) -cne 'Exchange, Applications' -or
+        [string](Get-BootstrapPurviewProperty -InputObject $Collection -Names @('PolicyCategory')) -cne 'Unknown' -or
+        [string](Get-BootstrapPurviewProperty -InputObject $Collection -Names @('GlobalListType')) -cne 'None' -or
+        (Get-BootstrapPurviewProperty -InputObject $Collection -Names @('ForceValidate')) -ne $false) {
+        throw 'Purview collection provider state does not match the reviewed KnowYourData application-ingestion contract.'
+    }
+    $distributionStatus = [string](Get-BootstrapPurviewProperty -InputObject $Collection -Names @('DistributionStatus'))
+    $distributionSyncStatus = [string](Get-BootstrapPurviewProperty -InputObject $Collection -Names @('DistributionSyncStatus'))
+    if ($distributionStatus -notin @('Pending', 'Success') -or
+        $distributionSyncStatus -notin @('Unknown', 'Pending', 'Success')) {
+        throw 'Purview collection distribution state is neither pending nor successful.'
+    }
+    $constraints = ConvertFrom-BootstrapPurviewStructuredValue -Value (
+        Get-BootstrapPurviewProperty -InputObject $Collection -Names @('PolicyConstraints')) -Label 'PolicyConstraints'
+    $administrativeUnits = @(Get-BootstrapPurviewProperty -InputObject $constraints -Names @('AdministrativeUnit'))
+    if ($administrativeUnits.Count -ne 0) {
+        throw 'Purview collection contains unreviewed administrative-unit constraints.'
+    }
+    Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $constraints -AllowedNames @('AdministrativeUnit') -Label 'collection PolicyConstraints'
+    Assert-BootstrapPurviewNoNamedValues -Resource $Collection -Names @(
+        'PolicyRBACScopes', 'PolicyRulesMetaData', 'ErrorMetadata',
+        'DistributionResults', 'UserAdministrativeUnitMembershipMap'
+    ) -Label 'collection provider state'
     $scenario = ConvertFrom-BootstrapPurviewStructuredValue -Value (Get-BootstrapPurviewProperty -InputObject $Collection -Names @('ScenarioConfig')) -Label 'ScenarioConfig'
     $activities = @((Get-BootstrapPurviewProperty -InputObject $scenario -Names @('Activities')) | ForEach-Object { [string]$_ })
     $planes = @((Get-BootstrapPurviewProperty -InputObject $scenario -Names @('EnforcementPlanes')) | ForEach-Object { [string]$_ })
@@ -232,13 +339,20 @@ function Assert-BootstrapPurviewCollectionObject {
     Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $scenario -AllowedNames @(
         'Activities', 'EnforcementPlanes', 'SensitiveTypeIds', 'IsIngestionEnabled'
     ) -Label 'collection ScenarioConfig'
-    Assert-BootstrapPurviewApplicationLocations -Value (Get-BootstrapPurviewProperty -InputObject $Collection -Names @('Locations')) -BlueprintApplicationId $BlueprintApplicationId | Out-Null
+    Assert-BootstrapPurviewApplicationLocations `
+        -Value (Get-BootstrapPurviewProperty -InputObject $Collection -Names @('Locations')) `
+        -ExpectedLocationId $script:BootstrapPurviewEnterpriseAiAppsCollectionLocationId `
+        -ExpectedLocationType Group | Out-Null
     Assert-BootstrapPurviewNoNamedValues -Resource $Collection -Names @(
         'Exclusions', 'ExcludedLocations', 'Exceptions', 'Bypass', 'BypassRules'
     ) -Label 'collection policy'
     Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $Collection -AllowedNames @(
         (Get-BootstrapPurviewProviderMetadataPropertyNames)
         'Mode', 'FeatureScenario', 'Scenario', 'ScenarioConfig', 'Locations',
+        'Type', 'Enabled', 'ReadOnly', 'PolicyCategory', 'GlobalListType',
+        'ForceValidate', 'DistributionStatus', 'DistributionSyncStatus',
+        'PolicyConstraints', 'PolicyRBACScopes', 'PolicyRulesMetaData',
+        'ErrorMetadata', 'DistributionResults', 'UserAdministrativeUnitMembershipMap',
         'Exclusions', 'ExcludedLocations', 'Exceptions', 'Bypass', 'BypassRules'
     ) -Label 'collection policy'
     return $true
@@ -250,9 +364,41 @@ function Assert-BootstrapPurviewPolicyObject {
         [string](Get-BootstrapPurviewProperty -InputObject $Policy -Names @('Mode')) -cne 'Enable') {
         throw 'Purview DLP policy name or mode does not exactly match the reviewed configuration.'
     }
+    if ([string](Get-BootstrapPurviewProperty -InputObject $Policy -Names @('Type')) -cne 'Dlp' -or
+        (Get-BootstrapPurviewProperty -InputObject $Policy -Names @('Enabled')) -ne $true -or
+        (Get-BootstrapPurviewProperty -InputObject $Policy -Names @('ReadOnly')) -ne $false -or
+        [string](Get-BootstrapPurviewProperty -InputObject $Policy -Names @('Workload')) -cne 'Exchange, SharePoint, OneDriveForBusiness, Applications' -or
+        [string](Get-BootstrapPurviewProperty -InputObject $Policy -Names @('PolicyCategory')) -cne 'Unknown' -or
+        [string](Get-BootstrapPurviewProperty -InputObject $Policy -Names @('GlobalListType')) -cne 'None' -or
+        (Get-BootstrapPurviewProperty -InputObject $Policy -Names @('ForceValidate')) -ne $false) {
+        throw 'Purview DLP provider state does not match the reviewed enabled Application-policy contract.'
+    }
+    $distributionStatus = [string](Get-BootstrapPurviewProperty -InputObject $Policy -Names @('DistributionStatus'))
+    $distributionSyncStatus = [string](Get-BootstrapPurviewProperty -InputObject $Policy -Names @('DistributionSyncStatus'))
+    if ($distributionStatus -notin @('Pending', 'Success') -or
+        $distributionSyncStatus -notin @('Unknown', 'Pending', 'Success')) {
+        throw 'Purview DLP distribution state is neither pending nor successful.'
+    }
+    $constraints = ConvertFrom-BootstrapPurviewStructuredValue -Value (
+        Get-BootstrapPurviewProperty -InputObject $Policy -Names @('PolicyConstraints')) -Label 'DLP PolicyConstraints'
+    $administrativeUnits = @(Get-BootstrapPurviewProperty -InputObject $constraints -Names @('AdministrativeUnit'))
+    if ($administrativeUnits.Count -ne 0) {
+        throw 'Purview DLP policy contains unreviewed administrative-unit constraints.'
+    }
+    Assert-BootstrapPurviewNoUnknownMeaningfulProperties `
+        -Resource $constraints `
+        -AllowedNames @('AdministrativeUnit') `
+        -Label 'DLP PolicyConstraints'
+    Assert-BootstrapPurviewNoNamedValues -Resource $Policy -Names @(
+        'PolicyRBACScopes', 'ErrorMetadata', 'DistributionResults',
+        'UserAdministrativeUnitMembershipMap', 'LocationExclusions'
+    ) -Label 'DLP provider state'
     $planes = @((Get-BootstrapPurviewProperty -InputObject $Policy -Names @('EnforcementPlanes')) | ForEach-Object { [string]$_ })
     if (-not (Test-BootstrapPurviewExactSet -Actual $planes -Expected @('Application'))) { throw 'Purview DLP policy enforcement plane is not exactly Application.' }
-    Assert-BootstrapPurviewApplicationLocations -Value (Get-BootstrapPurviewProperty -InputObject $Policy -Names @('Locations')) -BlueprintApplicationId $BlueprintApplicationId | Out-Null
+    Assert-BootstrapPurviewApplicationLocations `
+        -Value (Get-BootstrapPurviewProperty -InputObject $Policy -Names @('Locations')) `
+        -ExpectedLocationId $BlueprintApplicationId `
+        -ExpectedLocationType Individual | Out-Null
     $extraBehavior = @(
         'EndpointDlpAdaptiveScopes', 'EndpointDlpAdaptiveScopesException',
         'EndpointDlpLocation', 'EndpointDlpLocationException',
@@ -285,7 +431,17 @@ function Assert-BootstrapPurviewPolicyObject {
     Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $Policy -AllowedNames @(
         (Get-BootstrapPurviewProviderMetadataPropertyNames)
         'Mode', 'Locations', 'EnforcementPlanes', 'Exclusions',
-        'ExcludedLocations', 'Exceptions', 'Bypass', 'BypassRules'
+        'ExcludedLocations', 'Exceptions', 'Bypass', 'BypassRules',
+        'Type', 'Enabled', 'ReadOnly', 'PolicyCategory', 'GlobalListType',
+        'ForceValidate', 'DistributionStatus', 'DistributionSyncStatus',
+        'PolicyConstraints', 'PolicyRulesMetaData', 'ErrorMetadata',
+        'DistributionResults', 'UserAdministrativeUnitMembershipMap',
+        'AutoEnableAfter', 'CompletedLocations', 'ExpectedLocations',
+        'FailedLocations', 'EndpointDlpExtendedLocations', 'ExtendedProperties',
+        'IsColdDataSimulationPolicy', 'IsSimulationPolicy', 'ItemStatistics',
+        'LocationExclusions', 'LocationInclusions', 'LogicalWorkload',
+        'MatchedItemsCount', 'RuleMatchBlob', 'SimulationStatus', 'Summary',
+        'TopNLocationStatistics', 'TotalItemsCount', 'WorkloadStatistics'
         $extraBehavior
     ) -Label 'DLP policy'
     return $true
@@ -330,11 +486,57 @@ function Assert-BootstrapPurviewRuleObject {
     if ($condition.Count -ne 1) {
         throw 'Purview DLP rule classifier does not exactly match the configured sensitive-information type.'
     }
-    Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $condition[0] -AllowedNames @('Name') -Label 'DLP rule classifier'
     $classifierNames = @(Get-BootstrapPurviewNamedLeafValues -Value $condition -PropertyName 'Name')
     if (-not (Test-BootstrapPurviewExactSet -Actual $classifierNames -Expected @($SensitiveInformationType))) {
         throw 'Purview DLP rule classifier does not exactly match the configured sensitive-information type.'
     }
+    $classifierId = [guid]::Empty
+    if ([string](Get-BootstrapPurviewProperty -InputObject $condition[0] -Names @('classifiertype')) -cne 'Content' -or
+        [string](Get-BootstrapPurviewProperty -InputObject $condition[0] -Names @('mincount')) -cne '1' -or
+        [string](Get-BootstrapPurviewProperty -InputObject $condition[0] -Names @('confidencelevel')) -cne 'High' -or
+        [string](Get-BootstrapPurviewProperty -InputObject $condition[0] -Names @('minconfidence')) -cne '85' -or
+        [string](Get-BootstrapPurviewProperty -InputObject $condition[0] -Names @('maxconfidence')) -cne '100' -or
+        [string](Get-BootstrapPurviewProperty -InputObject $condition[0] -Names @('maxcount')) -cne '-1' -or
+        -not [guid]::TryParse([string](Get-BootstrapPurviewProperty -InputObject $condition[0] -Names @('id')), [ref]$classifierId) -or
+        $classifierId -eq [guid]::Empty) {
+        throw 'Purview DLP rule classifier thresholds or provider identity do not match the exact generated contract.'
+    }
+    Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $condition[0] -AllowedNames @(
+        'Name', 'classifiertype', 'mincount', 'confidencelevel',
+        'minconfidence', 'maxconfidence', 'maxcount', 'id'
+    ) -Label 'DLP rule classifier'
+    $advancedRule = ConvertFrom-BootstrapPurviewStructuredValue -Value (
+        Get-BootstrapPurviewProperty -InputObject $Rule -Names @('AdvancedRule')) -Label 'AdvancedRule'
+    if ([string](Get-BootstrapPurviewProperty -InputObject $advancedRule -Names @('Version')) -cne '1.0') {
+        throw 'Purview DLP rule AdvancedRule version does not match the provider-generated contract.'
+    }
+    $advancedCondition = Get-BootstrapPurviewProperty -InputObject $advancedRule -Names @('Condition')
+    $advancedSubConditions = @(Get-BootstrapPurviewProperty -InputObject $advancedCondition -Names @('SubConditions'))
+    if ([string](Get-BootstrapPurviewProperty -InputObject $advancedCondition -Names @('Operator')) -cne 'And' -or
+        $advancedSubConditions.Count -ne 1 -or
+        [string](Get-BootstrapPurviewProperty -InputObject $advancedSubConditions[0] -Names @('ConditionName')) -cne 'ContentContainsSensitiveInformation') {
+        throw 'Purview DLP rule AdvancedRule contains an unexpected condition tree.'
+    }
+    $advancedClassifier = @(Get-BootstrapPurviewProperty -InputObject $advancedSubConditions[0] -Names @('Value'))
+    if ($advancedClassifier.Count -ne 1) {
+        throw 'Purview DLP rule AdvancedRule does not contain exactly one classifier.'
+    }
+    foreach ($classifierField in @(
+        'Name', 'classifiertype', 'mincount', 'confidencelevel',
+        'minconfidence', 'maxconfidence', 'maxcount', 'id'
+    )) {
+        if ([string](Get-BootstrapPurviewProperty -InputObject $advancedClassifier[0] -Names @($classifierField)) -cne
+            [string](Get-BootstrapPurviewProperty -InputObject $condition[0] -Names @($classifierField))) {
+            throw 'Purview DLP rule AdvancedRule classifier does not exactly mirror typed readback.'
+        }
+    }
+    Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $advancedRule -AllowedNames @('Version', 'Condition') -Label 'DLP rule AdvancedRule'
+    Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $advancedCondition -AllowedNames @('Operator', 'SubConditions') -Label 'DLP rule AdvancedRule condition'
+    Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $advancedSubConditions[0] -AllowedNames @('ConditionName', 'Value') -Label 'DLP rule AdvancedRule subcondition'
+    Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $advancedClassifier[0] -AllowedNames @(
+        'Name', 'classifiertype', 'mincount', 'confidencelevel',
+        'minconfidence', 'maxconfidence', 'maxcount', 'id'
+    ) -Label 'DLP rule AdvancedRule classifier'
     $restrictAccess = @(ConvertFrom-BootstrapPurviewStructuredValue -Value (Get-BootstrapPurviewProperty -InputObject $Rule -Names @('RestrictAccess')) -Label 'RestrictAccess')
     if ($restrictAccess.Count -ne 1 -or
         [string](Get-BootstrapPurviewProperty -InputObject $restrictAccess[0] -Names @('setting', 'Setting')) -cne 'UploadText' -or
@@ -344,7 +546,7 @@ function Assert-BootstrapPurviewRuleObject {
     Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $restrictAccess[0] -AllowedNames @('setting', 'value') -Label 'DLP rule RestrictAccess action'
 
     $extraConditions = @(
-        'AccessScope', 'ActivationDate', 'AdvancedRule',
+        'AccessScope', 'ActivationDate',
         'AnyOfRecipientAddressContainsWords', 'AnyOfRecipientAddressMatchesPatterns',
         'AttachmentIsNotLabeled', 'ContentCharacterSetContainsWords',
         'ContentExtensionMatchesWords', 'ContentFileTypeMatches',
@@ -369,18 +571,18 @@ function Assert-BootstrapPurviewRuleObject {
     $extraActions = @(
         'AddRecipients', 'AlertProperties', 'ApplyBrandingTemplate',
         'ApplyHtmlDisclaimer', 'BlockAccess', 'BlockAccessScope',
-        'EncryptRMSTemplate', 'EndpointDlpRestrictions', 'EnforcePortalAccess',
+        'EncryptRMSTemplate', 'EndpointDlpRestrictions',
         'GenerateAlert', 'GenerateIncidentReport', 'IncidentReportContent',
         'MipRestrictAccess', 'Moderate', 'ModifySubject', 'NotifyAllowOverride',
         'NotifyEmailCustomSenderDisplayName', 'NotifyEmailCustomSubject',
-        'NotifyEmailCustomText', 'NotifyEmailExchangeIncludeAttachment',
+        'NotifyEmailCustomText',
         'NotifyEmailOnedriveRemediationActions', 'NotifyOverrideRequirements',
         'NotifyPolicyTipCustomDialog', 'NotifyPolicyTipCustomText',
         'NotifyPolicyTipCustomTextTranslations', 'NotifyPolicyTipDisplayOption',
         'NotifyPolicyTipUrl', 'NotifyUser', 'NotifyUserType',
         'OnPremisesScannerDlpRestrictions', 'PrependSubject', 'Quarantine',
         'RedirectMessageTo', 'RemoveHeader', 'RemoveRMSTemplate',
-        'ReportSeverityLevel', 'RestrictWebGrounding', 'RuleErrorAction',
+        'RestrictWebGrounding', 'RuleErrorAction',
         'SetHeader', 'SharepointMoveToQuarantineLocation',
         'StopPolicyProcessing', 'TriggerPowerAutomateFlow'
     )
@@ -395,10 +597,29 @@ function Assert-BootstrapPurviewRuleObject {
     }
     $disabled = Get-BootstrapPurviewProperty -InputObject $Rule -Names @('Disabled') -Optional
     if (Test-BootstrapPurviewMeaningfulValue -Value $disabled) { throw 'Purview DLP rule is disabled.' }
+    $externalDependencies = Get-BootstrapPurviewProperty -InputObject $Rule -Names @('ExternalScenarioDependancies')
+    if (@(Get-BootstrapPurviewPropertyEntries -Resource $externalDependencies).Count -ne 0 -or
+        (Get-BootstrapPurviewProperty -InputObject $Rule -Names @('EnforcePortalAccess')) -ne $true -or
+        (Get-BootstrapPurviewProperty -InputObject $Rule -Names @('NotifyEmailExchangeIncludeAttachment')) -ne $true -or
+        [string](Get-BootstrapPurviewProperty -InputObject $Rule -Names @('ReportSeverityLevel')) -cne 'Low' -or
+        [int](Get-BootstrapPurviewProperty -InputObject $Rule -Names @('MaximumBlobRuleLength')) -ne 0) {
+        throw 'Purview DLP rule provider defaults do not match the exact observed generated contract.'
+    }
+    if ([string](Get-BootstrapPurviewProperty -InputObject $Rule -Names @('Mode')) -cne 'Enforce' -or
+        [string](Get-BootstrapPurviewProperty -InputObject $Rule -Names @('Workload')) -cne 'Exchange, SharePoint, OneDriveForBusiness, Applications' -or
+        (Get-BootstrapPurviewProperty -InputObject $Rule -Names @('ReadOnly')) -ne $false -or
+        (Get-BootstrapPurviewProperty -InputObject $Rule -Names @('IsAdvancedRule')) -ne $false) {
+        throw 'Purview DLP rule provider state does not match the reviewed enforced Application-rule contract.'
+    }
     Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $Rule -AllowedNames @(
         (Get-BootstrapPurviewProviderMetadataPropertyNames)
         'ParentPolicyName', 'PolicyName', 'Policy', 'PolicyId',
-        'ContentContainsSensitiveInformation', 'RestrictAccess', 'Disabled'
+        'ContentContainsSensitiveInformation', 'RestrictAccess', 'Disabled',
+        'Mode', 'ReadOnly', 'AdvancedRule', 'AdvancedRuleBuilderContext', 'ErrorMetadata',
+        'EnforcePortalAccess', 'NotifyEmailExchangeIncludeAttachment', 'ReportSeverityLevel',
+        'ExecutionRuleGuids', 'ExternalScenarioDependancies', 'IsAdvancedRule',
+        'IsObjectUnderSystemOperation', 'IsSummarizedPsRule',
+        'MaximumBlobRuleLength', 'RuleXml', 'SourceType', 'StorageBindings'
         $extraConditions
         $extraActions
     ) -Label 'DLP rule'
@@ -415,12 +636,12 @@ function Get-BootstrapPurviewPolicyEvidence {
             $rule = @(Get-DlpComplianceRule -Identity ([string]$Config.purview.dlpRuleName) -ErrorAction Stop)
             if ($collection.Count -ne 1 -or $policy.Count -ne 1 -or $rule.Count -ne 1) { throw 'Purview object count mismatch.' }
             $blueprintId = [string]$Blueprint.applicationId
-            Assert-BootstrapPurviewCollectionObject -Collection $collection[0] -Name ([string]$Config.purview.collectionPolicyName) -BlueprintApplicationId $blueprintId | Out-Null
+            Assert-BootstrapPurviewCollectionObject -Collection $collection[0] -Name ([string]$Config.purview.collectionPolicyName) | Out-Null
             Assert-BootstrapPurviewPolicyObject -Policy $policy[0] -Name ([string]$Config.purview.dlpPolicyName) -BlueprintApplicationId $blueprintId | Out-Null
             Assert-BootstrapPurviewRuleObject -Rule $rule[0] -Name ([string]$Config.purview.dlpRuleName) -PolicyName ([string]$Config.purview.dlpPolicyName) -SensitiveInformationType ([string]$Config.purview.sensitiveInformationType) | Out-Null
             return [ordered]@{
                 configured = $true
-                enabled = [bool]$Config.purview.activateGatewayAdapterAfterPolicyReadback
+                enabled = $false
                 collectionPolicyName = [string]$Config.purview.collectionPolicyName
                 dlpPolicyName = [string]$Config.purview.dlpPolicyName
                 dlpRuleName = [string]$Config.purview.dlpRuleName
@@ -455,20 +676,20 @@ function Ensure-BootstrapPurviewPolicies {
         $connectionId = Connect-BootstrapPurview -UserPrincipalName $UserPrincipalName -TenantId ([string]$Config.tenantId)
         $blueprintApplicationId = [string]$Blueprint.applicationId
         Assert-GuidValue -Value $blueprintApplicationId -Label 'Purview blueprint application ID'
-        $locations = @(@{
-        Workload = 'Applications'; Location = $blueprintApplicationId; LocationDisplayName = [string]$Blueprint.displayName
-        LocationSource = 'Entra'; LocationType = 'Individual'; Inclusions = @(@{ Type = 'Tenant'; Identity = 'All' })
-        }) | ConvertTo-Json -Depth 10 -Compress
+        $collectionLocations = ConvertTo-BootstrapPurviewCollectionLocationsJson
+        $dlpLocations = ConvertTo-BootstrapPurviewDlpLocationsJson `
+            -BlueprintApplicationId $blueprintApplicationId `
+            -BlueprintDisplayName ([string]$Blueprint.displayName)
         $scenarioConfig = @{ Activities = @('UploadText', 'DownloadText'); EnforcementPlanes = @('Application'); SensitiveTypeIds = @('All'); IsIngestionEnabled = $true } | ConvertTo-Json -Compress
 
     $collectionName = [string]$Config.purview.collectionPolicyName
     $collection = @(Get-FeatureConfiguration -FeatureScenario KnowYourData | Where-Object { $_.Name -eq $collectionName -or $_.Identity -eq $collectionName })
     if ($collection.Count -gt 1) { throw "Multiple Purview collection policies match '$collectionName'." }
     if ($collection.Count -eq 0) {
-        New-FeatureConfiguration -FeatureScenario KnowYourData -Name $collectionName -Mode Enable -ScenarioConfig $scenarioConfig -Locations $locations -Confirm:$false | Out-Null
+        New-FeatureConfiguration -FeatureScenario KnowYourData -Name $collectionName -Mode Enable -ScenarioConfig $scenarioConfig -Locations $collectionLocations -Confirm:$false | Out-Null
     }
     else {
-        Assert-BootstrapPurviewCollectionObject -Collection $collection[0] -Name $collectionName -BlueprintApplicationId $blueprintApplicationId | Out-Null
+        Assert-BootstrapPurviewCollectionObject -Collection $collection[0] -Name $collectionName | Out-Null
     }
 
     $policyName = [string]$Config.purview.dlpPolicyName
@@ -479,7 +700,7 @@ function Ensure-BootstrapPurviewPolicies {
     })
     if ($policy.Count -gt 1) { throw "Multiple DLP policies match '$policyName'." }
     if ($policy.Count -eq 0) {
-        New-DlpCompliancePolicy -Name $policyName -Mode Enable -Locations $locations -EnforcementPlanes @('Application') -Confirm:$false | Out-Null
+        New-DlpCompliancePolicy -Name $policyName -Mode Enable -Locations $dlpLocations -EnforcementPlanes @('Application') -Confirm:$false | Out-Null
     }
     else {
         Assert-BootstrapPurviewPolicyObject -Policy $policy[0] -Name $policyName -BlueprintApplicationId $blueprintApplicationId | Out-Null

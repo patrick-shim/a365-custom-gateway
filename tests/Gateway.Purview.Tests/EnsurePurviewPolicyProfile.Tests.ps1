@@ -12,6 +12,8 @@ Describe 'Runtime Purview policy profile exact readback' {
         if ($parseErrors.Count -gt 0) {
             throw 'Runtime Purview automation did not parse for focused behavior tests.'
         }
+        $script:EnterpriseAiAppsCollectionLocationId =
+            'ee1680d0-702f-4090-b26c-c49091e86531'
         foreach ($definition in @($automationAst.FindAll({
             param($node)
             $node -is [Management.Automation.Language.FunctionDefinitionAst]
@@ -25,16 +27,22 @@ Describe 'Runtime Purview policy profile exact readback' {
         function New-FeatureConfiguration { }
         function New-DlpCompliancePolicy { }
         function New-DlpComplianceRule { }
-        function Set-FeatureConfiguration { }
         function Set-DlpCompliancePolicy { }
         $script:NewExactObjects = {
             param(
                 [Parameter(Mandatory)]
-                [Alias('ApplicationId')]
-                [string[]]$ApplicationIds
+                [Alias('DlpApplicationId')]
+                [string[]]$DlpApplicationIds
             )
 
-            $locations = @($ApplicationIds | ForEach-Object {
+            $collectionLocations = @([pscustomobject]@{
+                Workload = 'Applications'
+                Location = 'ee1680d0-702f-4090-b26c-c49091e86531'
+                LocationSource = 'Entra'
+                LocationType = 'Group'
+                Inclusions = @([pscustomobject]@{ Type = 'Tenant'; Identity = 'All' })
+            })
+            $dlpLocations = @($DlpApplicationIds | ForEach-Object {
                 [pscustomobject]@{
                     Workload = 'Applications'
                     Location = $_
@@ -56,14 +64,14 @@ Describe 'Runtime Purview policy profile exact readback' {
                     Identity = 'collection-id'
                     Mode = 'Enable'
                     ScenarioConfig = $scenario
-                    Locations = $locations
+                    Locations = $collectionLocations
                 }
                 Policy = [pscustomobject]@{
                     Name = 'policy'
                     Identity = 'policy-id'
                     Mode = 'Enable'
                     EnforcementPlanes = @('Application')
-                    Locations = $locations
+                    Locations = $dlpLocations
                 }
                 Rule = [pscustomobject]@{
                     Name = 'rule'
@@ -91,8 +99,8 @@ Describe 'Runtime Purview policy profile exact readback' {
             expectedCollectionPolicyId = 'collection-id'
             expectedDlpPolicyId = 'policy-id'
             expectedDlpRuleId = 'rule-id'
-            expectedPriorBlueprintApplicationIds = @()
-            expectedBlueprintApplicationIds = @($script:BlueprintId)
+            expectedPriorDlpBlueprintApplicationIds = @()
+            expectedDlpBlueprintApplicationIds = @($script:BlueprintId)
         }
     }
 
@@ -108,28 +116,28 @@ Describe 'Runtime Purview policy profile exact readback' {
     }
 
     It 'rejects a wrong provider ID and wrong blueprint scope' {
-        $objects = & $script:NewExactObjects -ApplicationId $script:OtherBlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:OtherBlueprintId
         $objects.Collection.Identity = 'wrong-collection-id'
 
         { Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
             -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
-            -ExpectedApplicationIds @($script:BlueprintId) } |
+            -ExpectedDlpApplicationIds @($script:BlueprintId) } |
             Should -Throw
     }
 
     It 'rejects an extra exclusion or bypass on an application location' {
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
         $objects.Collection.Locations[0] | Add-Member -NotePropertyName Exclusions `
             -NotePropertyValue @(@{ Type = 'Tenant'; Identity = 'Except' })
 
         { Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
             -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
-            -ExpectedApplicationIds @($script:BlueprintId) } |
+            -ExpectedDlpApplicationIds @($script:BlueprintId) } |
             Should -Throw '*unreviewed*Exclusions*'
     }
 
     It 'rejects extra rule conditions and actions' {
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
         $objects.Rule | Add-Member -NotePropertyName ExceptIfContentContainsWords `
             -NotePropertyValue @('bypass marker')
         $objects.Rule | Add-Member -NotePropertyName NotifyUser `
@@ -137,171 +145,186 @@ Describe 'Runtime Purview policy profile exact readback' {
 
         { Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
             -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
-            -ExpectedApplicationIds @($script:BlueprintId) } |
+            -ExpectedDlpApplicationIds @($script:BlueprintId) } |
             Should -Throw '*unreviewed*'
     }
 
     It 'rejects an unknown meaningful rule behavior property' {
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
         $objects.Rule | Add-Member -NotePropertyName FutureAutonomousAllow `
             -NotePropertyValue 'Enabled'
 
         { Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
             -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
-            -ExpectedApplicationIds @($script:BlueprintId) } |
+            -ExpectedDlpApplicationIds @($script:BlueprintId) } |
             Should -Throw '*unrecognized meaningful property*FutureAutonomousAllow*'
     }
 
     It 'rejects unknown meaningful collection and policy behavior properties' {
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
         $objects.Collection | Add-Member -NotePropertyName FutureCollectionBypass `
             -NotePropertyValue 'Enabled'
 
         { Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
             -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
-            -ExpectedApplicationIds @($script:BlueprintId) } |
+            -ExpectedDlpApplicationIds @($script:BlueprintId) } |
             Should -Throw '*unrecognized meaningful property*FutureCollectionBypass*'
 
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
         $objects.Policy | Add-Member -NotePropertyName FuturePolicyExclusion `
             -NotePropertyValue 'Enabled'
 
         { Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
             -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
-            -ExpectedApplicationIds @($script:BlueprintId) } |
+            -ExpectedDlpApplicationIds @($script:BlueprintId) } |
             Should -Throw '*unrecognized meaningful property*FuturePolicyExclusion*'
     }
 
     It 'rejects unknown meaningful nested scenario, inclusion, condition, and action behavior' {
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
         $objects.Collection.ScenarioConfig | Add-Member -NotePropertyName FutureScenarioBypass `
             -NotePropertyValue 'Enabled'
         { Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
             -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
-            -ExpectedApplicationIds @($script:BlueprintId) } |
+            -ExpectedDlpApplicationIds @($script:BlueprintId) } |
             Should -Throw '*unrecognized meaningful property*FutureScenarioBypass*'
 
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
         $objects.Collection.Locations[0].Inclusions[0] |
             Add-Member -NotePropertyName FutureInclusionException -NotePropertyValue 'Enabled'
         { Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
             -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
-            -ExpectedApplicationIds @($script:BlueprintId) } |
+            -ExpectedDlpApplicationIds @($script:BlueprintId) } |
             Should -Throw '*unrecognized meaningful property*FutureInclusionException*'
 
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
         $objects.Rule.ContentContainsSensitiveInformation[0] |
             Add-Member -NotePropertyName FutureClassifierException -NotePropertyValue 'Enabled'
         { Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
             -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
-            -ExpectedApplicationIds @($script:BlueprintId) } |
+            -ExpectedDlpApplicationIds @($script:BlueprintId) } |
             Should -Throw '*unrecognized meaningful property*FutureClassifierException*'
 
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
         $objects.Rule.RestrictAccess[0] |
             Add-Member -NotePropertyName FutureActionFallback -NotePropertyValue 'Allow'
         { Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
             -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
-            -ExpectedApplicationIds @($script:BlueprintId) } |
+            -ExpectedDlpApplicationIds @($script:BlueprintId) } |
             Should -Throw '*unrecognized meaningful property*FutureActionFallback*'
     }
 
     It 'accepts the exact typed collection, policy, classifier, and UploadText action' {
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
 
         $result = Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
             -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
-            -ExpectedApplicationIds @($script:BlueprintId)
+            -ExpectedDlpApplicationIds @($script:BlueprintId)
 
         $result.collectionPolicyId | Should -Be 'collection-id'
-        $result.blueprintApplicationIds | Should -Contain $script:BlueprintId
+        $result.collectionLocation.locationIds | Should -Contain `
+            'ee1680d0-702f-4090-b26c-c49091e86531'
+        $result.collectionLocation.locationType | Should -BeExactly 'Group'
+        $result.dlpBlueprintApplicationIds | Should -Contain $script:BlueprintId
+        $result.dlpLocation.locationType | Should -BeExactly 'Individual'
         $result.hasExtraConditions | Should -BeFalse
         $result.hasExtraActions | Should -BeFalse
     }
 
-    It 'rejects an untrusted extra provider application before either Set mutation' {
+    It 'rejects an untrusted extra DLP application before mutation' {
         $script:InputObject.blueprintApplicationId = $script:OtherBlueprintId
-        $script:InputObject.expectedPriorBlueprintApplicationIds = @($script:BlueprintId)
-        $script:InputObject.expectedBlueprintApplicationIds = @(
+        $script:InputObject.expectedPriorDlpBlueprintApplicationIds = @($script:BlueprintId)
+        $script:InputObject.expectedDlpBlueprintApplicationIds = @(
             $script:BlueprintId,
             $script:OtherBlueprintId)
         $untrustedId = '33333333-3333-4333-8333-333333333333'
-        $objects = & $script:NewExactObjects -ApplicationIds @(
+        $objects = & $script:NewExactObjects -DlpApplicationIds @(
             $script:BlueprintId,
             $untrustedId)
         Mock Get-FeatureConfiguration { $objects.Collection }
         Mock Get-DlpCompliancePolicy { $objects.Policy }
         Mock Get-DlpComplianceRule { $objects.Rule }
-        Mock Set-FeatureConfiguration { throw 'mutation must not run' }
         Mock Set-DlpCompliancePolicy { throw 'mutation must not run' }
 
         { Invoke-ExactPurviewProfile -InputObject $script:InputObject `
             -ExpectedDlpMode 'Enable' } |
-            Should -Throw '*exact prior nor expected authorized Application scope*'
+            Should -Throw '*exact prior nor expected authorized DLP Application scope*'
 
-        Should -Invoke Set-FeatureConfiguration -Times 0 -Exactly
         Should -Invoke Set-DlpCompliancePolicy -Times 0 -Exactly
     }
 
-    It 'rejects behavior drift before either Set mutation' {
+    It 'rejects a blueprint-scoped collection before DLP mutation' {
         $script:InputObject.blueprintApplicationId = $script:OtherBlueprintId
-        $script:InputObject.expectedPriorBlueprintApplicationIds = @($script:BlueprintId)
-        $script:InputObject.expectedBlueprintApplicationIds = @(
+        $script:InputObject.expectedPriorDlpBlueprintApplicationIds = @($script:BlueprintId)
+        $script:InputObject.expectedDlpBlueprintApplicationIds = @(
             $script:BlueprintId,
             $script:OtherBlueprintId)
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
+        $objects.Collection.Locations = @($objects.Policy.Locations)
+        Mock Get-FeatureConfiguration { $objects.Collection }
+        Mock Get-DlpCompliancePolicy { $objects.Policy }
+        Mock Get-DlpComplianceRule { $objects.Rule }
+        Mock Set-DlpCompliancePolicy { throw 'mutation must not run' }
+
+        { Invoke-ExactPurviewProfile -InputObject $script:InputObject `
+            -ExpectedDlpMode 'Enable' } |
+            Should -Throw '*unreviewed Application location shape*'
+
+        Should -Invoke Set-DlpCompliancePolicy -Times 0 -Exactly
+    }
+
+    It 'rejects behavior drift before DLP mutation' {
+        $script:InputObject.blueprintApplicationId = $script:OtherBlueprintId
+        $script:InputObject.expectedPriorDlpBlueprintApplicationIds = @($script:BlueprintId)
+        $script:InputObject.expectedDlpBlueprintApplicationIds = @(
+            $script:BlueprintId,
+            $script:OtherBlueprintId)
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
         $objects.Rule | Add-Member -NotePropertyName NotifyUser `
             -NotePropertyValue @('SiteAdmin')
         Mock Get-FeatureConfiguration { $objects.Collection }
         Mock Get-DlpCompliancePolicy { $objects.Policy }
         Mock Get-DlpComplianceRule { $objects.Rule }
-        Mock Set-FeatureConfiguration { throw 'mutation must not run' }
         Mock Set-DlpCompliancePolicy { throw 'mutation must not run' }
 
         { Invoke-ExactPurviewProfile -InputObject $script:InputObject `
             -ExpectedDlpMode 'Enable' } |
             Should -Throw '*unreviewed*'
 
-        Should -Invoke Set-FeatureConfiguration -Times 0 -Exactly
         Should -Invoke Set-DlpCompliancePolicy -Times 0 -Exactly
     }
 
-    It 'rejects persisted provider-ID drift before either Set mutation' {
+    It 'rejects persisted provider-ID drift before DLP mutation' {
         $script:InputObject.blueprintApplicationId = $script:OtherBlueprintId
-        $script:InputObject.expectedPriorBlueprintApplicationIds = @($script:BlueprintId)
-        $script:InputObject.expectedBlueprintApplicationIds = @(
+        $script:InputObject.expectedPriorDlpBlueprintApplicationIds = @($script:BlueprintId)
+        $script:InputObject.expectedDlpBlueprintApplicationIds = @(
             $script:BlueprintId,
             $script:OtherBlueprintId)
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
         $objects.Policy.Identity = 'untrusted-policy-id'
         Mock Get-FeatureConfiguration { $objects.Collection }
         Mock Get-DlpCompliancePolicy { $objects.Policy }
         Mock Get-DlpComplianceRule { $objects.Rule }
-        Mock Set-FeatureConfiguration { throw 'mutation must not run' }
         Mock Set-DlpCompliancePolicy { throw 'mutation must not run' }
 
         { Invoke-ExactPurviewProfile -InputObject $script:InputObject `
             -ExpectedDlpMode 'Enable' } |
             Should -Throw '*ID did not match the persisted profile ID*'
 
-        Should -Invoke Set-FeatureConfiguration -Times 0 -Exactly
         Should -Invoke Set-DlpCompliancePolicy -Times 0 -Exactly
     }
 
-    It 'extends only the exact persisted scope and verifies the post-mutation union' {
+    It 'preserves the tenant-wide collection and extends only the exact persisted DLP scope' {
         $script:InputObject.blueprintApplicationId = $script:OtherBlueprintId
-        $script:InputObject.expectedPriorBlueprintApplicationIds = @($script:BlueprintId)
-        $script:InputObject.expectedBlueprintApplicationIds = @(
+        $script:InputObject.expectedPriorDlpBlueprintApplicationIds = @($script:BlueprintId)
+        $script:InputObject.expectedDlpBlueprintApplicationIds = @(
             $script:BlueprintId,
             $script:OtherBlueprintId)
-        $objects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
+        $originalCollectionJson = $objects.Collection.Locations | ConvertTo-Json -Depth 20 -Compress
         Mock Get-FeatureConfiguration { $objects.Collection }
         Mock Get-DlpCompliancePolicy { $objects.Policy }
         Mock Get-DlpComplianceRule { $objects.Rule }
-        Mock Set-FeatureConfiguration {
-            param($Identity, $Locations)
-            $objects.Collection.Locations = $Locations | ConvertFrom-Json -Depth 20
-        }
         Mock Set-DlpCompliancePolicy {
             param($Identity, $Locations)
             $objects.Policy.Locations = $Locations | ConvertFrom-Json -Depth 20
@@ -310,42 +333,85 @@ Describe 'Runtime Purview policy profile exact readback' {
         $result = Invoke-ExactPurviewProfile -InputObject $script:InputObject `
             -ExpectedDlpMode 'Enable'
 
-        $result.blueprintApplicationIds | Should -HaveCount 2
-        $result.blueprintApplicationIds | Should -Contain $script:BlueprintId
-        $result.blueprintApplicationIds | Should -Contain $script:OtherBlueprintId
-        Should -Invoke Set-FeatureConfiguration -Times 1 -Exactly
+        $result.dlpBlueprintApplicationIds | Should -HaveCount 2
+        $result.dlpBlueprintApplicationIds | Should -Contain $script:BlueprintId
+        $result.dlpBlueprintApplicationIds | Should -Contain $script:OtherBlueprintId
+        ($objects.Collection.Locations | ConvertTo-Json -Depth 20 -Compress) |
+            Should -BeExactly $originalCollectionJson
         Should -Invoke Set-DlpCompliancePolicy -Times 1 -Exactly
     }
 
-    It 'resumes an independently verified partial scope extension without repeating the completed Set' {
+    It 'resumes an independently verified DLP extension without repeating the Set' {
         $script:InputObject.blueprintApplicationId = $script:OtherBlueprintId
-        $script:InputObject.expectedPriorBlueprintApplicationIds = @($script:BlueprintId)
-        $script:InputObject.expectedBlueprintApplicationIds = @(
+        $script:InputObject.expectedPriorDlpBlueprintApplicationIds = @($script:BlueprintId)
+        $script:InputObject.expectedDlpBlueprintApplicationIds = @(
             $script:BlueprintId,
             $script:OtherBlueprintId)
-        $collectionObjects = & $script:NewExactObjects -ApplicationIds @(
+        $objects = & $script:NewExactObjects -DlpApplicationIds @(
             $script:BlueprintId,
             $script:OtherBlueprintId)
-        $policyObjects = & $script:NewExactObjects -ApplicationId $script:BlueprintId
-        $objects = [pscustomobject]@{
-            Collection = $collectionObjects.Collection
-            Policy = $policyObjects.Policy
-            Rule = $policyObjects.Rule
-        }
         Mock Get-FeatureConfiguration { $objects.Collection }
         Mock Get-DlpCompliancePolicy { $objects.Policy }
         Mock Get-DlpComplianceRule { $objects.Rule }
-        Mock Set-FeatureConfiguration { throw 'completed mutation must not repeat' }
-        Mock Set-DlpCompliancePolicy {
-            param($Identity, $Locations)
-            $objects.Policy.Locations = $Locations | ConvertFrom-Json -Depth 20
-        }
+        Mock Set-DlpCompliancePolicy { throw 'completed mutation must not repeat' }
 
         $result = Invoke-ExactPurviewProfile -InputObject $script:InputObject `
             -ExpectedDlpMode 'Enable'
 
-        $result.blueprintApplicationIds | Should -HaveCount 2
-        Should -Invoke Set-FeatureConfiguration -Times 0 -Exactly
-        Should -Invoke Set-DlpCompliancePolicy -Times 1 -Exactly
+        $result.dlpBlueprintApplicationIds | Should -HaveCount 2
+        Should -Invoke Set-DlpCompliancePolicy -Times 0 -Exactly
+    }
+
+    It 'creates distinct fixed collection and blueprint DLP locations' {
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
+        $script:createdCollectionLocations = $null
+        $script:createdCollectionScenario = $null
+        $script:createdDlpLocations = $null
+        $script:createdDlpEnforcementPlanes = $null
+        Mock Get-FeatureConfiguration {
+            if ($null -eq $script:createdCollectionLocations) { return @() }
+            return $objects.Collection
+        }
+        Mock Get-DlpCompliancePolicy {
+            if ($null -eq $script:createdDlpLocations) { return @() }
+            return $objects.Policy
+        }
+        Mock Get-DlpComplianceRule {
+            if ($null -eq $script:createdDlpLocations) { return @() }
+            return $objects.Rule
+        }
+        Mock New-FeatureConfiguration {
+            param($FeatureScenario, $Name, $Mode, $ScenarioConfig, $Locations)
+            $script:createdCollectionLocations = $Locations | ConvertFrom-Json -Depth 20
+            $script:createdCollectionScenario = $ScenarioConfig | ConvertFrom-Json -Depth 20
+            $objects.Collection.Locations = $script:createdCollectionLocations
+        }
+        Mock New-DlpCompliancePolicy {
+            param($Name, $Mode, $Locations, $EnforcementPlanes)
+            $script:createdDlpLocations = $Locations | ConvertFrom-Json -Depth 20
+            $script:createdDlpEnforcementPlanes = @($EnforcementPlanes)
+            $objects.Policy.Locations = $script:createdDlpLocations
+        }
+        Mock New-DlpComplianceRule { }
+
+        $script:InputObject.expectedCollectionPolicyId = $null
+        $script:InputObject.expectedDlpPolicyId = $null
+        $script:InputObject.expectedDlpRuleId = $null
+        $result = Invoke-ExactPurviewProfile -InputObject $script:InputObject `
+            -ExpectedDlpMode 'Enable'
+
+        $script:createdCollectionLocations | Should -HaveCount 1
+        $script:createdCollectionLocations.Location | Should -BeExactly `
+            'ee1680d0-702f-4090-b26c-c49091e86531'
+        $script:createdCollectionLocations.LocationType | Should -BeExactly 'Group'
+        $script:createdCollectionScenario.EnforcementPlanes | Should -HaveCount 1
+        $script:createdCollectionScenario.EnforcementPlanes | Should -Contain 'Application'
+        $script:createdDlpLocations | Should -HaveCount 1
+        $script:createdDlpLocations.Location | Should -BeExactly $script:BlueprintId
+        $script:createdDlpLocations.LocationType | Should -BeExactly 'Individual'
+        $script:createdDlpEnforcementPlanes | Should -HaveCount 1
+        $script:createdDlpEnforcementPlanes | Should -Contain 'Application'
+        $result.collectionLocation.locationIds | Should -Not -Contain $script:BlueprintId
+        $result.dlpBlueprintApplicationIds | Should -Contain $script:BlueprintId
     }
 }

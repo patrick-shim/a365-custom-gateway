@@ -8,6 +8,42 @@ public sealed class UpdateSystemConfigValidator : AbstractValidator<UpdateSystem
 {
     public UpdateSystemConfigValidator()
     {
+        RuleFor(x => x.ProvisioningMode).Null()
+            .WithMessage("ProvisioningMode is a persisted compatibility value and is not an editable runtime control.");
+        RuleFor(x => x.RetentionDaysActivityReceipts).Null()
+            .WithMessage("Activity-receipt cleanup is not implemented; this compatibility value cannot be changed.");
+        RuleFor(x => x.RetentionDaysAuditEvents).Null()
+            .WithMessage("Audit-event cleanup is not implemented; this compatibility value cannot be changed.");
+        RuleFor(x => x.RetentionDaysOutboxMessages).Null()
+            .WithMessage("Outbox cleanup is not implemented; this compatibility value cannot be changed.");
+        RuleFor(x => x.ReconciliationEnabled).Null()
+            .WithMessage("Microsoft-resource reconciliation is not implemented.");
+        RuleFor(x => x.ReconciliationIntervalHours).Null()
+            .WithMessage("Microsoft-resource reconciliation is not implemented.");
+        RuleFor(x => x.StuckTransitionTimeoutDays).Null()
+            .WithMessage("No stuck-transition cleanup service consumes this compatibility value.");
+        RuleFor(x => x.UseGraphAgentRegistration).Null()
+            .WithMessage("Agent registration transport is deployment-controlled and not a database setting.");
+        RuleFor(x => x.UseCliProvisioningFallback).Null()
+            .WithMessage("The Gateway has no unattended CLI provisioning fallback.");
+
+        RuleFor(x => x.RetentionDaysIdempotencyRecords)
+            .InclusiveBetween(1, 3_650)
+            .When(x => x.RetentionDaysIdempotencyRecords is not null)
+            .WithMessage("RetentionDaysIdempotencyRecords must be between 1 and 3650 days.");
+        RuleFor(x => x.RateLimitPerClient)
+            .InclusiveBetween(1, 10_000_000)
+            .When(x => x.RateLimitPerClient is not null)
+            .WithMessage("RateLimitPerClient must be between 1 and 10000000 requests per minute.");
+        RuleFor(x => x.RateLimitPerAgent)
+            .InclusiveBetween(1, 10_000_000)
+            .When(x => x.RateLimitPerAgent is not null)
+            .WithMessage("RateLimitPerAgent must be between 1 and 10000000 requests per minute.");
+        RuleFor(x => x.RateLimitGlobal)
+            .InclusiveBetween(1, 10_000_000)
+            .When(x => x.RateLimitGlobal is not null)
+            .WithMessage("RateLimitGlobal must be between 1 and 10000000 requests per minute.");
+
         RuleFor(x => x.DefaultObservabilityMode)
             .Must(BeValidObservabilityMode)
             .WithMessage("DefaultObservabilityMode must be a valid value.")

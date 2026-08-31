@@ -227,9 +227,9 @@ public sealed class BootstrapOutputSanitizerTests
 
     [Theory]
     [InlineData("Info", "Plan gwabcde-dev-1234; fingerprint sha256:0123456789abcdef", "scope")]
-    [InlineData("Info", "Features: Registry beta closed; Content Safety shields enabled (F0); Purview disabled.", "features")]
+    [InlineData("Info", "Features: Registry preview closed; Content Safety shields enabled (F0); Purview disabled.", "features")]
     [InlineData("Info", "Azure foundation What-If: Create=4, Modify=1; applyReady=True.", "whatIf")]
-    [InlineData("Warning", "Boundaries: Azure charges may apply; Registry beta creation remains closed; Entra, Agent 365, and optional Purview require separate administrator handoffs.", "boundaries")]
+    [InlineData("Warning", "Boundaries: Azure charges may apply; Registry preview creation remains closed; Entra, Agent 365, and optional Purview require separate administrator handoffs.", "boundaries")]
     public void RealPlanSummaryEnvelope_RemainsReviewable(
         string type,
         string message,
@@ -384,7 +384,7 @@ public sealed class BootstrapOutputSanitizerTests
     [InlineData("imperativeOperation", "Imperative operation 1/2: Entra application creation is a mutation.", "Imperative operation")]
     [InlineData("whatIfChange", "What-If change 1/2: Create /subscriptions/0000/resourceGroups/rg-gwabcde-dev.", "Sanitized What-If change")]
     [InlineData("costBoundary", "Cost boundary 1/2: Azure consumption charges may apply.", "Cost boundary")]
-    [InlineData("previewBoundary", "Preview boundary 1/1: Registry beta remains closed.", "Preview boundary")]
+    [InlineData("previewBoundary", "Preview boundary 1/1: Registry preview remains closed.", "Preview boundary")]
     [InlineData("administratorBoundary", "Administrator boundary 1/2: Entra consent requires an official handoff.", "Administrator boundary")]
     [InlineData("notChecked", "Not checked 1/2: tenant license eligibility.", "Not checked by Plan")]
     public void BoundedPlanDetailEvents_AreClearlyLabeledWithoutRenderingArbitraryData(

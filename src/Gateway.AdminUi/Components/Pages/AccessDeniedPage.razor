@@ -1,0 +1,9 @@
+@page "/access-denied"
+@layout MainLayout
+@attribute [Authorize]
+
+<PageTitle>Access denied · A365 Gateway</PageTitle>
+
+<section class="card">
+    <AccessDenied />
+</section>

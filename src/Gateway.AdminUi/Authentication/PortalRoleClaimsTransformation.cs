@@ -28,7 +28,12 @@ public sealed class PortalRoleClaimsTransformation : IClaimsTransformation
 
         foreach (var mapping in RoleMappings)
         {
-            if (roleValues.Contains(mapping.Key) && !roleValues.Contains(mapping.Value))
+            var hasRecognizedRole = roleValues.Contains(mapping.Key) || roleValues.Contains(mapping.Value);
+            var hasCanonicalRoleForIdentity = principal.Claims.Any(claim =>
+                string.Equals(claim.Type, identity.RoleClaimType, StringComparison.Ordinal) &&
+                string.Equals(claim.Value, mapping.Value, StringComparison.OrdinalIgnoreCase));
+
+            if (hasRecognizedRole && !hasCanonicalRoleForIdentity)
             {
                 identity.AddClaim(new Claim(identity.RoleClaimType, mapping.Value));
             }

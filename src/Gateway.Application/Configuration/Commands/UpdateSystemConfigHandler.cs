@@ -34,8 +34,18 @@ internal sealed class UpdateSystemConfigHandler : IRequestHandler<UpdateSystemCo
         var config = await _configRepository.GetAsync(cancellationToken)
             ?? throw new NotFoundException("SystemConfiguration", "singleton");
 
-        if (request.ProvisioningMode is not null)
-            config.ProvisioningMode = request.ProvisioningMode;
+        var rateLimitPerClient = request.RateLimitPerClient ?? config.RateLimitPerClient;
+        var rateLimitPerAgent = request.RateLimitPerAgent ?? config.RateLimitPerAgent;
+        var rateLimitGlobal = request.RateLimitGlobal ?? config.RateLimitGlobal;
+        if (rateLimitGlobal < Math.Max(rateLimitPerClient, rateLimitPerAgent))
+        {
+            throw new ValidationException(new Dictionary<string, string[]>
+            {
+                ["RateLimitGlobal"] =
+                ["RateLimitGlobal must be at least as large as RateLimitPerClient and RateLimitPerAgent."]
+            });
+        }
+
         if (request.DefaultObservabilityMode is not null ||
             request.DefaultAgent365ObservabilityEnabled is not null ||
             request.DefaultAzureMonitorExportEnabled is not null)
@@ -89,31 +99,11 @@ internal sealed class UpdateSystemConfigHandler : IRequestHandler<UpdateSystemCo
                 Gateway.Contracts.ErrorCodes.UNSUPPORTED_FEATURE_CONFIGURATION);
         }
         config.DefaultPromptShieldEnabled = defaultPromptShieldEnabled;
-        if (request.RetentionDaysActivityReceipts is not null)
-            config.RetentionDaysActivityReceipts = request.RetentionDaysActivityReceipts.Value;
-        if (request.RetentionDaysAuditEvents is not null)
-            config.RetentionDaysAuditEvents = request.RetentionDaysAuditEvents.Value;
         if (request.RetentionDaysIdempotencyRecords is not null)
             config.RetentionDaysIdempotencyRecords = request.RetentionDaysIdempotencyRecords.Value;
-        if (request.RetentionDaysOutboxMessages is not null)
-            config.RetentionDaysOutboxMessages = request.RetentionDaysOutboxMessages.Value;
-        if (request.RateLimitPerClient is not null)
-            config.RateLimitPerClient = request.RateLimitPerClient.Value;
-        if (request.RateLimitPerAgent is not null)
-            config.RateLimitPerAgent = request.RateLimitPerAgent.Value;
-        if (request.RateLimitGlobal is not null)
-            config.RateLimitGlobal = request.RateLimitGlobal.Value;
-        if (request.ReconciliationEnabled is not null)
-            config.ReconciliationEnabled = request.ReconciliationEnabled.Value;
-        if (request.ReconciliationIntervalHours is not null)
-            config.ReconciliationIntervalHours = request.ReconciliationIntervalHours.Value;
-        if (request.StuckTransitionTimeoutDays is not null)
-            config.StuckTransitionTimeoutDays = request.StuckTransitionTimeoutDays.Value;
-        if (request.UseGraphAgentRegistration is not null)
-            config.UseGraphAgentRegistration = request.UseGraphAgentRegistration.Value;
-        if (request.UseCliProvisioningFallback is not null)
-            config.UseCliProvisioningFallback = request.UseCliProvisioningFallback.Value;
-
+        config.RateLimitPerClient = rateLimitPerClient;
+        config.RateLimitPerAgent = rateLimitPerAgent;
+        config.RateLimitGlobal = rateLimitGlobal;
         config.UpdatedAtUtc = DateTime.UtcNow;
 
         var auditEvent = new AuditEvent

@@ -98,35 +98,6 @@ printf '%s\n' "$@" > "$GATEWAY_TEST_MARKER"
         }
     }
 
-    It 'routes the narrow recovered-bootstrap continuation and exact fingerprint' {
-        $pwshStub = Join-Path $TestDrive 'pwsh'
-        $marker = Join-Path $TestDrive 'continuation-pwsh-arguments.txt'
-        @'
-#!/bin/sh
-printf '%s\n' "$@" > "$GATEWAY_TEST_MARKER"
-'@ | Set-Content -LiteralPath $pwshStub -Encoding utf8NoBOM
-        & chmod 700 $pwshStub
-        $fingerprint = 'sha256:' + ('a' * 64)
-        $originalPath = $env:PATH
-        $originalMarker = $env:GATEWAY_TEST_MARKER
-        try {
-            $env:PATH = "$TestDrive$([IO.Path]::PathSeparator)$originalPath"
-            $env:GATEWAY_TEST_MARKER = $marker
-            & bash (Join-Path $repositoryRoot 'gateway') continue-bootstrap --config bootstrap/config.json --yes --expected-continuation-fingerprint $fingerprint
-
-            $LASTEXITCODE | Should -Be 0
-            $arguments = @(Get-Content -LiteralPath $marker)
-            $arguments | Should -Contain (Join-Path $repositoryRoot 'operations/continue-bootstrap-after-database-recovery.ps1')
-            $arguments | Should -Contain '-ExpectedContinuationFingerprint'
-            $arguments | Should -Contain $fingerprint
-            $arguments | Should -Contain '-Yes'
-        }
-        finally {
-            $env:PATH = $originalPath
-            $env:GATEWAY_TEST_MARKER = $originalMarker
-        }
-    }
-
     It 'rejects an unknown command before invoking PowerShell' {
         $pwshStub = Join-Path $TestDrive 'pwsh'
         $marker = Join-Path $TestDrive 'pwsh-was-invoked.txt'
@@ -294,8 +265,7 @@ Describe 'Cross-platform guided setup prerequisite contract' {
         $launcher | Should -Match 'Setup requires Azure CLI'
         $launcher | Should -Match 'if /I "%COMMAND%"=="recover-database" set "GATEWAY_MODE=RecoverDatabase"'
         $launcher | Should -Match 'if /I "%COMMAND%"=="repair-database" set "GATEWAY_MODE=RepairDatabase"'
-        $launcher | Should -Match 'if /I "%COMMAND%"=="continue-bootstrap" set "GATEWAY_MODE=ContinueBootstrap"'
-        $launcher | Should -Match 'operations\\continue-bootstrap-after-database-recovery\.ps1'
+        $launcher | Should -Not -Match 'continue-bootstrap|repair-api-attestation'
     }
 }
 

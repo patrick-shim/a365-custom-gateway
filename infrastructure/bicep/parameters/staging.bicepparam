@@ -13,7 +13,7 @@ param runtimeImagePullIdentityPrincipalId = readEnvironmentVariable('RUNTIME_IMA
 param runtimeImagePullAcrPullRoleAssignmentId = readEnvironmentVariable('RUNTIME_IMAGE_PULL_ACR_PULL_ROLE_ASSIGNMENT_ID', '')
 param allowLegacySystemAssignedImagePull = readEnvironmentVariable('ALLOW_LEGACY_SYSTEM_ASSIGNED_IMAGE_PULL', 'false') == 'true'
 
-param entraIdTenantId = 'ff8b1e46-ff0f-4bc2-ab02-caf2b92da496'
+param entraIdTenantId = readEnvironmentVariable('ENTRA_TENANT_ID', '00000000-0000-0000-0000-000000000000')
 param entraIdClientId = readEnvironmentVariable('ENTRA_CLIENT_ID', '00000000-0000-0000-0000-000000000000')
 // Microsoft identity platform v2 access tokens use the bare API client ID as aud.
 param entraIdAudience = readEnvironmentVariable('ENTRA_AUDIENCE', readEnvironmentVariable('ENTRA_CLIENT_ID', '00000000-0000-0000-0000-000000000000'))
@@ -26,16 +26,9 @@ param workerContainerImage = readEnvironmentVariable('WORKER_IMAGE', 'mcr.micros
 param historicalWorkerContainerAppName = 'ca-gateway-worker-staging'
 param preserveExistingApiSecrets = true
 param workerProcessingEnabled = false
-param enableLegacyWorkerCredentialKeyVaultSecretsOfficer = false
 param provisioningExecutionEnabled = false
 param continuousDevelopmentProvisioningEnabled = false
-param provisioningAuthorizedExternalAgentId = ''
-param provisioningAuthorizedRetryAgentId = ''
-param agent365RegistryProvider = 'Disabled'
-param agent365DirectRegistryPreviewEnabled = false
 param agent365DelegatedRegistryEnabled = false
-param agent365DelegatedRegistryActionExpiresAtUtc = ''
-param agent365DelegatedRegistryAuthorizedOperationId = ''
 param agent365ManagerApplicationsPreflightConfirmed = false
 param agent365ManagerApplicationIds = json(readEnvironmentVariable('AGENT365_MANAGER_APPLICATION_IDS_JSON', '[]'))
 param purviewEnabled = false

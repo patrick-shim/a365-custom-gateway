@@ -64,7 +64,6 @@ internal sealed class DeleteAgentHandler : IRequestHandler<DeleteAgentCommand, D
             Payload = JsonSerializer.Serialize(new DeleteAgentMessage(
                 agent.Id,
                 job.Id,
-                request.DeleteMicrosoftResources,
                 CorrelationId: null)),
             Status = OutboxMessageStatus.Pending,
             RetryCount = 0,
@@ -88,7 +87,6 @@ internal sealed class DeleteAgentHandler : IRequestHandler<DeleteAgentCommand, D
             agent.Id,
             agent.Status.ToString(),
             job.Id,
-            request.DeleteMicrosoftResources,
             null);
     }
 }

@@ -103,11 +103,8 @@ param historicalWorkerContainerAppName string = 'ca-gateway-worker-${environment
 @description('Preserve existing API Container App secrets during the full ARM create-or-update operation. Keep true for every update; set false explicitly only when creating the API app for the first time.')
 param preserveExistingApiSecrets bool = true
 
-@description('Enable Service Bus processing on the current workflow worker. Keep false for inert-first deployment and enable only through the bounded canary controller.')
+@description('Enable Service Bus processing on the current workflow worker after exact identity, network, queue, and database verification.')
 param workerProcessingEnabled bool = false
-
-@description('Legacy-only switch granting the worker Key Vault Secrets Officer on the provisioning credential vault. Workflow v3 defaults this off.')
-param enableLegacyWorkerCredentialKeyVaultSecretsOfficer bool = false
 
 @description('Allow Microsoft-side provisioning messages to execute. Keep false until the read-only identity, permission, provider, network, and legacy-job preflight succeeds.')
 param provisioningExecutionEnabled bool = false
@@ -115,33 +112,8 @@ param provisioningExecutionEnabled bool = false
 @description('Development-only mode that keeps authenticated registration and delegated completion available without per-request deployment windows. Ignored outside dev.')
 param continuousDevelopmentProvisioningEnabled bool = false
 
-@description('Explicit UTC ISO-8601 deadline for API registration admission. Required in addition to provisioningExecutionEnabled; the API independently rejects missing, malformed, non-UTC, or expired values.')
-param provisioningAdmissionExpiresAtUtc string = ''
-
-@description('Exact external agent ID authorized for initial registration. Mutually exclusive with retry and delegated-completion bindings.')
-param provisioningAuthorizedExternalAgentId string = ''
-
-@description('Exact Gateway registration ID authorized for a reviewed retry window. Keep empty unless exact-bound retry is intended.')
-param provisioningAuthorizedRetryAgentId string = ''
-
-@description('Agent 365 registry provider. DirectRegistryPreview is development-only and must be combined with both explicit execution gates.')
-@allowed([
-  'Disabled'
-  'DirectRegistryPreview'
-])
-param agent365RegistryProvider string = 'Disabled'
-
-@description('Explicit acknowledgement that the unsupported-for-production Microsoft Graph beta registry provider may run in development.')
-param agent365DirectRegistryPreviewEnabled bool = false
-
-@description('Acknowledge the user-delegated Registry completion capability. The effective API action still requires its own operation binding and expiry.')
+@description('Acknowledge the user-delegated Registry completion capability in explicit continuous-development mode.')
 param agent365DelegatedRegistryEnabled bool = false
-
-@description('Independent UTC expiry for the delegated Registry completion action.')
-param agent365DelegatedRegistryActionExpiresAtUtc string = ''
-
-@description('Exact provisioning operation ID authorized for delegated Registry completion.')
-param agent365DelegatedRegistryAuthorizedOperationId string = ''
 
 @description('Operator confirmation that the independent Agent 365 managerApplications platform prerequisite was verified. This is a deployment acknowledgement, not a tenant permission grant.')
 param agent365ManagerApplicationsPreflightConfirmed bool = false
@@ -150,7 +122,7 @@ param agent365ManagerApplicationsPreflightConfirmed bool = false
 @maxLength(10)
 param agent365ManagerApplicationIds array = []
 
-@description('Enable the globally configured Microsoft Purview Graph adapter. Keep false until tenant licensing, policies, all three Graph app roles, and a synthetic canary are verified.')
+@description('Enable the Microsoft Purview Graph adapter only after tenant licensing, policy readback, token roles, and approved runtime verification succeed.')
 param purviewEnabled bool = false
 
 @description('Provision and enable Azure AI Content Safety Prompt Shields for synchronous prompt evaluation.')
@@ -163,7 +135,7 @@ param promptShieldEnabled bool = false
 @description('Azure AI Content Safety SKU. Use S0 for normal deployments; F0 is development-only and subject to availability.')
 param promptShieldSkuName string = 'S0'
 
-@description('Enable automated Purview collection/DLP policy profile assignment for newly-created blueprints. Requires the reviewed app-only Security & Compliance PowerShell identity.')
+@description('Enable automated Purview policy assignment: fixed tenant-wide Know Your Data Group plus blueprint-specific Individual DLP locations. Requires the reviewed app-only Security & Compliance PowerShell identity.')
 param purviewPolicyProvisioningEnabled bool = false
 
 @description('Microsoft 365 organization domain used by Purview policy automation.')
@@ -269,7 +241,6 @@ var names = {
   appInsights: 'ai-${suffix}'
   acr: 'acr${replace(suffix, '-', '')}${take(uniqueSuffix, 6)}'
   keyVault: 'kv-${suffix}'
-  provisioningKeyVault: 'kv-${suffix}-prov'
   storage: 'st${replace(suffix, '-', '')}${take(uniqueSuffix, 6)}'
   sqlServer: 'sql-${suffix}'
   sqlDatabase: 'GatewayDb'
@@ -307,7 +278,6 @@ var requiredApiGraphApplicationPermissions = [
   'AgentIdentityBlueprint.Read.All'
 ]
 
-var legacyWorkerKeyVaultRoleName = 'Key Vault Secrets Officer'
 var purviewCertificateSecretName = empty(purviewPolicyProvisioningCertificateSecretUri)
   ? ''
   : last(split(purviewPolicyProvisioningCertificateSecretUri, '/'))
@@ -331,21 +301,12 @@ var runtimeImagePullContractMode = runtimeImagePullIdentityInputsAreEmpty && all
 // Fail closed even when main.bicep is invoked outside the guarded deployment
 // scripts. Provisioning becomes effective only for the explicitly acknowledged
 // development preview combination; shared observability remains independent.
-var effectiveDelegatedRegistryEnabled = environment == 'dev' && agent365RegistryProvider == 'DirectRegistryPreview' && agent365DirectRegistryPreviewEnabled && agent365DelegatedRegistryEnabled
+var effectiveDelegatedRegistryEnabled = environment == 'dev' && agent365DelegatedRegistryEnabled
 var effectiveWorkerProvisioningExecutionEnabled = provisioningExecutionEnabled && environment == 'dev' && workerProcessingEnabled && !empty(entraIdClientId) && !empty(agent365ProvisioningManagedIdentityPrincipalId) && length(agent365ManagerApplicationIds) > 0 && effectiveDelegatedRegistryEnabled && agent365ManagerApplicationsPreflightConfirmed
 var effectiveContinuousDevelopmentProvisioningEnabled = effectiveWorkerProvisioningExecutionEnabled && continuousDevelopmentProvisioningEnabled
-var hasRegistrationBinding = !empty(provisioningAuthorizedExternalAgentId) && empty(provisioningAuthorizedRetryAgentId)
-var hasRetryBinding = empty(provisioningAuthorizedExternalAgentId) && !empty(provisioningAuthorizedRetryAgentId)
-var effectiveApiProvisioningAdmissionEnabled = effectiveWorkerProvisioningExecutionEnabled && (effectiveContinuousDevelopmentProvisioningEnabled || (!empty(provisioningAdmissionExpiresAtUtc) && (hasRegistrationBinding || hasRetryBinding) && empty(agent365DelegatedRegistryActionExpiresAtUtc) && empty(agent365DelegatedRegistryAuthorizedOperationId)))
-var effectiveApiDelegatedRegistryActionEnabled = effectiveWorkerProvisioningExecutionEnabled && effectiveDelegatedRegistryEnabled && (effectiveContinuousDevelopmentProvisioningEnabled || (empty(provisioningAdmissionExpiresAtUtc) && empty(provisioningAuthorizedExternalAgentId) && empty(provisioningAuthorizedRetryAgentId) && !empty(agent365DelegatedRegistryActionExpiresAtUtc) && !empty(agent365DelegatedRegistryAuthorizedOperationId)))
-var effectiveApiBoundedActionEnabled = effectiveApiProvisioningAdmissionEnabled || effectiveApiDelegatedRegistryActionEnabled
-
-// Workflow v3 has SQL-backed distributed ingress, idempotency, and per-job
-// execution ownership. The beta Registry development canary remains at one API
-// replica as a rollout containment choice, not as the concurrency correctness
-// mechanism.
-var effectiveApiMinReplicas = effectiveApiBoundedActionEnabled ? 1 : apiMinReplicas
-var effectiveApiMaxReplicas = effectiveApiBoundedActionEnabled ? 1 : apiMaxReplicas
+// Workflow v3 uses SQL-backed distributed ingress, idempotency, and per-job
+// execution ownership. Registration/Registry admission does not override the
+// configured API scale range.
 
 // ============================================================================
 // Tier 1 — Foundation Resources (no dependencies)
@@ -394,20 +355,6 @@ module keyVault './modules/key-vault.bicep' = {
     tenantId: entraIdTenantId
     enablePurgeProtection: keyVaultPurgeProtection
     tags: tags
-    logAnalyticsWorkspaceId: logAnalytics.outputs.workspaceId
-  }
-}
-
-module provisioningKeyVault './modules/key-vault.bicep' = {
-  name: 'deploy-provisioning-key-vault'
-  params: {
-    vaultName: names.provisioningKeyVault
-    location: location
-    tenantId: entraIdTenantId
-    enablePurgeProtection: keyVaultPurgeProtection
-    tags: union(tags, {
-      workload: 'provisioning-credentials'
-    })
     logAnalyticsWorkspaceId: logAnalytics.outputs.workspaceId
   }
 }
@@ -541,21 +488,16 @@ module apiApp './modules/container-app-api.bicep' = {
     imagePullIdentityResourceId: runtimeImagePullIdentityId
     cpu: apiCpu
     memory: apiMemory
-    minReplicas: effectiveApiMinReplicas
-    maxReplicas: effectiveApiMaxReplicas
+    minReplicas: apiMinReplicas
+    maxReplicas: apiMaxReplicas
     sqlServerFqdn: sqlDb.outputs.serverFqdn
     sqlDatabaseName: sqlDb.outputs.databaseName
     serviceBusNamespace: serviceBus.outputs.namespaceFqdn
     serviceBusQueueName: serviceBus.outputs.queueName
-    provisioningExecutionEnabled: effectiveApiProvisioningAdmissionEnabled
+    provisioningExecutionEnabled: effectiveContinuousDevelopmentProvisioningEnabled
     continuousDevelopmentProvisioningEnabled: effectiveContinuousDevelopmentProvisioningEnabled
-    provisioningAdmissionExpiresAtUtc: effectiveApiProvisioningAdmissionEnabled ? provisioningAdmissionExpiresAtUtc : ''
-    provisioningAuthorizedExternalAgentId: effectiveApiProvisioningAdmissionEnabled ? provisioningAuthorizedExternalAgentId : ''
-    provisioningAuthorizedRetryAgentId: effectiveApiProvisioningAdmissionEnabled ? provisioningAuthorizedRetryAgentId : ''
-    agent365DelegatedRegistryEnabled: effectiveApiDelegatedRegistryActionEnabled
+    agent365DelegatedRegistryEnabled: effectiveContinuousDevelopmentProvisioningEnabled
     agent365DelegatedRegistryContinuousDevelopmentAccess: effectiveContinuousDevelopmentProvisioningEnabled
-    agent365DelegatedRegistryActionExpiresAtUtc: effectiveApiDelegatedRegistryActionEnabled ? agent365DelegatedRegistryActionExpiresAtUtc : ''
-    agent365DelegatedRegistryAuthorizedOperationId: effectiveApiDelegatedRegistryActionEnabled ? agent365DelegatedRegistryAuthorizedOperationId : ''
     keyVaultUri: keyVault.outputs.vaultUri
     blobStorageEndpoint: storage.outputs.blobEndpoint
     appInsightsConnectionString: appInsights.outputs.connectionString
@@ -595,10 +537,10 @@ module workerApp './modules/container-app-worker.bicep' = {
     imagePullIdentityResourceId: runtimeImagePullIdentityId
     cpu: workerCpu
     memory: workerMemory
-    // Duplicate detection is unavailable on the current Basic Service Bus tier.
-    // Contain the bounded development canary to one message callback at a time.
-    maxReplicas: effectiveWorkerProvisioningExecutionEnabled ? 1 : workerMaxReplicas
-    maxConcurrentCalls: effectiveWorkerProvisioningExecutionEnabled ? 1 : 5
+    // SQL session-owned job locks and idempotent provider discovery protect
+    // duplicate delivery across the configured worker scale range.
+    maxReplicas: workerMaxReplicas
+    maxConcurrentCalls: 5
     serviceBusNamespace: serviceBus.outputs.namespaceFqdn
     serviceBusNamespaceName: serviceBus.outputs.namespaceName
     serviceBusQueueName: serviceBus.outputs.queueName
@@ -608,16 +550,10 @@ module workerApp './modules/container-app-worker.bicep' = {
     appInsightsConnectionString: appInsights.outputs.connectionString
     entraIdTenantId: entraIdTenantId
     agent365ObservabilityServerAddress: '${names.apiApp}.${containerAppsEnvironment.properties.defaultDomain}'
-    agent365GatewayApiApplicationClientId: entraIdClientId
-    agent365GatewayApiAudience: entraIdAudience
-    agent365GatewayApiBaseUrl: 'https://${names.apiApp}.${containerAppsEnvironment.properties.defaultDomain}/'
-    agent365CredentialKeyVaultUri: provisioningKeyVault.outputs.vaultUri
     agent365ProvisioningManagedIdentityPrincipalId: agent365ProvisioningManagedIdentityPrincipalId
     agent365ManagerApplicationIds: agent365ManagerApplicationIds
     processingEnabled: workerProcessingEnabled
     provisioningExecutionEnabled: effectiveWorkerProvisioningExecutionEnabled
-    agent365RegistryProvider: agent365RegistryProvider
-    agent365DirectRegistryPreviewEnabled: agent365DirectRegistryPreviewEnabled
     purviewEnabled: purviewEnabled
     purviewPolicyProvisioningEnabled: purviewEnabled && purviewPolicyProvisioningEnabled
     purviewPolicyProvisioningOrganization: purviewPolicyProvisioningOrganization
@@ -664,8 +600,6 @@ module roleAssignments './modules/role-assignments.bicep' = {
     apiPrincipalId: apiApp.outputs.principalId
     workerPrincipalId: workerApp.outputs.principalId
     keyVaultName: names.keyVault
-    workerCredentialKeyVaultName: names.provisioningKeyVault
-    enableWorkerCredentialKeyVaultSecretsOfficer: enableLegacyWorkerCredentialKeyVaultSecretsOfficer
     enableWorkerKeyVaultSecretsUser: purviewEnabled && purviewPolicyProvisioningEnabled
     workerPurviewCertificateSecretName: purviewCertificateSecretName
     storageAccountName: names.storage
@@ -790,26 +724,17 @@ output workerProcessingEnabled bool = workerApp.outputs.processingEnabled
 @description('True only when the provisioning-specific execution gate was explicitly enabled for this deployment.')
 output provisioningExecutionEnabled bool = workerApp.outputs.provisioningExecutionEnabled
 
-@description('True only when API provisioning admission is enabled with a non-empty server-enforced expiry input. The API additionally validates UTC syntax and freshness at request time.')
-output provisioningAdmissionEnabled bool = effectiveApiProvisioningAdmissionEnabled
-
-@description('Effective Agent 365 registry provider configuration.')
-output agent365RegistryProvider string = workerApp.outputs.agent365RegistryProvider
-
-@description('True only when the explicit DirectRegistryPreview acknowledgement was enabled for this deployment.')
-output agent365DirectRegistryPreviewEnabled bool = workerApp.outputs.agent365DirectRegistryPreviewEnabled
-
-@description('True only when the API delegated administrator Registry action is armed inside the bounded development admission window.')
+@description('True only when the API delegated administrator Registry action is enabled in explicit continuous-development mode.')
 output agent365DelegatedRegistryEnabled bool = apiApp.outputs.agent365DelegatedRegistryEnabled
 
 @description('True only when the operator explicitly confirmed the independent managerApplications platform prerequisite for this deployment.')
 output agent365ManagerApplicationsPreflightConfirmed bool = agent365ManagerApplicationsPreflightConfirmed
 
-@description('Effective minimum number of API replicas. The beta Registry development canary is deliberately forced to one.')
-output apiMinReplicas int = effectiveApiMinReplicas
+@description('Configured minimum number of API replicas.')
+output apiMinReplicas int = apiMinReplicas
 
-@description('Effective maximum number of API replicas. The beta Registry development canary is deliberately forced to one after distributed controls are in place.')
-output apiMaxReplicas int = effectiveApiMaxReplicas
+@description('Configured maximum number of API replicas.')
+output apiMaxReplicas int = apiMaxReplicas
 
 @description('Effective maximum number of worker replicas.')
 output workerMaxReplicas int = workerApp.outputs.maxReplicas
@@ -829,24 +754,18 @@ output requiredApiGraphDelegatedRegistryScopes array = [
 @description('Microsoft Graph application permissions that a tenant administrator must verify on the API managed identity before the reusable-blueprint inventory can load.')
 output requiredApiGraphApplicationPermissions array = requiredApiGraphApplicationPermissions
 
-@description('Legacy worker Key Vault role. Workflow v3 does not deploy or require it unless the explicit legacy switch is enabled.')
-output requiredWorkerKeyVaultRole string = enableLegacyWorkerCredentialKeyVaultSecretsOfficer ? legacyWorkerKeyVaultRoleName : 'Not required for workflow v3'
-
-@description('True only when the explicit legacy worker credential-vault role switch is enabled.')
-output legacyWorkerCredentialKeyVaultRoleEnabled bool = enableLegacyWorkerCredentialKeyVaultSecretsOfficer
-
 @description('Provisioning remains blocked until a tenant administrator verifies worker Graph application roles, Gateway API delegated Registry consent and OBO federation, and managerApplications.')
 output provisioningTenantAdminAction string = 'Verify the listed worker Graph application roles, grant tenant-wide delegated Registry consent to the Gateway API, configure its exact managed-identity OBO FIC, and confirm managerApplications. This deployment does not mutate Entra tenant configuration.'
 
-@description('Provisioning canaries are constrained to one replica and one callback as rollout containment. SQL session-owned application locks provide cross-replica ownership of each workflow-v3 job.')
+@description('Provisioning concurrency is protected by SQL session-owned job locks and duplicate-safe provider discovery across replicas.')
 output provisioningConcurrencyCaveat string = effectiveWorkerProvisioningExecutionEnabled
-  ? 'Development canary constrained to one replica and one callback; SQL session-owned application locks serialize each workflow-v3 job across replicas.'
-  : 'Provisioning execution disabled; SQL session-owned application locks remain active when workflow-v3 processing is enabled.'
+  ? 'Provisioning execution enabled with SQL session-owned job locks and duplicate-safe provider discovery across replicas.'
+  : 'Provisioning execution disabled; SQL session-owned job locks remain active when workflow-v3 processing is enabled.'
 
 @description('Service Bus queue used by the current N:N API outbox publisher and worker. Historical workers must remain on their legacy queue during cutover.')
 output serviceBusQueueName string = serviceBus.outputs.queueName
 
-@description('Dead-letter queue recovery remains a separate, explicitly authorized operation after topology, code, identity, and canary validation.')
+@description('Dead-letter queue recovery remains a separate, explicitly authorized operation after topology, code, and identity validation.')
 output deadLetterQueueRecoveryGate string = 'Do not receive, peek, settle, replay, or purge retained workflow-v2 or historical provisioning messages during deployment.'
 
 @description('Worker Container Apps covered by provisioning-failure monitoring during the blue/green transition.')

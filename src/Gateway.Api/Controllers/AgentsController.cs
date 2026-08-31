@@ -39,7 +39,7 @@ public class AgentsController : ControllerBase
         [FromBody] RegisterAgentRequest request,
         CancellationToken cancellationToken)
     {
-        _provisioningAdmissionGate.EnsureRegistrationOpen(request.ExternalAgentId);
+        _provisioningAdmissionGate.EnsureRegistrationOpen();
 
         var command = new RegisterAgentCommand(
             request.ExternalAgentId,
@@ -214,10 +214,9 @@ public class AgentsController : ControllerBase
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<IActionResult> DeleteAgent(
         Guid agentId,
-        [FromQuery] bool deleteMicrosoftResources = false,
         CancellationToken cancellationToken = default)
     {
-        var command = new DeleteAgentCommand(agentId, deleteMicrosoftResources, User.GetObjectId());
+        var command = new DeleteAgentCommand(agentId, User.GetObjectId());
         var result = await _sender.Send(command, cancellationToken);
 
         return Accepted(result);
@@ -233,7 +232,7 @@ public class AgentsController : ControllerBase
         Guid agentId,
         CancellationToken cancellationToken)
     {
-        _provisioningAdmissionGate.EnsureRetryOpen(agentId);
+        _provisioningAdmissionGate.EnsureRetryOpen();
 
         var command = new RetryProvisioningCommand(agentId, User.GetObjectId());
         var result = await _sender.Send(command, cancellationToken);

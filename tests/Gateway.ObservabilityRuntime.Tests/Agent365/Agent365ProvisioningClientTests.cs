@@ -16,9 +16,6 @@ public sealed class Agent365ProvisioningClientTests
 {
     private const string DependencyBodySentinel =
         "dependency-response-body-sentinel-must-never-escape";
-    private const string SecretTextSentinel =
-        "generated-secret-text-sentinel-must-never-be-loggable";
-
     private static readonly Guid TenantId =
         Guid.Parse("11111111-1111-4111-8111-111111111111");
     private static readonly Guid OwnerObjectId =
@@ -37,10 +34,6 @@ public sealed class Agent365ProvisioningClientTests
         Guid.Parse("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
     private static readonly Guid UnexpectedManagerApplicationId =
         Guid.Parse("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
-    private static readonly Guid ApplicationObjectId =
-        Guid.Parse("66666666-6666-4666-8666-666666666666");
-    private static readonly Guid ApplicationClientId =
-        Guid.Parse("77777777-7777-4777-8777-777777777777");
     private static readonly Guid BlueprintObjectId =
         Guid.Parse("88888888-8888-4888-8888-888888888888");
     private static readonly Guid BlueprintClientId =
@@ -51,12 +44,6 @@ public sealed class Agent365ProvisioningClientTests
         Guid.Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
     private static readonly Guid PlannedRegistryId =
         Guid.Parse("12121212-1212-4212-8212-121212121212");
-    private static readonly Guid UnexpectedAgent365RegistrationId =
-        Guid.Parse("13131313-1313-4313-8313-131313131313");
-    private static readonly Guid PasswordCredentialKeyId =
-        Guid.Parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
-    private static readonly DateTimeOffset CredentialExpiry =
-        new(2027, 1, 2, 3, 4, 5, TimeSpan.Zero);
     private static readonly TimeSpan[] FiveImmediateVerificationAttempts =
     [
         TimeSpan.Zero,
@@ -77,7 +64,7 @@ public sealed class Agent365ProvisioningClientTests
         string expectedErrorCode)
     {
         var options = CreateValidOptions();
-        var request = CreateRequest(ProvisioningStepType.CreateAppRegistration);
+        var request = CreateRequest(ProvisioningStepType.ResolveBlueprint);
         switch (scenario)
         {
             case "non-development":
@@ -96,11 +83,9 @@ public sealed class Agent365ProvisioningClientTests
         var handler = new RecordingHttpMessageHandler((_, _) =>
             throw new InvalidOperationException("HTTP must not be called after failed preflight."));
         var tokenProvider = new RecordingTokenProvider();
-        var credentialStore = new RecordingCredentialStore();
         var client = CreateClient(
             handler,
             tokenProvider,
-            credentialStore,
             new RecordingLogger<Agent365ProvisioningClient>(),
             options);
 
@@ -110,8 +95,29 @@ public sealed class Agent365ProvisioningClientTests
         exception.Which.ErrorCode.Should().Be(expectedErrorCode);
         handler.Requests.Should().BeEmpty();
         tokenProvider.CallCount.Should().Be(0);
-        credentialStore.FindCallCount.Should().Be(0);
-        credentialStore.StoreCallCount.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(ProvisioningStepType.CreateAppRegistration)]
+    [InlineData(ProvisioningStepType.CreateServicePrincipal)]
+    [InlineData(ProvisioningStepType.AssignRoles)]
+    [InlineData(ProvisioningStepType.StoreCredentials)]
+    [InlineData(ProvisioningStepType.CreateBlueprint)]
+    [InlineData(ProvisioningStepType.CreateBlueprintPrincipal)]
+    public async Task ExecuteStepAsync_UnsupportedPersistedStepFailsClosedWithoutGraph(
+        ProvisioningStepType stepType)
+    {
+        var handler = new RecordingHttpMessageHandler((_, _) =>
+            throw new InvalidOperationException("Unsupported persisted steps must not call Graph."));
+        var client = CreateClient(handler);
+
+        var action = () => client.ExecuteStepAsync(
+            CreateRequest(stepType),
+            CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
+        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_STEP_NOT_IMPLEMENTED);
+        handler.Requests.Should().BeEmpty();
     }
 
     [Fact]
@@ -313,7 +319,7 @@ public sealed class Agent365ProvisioningClientTests
     }
 
     [Fact]
-    public async Task ExecuteCreateBlueprint_ManagerApplicationsMatchAsAnOrderInsensitiveExactSet()
+    public async Task ExecuteResolveBlueprint_ManagerApplicationsMatchAsAnOrderInsensitiveExactSet()
     {
         var expectedDisplayName =
             $"A365 Blueprint - Test agent - {AgentRegistrationId:N}";
@@ -337,8 +343,8 @@ public sealed class Agent365ProvisioningClientTests
         ];
         var client = CreateClient(handler, options: options);
         var request = CreateRequest(
-            ProvisioningStepType.CreateBlueprint,
-            CreateBlueprintState());
+            ProvisioningStepType.ResolveBlueprint,
+            CreateResolvedBlueprintState());
 
         var result = await client.ExecuteStepAsync(request, CancellationToken.None);
 
@@ -354,7 +360,7 @@ public sealed class Agent365ProvisioningClientTests
     }
 
     [Fact]
-    public async Task ExecuteCreateBlueprint_RetriesExactReadAfterSuccessfulCreateWithoutReposting()
+    public async Task ExecuteResolveBlueprint_RetriesExactReadAfterSuccessfulCreateWithoutReposting()
     {
         var expectedDisplayName =
             $"A365 Blueprint - Test agent - {AgentRegistrationId:N}";
@@ -377,7 +383,7 @@ public sealed class Agent365ProvisioningClientTests
 
         var result = await client.ExecuteStepAsync(
             CreateRequest(
-                ProvisioningStepType.CreateBlueprint,
+                ProvisioningStepType.ResolveBlueprint,
                 new Agent365ProvisioningState()),
             CancellationToken.None);
 
@@ -415,7 +421,7 @@ public sealed class Agent365ProvisioningClientTests
         var result = await client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.EnsureBlueprintPrincipal,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         result.State.BlueprintPrincipalObjectId.Should().Be(
@@ -427,7 +433,7 @@ public sealed class Agent365ProvisioningClientTests
     }
 
     [Fact]
-    public async Task ExecuteCreateBlueprint_PreservesExistingPlannedRegistryId()
+    public async Task ExecuteResolveBlueprint_PreservesExistingPlannedRegistryId()
     {
         var expectedDisplayName =
             $"A365 Blueprint - Test agent - {AgentRegistrationId:N}";
@@ -441,13 +447,13 @@ public sealed class Agent365ProvisioningClientTests
             _ => throw new InvalidOperationException("Unexpected Graph request.")
         });
         var client = CreateClient(handler);
-        var state = CreateBlueprintState() with
+        var state = CreateResolvedBlueprintState() with
         {
             PlannedAgent365RegistrationId = PlannedRegistryId.ToString("D")
         };
 
         var result = await client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.CreateBlueprint, state),
+            CreateRequest(ProvisioningStepType.ResolveBlueprint, state),
             CancellationToken.None);
 
         result.State.PlannedAgent365RegistrationId.Should().Be(
@@ -455,7 +461,7 @@ public sealed class Agent365ProvisioningClientTests
     }
 
     [Fact]
-    public async Task ExecuteCreateBlueprint_UnexpectedManagerApplicationFailsClosed()
+    public async Task ExecuteResolveBlueprint_UnexpectedManagerApplicationFailsClosed()
     {
         var expectedDisplayName =
             $"A365 Blueprint - Test agent - {AgentRegistrationId:N}";
@@ -469,8 +475,8 @@ public sealed class Agent365ProvisioningClientTests
         });
         var client = CreateClient(handler);
         var request = CreateRequest(
-            ProvisioningStepType.CreateBlueprint,
-            CreateBlueprintState());
+            ProvisioningStepType.ResolveBlueprint,
+            CreateResolvedBlueprintState());
 
         var action = () => client.ExecuteStepAsync(request, CancellationToken.None);
 
@@ -481,414 +487,13 @@ public sealed class Agent365ProvisioningClientTests
         handler.Requests.Should().HaveCount(2);
     }
 
-    // Historical workflow-v2 app-only Registry tests are retained only as source
-    // archaeology. Workflow v3 makes this adapter path unreachable.
-#if false
-    [Fact]
-    public async Task ExecuteRegisterAgent_UsesBetaRouteOnlyAfterPreviewPreflightPasses()
-    {
-        var registryId = PlannedRegistryId.ToString("D");
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => AgentRegistrationResponse(registryId, HttpStatusCode.Created),
-            2 => AgentRegistrationResponse(registryId, HttpStatusCode.OK),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(handler);
-        var request = CreateRequest(
-            ProvisioningStepType.RegisterAgent,
-            CreateRegistryState());
-
-        var result = await client.ExecuteStepAsync(request, CancellationToken.None);
-
-        handler.Requests.Should().HaveCount(3);
-        handler.Requests[1].Method.Should().Be(HttpMethod.Post);
-        handler.Requests[1].Uri.Should().Be(
-            "https://graph.microsoft.com/beta/copilot/agentRegistrations");
-        using (var document = JsonDocument.Parse(handler.Requests[1].Body!))
-        {
-            document.RootElement.GetProperty("id").GetString().Should().Be(registryId);
-            document.RootElement.GetProperty("managedByAppId").GetString().Should().Be(
-                GatewayApiClientId.ToString("D"));
-        }
-        handler.Requests.Should().OnlyContain(request =>
-            !request.Headers.ContainsKey("ConsistencyLevel"));
-        handler.Requests[0].Method.Should().Be(HttpMethod.Get);
-        handler.Requests[0].Uri.Should().Be(
-            $"https://graph.microsoft.com/beta/copilot/agentRegistrations/{registryId}");
-        handler.Requests[2].Method.Should().Be(HttpMethod.Get);
-        handler.Requests[2].Uri.Should().Be(
-            $"https://graph.microsoft.com/beta/copilot/agentRegistrations/{registryId}");
-        result.State.Agent365RegistrationId.Should().Be(registryId);
-        result.State.PlannedAgent365RegistrationId.Should().Be(registryId);
-        result.State.RegistryProvider.Should().Be(Agent365Options.DirectRegistryPreviewProvider);
-    }
-
-    [Fact]
-    public async Task ExecuteRegisterAgent_ExistingPlannedRecordCompletesWithoutPost()
-    {
-        var registryId = PlannedRegistryId.ToString("D");
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => AgentRegistrationResponse(registryId, HttpStatusCode.OK),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(handler);
-
-        var result = await client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, CreateRegistryState()),
-            CancellationToken.None);
-
-        result.State.Agent365RegistrationId.Should().Be(registryId);
-        handler.Requests.Should().ContainSingle();
-        handler.Requests[0].Method.Should().Be(HttpMethod.Get);
-    }
-
-    [Fact]
-    public async Task ExecuteRegisterAgent_RunningRecoveryAllowsBoundedGetPropagationWithoutPost()
-    {
-        var registryId = PlannedRegistryId.ToString("D");
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => AgentRegistrationResponse(registryId, HttpStatusCode.OK),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(
-            handler,
-            postMutationVerificationLookupDelays: [TimeSpan.Zero, TimeSpan.Zero]);
-        var recoveryState = CreateRegistryState() with
-        {
-            Agent365RegistrationId = registryId,
-            RegistryProvider = null
-        };
-
-        var result = await client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, recoveryState),
-            CancellationToken.None);
-
-        result.State.Agent365RegistrationId.Should().Be(registryId);
-        handler.Requests.Should().HaveCount(2);
-        handler.Requests.Should().OnlyContain(candidate => candidate.Method == HttpMethod.Get);
-    }
-
-    [Fact]
-    public async Task ExecuteRegisterAgent_AmbiguousMutationReconcilesKnownIdWithoutReposting()
-    {
-        var registryId = PlannedRegistryId.ToString("D");
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => ErrorResponse(HttpStatusCode.InternalServerError, DependencyBodySentinel),
-            2 => AgentRegistrationResponse(registryId, HttpStatusCode.OK),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(
-            handler,
-            postMutationVerificationLookupDelays: [TimeSpan.Zero]);
-
-        var result = await client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, CreateRegistryState()),
-            CancellationToken.None);
-
-        result.State.Agent365RegistrationId.Should().Be(registryId);
-        handler.Requests.Should().HaveCount(3);
-        handler.Requests.Should().ContainSingle(candidate => candidate.Method == HttpMethod.Post);
-        handler.Requests.Count(candidate => candidate.Method == HttpMethod.Get).Should().Be(2);
-        handler.Requests.Where(candidate => candidate.Method == HttpMethod.Get).Should().OnlyContain(candidate =>
-            candidate.Method == HttpMethod.Get &&
-            candidate.Uri.EndsWith($"/{registryId}", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task ExecuteRegisterAgent_AmbiguousMutationMissingKnownIdFailsManualWithoutReposting()
-    {
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => ErrorResponse(HttpStatusCode.InternalServerError, DependencyBodySentinel),
-            >= 2 and <= 6 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(
-            handler,
-            postMutationVerificationLookupDelays: FiveImmediateVerificationAttempts);
-
-        var action = () => client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, CreateRegistryState()),
-            CancellationToken.None);
-
-        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
-        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
-        exception.Which.RequiresManualIntervention.Should().BeTrue();
-        exception.Which.IsTransient.Should().BeFalse();
-        exception.Which.Message.Should().NotContain(DependencyBodySentinel);
-        exception.Which.SafeSummary.Should().NotContain(DependencyBodySentinel);
-        handler.Requests.Should().HaveCount(7);
-        handler.Requests.Should().ContainSingle(candidate => candidate.Method == HttpMethod.Post);
-    }
-
-    [Fact]
-    public async Task ExecuteRegisterAgent_RawPostFailureReconcilesThenFailsManualWithoutReposting()
-    {
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => throw new InvalidOperationException("raw post transport failure"),
-            >= 2 and <= 6 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(
-            handler,
-            postMutationVerificationLookupDelays: FiveImmediateVerificationAttempts);
-
-        var action = () => client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, CreateRegistryState()),
-            CancellationToken.None);
-
-        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
-        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
-        exception.Which.RequiresManualIntervention.Should().BeTrue();
-        exception.Which.IsTransient.Should().BeFalse();
-        exception.Which.SafeSummary.Should().NotContain("raw post transport failure");
-        handler.Requests.Should().HaveCount(7);
-        handler.Requests.Should().ContainSingle(candidate => candidate.Method == HttpMethod.Post);
-    }
-
-    [Fact]
-    public async Task ExecuteRegisterAgent_DelayedKnownIdReadbackSucceedsWithoutReposting()
-    {
-        var registryId = PlannedRegistryId.ToString("D");
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => AgentRegistrationResponse(registryId, HttpStatusCode.Created),
-            2 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            3 => AgentRegistrationResponse(registryId, HttpStatusCode.OK),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(
-            handler,
-            postMutationVerificationLookupDelays: [TimeSpan.Zero, TimeSpan.Zero]);
-
-        var result = await client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, CreateRegistryState()),
-            CancellationToken.None);
-
-        result.State.Agent365RegistrationId.Should().Be(registryId);
-        handler.Requests.Should().ContainSingle(candidate => candidate.Method == HttpMethod.Post);
-        handler.Requests.Where(candidate => candidate.Method == HttpMethod.Get).Should().OnlyContain(candidate =>
-            candidate.Method == HttpMethod.Get &&
-            candidate.Uri.EndsWith($"/{registryId}", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task ExecuteRegisterAgent_MissingAfterBoundedKnownIdReadsFailsWithoutReposting()
-    {
-        var registryId = PlannedRegistryId.ToString("D");
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => AgentRegistrationResponse(registryId, HttpStatusCode.Created),
-            >= 2 and <= 6 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(
-            handler,
-            postMutationVerificationLookupDelays: FiveImmediateVerificationAttempts);
-
-        var action = () => client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, CreateRegistryState()),
-            CancellationToken.None);
-
-        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
-        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
-        exception.Which.RequiresManualIntervention.Should().BeTrue();
-        handler.Requests.Should().HaveCount(7);
-        handler.Requests.Should().ContainSingle(candidate => candidate.Method == HttpMethod.Post);
-    }
-
-    [Theory]
-    [InlineData(HttpStatusCode.BadRequest)]
-    [InlineData(HttpStatusCode.Unauthorized)]
-    [InlineData(HttpStatusCode.Forbidden)]
-    public async Task ExecuteRegisterAgent_PostCreateReadRejectionIsAlwaysAmbiguousManual(
-        HttpStatusCode readStatus)
-    {
-        var registryId = PlannedRegistryId.ToString("D");
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => AgentRegistrationResponse(registryId, HttpStatusCode.Created),
-            2 => ErrorResponse(readStatus, DependencyBodySentinel),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(
-            handler,
-            postMutationVerificationLookupDelays: [TimeSpan.Zero]);
-
-        var action = () => client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, CreateRegistryState()),
-            CancellationToken.None);
-
-        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
-        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
-        exception.Which.RequiresManualIntervention.Should().BeTrue();
-        exception.Which.IsTransient.Should().BeFalse();
-        exception.Which.SafeSummary.Should().NotContain(DependencyBodySentinel);
-        handler.Requests.Should().HaveCount(3);
-        handler.Requests.Should().ContainSingle(candidate => candidate.Method == HttpMethod.Post);
-    }
-
-    [Fact]
-    public async Task ExecuteRegisterAgent_MismatchedKnownIdReadbackFailsWithoutReposting()
-    {
-        var registryId = PlannedRegistryId.ToString("D");
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => AgentRegistrationResponse(registryId, HttpStatusCode.Created),
-            2 => JsonResponse(HttpStatusCode.OK, new
-            {
-                id = registryId,
-                sourceAgentId = "external-agent-1",
-                managedByAppId = UnexpectedManagerApplicationId,
-                agentIdentityId = AgentIdentityObjectId,
-                agentIdentityBlueprintId = BlueprintClientId
-            }),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(
-            handler,
-            postMutationVerificationLookupDelays: FiveImmediateVerificationAttempts);
-
-        var action = () => client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, CreateRegistryState()),
-            CancellationToken.None);
-
-        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
-        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
-        exception.Which.RequiresManualIntervention.Should().BeTrue();
-        handler.Requests.Should().HaveCount(3);
-        handler.Requests.Should().ContainSingle(candidate => candidate.Method == HttpMethod.Post);
-    }
-
-    [Fact]
-    public async Task ExecuteRegisterAgent_ResponseIdMismatchAndMissingPlannedReadbackFailsWithoutRepost()
-    {
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => AgentRegistrationResponse(
-                UnexpectedAgent365RegistrationId.ToString("D"),
-                HttpStatusCode.Created),
-            >= 2 and <= 6 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(
-            handler,
-            postMutationVerificationLookupDelays: FiveImmediateVerificationAttempts);
-
-        var action = () => client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, CreateRegistryState()),
-            CancellationToken.None);
-
-        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
-        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
-        exception.Which.RequiresManualIntervention.Should().BeTrue();
-        handler.Requests.Should().HaveCount(7);
-        handler.Requests.Should().ContainSingle(candidate => candidate.Method == HttpMethod.Post);
-    }
-
-    [Fact]
-    public async Task ExecuteRegisterAgent_ResponseIdMismatchReconcilesPlannedIdWithoutRepost()
-    {
-        var registryId = PlannedRegistryId.ToString("D");
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => AgentRegistrationResponse(
-                UnexpectedAgent365RegistrationId.ToString("D"),
-                HttpStatusCode.Created),
-            2 => AgentRegistrationResponse(registryId, HttpStatusCode.OK),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(
-            handler,
-            postMutationVerificationLookupDelays: [TimeSpan.Zero]);
-
-        var result = await client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, CreateRegistryState()),
-            CancellationToken.None);
-
-        result.State.Agent365RegistrationId.Should().Be(registryId);
-        handler.Requests.Should().HaveCount(3);
-        handler.Requests.Should().ContainSingle(candidate => candidate.Method == HttpMethod.Post);
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData("not-a-guid")]
-    public async Task ExecuteRegisterAgent_MissingOrInvalidPlannedIdFailsBeforePost(
-        string? plannedId)
-    {
-        var handler = new RecordingHttpMessageHandler((_, _) =>
-            throw new InvalidOperationException("No Graph request was expected."));
-        var client = CreateClient(handler);
-        var state = CreateRegistryState() with
-        {
-            PlannedAgent365RegistrationId = plannedId
-        };
-
-        var action = () => client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, state),
-            CancellationToken.None);
-
-        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
-        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_STATE_INVALID);
-        exception.Which.RequiresManualIntervention.Should().BeTrue();
-        handler.Requests.Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task ExecuteRegisterAgent_CancellationAfterCreateFailsManualWithoutReposting()
-    {
-        using var cancellation = new CancellationTokenSource();
-        var registryId = PlannedRegistryId.ToString("D");
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
-            1 => AgentRegistrationResponse(registryId, HttpStatusCode.Created),
-            2 => CancelAndReturnNotFound(cancellation),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(
-            handler,
-            postMutationVerificationLookupDelays:
-            [TimeSpan.Zero, TimeSpan.FromMinutes(1)]);
-
-        var action = () => client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.RegisterAgent, CreateRegistryState()),
-            cancellation.Token);
-
-        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
-        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
-        exception.Which.RequiresManualIntervention.Should().BeTrue();
-        handler.Requests.Should().HaveCount(3);
-        handler.Requests.Should().ContainSingle(candidate => candidate.Method == HttpMethod.Post);
-    }
-#endif
 
     [Fact]
     public async Task ExecuteRegisterAgent_RequiresDelegatedAdministratorAndNeverCallsGraph()
     {
         var handler = new RecordingHttpMessageHandler((_, _) =>
             throw new InvalidOperationException("The worker must not call Graph Registry."));
-        var options = CreateValidOptions();
-        options.RegistryProvider = Agent365Options.DisabledRegistryProvider;
-        options.DirectRegistryPreviewEnabled = false;
-        var client = CreateClient(handler, options: options);
+        var client = CreateClient(handler);
 
         var action = () => client.ExecuteStepAsync(
             CreateRequest(ProvisioningStepType.RegisterAgent, CreateAssignAgent365AccessState()),
@@ -901,7 +506,7 @@ public sealed class Agent365ProvisioningClientTests
     }
 
     [Fact]
-    public async Task ExecuteCreateApplication_ForbiddenIsNormalizedWithoutResponseBodyLeakage()
+    public async Task ExecuteResolveBlueprint_ForbiddenIsNormalizedWithoutResponseBodyLeakage()
     {
         var handler = new RecordingHttpMessageHandler((_, _) => ErrorResponse(
             HttpStatusCode.Forbidden,
@@ -909,7 +514,7 @@ public sealed class Agent365ProvisioningClientTests
         var client = CreateClient(handler);
 
         var action = () => client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.CreateAppRegistration),
+            CreateRequest(ProvisioningStepType.ResolveBlueprint),
             CancellationToken.None);
 
         var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
@@ -921,7 +526,7 @@ public sealed class Agent365ProvisioningClientTests
     }
 
     [Fact]
-    public async Task ExecuteCreateApplication_ThrottleIsNormalizedAsRetryableThrottle()
+    public async Task ExecuteResolveBlueprint_ThrottleIsNormalizedAsRetryableThrottle()
     {
         var handler = new RecordingHttpMessageHandler((_, _) => ErrorResponse(
             HttpStatusCode.TooManyRequests,
@@ -929,7 +534,7 @@ public sealed class Agent365ProvisioningClientTests
         var client = CreateClient(handler);
 
         var action = () => client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.CreateAppRegistration),
+            CreateRequest(ProvisioningStepType.ResolveBlueprint),
             CancellationToken.None);
 
         var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
@@ -938,98 +543,6 @@ public sealed class Agent365ProvisioningClientTests
         exception.Which.RequiresManualIntervention.Should().BeFalse();
         exception.Which.Message.Should().NotContain(DependencyBodySentinel);
         exception.Which.SafeSummary.Should().NotContain(DependencyBodySentinel);
-    }
-
-    [Fact]
-    public async Task ExecuteStoreCredentials_SecretTextIsAbsentFromResultAndLogs()
-    {
-        var credentialDisplayName = $"a365-gateway:{AgentRegistrationId:D}";
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => ApplicationCredentialResponse(credentialDisplayName, includeCredential: false),
-            1 => JsonResponse(HttpStatusCode.OK, new
-            {
-                keyId = PasswordCredentialKeyId,
-                displayName = credentialDisplayName,
-                endDateTime = CredentialExpiry,
-                secretText = SecretTextSentinel
-            }),
-            2 => ApplicationCredentialResponse(credentialDisplayName, includeCredential: true),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var credentialStore = new RecordingCredentialStore
-        {
-            StoredResult = new StoredPasswordCredential(
-                PasswordCredentialKeyId.ToString("D"),
-                "https://unit-test-vault.vault.azure.net/secrets/agent-credential/version",
-                CredentialExpiry)
-        };
-        var logger = new RecordingLogger<Agent365ProvisioningClient>();
-        var client = CreateClient(
-            handler,
-            new RecordingTokenProvider(),
-            credentialStore,
-            logger,
-            CreateValidOptions());
-        var request = CreateRequest(
-            ProvisioningStepType.StoreCredentials,
-            new Agent365ProvisioningState
-            {
-                ApplicationObjectId = ApplicationObjectId.ToString("D")
-            });
-
-        var result = await client.ExecuteStepAsync(request, CancellationToken.None);
-
-        credentialStore.CapturedSecretText.Should().Be(SecretTextSentinel);
-        result.State.PasswordCredentialKeyId.Should().Be(PasswordCredentialKeyId.ToString("D"));
-        result.State.KeyVaultSecretUri.Should().Be(credentialStore.StoredResult.KeyVaultSecretUri);
-        var serializedResult = JsonSerializer.Serialize(result);
-        serializedResult.Should().NotContain(SecretTextSentinel);
-        serializedResult.ToLowerInvariant().Should().NotContain("secrettext");
-        string.Join("|", logger.Messages).Should().NotContain(SecretTextSentinel);
-    }
-
-    [Fact]
-    public async Task ExecuteLegacyAssignRoles_StillAssignsExternalAgentToLegacyClientPrincipal()
-    {
-        var gatewayResourcePrincipalId = Guid.Parse("10101010-1010-4010-8010-101010101010");
-        var externalAgentRoleId = Guid.Parse("30303030-3030-4030-8030-303030303030");
-        const string gatewayAssignmentId = "legacy-gateway-assignment-id";
-        var assignments = new[]
-        {
-            new
-            {
-                id = gatewayAssignmentId,
-                principalId = ApplicationObjectId,
-                resourceId = gatewayResourcePrincipalId,
-                appRoleId = externalAgentRoleId
-            }
-        };
-        var handler = new RecordingHttpMessageHandler((_, index) => index switch
-        {
-            0 => ServicePrincipalWithRoleResponse(
-                gatewayResourcePrincipalId,
-                GatewayApiClientId,
-                externalAgentRoleId,
-                "ExternalAgent"),
-            1 => JsonResponse(HttpStatusCode.OK, new { value = assignments }),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
-        });
-        var client = CreateClient(handler);
-        var request = CreateRequest(
-            ProvisioningStepType.AssignRoles,
-            new Agent365ProvisioningState
-            {
-                ServicePrincipalObjectId = ApplicationObjectId.ToString("D"),
-                AppRoleAssignmentId = gatewayAssignmentId
-            });
-
-        var result = await client.ExecuteStepAsync(request, CancellationToken.None);
-
-        result.State.AppRoleAssignmentId.Should().Be(gatewayAssignmentId);
-        result.CompletionEvidence.Should().Be("ExternalAgentAppRoleAssignmentVerified");
-        handler.Requests.Should().HaveCount(2);
-        handler.Requests.Should().OnlyContain(candidate => candidate.Method == HttpMethod.Get);
     }
 
     [Fact]
@@ -1058,9 +571,7 @@ public sealed class Agent365ProvisioningClientTests
             1 => JsonResponse(HttpStatusCode.OK, new { value = assignments }),
             _ => throw new InvalidOperationException("Unexpected Graph request.")
         });
-        var options = CreateValidOptions();
-        options.ExternalAgentAppRoleValue = string.Empty;
-        var client = CreateClient(handler, options: options);
+        var client = CreateClient(handler);
         var request = CreateRequest(
             ProvisioningStepType.AssignAgent365Access,
             new Agent365ProvisioningState
@@ -1068,7 +579,7 @@ public sealed class Agent365ProvisioningClientTests
                 BlueprintObjectId = BlueprintObjectId.ToString("D"),
                 BlueprintClientId = BlueprintClientId.ToString("D"),
                 AgentIdentityObjectId = AgentIdentityObjectId.ToString("D"),
-                AgentIdentityClientId = ApplicationClientId.ToString("D"),
+                AgentIdentityClientId = AgentIdentityObjectId.ToString("D"),
                 ObservabilityAppRoleAssignmentId = observabilityAssignmentId
             });
 
@@ -1404,7 +915,7 @@ public sealed class Agent365ProvisioningClientTests
         var client = CreateClient(handler, tokenProvider);
         var request = CreateRequest(
             ProvisioningStepType.ConfigureGatewayFederation,
-            CreateBlueprintState());
+            CreateResolvedBlueprintState());
 
         var result = await client.ExecuteStepAsync(request, CancellationToken.None);
 
@@ -1442,7 +953,7 @@ public sealed class Agent365ProvisioningClientTests
         var result = await client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.ConfigureGatewayFederation,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         result.State.GatewayManagedIdentityPrincipalId.Should()
@@ -1484,7 +995,7 @@ public sealed class Agent365ProvisioningClientTests
         var action = () => client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.ConfigureGatewayFederation,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
@@ -1533,7 +1044,7 @@ public sealed class Agent365ProvisioningClientTests
         var action = () => client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.ConfigureGatewayFederation,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
@@ -1573,7 +1084,7 @@ public sealed class Agent365ProvisioningClientTests
         var result = await client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.ConfigureGatewayFederation,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         result.State.GatewayFederatedCredentialId.Should().Be(gatewayCredentialId);
@@ -1621,7 +1132,7 @@ public sealed class Agent365ProvisioningClientTests
         var action = () => client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.ConfigureGatewayFederation,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
@@ -1671,7 +1182,7 @@ public sealed class Agent365ProvisioningClientTests
         var action = () => client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.ConfigureGatewayFederation,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
@@ -1718,7 +1229,7 @@ public sealed class Agent365ProvisioningClientTests
         var action = () => client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.ConfigureGatewayFederation,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
@@ -1758,7 +1269,7 @@ public sealed class Agent365ProvisioningClientTests
         var action = () => client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.ConfigureGatewayFederation,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
@@ -1797,7 +1308,7 @@ public sealed class Agent365ProvisioningClientTests
         var action = () => client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.ConfigureGatewayFederation,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             cancellation.Token);
 
         await action.Should().ThrowAsync<OperationCanceledException>();
@@ -1833,7 +1344,7 @@ public sealed class Agent365ProvisioningClientTests
         var result = await client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.ConfigureGatewayFederation,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         result.State.GatewayFederatedCredentialId.Should().Be(gatewayCredentialId);
@@ -1851,7 +1362,7 @@ public sealed class Agent365ProvisioningClientTests
         var client = CreateClient(handler, new RecordingTokenProvider(unexpectedCaller));
 
         var action = () => client.ExecuteStepAsync(
-            CreateRequest(ProvisioningStepType.ConfigureGatewayFederation, CreateBlueprintState()),
+            CreateRequest(ProvisioningStepType.ConfigureGatewayFederation, CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
@@ -1874,7 +1385,7 @@ public sealed class Agent365ProvisioningClientTests
         var action = () => client.ExecuteStepAsync(
             CreateRequest(
                 ProvisioningStepType.ConfigureGatewayFederation,
-                CreateBlueprintState()),
+                CreateResolvedBlueprintState()),
             CancellationToken.None);
 
         var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
@@ -1920,6 +1431,67 @@ public sealed class Agent365ProvisioningClientTests
             candidate.Uri.Contains(GatewayApiClientId.ToString("D"), StringComparison.Ordinal));
         handler.Requests.Should().NotContain(candidate =>
             candidate.Uri.Contains("/beta/copilot/agentRegistrations", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ExecuteVerifyAgent365Connection_StaleSuccessfulAssignmentListRetriesWithoutReposting()
+    {
+        const string gatewayCredentialId = "gateway-federated-credential-id";
+        var handler = CreateAgent365ConnectionVerificationHandler(
+            gatewayCredentialId,
+            staleAssignmentReadCount: 1);
+        var observabilityTokenProvider = new RecordingObservabilityTokenProvider();
+        var client = CreateClient(
+            handler,
+            new RecordingTokenProvider(GatewayManagedIdentityPrincipalId),
+            observabilityTokenProvider: observabilityTokenProvider,
+            postMutationVerificationLookupDelays: [TimeSpan.Zero, TimeSpan.Zero]);
+
+        var result = await client.ExecuteStepAsync(
+            CreateRequest(
+                ProvisioningStepType.VerifyAgent365Connection,
+                CreateAgent365ConnectionVerificationState(gatewayCredentialId)),
+            CancellationToken.None);
+
+        result.State.Agent365ConnectionVerifiedAtUtc.Should().NotBeNull();
+        observabilityTokenProvider.CallCount.Should().Be(1);
+        handler.Requests.Should().HaveCount(7);
+        handler.Requests.Count(candidate =>
+                candidate.Uri.Contains("/appRoleAssignments", StringComparison.Ordinal))
+            .Should().Be(2);
+        handler.Requests.Should().NotContain(candidate => candidate.Method == HttpMethod.Post);
+    }
+
+    [Fact]
+    public async Task ExecuteVerifyAgent365Connection_MissingPersistedAssignmentAfterBoundedReadsFailsWithoutReposting()
+    {
+        const string gatewayCredentialId = "gateway-federated-credential-id";
+        var handler = CreateAgent365ConnectionVerificationHandler(
+            gatewayCredentialId,
+            staleAssignmentReadCount: 1,
+            exposeAssignment: false);
+        var observabilityTokenProvider = new RecordingObservabilityTokenProvider();
+        var client = CreateClient(
+            handler,
+            new RecordingTokenProvider(GatewayManagedIdentityPrincipalId),
+            observabilityTokenProvider: observabilityTokenProvider,
+            postMutationVerificationLookupDelays: [TimeSpan.Zero, TimeSpan.Zero]);
+
+        var action = () => client.ExecuteStepAsync(
+            CreateRequest(
+                ProvisioningStepType.VerifyAgent365Connection,
+                CreateAgent365ConnectionVerificationState(gatewayCredentialId)),
+            CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
+        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_STATE_INVALID);
+        exception.Which.RequiresManualIntervention.Should().BeTrue();
+        observabilityTokenProvider.CallCount.Should().Be(0);
+        handler.Requests.Should().HaveCount(6);
+        handler.Requests.Count(candidate =>
+                candidate.Uri.Contains("/appRoleAssignments", StringComparison.Ordinal))
+            .Should().Be(2);
+        handler.Requests.Should().NotContain(candidate => candidate.Method == HttpMethod.Post);
     }
 
     [Theory]
@@ -2061,7 +1633,6 @@ public sealed class Agent365ProvisioningClientTests
     private static Agent365ProvisioningClient CreateClient(
         RecordingHttpMessageHandler handler,
         RecordingTokenProvider? tokenProvider = null,
-        RecordingCredentialStore? credentialStore = null,
         RecordingLogger<Agent365ProvisioningClient>? logger = null,
         Agent365Options? options = null,
         IAgent365ObservabilityTokenProvider? observabilityTokenProvider = null,
@@ -2069,7 +1640,6 @@ public sealed class Agent365ProvisioningClientTests
         IReadOnlyList<TimeSpan>? postMutationVerificationLookupDelays = null)
     {
         tokenProvider ??= new RecordingTokenProvider();
-        credentialStore ??= new RecordingCredentialStore();
         logger ??= new RecordingLogger<Agent365ProvisioningClient>();
         options ??= CreateValidOptions();
         var graph = new MicrosoftGraphProvisioningClient(
@@ -2082,7 +1652,6 @@ public sealed class Agent365ProvisioningClientTests
             logger,
             options,
             graph,
-            credentialStore,
             observabilityTokenProvider,
             federatedCredentialVerificationLookupDelays,
             postMutationVerificationLookupDelays);
@@ -2093,16 +1662,10 @@ public sealed class Agent365ProvisioningClientTests
         return new Agent365Options
         {
             TenantId = TenantId.ToString("D"),
-            RegistryProvider = Agent365Options.DirectRegistryPreviewProvider,
-            DirectRegistryPreviewEnabled = true,
-            GatewayApiApplicationClientId = GatewayApiClientId.ToString("D"),
             ObservabilityApplicationClientId = ObservabilityApplicationClientId.ToString("D"),
             ProvisioningManagedIdentityPrincipalId = GatewayManagedIdentityPrincipalId.ToString("D"),
-            CredentialKeyVaultUri = "https://unit-test-vault.vault.azure.net/",
             ManagerApplicationIds = [ManagerApplicationId.ToString("D")],
-            ExternalAgentAppRoleValue = "ExternalAgent",
             RegistryOriginatingStore = "A365CustomGateway",
-            ApplicationPasswordLifetimeDays = 180,
             ProvisioningHttpTimeoutSeconds = 30
         };
     }
@@ -2127,17 +1690,6 @@ public sealed class Agent365ProvisioningClientTests
             "correlation-1");
     }
 
-    private static Agent365ProvisioningState CreateRegistryState()
-    {
-        return new Agent365ProvisioningState
-        {
-            BlueprintObjectId = BlueprintObjectId.ToString("D"),
-            BlueprintClientId = BlueprintClientId.ToString("D"),
-            AgentIdentityObjectId = AgentIdentityObjectId.ToString("D"),
-            PlannedAgent365RegistrationId = PlannedRegistryId.ToString("D")
-        };
-    }
-
     private static Agent365ProvisioningState CreateAgentIdentityState()
     {
         return new Agent365ProvisioningState
@@ -2157,7 +1709,7 @@ public sealed class Agent365ProvisioningClientTests
         };
     }
 
-    private static Agent365ProvisioningState CreateBlueprintState()
+    private static Agent365ProvisioningState CreateResolvedBlueprintState()
     {
         return new Agent365ProvisioningState
         {
@@ -2185,7 +1737,9 @@ public sealed class Agent365ProvisioningClientTests
         };
 
     private static RecordingHttpMessageHandler CreateAgent365ConnectionVerificationHandler(
-        string gatewayCredentialId)
+        string gatewayCredentialId,
+        int staleAssignmentReadCount = 0,
+        bool exposeAssignment = true)
     {
         var observabilityResourcePrincipalId = Guid.Parse("20202020-2020-4020-8020-202020202020");
         var observabilityRoleId = Guid.Parse("40404040-4040-4040-8040-404040404040");
@@ -2214,23 +1768,46 @@ public sealed class Agent365ProvisioningClientTests
 
         var expectedIdentityDisplayName =
             $"A365 Identity - Test agent - {AgentRegistrationId:N}";
-        return new RecordingHttpMessageHandler((_, index) => index switch
+        return new RecordingHttpMessageHandler((_, index) =>
         {
-            0 => BlueprintResponse(BlueprintDisplayName, ManagerApplicationId),
-            1 => JsonResponse(HttpStatusCode.OK, new
+            if (index == 0)
+                return BlueprintResponse(BlueprintDisplayName, ManagerApplicationId);
+            if (index == 1)
             {
-                id = BlueprintPrincipalObjectId,
-                appId = BlueprintClientId
-            }),
-            2 => AgentIdentityResponse(expectedIdentityDisplayName, HttpStatusCode.OK),
-            3 => ServicePrincipalWithRoleResponse(
-                observabilityResourcePrincipalId,
-                ObservabilityApplicationClientId,
-                observabilityRoleId,
-                "Agent365.Observability.OtelWrite"),
-            4 => JsonResponse(HttpStatusCode.OK, new { value = assignments }),
-            5 => JsonResponse(HttpStatusCode.OK, new { value = credentials }),
-            _ => throw new InvalidOperationException("Unexpected Graph request.")
+                return JsonResponse(HttpStatusCode.OK, new
+                {
+                    id = BlueprintPrincipalObjectId,
+                    appId = BlueprintClientId
+                });
+            }
+
+            if (index == 2)
+                return AgentIdentityResponse(expectedIdentityDisplayName, HttpStatusCode.OK);
+            if (index == 3)
+            {
+                return ServicePrincipalWithRoleResponse(
+                    observabilityResourcePrincipalId,
+                    ObservabilityApplicationClientId,
+                    observabilityRoleId,
+                    "Agent365.Observability.OtelWrite");
+            }
+
+            var assignmentReadIndex = index - 4;
+            if (assignmentReadIndex < staleAssignmentReadCount)
+                return JsonResponse(HttpStatusCode.OK, new { value = Array.Empty<object>() });
+            if (assignmentReadIndex == staleAssignmentReadCount)
+            {
+                return exposeAssignment
+                    ? JsonResponse(HttpStatusCode.OK, new { value = assignments })
+                    : JsonResponse(HttpStatusCode.OK, new { value = Array.Empty<object>() });
+            }
+
+            if (!exposeAssignment)
+                return JsonResponse(HttpStatusCode.OK, new { value = Array.Empty<object>() });
+            if (assignmentReadIndex == staleAssignmentReadCount + 1)
+                return JsonResponse(HttpStatusCode.OK, new { value = credentials });
+
+            throw new InvalidOperationException("Unexpected Graph request.");
         });
     }
 
@@ -2286,45 +1863,6 @@ public sealed class Agent365ProvisioningClientTests
                     allowedMemberTypes = new[] { "Application" }
                 }
             }
-        });
-    }
-
-    private static HttpResponseMessage AgentRegistrationResponse(
-        string registryId,
-        HttpStatusCode status)
-    {
-        return JsonResponse(status, new
-        {
-            id = registryId,
-            sourceAgentId = "external-agent-1",
-            managedByAppId = GatewayApiClientId,
-            agentIdentityId = AgentIdentityObjectId,
-            agentIdentityBlueprintId = BlueprintClientId,
-            ownerIds = new[] { OwnerObjectId },
-            createdBy = OwnerObjectId
-        });
-    }
-
-    private static HttpResponseMessage ApplicationCredentialResponse(
-        string credentialDisplayName,
-        bool includeCredential)
-    {
-        var credentials = includeCredential
-            ? new[]
-            {
-                new
-                {
-                    keyId = PasswordCredentialKeyId,
-                    displayName = credentialDisplayName,
-                    endDateTime = CredentialExpiry
-                }
-            }
-            : [];
-        return JsonResponse(HttpStatusCode.OK, new
-        {
-            id = ApplicationObjectId,
-            appId = ApplicationClientId,
-            passwordCredentials = credentials
         });
     }
 
@@ -2476,40 +2014,6 @@ public sealed class Agent365ProvisioningClientTests
                 Exception exception => ValueTask.FromException<AccessToken>(exception),
                 _ => throw new InvalidOperationException("Unexpected token-provider test result.")
             };
-        }
-    }
-
-    private sealed class RecordingCredentialStore : IProvisioningCredentialStore
-    {
-        public int FindCallCount { get; private set; }
-        public int StoreCallCount { get; private set; }
-        public string? CapturedSecretText { get; private set; }
-        public StoredPasswordCredential? ExistingResult { get; init; }
-        public StoredPasswordCredential StoredResult { get; init; } = new(
-            PasswordCredentialKeyId.ToString("D"),
-            "https://unit-test-vault.vault.azure.net/secrets/agent-credential/version",
-            CredentialExpiry);
-
-        public Task<StoredPasswordCredential?> FindAsync(
-            Guid agentRegistrationId,
-            string applicationObjectId,
-            CancellationToken cancellationToken)
-        {
-            FindCallCount++;
-            return Task.FromResult(ExistingResult);
-        }
-
-        public Task<StoredPasswordCredential> StoreAsync(
-            Guid agentRegistrationId,
-            string applicationObjectId,
-            string passwordCredentialKeyId,
-            string secretText,
-            DateTimeOffset expiresAtUtc,
-            CancellationToken cancellationToken)
-        {
-            StoreCallCount++;
-            CapturedSecretText = secretText;
-            return Task.FromResult(StoredResult);
         }
     }
 

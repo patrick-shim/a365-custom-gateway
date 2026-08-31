@@ -40,7 +40,7 @@ public class InfrastructureAsCodeSecurityTests
         var privateEndpoint = ReadRepositoryFile(
             "infrastructure", "bicep", "modules", "storage-private-endpoint.bicep");
         var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
-        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
+        var bootstrapAzure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
 
         storage.Should().Contain("publicNetworkAccess: 'Disabled'");
         storage.Should().Contain("defaultAction: 'Deny'");
@@ -58,7 +58,7 @@ public class InfrastructureAsCodeSecurityTests
         main.Should().Contain("subnetId: privateEndpointSubnet.id");
         main.Should().Contain("virtualNetworkId: virtualNetwork.id");
         main.Should().Contain("storagePrivateEndpoint");
-        deployScript.Should().Contain("'Microsoft.Network'");
+        bootstrapAzure.Should().Contain("'Microsoft.Network'");
     }
 
     [Fact]
@@ -67,7 +67,7 @@ public class InfrastructureAsCodeSecurityTests
         var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var apiModule = ReadRepositoryFile(
             "infrastructure", "bicep", "modules", "container-app-api.bicep");
-        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
+        var bootstrapAzure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
 
         main.Should().Contain("param preserveExistingApiSecrets bool = true");
         main.Should().Contain("existingApiContainerApp.listSecrets().value");
@@ -79,8 +79,7 @@ public class InfrastructureAsCodeSecurityTests
         apiModule.Should().Contain(
             "secrets: preservedConfigurationSecrets.?value ?? []");
 
-        deployScript.Should().Contain("[switch]$ApiContainerAppIsNew");
-        deployScript.Should().Contain("preserveExistingApiSecrets=$((-not $ApiContainerAppIsNew.IsPresent)");
+        bootstrapAzure.Should().Contain("preserveExistingApiSecrets = -not $Initial");
     }
 
     [Fact]
@@ -114,10 +113,7 @@ public class InfrastructureAsCodeSecurityTests
             "infrastructure", "bicep", "modules", "role-assignments.bicep");
         var registry = ReadRepositoryFile(
             "infrastructure", "bicep", "modules", "container-registry.bicep");
-        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
-        var runtimeImagePullOperations = ReadRepositoryFile(
-            "operations", "RuntimeImagePull.psm1");
-        var deployWorkflow = ReadRepositoryFile(".github", "workflows", "deploy.yml");
+        var bootstrapAzure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
         var sharedParameterFiles = new[] { "dev", "staging", "prod" }
             .Select(environment => ReadRepositoryFile(
                 "infrastructure", "bicep", "parameters", $"{environment}.bicepparam"))
@@ -185,61 +181,16 @@ public class InfrastructureAsCodeSecurityTests
             parameterFile.Contains("RUNTIME_IMAGE_PULL_IDENTITY_PRINCIPAL_ID", StringComparison.Ordinal) &&
             parameterFile.Contains("RUNTIME_IMAGE_PULL_ACR_PULL_ROLE_ASSIGNMENT_ID", StringComparison.Ordinal) &&
             parameterFile.Contains("ALLOW_LEGACY_SYSTEM_ASSIGNED_IMAGE_PULL", StringComparison.Ordinal));
-        deployScript.Should().Contain("Import-Module $RuntimeImagePullModule");
-        deployScript.Should().Contain("Assert-GatewayRuntimeImagePullContract");
-        runtimeImagePullOperations.Should().Contain(
-            "function Assert-GatewayRuntimeImagePullContract");
-        runtimeImagePullOperations.Should().Contain(
-            "$script:ArmGuidNamespace = [guid]'11fb06fb-712d-4ddd-98c7-e71bbd588830'");
-        runtimeImagePullOperations.Should().Contain(
-            "Get-ArmDeterministicGuid -Values @(");
-        runtimeImagePullOperations.Should().Contain(
-            "[string]$assignment.principalType -cne 'ServicePrincipal'");
-        runtimeImagePullOperations.Should().Contain(
-            "Get-RuntimeImagePullOptionalProperty -InputObject $assignment -Name 'delegatedManagedIdentityResourceId'");
-        runtimeImagePullOperations.Should().Contain(
-            "$identityTypes.Count -ne 1");
-        runtimeImagePullOperations.Should().Contain(
-            "$userAssignedIdentityIds.Count -ne 0");
-        runtimeImagePullOperations.Should().Contain(
-            "function Assert-RuntimeImageAcrBinding");
-        runtimeImagePullOperations.Should().Contain(
-            "Runtime images must be immutable digest references hosted by the exact expected deployment ACR.");
-        runtimeImagePullOperations.Should().NotContain(
-            "'--include-inherited', 'false'");
-        runtimeImagePullOperations.Should().Contain(
-            "A fresh private-image deployment cannot use the legacy post-compute system-identity AcrPull path.");
-        runtimeImagePullOperations.Should().Contain(
-            "cannot silently migrate an existing system-identity deployment while direct system AcrPull remains");
-        runtimeImagePullOperations.Should().Contain(
-            "Use a separately reviewed migration; this path never deletes role assignments.");
-        runtimeImagePullOperations.Should().Contain(
-            "--subscription', $canonicalSubscriptionId");
-        deployScript.Should().Contain(
-            "allowLegacySystemAssignedImagePull=$($AllowLegacySystemAssignedImagePull.ToString().ToLowerInvariant())");
-        deployScript.Should().Contain(
-            "-ExpectedAcrName $ExpectedContainerRegistryName");
-        deployScript.Should().Contain(
-            "Infrastructure deployment requires both immutable runtime image digests plus the exact expected ACR name and login server.");
-        deployScript.Should().Contain("Mode = 'NotEvaluatedSkipInfra'");
-        deployWorkflow.Should().Contain(
-            "Import-Module ./operations/RuntimeImagePull.psm1");
-        deployWorkflow.Should().Contain(
-            "allow_legacy_system_assigned_image_pull=$($allowLegacySystemAssignedImagePull.ToString().ToLowerInvariant())");
-        deployWorkflow.Should().Contain(
-            "-ExpectedAcrName $env:EXPECTED_ACR_NAME");
-        deployWorkflow.Should().Contain(
-            "az acr login --subscription \"$AZURE_SUBSCRIPTION_ID\"");
-        deployWorkflow.Should().MatchRegex(
-            @"build-and-push:\s+name: Build and Push Images\s+runs-on: ubuntu-latest\s+environment: \$\{\{ inputs\.environment \|\| 'dev' \}\}");
-        deployWorkflow.Should().Contain(
-            "az acr repository show --subscription \"$AZURE_SUBSCRIPTION_ID\"");
-        deployWorkflow.Should().Contain(
-            "'--subscription', $env:AZURE_SUBSCRIPTION_ID");
-        deployWorkflow.Should().Contain(
-            "--subscription $env:AZURE_SUBSCRIPTION_ID `");
-        deployWorkflow.Should().Contain("$parameterValidationExitCode -ne 0");
-        deployWorkflow.Should().Contain("Error\\s+BCP\\d+:");
+        bootstrapAzure.Should().Contain(
+            "function Assert-GatewayRuntimeImagePullFoundationEvidence");
+        bootstrapAzure.Should().Contain(
+            "runtimeImagePullIdentityId = [string]$pullEvidence.identityId");
+        bootstrapAzure.Should().Contain(
+            "runtimeImagePullIdentityPrincipalId = [string]$pullEvidence.principalId");
+        bootstrapAzure.Should().Contain(
+            "runtimeImagePullAcrPullRoleAssignmentId = [string]$pullEvidence.roleAssignmentId");
+        bootstrapAzure.Should().Contain(
+            "Assert-GatewayExactPartialRegistryEnvelope");
     }
 
     [Fact]
@@ -248,7 +199,7 @@ public class InfrastructureAsCodeSecurityTests
         var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var alerts = ReadRepositoryFile(
             "infrastructure", "bicep", "modules", "monitoring-alerts.bicep");
-        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
+        var bootstrapAzure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
 
         main.Should().Contain(
             "historicalWorkerContainerAppName: historicalWorkerContainerAppName");
@@ -258,9 +209,8 @@ public class InfrastructureAsCodeSecurityTests
         alerts.Should().Contain("cloud_RoleName == \"${historicalWorkerContainerAppName}\"");
         alerts.Should().Contain("cloud_RoleName == \"${targetWorkerContainerAppName}\"");
 
-        deployScript.Should().Contain("[string]$HistoricalWorkerContainerAppName");
-        deployScript.Should().Contain(
-            "historicalWorkerContainerAppName=$HistoricalWorkerContainerAppName");
+        bootstrapAzure.Should().Contain(
+            "historicalWorkerContainerAppName = \"ca-gateway-worker-$($Config.environment)\"");
     }
 
     [Fact]
@@ -271,6 +221,7 @@ public class InfrastructureAsCodeSecurityTests
             "infrastructure", "bicep", "modules", "container-app-worker.bicep");
         var preflight = ReadRepositoryFile(
             "operations", "test-provisioning-prerequisites.ps1");
+        var bootstrapAzure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
 
         main.Should().NotContain("agent365ObservabilityExporterClientId");
         worker.Should().NotContain("Agent365__ObservabilityExporterClientId");
@@ -375,16 +326,16 @@ public class InfrastructureAsCodeSecurityTests
         var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var worker = ReadRepositoryFile(
             "infrastructure", "bicep", "modules", "container-app-worker.bicep");
-        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
         var preflight = ReadRepositoryFile(
             "operations", "test-provisioning-prerequisites.ps1");
+        var bootstrapAzure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
 
         main.Should().Contain("agent365ProvisioningManagedIdentityPrincipalId");
         main.Should().Contain("!empty(agent365ProvisioningManagedIdentityPrincipalId)");
         worker.Should().Contain(
             "Agent365__ProvisioningManagedIdentityPrincipalId");
-        deployScript.Should().Contain(
-            "Resolve-ProvisioningManagedIdentityPrincipalId");
+        bootstrapAzure.Should().Contain(
+            "agent365ProvisioningManagedIdentityPrincipalId = $WorkerPrincipalId");
         preflight.Should().Contain(
             "The deployed worker managed-identity principal ID is pinned.");
     }
@@ -407,761 +358,17 @@ public class InfrastructureAsCodeSecurityTests
         main.Should().Contain(
             "var effectiveContinuousDevelopmentProvisioningEnabled = effectiveWorkerProvisioningExecutionEnabled && continuousDevelopmentProvisioningEnabled");
         main.Should().Contain(
-            "var effectiveApiProvisioningAdmissionEnabled = effectiveWorkerProvisioningExecutionEnabled && (effectiveContinuousDevelopmentProvisioningEnabled ||");
+            "provisioningExecutionEnabled: effectiveContinuousDevelopmentProvisioningEnabled");
         main.Should().Contain(
-            "var effectiveApiDelegatedRegistryActionEnabled = effectiveWorkerProvisioningExecutionEnabled");
-        main.Should().Contain(
-            "var effectiveApiBoundedActionEnabled = effectiveApiProvisioningAdmissionEnabled || effectiveApiDelegatedRegistryActionEnabled");
-        main.Should().Contain(
-            "var effectiveApiMinReplicas = effectiveApiBoundedActionEnabled ? 1 : apiMinReplicas");
-        main.Should().Contain(
-            "var effectiveApiMaxReplicas = effectiveApiBoundedActionEnabled ? 1 : apiMaxReplicas");
-        main.Should().Contain("minReplicas: effectiveApiMinReplicas");
-        main.Should().Contain("maxReplicas: effectiveApiMaxReplicas");
-        main.Should().Contain("output apiMinReplicas int = effectiveApiMinReplicas");
-        main.Should().Contain("output apiMaxReplicas int = effectiveApiMaxReplicas");
+            "agent365DelegatedRegistryEnabled: effectiveContinuousDevelopmentProvisioningEnabled");
+        main.Should().Contain("minReplicas: apiMinReplicas");
+        main.Should().Contain("maxReplicas: apiMaxReplicas");
+        main.Should().Contain("maxReplicas: workerMaxReplicas");
+        main.Should().Contain("output apiMinReplicas int = apiMinReplicas");
+        main.Should().Contain("output apiMaxReplicas int = apiMaxReplicas");
+        main.Should().NotContain("effectiveApiBoundedActionEnabled");
     }
 
-    [Fact]
-    public void DevelopmentCanaryController_ShouldBeWorkerFirstBoundedAndFailClosed()
-    {
-        var script = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
-        var preflight = ReadRepositoryFile(
-            "operations", "test-provisioning-prerequisites.ps1");
-
-        script.Should().Contain("'Status', 'Arm', 'OpenAdmission', 'OpenDelegatedCompletion', 'Deactivate'");
-        script.Should().Contain("$ApiContainerAppName = 'ca-gateway-api-dev'");
-        script.Should().Contain("$WorkerContainerAppName = 'ca-gateway-worker-dev-vnet'");
-        script.Should().Contain("$HistoricalWorkerContainerAppName = 'ca-gateway-worker-dev'");
-        script.Should().Contain("$WorkflowV3QueueName = 'gateway-provisioning-v3'");
-        script.Should().Contain("$WorkflowV2QueueName = 'gateway-provisioning-v2'");
-        script.Should().Contain("$HistoricalQueueName = 'gateway-provisioning'");
-        script.Should().Contain("$ExpectedHistoricalDeadLetterCount = 2L");
-        script.Should().Contain("[ValidateRange(30, 300)]");
-        script.Should().Contain("LivePrepareEvidencePath");
-        script.Should().Contain("LiveStateEvidencePath");
-        script.Should().Contain("LiveFinalizeEvidencePath");
-        script.Should().Contain("RecoveryBaselineEvidencePath");
-        script.Should().Contain("ReviewedCanaryFailureEvidencePaths");
-        script.Should().Contain("[Alias('ReviewedCanaryFailureEvidencePath')]");
-        script.Should().Contain("[long]$ExpectedWorkflowV2DeadLetterCount = 0");
-        script.Should().Contain("[long]$ExpectedWorkflowV3DeadLetterCount = 0");
-        script.Should().Contain("function Assert-ReviewedCanaryFailureEvidence");
-        script.Should().Contain("function Assert-QueueBaseline");
-        script.Should().Contain("function Assert-RetainedWorkflowV2QueueBaseline");
-        script.Should().Contain("$ExpectedWorkflowV2DeadLetterCount -eq 0");
-        script.Should().Contain("terminalMessageState");
-        script.Should().Contain("microsoftResourcesCreated");
-        script.Should().Contain("oneTimeGatewayApiKeyIncluded");
-        script.Should().Contain("a365gw_v1_[0-9a-fA-F]{32}");
-        script.Should().Contain("workerLogMutationMethodsBeforeFailure");
-        script.Should().Contain("Exactly one reviewed canary failure evidence file is required for every retained workflow-v2 DLQ message");
-        script.Should().Contain("BlueprintFederatedIdentityCredential");
-        script.Should().Contain("RetainAndReuseVerifiedFederation");
-        script.Should().Contain("exactly one FIC POST and no later Microsoft mutation");
-        script.Should().Contain("$retainedRegistryAmbiguityExceptionCount");
-        script.Should().Contain("$knownRegistryAmbiguityRegistrationId");
-        script.Should().Contain("$knownRegistryAmbiguityOperationId");
-        script.Should().Contain("$knownRegistryAmbiguityMessageId");
-        script.Should().Contain("$knownRegistryAmbiguityBlueprintId");
-        script.Should().Contain("$knownRegistryAmbiguityChildId");
-        script.Should().Contain("agentRegistrationPostHttpStatus");
-        script.Should().Contain("agentRegistrationKnownIdGetCount");
-        script.Should().Contain("registrationReplayAllowed");
-        script.Should().Contain("newRegistrationAllowedBeforeReconciliation");
-        script.Should().Contain("Do not issue another Registry create call for this registration.");
-        script.Should().Contain("workflowV2QueueAfterFailClosed.queueName");
-        script.Should().Contain(
-            "no message is received, peeked, settled, replayed, or purged");
-        script.Should().Contain("zero active and scheduled messages before activation or admission");
-        script.Should().Contain("dead-letter count changed during the admission window");
-        script.Should().Contain(
-            "Read-Evidence -Path $LivePrepareEvidencePath -Label 'Live prepare'");
-        script.Should().Contain(
-            "Read-Evidence -Path $LiveStateEvidencePath -Label 'Live state'");
-        script.Should().Contain(
-            "Read-Evidence -Path $RecoveryBaselineEvidencePath -Label 'Recovery baseline'");
-        script.Should().NotContain(
-            "Read-Evidence -Path $LiveFinalizeEvidencePath");
-        script.Should().Contain("$commands = @(");
-        script.Should().Contain("$arguments = @(");
-        script.Should().Contain("$rules = @(");
-        script.Should().Contain("[switch]$RequireExpectedMatch");
-        script.Should().Contain("-RequireExpectedMatch:$armed");
-        script.Should().Contain(
-            "-ContainerApp $Resources.Worker `");
-        script.Should().Contain(
-            "independently verified manager application ID is required for activation");
-        script.Should().Contain("empty or secret-backed manager application ID");
-        script.Should().Contain("duplicate manager application IDs");
-        script.Should().Contain("function Test-RevisionReadyRunningState");
-        script.Should().Contain("'RunningAtMaxScale'");
-        script.Should().Contain("'ScaleToZero'");
-        script.Should().Contain("ExpectedMinimumReplicas -ne 0");
-        script.Should().Contain("'ActivationFailed'");
-        script.Should().Contain("'Degraded'");
-        script.Should().Contain("'Failed'");
-        script.Should().Contain("'Unknown'");
-        script.Should().Contain("'Unhealthy'");
-        script.Should().Contain("-ExpectedMinimumReplicas ([int]$minimumReplicas)");
-        script.Should().Contain("-ExpectedMinimumReplicas 1");
-        script.Should().Contain("$activeRevisionCount -eq 1");
-        script.Should().Contain("during single-revision convergence");
-        script.Should().Contain("Last observation: $lastObservation");
-        script.Should().NotContain(
-            "does not have exactly one active revision");
-        script.Should().Contain(
-            "$null -ne $commandProperty -and $null -ne $commandProperty.Value");
-        script.Should().Contain(
-            "$null -ne $argumentsProperty -and $null -ne $argumentsProperty.Value");
-        script.Should().Contain(
-            "$null -ne $rulesProperty -and $null -ne $rulesProperty.Value");
-        script.Should().NotContain("$commands = if (");
-        script.Should().NotContain("$arguments = if (");
-        script.Should().NotContain("$rules = if (");
-        script.Should().Contain("PendingProvisioningOutboxVerifiedEmpty");
-        script.Should().Contain("ContainedSqlAccessVerified");
-        script.Should().Contain("DATABASE_MIGRATOR_");
-        script.Should().Contain("is not a clean runtime template");
-        script.Should().Contain("exactly one queue-scoped API Sender and one queue-scoped current-worker Receiver");
-        script.Should().Contain("no inherited, Data Owner, reversed, or third-party data-plane assignment");
-        script.Should().Contain("Invoke-FailClosedRecovery");
-        script.Should().Contain("$Action -ne 'Status'");
-        script.Should().Contain("finally {");
-        script.Should().NotContain("servicebus queue receive");
-        script.Should().NotContain("servicebus queue purge");
-        script.Should().NotContain(".secrets");
-        script.Should().Contain(
-            "The live finalize phase must remain unapplied until the bounded canary");
-        script.Should().Contain(
-            "LegacyGlobalIdempotencyUniqueIndexCount -ne 1");
-
-        var queueRoleCheckStart = script.IndexOf(
-            "function Assert-ExactQueueDataRoles", StringComparison.Ordinal);
-        var evidenceCheckStart = script.IndexOf(
-            "function Read-Evidence", StringComparison.Ordinal);
-        queueRoleCheckStart.Should().BeGreaterThan(-1);
-        evidenceCheckStart.Should().BeGreaterThan(queueRoleCheckStart);
-        var queueRoleCheck = script[queueRoleCheckStart..evidenceCheckStart];
-        queueRoleCheck.Should().Contain("'--scope', [string]$Queue.id");
-        queueRoleCheck.Should().Contain("'--include-inherited'");
-        queueRoleCheck.Should().NotContain("'--all'");
-        queueRoleCheck.Should().Contain("$ServiceBusDataOwnerRoleId");
-        queueRoleCheck.Should().Contain("$effectiveDataPlaneAssignments.Count -ne 2");
-
-        var armBlockStart = script.IndexOf("'Arm' {", StringComparison.Ordinal);
-        var openBlockStart = script.IndexOf("'OpenAdmission' {", StringComparison.Ordinal);
-        armBlockStart.Should().BeGreaterThan(-1);
-        openBlockStart.Should().BeGreaterThan(armBlockStart);
-        var armBlock = script[armBlockStart..openBlockStart];
-        armBlock.IndexOf("Set-WorkerMode", StringComparison.Ordinal)
-            .Should().BeLessThan(armBlock.IndexOf("Set-ApiAdmission", StringComparison.Ordinal));
-        armBlock.Should().Contain("-Enabled $false");
-
-        var recoveryStart = script.IndexOf(
-            "function Invoke-FailClosedRecovery", StringComparison.Ordinal);
-        var statusStart = script.IndexOf("function Show-Status", StringComparison.Ordinal);
-        var recoveryBlock = script[recoveryStart..statusStart];
-        recoveryBlock.IndexOf("Set-ApiAdmission", StringComparison.Ordinal)
-            .Should().BeLessThan(recoveryBlock.IndexOf("Set-WorkerMode", StringComparison.Ordinal));
-
-        preflight.Should().Contain("[switch]$ExpectApiAdmissionClosed");
-        preflight.Should().Contain("[switch]$ExpectDelegatedRegistryActionOpen");
-        preflight.Should().Contain(
-            "The worker-first staging state keeps API registration admission closed.");
-    }
-
-    [Fact]
-    public void DevelopmentCanaryController_ShouldSeparatePrepareProvenanceFromFreshLiveState()
-    {
-        var script = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
-        var timestampValidation = ReadPowerShellFunction(
-            script,
-            "Assert-EvidenceTimestampValid",
-            "Assert-ScriptEvidence");
-        var databaseEvidence = ReadPowerShellFunction(
-            script,
-            "Assert-DatabaseEvidence",
-            "Assert-OperationalConfirmations");
-
-        databaseEvidence.Should().Contain(
-            "Read-Evidence -Path $LivePrepareEvidencePath -Label 'Live prepare'");
-        databaseEvidence.Should().Contain(
-            "Read-Evidence -Path $LiveStateEvidencePath -Label 'Live state'");
-        databaseEvidence.Should().Contain(
-            "Assert-EvidenceTimestampValid -Evidence $prepare -Label 'Live prepare'");
-        databaseEvidence.Should().NotContain(
-            "Assert-EvidenceFresh -Evidence $prepare");
-        databaseEvidence.Should().Contain(
-            "Assert-EvidenceFresh -Evidence $liveState -Label 'Live state'");
-        databaseEvidence.Should().Contain(
-            "Assert-EvidenceFresh -Evidence $recovery -Label 'Recovery baseline'");
-
-        timestampValidation.Should().Contain(
-            "$verifiedAt.ToUniversalTime() -gt [datetimeoffset]::UtcNow.AddMinutes(5)");
-        timestampValidation.Should().Contain("evidence is future-dated");
-        timestampValidation.Should().NotContain("MaximumDatabaseEvidenceAgeMinutes");
-        timestampValidation.Should().NotContain("FromMinutes($MaximumDatabaseEvidenceAgeMinutes)");
-
-        databaseEvidence.Should().Contain(
-            "Assert-ScriptEvidence -Evidence $prepare -ExpectedScripts @(");
-        databaseEvidence.Should().Contain(
-            "'20260824_agent_identity_workflow_v2.sql'");
-        databaseEvidence.Should().Contain(
-            "'20260825_agent_ingress_credentials.sql'");
-        databaseEvidence.Should().Contain(
-            "'20260825_scoped_idempotency.sql'");
-        databaseEvidence.Should().Contain(
-            "'20260825_ingress_rate_limit_buckets.sql'");
-        databaseEvidence.Should().Contain(
-            "Assert-ScriptEvidence -Evidence $liveState -ExpectedScripts @() -Label 'Live state'");
-    }
-
-    [Fact]
-    public void DevelopmentCanaryController_ShouldRequireExactReadOnlyLiveAndRecoveryEvidence()
-    {
-        var script = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
-        var databaseEvidence = ReadPowerShellFunction(
-            script,
-            "Assert-DatabaseEvidence",
-            "Assert-OperationalConfirmations");
-        var operationalConfirmations = ReadPowerShellFunction(
-            script,
-            "Assert-OperationalConfirmations",
-            "Assert-NoContainerCommandOverride");
-
-        databaseEvidence.Should().Contain("[string]$liveState.Server");
-        databaseEvidence.Should().Contain("$SqlServerFqdn");
-        databaseEvidence.Should().Contain("[string]$liveState.Database");
-        databaseEvidence.Should().Contain("$SqlDatabaseName");
-        databaseEvidence.Should().Contain("[string]$liveState.Phase -ne 'verify'");
-        databaseEvidence.Should().Contain("[int]$liveState.Repeat -ne 1");
-        databaseEvidence.Should().Contain(
-            "$liveState.Verification.WorkflowV2Ready -ne $true");
-        databaseEvidence.Should().Contain(
-            "[int]$liveState.Verification.LegacyGlobalIdempotencyUniqueIndexCount -ne 1");
-        databaseEvidence.Should().Contain(
-            "[long]$liveState.Verification.PublishableOutboxMessageCount -ne 0");
-        databaseEvidence.Should().Contain(
-            "[long]$liveState.Verification.ActiveWorkflowV3JobCount -ne");
-        databaseEvidence.Should().Contain(
-            "$ExpectedRetainedManualWorkflowV3JobCount");
-        databaseEvidence.Should().Contain(
-            "[long]$liveState.Verification.AwaitingAdministratorActionWorkflowV3JobCount -ne 0");
-        var migrator = ReadRepositoryFile(
-            "tools", "Gateway.DatabaseMigrator", "Program.cs");
-        migrator.Should().Contain("AS ActiveWorkflowV3JobCount");
-        migrator.Should().Contain("AS AwaitingAdministratorActionWorkflowV3JobCount");
-        migrator.Should().Contain("N'AwaitingAdministratorAction'");
-        databaseEvidence.Should().Contain(
-            "$liveStateVerifiedAt = ([datetimeoffset]$liveState.VerifiedAtUtc).ToUniversalTime()");
-        databaseEvidence.Should().NotContain(
-            "[datetimeoffset]::Parse([string]$liveState.VerifiedAtUtc)");
-        databaseEvidence.Should().Contain("return $liveStateVerifiedAt");
-
-        databaseEvidence.Should().Contain(
-            "Assert-EvidenceFresh -Evidence $recovery -Label 'Recovery baseline'");
-        databaseEvidence.Should().Contain("[string]$recovery.Database");
-        databaseEvidence.Should().Contain("[string]$recovery.Phase -ne 'baseline'");
-        databaseEvidence.Should().Contain(
-            "$recovery.Verification.WorkflowV2Ready -ne $false");
-        databaseEvidence.Should().Contain(
-            "[int]$recovery.Verification.LegacyGlobalIdempotencyUniqueIndexCount -ne 1");
-
-        operationalConfirmations.Should().Contain(
-            "$ProvisioningOutboxVerifiedAtUtc.ToUniversalTime() -ne");
-        operationalConfirmations.Should().Contain(
-            "$ExpectedOutboxVerifiedAtUtc.ToUniversalTime()");
-        operationalConfirmations.Should().Contain("MaximumOutboxEvidenceAgeMinutes");
-
-        databaseEvidence.Should().Contain(
-            "-not [string]::IsNullOrWhiteSpace($LiveFinalizeEvidencePath)");
-        databaseEvidence.Should().Contain(
-            "The live finalize phase must remain unapplied until the bounded canary");
-        databaseEvidence.Should().NotContain(
-            "Read-Evidence -Path $LiveFinalizeEvidencePath");
-    }
-
-    [Fact]
-    public void DevelopmentCanaryController_ShouldEnforceDurableApiAdmissionExpiry()
-    {
-        var script = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
-
-        script.Should().Contain(
-            "$AdmissionExpirySettingName = 'Provisioning__AdmissionExpiresAtUtc'");
-        script.Should().MatchRegex(
-            @"\[ValidateRange\(30, 300\)\]\s*\r?\n\s*\[int\]\$AdmissionDurationSeconds = 120,");
-        script.Should().MatchRegex(
-            @"\[ValidateRange\(60, 300\)\]\s*\r?\n\s*\[int\]\$RevisionDeploymentAllowanceSeconds = 300,");
-        script.Should().Contain("$MaximumAdmissionExposureSeconds = 600");
-
-        var assertApiState = ReadPowerShellFunction(
-            script, "Assert-ApiState", "Assert-WorkerState");
-        assertApiState.Should().Contain(
-            "[Nullable[datetimeoffset]]$ExpectedAdmissionExpiresAtUtc");
-        assertApiState.Should().Contain(
-            "-Name $AdmissionExpirySettingName `");
-        assertApiState.Should().Contain("-AllowMissing");
-        assertApiState.Should().Contain("if ($AdmissionEnabled) {");
-        assertApiState.Should().Contain(
-            "$admissionExpiryValue.EndsWith('Z', [System.StringComparison]::Ordinal)");
-        assertApiState.Should().Contain(
-            "$parsedExpiry.ToUniversalTime() -le [datetimeoffset]::UtcNow");
-        assertApiState.Should().Contain(
-            "$ExpectedAdmissionExpiresAtUtc.ToUniversalTime()).TotalSeconds) -gt 1");
-        assertApiState.Should().Contain(
-            "Closed API admission must not retain an expiry, external-agent binding, or retry binding.");
-
-        var setApiAdmission = ReadPowerShellFunction(
-            script, "Set-ApiAdmission", "Invoke-ExecutionPreflight");
-        setApiAdmission.Should().Contain(
-            "[Nullable[datetimeoffset]]$AdmissionExpiresAtUtc");
-        setApiAdmission.Should().Contain("if ($Enabled) {");
-        setApiAdmission.Should().Contain("$null -eq $AdmissionExpiresAtUtc");
-        setApiAdmission.Should().Contain(
-            "$AdmissionExpiresAtUtc.ToUniversalTime() -le [datetimeoffset]::UtcNow");
-        setApiAdmission.Should().Contain(
-            "Closed API admission must not carry an expiry or registration/retry binding.");
-        setApiAdmission.Should().Contain(
-            "$settingsToRemove += $dynamicSettingName");
-        setApiAdmission.Should().Contain(
-            "'yyyy-MM-ddTHH:mm:ss.fffffffZ'");
-        setApiAdmission.Should().Contain(
-            "$arguments += \"$AdmissionExpirySettingName=$expiryValue\"");
-
-        var openAdmissionStart = script.IndexOf(
-            "'OpenAdmission' {", StringComparison.Ordinal);
-        var deactivateStart = script.IndexOf(
-            "'Deactivate' {", StringComparison.Ordinal);
-        openAdmissionStart.Should().BeGreaterThan(-1);
-        deactivateStart.Should().BeGreaterThan(openAdmissionStart);
-        var openAdmission = script[openAdmissionStart..deactivateStart];
-        openAdmission.Should().Contain(
-            "$maximumExposureSeconds = [math]::Min(");
-        openAdmission.Should().Contain("$MaximumAdmissionExposureSeconds,");
-        openAdmission.Should().Contain(
-            "$RevisionDeploymentAllowanceSeconds + $AdmissionDurationSeconds)");
-        openAdmission.Should().Contain(
-            "$admissionExpiresAtUtc = [datetimeoffset]::UtcNow.AddSeconds(");
-        openAdmission.Should().Contain("$maximumExposureSeconds)");
-        Regex.Matches(
-                openAdmission,
-                @"-AdmissionExpiresAtUtc \$admissionExpiresAtUtc",
-                RegexOptions.CultureInvariant)
-            .Count.Should().Be(1);
-        Regex.Matches(
-                openAdmission,
-                @"-ExpectedAdmissionExpiresAtUtc \$admissionExpiresAtUtc",
-                RegexOptions.CultureInvariant)
-            .Count.Should().Be(1);
-        openAdmission.Should().Contain(
-            "$operatorDeadline = [datetimeoffset]::UtcNow.AddSeconds(");
-        openAdmission.Should().Contain("$AdmissionDurationSeconds)");
-        openAdmission.Should().Contain(
-            "$deadline = if ($operatorDeadline -lt $admissionExpiresAtUtc)");
-        openAdmission.Should().MatchRegex(
-            @"\$deadline = if \(\$operatorDeadline -lt \$admissionExpiresAtUtc\) \{\s*\$operatorDeadline\s*\}\s*else \{\s*\$admissionExpiresAtUtc\s*\}");
-        openAdmission.Should().Contain(
-            "if ($deadline -le [datetimeoffset]::UtcNow)");
-        openAdmission.Should().Contain(
-            "The API-enforced admission deadline was consumed before the operator window could begin.");
-        openAdmission.Should().Contain(
-            "while ([datetimeoffset]::UtcNow -lt $deadline)");
-
-        var hardDeadlineStart = openAdmission.IndexOf(
-            "$maximumExposureSeconds = [math]::Min(", StringComparison.Ordinal);
-        var tryStart = openAdmission.IndexOf(
-            "try {", hardDeadlineStart, StringComparison.Ordinal);
-        var updateStart = openAdmission.IndexOf(
-            "$openedApi = Set-ApiAdmission", StringComparison.Ordinal);
-        var readinessStart = openAdmission.IndexOf(
-            "Wait-ApiHealth -Api $openedApi", updateStart, StringComparison.Ordinal);
-        var operatorDeadlineStart = openAdmission.IndexOf(
-            "$operatorDeadline = [datetimeoffset]::UtcNow.AddSeconds(",
-            readinessStart,
-            StringComparison.Ordinal);
-        var clippedDeadlineStart = openAdmission.IndexOf(
-            "$deadline = if ($operatorDeadline -lt $admissionExpiresAtUtc)",
-            operatorDeadlineStart,
-            StringComparison.Ordinal);
-        var consumedDeadlineStop = openAdmission.IndexOf(
-            "if ($deadline -le [datetimeoffset]::UtcNow)",
-            clippedDeadlineStart,
-            StringComparison.Ordinal);
-        var boundedLoopStart = openAdmission.IndexOf(
-            "while ([datetimeoffset]::UtcNow -lt $deadline)",
-            consumedDeadlineStop,
-            StringComparison.Ordinal);
-        var finallyStart = openAdmission.IndexOf("finally {", StringComparison.Ordinal);
-        hardDeadlineStart.Should().BeGreaterThan(-1);
-        tryStart.Should().BeGreaterThan(hardDeadlineStart);
-        updateStart.Should().BeGreaterThan(tryStart);
-        readinessStart.Should().BeGreaterThan(updateStart);
-        operatorDeadlineStart.Should().BeGreaterThan(readinessStart);
-        clippedDeadlineStart.Should().BeGreaterThan(operatorDeadlineStart);
-        consumedDeadlineStop.Should().BeGreaterThan(clippedDeadlineStart);
-        boundedLoopStart.Should().BeGreaterThan(consumedDeadlineStop);
-        finallyStart.Should().BeGreaterThan(boundedLoopStart);
-        openAdmission[finallyStart..].Should().Contain("Set-ApiAdmission `");
-        openAdmission[finallyStart..].Should().Contain("-Enabled $false `");
-        openAdmission[finallyStart..].Should().Contain(
-            "-AdmissionEnabled $false `");
-        openAdmission[finallyStart..].Should().Contain("Wait-ApiHealth -Api $closedApi");
-    }
-
-    [Fact]
-    public void DevelopmentCanaryController_ShouldPreserveAzureJsonDateStringsAcrossPowerShellVersions()
-    {
-        var script = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
-        var elementConverter = ReadPowerShellFunction(
-            script,
-            "ConvertFrom-JsonElementPreservingStrings",
-            "ConvertFrom-AzJsonPreservingStrings");
-        var azureJsonConverter = ReadPowerShellFunction(
-            script,
-            "ConvertFrom-AzJsonPreservingStrings",
-            "Invoke-AzJson");
-        var invokeAzJson = ReadPowerShellFunction(
-            script, "Invoke-AzJson", "Invoke-AzNoOutput");
-
-        azureJsonConverter.Should().Contain(
-            "$convertFromJson.Parameters.ContainsKey('DateKind')");
-        azureJsonConverter.Should().Contain(
-            "ConvertFrom-Json -Depth 100 -DateKind String");
-        azureJsonConverter.Should().Contain(
-            "[System.Text.Json.JsonDocument]::Parse($RawJson, $options)");
-        azureJsonConverter.Should().Contain("$document.Dispose()");
-        elementConverter.Should().Contain(
-            "[System.Text.Json.JsonValueKind]::String");
-        elementConverter.Should().Contain("return $Element.GetString()");
-
-        invokeAzJson.Should().Contain(
-            "ConvertFrom-AzJsonPreservingStrings -RawJson $json");
-        invokeAzJson.Should().NotContain("ConvertFrom-Json");
-
-        var assertApiState = ReadPowerShellFunction(
-            script, "Assert-ApiState", "Assert-WorkerState");
-        assertApiState.Should().Contain(
-            "$admissionExpiryValue.EndsWith('Z', [System.StringComparison]::Ordinal)");
-        assertApiState.Should().Contain(
-            "-not [datetimeoffset]::TryParse($admissionExpiryValue, [ref]$parsedExpiry)");
-        assertApiState.Should().Contain(
-            "$parsedExpiry.ToUniversalTime() -le [datetimeoffset]::UtcNow");
-        assertApiState.Should().Contain(
-            "$ExpectedAdmissionExpiresAtUtc.ToUniversalTime()).TotalSeconds) -gt 1");
-    }
-
-    [Fact]
-    public void DevelopmentCanaryController_ShouldStrictlyValidateRetainedFailureEvidence()
-    {
-        var script = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
-        var booleanReader = ReadPowerShellFunction(
-            script,
-            "Get-RequiredEvidenceBoolean",
-            "Assert-ReviewedCanaryFailureEvidence");
-        var evidenceCheck = ReadPowerShellFunction(
-            script,
-            "Assert-ReviewedCanaryFailureEvidence",
-            "Assert-EvidenceFresh");
-
-        booleanReader.Should().Contain("$value -isnot [bool]");
-        booleanReader.Should().Contain("must be a JSON Boolean");
-        foreach (var booleanField in new[]
-                 {
-                     "microsoftResourcesCreated",
-                     "gatewayCredentialRevoked",
-                     "oneTimeGatewayApiKeyIncluded",
-                     "apiAdmissionClosed",
-                     "workerProcessingEnabled",
-                     "workerProvisioningExecutionEnabled",
-                     "workerDirectRegistryPreviewEnabled",
-                     "historicalQueueOrDeadLetterTouched",
-                     "agentIdentityCreated",
-                     "agent365RegistrationCreated"
-                 })
-        {
-            evidenceCheck.Should().Contain($"-Name '{booleanField}'");
-        }
-
-        foreach (var guidField in new[]
-                 {
-                     "canary.agentRegistrationId",
-                     "canary.operationId",
-                     "canary.serviceBusMessageId",
-                     "canary.selectedBlueprintObjectId",
-                     "reconciliation.blueprintObjectId",
-                     "reconciliation.federatedCredentialId"
-                 })
-        {
-            evidenceCheck.Should().Contain(guidField);
-        }
-        Regex.Matches(
-                evidenceCheck,
-                @"\[guid\]::TryParse\(",
-                RegexOptions.CultureInvariant)
-            .Count.Should().BeGreaterThanOrEqualTo(6);
-        evidenceCheck.Should().Contain("$registrationId -eq [guid]::Empty");
-        evidenceCheck.Should().Contain("$operationId -eq [guid]::Empty");
-        evidenceCheck.Should().Contain("$messageId -eq [guid]::Empty");
-        evidenceCheck.Should().Contain("$selectedBlueprintObjectId -eq [guid]::Empty");
-        evidenceCheck.Should().Contain("-not $operationIds.Add(");
-        evidenceCheck.Should().Contain("-not $messageIds.Add(");
-        evidenceCheck.Should().Contain(
-            "[string]$request -cnotmatch $canonicalGraphRequestPattern");
-        evidenceCheck.Should().Contain(
-            "[string]$_ -cnotmatch '\\AGET https://graph\\.microsoft\\.com/'");
-
-        evidenceCheck.Should().Contain("$checkpointCaptureTimes = @{}");
-        evidenceCheck.Should().Contain(
-            "$checkpointCaptureTimes.ContainsKey($recordedDeadLetterCount)");
-        evidenceCheck.Should().Contain(
-            "$checkpointCaptureTimes[$recordedDeadLetterCount] = $capturedAt.ToUniversalTime()");
-        evidenceCheck.Should().Contain(
-            "for ($checkpoint = 1L; $checkpoint -le $ExpectedWorkflowV2DeadLetterCount; $checkpoint++)");
-        evidenceCheck.Should().Contain(
-            "-not $checkpointCaptureTimes.ContainsKey($checkpoint)");
-        evidenceCheck.Should().Contain("$captureTime -le $previousCaptureTime");
-
-        evidenceCheck.Should().Contain("$reconciledFederationExceptionCount++");
-        evidenceCheck.Should().Contain("$reconciledFederationExceptionCount -gt 1");
-        evidenceCheck.Should().Contain("$retainedRegistryAmbiguityExceptionCount++");
-        evidenceCheck.Should().Contain("$retainedRegistryAmbiguityExceptionCount -gt 1");
-        evidenceCheck.Should().Contain("$registrationId -ne $knownRegistryAmbiguityRegistrationId");
-        evidenceCheck.Should().Contain("$operationId -ne $knownRegistryAmbiguityOperationId");
-        evidenceCheck.Should().Contain("$messageId -ne $knownRegistryAmbiguityMessageId");
-        evidenceCheck.Should().Contain("$selectedBlueprintObjectId -ne $knownRegistryAmbiguityBlueprintId");
-        evidenceCheck.Should().Contain("$createdAgentIdentityObjectId -ne $knownRegistryAmbiguityChildId");
-        evidenceCheck.Should().Contain("$createdAgentIdentityClientId -ne $knownRegistryAmbiguityChildId");
-        evidenceCheck.Should().Contain("$rawEvidence.Replace(\"`r`n\", \"`n\")");
-        evidenceCheck.Should().Contain("[System.Security.Cryptography.SHA256]::HashData");
-        evidenceCheck.Should().Contain("$knownRegistryAmbiguityEvidenceSha256");
-        evidenceCheck.Should().Contain("$knownRegistryAmbiguityDeadLetterCheckpoint");
-        evidenceCheck.Should().Contain("agentRegistrationPostCount");
-        evidenceCheck.Should().Contain("agentRegistrationPostHttpStatus");
-        evidenceCheck.Should().Contain("agentRegistrationKnownIdGetCount");
-        evidenceCheck.Should().Contain("registrationReplayAllowed");
-        evidenceCheck.Should().Contain("newRegistrationAllowedBeforeReconciliation");
-        evidenceCheck.Should().Contain("$ExpectedWorkflowV2DeadLetterCount -ge 3");
-        evidenceCheck.Should().Contain("$retainedRegistryAmbiguityExceptionCount -ne 1");
-        evidenceCheck.Should().Contain("$mutations.Count -ne 1");
-        evidenceCheck.Should().Contain(
-            "POST https://graph.microsoft.com/v1.0/applications/$($selectedBlueprintObjectId.ToString('D'))/federatedIdentityCredentials");
-        evidenceCheck.Should().Contain(
-            "$mutationObservedAt.ToUniversalTime() -gt $verifiedAt.ToUniversalTime()");
-        evidenceCheck.Should().Contain(
-            "$verifiedAt.ToUniversalTime() -gt $capturedAt.ToUniversalTime()");
-        evidenceCheck.Should().Contain(
-            "$reconciledBlueprintObjectId -ne $selectedBlueprintObjectId");
-        evidenceCheck.Should().Contain(
-            "GET https://graph.microsoft.com/v1.0/applications/$($selectedBlueprintObjectId.ToString('D'))/federatedIdentityCredentials/$($ficId.ToString('D'))");
-        evidenceCheck.Should().Contain("'--method', 'GET'");
-        evidenceCheck.Should().Contain(
-            "'--uri', $expectedReadOnlyVerificationRequest.Substring(4)");
-        evidenceCheck.Should().Contain(
-            "The live selected-blueprint FIC no longer matches the reviewed reconciled resource.");
-    }
-
-    [Fact]
-    public void DevelopmentCanaryController_ShouldSourcePinNormalizedRegistryAmbiguityEvidence()
-    {
-        var script = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
-        var evidence = ReadRepositoryFile(
-            "docs", "operations", "evidence", "canary-registry-failure-20260826.json");
-        var digestAssignment = Regex.Match(
-            script,
-            @"(?m)^\s*\$knownRegistryAmbiguityEvidenceSha256\s*=\s*\r?\n\s*'(?<digest>[0-9a-f]{64})'\s*$",
-            RegexOptions.CultureInvariant);
-
-        digestAssignment.Success.Should().BeTrue(
-            "the one retained Registry ambiguity must be pinned in source");
-        var normalizedEvidence = evidence.Replace("\r\n", "\n", StringComparison.Ordinal);
-        var normalizedDigest = Convert.ToHexString(
-                System.Security.Cryptography.SHA256.HashData(
-                    System.Text.Encoding.UTF8.GetBytes(normalizedEvidence)))
-            .ToLowerInvariant();
-        var crlfEquivalentDigest = Convert.ToHexString(
-                System.Security.Cryptography.SHA256.HashData(
-                    System.Text.Encoding.UTF8.GetBytes(
-                        normalizedEvidence.Replace("\n", "\r\n", StringComparison.Ordinal)
-                            .Replace("\r\n", "\n", StringComparison.Ordinal))))
-            .ToLowerInvariant();
-
-        normalizedDigest.Should().Be(digestAssignment.Groups["digest"].Value);
-        crlfEquivalentDigest.Should().Be(normalizedDigest);
-        script.Should().Contain("$recordedDeadLetterCount -ne $knownRegistryAmbiguityDeadLetterCheckpoint");
-    }
-
-    [Fact]
-    public void DevelopmentCanaryController_ShouldReadEvidenceTimestampsFromRawJson()
-    {
-        var script = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
-        var rawJsonStringReader = ReadPowerShellFunction(
-            script, "Get-RequiredRawJsonString", "Get-RequiredEvidenceValue");
-        var evidenceCheck = ReadPowerShellFunction(
-            script,
-            "Assert-ReviewedCanaryFailureEvidence",
-            "Assert-EvidenceFresh");
-
-        rawJsonStringReader.Should().Contain(
-            "$document = [System.Text.Json.JsonDocument]::Parse($RawJson)");
-        rawJsonStringReader.Should().Contain("$element = $document.RootElement");
-        rawJsonStringReader.Should().Contain("foreach ($segment in $Path)");
-        rawJsonStringReader.Should().Contain("$element = $element.GetProperty($segment)");
-        rawJsonStringReader.Should().Contain(
-            "$element.ValueKind -ne [System.Text.Json.JsonValueKind]::String");
-        rawJsonStringReader.Should().Contain("$value = $element.GetString()");
-        rawJsonStringReader.Should().Contain("$document.Dispose()");
-        rawJsonStringReader.Should().NotContain("ConvertFrom-Json");
-
-        evidenceCheck.Should().Contain(
-            "$rawEvidence = Get-Content -Raw -LiteralPath $path");
-        Regex.Matches(
-                evidenceCheck,
-                @"Get-RequiredRawJsonString\s+`",
-                RegexOptions.CultureInvariant)
-            .Count.Should().Be(3);
-        evidenceCheck.Should().Contain("$capturedAtValue = Get-RequiredRawJsonString `");
-        evidenceCheck.Should().Contain("-RawJson $rawEvidence `");
-        evidenceCheck.Should().Contain("-Path @('capturedAtUtc') `");
-        evidenceCheck.Should().Contain(
-            "$mutationObservedAtValue = Get-RequiredRawJsonString `");
-        evidenceCheck.Should().Contain(
-            "-Path @('outcome', 'mutationObservedAtUtc') `");
-        evidenceCheck.Should().Contain("$verifiedAtValue = Get-RequiredRawJsonString `");
-        evidenceCheck.Should().Contain(
-            "-Path @('reconciliation', 'readOnlyVerifiedAtUtc') `");
-
-        evidenceCheck.Should().Contain(
-            "$capturedAtValue.EndsWith('Z', [System.StringComparison]::Ordinal)");
-        evidenceCheck.Should().Contain(
-            "$mutationObservedAtValue.EndsWith('Z', [System.StringComparison]::Ordinal)");
-        evidenceCheck.Should().Contain(
-            "$verifiedAtValue.EndsWith('Z', [System.StringComparison]::Ordinal)");
-        evidenceCheck.Should().MatchRegex(
-            @"-not \[datetimeoffset\]::TryParse\(\r?\n\s*\$capturedAtValue,");
-        evidenceCheck.Should().MatchRegex(
-            @"-not \[datetimeoffset\]::TryParse\(\r?\n\s*\$mutationObservedAtValue,");
-        evidenceCheck.Should().MatchRegex(
-            @"-not \[datetimeoffset\]::TryParse\(\r?\n\s*\$verifiedAtValue,");
-    }
-
-    [Fact]
-    public void DevelopmentCanaryController_GraphEvidencePattern_ShouldRejectNonCanonicalRequests()
-    {
-        var script = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
-        var assignment = Regex.Match(
-            script,
-            @"(?m)^\s*\$canonicalGraphRequestPattern\s*=\s*\r?\n\s*'(?<pattern>[^'\r\n]+)'\s*$",
-            RegexOptions.CultureInvariant);
-        assignment.Success.Should().BeTrue(
-            "the controller should declare one literal canonical Graph request pattern");
-
-        var requestPattern = new Regex(
-            assignment.Groups["pattern"].Value,
-            RegexOptions.CultureInvariant);
-        var validRequests = new[]
-        {
-            "GET https://graph.microsoft.com/v1.0/applications/00000000-0000-0000-0000-000000000001",
-            "POST https://graph.microsoft.com/v1.0/applications/00000000-0000-0000-0000-000000000001/federatedIdentityCredentials",
-            "GET https://graph.microsoft.com/beta/copilot/agentRegistrations/00000000-0000-0000-0000-000000000002?%24select=id%2CsourceAgentId"
-        };
-        var invalidRequests = new[]
-        {
-            "get https://graph.microsoft.com/v1.0/applications/00000000-0000-0000-0000-000000000001",
-            "GET  https://graph.microsoft.com/v1.0/applications/00000000-0000-0000-0000-000000000001",
-            "GET https://graph.microsoft.com.evil.example/v1.0/applications/00000000-0000-0000-0000-000000000001",
-            "GET https://graph.microsoft.com/v2.0/applications/00000000-0000-0000-0000-000000000001",
-            "GET https://graph.microsoft.com/v1.0/applications/id#fragment",
-            "OPTIONS https://graph.microsoft.com/v1.0/applications/id",
-            "GET https://graph.microsoft.com/v1.0/applications/id\r\nDELETE https://graph.microsoft.com/v1.0/applications/id"
-        };
-
-        validRequests.Should().OnlyContain(request => requestPattern.IsMatch(request));
-        invalidRequests.Should().OnlyContain(request => !requestPattern.IsMatch(request));
-    }
-
-    [Fact]
-    public void DevelopmentCanaryController_ShouldNeverConsumeOrDisposeQueueMessages()
-    {
-        var script = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
-        var queueRuntime = ReadPowerShellFunction(
-            script, "Get-QueueRuntime", "Assert-QueueBaseline");
-
-        queueRuntime.Should().Contain("'servicebus', 'queue', 'show'");
-        queueRuntime.Should().Contain("return Invoke-AzJson");
-        queueRuntime.Should().NotContain("Invoke-AzNoOutput");
-
-        var queueCommands = Regex.Matches(
-            script,
-            @"(?m)^\s*'servicebus'\s*,\s*'queue'\s*,\s*'(?<verb>[^']+)'\s*,",
-            RegexOptions.CultureInvariant);
-        queueCommands.Count.Should().Be(2);
-        queueCommands.Cast<Match>().Should().OnlyContain(
-            command => command.Groups["verb"].Value == "show");
-        queueRuntime.Should().Contain("$WorkflowV3QueueName");
-        queueRuntime.Should().Contain("$WorkflowV2QueueName");
-        script.Should().NotMatchRegex(
-            @"(?im)^\s*(?:Receive|Peek|Complete|Settle|Replay|Purge|DeadLetter|Abandon|Defer)-(?:Az)?ServiceBus");
-        script.Should().NotMatchRegex(
-            @"(?i)\.(?:ReceiveMessages?|PeekMessages?|CompleteMessage|DeadLetterMessage|AbandonMessage|DeferMessage|ReplayMessages?|PurgeMessages?)(?:Async)?\s*\(");
-        script.Should().NotContain("ServiceBusReceiver");
-        script.Should().NotContain("CreateReceiver");
-        script.Should().NotContain("servicebus.windows.net");
-        script.Should().NotContain("/$DeadLetterQueue");
-    }
-
-    [Fact]
-    public void DevelopmentCanaryController_ShouldPinApiManagerApplicationsOnEveryRevision()
-    {
-        var script = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
-        var preflight = ReadRepositoryFile(
-            "operations", "test-provisioning-prerequisites.ps1");
-
-        var setApiStart = script.IndexOf(
-            "function Set-ApiAdmission", StringComparison.Ordinal);
-        var preflightStart = script.IndexOf(
-            "function Invoke-ExecutionPreflight", StringComparison.Ordinal);
-        setApiStart.Should().BeGreaterThan(-1);
-        preflightStart.Should().BeGreaterThan(setApiStart);
-        var setApiBlock = script[setApiStart..preflightStart];
-
-        setApiBlock.Should().Contain(
-            "[AllowEmptyCollection()][string[]]$ManagerApplicationIds");
-        setApiBlock.Should().Contain("$ManagerApplicationSettingPrefix$index");
-        setApiBlock.Should().Contain("$staleSettingNames");
-        setApiBlock.Should().Contain("'--remove-env-vars'");
-        setApiBlock.Should().Contain("$arguments += $managerEnvironmentArguments");
-
-        var updateCalls = Regex.Matches(
-            script,
-            @"(?ms)^\s*(?:\$\w+\s*=\s*)?Set-ApiAdmission\s+`.*?-RevisionSuffix[^\r\n]+",
-            RegexOptions.CultureInvariant);
-        updateCalls.Count.Should().Be(7);
-        updateCalls.Cast<Match>().Should().OnlyContain(
-            match => match.Value.Contains(
-                "-ManagerApplicationIds", StringComparison.Ordinal));
-
-        script.Should().Contain("-RequireExpectedManagerApplications");
-        script.Should().Contain(
-            "-RequireApiManagerConfiguration:($Action -ne 'Arm')");
-        preflight.Should().Contain(
-            "Test-DeployedManagerApplicationConfiguration `");
-        preflight.Should().Contain("-ContainerApp $apiApp `");
-        preflight.Should().Contain("-Label 'API' `");
-        preflight.Should().Contain(
-            "manager application settings are not an exact contiguous indexed collection");
-    }
 
     [Fact]
     public void WorkflowV3_ShouldUseANewQueueAndPreserveHistoricalIsolation()
@@ -1173,7 +380,6 @@ public class InfrastructureAsCodeSecurityTests
             "src", "Gateway.Infrastructure", "ServiceBus", "ServiceBusOptions.cs");
         var worker = ReadRepositoryFile(
             "src", "Gateway.Provisioning.Worker", "ProvisioningWorkerOptions.cs");
-        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
         var preflight = ReadRepositoryFile(
             "operations", "test-provisioning-prerequisites.ps1");
 
@@ -1187,60 +393,46 @@ public class InfrastructureAsCodeSecurityTests
         roleAssignments.Should().Contain("serviceBusDataSenderRoleId");
         api.Should().Contain("gateway-provisioning-v3");
         worker.Should().Contain("gateway-provisioning-v3");
-        deployScript.Should().Contain("[string]$ServiceBusQueueName = 'gateway-provisioning-v3'");
         preflight.Should().Contain("ExpectedServiceBusQueueName");
         preflight.Should().Contain("The deployed API does not publish to the intended workflow-v3 Service Bus queue.");
     }
 
     [Fact]
-    public void WorkflowV3_ShouldDefaultLegacyWorkerCredentialVaultAccessOff()
+    public void WorkflowV3_ShouldNotDeployOrConfigureALegacyWorkerCredentialVault()
     {
         var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var roles = ReadRepositoryFile(
             "infrastructure", "bicep", "modules", "role-assignments.bicep");
-        var bootstrap = ReadRepositoryFile(
-            "infrastructure", "bicep", "modules", "role-assignments-worker-bootstrap.bicep");
+        var worker = ReadRepositoryFile(
+            "infrastructure", "bicep", "modules", "container-app-worker.bicep");
 
-        main.Should().Contain(
-            "param enableLegacyWorkerCredentialKeyVaultSecretsOfficer bool = false");
-        main.Should().Contain(
-            "enableWorkerCredentialKeyVaultSecretsOfficer: enableLegacyWorkerCredentialKeyVaultSecretsOfficer");
-        roles.Should().Contain(
-            "param enableWorkerCredentialKeyVaultSecretsOfficer bool = false");
-        roles.Should().Contain(
-            "= if (enableWorkerCredentialKeyVaultSecretsOfficer)");
-        bootstrap.Should().Contain(
-            "param enableWorkerCredentialKeyVaultSecretsOfficer bool = false");
-        bootstrap.Should().Contain(
-            "= if (enableWorkerCredentialKeyVaultSecretsOfficer)");
+        main.Should().NotContain("provisioningKeyVault");
+        main.Should().NotContain("-prov'");
+        roles.Should().NotContain("workerCredentialKeyVault");
+        roles.Should().NotContain("Key Vault Secrets Officer");
+        worker.Should().NotContain("Agent365__CredentialKeyVaultUri");
     }
 
     [Fact]
-    public void WorkflowV3_ApiActions_ShouldBeIndependentExactBoundWindows()
+    public void WorkflowV3_ApiAccess_ShouldBeClosedOrExplicitlyContinuousDevelopment()
     {
         var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var api = ReadRepositoryFile(
             "infrastructure", "bicep", "modules", "container-app-api.bicep");
-        var controller = ReadRepositoryFile(
-            "operations", "invoke-development-canary.ps1");
         var preflight = ReadRepositoryFile(
             "operations", "test-provisioning-prerequisites.ps1");
 
-        main.Should().Contain("effectiveApiProvisioningAdmissionEnabled");
-        main.Should().Contain("effectiveApiDelegatedRegistryActionEnabled");
-        main.Should().Contain("empty(provisioningAuthorizedExternalAgentId)");
-        main.Should().Contain("!empty(agent365DelegatedRegistryAuthorizedOperationId)");
-        api.Should().Contain("Provisioning__RequireExactAdmissionBinding");
-        api.Should().Contain("Agent365__DelegatedRegistry__RequireExactActionBinding");
-        controller.Should().Contain("'OpenDelegatedCompletion'");
-        controller.Should().Contain("Registration and retry bindings are valid only for OpenAdmission.");
-        controller.Should().Contain("AuthorizedOperationId is valid only for OpenDelegatedCompletion.");
-        controller.Should().Contain("$settingsToRemove += $dynamicSettingName");
-        controller.Should().NotContain("$AuthorizedOperationId.Value");
-        controller.Should().NotContain("$ExpectedAuthorizedOperationId.Value");
-        controller.Should().Contain("([guid]$AuthorizedOperationId).ToString('D')");
-        preflight.Should().Contain("Provisioning__RequireExactAdmissionBinding");
-        preflight.Should().Contain("Agent365__DelegatedRegistry__RequireExactActionBinding");
+        main.Should().Contain("effectiveContinuousDevelopmentProvisioningEnabled");
+        main.Should().Contain("provisioningExecutionEnabled: effectiveContinuousDevelopmentProvisioningEnabled");
+        main.Should().Contain("agent365DelegatedRegistryEnabled: effectiveContinuousDevelopmentProvisioningEnabled");
+        api.Should().Contain("Provisioning__AllowContinuousDevelopmentAccess");
+        api.Should().Contain("Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess");
+        preflight.Should().Contain("Test-DeployedProvisioningAccessConfiguration");
+        preflight.Should().Contain("ExpectedContinuousDevelopmentAccess");
+        main.Should().NotContain("provisioningAuthorizedExternalAgentId");
+        main.Should().NotContain("agent365DelegatedRegistryAuthorizedOperationId");
+        api.Should().NotContain("RequireExactAdmissionBinding");
+        api.Should().NotContain("RequireExactActionBinding");
     }
 
     [Fact]
@@ -1264,11 +456,9 @@ public class InfrastructureAsCodeSecurityTests
         preflight.Should().Contain("ConvertFrom-Json -Depth 100 -DateKind String");
         preflight.Should().Contain("[System.Text.Json.JsonDocument]::Parse");
         preflight.Should().Contain("ConvertFrom-AzJsonPreservingStrings -RawJson $json");
-        preflight.Should().Contain("function Test-EquivalentOptionalUtcInstant");
-        preflight.Should().Contain("$actualInstant.ToUniversalTime().Ticks -eq");
-        preflight.Should().Contain("$expectedInstant.ToUniversalTime().Ticks");
-        preflight.Should().Contain("-Actual ([string]$deployedAdmissionExpiresAtUtc)");
-        preflight.Should().Contain("-Actual ([string]$deployedActionExpiresAtUtc)");
+        preflight.Should().Contain("Test-DeployedDelegatedRegistryConfiguration");
+        preflight.Should().Contain("ExpectedContinuousDevelopmentAccess");
+        preflight.Should().NotContain("Test-EquivalentOptionalUtcInstant");
         preflight.Should().Contain("AllPrincipals");
 
         var mainWorkerRoles = main[
@@ -1287,7 +477,7 @@ public class InfrastructureAsCodeSecurityTests
         var main = ReadRepositoryFile("infrastructure", "bicep", "main.bicep");
         var api = ReadRepositoryFile(
             "infrastructure", "bicep", "modules", "container-app-api.bicep");
-        var deployScript = ReadRepositoryFile("operations", "deploy.ps1");
+        var bootstrapAzure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
         var preflight = ReadRepositoryFile(
             "operations", "test-provisioning-prerequisites.ps1");
 
@@ -1296,9 +486,8 @@ public class InfrastructureAsCodeSecurityTests
         api.Should().Contain("SignedAssertionFromManagedIdentity");
         api.Should().Contain("api://AzureADTokenExchange");
         api.Should().Contain("Agent365__DelegatedRegistry__Enabled");
-        deployScript.Should().Contain("[switch]$EnableDelegatedRegistry");
-        deployScript.Should().Contain(
-            "agent365DelegatedRegistryEnabled=$($EnableDelegatedRegistry.IsPresent.ToString().ToLowerInvariant())");
+        bootstrapAzure.Should().Contain(
+            "agent365DelegatedRegistryEnabled = [bool]$enablePreview");
 
         preflight.Should().Contain("function Test-GatewayApiFederatedCredential");
         preflight.Should().Contain("a365gw-api-obo-dev");
@@ -1393,25 +582,25 @@ public class InfrastructureAsCodeSecurityTests
     }
 
     [Fact]
-    public void LiveCanary_ShouldKeepTemporaryCredentialsInMemoryAndRevokeThem()
+    public void LiveVerification_ShouldKeepTemporaryCredentialsInMemoryAndRevokeThem()
     {
-        var source = ReadRepositoryFile("tools", "Gateway.LiveCanary", "Program.cs");
+        var source = ReadRepositoryFile("tools", "Gateway.LiveVerification", "Program.cs");
         var tokenValidator = ReadRepositoryFile(
-            "tools", "Gateway.LiveCanary", "ControlTokenValidator.cs");
+            "tools", "Gateway.LiveVerification", "ControlTokenValidator.cs");
         var evidenceValidator = ReadRepositoryFile(
-            "tools", "Gateway.LiveCanary", "CanaryEvidenceValidator.cs");
+            "tools", "Gateway.LiveVerification", "VerificationEvidenceValidator.cs");
         var wrapper = ReadRepositoryFile(
-            "operations", "invoke-bounded-user-canary.ps1");
+            "operations", "verify-first-registration.ps1");
         var durableState = ReadRepositoryFile(
-            "operations", "BoundedUserCanaryState.psm1");
-        var dockerfile = ReadRepositoryFile("tools", "Gateway.LiveCanary", "Dockerfile");
+            "operations", "FirstRegistrationVerificationState.psm1");
+        var dockerfile = ReadRepositoryFile("tools", "Gateway.LiveVerification", "Dockerfile");
 
         source.Should().Contain("credentialKey = string.Empty");
         source.Should().Contain("credentials/{credentialId:D}");
         source.Should().Contain("$\"{options.ApiScopeBaseUri}/access_as_user\"");
         source.Should().Contain("InteractiveBrowserCredential");
         source.Should().Contain("InteractiveBrowserUser");
-        source.Should().Contain("CanaryOperationMode.RevokeOnly");
+        source.Should().Contain("VerificationOperationMode.RevokeOnly");
         source.Should().Contain("credentialId = options.RecoveryCredentialId!.Value");
         source.Should().Contain("ControlTokenValidator.Validate(");
         source.Should().Contain("access_as_user");
@@ -1442,7 +631,7 @@ public class InfrastructureAsCodeSecurityTests
         source.Should().Contain("RequiredBoolean(values, \"expect-purview-enabled\")");
         source.Should().Contain("if (options.ExpectPromptShieldEnabled)");
         source.Should().Contain("Prompt Shields injection-block proof was not attempted");
-        source.Should().Contain("[PASS] Live Gateway ingestion canary completed.");
+        source.Should().Contain("[PASS] Live Gateway verification completed.");
         var allowedEvaluation = source.IndexOf(
             "ValidateAllowedEvaluation(await EvaluateAsync(",
             StringComparison.Ordinal);
@@ -1465,25 +654,25 @@ public class InfrastructureAsCodeSecurityTests
         wrapper.Should().Contain("GrantCreateStarted");
         wrapper.Should().Contain("ArmStarted");
         wrapper.Should().Contain("ChildLaunchStarted");
-        wrapper.Should().Contain("Test-BoundedUserCanaryStateRequiresPreservation");
+        wrapper.Should().Contain("Test-FirstRegistrationVerificationStateRequiresPreservation");
         wrapper.Should().Contain("wrapperSha256");
         wrapper.Should().Contain("helperBundleSha256");
-        wrapper.Should().Contain("canaryBundleSha256");
+        wrapper.Should().Contain("verificationBundleSha256");
         wrapper.Should().Contain("[switch]$ExpectPromptShieldEnabled");
         wrapper.Should().Contain("[switch]$ExpectPurviewEnabled");
         wrapper.Should().Contain("promptShieldExpected = ([bool]$ExpectPromptShieldEnabled).ToString().ToLowerInvariant()");
         wrapper.Should().Contain("purviewExpected = ([bool]$ExpectPurviewEnabled).ToString().ToLowerInvariant()");
         wrapper.Should().Contain("'--expect-prompt-shield-enabled'");
         wrapper.Should().Contain("'--expect-purview-enabled'");
-        wrapper.Should().Contain("Get-ExactCanaryApplicationById");
-        wrapper.Should().Contain("Wait-ExactCanaryObjectAbsent");
-        wrapper.Should().Contain("& dotnet @canaryArguments");
+        wrapper.Should().Contain("Get-ExactVerificationApplicationById");
+        wrapper.Should().Contain("Wait-ExactVerificationObjectAbsent");
+        wrapper.Should().Contain("& dotnet @verificationArguments");
         wrapper.Should().NotContain("'run', '--project'");
         durableState.Should().Contain("Completed = @()");
         durableState.Should().Contain("'promptShieldExpected'");
         durableState.Should().Contain("'purviewExpected'");
         durableState.Should().Contain("'^(true|false)$'");
-        durableState.Should().Contain("Convert-CanaryParsedJsonDatesToStrings");
+        durableState.Should().Contain("Convert-VerificationParsedJsonDatesToStrings");
         durableState.Should().Contain("$stream.Flush($true)");
         durableState.Should().Contain("[IO.File]::Move($temporary, $fullPath, $true)");
         dockerfile.Should().Contain("USER $APP_UID");
@@ -1710,8 +899,8 @@ public class InfrastructureAsCodeSecurityTests
 
         sourceGate.Should().Contain("$result.FailedCount -gt 0 -or $failedContainerCount -gt 0");
         sourceGate.Should().Contain("Bootstrap/runtime Pester failed:");
-        sourceGate.Should().Contain("operations/BoundedUserCanaryState.psm1");
-        sourceGate.Should().Contain("operations/invoke-bounded-user-canary.ps1");
+        sourceGate.Should().Contain("operations/FirstRegistrationVerificationState.psm1");
+        sourceGate.Should().Contain("operations/verify-first-registration.ps1");
     }
 
     [Fact]
@@ -1782,10 +971,6 @@ public class InfrastructureAsCodeSecurityTests
         var azure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
         var entra = ReadRepositoryFile("bootstrap", "modules", "Entra.psm1");
         var experience = ReadRepositoryFile("bootstrap", "modules", "Experience.psm1");
-        var provisioningBootstrap = ReadRepositoryFile(
-            "infrastructure", "bicep", "provisioning-bootstrap.bicep");
-        var provisioningScript = ReadRepositoryFile(
-            "operations", "bootstrap-provisioning-worker.ps1");
         var preflight = ReadRepositoryFile(
             "operations", "test-provisioning-prerequisites.ps1");
 
@@ -1798,20 +983,14 @@ public class InfrastructureAsCodeSecurityTests
             "'EntraId__Audience' = [string]$Identity.gatewayApiTokenAudience");
         experience.Should().Contain(
             "'GatewayApi__Scopes__0' = \"$($Identity.gatewayApiScopeBaseUri)/access_as_user\"");
-        provisioningBootstrap.Should().Contain(
-            "agent365GatewayApiAudience: gatewayApiApplicationClientId");
-        provisioningBootstrap.Should().NotContain(
-            "agent365GatewayApiAudience: 'api://${gatewayApiApplicationClientId}'");
-        provisioningScript.Should().Contain(
-            "'Agent365__GatewayApiAudience' = $ExpectedGatewayApiClientId");
         preflight.Should().Contain("-Audience $gatewayApiClientId");
         preflight.Should().Contain("$select=id,appId,api");
         preflight.Should().Contain("requestedAccessTokenVersion -ne 2");
 
-        var liveCanary = ReadRepositoryFile("tools", "Gateway.LiveCanary", "Program.cs");
-        liveCanary.Should().Contain("$\"{options.ApiScopeBaseUri}/access_as_user\"");
-        liveCanary.Should().Contain("InteractiveBrowserCredential");
-        liveCanary.Should().NotContain("$\"api://{options.ApiApplicationClientId:D}/.default\"");
+        var liveVerification = ReadRepositoryFile("tools", "Gateway.LiveVerification", "Program.cs");
+        liveVerification.Should().Contain("$\"{options.ApiScopeBaseUri}/access_as_user\"");
+        liveVerification.Should().Contain("InteractiveBrowserCredential");
+        liveVerification.Should().NotContain("$\"api://{options.ApiApplicationClientId:D}/.default\"");
     }
 
     private static string ReadRepositoryFile(params string[] pathSegments)

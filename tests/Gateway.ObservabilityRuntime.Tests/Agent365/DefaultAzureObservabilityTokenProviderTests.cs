@@ -14,7 +14,6 @@ public sealed class DefaultAzureObservabilityTokenProviderTests
     private static readonly Guid BlueprintClientId = Guid.Parse("33333333-3333-4333-8333-333333333333");
     private static readonly Guid ManagedIdentityClientId = Guid.Parse("44444444-4444-4444-8444-444444444444");
     private static readonly Guid ManagedIdentityPrincipalId = Guid.Parse("55555555-5555-4555-8555-555555555555");
-    private static readonly Guid GatewayApiClientId = Guid.Parse("66666666-6666-4666-8666-666666666666");
 
     [Fact]
     public async Task GetTokenAsync_UsesTwoStageAgentIdentityFlowAndCachesFinalToken()
@@ -69,36 +68,6 @@ public sealed class DefaultAzureObservabilityTokenProviderTests
             ["grant_type"] = "client_credentials"
         });
         handler.Requests[1].Form.Should().NotContainKey("fmi_path");
-    }
-
-    [Fact]
-    public async Task GetResourceTokenAsync_ArbitraryApplicationResource_UsesRequestedScopeAndPolicy()
-    {
-        var gatewayScope = $"api://{GatewayApiClientId:D}/.default";
-        var gatewayToken = CreateAgentIdentityToken(
-            audience: GatewayApiClientId.ToString("D"),
-            roles: ["ExternalAgent"]);
-        var handler = new RecordingSequenceHandler(
-            _ => TokenResponse("blueprint-t1"),
-            _ => TokenResponse(gatewayToken));
-        IAgentIdentityTokenProvider provider = CreateProvider(
-            new StubTokenCredential(CreateManagedIdentityAssertion()),
-            handler);
-
-        var result = await provider.GetResourceTokenAsync(
-            AgentIdentityClientId.ToString("D"),
-            BlueprintClientId.ToString("D"),
-            TenantId.ToString("D"),
-            new AgentIdentityResourceTokenRequest(
-                gatewayScope,
-                [GatewayApiClientId.ToString("D"), $"api://{GatewayApiClientId:D}"],
-                ["ExternalAgent"]),
-            CancellationToken.None);
-
-        result.Token.Should().Be(gatewayToken);
-        handler.Requests.Should().HaveCount(2);
-        handler.Requests[1].Form["scope"].Should().Be(gatewayScope);
-        handler.Requests[1].Form["client_id"].Should().Be(AgentIdentityClientId.ToString("D"));
     }
 
     [Fact]

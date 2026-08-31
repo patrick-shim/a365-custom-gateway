@@ -10,7 +10,7 @@
 
 <PageHeader Eyebrow="Getting started"
             Title="Setup center"
-            Description="Confirm deployment readiness and complete the first safe registration through Active state.">
+            Description="Confirm deployment readiness, then create and verify registrations through Active state.">
     <Actions>
         <span class="last-updated">Checked @FormatTime(lastUpdatedUtc)</span>
         <FluentButton Appearance="Appearance.Neutral" OnClick="LoadAsync" Disabled="loading">Refresh checks</FluentButton>
@@ -49,7 +49,7 @@ else
             <h2 id="next-safe-action-heading">@NextActionTitle</h2>
             <p>@NextActionDescription</p>
             <div class="setup-summary-actions">
-                @if (CanRegisterNow && !HasFirstAgentActive)
+                @if (CanRegisterNow && !HasActiveRegistration)
                 {
                     <FluentAnchor Appearance="Appearance.Accent" Href="/agents/register">Register the first agent</FluentAnchor>
                 }
@@ -66,31 +66,31 @@ else
         <div class="section-heading">
             <div>
                 <h2 id="readiness-heading">Deployment readiness</h2>
-                <p>Each milestone names the exact evidence available to this portal. Later milestones are not inferred from earlier ones.</p>
+                <p>Each check names the exact evidence available to this portal. One successful check never overrides another.</p>
             </div>
             <span class="role-chip">Signed in as @CurrentRole</span>
         </div>
 
         <ol class="readiness-list">
-            @foreach (var milestone in ReadinessMilestones)
+            @foreach (var check in ReadinessChecks)
             {
                 <li class="readiness-card card">
-                    <div class="readiness-index" aria-hidden="true">@milestone.Index</div>
+                    <div class="readiness-index" aria-hidden="true">@check.Index</div>
                     <div class="readiness-copy">
                         <div class="readiness-title-row">
                             <div>
-                                <span class="readiness-key">@milestone.Key</span>
-                                <h3>@milestone.Title</h3>
+                                <span class="readiness-key">@check.Key</span>
+                                <h3>@check.Title</h3>
                             </div>
-                            <span class="readiness-state readiness-state-@milestone.Tone"
-                                  aria-label="@($"{milestone.Title}: {milestone.Status}")">
-                                <span aria-hidden="true"></span>@milestone.Status
+                            <span class="readiness-state readiness-state-@check.Tone"
+                                  aria-label="@($"{check.Title}: {check.Status}")">
+                                <span aria-hidden="true"></span>@check.Status
                             </span>
                         </div>
-                        <p>@milestone.Description</p>
+                        <p>@check.Description</p>
                         <div class="readiness-evidence">
                             <strong>Portal evidence</strong>
-                            <span>@milestone.Evidence</span>
+                            <span>@check.Evidence</span>
                         </div>
                     </div>
                 </li>
@@ -139,7 +139,7 @@ else
                     <span class="first-run-number" aria-hidden="true">4</span>
                     <div>
                         <h3>Follow the seven-step operation</h3>
-                        <p>The worker completes five stages and can pause at 71% for a signed-in Gateway Administrator. A development deployment may initiate that delegated action from the administrator UI; exact-bound deployments require the separately authorized operation window. Neither path bypasses the one-POST Registry boundary.</p>
+                        <p>The worker completes five stages and pauses at 71% for a signed-in Gateway Administrator. An enabled development deployment may initiate that delegated action from the administrator UI. It never bypasses the user, role, OBO, locking, or one-POST Registry boundary.</p>
                     </div>
                 </li>
                 <li>
@@ -152,8 +152,8 @@ else
                 <li>
                     <span class="first-run-number" aria-hidden="true">6</span>
                     <div>
-                        <h3>Finish when the first agent is Active</h3>
-                        <p><strong>FirstAgentActive</strong> is the final setup milestone. Active means the Gateway persisted completion after final verification; it does not turn the beta Agent 365 Registry dependency into supported production readiness.</p>
+                        <h3>Confirm the registration becomes Active</h3>
+                        <p>Active means the Gateway persisted completion after final verification. This is a post-deployment use check; it does not turn the preview Agent 365 Registry dependency into supported production readiness.</p>
                     </div>
                 </li>
             </ol>
@@ -220,7 +220,7 @@ else
                         <li>Health does not verify Entra, Agent 365, Purview, or Content Safety resources.</li>
                         <li>Persisted provisioning progress is not independent Microsoft-side proof.</li>
                         <li>Agent 365 Registry completion uses a preview dependency and must not be presented as supported production readiness.</li>
-                        <li>FirstAgentActive is the final setup milestone; broader production-readiness reviews remain separate.</li>
+                        <li>An Active registration is Gateway-reported use evidence; broader production-readiness reviews remain separate.</li>
                     </ul>
                 </div>
             </section>
@@ -249,7 +249,7 @@ else
          string.Equals(readiness?.Status, "Ready", StringComparison.OrdinalIgnoreCase));
 
     private bool ControlPlaneReady => agentInventory is not null;
-    private bool HasFirstAgentActive => FirstActiveAgent is not null;
+    private bool HasActiveRegistration => FirstActiveAgent is not null;
     private AgentSummaryDto? FirstActiveAgent => activeAgentInventory?.Items.FirstOrDefault();
     private bool CanRegisterNow => isAdministrator && systemConfig?.ProvisioningExecutionEnabled == true;
 
@@ -262,7 +262,7 @@ else
 
     private string NextActionIcon => !InfrastructureReady || !ControlPlaneReady
         ? "!"
-        : HasFirstAgentActive
+        : HasActiveRegistration
             ? "✓"
             : "→";
 
@@ -275,26 +275,26 @@ else
                     ? "Refresh the server capability check"
                     : isAdministrator && systemConfig?.ProvisioningExecutionEnabled != true
                         ? "Registration admission is currently closed"
-                        : !HasFirstAgentActive
+                        : !HasActiveRegistration
                             ? isAdministrator
                                 ? "Register the first external agent"
                                 : "Ask a Gateway Administrator to register the first agent"
-                            : "Gateway setup is complete";
+                            : "Review the Active registration";
 
     private string NextActionDescription =>
         !InfrastructureReady
-            ? "The API liveness and database readiness probes do not both pass. Later milestones remain independent and should not be used to override this result."
+            ? "The API liveness and database readiness probes do not both pass. Other checks remain independent and should not be used to override this result."
             : !ControlPlaneReady
                 ? "The authenticated agent inventory did not return. Sign in again or use the safe correlation shown above when asking an operator for help."
                 : isAdministrator && systemConfig is null
                     ? "The portal cannot safely decide whether registration is open without the administrator-only capability response."
                     : isAdministrator && systemConfig?.ProvisioningExecutionEnabled != true
-                        ? "A deployment operator must review the server-owned admission gate. This page cannot open, extend, or infer a registration window."
-                        : !HasFirstAgentActive
+                        ? "A deployment operator must review the server-owned admission gate. This page cannot enable or infer deployment capability."
+                        : !HasActiveRegistration
                             ? isAdministrator
                                 ? "Registration will create a Gateway mapping and start provisioning. Microsoft effects remain unproven until the operation reaches its verified terminal state."
                                 : "Only a Gateway Administrator can create the mapping and receive the one-time Gateway key."
-                            : "At least one registration is Gateway-reported Active, so the final setup milestone is complete. Active remains Gateway state and is not a claim of supported production readiness for the beta Registry dependency.";
+                            : "At least one registration is Gateway-reported Active. This confirms the post-deployment registration path in Gateway state, not supported production readiness for the preview Registry dependency.";
 
     private string CapabilityGuidance => !isAdministrator
         ? "Ask a Gateway Administrator to review the current admission and optional protection-provider capabilities; those settings are intentionally not exposed to your role."
@@ -302,18 +302,16 @@ else
             ? "Capability data is unavailable. Refresh rather than assuming registration or an optional protection provider is configured."
             : "Use only the current server-advertised admission and protection-provider flags below. A disabled capability cannot be enabled by a page-level choice.";
 
-    private string AdmissionDescription => systemConfig?.AuthorizedRegistrationExternalAgentId is not null
-        ? "The current registration window is exact-bound to a server-authorized generated external ID. A later Agent 365 completion window is independently bound to the resulting operation."
-        : systemConfig?.ProvisioningExecutionEnabled == true
-            ? "The server currently accepts a registration without exposing an exact-bound external ID. This does not weaken API authorization or delegated Registry safeguards."
-            : "The server is not accepting a new registration. This portal cannot open or extend the deployment-owned admission gate.";
+    private string AdmissionDescription => systemConfig?.ProvisioningExecutionEnabled == true
+        ? "The authenticated continuous-development registration path is enabled. API authorization, SQL locking, and delegated Registry safeguards remain mandatory."
+        : "The server is not accepting a new registration. This portal cannot enable the deployment-owned admission gate.";
 
-    private IReadOnlyList<ReadinessMilestone> ReadinessMilestones =>
+    private IReadOnlyList<ReadinessCheck> ReadinessChecks =>
     [
-        BuildInfrastructureMilestone(),
-        BuildControlPlaneMilestone(),
-        BuildProvisioningMilestone(),
-        BuildFirstAgentMilestone()
+        BuildInfrastructureCheck(),
+        BuildControlPlaneCheck(),
+        BuildProvisioningCheck(),
+        BuildActiveRegistrationCheck()
     ];
 
     private static readonly string[] PortalRoles =
@@ -418,7 +416,7 @@ else
         }
     }
 
-    private ReadinessMilestone BuildInfrastructureMilestone()
+    private ReadinessCheck BuildInfrastructureCheck()
     {
         var hasEvidence = health is not null || readiness is not null;
         return new(
@@ -431,7 +429,7 @@ else
             $"API liveness: {health?.Status ?? "not available"}; database readiness: {readiness?.Status ?? "not available"}.");
     }
 
-    private ReadinessMilestone BuildControlPlaneMilestone() => new(
+    private ReadinessCheck BuildControlPlaneCheck() => new(
         2,
         "ControlPlaneReady",
         "Control plane ready",
@@ -442,7 +440,7 @@ else
             ? "The authenticated agent inventory did not return current data."
             : $"Authenticated inventory responded; {FormatCount(agentInventory.TotalCount, agentInventory.Items.Count, "registration")} reported.");
 
-    private ReadinessMilestone BuildProvisioningMilestone()
+    private ReadinessCheck BuildProvisioningCheck()
     {
         if (!isAdministrator)
         {
@@ -472,20 +470,20 @@ else
                 : AdmissionDescription);
     }
 
-    private ReadinessMilestone BuildFirstAgentMilestone() => new(
+    private ReadinessCheck BuildActiveRegistrationCheck() => new(
         4,
-        "FirstAgentActive",
-        "First agent Active",
+        "ActiveRegistration",
+        "Active registration",
         activeAgentInventory is null
             ? "Unknown"
-            : HasFirstAgentActive
+            : HasActiveRegistration
                 ? "Complete"
                 : "Not yet",
-        HasFirstAgentActive ? "positive" : "neutral",
-        "Active means the Gateway persisted completion after its final verification stage. It is the final setup milestone, while supported production readiness remains a separate review.",
+        HasActiveRegistration ? "positive" : "neutral",
+        "Active means the Gateway persisted completion after its final verification stage. This is registration evidence, while supported production readiness remains a separate review.",
         activeAgentInventory is null
             ? "The filtered Active-agent inventory did not return current data."
-            : HasFirstAgentActive
+            : HasActiveRegistration
                 ? $"{FormatCount(activeAgentInventory.TotalCount, activeAgentInventory.Items.Count, "Active registration")} reported by the Gateway."
                 : "The Gateway returned no Active registration for this query.");
 
@@ -506,7 +504,7 @@ else
         return ValueTask.CompletedTask;
     }
 
-    private sealed record ReadinessMilestone(
+    private sealed record ReadinessCheck(
         int Index,
         string Key,
         string Title,

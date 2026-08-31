@@ -147,4 +147,82 @@ public class UpdateSystemConfigHandlerTests
         config.DefaultPurviewEnabled.Should().BeFalse();
         await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
     }
+
+    [Fact]
+    public async Task Handle_Should_PreserveCompatibilityOnlyValues_WhenValidationIsBypassed()
+    {
+        var config = new SystemConfiguration
+        {
+            ProvisioningMode = "Automatic",
+            DefaultObservabilityMode = "Agent365",
+            RetentionDaysActivityReceipts = 90,
+            RetentionDaysAuditEvents = 365,
+            RetentionDaysIdempotencyRecords = 7,
+            RetentionDaysOutboxMessages = 30,
+            RateLimitPerClient = 100,
+            RateLimitPerAgent = 1_000,
+            RateLimitGlobal = 10_000,
+            ReconciliationEnabled = true,
+            ReconciliationIntervalHours = 24,
+            StuckTransitionTimeoutDays = 7,
+            UseGraphAgentRegistration = false,
+            UseCliProvisioningFallback = false
+        };
+        _configRepository.GetAsync(Arg.Any<CancellationToken>()).Returns(config);
+        var command = CreateCommand() with
+        {
+            ProvisioningMode = "Manual",
+            RetentionDaysActivityReceipts = 1,
+            RetentionDaysAuditEvents = 1,
+            RetentionDaysIdempotencyRecords = 14,
+            RetentionDaysOutboxMessages = 1,
+            RateLimitPerClient = 200,
+            RateLimitPerAgent = 2_000,
+            RateLimitGlobal = 20_000,
+            ReconciliationEnabled = false,
+            ReconciliationIntervalHours = 1,
+            StuckTransitionTimeoutDays = 1,
+            UseGraphAgentRegistration = true,
+            UseCliProvisioningFallback = true
+        };
+
+        var result = await _handler.Handle(command, CancellationToken.None);
+
+        config.ProvisioningMode.Should().Be("Automatic");
+        config.RetentionDaysActivityReceipts.Should().Be(90);
+        config.RetentionDaysAuditEvents.Should().Be(365);
+        config.RetentionDaysIdempotencyRecords.Should().Be(14);
+        config.RetentionDaysOutboxMessages.Should().Be(30);
+        config.RateLimitPerClient.Should().Be(200);
+        config.RateLimitPerAgent.Should().Be(2_000);
+        config.RateLimitGlobal.Should().Be(20_000);
+        config.ReconciliationEnabled.Should().BeTrue();
+        config.ReconciliationIntervalHours.Should().Be(24);
+        config.StuckTransitionTimeoutDays.Should().Be(7);
+        config.UseGraphAgentRegistration.Should().BeFalse();
+        config.UseCliProvisioningFallback.Should().BeFalse();
+        result.ProvisioningMode.Should().Be("Automatic");
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Handle_Should_RejectMergedRateLimits_WhenGlobalWouldBeLowerThanScopedLimit()
+    {
+        var config = new SystemConfiguration
+        {
+            DefaultObservabilityMode = "Agent365",
+            RateLimitPerClient = 100,
+            RateLimitPerAgent = 1_000,
+            RateLimitGlobal = 10_000
+        };
+        _configRepository.GetAsync(Arg.Any<CancellationToken>()).Returns(config);
+        var command = CreateCommand() with { RateLimitGlobal = 500 };
+
+        var action = () => _handler.Handle(command, CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<ValidationException>();
+        exception.Which.Errors.Should().ContainKey("RateLimitGlobal");
+        config.RateLimitGlobal.Should().Be(10_000);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
 }

@@ -364,33 +364,11 @@ Describe 'First-class database recovery contract' {
         $bootstrap | Should -Not -Match 'elseif \(\$currentRecoveryAttempt -eq 1 -and \[string\]\$state\.databaseRecoveryPlan\.status -ceq ''Running''\) \{\s*Get-GatewayDatabaseRecoveryPlan'
     }
 
-    It 'permanently blocks standard plan and apply paths after completed database recovery' {
-        InModuleScope Common {
-            $state = [ordered]@{
-                databaseRecoveryPlan = [ordered]@{ status = 'Completed' }
-                steps = [ordered]@{}
-            }
-            $steps = @('Admin UI identity', 'Gateway runtime deployment')
-            (Test-BootstrapDatabaseRecoveryRequiresNarrowContinuation -State $state -ContinuationStepNames $steps) |
-                Should -BeTrue
-            foreach ($name in $steps) { $state.steps[$name] = [ordered]@{ status = 'Completed' } }
-            (Test-BootstrapDatabaseRecoveryRequiresNarrowContinuation -State $state -ContinuationStepNames $steps) |
-                Should -BeTrue
-
-            $state.databaseRecoveryPlan.status = 'Running'
-            (Test-BootstrapDatabaseRecoveryRequiresNarrowContinuation -State $state -ContinuationStepNames $steps) |
-                Should -BeFalse
-        }
-
+    It 'routes completed database recovery through canonical resume and validation' {
         $bootstrap = Get-Content -LiteralPath (Join-Path $script:repoRoot 'bootstrap/bootstrap.ps1') -Raw
-        $guard = $bootstrap.IndexOf('Test-BootstrapDatabaseRecoveryRequiresNarrowContinuation', [StringComparison]::Ordinal)
-        $guardBlockStart = $bootstrap.LastIndexOf("if (`$Mode -in @('Plan', 'Apply', 'Up', 'Resume')", $guard, [StringComparison]::Ordinal)
-        $normalPlan = $bootstrap.IndexOf("if (`$Mode -in @('Plan', 'Up', 'Resume')) {", $guard + 1, [StringComparison]::Ordinal)
-        $guard | Should -BeGreaterOrEqual 0
-        $guardBlockStart | Should -BeGreaterOrEqual 0
-        $normalPlan | Should -BeGreaterThan $guard
-        $bootstrap.Substring($guardBlockStart, $guard - $guardBlockStart) | Should -Match "'Apply'"
-        $bootstrap | Should -Match 'Run gateway continue-bootstrap to execute only the remaining deployment steps'
+        $bootstrap | Should -Match 'Run gateway resume to revalidate state and execute only the remaining deployment steps'
+        $bootstrap | Should -Match 'Get-BootstrapCompletedDatabaseValidationPlans'
+        $bootstrap | Should -Not -Match 'Test-BootstrapDatabaseRecoveryRequiresNarrowContinuation|continue-bootstrap'
     }
 
     It 'preserves an absent provider end time in the failed recovery boundary' {

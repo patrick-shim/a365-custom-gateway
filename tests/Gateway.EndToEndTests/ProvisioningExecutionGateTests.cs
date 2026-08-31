@@ -31,11 +31,11 @@ public sealed class ProvisioningExecutionGateTests : IDisposable
     public void Dispose() => TestAuthHandler.Reset();
 
     [Fact]
-    public async Task Registration_WhenExecutionDisabledAndExpiryMissing_ReturnsSafe503WithoutPersistingWork()
+    public async Task Registration_WhenExecutionDisabled_ReturnsSafe503WithoutPersistingWork()
     {
         using var disabledFactory = CreateFactory(
             executionEnabled: false,
-            admissionExpiresAtUtc: null);
+            allowContinuousDevelopmentAccess: true);
         using var client = disabledFactory.CreateClient();
         TestAuthHandler.Reset();
         HttpClientExtensions.SetRole("Gateway.Administrator");
@@ -64,18 +64,12 @@ public sealed class ProvisioningExecutionGateTests : IDisposable
         after.Should().Be(before);
     }
 
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("not-a-timestamp")]
-    [InlineData("2099-01-01T09:00:00+09:00")]
-    [InlineData("2000-01-01T00:00:00Z")]
-    public async Task Registration_WhenEnabledButExpiryIsNotAValidFutureUtcTimestamp_Returns503WithoutPersistingWork(
-        string? admissionExpiresAtUtc)
+    [Fact]
+    public async Task Registration_WhenContinuousDevelopmentAccessIsDisabled_Returns503WithoutPersistingWork()
     {
         using var closedFactory = CreateFactory(
             executionEnabled: true,
-            admissionExpiresAtUtc);
+            allowContinuousDevelopmentAccess: false);
         using var client = closedFactory.CreateClient();
         TestAuthHandler.Reset();
         HttpClientExtensions.SetRole("Gateway.Administrator");
@@ -83,7 +77,7 @@ public sealed class ProvisioningExecutionGateTests : IDisposable
         var before = await ReadWorkCountsAsync(closedFactory.Services);
         var request = new RegisterAgentRequest(
             ExternalAgentId: $"gate-test-{Guid.NewGuid():N}",
-            Name: "Closed bounded admission test",
+            Name: "Closed provisioning admission test",
             Description: null,
             OwnerObjectId: "02ed1e89-4ad1-4073-8e90-4aa865784896",
             Environment: "Development",
@@ -104,7 +98,7 @@ public sealed class ProvisioningExecutionGateTests : IDisposable
     {
         using var disabledFactory = CreateFactory(
             executionEnabled: false,
-            admissionExpiresAtUtc: null);
+            allowContinuousDevelopmentAccess: true);
         using var client = disabledFactory.CreateClient();
         TestAuthHandler.Reset();
         HttpClientExtensions.SetRole("Gateway.Administrator");
@@ -122,32 +116,24 @@ public sealed class ProvisioningExecutionGateTests : IDisposable
     }
 
     [Fact]
-    public async Task Registration_WhenExactBindingDoesNotMatch_Returns503WithoutPersistingWork()
+    public async Task RetryProvisioning_WhenContinuousDevelopmentAccessIsDisabled_Returns503WithoutCreatingJob()
     {
-        using var boundFactory = CreateFactory(
+        using var closedFactory = CreateFactory(
             executionEnabled: true,
-            admissionExpiresAtUtc: "2099-01-01T00:00:00Z",
-            requireExactAdmissionBinding: true,
-            authorizedExternalAgentId: "agent-authorized");
-        using var client = boundFactory.CreateClient();
+            allowContinuousDevelopmentAccess: false);
+        using var client = closedFactory.CreateClient();
         TestAuthHandler.Reset();
         HttpClientExtensions.SetRole("Gateway.Administrator");
-        var before = await ReadWorkCountsAsync(boundFactory.Services);
-        var request = new RegisterAgentRequest(
-            ExternalAgentId: "agent-not-authorized",
-            Name: "Mismatched exact-bound registration",
-            Description: null,
-            OwnerObjectId: "02ed1e89-4ad1-4073-8e90-4aa865784896",
-            Environment: "Development",
-            Features: null,
-            Blueprint: TestRequestData.ValidBlueprint);
+        var before = await ReadWorkCountsAsync(closedFactory.Services);
 
-        var response = await client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);
+        var response = await client.PostAsync(
+            $"/api/v1/agents/{Guid.NewGuid():D}:retry-provisioning",
+            content: null);
 
         response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
         var problem = await response.Content.ReadFromJsonAsync<JsonElement>(JsonOptions);
         problem.GetProperty("errorCode").GetString().Should().Be(ErrorCodes.PROVISIONING_DISABLED);
-        (await ReadWorkCountsAsync(boundFactory.Services)).Should().Be(before);
+        (await ReadWorkCountsAsync(closedFactory.Services)).Should().Be(before);
     }
 
     [Fact]
@@ -155,7 +141,7 @@ public sealed class ProvisioningExecutionGateTests : IDisposable
     {
         using var disabledFactory = CreateFactory(
             executionEnabled: true,
-            admissionExpiresAtUtc: "2000-01-01T00:00:00Z");
+            allowContinuousDevelopmentAccess: false);
         using var client = disabledFactory.CreateClient();
         TestAuthHandler.Reset();
         HttpClientExtensions.SetRole("Gateway.Administrator");
@@ -171,17 +157,14 @@ public sealed class ProvisioningExecutionGateTests : IDisposable
 
     private WebApplicationFactory<Program> CreateFactory(
         bool executionEnabled,
-        string? admissionExpiresAtUtc,
-        bool requireExactAdmissionBinding = false,
-        string? authorizedExternalAgentId = null) =>
+        bool allowContinuousDevelopmentAccess) =>
         _factory.WithWebHostBuilder(builder =>
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["Provisioning:ExecutionEnabled"] = executionEnabled.ToString(),
-                    ["Provisioning:AdmissionExpiresAtUtc"] = admissionExpiresAtUtc,
-                    ["Provisioning:RequireExactAdmissionBinding"] = requireExactAdmissionBinding.ToString(),
-                    ["Provisioning:AuthorizedExternalAgentId"] = authorizedExternalAgentId
+                    ["Provisioning:AllowContinuousDevelopmentAccess"] =
+                        allowContinuousDevelopmentAccess.ToString()
                 })));
 
     private static async Task<WorkCounts> ReadWorkCountsAsync(IServiceProvider services)

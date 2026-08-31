@@ -20,6 +20,7 @@ Describe 'Purview Security and Compliance tenant boundary' {
             }
             Mock Import-Module {}
             Mock Connect-IPPSSession {}
+            Mock Connect-ExchangeOnline {}
             Mock Disconnect-ExchangeOnline {}
             Mock Get-ConnectionInformation {
                 $script:connectionRead++
@@ -46,6 +47,37 @@ Describe 'Purview Security and Compliance tenant boundary' {
             Should -Invoke Disconnect-ExchangeOnline -Times 1 -Exactly -ParameterFilter {
                 $ConnectionId -eq '22222222-2222-4222-8222-222222222222'
             }
+        }
+
+        It 'passes an externally acquired access token into the exact tenant-bound EOP session' {
+            $accessToken = 'header.payload.signature'
+            $connectionId = Connect-BootstrapPurview `
+                -UserPrincipalName $script:userPrincipalName `
+                -TenantId $script:tenantId `
+                -AccessToken $accessToken
+
+            $connectionId | Should -BeExactly '22222222-2222-4222-8222-222222222222'
+            Should -Invoke Connect-IPPSSession -Times 1 -Exactly -ParameterFilter {
+                $UserPrincipalName -eq $script:userPrincipalName -and
+                $AzureADAuthorizationEndpointUri -eq "https://login.microsoftonline.com/$script:tenantId" -and
+                $AccessToken -ceq 'header.payload.signature'
+            }
+        }
+
+        It 'uses the module device flow against the exact compliance and tenant endpoints' {
+            $connectionId = Connect-BootstrapPurview `
+                -UserPrincipalName $script:userPrincipalName `
+                -TenantId $script:tenantId `
+                -Device
+
+            $connectionId | Should -BeExactly '22222222-2222-4222-8222-222222222222'
+            Should -Invoke Connect-ExchangeOnline -Times 1 -Exactly -ParameterFilter {
+                $ConnectionUri -ceq 'https://ps.compliance.protection.outlook.com/PowerShell-LiveId' -and
+                $AzureADAuthorizationEndpointUri -eq "https://login.microsoftonline.com/$script:tenantId" -and
+                $UserPrincipalName -eq $script:userPrincipalName -and
+                $Device -eq $true
+            }
+            Should -Invoke Connect-IPPSSession -Times 0 -Exactly
         }
 
         It 'disconnects the newly created session when tenant readback differs' {

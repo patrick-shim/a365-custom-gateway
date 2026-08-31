@@ -69,16 +69,16 @@ public class UnitOfWorkTests
         await using var verifyContext = TestDbContextFactory.Create(dbName);
         var verifyAgentRepo = new AgentRegistrationRepository(verifyContext);
         var verifyJobRepo = new ProvisioningJobRepository(verifyContext);
-        var verifyOutboxRepo = new OutboxRepository(verifyContext);
 
         var retrievedAgent = await verifyAgentRepo.GetByIdAsync(agent.Id, CancellationToken.None);
         var retrievedJob = await verifyJobRepo.GetByIdAsync(job.Id, CancellationToken.None);
-        var retrievedOutbox = await verifyOutboxRepo.GetPendingAsync(10, CancellationToken.None);
+        var retrievedOutbox = await verifyContext.OutboxMessages.FindAsync(outboxMsg.Id);
 
         retrievedAgent.Should().NotBeNull();
         retrievedJob.Should().NotBeNull();
         retrievedJob!.Steps.Should().HaveCount(2);
-        retrievedOutbox.Should().Contain(m => m.Id == outboxMsg.Id);
+        retrievedOutbox.Should().NotBeNull();
+        retrievedOutbox!.Status.Should().Be(OutboxMessageStatus.Pending);
     }
 
     [Fact]

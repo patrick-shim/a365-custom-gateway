@@ -2,12 +2,12 @@
 
 <#
 .SYNOPSIS
-    Initializes an empty Gateway database or applies the reviewed SQL upgrade phases.
+    Initializes an empty Gateway database or applies the reviewed SQL upgrade steps.
 
 .DESCRIPTION
     Uses the current Azure CLI identity through AzureCliCredential. Initialize may
     create the current EF schema only when the database has zero user tables; all
-    nonempty databases must pass read-back verification or fail. Other phases apply
+    nonempty databases must pass read-back verification or fail. Other steps apply
     only checked-in SQL. The script never reads a SQL password, generates EF
     migrations, or modifies a project file. A live GatewayDb target requires the
     explicit AllowLiveDatabase switch. Public SQL access can be opened for the

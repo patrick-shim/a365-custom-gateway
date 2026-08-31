@@ -5,7 +5,6 @@ BeforeAll {
     $script:database = Get-Content -LiteralPath (Join-Path $script:repoRoot 'bootstrap/modules/Database.psm1') -Raw
     $script:experience = Get-Content -LiteralPath (Join-Path $script:repoRoot 'bootstrap/modules/Experience.psm1') -Raw
     $script:verification = Get-Content -LiteralPath (Join-Path $script:repoRoot 'bootstrap/modules/Verification.psm1') -Raw
-    $script:continuation = Get-Content -LiteralPath (Join-Path $script:repoRoot 'operations/continue-bootstrap-after-database-recovery.ps1') -Raw
     $script:bicep = Get-Content -LiteralPath (Join-Path $script:repoRoot 'bootstrap/infra/database-migrator-manual-repair-job.bicep') -Raw
     Import-Module (Join-Path $script:repoRoot 'bootstrap/modules/Common.psm1') -Force
 }
@@ -70,11 +69,10 @@ Describe 'One-shot manual database repair boundary' {
         $database | Should -Match "executions.Count -ne 1"
     }
 
-    It 'allows continuation only through exact completed manual evidence while automatic attempt two stays failed' {
-        $continuation | Should -Match 'Assert-BootstrapManualDatabaseRepairPrerequisite'
-        $continuation | Should -Match 'databaseCompletionMode = \$completionMode'
-        $continuation | Should -Match 'databaseBootstrapJobImage -ceq \[string\]\$recoveryPlan.correctedImage.image'
-        $continuation | Should -Match '-ManualDatabaseRepairPlan \$manualDatabaseRepairPlan'
+    It 'allows canonical resume only through exact completed manual evidence while automatic attempt two stays failed' {
+        $bootstrap | Should -Match 'Get-BootstrapCompletedDatabaseValidationPlans'
+        $bootstrap | Should -Match '-ManualDatabaseRepairPlan \$manualDatabaseRepairPlan'
+        $bootstrap | Should -Match 'run gateway resume'
         $experience | Should -Match '\[System.Collections.IDictionary\]\$ManualDatabaseRepairPlan'
         $experience | Should -Match 'databaseBootstrapJobImage -cne \[string\]\$ManualDatabaseRepairPlan.correctedImage.image'
         $verification | Should -Match '\[System.Collections.IDictionary\]\$ManualDatabaseRepairPlan'

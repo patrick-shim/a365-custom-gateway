@@ -13,10 +13,10 @@
     This script never creates role assignments, grants tenant consent, reads secret
     values, receives messages, replays messages, purges a DLQ, or changes Azure state.
 
-    RequireExecutionReady normally expects both execution gates enabled. During the
-    required worker-first bounded staging step, ExpectApiAdmissionClosed instead
-    requires the worker execution gates on while API registration admission remains
-    off.
+    RequireExecutionReady verifies the worker execution prerequisites. API
+    registration admission and the delegated Registry action remain closed unless
+    ExpectContinuousDevelopmentAccess explicitly requires the reviewed development
+    configuration.
 #>
 
 [CmdletBinding()]
@@ -57,20 +57,9 @@ param(
     [string]$ExpectedGatewayApiApplicationClientId,
 
     [Parameter(Mandatory = $false)]
-    [string]$ExpectedCredentialKeyVaultUri,
-
-    [Parameter(Mandatory = $false)]
     [string[]]$ExpectedManagerApplicationIds = @(),
 
-    [Parameter(Mandatory = $false)]
-    [ValidateSet('Disabled', 'DirectRegistryPreview')]
-    [string]$RegistryProvider = 'Disabled',
-
-    [switch]$DirectRegistryPreviewEnabled,
-
     [switch]$DelegatedRegistryEnabled,
-
-    [switch]$ExpectLegacyWorkerCredentialKeyVaultRole,
 
     [Parameter(Mandatory = $false)]
     [ValidateNotNullOrEmpty()]
@@ -80,28 +69,7 @@ param(
 
     [switch]$ExpectContinuousDevelopmentAccess,
 
-    [switch]$ExpectApiAdmissionClosed,
-
-    [switch]$ExpectDelegatedRegistryActionOpen,
-
-    [Parameter(Mandatory = $false)]
-    [string]$ExpectedProvisioningAuthorizedExternalAgentId = '',
-
-    [Parameter(Mandatory = $false)]
-    [string]$ExpectedProvisioningAuthorizedRetryAgentId = '',
-
-    [Parameter(Mandatory = $false)]
-    [string]$ExpectedProvisioningAdmissionExpiresAtUtc = '',
-
-    [Parameter(Mandatory = $false)]
-    [string]$ExpectedDelegatedRegistryActionExpiresAtUtc = '',
-
-    [Parameter(Mandatory = $false)]
-    [string]$ExpectedDelegatedRegistryAuthorizedOperationId = '',
-
     [switch]$ManagerApplicationsPreflightConfirmed,
-
-    [switch]$AllowMissingWorkloads,
 
     [switch]$RequireDeployedConfigurationMatch
 )
@@ -124,7 +92,6 @@ if (-not [guid]::TryParse($ExpectedTenantId, [ref]$parsedExpectedTenantId) -or
 $MicrosoftGraphAppId = '00000003-0000-0000-c000-000000000000'
 $Agent365ObservabilityAppId = '9b975845-388f-4429-889e-eab1ef63949c'
 $RequiredAgent365Role = 'Agent365.Observability.OtelWrite'
-$LegacyKeyVaultRole = 'Key Vault Secrets Officer'
 $RequiredGraphApplicationPermissions = @(
     'Application.Read.All',
     'AppRoleAssignment.ReadWrite.All',
@@ -379,21 +346,6 @@ function Test-ContainerAppExists {
         Invoke-AzJson -Arguments @(
             'containerapp', 'show', '--name', $Name, '--resource-group', $ResourceGroup
         ) -FailureMessage "Unable to inspect Container App '$Name'." | Out-Null
-        return $true
-    }
-    catch {
-        Assert-ActiveAzureAccountBoundary | Out-Null
-        return $false
-    }
-}
-
-function Test-KeyVaultExists {
-    param([string]$Name)
-
-    try {
-        Invoke-AzJson -Arguments @(
-            'keyvault', 'show', '--name', $Name, '--resource-group', $ResourceGroup
-        ) -FailureMessage "Unable to inspect Key Vault '$Name'." | Out-Null
         return $true
     }
     catch {
@@ -814,41 +766,14 @@ function Test-ApplicationRolesPublished {
     }
 }
 
-function Test-EquivalentOptionalUtcInstant {
-    param(
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Actual,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Expected
-    )
-
-    $actualMissing = [string]::IsNullOrWhiteSpace($Actual)
-    $expectedMissing = [string]::IsNullOrWhiteSpace($Expected)
-    if ($actualMissing -or $expectedMissing) {
-        return $actualMissing -and $expectedMissing
-    }
-
-    $actualInstant = [datetimeoffset]::MinValue
-    $expectedInstant = [datetimeoffset]::MinValue
-    if (-not [datetimeoffset]::TryParse($Actual, [ref]$actualInstant) -or
-        -not [datetimeoffset]::TryParse($Expected, [ref]$expectedInstant)) {
-        return $false
-    }
-
-    return $actualInstant.ToUniversalTime().Ticks -eq
-        $expectedInstant.ToUniversalTime().Ticks
-}
-
 function Test-DeployedDelegatedRegistryConfiguration {
     param(
         [Parameter(Mandatory = $true)][object]$ContainerApp,
-        [Parameter(Mandatory = $true)][bool]$ExpectedEnabled,
-        [Parameter(Mandatory = $true)][bool]$ExpectedContinuousDevelopmentAccess,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedActionExpiresAtUtc,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedAuthorizedOperationId
+        [Parameter(Mandatory = $true)][bool]$ExpectedContinuousDevelopmentAccess
     )
 
     $expectedSettings = [ordered]@{
-        'Agent365__DelegatedRegistry__Enabled' = $ExpectedEnabled.ToString().ToLowerInvariant()
-        'Agent365__DelegatedRegistry__RequireExactActionBinding' = (-not $ExpectedContinuousDevelopmentAccess).ToString().ToLowerInvariant()
+        'Agent365__DelegatedRegistry__Enabled' = $ExpectedContinuousDevelopmentAccess.ToString().ToLowerInvariant()
         'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = $ExpectedContinuousDevelopmentAccess.ToString().ToLowerInvariant()
         'Agent365__DelegatedRegistry__Scopes__0' = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All'
         'Agent365__DelegatedRegistry__Scopes__1' = 'https://graph.microsoft.com/AgentRegistration.Read.All'
@@ -878,188 +803,32 @@ function Test-DeployedDelegatedRegistryConfiguration {
         Add-Failure 'The deployed API delegated Registry scope collection must contain exactly two indexed entries.'
     }
 
-    $deployedActionExpiresAtUtc = Get-ExactPlainContainerEnvironmentValue `
-        -ContainerApp $ContainerApp `
-        -Name 'Agent365__DelegatedRegistry__ActionExpiresAtUtc' `
-        -AllowAbsent:([string]::IsNullOrEmpty($ExpectedActionExpiresAtUtc))
-    $deployedAuthorizedOperationId = Get-ExactPlainContainerEnvironmentValue `
-        -ContainerApp $ContainerApp `
-        -Name 'Agent365__DelegatedRegistry__AuthorizedOperationId' `
-        -AllowAbsent:([string]::IsNullOrEmpty($ExpectedAuthorizedOperationId))
-    if (-not (Test-EquivalentOptionalUtcInstant `
-            -Actual ([string]$deployedActionExpiresAtUtc) `
-            -Expected $ExpectedActionExpiresAtUtc) -or
-        -not [string]::Equals(
-            [string]$deployedAuthorizedOperationId,
-            $ExpectedAuthorizedOperationId,
-            [System.StringComparison]::OrdinalIgnoreCase)) {
-        Add-Failure 'The deployed delegated Registry action expiry or exact operation binding does not match the reviewed state.'
-    }
-    elseif ($ExpectedContinuousDevelopmentAccess -and -not $ExpectedEnabled) {
-        Add-Failure 'Continuous development delegated Registry access requires the delegated Registry feature to be enabled.'
-    }
-    elseif ($ExpectedContinuousDevelopmentAccess) {
-        if (-not [string]::IsNullOrWhiteSpace($ExpectedActionExpiresAtUtc) -or
-            -not [string]::IsNullOrWhiteSpace($ExpectedAuthorizedOperationId)) {
-            Add-Failure 'Continuous development delegated Registry access must not carry an exact action expiry or operation binding.'
-        }
-        else {
-            Write-Pass 'The delegated Registry action matches the explicit continuous development access contract.'
-        }
-    }
-    elseif ($ExpectedEnabled) {
-        $parsedExpiry = [datetimeoffset]::MinValue
-        $parsedOperationId = [guid]::Empty
-        if ([string]::IsNullOrWhiteSpace($ExpectedActionExpiresAtUtc) -or
-            -not $ExpectedActionExpiresAtUtc.EndsWith('Z', [System.StringComparison]::Ordinal) -or
-            -not [datetimeoffset]::TryParse($ExpectedActionExpiresAtUtc, [ref]$parsedExpiry) -or
-            $parsedExpiry.ToUniversalTime() -le [datetimeoffset]::UtcNow -or
-            -not [guid]::TryParse($ExpectedAuthorizedOperationId, [ref]$parsedOperationId) -or
-            $parsedOperationId -eq [guid]::Empty) {
-            Add-Failure 'An open delegated Registry action requires a future UTC expiry and one exact non-empty operation ID.'
-        }
-        else {
-            Write-Pass 'The delegated Registry action has an independent future expiry and exact operation binding.'
-        }
-    }
-    elseif (-not [string]::IsNullOrWhiteSpace($ExpectedActionExpiresAtUtc) -or
-            -not [string]::IsNullOrWhiteSpace($ExpectedAuthorizedOperationId)) {
-        Add-Failure 'A closed delegated Registry action must not retain an expiry or operation binding.'
-    }
 }
 
-function Test-DeployedProvisioningBindings {
+function Test-DeployedProvisioningAccessConfiguration {
     param(
         [Parameter(Mandatory = $true)][object]$ContainerApp,
-        [Parameter(Mandatory = $true)][bool]$ExpectedEnabled,
-        [Parameter(Mandatory = $true)][bool]$ExpectedContinuousDevelopmentAccess,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedExternalAgentId,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedRetryAgentId,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedAdmissionExpiresAtUtc
+        [Parameter(Mandatory = $true)][bool]$ExpectedContinuousDevelopmentAccess
     )
 
-    $requireExactBinding = Get-ExactPlainContainerEnvironmentValue `
-        -ContainerApp $ContainerApp `
-        -Name 'Provisioning__RequireExactAdmissionBinding'
-    $expectedExactBinding = (-not $ExpectedContinuousDevelopmentAccess).ToString().ToLowerInvariant()
-    if (-not [string]::Equals(
-            [string]$requireExactBinding,
-            $expectedExactBinding,
-            [System.StringComparison]::OrdinalIgnoreCase)) {
-        Add-Failure 'The deployed API exact registration/retry admission-binding mode does not match the reviewed contract.'
+    $expectedSettings = [ordered]@{
+        'Provisioning__AllowContinuousDevelopmentAccess' = $ExpectedContinuousDevelopmentAccess.ToString().ToLowerInvariant()
     }
-    else {
-        Write-Pass 'The deployed API exact registration/retry admission-binding mode matches.'
-    }
-    $allowContinuousDevelopment = Get-ExactPlainContainerEnvironmentValue `
-        -ContainerApp $ContainerApp `
-        -Name 'Provisioning__AllowContinuousDevelopmentAccess'
-    if (-not [string]::Equals(
-            [string]$allowContinuousDevelopment,
-            $ExpectedContinuousDevelopmentAccess.ToString().ToLowerInvariant(),
-            [System.StringComparison]::OrdinalIgnoreCase)) {
-        Add-Failure 'The deployed API continuous development admission mode does not match the reviewed contract.'
-    }
-    else {
-        Write-Pass 'The deployed API continuous development admission mode matches.'
-    }
-
-    $deployedExternalAgentId = Get-ExactPlainContainerEnvironmentValue `
-        -ContainerApp $ContainerApp `
-        -Name 'Provisioning__AuthorizedExternalAgentId' `
-        -AllowAbsent:([string]::IsNullOrEmpty($ExpectedExternalAgentId))
-    $deployedRetryAgentId = Get-ExactPlainContainerEnvironmentValue `
-        -ContainerApp $ContainerApp `
-        -Name 'Provisioning__AuthorizedRetryAgentId' `
-        -AllowAbsent:([string]::IsNullOrEmpty($ExpectedRetryAgentId))
-    $deployedAdmissionExpiresAtUtc = Get-ExactPlainContainerEnvironmentValue `
-        -ContainerApp $ContainerApp `
-        -Name 'Provisioning__AdmissionExpiresAtUtc' `
-        -AllowAbsent:([string]::IsNullOrEmpty($ExpectedAdmissionExpiresAtUtc))
-    if (-not [string]::Equals(
-            [string]$deployedExternalAgentId,
-            $ExpectedExternalAgentId,
-            [System.StringComparison]::Ordinal) -or
-        -not [string]::Equals(
-            [string]$deployedRetryAgentId,
-            $ExpectedRetryAgentId,
-            [System.StringComparison]::OrdinalIgnoreCase) -or
-        -not (Test-EquivalentOptionalUtcInstant `
-            -Actual ([string]$deployedAdmissionExpiresAtUtc) `
-            -Expected $ExpectedAdmissionExpiresAtUtc)) {
-        Add-Failure 'The deployed registration/retry expiry or bindings do not match the exact reviewed API admission state.'
-    }
-    elseif ($ExpectedContinuousDevelopmentAccess -and -not $ExpectedEnabled) {
-        Add-Failure 'Continuous development admission requires the API execution gate to be enabled.'
-    }
-    elseif ($ExpectedContinuousDevelopmentAccess) {
-        if (-not [string]::IsNullOrWhiteSpace($ExpectedExternalAgentId) -or
-            -not [string]::IsNullOrWhiteSpace($ExpectedRetryAgentId) -or
-            -not [string]::IsNullOrWhiteSpace($ExpectedAdmissionExpiresAtUtc)) {
-            Add-Failure 'Continuous development admission must not carry exact registration/retry bindings or an admission expiry.'
+    foreach ($setting in $expectedSettings.GetEnumerator()) {
+        $actual = Get-ExactPlainContainerEnvironmentValue `
+            -ContainerApp $ContainerApp `
+            -Name $setting.Key
+        if (-not [string]::Equals(
+                [string]$actual,
+                [string]$setting.Value,
+                [System.StringComparison]::OrdinalIgnoreCase)) {
+            Add-Failure "Deployed API setting '$($setting.Key)' does not match the reviewed admission configuration."
         }
         else {
-            Write-Pass 'The API admission bindings match the explicit continuous development access contract.'
+            Write-Pass "Deployed API setting '$($setting.Key)' matches."
         }
     }
-    elseif ($ExpectedEnabled -and
-            ([string]::IsNullOrWhiteSpace($ExpectedExternalAgentId) -eq
-             [string]::IsNullOrWhiteSpace($ExpectedRetryAgentId))) {
-        Add-Failure 'Open API admission requires exactly one external-registration or retry binding.'
-    }
-    elseif (-not $ExpectedEnabled -and
-            (-not [string]::IsNullOrWhiteSpace($ExpectedExternalAgentId) -or
-             -not [string]::IsNullOrWhiteSpace($ExpectedRetryAgentId) -or
-             -not [string]::IsNullOrWhiteSpace($ExpectedAdmissionExpiresAtUtc))) {
-        Add-Failure 'Closed API admission must not retain an expiry or registration/retry bindings.'
-    }
-    elseif ($ExpectedEnabled) {
-        $parsedExpiry = [datetimeoffset]::MinValue
-        if ([string]::IsNullOrWhiteSpace($ExpectedAdmissionExpiresAtUtc) -or
-            -not $ExpectedAdmissionExpiresAtUtc.EndsWith('Z', [System.StringComparison]::Ordinal) -or
-            -not [datetimeoffset]::TryParse(
-                $ExpectedAdmissionExpiresAtUtc,
-                [ref]$parsedExpiry) -or
-            $parsedExpiry.ToUniversalTime() -le [datetimeoffset]::UtcNow) {
-            Add-Failure 'Open API admission requires its own future UTC expiry.'
-        }
-        else {
-            Write-Pass 'The API admission expiry and exact registration/retry binding match the reviewed boundary.'
-        }
-    }
-    else {
-        Write-Pass 'The API admission bindings match the exact reviewed registration/retry boundary.'
-    }
-}
 
-function Test-ContinuousDevelopmentAccessInputContract {
-    param(
-        [Parameter(Mandatory = $true)][bool]$ContinuousDevelopmentAccessExpected,
-        [Parameter(Mandatory = $true)][bool]$ExecutionReadyRequired,
-        [Parameter(Mandatory = $true)][bool]$ApiAdmissionClosedExpected,
-        [Parameter(Mandatory = $true)][bool]$DelegatedRegistryActionOpenExpected,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ProvisioningAuthorizedExternalAgentId,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ProvisioningAuthorizedRetryAgentId,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ProvisioningAdmissionExpiresAtUtc,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DelegatedRegistryActionExpiresAtUtc,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DelegatedRegistryAuthorizedOperationId
-    )
-
-    if (-not $ContinuousDevelopmentAccessExpected) {
-        return
-    }
-
-    $hasExactBoundInput =
-        $ApiAdmissionClosedExpected -or
-        $DelegatedRegistryActionOpenExpected -or
-        -not [string]::IsNullOrWhiteSpace($ProvisioningAuthorizedExternalAgentId) -or
-        -not [string]::IsNullOrWhiteSpace($ProvisioningAuthorizedRetryAgentId) -or
-        -not [string]::IsNullOrWhiteSpace($ProvisioningAdmissionExpiresAtUtc) -or
-        -not [string]::IsNullOrWhiteSpace($DelegatedRegistryActionExpiresAtUtc) -or
-        -not [string]::IsNullOrWhiteSpace($DelegatedRegistryAuthorizedOperationId)
-    if (-not $ExecutionReadyRequired -or $hasExactBoundInput) {
-        Add-Failure 'Continuous development access requires execution-ready development and cannot be combined with exact-bound flags or binding inputs.'
-    }
 }
 
 function Test-GatewayApiFederatedCredential {
@@ -1181,19 +950,9 @@ $gatewayApiClientIdIsValid =
     [guid]::TryParse($ExpectedGatewayApiApplicationClientId, [ref]$parsedGatewayApiClientId) -and
     $parsedGatewayApiClientId -ne [guid]::Empty
 
-[uri]$parsedCredentialVaultUri = $null
-$credentialVaultUriIsValid =
-    -not [string]::IsNullOrWhiteSpace($ExpectedCredentialKeyVaultUri) -and
-    [uri]::TryCreate($ExpectedCredentialKeyVaultUri, [System.UriKind]::Absolute, [ref]$parsedCredentialVaultUri) -and
-    $parsedCredentialVaultUri.Scheme -eq [System.Uri]::UriSchemeHttps -and
-    $parsedCredentialVaultUri.Host.EndsWith('.vault.azure.net', [System.StringComparison]::OrdinalIgnoreCase)
-
 if (-not $gatewayApiClientIdIsValid -or
     $ExpectedGatewayApiApplicationClientId -cne $parsedGatewayApiClientId.ToString('D')) {
     Add-Failure 'ExpectedGatewayApiApplicationClientId must be one canonical lowercase non-empty GUID.'
-}
-if (-not $credentialVaultUriIsValid -and -not [string]::IsNullOrWhiteSpace($ExpectedCredentialKeyVaultUri)) {
-    Add-Failure 'The expected provisioning credential vault URI is not a valid Azure Key Vault HTTPS URI.'
 }
 
 $normalizedManagerApplicationIds = [System.Collections.Generic.List[string]]::new()
@@ -1225,14 +984,8 @@ if ($RequireExecutionReady) {
     if ($Environment -ne 'dev') {
         Add-Failure 'Provisioning execution is currently authorized only for development.'
     }
-    if ($RegistryProvider -ne 'DirectRegistryPreview') {
-        Add-Failure 'Execution requires Agent365__RegistryProvider=DirectRegistryPreview.'
-    }
-    if (-not $DirectRegistryPreviewEnabled) {
-        Add-Failure 'Execution requires Agent365__DirectRegistryPreviewEnabled=true.'
-    }
     if (-not $DelegatedRegistryEnabled) {
-        Add-Failure 'Execution requires the Gateway API delegated administrator Registry action to be explicitly enabled for the bounded development gate.'
+        Add-Failure 'Execution requires the Gateway API delegated administrator Registry feature to be configured.'
     }
     if (-not $ManagerApplicationsPreflightConfirmed) {
         Add-Failure 'Execution requires independent confirmation of the Agent 365 managerApplications platform prerequisite. Do not invent a first-party application ID.'
@@ -1241,28 +994,12 @@ if ($RequireExecutionReady) {
         Add-Failure 'Execution requires at least one independently verified Microsoft first-party manager application ID.'
     }
 }
-elseif ($RegistryProvider -ne 'Disabled' -or
-        $DirectRegistryPreviewEnabled -or
-        $DelegatedRegistryEnabled) {
-    Add-PreflightWarning 'A preview provider setting is staged while provisioning execution remains disabled.'
+elseif ($DelegatedRegistryEnabled) {
+    Add-PreflightWarning 'The delegated Registry feature is configured while provisioning execution remains disabled.'
 }
 
-if ($ExpectApiAdmissionClosed -and -not $RequireExecutionReady) {
-    Add-Failure 'ExpectApiAdmissionClosed is valid only with RequireExecutionReady for the worker-first bounded staging state.'
-}
-Test-ContinuousDevelopmentAccessInputContract `
-    -ContinuousDevelopmentAccessExpected $ExpectContinuousDevelopmentAccess.IsPresent `
-    -ExecutionReadyRequired $RequireExecutionReady.IsPresent `
-    -ApiAdmissionClosedExpected $ExpectApiAdmissionClosed.IsPresent `
-    -DelegatedRegistryActionOpenExpected $ExpectDelegatedRegistryActionOpen.IsPresent `
-    -ProvisioningAuthorizedExternalAgentId $ExpectedProvisioningAuthorizedExternalAgentId `
-    -ProvisioningAuthorizedRetryAgentId $ExpectedProvisioningAuthorizedRetryAgentId `
-    -ProvisioningAdmissionExpiresAtUtc $ExpectedProvisioningAdmissionExpiresAtUtc `
-    -DelegatedRegistryActionExpiresAtUtc $ExpectedDelegatedRegistryActionExpiresAtUtc `
-    -DelegatedRegistryAuthorizedOperationId $ExpectedDelegatedRegistryAuthorizedOperationId
-if ($ExpectDelegatedRegistryActionOpen -and
-    (-not $RequireExecutionReady -or -not $ExpectApiAdmissionClosed)) {
-    Add-Failure 'A delegated Registry action window requires execution-ready worker state while registration/retry admission remains closed.'
+if ($ExpectContinuousDevelopmentAccess -and -not $RequireExecutionReady) {
+    Add-Failure 'Continuous development access requires execution-ready development.'
 }
 
 Write-Check "Inspecting approved Container Apps environment '$ContainerAppsEnvironmentName'."
@@ -1305,9 +1042,6 @@ catch { Assert-ActiveAzureAccountBoundary | Out-Null }
 if ($serviceBusQueueExists) {
     Write-Pass "Service Bus queue '$ExpectedServiceBusQueueName' exists."
 }
-elseif ($AllowMissingWorkloads) {
-    Add-PreflightWarning "Service Bus queue '$ExpectedServiceBusQueueName' is not deployed yet."
-}
 else {
     Add-Failure "Service Bus queue '$ExpectedServiceBusQueueName' does not exist in '$serviceBusNamespaceName'."
 }
@@ -1315,11 +1049,11 @@ else {
 $apiApp = Test-AppEnvironment `
     -AppName $apiAppName `
     -TargetEnvironmentId $containerAppsEnvironment.id `
-    -Required (-not $AllowMissingWorkloads.IsPresent)
+    -Required $true
 $workerApp = Test-AppEnvironment `
     -AppName $workerAppName `
     -TargetEnvironmentId $containerAppsEnvironment.id `
-    -Required ($RequireExecutionReady.IsPresent -or -not $AllowMissingWorkloads.IsPresent)
+    -Required $true
 $null = Test-AppEnvironment `
     -AppName $adminUiAppName `
     -TargetEnvironmentId $containerAppsEnvironment.id `
@@ -1347,42 +1081,27 @@ if ($RequireDeployedConfigurationMatch -and $null -ne $apiApp) {
     $deployedRegistrationGate = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $apiApp `
         -Name 'Provisioning__ExecutionEnabled'
-    $expectedRegistrationEnabled =
-        $RequireExecutionReady.IsPresent -and
-        -not $ExpectApiAdmissionClosed.IsPresent -and
-        -not $ExpectDelegatedRegistryActionOpen.IsPresent
+    $expectedRegistrationEnabled = $ExpectContinuousDevelopmentAccess.IsPresent
     $expectedRegistrationGate = $expectedRegistrationEnabled.ToString().ToLowerInvariant()
     if (-not [string]::Equals(
         $deployedRegistrationGate,
         $expectedRegistrationGate,
         [System.StringComparison]::OrdinalIgnoreCase)) {
-        Add-Failure 'The deployed API registration gate does not match the expected staged deployment state.'
+        Add-Failure 'The deployed API registration gate does not match the reviewed deployment state.'
+    }
+    elseif ($expectedRegistrationEnabled) {
+        Write-Pass 'The deployed API registration gate matches the explicit continuous development configuration.'
     }
     else {
-        if ($ExpectDelegatedRegistryActionOpen) {
-            Write-Pass 'Registration/retry admission remains closed during the independently bounded delegated Registry action.'
-        }
-        elseif ($ExpectApiAdmissionClosed) {
-            Write-Pass 'The worker-first staging state keeps API registration admission closed.'
-        }
-        else {
-            Write-Pass 'The deployed API registration gate matches the expected execution state.'
-        }
+        Write-Pass 'The deployed API registration gate is closed.'
     }
 
     Test-DeployedDelegatedRegistryConfiguration `
         -ContainerApp $apiApp `
-        -ExpectedEnabled ($ExpectDelegatedRegistryActionOpen.IsPresent -or $ExpectContinuousDevelopmentAccess.IsPresent) `
-        -ExpectedContinuousDevelopmentAccess $ExpectContinuousDevelopmentAccess.IsPresent `
-        -ExpectedActionExpiresAtUtc $ExpectedDelegatedRegistryActionExpiresAtUtc `
-        -ExpectedAuthorizedOperationId $ExpectedDelegatedRegistryAuthorizedOperationId
-    Test-DeployedProvisioningBindings `
+        -ExpectedContinuousDevelopmentAccess $ExpectContinuousDevelopmentAccess.IsPresent
+    Test-DeployedProvisioningAccessConfiguration `
         -ContainerApp $apiApp `
-        -ExpectedEnabled $expectedRegistrationEnabled `
-        -ExpectedContinuousDevelopmentAccess $ExpectContinuousDevelopmentAccess.IsPresent `
-        -ExpectedExternalAgentId $ExpectedProvisioningAuthorizedExternalAgentId `
-        -ExpectedRetryAgentId $ExpectedProvisioningAuthorizedRetryAgentId `
-        -ExpectedAdmissionExpiresAtUtc $ExpectedProvisioningAdmissionExpiresAtUtc
+        -ExpectedContinuousDevelopmentAccess $ExpectContinuousDevelopmentAccess.IsPresent
 
     $deployedApiQueueName = Get-ContainerEnvironmentValue `
         -ContainerApp $apiApp `
@@ -1594,18 +1313,7 @@ if ($null -ne $workerApp) {
             'ProvisioningWorker__ProvisioningExecutionEnabled' = $RequireExecutionReady.IsPresent.ToString().ToLowerInvariant()
             'ProvisioningWorker__QueueName' = $ExpectedServiceBusQueueName
             'ServiceBus__QueueName' = $ExpectedServiceBusQueueName
-            'Agent365__RegistryProvider' = $RegistryProvider
-            'Agent365__DirectRegistryPreviewEnabled' = $DirectRegistryPreviewEnabled.IsPresent.ToString().ToLowerInvariant()
         }
-
-        if ($gatewayApiClientIdIsValid) {
-            $expectedSettings['Agent365__GatewayApiApplicationClientId'] = $parsedGatewayApiClientId.ToString('D')
-            $expectedSettings['Agent365__GatewayApiAudience'] = $parsedGatewayApiClientId.ToString('D')
-        }
-        if ($credentialVaultUriIsValid) {
-            $expectedSettings['Agent365__CredentialKeyVaultUri'] = $parsedCredentialVaultUri.AbsoluteUri
-        }
-
         foreach ($settingName in $expectedSettings.Keys) {
             $deployedValue = Get-ContainerEnvironmentValue -ContainerApp $workerApp -Name $settingName
             if (-not [string]::Equals(
@@ -1659,54 +1367,6 @@ if ($null -ne $workerApp) {
             }
             else {
                 Write-Pass 'The deployed worker managed-identity principal ID is pinned.'
-            }
-        }
-
-        # Workflow v3 uses the Gateway worker managed identity federated to the
-        # selected blueprint. A credential vault is legacy compatibility only;
-        # inspect it when explicitly supplied, but never gate N:N execution on it.
-        if ($credentialVaultUriIsValid) {
-            Write-Check 'Inspecting optional legacy provisioning credential-vault access.'
-            $credentialKeyVaultName = $parsedCredentialVaultUri.Host.Split('.')[0]
-            if (-not (Test-KeyVaultExists -Name $credentialKeyVaultName)) {
-                Add-PreflightWarning 'The optional legacy provisioning credential vault does not exist. Workflow v3 does not require it.'
-            }
-            else {
-                $keyVault = Invoke-AzJson -Arguments @(
-                    'keyvault', 'show',
-                    '--name', $credentialKeyVaultName,
-                    '--resource-group', $ResourceGroup
-                ) -FailureMessage 'Unable to inspect the optional legacy provisioning credential vault.'
-
-                $keyVaultAssignments = Invoke-AzJson -Arguments @(
-                    'role', 'assignment', 'list',
-                    '--assignee-object-id', $workerPrincipalId,
-                    '--scope', $keyVault.id,
-                    '--include-inherited'
-                ) -FailureMessage 'Unable to inspect optional legacy provisioning-vault role assignments.'
-
-                $hasLegacyKeyVaultRole = @($keyVaultAssignments | Where-Object {
-                    $_.roleDefinitionName -eq $LegacyKeyVaultRole
-                }).Count -gt 0
-
-                if ($hasLegacyKeyVaultRole -and $ExpectLegacyWorkerCredentialKeyVaultRole) {
-                    Write-Pass "Worker has explicitly requested legacy role '$LegacyKeyVaultRole'."
-                }
-                elseif ($hasLegacyKeyVaultRole) {
-                    $message = "Worker retains legacy role '$LegacyKeyVaultRole', which workflow v3 does not require."
-                    if ($RequireExecutionReady) {
-                        Add-Failure $message
-                    }
-                    else {
-                        Add-PreflightWarning $message
-                    }
-                }
-                elseif ($ExpectLegacyWorkerCredentialKeyVaultRole) {
-                    Add-Failure "Worker is missing explicitly requested legacy role '$LegacyKeyVaultRole'."
-                }
-                else {
-                    Write-Pass 'Worker has no legacy provisioning credential-vault role, as required by workflow v3 least privilege.'
-                }
             }
         }
 

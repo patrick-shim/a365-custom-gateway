@@ -147,106 +147,6 @@ function Get-GatewayCurrentDatabaseAttestationEvidence {
     throw 'The private-runtime database attestation endpoint did not return the exact bounded v1 success contract.'
 }
 
-function Assert-GatewayApiAttestationCorrectionProjection {
-    [CmdletBinding()]
-    param(
-        [Parameter()][AllowNull()][System.Collections.IDictionary]$Correction,
-        [Parameter(Mandatory)]$Runtime,
-        [Parameter(Mandatory)]$Images
-    )
-
-    if ($null -eq $Correction) {
-        return [ordered]@{
-            applied = $false
-            effectiveApiImage = [string]$Images.api
-        }
-    }
-    try {
-        $expectedProperties = @(
-            'baselineApiImage', 'baselineWorkerImage', 'contractFingerprint',
-            'receiptFingerprint', 'synthesizedBuildSourceFingerprint', 'targetApiImage',
-            'targetRevisionName', 'verifiedAtUtc'
-        )
-        if ((@($Correction.Keys | Sort-Object) -join '|') -cne ($expectedProperties -join '|')) {
-            throw 'mismatch'
-        }
-        foreach ($name in @('contractFingerprint', 'receiptFingerprint', 'synthesizedBuildSourceFingerprint')) {
-            Assert-BootstrapFingerprintValue -Value ([string]$Correction[$name]) -Label "API correction $name"
-        }
-        $verifiedAt = [DateTimeOffset]::MinValue
-        $targetPattern = "^$([regex]::Escape([string]$Runtime.acrLoginServer))/gateway-api@sha256:[0-9a-f]{64}$"
-        if ([string]$Correction.baselineApiImage -cne [string]$Images.api -or
-            [string]$Correction.baselineWorkerImage -cne [string]$Images.worker -or
-            [string]$Correction.targetApiImage -ceq [string]$Images.api -or
-            [string]$Correction.targetApiImage -cnotmatch $targetPattern -or
-            [string]$Correction.targetRevisionName -cnotmatch "^ca-gateway-api-[a-z0-9-]+--[a-z0-9-]{1,64}$" -or
-            -not [DateTimeOffset]::TryParse(
-                [string]$Correction.verifiedAtUtc,
-                [Globalization.CultureInfo]::InvariantCulture,
-                [Globalization.DateTimeStyles]::RoundtripKind,
-                [ref]$verifiedAt) -or
-            $verifiedAt -gt [DateTimeOffset]::UtcNow.AddMinutes(5)) {
-            throw 'mismatch'
-        }
-        return [ordered]@{
-            applied = $true
-            effectiveApiImage = [string]$Correction.targetApiImage
-            receiptFingerprint = [string]$Correction.receiptFingerprint
-            contractFingerprint = [string]$Correction.contractFingerprint
-            synthesizedBuildSourceFingerprint = [string]$Correction.synthesizedBuildSourceFingerprint
-            targetRevisionName = [string]$Correction.targetRevisionName
-            verifiedAtUtc = $verifiedAt.ToUniversalTime().ToString('O')
-        }
-    }
-    catch {
-        throw 'The API-attestation correction projection is absent, malformed, or not bound to the recorded baseline and immutable target digest.'
-    }
-}
-
-function Get-GatewayVerifiedApiAttestationCorrectionProjection {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
-        [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$Runtime,
-        [Parameter(Mandatory)]$Images
-    )
-
-    $expectedToolPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../operations/repair-bootstrap-api-attestation.ps1'))
-    if (-not (Test-Path -LiteralPath $expectedToolPath -PathType Leaf)) {
-        throw 'The supported API-attestation correction receipt validator is absent.'
-    }
-    return & {
-        param($ToolPath, $InnerConfig, $InnerState, $InnerRuntime, $InnerImages)
-
-        # Keep the operation script's parameters/preferences/functions inside this
-        # child scope. The script is dot-sourced only to load its receipt helpers;
-        # its mutation entry point is guarded by InvocationName and is not called.
-        . $ToolPath -Config ''
-        $receiptPath = Get-BootstrapApiAttestationCorrectionReceiptPath `
-            -Config $InnerConfig `
-            -State $InnerState
-        if ([string]::IsNullOrWhiteSpace([string]$receiptPath)) {
-            return Assert-GatewayApiAttestationCorrectionProjection `
-                -Correction $null `
-                -Runtime $InnerRuntime `
-                -Images $InnerImages
-        }
-        $receipt = Read-BootstrapApiAttestationCorrectionReceipt -Path $receiptPath
-        if ($receipt -isnot [System.Collections.IDictionary]) {
-            throw 'The discovered API-attestation correction receipt is absent or malformed.'
-        }
-        $projection = Assert-BootstrapApiAttestationCorrectionReceipt `
-            -Config $InnerConfig `
-            -State $InnerState `
-            -Receipt $receipt
-        return Assert-GatewayApiAttestationCorrectionProjection `
-            -Correction $projection `
-            -Runtime $InnerRuntime `
-            -Images $InnerImages
-    } $expectedToolPath $Config $State $Runtime $Images
-}
-
 function Test-ExactAdminUiRuntimeApplicationSurface {
     param(
         [Parameter(Mandatory)]$Application,
@@ -284,16 +184,16 @@ function Get-GatewayRuntimeProvisioningMode {
         [Parameter(Mandatory)]$Runtime
     )
     $previewRequested = [string]$Config.environment -eq 'dev' -and $Config.agent365.allowDevelopmentRegistryPreview -eq $true
-    $runtimePreviewEnabled = $previewRequested -and $Config.purview.policyProvisioningEnabled -ne $true
-    $expectedRegistryProvider = if ($runtimePreviewEnabled) { 'DirectRegistryPreview' } else { 'Disabled' }
-    if ($Runtime.provisioningExecutionEnabled -ne $runtimePreviewEnabled -or
-        [string]$Runtime.registryProvider -cne $expectedRegistryProvider) {
-        throw 'Runtime provisioning execution and Registry provider do not match the reviewed effective bootstrap mode.'
+    # Optional Purview protection-profile automation must not close the base
+    # registration workflow. A registration that selects a profile is still
+    # validated independently by the API and worker before any provider action.
+    $runtimePreviewEnabled = $previewRequested
+    if ($Runtime.provisioningExecutionEnabled -ne $runtimePreviewEnabled) {
+        throw 'Runtime provisioning execution does not match the reviewed effective bootstrap mode.'
     }
     return [ordered]@{
         previewRequested = [bool]$previewRequested
         runtimePreviewEnabled = [bool]$runtimePreviewEnabled
-        expectedRegistryProvider = $expectedRegistryProvider
     }
 }
 
@@ -638,26 +538,25 @@ function Assert-GatewayExactAzureLocalCredentialControls {
         throw 'Azure SQL Entra-only authentication, TLS, network, or deployment controls are not exact.'
     }
 
-    foreach ($vaultName in @("kv-$($Config.projectName)-$($Config.environment)", "kv-$($Config.projectName)-$($Config.environment)-prov")) {
-        $vault = Invoke-AzJson -Arguments @(
-            'keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $vaultName,
-            '--query', '{tenantId:properties.tenantId,enableRbacAuthorization:properties.enableRbacAuthorization,enableSoftDelete:properties.enableSoftDelete,softDeleteRetentionInDays:properties.softDeleteRetentionInDays,enablePurgeProtection:properties.enablePurgeProtection,enabledForDeployment:properties.enabledForDeployment,enabledForDiskEncryption:properties.enabledForDiskEncryption,enabledForTemplateDeployment:properties.enabledForTemplateDeployment,publicNetworkAccess:properties.publicNetworkAccess,defaultAction:properties.networkAcls.defaultAction,bypass:properties.networkAcls.bypass,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
-        )
-        $vaultDefaultAction = [string]$vault.defaultAction
-        $vaultBypass = [string]$vault.bypass
-        $vaultNetworkAclsAreExact =
-            ($vaultDefaultAction -ceq 'Allow' -and $vaultBypass -ceq 'AzureServices') -or
-            ([string]::IsNullOrEmpty($vaultDefaultAction) -and [string]::IsNullOrEmpty($vaultBypass))
-        if (-not ([string]$vault.tenantId).Equals([string]$Config.tenantId, [StringComparison]::OrdinalIgnoreCase) -or
-            $vault.enableRbacAuthorization -ne $true -or $vault.enableSoftDelete -ne $true -or
-            [int]$vault.softDeleteRetentionInDays -ne 90 -or $vault.enablePurgeProtection -ne $true -or
-            $vault.enabledForDeployment -ne $false -or $vault.enabledForDiskEncryption -ne $false -or
-            $vault.enabledForTemplateDeployment -ne $false -or [string]$vault.publicNetworkAccess -cne 'Disabled' -or
-            -not $vaultNetworkAclsAreExact -or
-            [string]$vault.ownershipId -cne [string]$Runtime.deploymentOwnershipId -or
-            [string]$vault.sourceFingerprint -cne [string]$Runtime.sourceFingerprint) {
-            throw 'Key Vault RBAC, recovery, deployment, network, tenant, or source controls are not exact.'
-        }
+    $vaultName = "kv-$($Config.projectName)-$($Config.environment)"
+    $vault = Invoke-AzJson -Arguments @(
+        'keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $vaultName,
+        '--query', '{tenantId:properties.tenantId,enableRbacAuthorization:properties.enableRbacAuthorization,enableSoftDelete:properties.enableSoftDelete,softDeleteRetentionInDays:properties.softDeleteRetentionInDays,enablePurgeProtection:properties.enablePurgeProtection,enabledForDeployment:properties.enabledForDeployment,enabledForDiskEncryption:properties.enabledForDiskEncryption,enabledForTemplateDeployment:properties.enabledForTemplateDeployment,publicNetworkAccess:properties.publicNetworkAccess,defaultAction:properties.networkAcls.defaultAction,bypass:properties.networkAcls.bypass,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
+    )
+    $vaultDefaultAction = [string]$vault.defaultAction
+    $vaultBypass = [string]$vault.bypass
+    $vaultNetworkAclsAreExact =
+        ($vaultDefaultAction -ceq 'Allow' -and $vaultBypass -ceq 'AzureServices') -or
+        ([string]::IsNullOrEmpty($vaultDefaultAction) -and [string]::IsNullOrEmpty($vaultBypass))
+    if (-not ([string]$vault.tenantId).Equals([string]$Config.tenantId, [StringComparison]::OrdinalIgnoreCase) -or
+        $vault.enableRbacAuthorization -ne $true -or $vault.enableSoftDelete -ne $true -or
+        [int]$vault.softDeleteRetentionInDays -ne 90 -or $vault.enablePurgeProtection -ne $true -or
+        $vault.enabledForDeployment -ne $false -or $vault.enabledForDiskEncryption -ne $false -or
+        $vault.enabledForTemplateDeployment -ne $false -or [string]$vault.publicNetworkAccess -cne 'Disabled' -or
+        -not $vaultNetworkAclsAreExact -or
+        [string]$vault.ownershipId -cne [string]$Runtime.deploymentOwnershipId -or
+        [string]$vault.sourceFingerprint -cne [string]$Runtime.sourceFingerprint) {
+        throw 'Key Vault RBAC, recovery, deployment, network, tenant, or source controls are not exact.'
     }
 
     if ($Config.promptShield.enabled -eq $true) {
@@ -694,7 +593,7 @@ function Assert-GatewayPurviewWorkerDeploymentConfiguration {
     }
 
     $expectedEnvironment = [ordered]@{
-        'Purview__Enabled' = ConvertTo-GatewayArmBooleanText -Value ([bool]$Config.purview.activateGatewayAdapterAfterPolicyReadback)
+        'Purview__Enabled' = 'False'
         'Purview__PolicyProvisioningEnabled' = ConvertTo-GatewayArmBooleanText -Value ([bool]$Config.purview.policyProvisioningEnabled)
         'Purview__PolicyProvisioningOrganization' = [string]$Config.purview.policyProvisioningOrganization
         'Purview__PolicyProvisioningApplicationId' = [string]$Config.purview.policyProvisioningApplicationId
@@ -772,7 +671,7 @@ function Get-GatewayPurviewCertificateMetadataEvidence {
         return [ordered]@{
             status = 'NotConfigured'
             automationApplicationCertificateAndComplianceRbac = 'NotRequired'
-            profileProvisioningReady = $true
+            profileProvisioningReady = $false
         }
     }
 
@@ -814,7 +713,6 @@ function Get-GatewayProvisioningPreflightArguments {
         [Parameter(Mandatory)]$Runtime,
         [Parameter(Mandatory)]$Identity,
         [Parameter(Mandatory)]$Blueprint,
-        [Parameter(Mandatory)][string]$ExpectedRegistryProvider,
         [Parameter(Mandatory)][bool]$RuntimePreviewEnabled
     )
 
@@ -833,15 +731,12 @@ function Get-GatewayProvisioningPreflightArguments {
         ExpectedServiceBusQueueName = [string]$Runtime.serviceBusQueueName
         WorkerProcessingEnabled = [bool]$Runtime.workerProcessingEnabled
         ExpectedGatewayApiApplicationClientId = [string]$Identity.gatewayApiClientId
-        ExpectedCredentialKeyVaultUri = "https://kv-$($Config.projectName)-$($Config.environment)-prov.vault.azure.net/"
         ExpectedManagerApplicationIds = [string[]]@($Blueprint.managerApplicationIds)
-        RegistryProvider = $ExpectedRegistryProvider
         ExpectedGatewayApiFederatedCredentialName = "a365gw-$($Config.projectName)-api-obo-$($Config.environment)"
         ManagerApplicationsPreflightConfirmed = $true
         RequireDeployedConfigurationMatch = $true
     }
     if ($RuntimePreviewEnabled) {
-        $arguments.DirectRegistryPreviewEnabled = $true
         $arguments.DelegatedRegistryEnabled = $true
         $arguments.RequireExecutionReady = $true
         $arguments.ExpectContinuousDevelopmentAccess = $true
@@ -917,20 +812,6 @@ function Test-GatewayBootstrapDeployment {
     }
     Assert-BootstrapFingerprintValue -Value ([string]$Images.sourceFingerprint) -Label 'Recorded image source fingerprint'
     Test-GatewayImmutableImageEvidence -Evidence $Images -SourceFingerprint ([string]$Images.sourceFingerprint) -DeploymentOwnershipId $DeploymentOwnershipId | Out-Null
-    $apiCorrection = Get-GatewayVerifiedApiAttestationCorrectionProjection `
-        -State $State `
-        -Config $Config `
-        -Runtime $Runtime `
-        -Images $Images
-    $effectiveApiImage = [string]$apiCorrection.effectiveApiImage
-    $apiImageSupersession = if ($apiCorrection.applied) {
-        [ordered]@{
-            receiptFingerprint = [string]$apiCorrection.receiptFingerprint
-            targetApiImage = $effectiveApiImage
-            targetRevisionName = [string]$apiCorrection.targetRevisionName
-        }
-    }
-    else { $null }
     Test-GatewayRecordedDatabaseAttestationBoundary `
         -Config $Config `
         -Runtime $Runtime `
@@ -1053,9 +934,6 @@ function Test-GatewayBootstrapDeployment {
         WorkerImage = [string]$Images.worker
         Database = $Database
     }
-    if ($apiCorrection.applied) {
-        $runtimeEvidenceParameters['ApiImageSupersession'] = $apiImageSupersession
-    }
     Test-GatewayGroupDeploymentEvidence @runtimeEvidenceParameters | Out-Null
     Test-GatewayNamedGroupDeployment `
         -Config $Config `
@@ -1144,12 +1022,11 @@ function Test-GatewayBootstrapDeployment {
         [string]$sqlAdministrator.tenantId -cne ([guid][string]$Config.tenantId).ToString('D')) {
         throw 'Azure SQL did not retain the exact restored original Entra administrator after private bootstrap.'
     }
-    foreach ($vault in @("kv-$($Config.projectName)-$($Config.environment)", "kv-$($Config.projectName)-$($Config.environment)-prov")) {
-        $public = Invoke-AzTsv -Arguments @('keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $vault, '--query', 'properties.publicNetworkAccess')
-        if ($public -ne 'Disabled') { throw "Key Vault '$vault' public network access is not Disabled." }
-    }
+    $sharedVault = "kv-$($Config.projectName)-$($Config.environment)"
+    $public = Invoke-AzTsv -Arguments @('keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $sharedVault, '--query', 'properties.publicNetworkAccess')
+    if ($public -ne 'Disabled') { throw "Key Vault '$sharedVault' public network access is not Disabled." }
     $deployedImages = [ordered]@{
-        "ca-gateway-api-$($Config.environment)" = $effectiveApiImage
+        "ca-gateway-api-$($Config.environment)" = [string]$Images.api
         "ca-gateway-worker-$($Config.environment)-v3" = [string]$Images.worker
         "ca-gateway-admin-$($Config.environment)" = [string]$Images.adminUi
     }
@@ -1257,15 +1134,13 @@ function Test-GatewayBootstrapDeployment {
     $provisioningMode = Get-GatewayRuntimeProvisioningMode -Config $Config -Runtime $Runtime
     $previewRequested = [bool]$provisioningMode.previewRequested
     $runtimePreviewEnabled = [bool]$provisioningMode.runtimePreviewEnabled
-    $expectedRegistryProvider = [string]$provisioningMode.expectedRegistryProvider
-    $provisioningAdmissionReady = $runtimePreviewEnabled -and $purviewProfilePrerequisites.profileProvisioningReady -eq $true
+    $provisioningAdmissionReady = $runtimePreviewEnabled
     $preflightArguments = Get-GatewayProvisioningPreflightArguments `
         -Config $Config `
         -Foundation $Foundation `
         -Runtime $Runtime `
         -Identity $Identity `
         -Blueprint $Blueprint `
-        -ExpectedRegistryProvider $expectedRegistryProvider `
         -RuntimePreviewEnabled $runtimePreviewEnabled
     & (Join-Path $root 'operations/test-provisioning-prerequisites.ps1') @preflightArguments | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Read-only provisioning preflight failed.' }
@@ -1281,7 +1156,6 @@ function Test-GatewayBootstrapDeployment {
         keyVaultPublicNetworkAccess = 'Disabled'
         sqlPrivateEndpoint = 'Passed'
         databaseAttestation = $databaseAttestation
-        apiAttestationCorrection = $apiCorrection
         immutableImages = [ordered]@{
             "ca-gateway-api-$($Config.environment)" = [string]$Images.api
             "ca-gateway-worker-$($Config.environment)-v3" = [string]$Images.worker
@@ -1290,7 +1164,8 @@ function Test-GatewayBootstrapDeployment {
         deployedImages = $deployedImages
         azureRbac = 'Passed'
         azureLocalCredentialControls = 'Passed'
-        purviewGraphRoles = if ($Config.purview.enabled -eq $true) { 'Passed' } else { 'NotConfigured' }
+        purviewGraphRoleAssignments = if ($Config.purview.enabled -eq $true) { 'Passed' } else { 'NotConfigured' }
+        purviewManagedIdentityTokenRoles = if ($Config.purview.enabled -eq $true) { 'NotAttestedByBootstrap' } else { 'NotConfigured' }
         purviewWorkerConfiguration = 'Passed'
         purviewPolicyProfilePrerequisites = $purviewProfilePrerequisites
         promptShield = $promptShieldVerification
@@ -1300,16 +1175,10 @@ function Test-GatewayBootstrapDeployment {
         provisioningPreflight = if ($provisioningAdmissionReady) {
             'ExecutionReadyPassed'
         }
-        elseif ($previewRequested -and $Config.purview.policyProvisioningEnabled -eq $true) {
-            'ConfigurationVerifiedPurviewProfileAuthorityNotChecked'
-        }
         else { 'ConfigurationVerifiedAdmissionClosed' }
         provisioningAdmissionReady = [bool]$provisioningAdmissionReady
         registrationMode = if ($provisioningAdmissionReady) {
             'ContinuousDevelopmentPreview'
-        }
-        elseif ($previewRequested -and $Config.purview.policyProvisioningEnabled -eq $true) {
-            'DevelopmentPreviewPurviewProfileAuthorityNotChecked'
         }
         else { 'ClosedUnsupportedForProduction' }
     }

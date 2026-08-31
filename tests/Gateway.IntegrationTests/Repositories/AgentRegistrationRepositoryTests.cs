@@ -59,61 +59,6 @@ public class AgentRegistrationRepositoryTests
     }
 
     [Fact]
-    public async Task GetByExternalAgentIdAsync_Should_ReturnAgent_When_ExternalAgentIdExists()
-    {
-        // Arrange
-        await using var context = TestDbContextFactory.Create();
-        var repository = new AgentRegistrationRepository(context);
-        var agent = TestEntityFactory.CreateAgentRegistration(externalAgentId: "ext-agent-lookup");
-
-        await repository.AddAsync(agent, CancellationToken.None);
-        await context.SaveChangesAsync();
-
-        // Act
-        var result = await repository.GetByExternalAgentIdAsync("ext-agent-lookup", CancellationToken.None);
-
-        // Assert
-        result.Should().NotBeNull();
-        result!.Id.Should().Be(agent.Id);
-        result.ExternalAgentId.Value.Should().Be("ext-agent-lookup");
-        result.FeatureConfiguration.Should().NotBeNull();
-    }
-
-    [Fact]
-    public async Task GetByExternalAgentIdAsync_Should_ReturnNull_When_ExternalAgentIdDoesNotExist()
-    {
-        // Arrange
-        await using var context = TestDbContextFactory.Create();
-        var repository = new AgentRegistrationRepository(context);
-
-        // Act
-        var result = await repository.GetByExternalAgentIdAsync("nonexistent-agent", CancellationToken.None);
-
-        // Assert
-        result.Should().BeNull();
-    }
-
-    [Fact]
-    public async Task GetByExternalClientIdAsync_Should_ReturnAgent_When_ExternalClientIdExists()
-    {
-        // Arrange
-        await using var context = TestDbContextFactory.Create();
-        var repository = new AgentRegistrationRepository(context);
-        var clientId = Guid.NewGuid().ToString();
-        var agent = TestEntityFactory.CreateAgentRegistration(externalClientId: clientId);
-
-        await repository.AddAsync(agent, CancellationToken.None);
-        await context.SaveChangesAsync();
-
-        // Act
-        var result = await repository.GetByExternalClientIdAsync(clientId, CancellationToken.None);
-
-        // Assert
-        result.Should().NotBeNull();
-        result!.ExternalClientId.Should().Be(clientId);
-    }
-
-    [Fact]
     public async Task ExistsAsync_Should_ReturnTrue_When_ExternalAgentIdExists()
     {
         // Arrange

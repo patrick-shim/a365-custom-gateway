@@ -27,6 +27,37 @@ public sealed class ProvisioningMessageHandlerTests
         "22222222-2222-4222-8222-222222222222";
 
     [Fact]
+    public async Task HandleAsync_DeleteAgent_DeletesGatewayRegistrationWithoutProviderCalls()
+    {
+        var fixture = new HandlerFixture();
+        var agent = CreateAgent(ObservabilityMode.Agent365);
+        agent.Status = AgentStatus.Active;
+        var job = CreateProvisioningJob(agent.Id);
+        job.Type = OperationType.DeleteAgent;
+        fixture.Arrange(agent, job);
+
+        var result = await fixture.Handler.HandleAsync(
+            "DeleteAgent",
+            JsonSerializer.Serialize(new DeleteAgentMessage(
+                agent.Id,
+                job.Id,
+                "correlation-1")),
+            CancellationToken.None);
+
+        result.ShouldDeadLetter.Should().BeFalse();
+        job.Status.Should().Be(JobStatus.Completed);
+        job.PercentComplete.Should().Be(100);
+        agent.Status.Should().Be(AgentStatus.Deleted);
+        agent.IsDeleted.Should().BeTrue();
+        agent.DeletedAtUtc.Should().NotBeNull();
+        fixture.ProvisioningClient.ReceivedCalls().Should().BeEmpty();
+        fixture.AddedAuditEvents.Should().ContainSingle(auditEvent =>
+            auditEvent.EventType == "GatewayRegistrationDeletedResourcesPreserved" &&
+            auditEvent.Details == JsonSerializer.Serialize(
+                new { Scope = "GatewayRegistrationOnly" }));
+    }
+
+    [Fact]
     public async Task HandleAsync_ProvisionAgentMalformedPayload_RequestsDeadLetter()
     {
         var fixture = new HandlerFixture();
@@ -108,6 +139,34 @@ public sealed class ProvisioningMessageHandlerTests
         job.Steps.Skip(1).Should().OnlyContain(step => step.Status == StepStatus.Pending);
         await fixture.ProvisioningClient.DidNotReceiveWithAnyArgs()
             .ExecuteStepAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task HandleAsync_UnprofiledJob_DoesNotReadOrInvokeDisabledPurviewDependencies()
+    {
+        var fixture = new HandlerFixture();
+        var agent = CreateAgent(ObservabilityMode.Agent365);
+        var job = CreateCurrentProvisioningJob(agent.Id);
+        fixture.Arrange(agent, job);
+        fixture.PurviewProvisioning.IsEnabled.Returns(false);
+        fixture.PurviewProvisioning.ClearReceivedCalls();
+        fixture.PurviewProfiles.ClearReceivedCalls();
+        fixture.ProvisioningClient.ExecuteStepAsync(
+                Arg.Any<Agent365ProvisioningStepRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call => CreateSuccessfulStepResult(
+                call.Arg<Agent365ProvisioningStepRequest>()));
+
+        var result = await fixture.Handler.HandleAsync(
+            "ProvisionAgent",
+            CreateProvisioningPayload(agent.Id, job.Id),
+            CancellationToken.None);
+
+        result.ShouldDeadLetter.Should().BeFalse();
+        job.Steps.OrderBy(step => step.OrderIndex).First().Status
+            .Should().Be(StepStatus.Completed);
+        fixture.PurviewProfiles.ReceivedCalls().Should().BeEmpty();
+        fixture.PurviewProvisioning.ReceivedCalls().Should().BeEmpty();
     }
 
     [Fact]
@@ -217,7 +276,7 @@ public sealed class ProvisioningMessageHandlerTests
     }
 
     [Fact]
-    public async Task HandleAsync_ProviderReturnsWiderPurviewScope_DoesNotAdoptIt()
+    public async Task HandleAsync_ProviderReturnsWiderDlpLocationReadback_DoesNotAdoptIt()
     {
         var fixture = new HandlerFixture();
         var agent = CreateAgent(ObservabilityMode.Agent365);
@@ -255,8 +314,62 @@ public sealed class ProvisioningMessageHandlerTests
             .Returns(CreatePurviewResult(
                 ProtectedBlueprintId,
                 "Enforce",
-                blueprintApplicationIds:
+                dlpLocationIds:
                     [ProtectedBlueprintId, PreviouslyAuthorizedBlueprintId]));
+
+        var result = await fixture.Handler.HandleAsync(
+            "ProvisionAgent",
+            CreateProvisioningPayload(agent.Id, job.Id),
+            CancellationToken.None);
+
+        result.ShouldDeadLetter.Should().BeTrue();
+        result.DeadLetterReason.Should().Be("PURVIEW_POLICY_READBACK_MISMATCH");
+        profile.Status.Should().Be("Failed");
+        profile.BlueprintApplicationIdsJson.Should().Be("[]");
+        job.Steps.OrderBy(step => step.OrderIndex).First().Status.Should().Be(StepStatus.Failed);
+    }
+
+    [Fact]
+    public async Task HandleAsync_ProviderReturnsBlueprintScopedCollection_DoesNotCompleteResolveStep()
+    {
+        var fixture = new HandlerFixture();
+        var agent = CreateAgent(ObservabilityMode.Agent365);
+        var profile = new PurviewPolicyProfile
+        {
+            Id = Guid.NewGuid(),
+            DisplayName = "Enterprise AI protection",
+            Template = "AllSensitiveInformation",
+            Mode = "Enforce",
+            Status = "Pending",
+            CollectionPolicyName = "collection",
+            DlpPolicyName = "dlp",
+            DlpRuleName = "rule"
+        };
+        agent.PurviewPolicyProfileId = profile.Id;
+        var job = CreateCurrentProvisioningJob(agent.Id);
+        fixture.Arrange(agent, job);
+        fixture.PurviewProfiles.GetByIdAsync(profile.Id, Arg.Any<CancellationToken>())
+            .Returns(profile);
+        fixture.PurviewProvisioning.IsEnabled.Returns(true);
+        fixture.ProvisioningClient.ExecuteStepAsync(
+                Arg.Any<Agent365ProvisioningStepRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new Agent365ProvisioningStepResult(
+                ProvisioningStepType.ResolveBlueprint,
+                new Agent365ProvisioningState
+                {
+                    BlueprintObjectId = ProtectedBlueprintId,
+                    BlueprintClientId = ProtectedBlueprintId
+                },
+                "verified_ResolveBlueprint"));
+        fixture.PurviewProvisioning.EnsureProfileAssignmentAsync(
+                Arg.Any<PurviewPolicyProvisioningRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(CreatePurviewResult(
+                ProtectedBlueprintId,
+                "Enforce",
+                collectionLocationId: ProtectedBlueprintId,
+                collectionLocationType: PurviewPolicyLocationContract.DlpLocationType));
 
         var result = await fixture.Handler.HandleAsync(
             "ProvisionAgent",
@@ -299,7 +412,7 @@ public sealed class ProvisioningMessageHandlerTests
             .Returns(CreatePurviewResult(
                 ProtectedBlueprintId,
                 "Enforce",
-                blueprintApplicationIds:
+                dlpBlueprintApplicationIds:
                     [ProtectedBlueprintId, PreviouslyAuthorizedBlueprintId]));
 
         var result = await fixture.Handler.HandleAsync(
@@ -310,9 +423,9 @@ public sealed class ProvisioningMessageHandlerTests
         result.ShouldDeadLetter.Should().BeFalse();
         await fixture.PurviewProvisioning.Received(1).EnsureProfileAssignmentAsync(
             Arg.Is<PurviewPolicyProvisioningRequest>(request =>
-                request.ExpectedPriorBlueprintApplicationIds!.SequenceEqual(
+                request.ExpectedPriorDlpBlueprintApplicationIds!.SequenceEqual(
                     new[] { PreviouslyAuthorizedBlueprintId }) &&
-                request.ExpectedBlueprintApplicationIds!.OrderBy(value => value).SequenceEqual(
+                request.ExpectedDlpBlueprintApplicationIds!.OrderBy(value => value).SequenceEqual(
                     new[] { PreviouslyAuthorizedBlueprintId, ProtectedBlueprintId }
                         .OrderBy(value => value))),
             Arg.Any<CancellationToken>());
@@ -364,9 +477,9 @@ public sealed class ProvisioningMessageHandlerTests
                 request.ExpectedDlpPolicyId == "dlp-id" &&
                 request.ExpectedDlpRuleId == "rule-id" &&
                 request.BlueprintApplicationId == ProtectedBlueprintId &&
-                request.ExpectedPriorBlueprintApplicationIds!.SequenceEqual(
+                request.ExpectedPriorDlpBlueprintApplicationIds!.SequenceEqual(
                     new[] { ProtectedBlueprintId }) &&
-                request.ExpectedBlueprintApplicationIds!.SequenceEqual(
+                request.ExpectedDlpBlueprintApplicationIds!.SequenceEqual(
                     new[] { ProtectedBlueprintId })),
             Arg.Any<CancellationToken>());
     }
@@ -1346,13 +1459,15 @@ public sealed class ProvisioningMessageHandlerTests
                 Arg.Any<CancellationToken>());
     }
 
-    [Fact]
-    public async Task HandleAsync_UnknownMessageType_RequestsDeadLetter()
+    [Theory]
+    [InlineData("NotSupported")]
+    [InlineData("ReconcileAgent")]
+    public async Task HandleAsync_UnsupportedMessageType_RequestsDeadLetter(string messageType)
     {
         var fixture = new HandlerFixture();
 
         var result = await fixture.Handler.HandleAsync(
-            "NotSupported",
+            messageType,
             "{}",
             CancellationToken.None);
 
@@ -1836,20 +1951,34 @@ public sealed class ProvisioningMessageHandlerTests
         string dlpPolicyId = "dlp-id",
         string dlpRuleId = "rule-id",
         bool hasExtraActions = false,
-        string[]? blueprintApplicationIds = null) =>
+        string[]? dlpBlueprintApplicationIds = null,
+        string collectionLocationId = PurviewPolicyLocationContract.EnterpriseAiAppsCollectionLocationId,
+        string collectionLocationType = PurviewPolicyLocationContract.CollectionLocationType,
+        string dlpLocationType = PurviewPolicyLocationContract.DlpLocationType,
+        string[]? dlpLocationIds = null) =>
         new(
             collectionPolicyId,
             dlpPolicyId,
             dlpRuleId,
-            blueprintApplicationIds ?? [blueprintApplicationId],
+            dlpBlueprintApplicationIds ?? [blueprintApplicationId],
             new PurviewPolicyReadbackEvidence(
                 "Enable",
                 ["UploadText", "DownloadText"],
                 ["Application"],
                 ["All"],
                 true,
+                new PurviewPolicyLocationReadbackEvidence(
+                    PurviewPolicyLocationContract.ApplicationWorkload,
+                    PurviewPolicyLocationContract.EntraLocationSource,
+                    collectionLocationType,
+                    [collectionLocationId]),
                 mode == "Enforce" ? "Enable" : "TestWithoutNotifications",
                 ["Application"],
+                new PurviewPolicyLocationReadbackEvidence(
+                    PurviewPolicyLocationContract.ApplicationWorkload,
+                    PurviewPolicyLocationContract.EntraLocationSource,
+                    dlpLocationType,
+                    dlpLocationIds ?? dlpBlueprintApplicationIds ?? [blueprintApplicationId]),
                 ["Credit Card Number"],
                 [new PurviewPolicyRuleActionEvidence("UploadText", "Block")],
                 false,

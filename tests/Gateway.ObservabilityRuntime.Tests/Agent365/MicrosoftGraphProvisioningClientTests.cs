@@ -13,8 +13,6 @@ public sealed class MicrosoftGraphProvisioningClientTests
     private const string GatewayBlueprintKey = "development-reusable-blueprint";
     private static readonly Guid OwnerObjectId =
         Guid.Parse("22222222-2222-4222-8222-222222222222");
-    private static readonly Guid ApplicationObjectId =
-        Guid.Parse("33333333-3333-4333-8333-333333333333");
     private static readonly Guid BlueprintObjectId =
         Guid.Parse("55555555-5555-4555-8555-555555555555");
     private static readonly Guid BlueprintClientId =
@@ -378,9 +376,8 @@ public sealed class MicrosoftGraphProvisioningClientTests
             }));
         var client = CreateClient(handler);
 
-        await client.CreateServicePrincipalAsync(
+        await client.CreateBlueprintPrincipalAsync(
             BlueprintClientId.ToString("D"),
-            isBlueprintPrincipal: true,
             CancellationToken.None);
 
         var request = handler.Requests.Should().ContainSingle().Subject;
@@ -452,30 +449,21 @@ public sealed class MicrosoftGraphProvisioningClientTests
     }
 
     [Fact]
-    public async Task OrdinaryApplicationAndServicePrincipalReads_DoNotSelectDerivedProperties()
+    public async Task GetBlueprintAsync_UsesExactTypedRouteWithoutCredentialProperties()
     {
         var handler = new RecordingHttpMessageHandler((_, _) =>
             JsonResponse(HttpStatusCode.OK, new { }));
         var client = CreateClient(handler);
 
-        await client.GetApplicationAsync(
-            ApplicationObjectId.ToString("D"),
-            isBlueprint: false,
-            includePasswordCredentials: false,
-            CancellationToken.None);
-        await client.GetServicePrincipalAsync(
-            BlueprintPrincipalObjectId.ToString("D"),
-            isAgentIdentity: false,
+        await client.GetBlueprintAsync(
+            BlueprintObjectId.ToString("D"),
             CancellationToken.None);
 
-        handler.Requests.Should().HaveCount(2);
-        handler.Requests[0].Uri.Should().Be(
-            $"https://graph.microsoft.com/v1.0/applications/{ApplicationObjectId:D}?$select=id,appId,displayName,tags");
-        handler.Requests[0].Uri.Should().NotContain("managerApplications");
-        handler.Requests[0].Uri.Should().NotContain("passwordCredentials");
-        handler.Requests[1].Uri.Should().Be(
-            $"https://graph.microsoft.com/v1.0/servicePrincipals/{BlueprintPrincipalObjectId:D}?$select=id,appId,displayName,appRoles");
-        handler.Requests[1].Uri.Should().NotContain("agentIdentityBlueprintId");
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Uri.Should().Be(
+            $"https://graph.microsoft.com/v1.0/applications/{BlueprintObjectId:D}/microsoft.graph.agentIdentityBlueprint?$select=id,appId,displayName,tags,managerApplications");
+        request.Uri.Should().NotContain("keyCredentials");
+        request.Uri.Should().NotContain("passwordCredentials");
     }
 
     [Fact]
@@ -497,9 +485,8 @@ public sealed class MicrosoftGraphProvisioningClientTests
 
         await client.ListBlueprintOwnerIdsAsync(BlueprintObjectId.ToString("D"), CancellationToken.None);
         await client.ListBlueprintSponsorIdsAsync(BlueprintObjectId.ToString("D"), CancellationToken.None);
-        var identity = await client.GetServicePrincipalAsync(
+        var identity = await client.GetAgentIdentityAsync(
             AgentIdentityObjectId.ToString("D"),
-            isAgentIdentity: true,
             CancellationToken.None);
 
         handler.Requests.Select(request => request.Uri).Should().Equal(

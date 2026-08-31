@@ -142,7 +142,6 @@ function Get-GatewayArmBooleanEnvironmentContract {
 
     $runtimeText = ConvertTo-GatewayArmBooleanText -Value $RuntimeEnabled
     $previewText = ConvertTo-GatewayArmBooleanText -Value $RegistryPreviewEnabled
-    $closedBindingText = ConvertTo-GatewayArmBooleanText -Value (-not $RegistryPreviewEnabled)
     $purviewText = ConvertTo-GatewayArmBooleanText -Value $PurviewEnabled
     $policyText = ConvertTo-GatewayArmBooleanText -Value $PurviewPolicyProvisioningEnabled
     $promptShieldText = ConvertTo-GatewayArmBooleanText -Value $PromptShieldEnabled
@@ -150,10 +149,8 @@ function Get-GatewayArmBooleanEnvironmentContract {
     return [ordered]@{
         Api = [ordered]@{
             'Provisioning__ExecutionEnabled' = $previewText
-            'Provisioning__RequireExactAdmissionBinding' = $closedBindingText
             'Provisioning__AllowContinuousDevelopmentAccess' = $previewText
             'Agent365__DelegatedRegistry__Enabled' = $previewText
-            'Agent365__DelegatedRegistry__RequireExactActionBinding' = $closedBindingText
             'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = $previewText
             'Purview__Enabled' = $purviewText
             'PromptShield__Enabled' = $promptShieldText
@@ -162,7 +159,6 @@ function Get-GatewayArmBooleanEnvironmentContract {
         Worker = [ordered]@{
             'ProvisioningWorker__ProcessingEnabled' = $runtimeText
             'ProvisioningWorker__ProvisioningExecutionEnabled' = $previewText
-            'Agent365__DirectRegistryPreviewEnabled' = $previewText
             'Purview__Enabled' = $purviewText
             'Purview__PolicyProvisioningEnabled' = $policyText
         }
@@ -1296,7 +1292,7 @@ function Read-BootstrapConfig {
     }
     $config.agent365.reviewedManagerApplicationIds = @($reviewedManagerIds | Sort-Object)
     if ($config.environment -ne 'dev' -and $config.agent365.allowDevelopmentRegistryPreview -eq $true) {
-        throw 'Agent Registration beta preview can be enabled only for the dev environment.'
+        throw 'Agent Registration preview can be enabled only for the dev environment.'
     }
     if ($config.purview.enabled -eq $true -and [string]::IsNullOrWhiteSpace([string]$config.purview.sensitiveInformationType)) {
         throw 'purview.sensitiveInformationType is required when Purview is enabled; the bootstrap never invents a tenant DLP classifier.'
@@ -1306,15 +1302,9 @@ function Read-BootstrapConfig {
             if ([string]::IsNullOrWhiteSpace([string]$config.purview.$name)) { throw "purview.$name is required when Purview is enabled." }
         }
     }
-    if ($config.purview.activateGatewayAdapterAfterPolicyReadback -eq $true -and $config.purview.enabled -ne $true) {
-        throw 'Purview adapter activation requires purview.enabled=true.'
-    }
     if ($config.purview.policyProvisioningEnabled -eq $true) {
         if ($config.purview.enabled -ne $true) {
             throw 'Purview policy-profile automation requires purview.enabled=true.'
-        }
-        if ($config.purview.activateGatewayAdapterAfterPolicyReadback -ne $true) {
-            throw 'Purview policy-profile automation requires activateGatewayAdapterAfterPolicyReadback=true so the requested worker feature cannot be silently deployed disabled.'
         }
         if ([string]$config.purview.policyProvisioningOrganization -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$') {
             throw 'purview.policyProvisioningOrganization must be the verified Microsoft 365 organization domain.'
@@ -1789,37 +1779,6 @@ function Get-BootstrapCompletedDatabaseValidationPlans {
         databaseRecoveryPlan = $null
         manualDatabaseRepairPlan = $null
     }
-}
-
-function Test-BootstrapDatabaseRecoveryRequiresNarrowContinuation {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
-        [Parameter(Mandatory)][string[]]$ContinuationStepNames
-    )
-
-    $automaticCompleted = $State.Contains('databaseRecoveryPlan') -and
-        $State.databaseRecoveryPlan -is [System.Collections.IDictionary] -and
-        [string]$State.databaseRecoveryPlan.status -ceq 'Completed'
-    $manualCompleted = $State.Contains('manualDatabaseRepairPlan') -and
-        $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
-        [string]$State.manualDatabaseRepairPlan.status -ceq 'Completed'
-    if (-not $automaticCompleted -and -not $manualCompleted) {
-        return $false
-    }
-    if ($manualCompleted) { Assert-BootstrapManualDatabaseRepairPrerequisite -State $State | Out-Null }
-    if ($ContinuationStepNames.Count -eq 0) {
-        throw 'The recovered-bootstrap continuation step boundary is empty.'
-    }
-    foreach ($name in $ContinuationStepNames) {
-        if ([string]::IsNullOrWhiteSpace($name)) {
-            throw 'The recovered-bootstrap continuation contains an empty step name.'
-        }
-    }
-    # A completed database recovery permanently changes the accepted-source boundary.
-    # Even after all continuation steps are marked Completed, only the narrow
-    # continuation may reconcile/finalize its receipt after an interruption.
-    return $true
 }
 
 function Get-BootstrapDatabaseRecoveryAttemptNumber {

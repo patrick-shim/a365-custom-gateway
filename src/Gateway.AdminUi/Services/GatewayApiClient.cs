@@ -15,8 +15,6 @@ namespace Gateway.AdminUi.Services;
 public sealed class GatewayApiClient : IGatewayApiClient
 {
     private const string CorrelationIdHeader = "X-Correlation-ID";
-    private const string IdempotencyKeyHeader = "Idempotency-Key";
-    private const string IfMatchHeader = "If-Match";
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -117,7 +115,6 @@ public sealed class GatewayApiClient : IGatewayApiClient
     public Task<RevokeAgentIngressCredentialResponse> RevokeAgentIngressCredentialAsync(
         Guid agentId,
         Guid credentialId,
-        Guid? idempotencyKey = null,
         CancellationToken cancellationToken = default)
     {
         EnsureNotEmpty(agentId, nameof(agentId));
@@ -126,7 +123,6 @@ public sealed class GatewayApiClient : IGatewayApiClient
         var message = new HttpRequestMessage(
             HttpMethod.Delete,
             $"api/v1/agents/{agentId:D}/credentials/{credentialId:D}");
-        AddIdempotencyKey(message, idempotencyKey);
 
         return SendForValueAsync<RevokeAgentIngressCredentialResponse>(
             message,
@@ -150,13 +146,11 @@ public sealed class GatewayApiClient : IGatewayApiClient
 
     public Task<RegisterAgentResponse> RegisterAgentAsync(
         RegisterAgentRequest request,
-        Guid? idempotencyKey = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         var message = CreateJsonRequest(HttpMethod.Post, "api/v1/agents", request);
-        AddIdempotencyKey(message, idempotencyKey);
 
         return SendForValueAsync<RegisterAgentResponse>(message, true, cancellationToken);
     }
@@ -164,7 +158,6 @@ public sealed class GatewayApiClient : IGatewayApiClient
     public Task<UpdateFeaturesResponse> UpdateAgentFeaturesAsync(
         Guid agentId,
         UpdateFeaturesRequest request,
-        string? eTag = null,
         CancellationToken cancellationToken = default)
     {
         EnsureNotEmpty(agentId, nameof(agentId));
@@ -174,27 +167,22 @@ public sealed class GatewayApiClient : IGatewayApiClient
             HttpMethod.Patch,
             $"api/v1/agents/{agentId:D}/features",
             request);
-        AddIfMatch(message, eTag);
-        AddIdempotencyKey(message);
 
         return SendForValueAsync<UpdateFeaturesResponse>(message, true, cancellationToken);
     }
 
     public Task<AgentStateChangeResponse> EnableAgentAsync(
         Guid agentId,
-        Guid? idempotencyKey = null,
         CancellationToken cancellationToken = default) =>
-        SendAgentStateChangeAsync(agentId, "enable", idempotencyKey, cancellationToken);
+        SendAgentStateChangeAsync(agentId, "enable", cancellationToken);
 
     public Task<AgentStateChangeResponse> DisableAgentAsync(
         Guid agentId,
-        Guid? idempotencyKey = null,
         CancellationToken cancellationToken = default) =>
-        SendAgentStateChangeAsync(agentId, "disable", idempotencyKey, cancellationToken);
+        SendAgentStateChangeAsync(agentId, "disable", cancellationToken);
 
     public Task<AsyncOperationResponse> RetryProvisioningAsync(
         Guid agentId,
-        Guid? idempotencyKey = null,
         CancellationToken cancellationToken = default)
     {
         EnsureNotEmpty(agentId, nameof(agentId));
@@ -202,25 +190,17 @@ public sealed class GatewayApiClient : IGatewayApiClient
         var message = new HttpRequestMessage(
             HttpMethod.Post,
             $"api/v1/agents/{agentId:D}:retry-provisioning");
-        AddIdempotencyKey(message, idempotencyKey);
 
         return SendForValueAsync<AsyncOperationResponse>(message, true, cancellationToken);
     }
 
     public Task<DeleteAgentResponse> DeleteAgentAsync(
         Guid agentId,
-        bool deleteMicrosoftResources,
-        string? eTag = null,
-        Guid? idempotencyKey = null,
         CancellationToken cancellationToken = default)
     {
         EnsureNotEmpty(agentId, nameof(agentId));
 
-        var path = $"api/v1/agents/{agentId:D}?deleteMicrosoftResources=" +
-            deleteMicrosoftResources.ToString().ToLowerInvariant();
-        var message = new HttpRequestMessage(HttpMethod.Delete, path);
-        AddIfMatch(message, eTag);
-        AddIdempotencyKey(message, idempotencyKey);
+        var message = new HttpRequestMessage(HttpMethod.Delete, $"api/v1/agents/{agentId:D}");
 
         return SendForValueAsync<DeleteAgentResponse>(message, true, cancellationToken);
     }
@@ -296,14 +276,11 @@ public sealed class GatewayApiClient : IGatewayApiClient
 
     public Task<SystemConfigDto> UpdateSystemConfigAsync(
         UpdateSystemConfigRequest request,
-        string? eTag = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         var message = CreateJsonRequest(HttpMethod.Patch, "api/v1/system/config", request);
-        AddIfMatch(message, eTag);
-        AddIdempotencyKey(message);
 
         return SendForValueAsync<SystemConfigDto>(message, true, cancellationToken);
     }
@@ -311,7 +288,6 @@ public sealed class GatewayApiClient : IGatewayApiClient
     private async Task<AgentStateChangeResponse> SendAgentStateChangeAsync(
         Guid agentId,
         string action,
-        Guid? idempotencyKey,
         CancellationToken cancellationToken)
     {
         EnsureNotEmpty(agentId, nameof(agentId));
@@ -319,7 +295,6 @@ public sealed class GatewayApiClient : IGatewayApiClient
         var message = new HttpRequestMessage(
             HttpMethod.Post,
             $"api/v1/agents/{agentId:D}:{action}");
-        AddIdempotencyKey(message, idempotencyKey);
 
         return await SendForValueAsync<AgentStateChangeResponse>(message, true, cancellationToken);
     }
@@ -506,21 +481,6 @@ public sealed class GatewayApiClient : IGatewayApiClient
         {
             Content = JsonContent.Create(value, options: JsonOptions)
         };
-
-    private static void AddIdempotencyKey(
-        HttpRequestMessage request,
-        Guid? idempotencyKey = null) =>
-        request.Headers.TryAddWithoutValidation(
-            IdempotencyKeyHeader,
-            (idempotencyKey ?? Guid.NewGuid()).ToString("D"));
-
-    private static void AddIfMatch(HttpRequestMessage request, string? eTag)
-    {
-        if (!string.IsNullOrWhiteSpace(eTag))
-        {
-            request.Headers.TryAddWithoutValidation(IfMatchHeader, eTag);
-        }
-    }
 
     private static string BuildRelativeUri(
         string path,

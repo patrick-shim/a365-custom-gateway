@@ -1,505 +1,259 @@
 # A365 Gateway bootstrap
 
-`bootstrap.ps1` is the supported first-deployment entry point for a clean Azure
-subscription. It is an interactive, resumable state machine rather than a thin
-wrapper around the existing update scripts.
+The bootstrap is the supported deployment system for a new A365 Custom Gateway. It
+owns the path from non-secret configuration through Azure What-If, explicit plan
+acceptance, Azure and tenant provisioning, database initialization, immutable image
+deployment, and final verification.
 
-## What it provisions
+Run it through `./gateway` on macOS/Linux or `.\gateway.cmd` on Windows. The launcher
+delegates to `bootstrap/bootstrap.ps1`; lower-level scripts are not alternate
+installers.
 
-An `Apply` run performs these ordered phases:
+## What it deploys
 
-1. verifies or installs PowerShell 7 (Windows launcher), Git, Azure CLI, Bicep,
-   .NET 10, and ExchangeOnlineManagement when Purview is requested;
-2. pins the exact Azure tenant and subscription and registers required providers;
-3. creates the resource group, Log Analytics workspace, VNet, delegated Container
-   Apps subnet, private-endpoint subnet, and VNet-integrated Container Apps
-   environment;
-4. creates or safely adopts the Gateway API Entra app, builds the real API, worker,
-   Admin UI, and database-migrator images in the foundation ACR, and pins immutable
-   digests;
-5. deploys those real API/worker images inert so their managed identities exist;
-6. issues at most one direct Microsoft Graph v1.0 create for one typed Agent ID
-   seed blueprint; its exact display name is bound to deployment ownership and the
-   accepted source, the authenticated administrator is its sole owner and sponsor,
-   no blueprint credential is created, pre-existing same-name objects are never
-   adopted, and `managerApplications` must exactly equal the independently reviewed
-   IDs in configuration;
-7. applies the exact eight worker Graph roles, the API blueprint-read role, the
-   delegated Registry scopes/consent, and the API managed-identity OBO FIC;
-8. creates SQL private DNS/endpoint, initializes an empty `GatewayDb` from the
-   reviewed current EF model, and creates the API/worker database principals through
-   one VNet-private, retry-disabled Container Apps Job execution; SQL public access
-   remains `Disabled` with zero firewall rules, and the Job's system identity is the
-   singular SQL Entra administrator only for the bounded execution before the exact
-   original administrator is restored;
-9. creates the Admin UI Entra app and transfers its one-time secret directly to
-    Key Vault without rendering or persisting the value;
-10. optionally creates blueprint-scoped Purview collection and inline DLP policy
-    objects, using `Application` as the enforcement plane;
-11. optionally creates an Azure AI Content Safety account for Prompt Shields and
-    grants the API managed identity only the built-in Cognitive Services User role;
-12. deploys the current runtime and Admin UI, sets exact redirect URIs, disables
-    SQL and Key Vault public access, and performs health/private-network/identity/
-    permission/provisioning read-back checks.
+The bootstrap creates one named resource group containing the Gateway's Azure
+foundation and workloads, then creates the required tenant-side identity objects.
+The deployed system includes:
 
-The script has no destroy mode. Resource deletion, purge, retained-message access,
-historical replay, and SQL finalization remain separate reviewed operations.
+- Azure Container Apps for the Admin UI, API, and provisioning worker;
+- Azure Container Registry and immutable workload images;
+- Azure SQL, Service Bus, Blob storage, Key Vault, private networking, logs, alerts,
+  and Application Insights;
+- Entra applications, app roles, managed identities, federated credentials, and
+  the seed Agent ID blueprint;
+- the ordered Gateway database schema; and
+- optional Azure AI Content Safety and optional Purview policy-authoring
+  prerequisites. Purview runtime enforcement is enabled only after the separate
+  post-bootstrap verification in the Purview runbook.
 
-## Golden path
+```mermaid
+flowchart TD
+    config[Reviewed non-secret configuration] --> whatif[Azure What-If]
+    whatif --> approval[Explicit plan acceptance]
+    approval --> foundation[Azure foundation]
+    foundation --> identity[Entra and Agent ID setup]
+    identity --> database[Empty database initialization]
+    database --> images[Immutable workload images]
+    images --> runtime[Admin UI, API, worker]
+    runtime --> verify[Read-only verification]
+    verify --> endpoints[Verified Admin UI and API endpoints]
+```
 
-Run from the repository root. On macOS or Linux:
+## Prerequisites
+
+- Git
+- .NET 10 SDK
+- PowerShell 7 (`pwsh`)
+- Azure CLI (`az`)
+- an enabled Azure subscription in the target Microsoft Entra tenant
+- an Azure account with Subscription Owner, or Contributor plus permission to make
+  the role assignments shown by Plan
+- an administrator able to approve the Entra and Agent ID changes
+- Agent 365 tenant eligibility and licensing
+- for optional Purview provisioning, an approved Security & Compliance PowerShell
+  application, certificate in Key Vault, and the required Purview roles
+
+The installer uses official Microsoft sign-in surfaces. It never asks you to paste
+an Azure password, access token, client secret, certificate, or Gateway key into its
+configuration.
+
+## Guided deployment
+
+From the repository root:
 
 ```bash
+az login
 ./gateway setup
 ```
 
-On Windows:
+On Windows PowerShell or Command Prompt, run:
 
 ```powershell
-gateway.cmd setup
+az login
+.\gateway.cmd setup
 ```
 
-This opens a temporary Fluent setup UI on an ephemeral `127.0.0.1` port. A
-single-use local URL establishes the in-memory session, and the URL is immediately
-removed from browser history. The UI discovers only safe Azure subscription
-metadata from the current Azure CLI session, creates the ignored non-secret
-`bootstrap/config.json`, runs Plan, presents the permission/preview/cost boundaries,
-and requires a second explicit confirmation before mutation. All deployment work
-still runs through `bootstrap/bootstrap.ps1`; the UI is not a second deployment
-engine.
+Setup listens only on an ephemeral `127.0.0.1` port. It lets you select a
+subscription visible to Azure CLI, discover compatible Agent 365 manager
+applications, choose optional features, and write `bootstrap/config.json`. It then
+runs Plan, displays the exact deployment boundaries, and requires a second explicit
+confirmation before Apply or Resume.
 
-Prefer the terminal experience or cannot open a browser? Use:
+Keep the terminal open. Deployment may hand control to official Microsoft browser
+windows for refreshed Azure, Entra, Agent ID, or Purview authentication. Setup
+closes after completion and does not become part of the hosted Gateway.
+
+## Terminal deployment
+
+The same deployment can be run without the setup UI:
 
 ```bash
 ./gateway doctor
-./gateway up
+./gateway init
+./gateway plan
+./gateway apply --open
 ```
 
-`up` starts the configuration wizard when needed, compiles every deployment Bicep
-template, runs subscription-scope ARM What-If, prints the imperative Entra/Graph/
-Agent 365/SQL/Purview manifest, asks for confirmation, applies or resumes safe
-checkpoints, verifies the result, and opens the hosted Admin UI when requested.
+Windows uses the same command names through the root launcher:
 
-The base workstation requirements are PowerShell 7, Git, Azure CLI, and the .NET
-10 SDK. `doctor` also verifies Bicep and the credential-free Microsoft Graph v1.0
-blueprint provider, reports the current subscription/tenant match, and distinguishes failures
-from authority, quota, regional SKU, licensing, and browser checks that remain
-`NotChecked`. Docker is not required: ACR performs the image builds.
-
-Prerequisite installation is itself a workstation mutation and is enabled by
-default for supported commands. Depending on the platform and selected features,
-bootstrap may install Git, Azure CLI, the .NET 10 SDK, or Bicep, and install
-`ExchangeOnlineManagement` for the current user when Purview needs it. Pass
-`--no-install` to `plan`, `up`, or `resume` when another workstation-management
-process owns those changes; missing or mismatched tools will then fail with
-remediation instead of being installed.
-
-After you select the exact subscription, guided setup can perform bounded read-only
-discovery of typed Agent ID blueprint `managerApplications` and exact tenant service-
-principal metadata. It shows every candidate and its provenance, but copies nothing
-into configuration until you explicitly accept that exact set. If the tenant has no
-usable provider evidence or the result is partial/ambiguous, setup stops and asks for
-an independently reviewed provider result instead of guessing. The terminal wizard
-still accepts an independently reviewed one-to-ten ID set. The resulting sorted set
-is written to `agent365.reviewedManagerApplicationIds`, displayed by Plan, and bound
-into the accepted fingerprint. Replace the dummy GUID in `config.example.json` when
-using a hand-authored configuration. Discovery is readback evidence only and never
-grants authority by itself. Follow the review boundary in
-[`docs/operations/entra-setup-runbook.md`](../docs/operations/entra-setup-runbook.md#43-agent-365-managerapplications-provider-prerequisite).
-
-On macOS, Homebrew can install the base command-line tools:
-
-```bash
-brew install powershell git azure-cli
+```powershell
+.\gateway.cmd doctor
+.\gateway.cmd init
+.\gateway.cmd plan
+.\gateway.cmd apply --open
 ```
 
-Install the .NET 10 SDK from Microsoft's platform installer if it is not already
-available. On Windows, the lower-level `bootstrap/bootstrap.cmd` can install
-PowerShell 7 with `winget`; the root launcher is the supported day-zero command
-surface.
-
-Azure, Agent ID/Graph, tenant consent, and optional Purview handoffs may open
-official Microsoft authentication. The setup UI and bootstrap never collect or
-render those credentials. A cached sign-in is required for non-interactive use.
+`init` interactively creates `bootstrap/config.json`. You can instead copy
+`bootstrap/config.example.json`, replace every placeholder, and pass a different
+file with `--config PATH`.
 
 ### Command reference
 
 | Command | Behavior |
 |---|---|
-| `gateway setup` | Start the local-only guided setup UI. |
-| `gateway init` | Create or replace the reviewed non-secret configuration in the terminal. |
-| `gateway doctor` | Check workstation, account, and explicitly unverified readiness items. |
-| `gateway plan` | Compile source, show all mutation classes, and run ARM What-If; no cloud mutation. |
-| `gateway up` | Configure if needed, plan, confirm, apply/resume, verify, and optionally open the portal. |
-| `gateway apply` | Apply one still-current accepted plan. |
-| `gateway resume` | Re-plan, confirm, and resume independently revalidated checkpoints. |
-| `gateway recover-database` | Run the separately reviewed one-time recovery for the exact eligible failed database bootstrap. |
-| `gateway repair-database --yes` | Run one new one-shot repair Job after both automatic database recoveries are terminal `Failed`/`manualOnly`; there is no Plan or What-If mode. |
-| `gateway upgrade-admin-ui` | Promote only the Admin UI in an already completed and verified bootstrap deployment. |
-| `gateway repair-api-attestation --yes` | Apply only the reviewed, receipt-bound API attestation correction to its exact eligible failed bootstrap, then run canonical final verification. |
-| `gateway status` | Show local checkpoint and layered readiness status without Azure calls. |
-| `gateway verify` | Rerun authenticated, read-only deployment verification. |
-| `gateway open` | Open only a recorded, verified HTTPS Admin UI endpoint. |
-| `gateway diagnose` | Write a bounded, redacted support bundle containing safe identifiers only. |
+| `setup` | Start the temporary loopback-only setup UI. |
+| `up` | Create configuration if needed, Plan, confirm, Apply/Resume, and Verify. |
+| `init` | Create a reviewed non-secret configuration interactively. |
+| `doctor` | Check tools, configuration, Azure CLI account, and subscription readiness. |
+| `plan` | Validate inputs, compile Bicep, and run authenticated Azure What-If. |
+| `apply` | Apply an accepted current plan and run final verification. |
+| `resume` | Reconcile and continue an interrupted accepted plan. |
+| `status` | Show local checkpoint/readiness state without Azure calls. |
+| `verify` | Rerun read-only deployment verification. |
+| `open` | Open the recorded verified Admin UI HTTPS endpoint. |
+| `diagnose` | Write a sanitized diagnostic bundle. |
 
-There is intentionally no destroy command. Plan acceptance expires after 60 minutes
-and is bound to the entire configuration, deployment-affecting source, and sorted
-sanitized What-If prediction. A source/configuration change requires a new plan.
-Acceptance materializes the reviewed deployment inputs in the ignored,
-content-addressed `.bootstrap/accepted-source/<ownership>/<plan>/` tree. Apply and
-Resume require the currently running checkout to match the accepted source exactly,
-verify the snapshot hash, and reload mutation modules, templates, scripts, project
-files, and ACR build inputs from that snapshot. If any durable step or output has
-already been written, a different source generation cannot be planned or mixed
-into that deployment state; restore the exact source or use a distinct deployment
-identity.
-The first live disposable execution must follow the
-[`clean-subscription bootstrap proof`](../docs/operations/clean-subscription-bootstrap-proof.md)
-runbook; local success alone is not deployment evidence.
+Narrow recovery and upgrade commands also appear in `./gateway --help`. Use them
+only when the matching failure boundary or runbook explicitly calls for them; they
+are not alternate installation paths.
 
-### Promote only the Admin UI
+Common options include `--config PATH`, `--json`, `--non-interactive`, `--yes`,
+`--expected-plan-fingerprint SHA256`, `--open`, and `--no-install`. Run
+`./gateway --help` for the exact current surface.
 
-After the same bootstrap deployment has completed `Resume` and `Verify` (including
-an exact completed database-recovery receipt when one exists), promote the current
-Admin UI source without replaying the full bootstrap:
+## Configuration
 
-```bash
-./gateway upgrade-admin-ui --config bootstrap/config.json --yes
-```
+`bootstrap/config.json` is non-secret and ignored by Git. The JSON schema is
+`bootstrap/config.schema.json`; the example is `bootstrap/config.example.json`.
+Configuration selects:
 
-On Windows, use `gateway.cmd upgrade-admin-ui` with the same options. This is a
-separate, narrow operation—not a bootstrap mode. It requires the exact existing
-tenant, subscription, resource group, project, environment, ownership ID, accepted
-bootstrap plan, and current verification evidence. It records a separate accepted
-upgrade-plan fingerprint under ignored
-`.bootstrap/evidence/<resource-group>/admin-ui-upgrade/`; it never rewrites the
-accepted bootstrap plan.
+- the exact subscription and tenant;
+- environment, Azure location, project name, resource group, and alert email;
+- SQL service tier;
+- seed blueprint name and reviewed manager-application allowlist;
+- development-only Registry preview enablement; and
+- optional Prompt Shields and Purview settings.
 
-The command captures the API and workflow-v3 worker digest/configuration plus every
-Service Bus queue count, runs Admin UI-only ARM What-If, and rejects Create, Delete,
-or any resource outside the existing Admin UI app, identity, and two exact role
-assignments. It disables private-endpoint redeployment, remotely builds only
-`gateway-admin`, deploys the immutable digest incrementally in the same resource
-group, and verifies one ready revision, managed-identity ACR pull, RBAC-only
-versionless Key Vault access, health, and the Entra sign-in redirect. It finishes
-only when the API, worker, queue counts, ownership, and original accepted bootstrap
-plan are unchanged. The receipt records the prior Admin UI digest as the rollback
-boundary; rollback remains a separately reviewed operation.
+The deployment profile matters. A development configuration may explicitly enable
+the preview Registry path so a registration can reach Gateway-reported `Active`.
+Staging and production configurations keep Registry creation closed.
 
-### Repair only the bootstrap API attestation contract
+Do not put credentials, tokens, Gateway keys, prompt/response content, or
+certificate material in configuration. Purview automation records only an
+application ID, organization domain, and Key Vault secret URI; the certificate is
+loaded through its approved non-echoing runtime path.
 
-When the completed manual database repair is exact and the only remaining clean-
-bootstrap failure is the original API image's database-attestation contract, run:
+## Plan, Apply, Resume, Verify
 
-```bash
-./gateway repair-api-attestation --config bootstrap/config.json --yes
-```
+Bootstrap is a resumable state machine:
 
-On Windows, use `gateway.cmd repair-api-attestation` with the same options. This is
-a separately guarded correction, not a bootstrap mode. It accepts no Plan,
-What-If, dry-run, or Bicep/resource replay. The command preserves the original
-accepted plan and every completed prior step, reconstructs source from that
-content-addressed snapshot, overlays exactly the two reviewed hash-pinned API
-attestation files, builds only `gateway-api`, and directly updates only the existing
-API Container App with an immutable digest and receipt-bound revision suffix.
+1. `plan` validates configuration and source, compiles Bicep, runs authenticated
+   subscription-scope What-If, and shows imperative tenant operations.
+2. Explicit acceptance binds the exact plan fingerprint, configuration, source,
+   target, and What-If prediction for a limited time.
+3. `apply` revalidates that binding before mutation and writes safe checkpoint
+   evidence after each verified action.
+4. `resume` reconciles completed checkpoints and continues only work that remains
+   safe for the same accepted plan.
+5. `verify` reads back the deployed boundary without creating or updating it.
 
-The additive receipt lives under
-`.bootstrap/evidence/<resource-group>/api-attestation-correction/` and is saved
-before external mutation so rerunning the same command reconciles the one ACR run
-and one Container Apps update instead of resubmitting them. Success requires exact
-ACR run/tag/digest readback, one healthy active target revision, unchanged API
-identity/configuration/environment/ingress/registry/secrets/tags, an unchanged
-workflow-v3 worker and Service Bus queue counts, HTTP 2xx health, exact `Ready`, and
-the exact v1 `Attested` response. The command then reruns only the canonical
-`End-to-end deployment verification` step and records the verified Admin UI/API
-URLs; it never replays earlier resources.
+State and sanitized evidence live under ignored `.bootstrap/`. They may contain
+tenant, subscription, resource, application, principal, image-digest, and
+fingerprint identifiers. They never contain credentials, access tokens, clear
+Gateway keys, prompts, responses, or provider bodies.
 
-For controlled automation, separate review from authorization. Preserve the JSON
-Lines Plan result, extract the one top-level object whose `applyReady` is `true`,
-and send its `planFingerprint` through the external approval system. This example
-uses `jq` supplied by the CI image; `jq` is not a bootstrap prerequisite:
+For automation, create and review a fresh JSON plan, then require the exact emitted
+fingerprint at the mutation gate:
 
 ```bash
-plan_artifact="$(mktemp)"
-./gateway plan --json --non-interactive | tee "$plan_artifact"
-plan_fingerprint="$(jq -ser '[.[] | select(.planFingerprint? and .applyReady == true)] | if length == 1 then .[0].planFingerprint else error("expected one apply-ready plan") end' "$plan_artifact")"
-
-# The approval gate reviews the full artifact and returns exactly this fingerprint.
-: "${APPROVED_PLAN_FINGERPRINT:?external approval did not supply a plan fingerprint}"
-test "$APPROVED_PLAN_FINGERPRINT" = "$plan_fingerprint"
-./gateway up --json --non-interactive --yes \
-  --expected-plan-fingerprint "$APPROVED_PLAN_FINGERPRINT"
+./gateway plan --config bootstrap/config.json --json --non-interactive
+./gateway up --config bootstrap/config.json --json --non-interactive --yes \
+  --expected-plan-fingerprint sha256:REVIEWED_FINGERPRINT
 ```
 
-For an interrupted run, carry a newly reviewed fingerprint into Resume:
+The second command stops before mutation if source, configuration, target, or
+What-If output changed.
+
+## Optional runtime protections
+
+Prompt Shields and Purview are optional and independent.
+
+### Prompt Shields
+
+Set `promptShield.enabled` to `true` to deploy Azure AI Content Safety and authorize
+the Gateway API managed identity. The account has local authentication disabled;
+the bootstrap does not provision or store an account key. Registrations still opt
+in individually in the Admin UI.
+
+### Microsoft Purview
+
+Set `purview.enabled` to `true` and provide a reviewed sensitive-information type
+only when you want bootstrap to prepare the optional policy-authoring path. If
+`policyProvisioningEnabled` is true, deployment pauses for the authorized Security
+& Compliance PowerShell sign-in and provisions then reads back the policy contract.
+Bootstrap always deploys the Gateway with `Purview__Enabled=false`; enabling runtime
+enforcement requires the separate token-role and bounded data-plane checks in the
+Purview runbook.
+
+Purview uses two distinct Application-plane locations:
+
+| Purpose | Location | Source | Type |
+|---|---|---|---|
+| Know Your Data collection | Fixed tenant-wide enterprise-AI-apps location `ee1680d0-702f-4090-b26c-c49091e86531` | Entra | `Group` |
+| DLP policy/rule | Selected reusable blueprint application/client ID | Entra | `Individual` |
+
+The KYD collection is not blueprint-scoped, and the DLP policy is not Group-scoped.
+Exact readback proves configuration, not policy propagation or a data-plane
+allow/block verdict. Follow the [Purview setup runbook](../docs/operations/purview-setup-runbook.md)
+for roles, certificate handling, and bounded validation.
+
+## Recovery
+
+If deployment stops:
 
 ```bash
-./gateway resume --json --non-interactive --yes \
-  --expected-plan-fingerprint "$APPROVED_PLAN_FINGERPRINT"
+./gateway status
+./gateway diagnose
+./gateway resume
 ```
 
-On Windows, use the same long options with `gateway.cmd`. `--yes` alone authorizes
-the plan freshly recomputed inside that `up` or `resume`; it does **not** prove that
-a previously emitted plan was reviewed. Only the expected fingerprint binds
-external approval to the full configuration, deployment source, descriptor, and
-sorted sanitized ARM What-If prediction. Never put secrets on the command line or
-in configuration.
+Review the reported failure and correct its cause before Resume. Do not edit or
+delete `.bootstrap/`, manually replay completed tenant operations, access retained
+messages, or run a second bootstrap against the same deployment.
 
-### Fixing the Purview sensitive-information-type error
+Database recovery, one-shot manual database repair, and Admin UI upgrade are
+deliberately bounded commands. Use them only when the bootstrap identifies that
+exact eligible state and follow the linked [operations guide](../operations/README.md).
 
-This error is a configuration guard and is independent of macOS:
+If a completed resource group was deleted, preserved tenant objects and deleted
+resource-group credentials no longer share one lifecycle. Bootstrap refuses to
+replay that state. Use a separately reviewed disaster-recovery procedure or a new
+isolated deployment.
 
-```text
-purview.sensitiveInformationType is required when Purview is enabled
-```
+Bootstrap has no destroy mode and does not authorize cleanup, historical replay,
+retained-message access, or SQL finalization.
 
-It occurs while `config.json` is loaded, before `Plan` or `Apply` changes Azure. Use
-one of these two valid configurations:
+## After verification
 
-- To bootstrap without Purview initially, keep the complete `purview` object from
-  `config.example.json` and set:
+Open the hosted Admin UI with `./gateway open`, sign in as a
+`Gateway.Administrator`, register an external agent, and store the one-time Gateway
+key immediately. See the root [quickstart](../README.md#sign-in-and-register-an-agent)
+and [sample client](../README.md#send-a-sample-interaction).
 
-```json
-{
-  "enabled": false,
-  "activateGatewayAdapterAfterPolicyReadback": false,
-  "collectionPolicyName": "A365 Gateway AI collection",
-  "dlpPolicyName": "A365 Gateway inline DLP",
-  "dlpRuleName": "A365 Gateway inline DLP rule",
-  "sensitiveInformationType": "",
-  "policyProvisioningEnabled": false,
-  "policyProvisioningOrganization": "",
-  "policyProvisioningApplicationId": "",
-  "policyProvisioningCertificateSecretUri": ""
-}
-```
+Additional references:
 
-- To include Purview, set `enabled` to `true` and replace the empty
-  `sensitiveInformationType` with the exact tenant-approved Purview sensitive
-  information type name. Do not use a guessed name. Keep
-  `activateGatewayAdapterAfterPolicyReadback` false if this run should only create
-  and read back policy configuration; set it true only when the operator explicitly
-  wants the deployed Gateway adapter enabled after that read-back. The separate
-  protection-profile automation switch `policyProvisioningEnabled` is accepted only
-  when this adapter-activation switch is also true, so Plan cannot advertise a
-  worker feature that Apply would silently leave disabled.
-
-After correcting `bootstrap/config.json`, rerun `Plan`, then `Apply`. If a later
-`Apply` step fails, fix that reported cause and use `-Mode Resume` with the same
-configuration instead of deleting `.bootstrap` state or starting a second run.
-
-The signed-in account needs Azure subscription Owner (or Contributor plus User
-Access Administrator) rights, permission to create Entra applications/service
-principals and grant admin consent, Agent ID
-Developer (or a role that includes the required Agent ID operations), and the
-Purview roles required to author collection/DLP policies when that option is on.
-Some consent and Purview connections intentionally display Microsoft interactive
-authentication. `-NonInteractive` fails instead of bypassing those boundaries.
-
-## Modes and recovery
-
-- `Init` creates reviewed non-secret configuration.
-- `Doctor` reports workstation/account readiness and truthful `NotChecked` items.
-- `Plan` validates configuration and deployment source, runs ARM What-If, and may
-  record a short-lived exact-plan acceptance; it does not mutate cloud resources.
-- `Apply` consumes an accepted, current plan and starts or continues a deployment.
-- `Resume` generates a fresh plan, asks for authorization, and continues only
-  independently revalidated step evidence.
-- `Status` reads local safe state without making Azure calls.
-- `Verify` performs final authenticated read-only checks from existing state.
-- `Open` opens only the recorded verified HTTPS Admin UI endpoint.
-- `Diagnose` writes a redacted local support bundle.
-- `Up` composes Init, Plan, explicit approval, Apply/Resume, and Verify.
-
-Safe state is stored under `.bootstrap/state/` and evidence under
-`.bootstrap/evidence/`; both are ignored by Git. Completed steps are not blindly
-replayed or blindly trusted: each reusable mutation checkpoint must pass its own
-read-only validator, and a missing or ambiguous validator fails closed while
-preserving evidence. If a step failed, fix the reported cause and use `Resume`. A
-per-deployment lock prevents concurrent runs. Never edit the state to claim a step
-completed.
-The reviewed plan makes the seed-blueprint disposition explicit and binds it into
-the plan fingerprint. A fresh state may authorize at most one Graph POST; a
-`Running` or `Failed` blueprint step is GET-only reconciliation, and a `Completed`
-step is read-only revalidation. An exact-name object found during recovery must
-also match the persisted ownership/source boundary, administrator owner/sponsor,
-reviewed manager applications, credential-free application surface, and the exact
-pristine-or-Gateway-activated principal/FIC authority surface. Resume never turns a
-prior unknown create outcome into a second POST or name-only adoption.
-Prerequisite and exact tenant/subscription checks run on every Apply/Resume, and
-final verification is never accepted from stale state. If a previously completed
-resource group was deleted, bootstrap preserves its state and fails before any
-replay. Tenant-scoped Entra/Agent ID objects can survive while Key Vault credential
-metadata does not, so rebuilding that identity requires a separately reviewed
-disaster-recovery procedure or a new isolated deployment identity.
-The verified subscription ID is appended to every supported Azure CLI/ARM call.
-For Graph, bootstrap acquires a short-lived token with the exact subscription,
-verifies the returned tenant and subscription metadata, and sends only bounded
-Graph v1.0 requests through its in-process no-redirect client. Authenticated native
-`az ad` and `az rest` calls are rejected, so a later default-subscription change
-cannot redirect the operation; tenant and subscription readback still fail closed.
-
-Each new deployment state contains a generated, unguessable
-`deploymentOwnershipId`. The two bootstrap-managed Entra applications must carry
-exactly the corresponding `A365GatewayBootstrap` and
-`A365GatewayOwnership:<id>` tags and exactly the pinned bootstrap operator as
-owner. Bootstrap may reuse an application only when that state-owned identity and
-its reviewed contract read back exactly. A same-name application without the exact
-marker, an ownership mismatch, or ambiguous results are treated as a collision and
-fail closed; bootstrap never adopts them by display name alone.
-
-The same ownership ID and accepted source fingerprint are emitted by the ARM
-deployments and tagged on the bootstrap-created runtime resources. Image evidence
-records the source fingerprint and digest-pinned API, worker, Admin UI, and
-database-migrator images.
-Checkpoint reuse requires exact deployment parameters/outputs, resource tags,
-managed-identity IDs, and deployed image references; a matching resource name is
-not sufficient.
-
-Database initialization is also explicitly recoverable. Bootstrap deploys one
-dormant, GA manual Container Apps Job inside the VNet-integrated environment with
-the immutable database-migrator image, zero retries, and no secret or execution
-intent in its stored template. Before the one authorized start it persists a safe
-receipt containing the exact deployment, Job, execution-intent, and original SQL
-Entra-administrator identifiers. The Job system identity temporarily becomes the
-server's singular SQL Entra administrator; `finally` recovery waits beyond the Job
-timeout when necessary and restores the exact original administrator before the
-step can finish or fail.
-
-The execution intent is supplied only to the one manual start and must agree with
-the migrator's bound argument/environment contract. Resume adopts an exact existing
-dormant deployment or the sole exact execution; absence permits only the first
-deployment, while partial or ambiguous ARM state fails closed. It never starts a
-second execution after an unknown outcome. The successful execution emits exactly
-three intent-bound, hashed evidence records to its exact Log Analytics stream;
-bootstrap reconstructs and validates those records before accepting the EF schema
-and API/worker principals. Final verification proves the Job is dormant, the sole
-execution succeeded, the original SQL administrator is restored, SQL public access
-remains `Disabled`, no firewall rule exists, and the Job identity has no Azure RBAC
-or Microsoft Graph application-role assignment. The retained
-`sqlBootstrapClientIpv4` plan field is legacy schema metadata fixed to `0.0.0.0` and
-is unused by this private path.
-
-The state may contain tenant, subscription, resource, application, principal,
-blueprint, image-digest, endpoint, and policy identifiers. It never contains SQL
-passwords, app secret values, access tokens, Gateway keys, prompts, or responses.
-The bootstrap does not read `.secrets`. Both `.bootstrap/` and local
-`bootstrap/config.json` are excluded from Git and the remote ACR build context.
-
-## Administrator and eligibility matrix
-
-| Boundary | Minimum reviewed authority or requirement | When needed |
-|---|---|---|
-| Azure resources | Contributor at subscription scope | Every Apply |
-| Azure role assignments | Role Based Access Control Administrator, User Access Administrator, or Owner at the required scope | Every Apply |
-| Entra applications/service principals | Tenant authority to create the project-scoped applications and service principals | Every Apply |
-| Delegated Graph consent | Privileged Role Administrator or another tenant role authorized to grant the exact reviewed scopes | Every Apply |
-| Agent ID | Agent ID Developer or a role containing the required blueprint/identity operations | Every Apply |
-| Agent 365 service | Eligible tenant, licensing, and current service availability | Blueprint setup and the first real registration reaching Gateway-reported `Active` |
-| Purview | Eligible licensing plus the documented collection/DLP authoring roles | Only when Purview is enabled |
-| Prompt Shields | Supported Azure AI Content Safety region, SKU, and quota | Only when Prompt Shields is enabled |
-
-`doctor` can prove tool versions, cached account identity, visible subscriptions,
-selected provider state, and some role assignments when the caller may read them.
-It cannot prove every quota, regional data-plane SKU, Conditional Access handoff,
-Agent 365 license, Purview propagation/verdict, signed-in Admin UI route, first
-Active agent, or bounded data-plane behavior. Those remain visibly `NotChecked`
-until their own later evidence exists.
-
-The guided profiles are defaults, not authorization shortcuts:
-
-- **Quick development** selects `dev`; Registry preview, Prompt Shields, Purview,
-  and paid Prompt Shields S0 remain separate opt-ins.
-- **Staging foundation** keeps direct Registry creation closed and makes no
-  production-readiness claim.
-- **Production-safe foundation** deploys the supported foundation while keeping the
-  beta Registry boundary closed; production rollout still requires the separate
-  readiness reviews.
-
-## Agent 365, Prompt Shields, and Purview boundaries
-
-`promptShield.enabled` provisions Azure AI Content Safety in the Gateway region,
-disables local-key authentication, injects only its endpoint into the API, and uses
-the API Container App managed identity for `https://cognitiveservices.azure.com/.default`.
-The runtime calls the GA `2024-09-01` Prompt Shield API. A provider failure is a
-closed decision for registrations that enabled the control. Provisioning the
-resource does not enable Prompt Shields on every registration; the system default
-and per-registration checkbox remain explicit controls.
-Final bootstrap verification reads the exact Content Safety resource back, proves
-local authentication is disabled, and proves the Gateway API managed identity has
-the Cognitive Services User role at that resource scope.
-
-The current direct Agent Registration create API is beta and explicitly unsupported
-for production. Therefore full automatic Gateway registration is enabled only when
-`environment` is `dev` and `agent365.allowDevelopmentRegistryPreview` is `true`.
-Staging and production deployments remain fail-closed at that boundary; the script
-does not relabel preview behavior as production-ready.
-
-Purview setup requires an explicit tenant-approved sensitive-information type. The
-bootstrap never invents a classifier or overwrites an incompatible existing policy.
-Policy creation/read-back proves configuration, not propagation or a block verdict.
-The Gateway adapter remains off unless
-`purview.activateGatewayAdapterAfterPolicyReadback` is also explicitly true; that
-switch is an operator acknowledgement, not synthetic-verdict evidence.
-After the first real registration, capture bounded benign and authorized
-synthetic-sensitive requests and confirm both results before treating new-tenant
-DLP as live proof. There is no current canary release gate after `FirstAgentActive`.
-
-The optional Admin UI protection-profile workflow is configured separately with
-`purview.policyProvisioningEnabled`. Keep it `false` unless a certificate-authenticated
-application already has `Exchange.ManageAsApp` plus the required Security &
-Compliance PowerShell RBAC, and its base64 PKCS#12 certificate is stored as a
-versionless secret in the Gateway shared Key Vault. It also requires
-`purview.activateGatewayAdapterAfterPolicyReadback=true`. Supply only the verified
-organization domain, application/client ID, and secret URI in `config.json`.
-
-When enabled, bootstrap grants the worker **Key Vault Secrets User** only at the
-exact configured certificate-secret resource, not at the shared-vault scope. The
-Admin UI user-assigned identity receives the same role only on its exact Entra
-client-secret resource, and the API receives no shared-vault role. Final Verify
-reads these exact assignments and the worker's Purview settings back; when Purview
-provisioning is disabled, its certificate-read assignment must be absent.
-Certificate values and passwords never belong in configuration, bootstrap state,
-or documentation. Bootstrap deliberately does not create or privilege the
-tenant-wide Microsoft 365 automation application. The stricter runtime Purview
-scope/ID/action readback, temporary-certificate cleanup proof, and final
-revalidation before `Active` are local unreleased source with no live proof. Follow
-the exact prerequisites and read-back checks in
-[`docs/operations/purview-setup-runbook.md`](../docs/operations/purview-setup-runbook.md).
-
-## Files
-
-- `../gateway` and `../gateway.cmd` — supported cross-platform command surface.
-- `../tools/Gateway.Setup` — ephemeral loopback-only Fluent setup UI; it delegates
-  to the canonical PowerShell engine and stores only in-memory session state.
-- `bootstrap.ps1` — orchestration and state transitions.
-- `bootstrap.cmd` — Windows PowerShell-7 launcher.
-- `config.example.json` and `config.schema.json` — non-secret configuration example
-  and machine-readable schema.
-- `modules/` — prerequisite, Azure, Entra, Agent 365, SQL, Purview, and verification
-  functions.
-- `infra/` — subscription/foundation and SQL-private-endpoint Bicep.
-
-The bootstrap composes declarative assets under [`../infrastructure/`](../infrastructure/README.md),
-operational scripts under [`../operations/`](../operations/README.md), and shared
-utilities under `../tools/`. It does not replace upgrade or incident runbooks.
-Historical canary artifacts remain immutable evidence only and must not be replayed.
-These are source-reviewed behaviors; a disposable clean-subscription Apply, Verify,
-and one registration reaching Gateway-reported `Active` must be captured before
-this bootstrap path is called live-proven.
-
-## Official capability references
-
-- [Install PowerShell on macOS](https://learn.microsoft.com/powershell/scripting/install/install-powershell-on-macos)
-- [Install Azure CLI on macOS](https://learn.microsoft.com/cli/azure/install-azure-cli-macos)
-- [Install .NET on macOS](https://learn.microsoft.com/dotnet/core/install/macos)
-- [Subscription-scope Bicep deployments](https://learn.microsoft.com/azure/azure-resource-manager/bicep/deploy-to-subscription)
-- [Create an Agent Identity blueprint](https://learn.microsoft.com/graph/api/agentidentityblueprint-post?view=graph-rest-1.0)
-- [List Agent Identity blueprint owners](https://learn.microsoft.com/graph/api/agentidentityblueprint-list-owners?view=graph-rest-1.0)
-- [List Agent Identity blueprint sponsors](https://learn.microsoft.com/graph/api/agentidentityblueprint-list-sponsors?view=graph-rest-1.0)
-- [Agent 365 registration setup](https://learn.microsoft.com/microsoft-agent-365/developer/registration)
-- [Configure Purview for custom AI apps](https://learn.microsoft.com/purview/developer/configurepurview)
-- [Prompt Shields REST API](https://learn.microsoft.com/rest/api/contentsafety/text-operations/shield-prompt?view=rest-contentsafety-2024-09-01)
-- [Cognitive Services User role](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/ai-machine-learning)
-- [Microsoft identity consent model](https://learn.microsoft.com/entra/identity-platform/permissions-consent-overview)
-- [Agent Registration create API (beta limitation)](https://learn.microsoft.com/microsoft-365/copilot/extensibility/api/admin-settings/agent-registration/agentregistration-create)
+- [Entra setup](../docs/operations/entra-setup-runbook.md)
+- [Agent 365 observability](../docs/operations/agent365-observability-setup.md)
+- [Backup and recovery](../docs/operations/backup-recovery.md)
+- [Upgrade strategy](../docs/operations/upgrade-strategy.md)
+- [Infrastructure assets](../infrastructure/README.md)

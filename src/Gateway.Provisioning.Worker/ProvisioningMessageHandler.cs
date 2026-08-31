@@ -77,8 +77,6 @@ internal sealed class ProvisioningMessageHandler
                 return await HandleProvisionAsync(messageType, payload, ct);
             case "DeleteAgent":
                 return await HandleDeleteAsync(payload, ct);
-            case "ReconcileAgent":
-                return await HandleReconcileAsync(payload, ct);
             case "ExportInteraction":
                 return await HandleExportInteractionAsync(payload, ct);
             case "ProcessActivity":
@@ -1564,15 +1562,15 @@ internal sealed class ProvisioningMessageHandler
                 "The resolved blueprint did not provide a valid Application ID.");
         }
 
-        if (!TryResolveAuthorizedPurviewScope(profile, out var priorApplicationIds, out var scopeError))
+        if (!TryResolveAuthorizedPurviewDlpScope(profile, out var priorDlpApplicationIds, out var scopeError))
         {
             MarkPurviewProfileFailed(profile, "PURVIEW_POLICY_PERSISTED_SCOPE_INVALID");
             throw new PurviewPolicyException(
                 "PURVIEW_POLICY_PERSISTED_SCOPE_INVALID",
                 scopeError!);
         }
-        var expectedApplicationIds = AddBlueprintToAuthorizedScope(
-            priorApplicationIds,
+        var expectedDlpApplicationIds = AddBlueprintToAuthorizedDlpScope(
+            priorDlpApplicationIds,
             blueprintApplicationId!);
 
         PurviewPolicyProvisioningResult provisioned;
@@ -1592,8 +1590,8 @@ internal sealed class ProvisioningMessageHandler
                     profile.CollectionPolicyId,
                     profile.DlpPolicyId,
                     profile.DlpRuleId,
-                    priorApplicationIds,
-                    expectedApplicationIds),
+                    priorDlpApplicationIds,
+                    expectedDlpApplicationIds),
                 ct);
         }
         catch (PurviewPolicyException exception) when (!exception.IsTransient)
@@ -1605,7 +1603,7 @@ internal sealed class ProvisioningMessageHandler
             profile,
             provisioned,
             blueprintApplicationId!,
-            expectedApplicationIds,
+            expectedDlpApplicationIds,
             expectedState: null);
         if (readbackError is not null)
         {
@@ -1618,7 +1616,7 @@ internal sealed class ProvisioningMessageHandler
         profile.CollectionPolicyId = provisioned.CollectionPolicyId;
         profile.DlpPolicyId = provisioned.DlpPolicyId;
         profile.DlpRuleId = provisioned.DlpRuleId;
-        profile.BlueprintApplicationIdsJson = JsonSerializer.Serialize(expectedApplicationIds);
+        profile.BlueprintApplicationIdsJson = JsonSerializer.Serialize(expectedDlpApplicationIds);
         profile.Status = "Ready";
         profile.VerifiedAtUtc = provisioned.VerifiedAtUtc.UtcDateTime;
         profile.LastErrorCode = null;
@@ -1682,15 +1680,15 @@ internal sealed class ProvisioningMessageHandler
                 "PURVIEW_POLICY_BLUEPRINT_INVALID",
                 "The final provisioning state did not contain a valid blueprint Application ID.");
         }
-        if (!TryResolveAuthorizedPurviewScope(profile, out var priorApplicationIds, out var scopeError))
+        if (!TryResolveAuthorizedPurviewDlpScope(profile, out var priorDlpApplicationIds, out var scopeError))
         {
             MarkPurviewProfileFailed(profile, "PURVIEW_POLICY_PERSISTED_SCOPE_INVALID");
             throw new PurviewPolicyException(
                 "PURVIEW_POLICY_PERSISTED_SCOPE_INVALID",
                 scopeError!);
         }
-        var expectedApplicationIds = AddBlueprintToAuthorizedScope(
-            priorApplicationIds,
+        var expectedDlpApplicationIds = AddBlueprintToAuthorizedDlpScope(
+            priorDlpApplicationIds,
             blueprintApplicationId!);
 
         PurviewPolicyProvisioningResult provisioned;
@@ -1710,8 +1708,8 @@ internal sealed class ProvisioningMessageHandler
                     result.State.PurviewCollectionPolicyId,
                     result.State.PurviewDlpPolicyId,
                     result.State.PurviewDlpRuleId,
-                    priorApplicationIds,
-                    expectedApplicationIds),
+                    priorDlpApplicationIds,
+                    expectedDlpApplicationIds),
                 ct);
         }
         catch (PurviewPolicyException exception) when (!exception.IsTransient)
@@ -1723,7 +1721,7 @@ internal sealed class ProvisioningMessageHandler
             profile,
             provisioned,
             blueprintApplicationId!,
-            expectedApplicationIds,
+            expectedDlpApplicationIds,
             result.State);
         if (readbackError is not null)
         {
@@ -1733,7 +1731,7 @@ internal sealed class ProvisioningMessageHandler
                 readbackError);
         }
 
-        profile.BlueprintApplicationIdsJson = JsonSerializer.Serialize(expectedApplicationIds);
+        profile.BlueprintApplicationIdsJson = JsonSerializer.Serialize(expectedDlpApplicationIds);
         profile.VerifiedAtUtc = provisioned.VerifiedAtUtc.UtcDateTime;
         profile.LastErrorCode = null;
         profile.UpdatedAtUtc = DateTime.UtcNow;
@@ -1753,21 +1751,21 @@ internal sealed class ProvisioningMessageHandler
         PurviewPolicyProfile profile,
         PurviewPolicyProvisioningResult provisioned,
         string blueprintApplicationId,
-        IReadOnlyList<string> expectedApplicationIds,
+        IReadOnlyList<string> expectedDlpApplicationIds,
         Agent365ProvisioningState? expectedState)
     {
         if (string.IsNullOrWhiteSpace(provisioned.CollectionPolicyId) ||
             string.IsNullOrWhiteSpace(provisioned.DlpPolicyId) ||
             string.IsNullOrWhiteSpace(provisioned.DlpRuleId) ||
             provisioned.VerifiedAtUtc == default ||
-            provisioned.BlueprintApplicationIds.Count(applicationId => string.Equals(
+            provisioned.DlpBlueprintApplicationIds.Count(applicationId => string.Equals(
                 applicationId,
                 blueprintApplicationId,
                 StringComparison.OrdinalIgnoreCase)) != 1 ||
-            provisioned.BlueprintApplicationIds.Count !=
-                provisioned.BlueprintApplicationIds.Distinct(
+            provisioned.DlpBlueprintApplicationIds.Count !=
+                provisioned.DlpBlueprintApplicationIds.Distinct(
                     StringComparer.OrdinalIgnoreCase).Count() ||
-            !HasExactGuidSet(provisioned.BlueprintApplicationIds, expectedApplicationIds))
+            !HasExactGuidSet(provisioned.DlpBlueprintApplicationIds, expectedDlpApplicationIds))
         {
             return "Purview did not return complete exact blueprint and provider-ID readback evidence.";
         }
@@ -1804,11 +1802,23 @@ internal sealed class ProvisioningMessageHandler
             evidence is null ||
             !string.Equals(evidence.CollectionMode, "Enable", StringComparison.Ordinal) ||
             !HasExactSet(evidence.CollectionActivities, "UploadText", "DownloadText") ||
-            !HasExactSet(evidence.CollectionEnforcementPlanes, "Application") ||
+            !HasExactSet(
+                evidence.CollectionEnforcementPlanes,
+                PurviewPolicyLocationContract.ApplicationEnforcementPlane) ||
             !HasExactSet(evidence.CollectionSensitiveTypeIds, "All") ||
             !evidence.CollectionIngestionEnabled ||
+            !HasExactPurviewLocation(
+                evidence.CollectionLocation,
+                PurviewPolicyLocationContract.CollectionLocationType,
+                [PurviewPolicyLocationContract.EnterpriseAiAppsCollectionLocationId]) ||
             !string.Equals(evidence.DlpMode, expectedDlpMode, StringComparison.Ordinal) ||
-            !HasExactSet(evidence.DlpEnforcementPlanes, "Application") ||
+            !HasExactSet(
+                evidence.DlpEnforcementPlanes,
+                PurviewPolicyLocationContract.ApplicationEnforcementPlane) ||
+            !HasExactPurviewLocation(
+                evidence.DlpLocation,
+                PurviewPolicyLocationContract.DlpLocationType,
+                expectedDlpApplicationIds) ||
             evidence.ClassifierNames.Count != 1 ||
             evidence.ClassifierNames.Any(string.IsNullOrWhiteSpace) ||
             evidence.RuleActions.Count != 1 ||
@@ -1835,6 +1845,23 @@ internal sealed class ProvisioningMessageHandler
             expected.OrderBy(value => value, StringComparer.Ordinal),
             StringComparer.Ordinal);
 
+    private static bool HasExactPurviewLocation(
+        PurviewPolicyLocationReadbackEvidence? actual,
+        string expectedLocationType,
+        IReadOnlyList<string> expectedLocationIds) =>
+        actual is not null &&
+        string.Equals(
+            actual.Workload,
+            PurviewPolicyLocationContract.ApplicationWorkload,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            actual.LocationSource,
+            PurviewPolicyLocationContract.EntraLocationSource,
+            StringComparison.Ordinal) &&
+        string.Equals(actual.LocationType, expectedLocationType, StringComparison.Ordinal) &&
+        actual.LocationIds is not null &&
+        HasExactGuidSet(actual.LocationIds, expectedLocationIds);
+
     private static bool HasExactGuidSet(
         IReadOnlyList<string> actual,
         IReadOnlyList<string> expected)
@@ -1853,7 +1880,7 @@ internal sealed class ProvisioningMessageHandler
                    StringComparer.Ordinal);
     }
 
-    private static bool TryResolveAuthorizedPurviewScope(
+    private static bool TryResolveAuthorizedPurviewDlpScope(
         PurviewPolicyProfile profile,
         out string[] applicationIds,
         out string? error)
@@ -1929,12 +1956,12 @@ internal sealed class ProvisioningMessageHandler
         return true;
     }
 
-    private static string[] AddBlueprintToAuthorizedScope(
-        IReadOnlyList<string> priorApplicationIds,
+    private static string[] AddBlueprintToAuthorizedDlpScope(
+        IReadOnlyList<string> priorDlpApplicationIds,
         string blueprintApplicationId)
     {
         _ = TryParseNonEmptyGuid(blueprintApplicationId, out var parsed);
-        return priorApplicationIds
+        return priorDlpApplicationIds
             .Append(parsed.ToString("D"))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(value => value, StringComparer.Ordinal)
@@ -2154,67 +2181,6 @@ internal sealed class ProvisioningMessageHandler
         agent.Status = AgentStatus.Deleting;
         await _unitOfWork.SaveChangesAsync(ct);
 
-        if (message.DeleteMicrosoftResources)
-        {
-            var resource = new Agent365ResourceReference(
-                agent.Id,
-                agent.ExternalClientId,
-                null,
-                agent.BlueprintId,
-                agent.Agent365AgentId,
-                agent.Agent365InstanceId);
-
-            try
-            {
-                await _provisioningClient.DeleteAsync(resource, ct);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Agent365ProvisioningException exception)
-            {
-                await PersistDeletionFailureAsync(
-                    agent,
-                    job,
-                    exception.ErrorCode,
-                    exception.SafeSummary,
-                    message.CorrelationId,
-                    ct);
-                return MessageHandlingResult.DeadLetter(
-                    exception.ErrorCode,
-                    exception.SafeSummary);
-            }
-            catch (NotImplementedException)
-            {
-                const string summary = "Microsoft-resource deletion is not implemented.";
-                await PersistDeletionFailureAsync(
-                    agent,
-                    job,
-                    ErrorCodes.PROVISIONING_STEP_NOT_IMPLEMENTED,
-                    summary,
-                    message.CorrelationId,
-                    ct);
-                return MessageHandlingResult.DeadLetter(
-                    ErrorCodes.PROVISIONING_STEP_NOT_IMPLEMENTED,
-                    summary);
-            }
-            catch (Exception)
-            {
-                const string summary = "Microsoft-resource deletion failed without a safe dependency result.";
-                await PersistDeletionFailureAsync(
-                    agent,
-                    job,
-                    ErrorCodes.PROVISIONING_FAILED,
-                    summary,
-                    message.CorrelationId,
-                    ct);
-                return MessageHandlingResult.DeadLetter(
-                    ErrorCodes.PROVISIONING_FAILED,
-                    summary);
-            }
-        }
-
         job.Status = JobStatus.Completed;
         job.PercentComplete = 100;
         job.ErrorCode = null;
@@ -2228,10 +2194,8 @@ internal sealed class ProvisioningMessageHandler
         {
             Id = Guid.NewGuid(),
             AgentRegistrationId = agent.Id,
-            EventType = message.DeleteMicrosoftResources
-                ? "AgentResourcesDeleted"
-                : "GatewayRegistrationDeletedResourcesPreserved",
-            Details = JsonSerializer.Serialize(new { message.DeleteMicrosoftResources }),
+            EventType = "GatewayRegistrationDeletedResourcesPreserved",
+            Details = JsonSerializer.Serialize(new { Scope = "GatewayRegistrationOnly" }),
             CorrelationId = message.CorrelationId,
             OccurredAtUtc = DateTime.UtcNow
         }, ct);
@@ -2239,173 +2203,6 @@ internal sealed class ProvisioningMessageHandler
         await _unitOfWork.SaveChangesAsync(ct);
         return MessageHandlingResult.Complete();
     }
-
-    private async Task PersistDeletionFailureAsync(
-        AgentRegistration agent,
-        ProvisioningJob job,
-        string errorCode,
-        string safeSummary,
-        string? correlationId,
-        CancellationToken ct)
-    {
-        job.Status = JobStatus.RequiresManualIntervention;
-        job.ErrorCode = errorCode;
-        job.ErrorSummary = safeSummary;
-        job.CompletedAtUtc = DateTime.UtcNow;
-        agent.Status = AgentStatus.RequiresManualIntervention;
-        agent.LastProvisioningErrorCode = errorCode;
-        agent.LastProvisioningErrorSummary = safeSummary;
-
-        await _auditEventRepository.AddAsync(new AuditEvent
-        {
-            Id = Guid.NewGuid(),
-            AgentRegistrationId = agent.Id,
-            EventType = "AgentDeletionRequiresManualIntervention",
-            Details = JsonSerializer.Serialize(new { job.Id, ErrorCode = errorCode }),
-            CorrelationId = correlationId,
-            OccurredAtUtc = DateTime.UtcNow
-        }, ct);
-
-        await _unitOfWork.SaveChangesAsync(ct);
-    }
-
-    private async Task<MessageHandlingResult> HandleReconcileAsync(
-        string payload,
-        CancellationToken ct)
-    {
-        ReconcileMessage? message;
-        try
-        {
-            message = JsonSerializer.Deserialize<ReconcileMessage>(payload);
-        }
-        catch (JsonException)
-        {
-            return MessageHandlingResult.DeadLetter(
-                "RECONCILIATION_INVALID_MESSAGE",
-                "The reconciliation payload is not valid JSON.");
-        }
-
-        if (message is null || message.AgentRegistrationId == Guid.Empty)
-        {
-            return MessageHandlingResult.DeadLetter(
-                "RECONCILIATION_INVALID_MESSAGE",
-                "The reconciliation payload is missing the agent identifier.");
-        }
-
-        var agent = await _agentRepository.GetByIdAsync(message.AgentRegistrationId, ct);
-        if (agent is null)
-        {
-            return MessageHandlingResult.DeadLetter(
-                ErrorCodes.AGENT_NOT_FOUND,
-                "The referenced agent registration does not exist.");
-        }
-
-        var resource = new Agent365ResourceReference(
-            agent.Id,
-            agent.ExternalClientId,
-            null,
-            agent.BlueprintId,
-            agent.Agent365AgentId,
-            agent.Agent365InstanceId);
-
-        Agent365ReconciliationResult result;
-        try
-        {
-            result = await _provisioningClient.ReconcileAsync(resource, ct);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Agent365ProvisioningException exception)
-        {
-            await PersistReconciliationFailureAsync(
-                agent,
-                exception.ErrorCode,
-                exception.SafeSummary,
-                message.CorrelationId,
-                ct);
-            return MessageHandlingResult.DeadLetter(
-                exception.ErrorCode,
-                exception.SafeSummary);
-        }
-        catch (NotImplementedException)
-        {
-            const string summary = "Microsoft-resource reconciliation is not implemented.";
-            await PersistReconciliationFailureAsync(
-                agent,
-                ErrorCodes.PROVISIONING_STEP_NOT_IMPLEMENTED,
-                summary,
-                message.CorrelationId,
-                ct);
-            return MessageHandlingResult.DeadLetter(
-                ErrorCodes.PROVISIONING_STEP_NOT_IMPLEMENTED,
-                summary);
-        }
-        catch (Exception)
-        {
-            const string summary = "Microsoft-resource reconciliation failed without a safe dependency result.";
-            await PersistReconciliationFailureAsync(
-                agent,
-                ErrorCodes.PROVISIONING_FAILED,
-                summary,
-                message.CorrelationId,
-                ct);
-            return MessageHandlingResult.DeadLetter(
-                ErrorCodes.PROVISIONING_FAILED,
-                summary);
-        }
-
-        if (!result.InSync)
-        {
-            await PersistReconciliationFailureAsync(
-                agent,
-                "RECONCILIATION_DRIFT_DETECTED",
-                "Microsoft-resource drift requires manual review.",
-                message.CorrelationId,
-                ct);
-            return MessageHandlingResult.Complete();
-        }
-
-        await _auditEventRepository.AddAsync(new AuditEvent
-        {
-            Id = Guid.NewGuid(),
-            AgentRegistrationId = agent.Id,
-            EventType = "ReconciliationPassed",
-            CorrelationId = message.CorrelationId,
-            OccurredAtUtc = DateTime.UtcNow
-        }, ct);
-        await _unitOfWork.SaveChangesAsync(ct);
-        return MessageHandlingResult.Complete();
-    }
-
-    private async Task PersistReconciliationFailureAsync(
-        AgentRegistration agent,
-        string errorCode,
-        string safeSummary,
-        string? correlationId,
-        CancellationToken ct)
-    {
-        agent.Status = AgentStatus.RequiresManualIntervention;
-        agent.LastProvisioningErrorCode = errorCode;
-        agent.LastProvisioningErrorSummary = safeSummary;
-
-        await _auditEventRepository.AddAsync(new AuditEvent
-        {
-            Id = Guid.NewGuid(),
-            AgentRegistrationId = agent.Id,
-            EventType = "ReconciliationRequiresManualIntervention",
-            Details = JsonSerializer.Serialize(new { ErrorCode = errorCode }),
-            CorrelationId = correlationId,
-            OccurredAtUtc = DateTime.UtcNow
-        }, ct);
-
-        await _unitOfWork.SaveChangesAsync(ct);
-    }
-
-    private sealed record ReconcileMessage(
-        Guid AgentRegistrationId,
-        string? CorrelationId);
 
     private sealed record ExportInteractionMessage(
         Guid AgentId,

@@ -1,28 +1,25 @@
 # A365 Custom Gateway
 
-A365 Custom Gateway is an N:N broker for externally hosted AI agents. One Gateway
-accepts many independent registrations. Each registration gets a generated external
-agent ID and one-time Gateway API key, maps to one distinct Microsoft Entra Agent
-ID, and selects one reusable Agent Identity blueprint.
+A365 Custom Gateway gives external agents one controlled path into Microsoft Agent
+365. An administrator deploys the Gateway, registers an external agent against a
+reusable Agent ID blueprint, and receives a Gateway external ID plus a one-time
+ingress key. The agent then submits activity and interaction data through the
+Gateway API without receiving an Entra token or managed-identity identifier.
 
-Ordinary data-plane clients call the Gateway with their Gateway key. They do not
-provide a managed-identity object ID or acquire an Entra token. The Gateway worker
-uses managed identity plus one reusable FIC per blueprint to obtain each child Agent
-ID's Agent 365 token. Agent 365 observability defaults on, sanitized Azure Monitor
-mirroring is optional/off, and Purview remains independent per registration.
-Azure AI Content Safety Prompt Shields is an independent, per-registration
-pre-model control. It is deployed and live-proven in the external development
-environment; production support remains gated by the preview Agent 365 Registry
-dependency and the production-readiness reviews below.
+The supported fresh-subscription installer is the repository-root `gateway`
+launcher. It configures, plans, deploys, resumes, and verifies the complete Gateway.
 
-## Bring up a new Gateway
+> The Agent 365 Registry dependency is currently a preview capability. The bootstrap
+> can open the end-to-end Registry path only for an explicitly configured
+> development environment. Staging and production deployments keep that boundary
+> closed.
 
-The guided setup is the shortest supported path:
+## Quick start
 
-This clean-subscription path assumes the selected subscription belongs to an
-Agent-365-enabled tenant with usable typed-blueprint `managerApplications`
-evidence. Setup stops instead of guessing when that tenant-level prerequisite is
-absent.
+You need an Agent-365-enabled Microsoft Entra tenant, an Azure subscription, and an
+administrator who can approve the Azure, Entra, Agent ID, and optional Purview
+changes shown by the installer. On the workstation, install Git, the .NET 10 SDK,
+PowerShell 7, and Azure CLI.
 
 ```bash
 git clone https://github.com/patrick-shim/a365-custom-gateway.git
@@ -31,426 +28,168 @@ az login
 ./gateway setup
 ```
 
-On Windows, run `gateway.cmd setup`. The command opens a temporary Fluent UI on
-`127.0.0.1`. Before it launches, it checks the .NET 10 SDK, PowerShell 7, and Azure
-CLI and gives a direct remediation if one is missing.
-
-The wizard then does four things:
-
-1. makes you select the exact Azure subscription when more than one is available;
-2. collects the project, region, alert email, and deployment profile;
-3. derives any Agent 365 manager-application candidate through bounded read-only
-   tenant inventory, shows its provenance, and requires explicit acceptance rather
-   than treating discovery as authority; and
-4. shows the complete Azure What-If and permission plan before one **Deploy** action.
-
-The wizard stores only ignored, non-secret configuration and never asks for a cloud
-password or token. Deployment is considered finished only after authenticated
-read-back verification emits one consistent Admin UI URL and API URL. The finish
-page opens the hosted Setup Center.
-
-To use the deployed Gateway:
-
-1. sign in to the Admin UI as the bootstrap administrator;
-2. open **Setup Center** and register the first agent; and
-3. save the one-time Gateway key when it is shown, then give the external agent its
-   generated external ID, Gateway API URL, and that key.
-
-`FirstAgentActive` is the final setup milestone. There is no additional current
-canary step or canary release gate. Active remains Gateway-reported state and does
-not make the beta Agent 365 Registry dependency production-supported.
-
-Quick Development can explicitly enable the Registry beta needed to take a demo
-registration through `Active`. Staging and production keep that preview boundary
-closed. Prompt Shields, Purview, and paid SKU choices remain opt-in.
-
-The terminal-only equivalent is:
-
-```bash
-./gateway doctor
-./gateway up
-```
-
-PowerShell 7, Git, Azure CLI, and the .NET 10 SDK are the base workstation
-requirements; `doctor` reports exact remediation. Docker and the Agent 365 CLI are
-not required on the happy path: image builds run in the deployment's Azure
-Container Registry, and the seed blueprint is created directly through Microsoft
-Graph v1.0 without creating a blueprint credential. Azure, Entra, Agent ID, and
-optional Purview authentication remain in their official signed-in flows.
-
-For automation, recovery rules, exact permissions, and the terminal command
-reference, see [`bootstrap/README.md`](bootstrap/README.md). Setup deliberately has
-no destroy, retained-message replay, historical cleanup, or SQL-finalization
-command.
-
-## Start here
-
-- [`AGENTS.md`](AGENTS.md): shared safety/resume rules for Codex, Claude, Copilot,
-  and humans.
-- [`docs/implementation-status.md`](docs/implementation-status.md): current product,
-  source, test, deployment, blocker, next-action, and completion checkpoint.
-- [`docs/agent-guides/admin-ui.md`](docs/agent-guides/admin-ui.md): Admin UI contract.
-- [`docs/agent-guides/provisioning.md`](docs/agent-guides/provisioning.md): Entra /
-  Agent 365 workflow and rollout contract.
-- [`docs/operations/development-deployment-status.md`](docs/operations/development-deployment-status.md):
-  timestamped live-development evidence.
-- [`docs/operations/entra-setup-runbook.md`](docs/operations/entra-setup-runbook.md):
-  Entra roles, delegated scopes, OBO FIC, consent, and verification.
-- [`docs/operations/upgrade-strategy.md`](docs/operations/upgrade-strategy.md): SQL,
-  inert deployment, verification, and recovery sequence.
-- [`bootstrap/README.md`](bootstrap/README.md): clean-subscription, resumable first
-  deployment of the complete Gateway foundation and workloads.
-
-Those documents distinguish current local source from deployed development state.
-An operation page or passing local test does not independently prove a Microsoft
-resource exists.
-
-## Architecture at a glance
+On Windows, use `.\gateway.cmd setup` instead. Setup opens a temporary browser UI on
+`127.0.0.1`, discovers the subscriptions visible to the current Azure CLI session,
+writes only the reviewed non-secret `bootstrap/config.json`, runs an authenticated
+Azure What-If plan, and waits for explicit confirmation before deployment. Complete
+any Microsoft sign-in or consent windows that open during deployment.
 
 ```mermaid
 flowchart LR
-    Admin[Gateway administrator] -->|Entra sign-in| UI[Blazor Admin UI]
-    UI -->|delegated access_as_user| API[Gateway API]
-    Client[External agent] -->|externalAgentId + one-time Gateway key| API
-
-    API --> SQL[(Azure SQL)]
-    API --> Blob[(Encrypted interaction content)]
-    API --> Outbox[Transactional outbox]
-    Outbox --> Bus[Azure Service Bus]
-    Bus --> Worker[Provisioning / relay worker]
-
-    API -->|Graph OBO: Registry action| Registry[Agent 365 Registry preview]
-    Worker -->|managed identity + Graph app roles| Entra[Entra Agent Identity]
-    Worker -->|child Agent ID token| A365[Agent 365 observability]
-    Worker -->|optional sanitized mirror| Monitor[Azure Monitor]
-    API -->|per-registration, fail closed| Purview[Microsoft Purview DLP]
-    API -->|optional pre-model check| Shield[Azure AI Content Safety<br/>Prompt Shields]
+    clone[Clone repository] --> signin[Azure CLI sign-in]
+    signin --> setup[Gateway Setup]
+    setup --> plan[Review configuration and What-If]
+    plan --> deploy[Confirm and deploy]
+    deploy --> verify[Automatic verification]
+    verify --> admin[Sign in to Admin UI]
+    admin --> register[Register external agent]
+    register --> active[Registration Active]
+    active --> use[Send through Gateway API]
 ```
 
-The control plane owns registrations, blueprint selection, feature configuration,
-provisioning status, and credential lifecycle. The data plane accepts bounded
-activity, pre-model prompt evaluations, and completed prompt/response submissions.
-An allowed evaluation returns a short-lived, single-use receipt bound to the exact
-registration, interaction, tenant user, content type, and prompt. Protected
-interaction submission requires that receipt. SQL-backed idempotency and rate
-limits bind every request to one registration and key; accepted work enters the
-transactional outbox before Service Bus delivery. Prompt/response content is never
-rendered in the Admin UI and is stored only in the encrypted content store according
-to the documented retention boundary.
+For a terminal-only installation, run:
 
-## Current workflow v3
+```bash
+./gateway doctor
+./gateway init
+./gateway plan
+./gateway apply --open
+```
+
+`plan` records a time-bounded acceptance of the exact configuration, source, and
+What-If result. `apply` revalidates that acceptance before changing anything. If an
+interruption occurs, correct the reported cause and run `./gateway resume`; do not
+delete `.bootstrap/` or start a second deployment.
+
+See the [bootstrap guide](bootstrap/README.md) for prerequisites, configuration,
+automation, and recovery behavior.
+
+## Sign in and register an agent
+
+After verification, Setup shows the Admin UI and API endpoints. You can reopen the
+recorded Admin UI later with:
+
+```bash
+./gateway open
+```
+
+Sign in with a user assigned the `Gateway.Administrator` app role, then use the
+Admin UI to:
+
+1. Select or create a reusable Agent ID blueprint.
+2. Choose the registration's observability and optional protection settings.
+3. Submit the registration and complete the administrator handoff when prompted.
+4. Wait until the Gateway reports the registration as `Active`.
+5. Copy the external agent ID and one-time Gateway key to the external agent's
+   secret store. The clear key is not shown again.
+
+The Gateway creates a distinct child Entra Agent ID for every registration. A
+registration remains bound to its stored registration record, selected blueprint,
+child Agent ID, external ID, and key lifecycle.
+
+## Send a sample interaction
+
+Use the API base URL and external agent ID shown by the Admin UI. The sample reads
+the one-time Gateway key from a non-echoing prompt; never place the key on the
+command line.
+
+```bash
+dotnet run --project src/ExternalAgent.Sample -- \
+  --api-base-url https://YOUR-GATEWAY-API/ \
+  --external-agent-id YOUR-EXTERNAL-AGENT-ID \
+  --tenant-user-object-id YOUR-USER-OBJECT-ID \
+  --message "Hello through the Gateway"
+```
+
+The sample evaluates the prompt, submits Agent 365 activity/OTel data, and submits
+the completed prompt/response interaction. A successful run prints only safe
+decisions and correlation identifiers; it does not print provider response bodies
+or the Gateway key.
+
+The complete HTTP contract is in [OpenAPI](docs/api/openapi.yaml).
+
+## Optional runtime protections
+
+Agent 365 observability is enabled by default for a registration. Azure Monitor
+mirroring, Prompt Shields, and Microsoft Purview are separate choices.
+
+| Capability | Default | What it does |
+|---|---:|---|
+| Agent 365 observability | On | Submits registration-scoped activities to Agent 365. |
+| Azure Monitor mirror | Off | Mirrors selected telemetry to the Gateway's Azure Monitor path. |
+| Prompt Shields | Off | Evaluates prompts before protected interaction ingestion by using Azure AI Content Safety with managed identity. |
+| Microsoft Purview | Off | Evaluates configured activities and attributes them to the child Agent ID and reusable blueprint. |
+
+Purview policy provisioning uses two different Microsoft location contracts and
+must not combine them:
+
+- Know Your Data collection: the fixed tenant-wide enterprise-AI-apps location
+  `ee1680d0-702f-4090-b26c-c49091e86531`, with `LocationType=Group` on the
+  Application plane.
+- DLP policy: the selected reusable blueprint application/client ID, with
+  `LocationType=Individual` on the Application plane.
+
+The [Purview runbook](docs/operations/purview-setup-runbook.md) describes the
+post-bootstrap Security & Compliance PowerShell application, certificate, roles,
+policy readback, token-role check, and bounded runtime validation. Bootstrap does
+not turn on the Purview runtime adapter: policy readback alone is not a data-plane
+verdict test.
+
+## Architecture
 
 ```mermaid
-sequenceDiagram
-    participant A as Administrator
-    participant UI as Admin UI
-    participant API as Gateway API
-    participant W as Worker
-    participant E as Entra / Graph
-    participant R as Agent 365 Registry
-
-    A->>UI: Register external agent
-    UI->>API: Registration + selected/new blueprint
-    API-->>UI: External ID + one-time Gateway key
-    API->>W: gateway-provisioning-v3
-    W->>E: Resolve blueprint, FIC, child Agent ID, OtelWrite
-    W-->>API: Pause at 71% for delegated action
-    UI->>API: Complete Registry action as signed-in Administrator
-    API->>R: One creator-bound POST through OBO
-    API-->>W: Persist accepted ID; enqueue final verification at 85%
-    W->>E: Reverify identity, permissions, FIC, and token exchange
-    W-->>API: Mark registration Active at 100%
+flowchart TB
+    admin[Gateway Administrator] --> ui[Blazor Admin UI]
+    ui -->|Entra user token| api[Gateway API]
+    client[External agent] -->|External ID + Gateway key| api
+    api --> sql[(Azure SQL)]
+    api --> blob[(Encrypted Blob storage)]
+    sql --> relay[Transactional outbox relay]
+    relay --> bus[Service Bus workflow-v3]
+    bus --> worker[Provisioning worker]
+    worker --> sql
+    worker --> entra[Microsoft Entra Agent ID]
+    worker --> a365[Agent 365]
+    api -. optional .-> shield[Azure AI Content Safety]
+    api -. optional .-> purview[Microsoft Purview]
+    api --> monitor[Application Insights / Azure Monitor]
 ```
 
-The seven persisted stages are:
+The API is the authorization boundary. UI role checks improve usability but do not
+replace API enforcement. Work is persisted in SQL and Service Bus so deployment and
+provisioning can reconcile after interruption without assuming exactly-once
+delivery.
 
-1. Resolve Blueprint
-2. Ensure Blueprint Principal
-3. Configure Gateway Federation
-4. Create Agent Identity
-5. Assign Agent 365 Access
-6. Register in Agent 365 preview Registry
-7. Verify Agent 365 Connection
+## Operate an existing deployment
 
-The worker executes stages 1--5 and pauses at 71%. A signed-in
-`Gateway.Administrator` uses the operation page's required action. The Gateway API
-exchanges that user's API token for Microsoft Graph through OBO with exactly the
-admin-consented delegated scopes `AgentRegistration.ReadWrite.All` and
-`AgentRegistration.Read.All`. The API app authenticates as a confidential client
-with a managed-identity signed assertion/FIC; it does not store a client secret.
+These commands are safe entry points from the repository root:
 
-Development now supports an explicitly configured continuous demo mode: registration
-is admitted without an operator-opened exact-ID window, and the signed-in
-Administrator UI invokes delegated Registry completion automatically when stage 6
-becomes required. Staging and production remain closed by default and retain the
-exact-bound, expiring external-ID and operation-ID controls. The continuous mode
-does not bypass authentication, role checks, OBO, SQL locking, or the one-POST
-Registry boundary.
-
-The API records a creator-bound planned Registry ID, emits at most one Registry
-POST, and persists the safe ID returned with HTTP 201 immediately (using the planned
-ID only if the successful response omits one). The CLI-compatible payload includes
-that `id` and the reviewed preview-provider `managedByAppId`; the Gateway external
-ID is `sourceAgentId`, and the administrator `oid` is `createdBy`. The preview
-Registry's immediate exact GET is not a reliable creation proof. Acceptance
-completes stage 6 at 85% and queues only final worker verification. The worker does
-not call Registry in v3; it independently verifies blueprint, principal, FIC, child
-identity, OtelWrite assignment, and the two-stage Agent 365 token exchange before
-`Active`.
-
-An unknown POST outcome is reconciled only by exact GET of the persisted planned
-ID; the POST is never repeated. A transient read permits creator-bound GET-only
-repetition, while mismatch or nonrecoverable ambiguity is manual. Safe retry
-preserves verified completed rows and never repeats a completed Registry boundary.
-
-## Repository map
-
-| Path | Responsibility |
+| Command | Purpose |
 |---|---|
-| `src/Gateway.AdminUi` | Role-aware Blazor control plane and typed API client |
-| `src/Gateway.Api` | Authenticated control/data-plane HTTP boundary and safe Problem Details |
-| `src/Gateway.Application` | Commands, queries, validation, and orchestration policies |
-| `src/Gateway.Domain` / `src/Gateway.Contracts` | Persistence-independent model and public contracts |
-| `src/Gateway.Agent365` | Entra Agent Identity, Registry, token exchange, and OTLP adapters |
-| `src/Gateway.Purview` | Graph v1.0 Purview policy evaluation adapter |
-| `src/Gateway.ContentSafety` | Managed-identity Azure AI Content Safety Prompt Shields adapter |
-| `src/Gateway.Infrastructure` | SQL, locks, idempotency, rate limits, outbox, Service Bus, and Blob storage |
-| `src/Gateway.Provisioning.Worker` | Idempotent workflow stages and data-plane relay |
-| `src/ExternalAgent.Sample` | Minimal external client for bounded ingestion verification |
-| `tools/Gateway.Setup` | Ephemeral loopback-only Fluent UI over the canonical bootstrap engine |
-| `tools/Gateway.LiveCanary` | Retained historical verification utility; not part of current setup or release completion |
-| `bootstrap` | Clean-subscription prerequisite, identity, infrastructure, build, deploy, and verify orchestration |
-| `infrastructure` | Declarative shared Bicep templates and ordered, reviewed SQL schema phases |
-| `operations` | Existing-environment deployment, preflight, recovery, and retained historical verification scripts |
-| `tools` | Developer utilities and the database migrator used by bootstrap and operations |
-| `tests` | Unit, UI, E2E, security, runtime, integration, and architecture gates |
+| `./gateway status` | Show local checkpoint/readiness state without Azure calls. |
+| `./gateway verify` | Rerun read-only live deployment verification. |
+| `./gateway resume` | Reconcile and continue an interrupted accepted deployment. |
+| `./gateway diagnose` | Write a sanitized diagnostic bundle. |
+| `./gateway open` | Open the recorded verified Admin UI endpoint. |
 
-## Current checkpoint
+Use [operations](operations/README.md) for an existing environment and
+[infrastructure](infrastructure/README.md) for the declarative asset map. The
+bootstrap intentionally has no destroy, Registry replay, retained-message, or
+cleanup command.
 
-The continuous development path is **Active end to end** for both blueprint modes.
-`gateway-e2e-auto-20260828` created blueprint
-`79a71594-6435-4c64-a7bf-5f472a475792`, child Agent ID
-`640f3b3a-1ff2-4ab5-b1a4-cfac59dd35de`, and Registry record
-`9451d70c-71b6-45eb-9db5-4be8f05c6d04`; its safe retry operation
-`6395ab47-e6c8-4584-8867-36c5c09f9475` completed at 100% after an explicit Graph
-404 propagation retry. `gateway-e2e-purview-control-20260828` reused blueprint
-`29fa5cc5-c42b-4bdc-8f99-d85a5b91ad01`, created child Agent ID
-`954fec63-53a7-4556-abaa-67acf11956c8`, and completed operation
-`099248a5-e1a3-4c50-a456-d0a04a6f1933` with Registry record
-`b2bf22e4-3d2c-49b4-8ead-a003d2496dab`.
+## Documentation
 
-Both agents are visible and Available in Microsoft 365 Admin Center on platform
-`A365CustomGateway`. Gateway activity and interaction requests return HTTP 202, the
-v3 queue drains to zero active/scheduled, and retained historical verification
-evidence separately proves two-stage child-token exchange and Agent 365 OTLP HTTP 200. Current queue
-counts are v3 `0/0/10`, retained v2 `0/0/3`, and historical `0/0/2`; all DLQ entries
-remain immutable evidence. The latest exact SQL snapshot predates the two continuous
-registrations and is not represented as a current database count.
+- [Documentation hub](docs/README.md)
+- [Bootstrap and configuration](bootstrap/README.md)
+- [Admin UI guide](docs/agent-guides/admin-ui.md)
+- [Provisioning guide](docs/agent-guides/provisioning.md)
+- [System architecture](docs/architecture/system-architecture.md)
+- [Backup and recovery](docs/operations/backup-recovery.md)
+- [Incident response](docs/operations/incident-response.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 
-Purview DLP is now proven against the reusable blueprint boundary. The policy uses
-`EnforcementPlanes Application` with the blueprint client ID as
-`policyLocationApplication`; the distinct child Agent ID and blueprint remain in
-`aiAgentInfo` for attribution. A benign completed interaction returned
-`purviewProcessing: AuditLogged`, while a synthetic credit-card prompt returned
-`status: Failed` and `purviewProcessing: Blocked` without queuing observability.
-The live scope is intentionally mixed: `uploadText` is evaluated inline and
-`downloadText` is submitted offline. The current completed-pair endpoint therefore
-proves prompt DLP, not a pre-model response gate.
-
-Current unreleased source also adds reusable Purview **protection profiles** to the
-new-blueprint registration experience. An administrator can select a verified
-Gateway-managed collection/DLP policy pair or create one from the reviewed template.
-The worker preserves existing policy locations, adds the new blueprint application
-scope, and requires exact readback before child Agent ID creation. This source is not
-live deployment evidence; see `docs/implementation-status.md` and the Purview
-runbook for the release and app-only RBAC boundary.
-
-The external development deployment also runs an optional **pre-model prompt-protection gate**.
-The Admin UI exposes Prompt Shields independently from Purview. The external client
-first calls `POST /api/v1/prompts:evaluate`; enabled Prompt Shields and prompt-only
-Purview evaluation run fail closed, and a blocked request returns safe RFC 9457
-details the client can display. An allowed request returns a short-lived,
-single-use receipt required by the matching completed interaction. SQL stores only
-a salted prompt hash and decision metadata for the evaluation; raw prompt content
-is not stored in that table or rendered in the Admin UI. The Bicep/bootstrap source
-can create the Content Safety account and grant the API managed identity Cognitive
-Services User. Registration `ca5de6e3-d30a-4c57-8085-7382cc69fa0a` has live proof
-for Prompt Shields allow and block, Purview `AuditLogged`, activity/OTel HTTP 202,
-receipt-bound interaction HTTP 202, and temporary-key revocation. Exact revisions,
-digests, safe correlations, cleanup evidence, and limitations are in the two status
-documents linked above.
-
-Historical v1/v2 and failed v3 attempts remain immutable evidence and must not be
-replayed or deleted. SQL finalization remains unapplied. See the implementation and
-deployment status documents for exact digests, correlations, test counts, retained
-IDs, and the next safe action.
-
-## Build and test
-
-```powershell
-dotnet build src/A365Gateway.slnx -c Release
-dotnet test tests/Gateway.UnitTests -c Release
-dotnet test tests/Gateway.AdminUi.Tests -c Release
-dotnet test tests/Gateway.Setup.Tests -c Release
-dotnet test tests/Gateway.ObservabilityRuntime.Tests -c Release
-dotnet test tests/Gateway.IntegrationTests -c Release
-dotnet test tests/Gateway.EndToEndTests -c Release
-dotnet test tests/Gateway.ArchitectureTests -c Release
-dotnet test tests/Gateway.SecurityTests -c Release
-pwsh ./tools/Test-BootstrapSource.ps1 -RunPester -CompileBicep
-dotnet format src/A365Gateway.slnx --verify-no-changes
-```
-
-Use the latest verified counts in the implementation status; do not copy counts
-forward after source changes.
-
-## Clean-subscription deployment
-
-Use the repository-root `gateway` launcher for a new clean subscription. It
-installs/checks supported prerequisites, creates the missing
-Azure foundation, configures Entra and a typed Agent ID seed blueprint, builds
-immutable images, initializes only an empty database, deploys the Admin UI, and
-runs fail-closed read-back verification:
-
-```bash
-./gateway setup          # local guided Fluent UI
-./gateway up             # terminal wizard + plan + apply/resume + verify
-./gateway status         # local checkpoint/readiness view; no Azure calls
-./gateway verify         # authenticated read-only deployed verification
-./gateway diagnose       # sanitized local support bundle
-```
-
-Windows exposes the same commands through `gateway.cmd`. CI and other controlled
-automation must preserve the machine-readable Plan output, extract its single
-apply-ready top-level `planFingerprint`, submit that exact value for review, and
-carry the approved value into execution. For example (using `jq` in the CI image):
-
-```bash
-plan_artifact="$(mktemp)"
-./gateway plan --json --non-interactive | tee "$plan_artifact"
-plan_fingerprint="$(jq -ser '[.[] | select(.planFingerprint? and .applyReady == true)] | if length == 1 then .[0].planFingerprint else error("expected one apply-ready plan") end' "$plan_artifact")"
-
-# The external approval gate reviews the artifact and returns this exact value.
-: "${APPROVED_PLAN_FINGERPRINT:?external approval did not supply a plan fingerprint}"
-test "$APPROVED_PLAN_FINGERPRINT" = "$plan_fingerprint"
-./gateway up --json --non-interactive --yes \
-  --expected-plan-fingerprint "$APPROVED_PLAN_FINGERPRINT"
-```
-
-Use the same expected-fingerprint option with `resume`. `--yes` by itself approves
-the plan freshly recomputed by that `up` or `resume` invocation; it does not attest
-that an earlier Plan output was externally reviewed. The expected fingerprint is
-what makes a configuration, deployment-source, descriptor, or sanitized What-If
-change fail before mutation.
-
-Accepting Plan also copies the reviewed deployment inputs into an ignored,
-content-addressed source snapshot under `.bootstrap/accepted-source/`. Apply and
-Resume first require the running checkout to have the exact accepted source
-fingerprint, then reopen templates, scripts, project files, and ACR build inputs
-from that snapshot. Once any durable step or output exists, bootstrap refuses to
-mix another source generation into the same deployment state; restore the original
-checkout or choose a distinct project/resource group.
-
-`config.json` is non-secret and should remain local. Runtime bootstrap state is
-under ignored `.bootstrap/`. The tool has no destroy path and does not read
-`.secrets`. Full Registry creation remains development-only because Microsoft's
-direct create API is beta and unsupported for production.
-
-The ignored state also holds a generated, unguessable deployment-ownership ID.
-Bootstrap-created Entra applications carry its exact ownership tag and exactly the
-pinned bootstrap operator as owner. A pre-existing same-name application without
-that state-owned marker is a collision, not an adoption candidate, and stops the
-run fail-closed. Bootstrap-created deployments and resources also carry the exact
-ownership and accepted source fingerprint. API, worker, and Admin UI checkpoints
-must read back those tags plus the requested immutable image digests before reuse.
-
-Empty-database initialization runs as one digest-pinned private Container Apps Job.
-The SQL public endpoint remains `Disabled`; the bootstrap never creates a public
-firewall exception on the supported path. It validates the dormant Job and zero
-prior executions before a single start, temporarily makes only that Job identity the
-SQL Entra administrator, and restores the exact original administrator afterward.
-Any ambiguous or failed start is preserved for review and is never emitted again.
-
-Key Vault access is secret-scoped in this path: the Admin UI user-assigned identity
-gets Key Vault Secrets User only on its exact Entra client-secret resource; when
-Purview protection-profile automation is enabled, the worker gets that role only
-on the configured certificate-secret resource. The API receives no role on the
-shared vault. The stricter runtime Purview authority/readback and final-revalidation
-work in this checkout is local, unreleased source and has no live deployment proof.
-
-```mermaid
-flowchart TD
-    Plan[Plan: validate config and source] --> Apply[Apply / Resume]
-    Apply --> Prereq[Install or verify prerequisites]
-    Prereq --> Foundation[Subscription + private Azure foundation]
-    Foundation --> Identity[Entra apps, managed identities, roles, FIC, consent]
-    Identity --> Images[Build and pin API, worker, and UI images]
-    Images --> Data[Private SQL + schema + workload principals]
-    Data --> Optional[Optional blueprint-scoped Purview policy]
-    Optional --> Shield[Optional Azure AI Content Safety Prompt Shields]
-    Shield --> Runtime[Deploy current runtime]
-    Runtime --> Verify[Read-only health, network, identity, and permission verification]
-    Verify --> Register[First registration reaches Active]
-```
-
-The bootstrap implementation is locally source-validated and resumable, but a disposable
-clean-subscription `Apply` has not yet been captured as live evidence. Follow the
-[clean-subscription proof runbook](docs/operations/clean-subscription-bootstrap-proof.md)
-for that separately authorized proof; do not infer it from the already-running
-development resource group.
-
-## Local UI
-
-```powershell
-dotnet run --project src/Gateway.AdminUi
-```
-
-Development URLs are normally `https://localhost:7198` and
-`http://localhost:5261`. The Codex in-app browser may reject the workstation
-development certificate even when an external browser trusts it.
-
-## External-agent sample
-
-[`src/ExternalAgent.Sample`](src/ExternalAgent.Sample) is a bounded console client,
-not a mock AI loop. After a registration is `Active`, run it with the registration's
-public external ID and the accountable tenant user's object ID:
-
-```powershell
-dotnet run --project src/ExternalAgent.Sample -- `
-  --api-base-url https://<verified-api-url>/ `
-  --external-agent-id agent-example `
-  --tenant-user-object-id 00000000-0000-0000-0000-000000000000
-```
-
-The client reads the one-time Gateway key from a non-echoing prompt or redirected
-standard input; never place the key in command arguments, environment variables, a
-file, or documentation. It first evaluates `--message` through every enabled
-pre-model control and prints the safe per-provider result. A blocked prompt exits
-without sending the activity or completed interaction. An allowed prompt supplies
-the returned receipt, sends one activity (which drives sanitized OTel export) and
-one AI-interaction message, expects HTTP 202 for both, and renders only safe
-status/correlation evidence. HTTP 202 proves Gateway ingestion; Agent 365 landing
-still requires the separate documented Defender `CloudAppEvents` verification.
-
-## Security
-
-`.secrets` is authorized private runtime configuration. Existing tooling may read
-required values only through the non-echoing deployment path. Never print, log,
-copy, document, alter, transmit, or commit its contents. Never persist or expose
-clear Gateway keys, Microsoft tokens, managed-identity assertions, authorization
-headers, prompts, or responses.
-
-## Known boundaries
-
-- Direct Agent 365 Registry creation is a beta, Global-cloud preview and is not
-  claimed as production-supported. Development may opt in; staging/production
-  remain closed by default.
-- The prompt-evaluation endpoint is a pre-model gate only when the external client
-  calls it before model invocation and honors a block. The Gateway does not proxy or
-  enforce the model call itself. The completed interaction path may still submit the
-  response for offline Purview evaluation; it is not a response-before-release gate.
-- Automated Microsoft-resource deletion/reconciliation, production multi-replica
-  failover proof, SQL finalization, and full production capacity/backup/incident
-  sign-off remain open work.
-- Historical ambiguous operations and dead-letter messages are evidence. They must
-  not be replayed, attached, disposed, or deleted as cleanup.
+Current implementation and deployment evidence lives in
+[implementation status](docs/implementation-status.md) and
+[development deployment status](docs/operations/development-deployment-status.md).
+Those files are engineering checkpoints, not installation instructions.

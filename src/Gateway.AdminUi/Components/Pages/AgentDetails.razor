@@ -499,11 +499,11 @@ else if (agentResource is not null)
                                     </div>
                                 }
                                 <div class="action-tile">
-                                    <strong>Delete</strong>
-                                    <p>Begin asynchronous deletion. Linked Microsoft resources are preserved by default.</p>
+                                    <strong>Delete Gateway registration</strong>
+                                    <p>Remove this registration from the Gateway. Linked Microsoft resources are not changed.</p>
                                     <FluentButton Appearance="Appearance.Neutral"
                                                   OnClick="@(() => OpenConfirmation(ConfirmationAction.Delete))"
-                                                  Disabled="@(!CanDelete(agent.Status) || actionBusy)">Delete agent</FluentButton>
+                                                  Disabled="@(!CanDelete(agent.Status) || actionBusy)">Delete registration</FluentButton>
                                 </div>
                             }
                         </div>
@@ -657,7 +657,7 @@ else if (agentResource is not null)
         <AdditionalContent>
             @if (confirmationAction == ConfirmationAction.Delete)
             {
-                <p class="field-help">This action removes the Gateway registration only. Linked Microsoft resources are preserved because automatic Microsoft-resource deletion is not implemented.</p>
+                <p class="field-help">The selected blueprint, child Agent ID, and Agent 365 Registry record are not deleted by this action.</p>
             }
             else if (confirmationAction == ConfirmationAction.IssueCredential)
             {
@@ -884,7 +884,6 @@ else if (agentResource is not null)
             await Api.UpdateAgentFeaturesAsync(
                 AgentId,
                 request,
-                agentResource.ETag,
                 disposeCts.Token);
 
             await ReloadAgentAsync();
@@ -944,7 +943,7 @@ else if (agentResource is not null)
             {
                 case ConfirmationAction.Enable when canOperate && CanEnable(agentResource.Value.Status):
                 {
-                    var result = await Api.EnableAgentAsync(AgentId, Guid.NewGuid(), disposeCts.Token);
+                    var result = await Api.EnableAgentAsync(AgentId, disposeCts.Token);
                     confirmationAction = ConfirmationAction.None;
                     await ReloadAgentAsync();
                     announcement = $"Agent enabled. Current status: {FormatPascalCase(result.Status)}.";
@@ -952,7 +951,7 @@ else if (agentResource is not null)
                 }
                 case ConfirmationAction.Disable when canOperate && CanDisable(agentResource.Value.Status):
                 {
-                    var result = await Api.DisableAgentAsync(AgentId, Guid.NewGuid(), disposeCts.Token);
+                    var result = await Api.DisableAgentAsync(AgentId, disposeCts.Token);
                     confirmationAction = ConfirmationAction.None;
                     await ReloadAgentAsync();
                     announcement = $"Agent disabled. Current status: {FormatPascalCase(result.Status)}.";
@@ -960,7 +959,7 @@ else if (agentResource is not null)
                 }
                 case ConfirmationAction.Retry when isAdministrator && CanRetry(agentResource.Value):
                 {
-                    var result = await Api.RetryProvisioningAsync(AgentId, Guid.NewGuid(), disposeCts.Token);
+                    var result = await Api.RetryProvisioningAsync(AgentId, disposeCts.Token);
                     confirmationAction = ConfirmationAction.None;
                     Navigation.NavigateTo($"/operations/{result.OperationId:D}");
                     break;
@@ -969,9 +968,6 @@ else if (agentResource is not null)
                 {
                     var result = await Api.DeleteAgentAsync(
                         AgentId,
-                        deleteMicrosoftResources: false,
-                        agentResource.ETag,
-                        Guid.NewGuid(),
                         disposeCts.Token);
                     confirmationAction = ConfirmationAction.None;
                     Navigation.NavigateTo($"/operations/{result.OperationId:D}");
@@ -999,7 +995,6 @@ else if (agentResource is not null)
                     var result = await Api.RevokeAgentIngressCredentialAsync(
                         AgentId,
                         credentialId,
-                        Guid.NewGuid(),
                         disposeCts.Token);
                     confirmationAction = ConfirmationAction.None;
                     pendingCredentialId = null;
@@ -1107,7 +1102,7 @@ else if (agentResource is not null)
         ConfirmationAction.Enable => "Enable this agent?",
         ConfirmationAction.Disable => "Disable this agent?",
         ConfirmationAction.Retry => "Retry provisioning?",
-        ConfirmationAction.Delete => "Delete this agent?",
+        ConfirmationAction.Delete => "Delete this Gateway registration?",
         ConfirmationAction.IssueCredential => "Issue an additional Gateway credential?",
         ConfirmationAction.RevokeCredential => "Revoke this Gateway credential?",
         _ => "Confirm action"
@@ -1118,7 +1113,7 @@ else if (agentResource is not null)
         ConfirmationAction.Enable => "The agent will be allowed to submit new data-plane requests.",
         ConfirmationAction.Disable => "New data-plane requests will be rejected until the agent is enabled again.",
         ConfirmationAction.Retry => "A new asynchronous provisioning operation will be created from the confirmed retry-safe failure. The existing history is preserved.",
-        ConfirmationAction.Delete => "Deletion runs asynchronously and preserves all linked Microsoft resources.",
+        ConfirmationAction.Delete => "Deletion runs asynchronously. The Gateway registration is removed; linked Microsoft resources are not changed.",
         ConfirmationAction.IssueCredential => "The current credential remains valid while you deploy and verify the new key.",
         ConfirmationAction.RevokeCredential => "Requests using the selected key will be rejected immediately after revocation.",
         _ => string.Empty
@@ -1129,7 +1124,7 @@ else if (agentResource is not null)
         ConfirmationAction.Enable => "Enable",
         ConfirmationAction.Disable => "Disable",
         ConfirmationAction.Retry => "Start retry",
-        ConfirmationAction.Delete => "Delete agent",
+        ConfirmationAction.Delete => "Delete registration",
         ConfirmationAction.IssueCredential => "Issue credential",
         ConfirmationAction.RevokeCredential => "Revoke credential",
         _ => "Confirm"

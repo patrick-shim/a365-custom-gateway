@@ -39,7 +39,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
     private readonly ILogger<Agent365ProvisioningClient> _logger;
     private readonly Agent365Options _options;
     private readonly MicrosoftGraphProvisioningClient _graph;
-    private readonly IProvisioningCredentialStore _credentialStore;
     private readonly IAgent365ObservabilityTokenProvider? _observabilityTokenProvider;
     private readonly IReadOnlyList<TimeSpan> _federatedCredentialVerificationLookupDelays;
     private readonly IReadOnlyList<TimeSpan> _postMutationVerificationLookupDelays;
@@ -49,7 +48,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         IOptions<Agent365Options> options,
         IHttpClientFactory httpClientFactory,
         IAgent365ProvisioningTokenProvider tokenProvider,
-        IProvisioningCredentialStore credentialStore,
         IAgent365ObservabilityTokenProvider observabilityTokenProvider)
         : this(
             logger,
@@ -57,7 +55,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             new MicrosoftGraphProvisioningClient(
                 httpClientFactory.CreateClient(nameof(Agent365ProvisioningClient)),
                 tokenProvider),
-            credentialStore,
             observabilityTokenProvider)
     {
     }
@@ -65,9 +62,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
     internal Agent365ProvisioningClient(
         ILogger<Agent365ProvisioningClient> logger,
         Agent365Options options,
-        MicrosoftGraphProvisioningClient graph,
-        IProvisioningCredentialStore credentialStore)
-        : this(logger, options, graph, credentialStore, observabilityTokenProvider: null)
+        MicrosoftGraphProvisioningClient graph)
+        : this(logger, options, graph, observabilityTokenProvider: null)
     {
     }
 
@@ -75,7 +71,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         ILogger<Agent365ProvisioningClient> logger,
         Agent365Options options,
         MicrosoftGraphProvisioningClient graph,
-        IProvisioningCredentialStore credentialStore,
         IAgent365ObservabilityTokenProvider? observabilityTokenProvider,
         IReadOnlyList<TimeSpan>? federatedCredentialVerificationLookupDelays = null,
         IReadOnlyList<TimeSpan>? postMutationVerificationLookupDelays = null)
@@ -83,7 +78,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         _logger = logger;
         _options = options;
         _graph = graph;
-        _credentialStore = credentialStore;
         _observabilityTokenProvider = observabilityTokenProvider;
         _federatedCredentialVerificationLookupDelays =
             federatedCredentialVerificationLookupDelays?.ToArray()
@@ -109,22 +103,10 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         {
             return request.StepType switch
             {
-                ProvisioningStepType.CreateAppRegistration =>
-                    await CreateApplicationAsync(request, context, cancellationToken),
-                ProvisioningStepType.CreateServicePrincipal =>
-                    await CreateServicePrincipalAsync(request, context, cancellationToken),
-                ProvisioningStepType.AssignRoles =>
-                    await AssignExternalAgentRoleAsync(request, context, cancellationToken),
-                ProvisioningStepType.StoreCredentials =>
-                    await StoreApplicationCredentialAsync(request, context, cancellationToken),
-                ProvisioningStepType.CreateBlueprint =>
-                    await ResolveBlueprintAsync(request, context, cancellationToken),
-                ProvisioningStepType.CreateBlueprintPrincipal =>
-                    await CreateBlueprintPrincipalAsync(request, context, cancellationToken),
                 ProvisioningStepType.ResolveBlueprint =>
                     await ResolveBlueprintAsync(request, context, cancellationToken),
                 ProvisioningStepType.EnsureBlueprintPrincipal =>
-                    await CreateBlueprintPrincipalAsync(request, context, cancellationToken),
+                    await EnsureBlueprintPrincipalAsync(request, context, cancellationToken),
                 ProvisioningStepType.ConfigureGatewayFederation =>
                     await ConfigureGatewayFederationAsync(request, context, cancellationToken),
                 ProvisioningStepType.CreateAgentIdentity =>
@@ -151,196 +133,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         {
             throw NormalizeDependencyFailure(exception);
         }
-    }
-
-    public Task<Agent365ReconciliationResult> ReconcileAsync(
-        Agent365ResourceReference resource,
-        CancellationToken cancellationToken)
-    {
-        throw Failure(
-            ErrorCodes.PROVISIONING_STEP_NOT_IMPLEMENTED,
-            "Microsoft-resource reconciliation isn't implemented.",
-            requiresManualIntervention: true);
-    }
-
-    public Task DeleteAsync(
-        Agent365ResourceReference resource,
-        CancellationToken cancellationToken)
-    {
-        throw Failure(
-            ErrorCodes.PROVISIONING_STEP_NOT_IMPLEMENTED,
-            "Microsoft-resource deletion isn't implemented.",
-            requiresManualIntervention: true);
-    }
-
-    private async Task<Agent365ProvisioningStepResult> CreateApplicationAsync(
-        Agent365ProvisioningStepRequest request,
-        ProvisioningContext context,
-        CancellationToken cancellationToken)
-    {
-        var state = request.State;
-        GraphApplication? application;
-
-        if (HasEither(state.ApplicationObjectId, state.ApplicationClientId))
-        {
-            RequirePair(
-                state.ApplicationObjectId,
-                state.ApplicationClientId,
-                "The application identifiers are incomplete.");
-            application = await _graph.GetApplicationAsync(
-                state.ApplicationObjectId!,
-                isBlueprint: false,
-                includePasswordCredentials: false,
-                cancellationToken);
-        }
-        else
-        {
-            application = await _graph.FindApplicationAsync(
-                context.ApplicationDisplayName,
-                isBlueprint: false,
-                cancellationToken);
-
-            if (application is null)
-            {
-                try
-                {
-                    application = await _graph.CreateApplicationAsync(
-                        context.ApplicationDisplayName,
-                        request.Agent.AgentRegistrationId,
-                        cancellationToken);
-                }
-                catch (Agent365ProvisioningException exception)
-                {
-                    application = await RecoverLookupAsync(
-                        () => _graph.FindApplicationAsync(
-                            context.ApplicationDisplayName,
-                            isBlueprint: false,
-                            cancellationToken),
-                        cancellationToken);
-
-                    if (application is null)
-                    {
-                        if (CanRecoverCreate(exception))
-                            throw AmbiguousCreate();
-
-                        throw;
-                    }
-                }
-            }
-        }
-
-        var (objectId, clientId) = ValidateApplication(
-            application,
-            context.ApplicationDisplayName,
-            request.Agent.AgentRegistrationId,
-            state.ApplicationObjectId,
-            state.ApplicationClientId);
-        await VerifyApplicationAsync(
-            objectId,
-            clientId,
-            context.ApplicationDisplayName,
-            request.Agent.AgentRegistrationId,
-            cancellationToken);
-
-        return Complete(
-            request,
-            state with
-            {
-                ApplicationObjectId = objectId,
-                ApplicationClientId = clientId
-            },
-            "GraphApplicationVerified");
-    }
-
-    private async Task<Agent365ProvisioningStepResult> CreateServicePrincipalAsync(
-        Agent365ProvisioningStepRequest request,
-        ProvisioningContext context,
-        CancellationToken cancellationToken)
-    {
-        var state = request.State;
-        var applicationClientId = RequiredStateGuid(
-            state.ApplicationClientId,
-            "The application client ID is required before creating its service principal.");
-        GraphServicePrincipal? principal;
-
-        if (!string.IsNullOrWhiteSpace(state.ServicePrincipalObjectId))
-        {
-            principal = await _graph.GetServicePrincipalAsync(
-                state.ServicePrincipalObjectId,
-                isAgentIdentity: false,
-                cancellationToken);
-        }
-        else
-        {
-            principal = await _graph.GetServicePrincipalByAppIdAsync(
-                applicationClientId.ToString("D"),
-                cancellationToken);
-
-            if (principal is null)
-            {
-                try
-                {
-                    principal = await _graph.CreateServicePrincipalAsync(
-                        applicationClientId.ToString("D"),
-                        isBlueprintPrincipal: false,
-                        cancellationToken);
-                }
-                catch (Agent365ProvisioningException exception)
-                {
-                    principal = await RecoverLookupAsync(
-                        () => _graph.GetServicePrincipalByAppIdAsync(
-                            applicationClientId.ToString("D"),
-                            cancellationToken),
-                        cancellationToken);
-
-                    if (principal is null)
-                    {
-                        if (CanRecoverCreate(exception))
-                            throw AmbiguousCreate();
-
-                        throw;
-                    }
-                }
-            }
-        }
-
-        var principalObjectId = ValidateServicePrincipal(
-            principal,
-            applicationClientId,
-            state.ServicePrincipalObjectId);
-        await VerifyServicePrincipalAsync(
-            principalObjectId,
-            applicationClientId,
-            isAgentIdentity: false,
-            cancellationToken);
-
-        return Complete(
-            request,
-            state with { ServicePrincipalObjectId = principalObjectId },
-            "GraphServicePrincipalVerified");
-    }
-
-    private async Task<Agent365ProvisioningStepResult> AssignExternalAgentRoleAsync(
-        Agent365ProvisioningStepRequest request,
-        ProvisioningContext context,
-        CancellationToken cancellationToken)
-    {
-        var state = request.State;
-        var principalId = RequiredStateGuid(
-            state.ServicePrincipalObjectId,
-            "The client service-principal ID is required before assigning its role.");
-        var gatewayAssignmentId = await EnsureApplicationRoleAssignmentAsync(
-            principalId,
-            context.GatewayApiApplicationClientId,
-            _options.ExternalAgentAppRoleValue,
-            state.AppRoleAssignmentId,
-            "Gateway API",
-            cancellationToken);
-
-        return Complete(
-            request,
-            state with { AppRoleAssignmentId = gatewayAssignmentId },
-            "ExternalAgentAppRoleAssignmentVerified");
     }
 
     private async Task<Agent365ProvisioningStepResult> AssignAgent365AccessAsync(
@@ -401,25 +193,23 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         }
 
         var appRoleId = matchingRoles[0].Id!.Value;
+        if (!string.IsNullOrWhiteSpace(persistedAssignmentId))
+        {
+            var persistedAssignment = await VerifyPersistedApplicationRoleAssignmentAfterPropagationAsync(
+                principalId,
+                resourceId,
+                appRoleId,
+                persistedAssignmentId,
+                resourceName,
+                cancellationToken);
+            return persistedAssignment.Id!;
+        }
+
         var assignments = await ListAppRoleAssignmentsAfterPrincipalPropagationAsync(
             principalId,
             cancellationToken);
         var matches = FindMatchingAssignments(assignments, principalId, resourceId, appRoleId);
-
-        if (!string.IsNullOrWhiteSpace(persistedAssignmentId))
-        {
-            if (matches.Count != 1 || !string.Equals(
-                    matches[0].Id,
-                    persistedAssignmentId,
-                    StringComparison.Ordinal))
-            {
-                throw Failure(
-                    ErrorCodes.PROVISIONING_STATE_INVALID,
-                    $"The persisted {resourceName} app-role assignment couldn't be verified.",
-                    requiresManualIntervention: true);
-            }
-        }
-        else if (matches.Count == 0)
+        if (matches.Count == 0)
         {
             GraphAppRoleAssignment? assignment;
             try
@@ -481,6 +271,89 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         return matches[0].Id!;
     }
 
+    private async Task<GraphAppRoleAssignment>
+        VerifyPersistedApplicationRoleAssignmentAfterPropagationAsync(
+            Guid principalId,
+            Guid resourceId,
+            Guid appRoleId,
+            string persistedAssignmentId,
+            string resourceName,
+            CancellationToken cancellationToken)
+    {
+        foreach (var delay in _postMutationVerificationLookupDelays)
+        {
+            if (delay > TimeSpan.Zero)
+                await Task.Delay(delay, cancellationToken);
+
+            IReadOnlyList<GraphAppRoleAssignment> assignments;
+            try
+            {
+                assignments = await _graph.ListAppRoleAssignmentsAsync(
+                    principalId.ToString("D"),
+                    cancellationToken);
+            }
+            catch (Agent365ProvisioningException exception)
+                when (IsRetryableVerificationRead(exception))
+            {
+                continue;
+            }
+
+            var matches = FindMatchingAssignments(assignments, principalId, resourceId, appRoleId);
+            if (matches.Count > 1)
+            {
+                throw Failure(
+                    ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
+                    $"The persisted {resourceName} app-role assignment couldn't be verified uniquely.",
+                    requiresManualIntervention: true);
+            }
+
+            var knownIdMatches = assignments
+                .Where(assignment => string.Equals(
+                    assignment.Id,
+                    persistedAssignmentId,
+                    StringComparison.Ordinal))
+                .ToList();
+            if (knownIdMatches.Count > 1)
+            {
+                throw Failure(
+                    ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
+                    $"The persisted {resourceName} app-role assignment ID wasn't unique.",
+                    requiresManualIntervention: true);
+            }
+
+            if (knownIdMatches.Count == 1)
+            {
+                ValidateAssignment(knownIdMatches[0], principalId, resourceId, appRoleId);
+                if (matches.Count != 1)
+                {
+                    throw Failure(
+                        ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
+                        $"The persisted {resourceName} app-role assignment couldn't be verified uniquely.",
+                        requiresManualIntervention: true);
+                }
+
+                return knownIdMatches[0];
+            }
+
+            if (matches.Count == 1)
+            {
+                throw Failure(
+                    ErrorCodes.PROVISIONING_STATE_INVALID,
+                    $"The persisted {resourceName} app-role assignment ID doesn't match the verified assignment.",
+                    requiresManualIntervention: true);
+            }
+
+            // Microsoft Graph can return a successful but stale relationship list
+            // immediately after an app-role assignment is created. Retry only the
+            // bounded exact read; never repeat the assignment POST.
+        }
+
+        throw Failure(
+            ErrorCodes.PROVISIONING_STATE_INVALID,
+            $"The persisted {resourceName} app-role assignment couldn't be verified after bounded read-only reconciliation.",
+            requiresManualIntervention: true);
+    }
+
     private async Task<GraphAppRoleAssignment> CreateAppRoleAssignmentAfterPrincipalPropagationAsync(
         Guid principalId,
         Guid resourceId,
@@ -522,184 +395,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             "The Agent Identity wasn't available for app-role assignment.");
     }
 
-    private async Task<Agent365ProvisioningStepResult> StoreApplicationCredentialAsync(
-        Agent365ProvisioningStepRequest request,
-        ProvisioningContext context,
-        CancellationToken cancellationToken)
-    {
-        var state = request.State;
-        var applicationObjectId = RequiredStateGuid(
-            state.ApplicationObjectId,
-            "The application object ID is required before creating a credential.");
-        var anyPersistedCredentialState =
-            !string.IsNullOrWhiteSpace(state.PasswordCredentialKeyId) ||
-            !string.IsNullOrWhiteSpace(state.KeyVaultSecretUri) ||
-            state.CredentialExpiresAtUtc is not null;
-        var completePersistedCredentialState =
-            !string.IsNullOrWhiteSpace(state.PasswordCredentialKeyId) &&
-            !string.IsNullOrWhiteSpace(state.KeyVaultSecretUri) &&
-            state.CredentialExpiresAtUtc is not null;
-
-        if (anyPersistedCredentialState && !completePersistedCredentialState)
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_STATE_INVALID,
-                "The persisted credential state is incomplete.",
-                requiresManualIntervention: true);
-        }
-
-        var stored = await _credentialStore.FindAsync(
-            request.Agent.AgentRegistrationId,
-            applicationObjectId.ToString("D"),
-            cancellationToken);
-        var application = await _graph.GetApplicationAsync(
-            applicationObjectId.ToString("D"),
-            isBlueprint: false,
-            includePasswordCredentials: true,
-            cancellationToken)
-            ?? throw Failure(
-                ErrorCodes.PROVISIONING_STATE_INVALID,
-                "The application for the credential step no longer exists.",
-                requiresManualIntervention: true);
-
-        if (stored is not null)
-        {
-            VerifyStoredCredential(application, stored, context.PasswordCredentialDisplayName);
-            if (completePersistedCredentialState)
-                VerifyPersistedCredentialState(state, stored);
-
-            return Complete(
-                request,
-                state with
-                {
-                    PasswordCredentialKeyId = stored.PasswordCredentialKeyId,
-                    KeyVaultSecretUri = stored.KeyVaultSecretUri,
-                    CredentialExpiresAtUtc = stored.ExpiresAtUtc
-                },
-                "ApplicationCredentialAndVaultReferenceVerified");
-        }
-
-        if (completePersistedCredentialState)
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                "The persisted credential has no matching deterministic vault reference.",
-                requiresManualIntervention: true);
-        }
-
-        var matchingGraphCredentials = (application.PasswordCredentials ?? [])
-            .Where(credential => string.Equals(
-                credential.DisplayName,
-                context.PasswordCredentialDisplayName,
-                StringComparison.Ordinal))
-            .ToList();
-        if (matchingGraphCredentials.Count > 0)
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                "Microsoft Graph contains a credential that has no recoverable vault reference.",
-                requiresManualIntervention: true);
-        }
-
-        var requestedExpiry = DateTimeOffset.UtcNow.AddDays(_options.ApplicationPasswordLifetimeDays);
-        GraphPasswordCredential generated;
-        try
-        {
-            generated = await _graph.AddPasswordAsync(
-                applicationObjectId.ToString("D"),
-                context.PasswordCredentialDisplayName,
-                requestedExpiry,
-                cancellationToken);
-        }
-        catch (Agent365ProvisioningException exception)
-            when (exception.RequiresManualIntervention)
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                "The credential creation outcome is unknown and requires manual verification.",
-                requiresManualIntervention: true);
-        }
-
-        if (generated.KeyId is null || generated.KeyId == Guid.Empty ||
-            string.IsNullOrEmpty(generated.SecretText))
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                "Microsoft Graph didn't return a safely storable credential result.",
-                requiresManualIntervention: true);
-        }
-
-        var credentialKeyId = generated.KeyId.Value.ToString("D");
-        var expiresAtUtc = generated.EndDateTime ?? requestedExpiry;
-        try
-        {
-            stored = await _credentialStore.StoreAsync(
-                request.Agent.AgentRegistrationId,
-                applicationObjectId.ToString("D"),
-                credentialKeyId,
-                generated.SecretText,
-                expiresAtUtc,
-                cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            stored = await RecoverStoredCredentialAfterWriteAsync(
-                request.Agent.AgentRegistrationId,
-                applicationObjectId,
-                generated.KeyId.Value);
-            if (stored is not null)
-                throw;
-
-            if (!await TryRemoveCredentialAsync(
-                    applicationObjectId,
-                    generated.KeyId.Value,
-                    CancellationToken.None))
-            {
-                throw CredentialCompensationFailed();
-            }
-
-            throw;
-        }
-        catch (Agent365ProvisioningException)
-        {
-            stored = await RecoverStoredCredentialAfterWriteAsync(
-                request.Agent.AgentRegistrationId,
-                applicationObjectId,
-                generated.KeyId.Value);
-            if (stored is null && !await TryRemoveCredentialAsync(
-                    applicationObjectId,
-                    generated.KeyId.Value,
-                    CancellationToken.None))
-            {
-                throw CredentialCompensationFailed();
-            }
-
-            if (stored is null)
-                throw;
-        }
-
-        application = await _graph.GetApplicationAsync(
-            applicationObjectId.ToString("D"),
-            isBlueprint: false,
-            includePasswordCredentials: true,
-            cancellationToken)
-            ?? throw Failure(
-                ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                "The newly stored application credential couldn't be independently verified.",
-                requiresManualIntervention: true);
-        VerifyStoredCredential(application, stored, context.PasswordCredentialDisplayName);
-
-        return Complete(
-            request,
-            state with
-            {
-                PasswordCredentialKeyId = stored.PasswordCredentialKeyId,
-                KeyVaultSecretUri = stored.KeyVaultSecretUri,
-                CredentialExpiresAtUtc = stored.ExpiresAtUtc
-            },
-            "ApplicationCredentialAndVaultReferenceVerified");
-    }
-
     private async Task<Agent365ProvisioningStepResult> ResolveBlueprintAsync(
         Agent365ProvisioningStepRequest request,
         ProvisioningContext context,
@@ -718,10 +413,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
                 state.BlueprintObjectId,
                 state.BlueprintClientId,
                 "The blueprint identifiers are incomplete.");
-            blueprint = await _graph.GetApplicationAsync(
+            blueprint = await _graph.GetBlueprintAsync(
                 state.BlueprintObjectId!,
-                isBlueprint: true,
-                includePasswordCredentials: true,
                 cancellationToken);
         }
         else if (useExisting)
@@ -729,17 +422,14 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             var requestedObjectId = RequiredStateGuid(
                 request.Agent.RequestedBlueprintObjectId,
                 "An existing Agent Identity blueprint object ID is required.");
-            blueprint = await _graph.GetApplicationAsync(
+            blueprint = await _graph.GetBlueprintAsync(
                 requestedObjectId.ToString("D"),
-                isBlueprint: true,
-                includePasswordCredentials: true,
                 cancellationToken);
         }
         else
         {
-            blueprint = await _graph.FindApplicationAsync(
+            blueprint = await _graph.FindBlueprintAsync(
                 context.BlueprintDisplayName,
-                isBlueprint: true,
                 cancellationToken);
 
             if (blueprint is null)
@@ -757,9 +447,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
                 catch (Agent365ProvisioningException exception)
                 {
                     blueprint = await RecoverLookupAsync(
-                        () => _graph.FindApplicationAsync(
+                        () => _graph.FindBlueprintAsync(
                             context.BlueprintDisplayName,
-                            isBlueprint: true,
                             cancellationToken),
                         cancellationToken);
 
@@ -848,10 +537,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
 
             try
             {
-                var blueprint = await _graph.GetApplicationAsync(
+                var blueprint = await _graph.GetBlueprintAsync(
                     objectId,
-                    isBlueprint: true,
-                    includePasswordCredentials: true,
                     cancellationToken);
                 if (blueprint is not null)
                     return blueprint;
@@ -1089,7 +776,7 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         }
     }
 
-    private async Task<Agent365ProvisioningStepResult> CreateBlueprintPrincipalAsync(
+    private async Task<Agent365ProvisioningStepResult> EnsureBlueprintPrincipalAsync(
         Agent365ProvisioningStepRequest request,
         ProvisioningContext context,
         CancellationToken cancellationToken)
@@ -1116,9 +803,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             {
                 try
                 {
-                    principal = await _graph.CreateServicePrincipalAsync(
+                    principal = await _graph.CreateBlueprintPrincipalAsync(
                         blueprintClientId.ToString("D"),
-                        isBlueprintPrincipal: true,
                         cancellationToken);
                 }
                 catch (Agent365ProvisioningException exception)
@@ -1172,9 +858,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
 
         if (!string.IsNullOrWhiteSpace(state.AgentIdentityObjectId))
         {
-            identity = await _graph.GetServicePrincipalAsync(
+            identity = await _graph.GetAgentIdentityAsync(
                 state.AgentIdentityObjectId,
-                isAgentIdentity: true,
                 cancellationToken);
         }
         else
@@ -1248,9 +933,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             state.AgentIdentityClientId);
         if (!verifiedAfterMutation)
         {
-            identity = await _graph.GetServicePrincipalAsync(
+            identity = await _graph.GetAgentIdentityAsync(
                 identityObjectId,
-                isAgentIdentity: true,
                 cancellationToken)
                 ?? throw Failure(
                     ErrorCodes.PROVISIONING_STATE_INVALID,
@@ -1315,9 +999,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
                     candidateObjectId = discoveredIdentity.ObjectId;
                 }
 
-                var candidate = await _graph.GetServicePrincipalAsync(
+                var candidate = await _graph.GetAgentIdentityAsync(
                     candidateObjectId,
-                    isAgentIdentity: true,
                     cancellationToken);
                 if (candidate is null)
                     continue;
@@ -1341,252 +1024,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         throw Failure(
             ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
             "The created Agent Identity couldn't be verified after bounded read-only reconciliation.",
-            requiresManualIntervention: true);
-    }
-
-    private async Task<Agent365ProvisioningStepResult> RegisterAgentAsync(
-        Agent365ProvisioningStepRequest request,
-        ProvisioningContext context,
-        CancellationToken cancellationToken)
-    {
-        var state = request.State;
-        RequiredStateGuid(
-            state.BlueprintObjectId,
-            "The blueprint object ID is required before registry registration.");
-        var blueprintClientId = RequiredStateGuid(
-            state.BlueprintClientId,
-            "The blueprint client ID is required before registry registration.");
-        var agentIdentityObjectId = RequiredStateGuid(
-            state.AgentIdentityObjectId,
-            "The Agent Identity object ID is required before registry registration.");
-
-        GraphAgentRegistration? registration;
-        string registryId;
-        if (!string.IsNullOrWhiteSpace(state.Agent365RegistrationId))
-        {
-            registryId = RequiredDependencyIdentifier(
-                state.Agent365RegistrationId,
-                "The persisted Agent 365 registration ID is invalid.");
-            if (!string.IsNullOrWhiteSpace(state.PlannedAgent365RegistrationId))
-            {
-                var plannedId = RequiredStateGuid(
-                    state.PlannedAgent365RegistrationId,
-                    "The planned Agent 365 registration ID is invalid.");
-                if (!Guid.TryParse(registryId, out var persistedId) || persistedId != plannedId)
-                {
-                    throw Failure(
-                        ErrorCodes.PROVISIONING_STATE_INVALID,
-                        "The persisted Agent 365 registration ID doesn't match the planned ID.",
-                        requiresManualIntervention: true);
-                }
-            }
-
-            registration = string.IsNullOrWhiteSpace(state.RegistryProvider) &&
-                           !string.IsNullOrWhiteSpace(state.PlannedAgent365RegistrationId)
-                ? await VerifyAgentRegistrationAfterMutationAsync(
-                    registryId,
-                    request.Agent.ExternalAgentId,
-                    context.GatewayApiApplicationClientId,
-                    agentIdentityObjectId,
-                    blueprintClientId,
-                    cancellationToken)
-                : await _graph.GetAgentRegistrationAsync(
-                    registryId,
-                    cancellationToken);
-        }
-        else
-        {
-            var plannedId = RequiredStateGuid(
-                state.PlannedAgent365RegistrationId,
-                "A planned Agent 365 registration ID is required before registry registration.");
-            registryId = plannedId.ToString("D");
-            registration = await _graph.GetAgentRegistrationAsync(
-                registryId,
-                cancellationToken);
-            var independentlyVerified = registration is not null;
-            if (registration is null)
-            {
-                try
-                {
-                    registration = await _graph.CreateAgentRegistrationAsync(
-                        plannedId,
-                        SanitizeRequired(request.Agent.Name, 256),
-                        SanitizeOptional(request.Agent.Description, 2000),
-                        context.OwnerObjectId,
-                        context.GatewayApiApplicationClientId,
-                        SanitizeRequired(request.Agent.ExternalAgentId, 256),
-                        SanitizeRequired(_options.RegistryOriginatingStore, 256),
-                        agentIdentityObjectId.ToString("D"),
-                        blueprintClientId.ToString("D"),
-                        cancellationToken);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw PostMutationCancellation("Agent 365 registry record");
-                }
-                catch (Agent365ProvisioningException exception)
-                    when (exception.IsTransient || exception.RequiresManualIntervention)
-                {
-                    try
-                    {
-                        registration = await VerifyAgentRegistrationAfterMutationAsync(
-                            registryId,
-                            request.Agent.ExternalAgentId,
-                            context.GatewayApiApplicationClientId,
-                            agentIdentityObjectId,
-                            blueprintClientId,
-                            cancellationToken);
-                        independentlyVerified = true;
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        throw PostMutationCancellation("Agent 365 registry record");
-                    }
-                }
-                catch (Exception)
-                {
-                    try
-                    {
-                        registration = await VerifyAgentRegistrationAfterMutationAsync(
-                            registryId,
-                            request.Agent.ExternalAgentId,
-                            context.GatewayApiApplicationClientId,
-                            agentIdentityObjectId,
-                            blueprintClientId,
-                            cancellationToken);
-                        independentlyVerified = true;
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        throw PostMutationCancellation("Agent 365 registry record");
-                    }
-                }
-            }
-
-            if (independentlyVerified)
-            {
-                VerifyAgentRegistration(
-                    registration,
-                    registryId,
-                    request.Agent.ExternalAgentId,
-                    context.GatewayApiApplicationClientId,
-                    agentIdentityObjectId,
-                    blueprintClientId);
-            }
-            else
-            {
-                try
-                {
-                    VerifyAgentRegistration(
-                        registration,
-                        registryId,
-                        request.Agent.ExternalAgentId,
-                        context.GatewayApiApplicationClientId,
-                        agentIdentityObjectId,
-                        blueprintClientId);
-                }
-                catch (Agent365ProvisioningException exception)
-                    when (exception.RequiresManualIntervention)
-                {
-                    // The response is not durable reconciliation evidence. The planned
-                    // identifier still permits one bounded GET-only verification pass.
-                }
-
-                try
-                {
-                    registration = await VerifyAgentRegistrationAfterMutationAsync(
-                        registryId,
-                        request.Agent.ExternalAgentId,
-                        context.GatewayApiApplicationClientId,
-                        agentIdentityObjectId,
-                        blueprintClientId,
-                        cancellationToken);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw PostMutationCancellation("Agent 365 registry record");
-                }
-            }
-        }
-
-        VerifyAgentRegistration(
-            registration,
-            registryId,
-            request.Agent.ExternalAgentId,
-            context.GatewayApiApplicationClientId,
-            agentIdentityObjectId,
-            blueprintClientId);
-
-        return Complete(
-            request,
-            state with
-            {
-                Agent365RegistrationId = registryId,
-                RegistryProvider = Agent365Options.DirectRegistryPreviewProvider
-            },
-            "DirectRegistryPreviewRecordVerified");
-    }
-
-    private async Task<GraphAgentRegistration> VerifyAgentRegistrationAfterMutationAsync(
-        string registryId,
-        string expectedSourceAgentId,
-        Guid expectedManagedByApplicationClientId,
-        Guid expectedAgentIdentityObjectId,
-        Guid expectedBlueprintClientId,
-        CancellationToken cancellationToken)
-    {
-        foreach (var delay in _postMutationVerificationLookupDelays)
-        {
-            if (delay > TimeSpan.Zero)
-                await Task.Delay(delay, cancellationToken);
-
-            GraphAgentRegistration? candidate;
-            try
-            {
-                candidate = await _graph.GetAgentRegistrationAsync(
-                    registryId,
-                    cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Agent365ProvisioningException exception)
-                when (IsRetryableVerificationRead(exception))
-            {
-                continue;
-            }
-            catch (Agent365ProvisioningException)
-            {
-                throw Failure(
-                    ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                    "The Agent 365 registry record couldn't be independently verified after the create attempt.",
-                    requiresManualIntervention: true);
-            }
-            catch (Exception)
-            {
-                throw Failure(
-                    ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                    "The Agent 365 registry record couldn't be independently verified after the create attempt.",
-                    requiresManualIntervention: true);
-            }
-
-            if (candidate is null)
-                continue;
-
-            VerifyAgentRegistration(
-                candidate,
-                registryId,
-                expectedSourceAgentId,
-                expectedManagedByApplicationClientId,
-                expectedAgentIdentityObjectId,
-                expectedBlueprintClientId);
-            return candidate;
-        }
-
-        throw Failure(
-            ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-            "The new Agent 365 registry record couldn't be independently verified after bounded read-only reconciliation.",
             requiresManualIntervention: true);
     }
 
@@ -1655,10 +1092,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             state.GatewayFederatedCredentialId,
             "The Gateway federated credential is required for the final verification.");
 
-        var blueprint = await _graph.GetApplicationAsync(
+        var blueprint = await _graph.GetBlueprintAsync(
             blueprintObjectId.ToString("D"),
-            isBlueprint: true,
-            includePasswordCredentials: true,
             cancellationToken)
             ?? throw Failure(
                 ErrorCodes.PROVISIONING_STATE_INVALID,
@@ -1680,9 +1115,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             blueprintClientId,
             blueprintPrincipalObjectId.ToString("D"));
 
-        var identity = await _graph.GetServicePrincipalAsync(
+        var identity = await _graph.GetAgentIdentityAsync(
             agentIdentityObjectId.ToString("D"),
-            isAgentIdentity: true,
             cancellationToken);
         ValidateAgentIdentity(
             identity,
@@ -1846,7 +1280,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         var ownerObjectId = RequiredStateGuid(
             request.Agent.OwnerObjectId,
             "The accountable owner object ID is invalid.");
-        var gatewayApiClientId = RequiredOptionGuid(_options.GatewayApiApplicationClientId);
         RequiredOptionGuid(_options.ObservabilityApplicationClientId);
         var gatewayManagedIdentityPrincipalId = RequiredOptionGuid(
             _options.ProvisioningManagedIdentityPrincipalId);
@@ -1880,40 +1313,22 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         if ((!string.IsNullOrWhiteSpace(_options.ProvisioningManagedIdentityClientId) &&
              (!Guid.TryParse(_options.ProvisioningManagedIdentityClientId, out var managedIdentityClientId) ||
               managedIdentityClientId == Guid.Empty)) ||
-            (request.StepType == ProvisioningStepType.StoreCredentials &&
-             _options.ApplicationPasswordLifetimeDays is < 1 or > 730) ||
             _options.ProvisioningHttpTimeoutSeconds is < 1 or > 120 ||
-            (request.StepType == ProvisioningStepType.AssignRoles &&
-             string.IsNullOrWhiteSpace(_options.ExternalAgentAppRoleValue)) ||
-            string.IsNullOrWhiteSpace(_options.ObservabilityAppRoleValue) ||
-            string.IsNullOrWhiteSpace(_options.RegistryOriginatingStore))
+            string.IsNullOrWhiteSpace(_options.ObservabilityAppRoleValue))
         {
             throw Failure(
                 ErrorCodes.PROVISIONING_CONFIGURATION_INVALID,
                 "The Agent 365 provisioning options aren't valid.");
         }
 
-        if (request.StepType == ProvisioningStepType.StoreCredentials &&
-            (!Uri.TryCreate(_options.CredentialKeyVaultUri, UriKind.Absolute, out var vaultUri) ||
-             !string.Equals(vaultUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
-             !vaultUri.Host.EndsWith(".vault.azure.net", StringComparison.OrdinalIgnoreCase)))
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_CONFIGURATION_INVALID,
-                "The provisioning credential vault URI isn't valid.");
-        }
-
         return new ProvisioningContext(
             tenantId,
             ownerObjectId,
-            gatewayApiClientId,
             managerApplicationIds,
             gatewayManagedIdentityPrincipalId,
-            BuildDisplayName("Client", request.Agent.Name, request.Agent.AgentRegistrationId),
             blueprintDisplayName,
             blueprintKey,
-            BuildDisplayName("Identity", request.Agent.Name, request.Agent.AgentRegistrationId),
-            $"a365-gateway:{request.Agent.AgentRegistrationId:D}");
+            BuildDisplayName("Identity", request.Agent.Name, request.Agent.AgentRegistrationId));
     }
 
     private IReadOnlyList<Guid> ParseManagerApplicationIds()
@@ -1942,39 +1357,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         }
 
         return values.ToList();
-    }
-
-    private static (string ObjectId, string ClientId) ValidateApplication(
-        GraphApplication? application,
-        string expectedDisplayName,
-        Guid agentRegistrationId,
-        string? expectedObjectId,
-        string? expectedClientId)
-    {
-        if (application is null ||
-            !Guid.TryParse(application.Id, out var objectId) || objectId == Guid.Empty ||
-            !Guid.TryParse(application.AppId, out var clientId) || clientId == Guid.Empty ||
-            !string.Equals(application.DisplayName, expectedDisplayName, StringComparison.Ordinal) ||
-            !(application.Tags ?? []).Contains(
-                $"AgentRegistration:{agentRegistrationId:D}",
-                StringComparer.Ordinal))
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                "The Microsoft application couldn't be matched to this Gateway registration.",
-                requiresManualIntervention: true);
-        }
-
-        if (!MatchesOptionalGuid(expectedObjectId, objectId) ||
-            !MatchesOptionalGuid(expectedClientId, clientId))
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_STATE_INVALID,
-                "The persisted application identifiers don't match Microsoft Graph.",
-                requiresManualIntervention: true);
-        }
-
-        return (objectId.ToString("D"), clientId.ToString("D"));
     }
 
     private static (string ObjectId, string ClientId) ValidateSelectedBlueprint(
@@ -2024,26 +1406,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         return (objectId.ToString("D"), clientId.ToString("D"));
     }
 
-    private async Task VerifyApplicationAsync(
-        string objectId,
-        string clientId,
-        string expectedDisplayName,
-        Guid agentRegistrationId,
-        CancellationToken cancellationToken)
-    {
-        var application = await _graph.GetApplicationAsync(
-            objectId,
-            isBlueprint: false,
-            includePasswordCredentials: false,
-            cancellationToken);
-        ValidateApplication(
-            application,
-            expectedDisplayName,
-            agentRegistrationId,
-            objectId,
-            clientId);
-    }
-
     private static string ValidateServicePrincipal(
         GraphServicePrincipal? principal,
         Guid expectedApplicationClientId,
@@ -2062,19 +1424,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         }
 
         return objectId.ToString("D");
-    }
-
-    private async Task VerifyServicePrincipalAsync(
-        string objectId,
-        Guid applicationClientId,
-        bool isAgentIdentity,
-        CancellationToken cancellationToken)
-    {
-        var principal = await _graph.GetServicePrincipalAsync(
-            objectId,
-            isAgentIdentity,
-            cancellationToken);
-        ValidateServicePrincipal(principal, applicationClientId, objectId);
     }
 
     private async Task VerifyBlueprintPrincipalAsync(
@@ -2159,47 +1508,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
                 allowAdditional
                     ? "The selected blueprint is missing a configured Agent 365 platform manager."
                     : "The blueprint manager applications don't exactly match the configured Agent 365 platform managers.",
-                requiresManualIntervention: true);
-        }
-    }
-
-    private static void VerifyStoredCredential(
-        GraphApplication application,
-        StoredPasswordCredential stored,
-        string expectedDisplayName)
-    {
-        var keyId = RequiredStateGuid(
-            stored.PasswordCredentialKeyId,
-            "The vault credential key ID is invalid.");
-        var matches = (application.PasswordCredentials ?? [])
-            .Where(credential => credential.KeyId == keyId)
-            .ToList();
-        var match = matches.Count == 1 ? matches[0] : null;
-        if (match is null ||
-            !string.Equals(match.DisplayName, expectedDisplayName, StringComparison.Ordinal) ||
-            match.EndDateTime is not { } credentialExpiry ||
-            Math.Abs((credentialExpiry - stored.ExpiresAtUtc).TotalSeconds) > 1)
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                "The vault credential doesn't match a unique Microsoft Graph credential.",
-                requiresManualIntervention: true);
-        }
-    }
-
-    private static void VerifyPersistedCredentialState(
-        Agent365ProvisioningState state,
-        StoredPasswordCredential stored)
-    {
-        if (!Guid.TryParse(state.PasswordCredentialKeyId, out var stateKeyId) ||
-            !Guid.TryParse(stored.PasswordCredentialKeyId, out var storedKeyId) ||
-            stateKeyId != storedKeyId ||
-            !string.Equals(state.KeyVaultSecretUri, stored.KeyVaultSecretUri, StringComparison.Ordinal) ||
-            state.CredentialExpiresAtUtc != stored.ExpiresAtUtc)
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_STATE_INVALID,
-                "The persisted credential state doesn't match the deterministic vault reference.",
                 requiresManualIntervention: true);
         }
     }
@@ -2353,145 +1661,6 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             ErrorCodes.PROVISIONING_DEPENDENCY_UNAVAILABLE,
             "The service-principal app-role assignment relationship is not available yet.",
             isTransient: true);
-    }
-
-    private static void VerifyAgentRegistration(
-        GraphAgentRegistration? registration,
-        string expectedRegistrationId,
-        string expectedSourceAgentId,
-        Guid expectedManagedByApplicationClientId,
-        Guid expectedAgentIdentityObjectId,
-        Guid expectedBlueprintClientId)
-    {
-        if (registration is null ||
-            !string.Equals(registration.Id, expectedRegistrationId, StringComparison.Ordinal) ||
-            !string.Equals(
-                registration.SourceAgentId,
-                expectedSourceAgentId,
-                StringComparison.Ordinal) ||
-            !Guid.TryParse(registration.ManagedByAppId, out var managedByApplicationClientId) ||
-            managedByApplicationClientId != expectedManagedByApplicationClientId ||
-            !Guid.TryParse(registration.AgentIdentityId, out var agentIdentityObjectId) ||
-            agentIdentityObjectId != expectedAgentIdentityObjectId ||
-            !Guid.TryParse(registration.AgentIdentityBlueprintId, out var blueprintClientId) ||
-            blueprintClientId != expectedBlueprintClientId)
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                "The Agent 365 registry record couldn't be matched to the provisioned identity.",
-                requiresManualIntervention: true);
-        }
-    }
-
-    private static void VerifyDelegatedAgentRegistration(
-        GraphAgentRegistration? registration,
-        string expectedRegistrationId,
-        string expectedSourceAgentId,
-        Guid expectedAgentIdentityObjectId,
-        Guid expectedBlueprintClientId,
-        Guid expectedOwnerObjectId,
-        Guid expectedCreatedByObjectId)
-    {
-        var ownerIds = registration?.OwnerIds ?? [];
-        if (registration is null ||
-            !Guid.TryParse(registration.Id, out var registrationId) ||
-            !Guid.TryParse(expectedRegistrationId, out var expectedId) ||
-            registrationId != expectedId ||
-            !string.Equals(
-                registration.SourceAgentId,
-                expectedSourceAgentId,
-                StringComparison.Ordinal) ||
-            !Guid.TryParse(registration.AgentIdentityId, out var agentIdentityObjectId) ||
-            agentIdentityObjectId != expectedAgentIdentityObjectId ||
-            !Guid.TryParse(registration.AgentIdentityBlueprintId, out var blueprintClientId) ||
-            blueprintClientId != expectedBlueprintClientId ||
-            !ownerIds.Any(value =>
-                Guid.TryParse(value, out var ownerObjectId) &&
-                ownerObjectId == expectedOwnerObjectId) ||
-            !Guid.TryParse(registration.CreatedBy, out var createdByObjectId) ||
-            createdByObjectId != expectedCreatedByObjectId)
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                "The delegated Agent 365 registry record couldn't be matched to the provisioned identity and accountable owner.",
-                requiresManualIntervention: true);
-        }
-    }
-
-    private async Task<bool> TryRemoveCredentialAsync(
-        Guid applicationObjectId,
-        Guid passwordCredentialKeyId,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(15));
-            await _graph.RemovePasswordAsync(
-                applicationObjectId.ToString("D"),
-                passwordCredentialKeyId.ToString("D"),
-                timeout.Token);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private async Task<StoredPasswordCredential?> RecoverStoredCredentialAfterWriteAsync(
-        Guid agentRegistrationId,
-        Guid applicationObjectId,
-        Guid expectedCredentialKeyId)
-    {
-        try
-        {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            var recovered = await _credentialStore.FindAsync(
-                agentRegistrationId,
-                applicationObjectId.ToString("D"),
-                timeout.Token);
-            if (recovered is null)
-                return null;
-
-            if (!Guid.TryParse(recovered.PasswordCredentialKeyId, out var recoveredKeyId) ||
-                recoveredKeyId != expectedCredentialKeyId)
-            {
-                throw Failure(
-                    ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                    "The credential vault write outcome doesn't match the generated Microsoft credential.",
-                    requiresManualIntervention: true);
-            }
-
-            return recovered;
-        }
-        catch (Agent365ProvisioningException exception)
-            when (exception.ErrorCode == ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT)
-        {
-            throw;
-        }
-        catch (Agent365ProvisioningException)
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                "The credential vault write outcome couldn't be safely verified.",
-                requiresManualIntervention: true);
-        }
-        catch (OperationCanceledException)
-        {
-            throw Failure(
-                ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                "The credential vault write outcome couldn't be safely verified.",
-                requiresManualIntervention: true);
-        }
-    }
-
-    private static Agent365ProvisioningException CredentialCompensationFailed()
-    {
-        return Failure(
-            ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-            "Credential storage failed and the generated Microsoft credential couldn't be safely revoked.",
-            requiresManualIntervention: true);
     }
 
     private static Agent365ProvisioningException AmbiguousCreate()
@@ -2739,12 +1908,9 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
     private sealed record ProvisioningContext(
         Guid TenantId,
         Guid OwnerObjectId,
-        Guid GatewayApiApplicationClientId,
         IReadOnlyList<Guid> ManagerApplicationIds,
         Guid GatewayManagedIdentityPrincipalId,
-        string ApplicationDisplayName,
         string BlueprintDisplayName,
         string BlueprintKey,
-        string AgentIdentityDisplayName,
-        string PasswordCredentialDisplayName);
+        string AgentIdentityDisplayName);
 }

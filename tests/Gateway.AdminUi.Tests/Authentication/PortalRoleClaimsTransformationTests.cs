@@ -42,6 +42,24 @@ public sealed class PortalRoleClaimsTransformationTests
     }
 
     [Fact]
+    public async Task TransformAsync_NormalizesCanonicalInboundRoleToIdentityRoleClaimType()
+    {
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim(ClaimTypes.Role, GatewayRoles.Administrator)],
+            "test",
+            ClaimTypes.Name,
+            "roles"));
+        var sut = new PortalRoleClaimsTransformation();
+
+        await sut.TransformAsync(principal);
+
+        principal.IsInRole(GatewayRoles.Administrator).Should().BeTrue();
+        principal.Claims.Should().ContainSingle(claim =>
+            claim.Type == "roles" &&
+            claim.Value == GatewayRoles.Administrator);
+    }
+
+    [Fact]
     public async Task TransformAsync_LeavesUnauthenticatedPrincipalUnchanged()
     {
         var identity = new ClaimsIdentity([new Claim("roles", "Administrator")]);

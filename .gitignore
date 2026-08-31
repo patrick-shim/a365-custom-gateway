@@ -83,6 +83,7 @@ bootstrap/config.json
 ## OS
 .DS_Store
 Thumbs.db
+.vscode/
 
 ## Coverage
 coverage/

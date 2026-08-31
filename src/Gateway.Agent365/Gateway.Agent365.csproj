@@ -17,9 +17,6 @@
 
   <ItemGroup>
     <PackageReference Include="Azure.Identity" Version="1.14.2" />
-    <PackageReference Include="Azure.Security.KeyVault.Secrets" Version="4.7.0" />
-    <PackageReference Include="Microsoft.Graph" Version="5.105.0" />
-    <PackageReference Include="Microsoft.Kiota.Abstractions" Version="1.22.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />

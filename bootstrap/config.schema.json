@@ -107,7 +107,6 @@
       "additionalProperties": false,
       "required": [
         "enabled",
-        "activateGatewayAdapterAfterPolicyReadback",
         "collectionPolicyName",
         "dlpPolicyName",
         "dlpRuleName",
@@ -115,7 +114,6 @@
       ],
       "properties": {
         "enabled": { "type": "boolean" },
-        "activateGatewayAdapterAfterPolicyReadback": { "type": "boolean" },
         "collectionPolicyName": { "type": "string", "minLength": 1 },
         "dlpPolicyName": { "type": "string", "minLength": 1 },
         "dlpRuleName": { "type": "string", "minLength": 1 },
@@ -173,28 +171,6 @@
         "properties": {
           "purview": {
             "properties": {
-              "activateGatewayAdapterAfterPolicyReadback": { "const": true }
-            },
-            "required": ["activateGatewayAdapterAfterPolicyReadback"]
-          }
-        },
-        "required": ["purview"]
-      },
-      "then": {
-        "properties": {
-          "purview": {
-            "properties": {
-              "enabled": { "const": true }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "purview": {
-            "properties": {
               "policyProvisioningEnabled": { "const": true }
             },
             "required": ["policyProvisioningEnabled"]
@@ -207,7 +183,6 @@
           "purview": {
             "properties": {
               "enabled": { "const": true },
-              "activateGatewayAdapterAfterPolicyReadback": { "const": true },
               "policyProvisioningOrganization": {
                 "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\\.[A-Za-z]{2,}$"
               },
@@ -221,7 +196,6 @@
             },
             "required": [
               "enabled",
-              "activateGatewayAdapterAfterPolicyReadback",
               "policyProvisioningOrganization",
               "policyProvisioningApplicationId",
               "policyProvisioningCertificateSecretUri"

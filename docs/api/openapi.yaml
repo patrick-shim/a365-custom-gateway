@@ -13,15 +13,12 @@ info:
 
     Registration-bound ingress is rate limited after Gateway-key authorization.
     The SQL Server path uses database-UTC fixed-minute buckets and serializable locks
-    across global, registration, and credential scopes. The limiter and its database
-    schema are deployed in development; real multi-replica load/security proof remains
-    required. The process-local InMemory fallback is for tests only.
+    across global, registration, and credential scopes. The process-local in-memory
+    implementation is for tests only.
 
     Scoped idempotency canonical-hashes the typed request and takes an exclusive,
     transaction-owned SQL application lock for registration + endpoint + key before
-    replay lookup or side effects, holding it through persistence and commit. This is
-    deployed in development; real SQL Server multi-replica/staging stress remains a
-    production-readiness gate.
+    replay lookup or side effects, holding it through persistence and commit.
 
     For Entra child Agent Identity telemetry, the Gateway emits the child client ID
     as gen_ai.agent.id and the selected blueprint client ID as
@@ -73,18 +70,14 @@ paths:
         Creates a new agent registration and starts async provisioning.
         Returns 202 Accepted with agent and operation URLs.
 
-        This endpoint fails closed before persistence unless the deployment-level
-        execution setting is enabled and its server-side AdmissionExpiresAtUtc is a
-        parseable future UTC instant. Clients can read the resulting effective gate
-        from provisioningExecutionEnabled in the GET /system/config response. With
-        exact admission binding enabled, the request must also match the configured
-        AuthorizedExternalAgentId; authenticated system config exposes that public
-        value as authorizedRegistrationExternalAgentId for the Admin UI.
+        This endpoint fails closed before persistence unless the deployment
+        explicitly enables the authenticated continuous-development registration
+        path. Other deployment profiles keep registration closed. Clients can read
+        the effective gate from provisioningExecutionEnabled in GET /system/config.
 
-        Current local workflow-v3 source selects or creates a reusable typed Agent ID
+        Workflow-v3 selects or creates a reusable typed Agent ID
         blueprint. It does not accept an external-runtime managed-identity object ID.
-        Development creation remains intentionally closed outside a bounded admission
-        window. Ordinary Entra apps cannot be substituted as blueprints.
+        Ordinary Entra apps cannot be substituted as blueprints.
 
         The response contains a unique per-registration Gateway API key exactly
         once. Store it immediately in the external agent's secret manager. The
@@ -132,10 +125,6 @@ paths:
               schema:
                 type: string
               description: URL of the created agent resource
-            Operation-Location:
-              schema:
-                type: string
-              description: URL of the provisioning operation
             Cache-Control:
               schema:
                 type: string
@@ -245,9 +234,11 @@ paths:
       operationId: listPurviewPolicyProfiles
       summary: List verified Gateway-managed Purview protection profiles
       description: |
-        Returns durable, non-secret metadata for collection-policy and DLP-policy
-        pairs that the Gateway has created and exactly verified. Only Ready profiles
-        are returned. Certificate material and arbitrary tenant policies are never exposed.
+        Returns durable, non-secret metadata for protection profiles that bind the
+        fixed tenant-wide Know Your Data Group location to blueprint-specific DLP
+        Individual locations. Only profiles with exact independent readback are
+        returned as Ready. Certificate material and arbitrary tenant policies are
+        never exposed.
       tags: [Configuration]
       security:
         - entraBearer: [Gateway.Administrator]
@@ -293,31 +284,17 @@ paths:
 
     delete:
       operationId: deleteAgent
-      summary: Delete an agent (async)
+      summary: Delete a Gateway registration (async)
       description: |
-        Starts async deletion. With deleteMicrosoftResources=false, the current
-        worker deletes the Gateway registration state while preserving Microsoft
-        resources. With deleteMicrosoftResources=true, Microsoft-side deletion is
-        currently unsupported and the operation fails closed in
-        RequiresManualIntervention; it never claims external resources were deleted.
+        Starts asynchronous deletion of the Gateway registration. The selected
+        blueprint, child Agent ID, Agent 365 Registry record, and other linked
+        Microsoft resources are not changed by this operation.
       tags: [Agents]
       security:
         - entraBearer: [Gateway.Administrator]
-      parameters:
-        - name: deleteMicrosoftResources
-          in: query
-          schema:
-            type: boolean
-            default: false
-        - $ref: '#/components/parameters/IfMatch'
-        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '202':
           description: Deletion accepted
-          headers:
-            Operation-Location:
-              schema:
-                type: string
           content:
             application/json:
               schema:
@@ -328,8 +305,6 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/ConcurrencyConflict'
 
   /agents/{agentId}/features:
     parameters:
@@ -341,8 +316,6 @@ paths:
       tags: [Agents]
       security:
         - entraBearer: [Gateway.Administrator]
-      parameters:
-        - $ref: '#/components/parameters/IfMatch'
       requestBody:
         required: true
         content:
@@ -352,10 +325,6 @@ paths:
       responses:
         '200':
           description: Features updated
-          headers:
-            ETag:
-              schema:
-                type: string
           content:
             application/json:
               schema:
@@ -503,8 +472,6 @@ paths:
       tags: [Agents]
       security:
         - entraBearer: [Gateway.Administrator, Gateway.Operator]
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
           description: Agent enabled
@@ -535,8 +502,6 @@ paths:
       tags: [Agents]
       security:
         - entraBearer: [Gateway.Administrator, Gateway.Operator]
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
           description: Agent disabled
@@ -568,22 +533,16 @@ paths:
         Failed status is necessary but not sufficient. The latest server-computed
         retryProvisioning decision must have supported=true, and the endpoint
         re-evaluates that decision before persistence. Legacy workflows, manual-
-        intervention outcomes, active operations, and ambiguous or in-flight beta
+        intervention outcomes, active operations, and ambiguous or in-flight preview
         Registry creates fail closed and must not be replayed. The request also
         fails before persistence when deployment-level provisioning execution is
         disabled.
       tags: [Agents]
       security:
         - entraBearer: [Gateway.Administrator]
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '202':
           description: Retry accepted
-          headers:
-            Operation-Location:
-              schema:
-                type: string
           content:
             application/json:
               schema:
@@ -659,8 +618,9 @@ paths:
         collection. An unknown post-create outcome permits exact planned-ID GET-only
         reconciliation and never repeats the POST. Historical v1/v2
         operations are rejected before token acquisition or Microsoft mutation.
-        Registration admission must already be closed; this independent action gate
-        must be enabled, unexpired, and exact-bound to this operation ID.
+        The deployment must explicitly enable the authenticated
+        continuous-development delegated action. Other deployment profiles keep the
+        preview Registry boundary closed.
       tags: [Operations]
       security:
         - entraBearer: [Gateway.Administrator, access_as_user]
@@ -727,12 +687,9 @@ paths:
       tags: [Audit]
       security:
         - entraBearer: [Gateway.Administrator, Gateway.Operator]
-      parameters:
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
-          description: Paginated provisioning history
+          description: Provisioning history for the selected registration
           content:
             application/json:
               schema:
@@ -754,10 +711,6 @@ paths:
       responses:
         '200':
           description: System configuration
-          headers:
-            ETag:
-              schema:
-                type: string
           content:
             application/json:
               schema:
@@ -770,11 +723,14 @@ paths:
     patch:
       operationId: updateSystemConfig
       summary: Update system configuration
+      description: |
+        Updates implemented registration defaults, idempotency-record lifetime,
+        and SQL-backed ingress rate limits. Persisted compatibility properties must
+        be omitted or null; a non-null write is rejected rather than accepted as a
+        control with no runtime effect.
       tags: [System]
       security:
         - entraBearer: [Gateway.Administrator]
-      parameters:
-        - $ref: '#/components/parameters/IfMatch'
       requestBody:
         required: true
         content:
@@ -784,14 +740,12 @@ paths:
       responses:
         '200':
           description: Configuration updated
-          headers:
-            ETag:
-              schema:
-                type: string
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SystemConfig'
+        '400':
+          $ref: '#/components/responses/ValidationError'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -821,18 +775,18 @@ paths:
     get:
       operationId: readinessCheck
       summary: Readiness health check
-      description: Checks database, Service Bus, and Key Vault connectivity.
+      description: Checks whether the Gateway database is reachable.
       tags: [System]
       security: []
       responses:
         '200':
-          description: Ready
+          description: Database is reachable
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReadinessResponse'
         '503':
-          description: Not ready
+          description: Database is unavailable
           content:
             application/json:
               schema:
@@ -974,14 +928,8 @@ paths:
             schema:
               $ref: '#/components/schemas/BatchActivityRequest'
       responses:
-        '200':
-          description: Batch processed (may include partial success)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BatchActivityResponse'
         '202':
-          description: All activities accepted
+          description: Batch processed; the body may contain accepted and rejected items
           content:
             application/json:
               schema:
@@ -1193,26 +1141,6 @@ components:
       schema:
         type: string
 
-    IfMatch:
-      name: If-Match
-      in: header
-      required: true
-      description: ETag for optimistic concurrency
-      schema:
-        type: string
-
-    IdempotencyKey:
-      name: Idempotency-Key
-      in: header
-      description: |
-        Scoped by authenticated AgentRegistrationId and normalized endpoint. Reuse
-        with the same endpoint-specific canonical request returns the cached safe
-        response; different content returns 409 IDEMPOTENCY_CONFLICT. Never contains
-        or caches a Gateway API key.
-      schema:
-        type: string
-        format: uuid
-
     IdempotencyKeyRequired:
       name: Idempotency-Key
       in: header
@@ -1298,6 +1226,7 @@ components:
         - legacy
         - replaySupported
         - pollingRecommended
+        - agent365RegistrationCompletionAvailable
       properties:
         operationId:
           type: string
@@ -1309,6 +1238,7 @@ components:
           enum: [Pending, Running, AwaitingAdministratorAction, Completed, Failed, RequiresManualIntervention]
         currentStep:
           type: string
+          nullable: true
         percentComplete:
           type: integer
           minimum: 0
@@ -1350,6 +1280,11 @@ components:
           nullable: true
           enum: [CompleteAgent365Registration]
           description: Explicit user action required before the workflow can continue.
+        agent365RegistrationCompletionAvailable:
+          type: boolean
+          description: |
+            True only when this operation requires the Administrator Registry action
+            and the deployment has explicitly opened that delegated action boundary.
 
     CompleteAgent365RegistrationResponse:
       type: object
@@ -1459,9 +1394,11 @@ components:
 
     ProvisioningInfo:
       type: object
+      required: [percentComplete]
       properties:
         currentStep:
           type: string
+          nullable: true
         percentComplete:
           type: integer
         lastError:
@@ -1568,6 +1505,22 @@ components:
         Required only when Purview is enabled while creating a new blueprint.
         Selects a verified Gateway-managed profile or requests a new reviewed profile.
       required: [mode]
+      oneOf:
+        - title: Use an existing profile
+          required: [mode, profileId]
+          properties:
+            mode:
+              type: string
+              enum: [UseExisting]
+        - title: Create a profile
+          required: [mode, displayName, template]
+          properties:
+            mode:
+              type: string
+              enum: [CreateNew]
+            template:
+              type: string
+              enum: [AllSensitiveInformation]
       properties:
         mode:
           type: string
@@ -1693,13 +1646,13 @@ components:
     RegisterAgentRequest:
       type: object
       description: |
-        Current local workflow-v3 registration contract. Development creation remains
-        fail-closed outside an exact-bound, expiring admission window.
+        Workflow-v3 registration contract. Creation fails closed unless the
+        deployment explicitly enables continuous development registration.
       required: [externalAgentId, name, ownerObjectId, environment, blueprint]
       properties:
         externalAgentId:
           type: string
-          minLength: 3
+          minLength: 1
           maxLength: 128
           pattern: '^[a-zA-Z0-9][a-zA-Z0-9._-]*$'
         name:
@@ -1711,7 +1664,8 @@ components:
           maxLength: 2000
         ownerObjectId:
           type: string
-          format: uuid
+          minLength: 1
+          maxLength: 64
         environment:
           $ref: '#/components/schemas/Environment'
         features:
@@ -1742,12 +1696,12 @@ components:
           format: date-time
         gatewayCredential:
           $ref: '#/components/schemas/AgentGatewayCredential'
-        _links:
+        links:
           $ref: '#/components/schemas/Links'
 
     AgentSummary:
       type: object
-      required: [agentId, externalAgentId, name, status, environment]
+      required: [agentId, externalAgentId, name, status, environment, createdAtUtc, updatedAtUtc]
       properties:
         agentId:
           type: string
@@ -1793,7 +1747,18 @@ components:
 
     AgentDetail:
       type: object
-      required: [agentId, externalAgentId, name, status, environment, createdAtUtc]
+      required:
+        - agentId
+        - externalAgentId
+        - name
+        - ownerObjectId
+        - status
+        - environment
+        - createdAtUtc
+        - createdByObjectId
+        - updatedAtUtc
+        - updatedByObjectId
+        - rowVersion
       properties:
         agentId:
           type: string
@@ -1806,7 +1771,6 @@ components:
           type: string
         ownerObjectId:
           type: string
-          format: uuid
         status:
           $ref: '#/components/schemas/AgentStatus'
         environment:
@@ -1815,7 +1779,7 @@ components:
           $ref: '#/components/schemas/Agent365Info'
         features:
           $ref: '#/components/schemas/AgentFeatures'
-        provisioningStatus:
+        provisioning:
           $ref: '#/components/schemas/ProvisioningInfo'
         retryProvisioning:
           $ref: '#/components/schemas/ProvisioningRetryEligibility'
@@ -1828,16 +1792,14 @@ components:
           format: date-time
         createdByObjectId:
           type: string
-          format: uuid
         updatedAtUtc:
           type: string
           format: date-time
         updatedByObjectId:
           type: string
-          format: uuid
         rowVersion:
           type: string
-        _links:
+        links:
           $ref: '#/components/schemas/Links'
 
     UpdateFeaturesRequest:
@@ -1893,7 +1855,7 @@ components:
 
     DeleteAgentResponse:
       type: object
-      required: [agentId, status, operationId, deleteMicrosoftResources]
+      required: [agentId, status, operationId]
       properties:
         agentId:
           type: string
@@ -1903,9 +1865,7 @@ components:
         operationId:
           type: string
           format: uuid
-        deleteMicrosoftResources:
-          type: boolean
-        _links:
+        links:
           $ref: '#/components/schemas/Links'
 
     AsyncOperationResponse:
@@ -1920,7 +1880,7 @@ components:
         operationId:
           type: string
           format: uuid
-        _links:
+        links:
           $ref: '#/components/schemas/Links'
 
     AuditEvent:
@@ -1960,24 +1920,24 @@ components:
     ProvisioningJob:
       type: object
       description: |
-        Historical job projection. It doesn't expose workflowVersion/legacy;
-        clients must fetch OperationStatus before considering any replay. Exact
-        workflow version 2 plus the seven current stages is necessary but not
-        sufficient; replaySupported can also be false for manual intervention,
-        ambiguous Registry results, or an in-flight Registry create.
-      required: [jobId, agentId, type, status, startedAtUtc]
+        Historical workflow-v3 job projection for one registration. This is a
+        read-only history view; retry and recovery eligibility remain authoritative
+        on the current OperationStatus response and the corresponding command.
+      required: [operationId, type, status, percentComplete, startedAtUtc]
       properties:
-        jobId:
-          type: string
-          format: uuid
-        agentId:
+        operationId:
           type: string
           format: uuid
         type:
-          $ref: '#/components/schemas/OperationType'
+          type: string
+          description: Persisted operation type, including compatibility values from older records.
         status:
           type: string
-          enum: [Pending, Running, Completed, Failed, RequiresManualIntervention]
+          enum: [Pending, Running, Completed, Failed, RequiresManualIntervention, AwaitingAdministratorAction]
+        percentComplete:
+          type: integer
+          minimum: 0
+          maximum: 100
         startedAtUtc:
           type: string
           format: date-time
@@ -1994,23 +1954,49 @@ components:
 
     ProvisioningHistoryResponse:
       type: object
-      required: [items]
+      required: [agentId, jobs]
       properties:
-        items:
+        agentId:
+          type: string
+          format: uuid
+        jobs:
           type: array
           items:
             $ref: '#/components/schemas/ProvisioningJob'
-        nextCursor:
-          type: string
-          nullable: true
 
     SystemConfig:
       type: object
-      description: Current singleton system configuration in the flat API DTO shape.
+      description: |
+        Current singleton system configuration and deployment capabilities in the
+        flat API DTO shape. Deprecated read-only compatibility values remain in the
+        response for existing clients but do not advertise active runtime controls.
+      required:
+        - provisioningMode
+        - defaultObservabilityMode
+        - defaultPurviewEnabled
+        - defaultPromptShieldEnabled
+        - retentionDaysActivityReceipts
+        - retentionDaysAuditEvents
+        - retentionDaysIdempotencyRecords
+        - retentionDaysOutboxMessages
+        - rateLimitPerClient
+        - rateLimitPerAgent
+        - rateLimitGlobal
+        - reconciliationEnabled
+        - reconciliationIntervalHours
+        - stuckTransitionTimeoutDays
+        - useGraphAgentRegistration
+        - useCliProvisioningFallback
+        - provisioningExecutionEnabled
+        - purviewPolicyProvisioningEnabled
+        - promptShieldAvailable
       properties:
         provisioningMode:
           type: string
           enum: [Automatic, Manual]
+          deprecated: true
+          readOnly: true
+          description: Persisted compatibility value; provisioning execution is deployment-controlled.
         defaultObservabilityMode:
           deprecated: true
           description: Deprecated compatibility encoding of the two canonical defaults.
@@ -2018,74 +2004,93 @@ components:
             - $ref: '#/components/schemas/ObservabilityMode'
         defaultAgent365ObservabilityEnabled:
           type: boolean
+          nullable: true
           default: true
           description: Default Agent 365 export setting for new agent registrations.
         defaultAzureMonitorExportEnabled:
           type: boolean
+          nullable: true
           default: false
           description: Default optional Azure Monitor mirror setting for new agent registrations.
         defaultPurviewEnabled:
           type: boolean
         defaultPurviewMode:
-          $ref: '#/components/schemas/PurviewMode'
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewMode'
         defaultPromptShieldEnabled:
           type: boolean
           description: Default Prompt Shields setting for new registrations.
         retentionDaysActivityReceipts:
           type: integer
+          deprecated: true
+          readOnly: true
+          description: Persisted compatibility value; no activity-receipt cleanup worker consumes it.
         retentionDaysAuditEvents:
           type: integer
+          deprecated: true
+          readOnly: true
+          description: Persisted compatibility value; no audit-event cleanup worker consumes it.
         retentionDaysIdempotencyRecords:
           type: integer
+          minimum: 1
+          maximum: 3650
+          description: Lifetime, in days, captured when the Gateway creates an idempotency record.
         retentionDaysOutboxMessages:
           type: integer
+          deprecated: true
+          readOnly: true
+          description: Persisted compatibility value; no outbox cleanup worker consumes it.
         rateLimitPerClient:
           type: integer
+          minimum: 1
+          maximum: 10000000
           description: Maximum requests per Gateway credential in each database-UTC fixed minute.
         rateLimitPerAgent:
           type: integer
+          minimum: 1
+          maximum: 10000000
           description: Maximum requests per authenticated registration in each database-UTC fixed minute.
         rateLimitGlobal:
           type: integer
+          minimum: 1
+          maximum: 10000000
           description: Maximum registration-bound requests Gateway-wide in each database-UTC fixed minute.
         reconciliationEnabled:
           type: boolean
           deprecated: true
+          readOnly: true
           description: Persisted compatibility value; the current Gateway has no verified reconciliation scheduler or Microsoft adapter.
         reconciliationIntervalHours:
           type: integer
           deprecated: true
+          readOnly: true
           description: Persisted compatibility value with no current background execution effect.
         stuckTransitionTimeoutDays:
           type: integer
+          deprecated: true
+          readOnly: true
+          description: Persisted compatibility value; no stuck-transition cleanup service consumes it.
         useGraphAgentRegistration:
           type: boolean
           deprecated: true
+          readOnly: true
           description: Persisted compatibility field; it does not select the current deployment provider or enable provisioning execution.
         useCliProvisioningFallback:
           type: boolean
           deprecated: true
+          readOnly: true
           description: Persisted compatibility field; the current worker has no unattended CLI fallback.
         provisioningExecutionEnabled:
           type: boolean
           readOnly: true
           description: |
             Effective deployment capability gate for new registration and
-            provisioning retry. True requires both the boolean execution setting and
-            a parseable future server-side AdmissionExpiresAtUtc; current exact-bound
-            mode also requires a configured authorized external ID. False means those
-            requests return PROVISIONING_DISABLED before creating an agent, job, or
-            outbox message. This value is supplied by deployment configuration and
-            cannot be changed through PATCH.
-        authorizedRegistrationExternalAgentId:
-          type: string
-          nullable: true
-          readOnly: true
-          description: |
-            Server-authorized generated external ID while an exact-bound registration
-            window is effectively open. Authenticated Admin UI clients use this value
-            verbatim. It is admission/routing metadata, not a Gateway key, Microsoft
-            credential, or authority for delegated completion.
+            provisioning retry. True requires the explicitly enabled authenticated
+            continuous-development path. False means those requests return
+            PROVISIONING_DISABLED before creating an agent, job, or outbox message.
+            This value is supplied by deployment configuration and cannot be changed
+            through PATCH.
         purviewPolicyProvisioningEnabled:
           type: boolean
           readOnly: true
@@ -2101,13 +2106,19 @@ components:
     UpdateSystemConfigRequest:
       type: object
       description: |
-        Partial system configuration update. The canonical observability defaults
-        can be changed independently. If deprecated defaultObservabilityMode is also
-        supplied, all supplied destination values must agree.
+        Partial update of implemented registration defaults, idempotency-record
+        lifetime, and ingress rate limits. The canonical observability defaults can
+        be changed independently. If deprecated defaultObservabilityMode is also
+        supplied, all supplied destination values must agree. Compatibility-only
+        properties remain for wire compatibility; omit them or send null because
+        every non-null value is rejected with a validation error.
       properties:
         provisioningMode:
           type: string
           enum: [Automatic, Manual]
+          nullable: true
+          deprecated: true
+          description: Compatibility-only property. Omit or send null; every non-null write is rejected.
         defaultObservabilityMode:
           deprecated: true
           description: Deprecated compatibility encoding of the two canonical defaults.
@@ -2127,39 +2138,63 @@ components:
           type: boolean
         retentionDaysActivityReceipts:
           type: integer
+          nullable: true
+          deprecated: true
+          description: Compatibility-only property. Omit or send null; activity-receipt cleanup is not implemented.
         retentionDaysAuditEvents:
           type: integer
+          nullable: true
+          deprecated: true
+          description: Compatibility-only property. Omit or send null; audit-event cleanup is not implemented.
         retentionDaysIdempotencyRecords:
           type: integer
+          minimum: 1
+          maximum: 3650
         retentionDaysOutboxMessages:
           type: integer
+          nullable: true
+          deprecated: true
+          description: Compatibility-only property. Omit or send null; outbox cleanup is not implemented.
         rateLimitPerClient:
           type: integer
+          minimum: 1
+          maximum: 10000000
           description: Maximum requests per Gateway credential in each database-UTC fixed minute.
         rateLimitPerAgent:
           type: integer
+          minimum: 1
+          maximum: 10000000
           description: Maximum requests per authenticated registration in each database-UTC fixed minute.
         rateLimitGlobal:
           type: integer
-          description: Maximum registration-bound requests Gateway-wide in each database-UTC fixed minute.
+          minimum: 1
+          maximum: 10000000
+          description: Maximum registration-bound requests Gateway-wide in each database-UTC fixed minute; must be at least as large as each scoped limit after merging the partial update.
         reconciliationEnabled:
           type: boolean
+          nullable: true
           deprecated: true
-          description: Compatibility-only setting; changing it does not start reconciliation in the current Gateway.
+          description: Compatibility-only property. Omit or send null; every non-null write is rejected because reconciliation is not implemented.
         reconciliationIntervalHours:
           type: integer
+          nullable: true
           deprecated: true
-          description: Compatibility-only setting with no current scheduler effect.
+          description: Compatibility-only property. Omit or send null; every non-null write is rejected because reconciliation is not implemented.
         stuckTransitionTimeoutDays:
           type: integer
+          nullable: true
+          deprecated: true
+          description: Compatibility-only property. Omit or send null; no stuck-transition cleanup service consumes it.
         useGraphAgentRegistration:
           type: boolean
+          nullable: true
           deprecated: true
-          description: Compatibility-only setting with no control over the current deployment provider or execution gate.
+          description: Compatibility-only property. Omit or send null; provider selection is deployment-controlled.
         useCliProvisioningFallback:
           type: boolean
+          nullable: true
           deprecated: true
-          description: Compatibility-only setting; the current worker does not use an unattended CLI fallback.
+          description: Compatibility-only property. Omit or send null; the Gateway has no unattended CLI fallback.
 
     SubmitActivityRequest:
       type: object
@@ -2198,6 +2233,7 @@ components:
                 enabled; otherwise optional.
         tool:
           type: object
+          required: [name, outcome]
           properties:
             name:
               type: string
@@ -2229,7 +2265,7 @@ components:
           type: string
         status:
           type: string
-          enum: [Accepted, Duplicate]
+          enum: [Accepted]
         receivedAtUtc:
           type: string
           format: date-time
@@ -2282,6 +2318,7 @@ components:
                       observability is enabled; otherwise optional.
               tool:
                 type: object
+                required: [name, outcome]
                 properties:
                   name:
                     type: string
@@ -2317,7 +2354,7 @@ components:
                 type: string
               status:
                 type: string
-                enum: [Accepted, Duplicate, Rejected]
+                enum: [Accepted, Rejected]
               receiptId:
                 type: string
                 format: uuid
@@ -2494,19 +2531,7 @@ components:
       properties:
         status:
           type: string
-          enum: [Healthy, Degraded, Unhealthy]
-        checks:
-          type: object
-          properties:
-            database:
-              type: string
-              enum: [Healthy, Unhealthy]
-            serviceBus:
-              type: string
-              enum: [Healthy, Unhealthy]
-            keyVault:
-              type: string
-              enum: [Healthy, Unhealthy]
+          enum: [Ready, Unavailable]
 
     ProblemDetails:
       type: object
@@ -2533,14 +2558,6 @@ components:
             type: array
             items:
               type: string
-        policyActions:
-          type: array
-          items:
-            type: object
-            properties:
-              action:
-                type: string
-
     Links:
       type: object
       additionalProperties:
@@ -2575,16 +2592,7 @@ components:
             errorCode: AUTHENTICATION_REQUIRED
 
     Forbidden:
-      description: Insufficient permissions
-      content:
-        application/problem+json:
-          schema:
-            $ref: '#/components/schemas/ProblemDetails'
-          example:
-            type: https://gateway.example.com/problems/caller-not-authorized
-            title: The caller does not have the required permissions.
-            status: 403
-            errorCode: CALLER_NOT_AUTHORIZED
+      description: Insufficient permissions; the authorization middleware returns HTTP 403 without a Gateway Problem Details body
 
     NotFound:
       description: Resource not found
@@ -2599,14 +2607,14 @@ components:
             errorCode: AGENT_NOT_FOUND
 
     ConcurrencyConflict:
-      description: Concurrency conflict (stale ETag)
+      description: A concurrent update prevented the operation from being committed
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetails'
           example:
             type: https://gateway.example.com/problems/concurrency-conflict
-            title: The resource has been modified since it was last read.
+            title: The resource was updated concurrently.
             status: 409
             errorCode: CONCURRENCY_CONFLICT
 
@@ -2662,7 +2670,7 @@ components:
             correlationId: 3f2504e0-4f89-41d3-9a0c-0305e82c3301
 
     ProvisioningDisabled:
-      description: Provisioning execution is disabled or its bounded admission deadline is absent, invalid, or expired
+      description: Provisioning execution is closed for this deployment
       content:
         application/problem+json:
           schema:
@@ -2672,4 +2680,4 @@ components:
             title: Provisioning is unavailable.
             status: 503
             errorCode: PROVISIONING_DISABLED
-            detail: Complete preflight and open an unexpired bounded admission window before registering or retrying an agent.
+            detail: Complete deployment preflight and explicitly enable the supported development registration path before registering or retrying an agent.

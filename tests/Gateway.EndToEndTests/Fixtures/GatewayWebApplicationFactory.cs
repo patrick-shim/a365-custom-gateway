@@ -54,11 +54,9 @@ public class GatewayWebApplicationFactory : WebApplicationFactory<Program>
                 ["OutboxRelay:PollingIntervalSeconds"] = "3600",
                 ["OutboxRelay:BatchSize"] = "10",
                 ["Provisioning:ExecutionEnabled"] = "true",
-                ["Provisioning:RequireExactAdmissionBinding"] = "false",
-                ["Provisioning:AdmissionExpiresAtUtc"] = "2099-01-01T00:00:00.0000000Z",
+                ["Provisioning:AllowContinuousDevelopmentAccess"] = "true",
                 ["Agent365:DelegatedRegistry:Enabled"] = "true",
-                ["Agent365:DelegatedRegistry:RequireExactActionBinding"] = "false",
-                ["Agent365:DelegatedRegistry:ActionExpiresAtUtc"] = "2099-01-01T00:00:00.0000000Z",
+                ["Agent365:DelegatedRegistry:AllowContinuousDevelopmentAccess"] = "true",
                 ["Agent365:DelegatedRegistry:Scopes:0"] =
                     "https://graph.microsoft.com/AgentRegistration.ReadWrite.All",
                 ["Agent365:DelegatedRegistry:Scopes:1"] =

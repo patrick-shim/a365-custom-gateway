@@ -5,7 +5,6 @@ namespace Gateway.Domain.Interfaces;
 public interface IOutboxRepository
 {
     Task AddAsync(OutboxMessage message, CancellationToken ct);
-    Task<List<OutboxMessage>> GetPendingAsync(int batchSize, CancellationToken ct);
     Task<IReadOnlyList<OutboxMessage>> ClaimPendingAsync(
         int batchSize,
         DateTime utcNow,

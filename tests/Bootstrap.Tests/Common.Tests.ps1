@@ -89,7 +89,6 @@ Describe 'Bootstrap JSON Schema configuration validation' {
     It 'accepts a complete versionless Key Vault policy-provisioning contract' {
         $config = New-TestBootstrapConfig
         $config.purview.enabled = $true
-        $config.purview.activateGatewayAdapterAfterPolicyReadback = $true
         $config.purview.sensitiveInformationType = 'Credit Card Number'
         $config.purview.policyProvisioningEnabled = $true
         $config.purview.policyProvisioningOrganization = 'contoso.onmicrosoft.com'
@@ -104,16 +103,16 @@ Describe 'Bootstrap JSON Schema configuration validation' {
         $loaded.purview.policyProvisioningApplicationId | Should -Be '33333333-3333-4333-8333-333333333333'
     }
 
-    It 'rejects policy provisioning when the Gateway Purview adapter would remain disabled' {
+    It 'rejects an obsolete bootstrap runtime-adapter switch' {
         $config = New-TestBootstrapConfig
         $config.purview.enabled = $true
-        $config.purview.activateGatewayAdapterAfterPolicyReadback = $false
+        $config.purview | Add-Member -NotePropertyName activateGatewayAdapterAfterPolicyReadback -NotePropertyValue $true
         $config.purview.sensitiveInformationType = 'Credit Card Number'
         $config.purview.policyProvisioningEnabled = $true
         $config.purview.policyProvisioningOrganization = 'contoso.onmicrosoft.com'
         $config.purview.policyProvisioningApplicationId = '33333333-3333-4333-8333-333333333333'
         $config.purview.policyProvisioningCertificateSecretUri = 'https://safe-vault.vault.azure.net/secrets/automation-certificate'
-        $path = Join-Path $TestDrive 'inert-policy-provisioning.json'
+        $path = Join-Path $TestDrive 'unsafe-runtime-activation.json'
         Write-TestBootstrapConfig -Config $config -Path $path
 
         { Read-BootstrapConfig -Path $path } | Should -Throw '*JSON Schema validation*'
@@ -161,9 +160,9 @@ Describe 'Canonical bootstrap fingerprints' {
             -PurviewEnabled $false `
             -PurviewPolicyProvisioningEnabled $false `
             -PromptShieldEnabled $true
-        $contract.Api.Count | Should -Be 9
-        $contract.Worker.Count | Should -Be 5
-        $contract.Api['Provisioning__RequireExactAdmissionBinding'] | Should -BeExactly 'True'
+        $contract.Api.Count | Should -Be 7
+        $contract.Worker.Count | Should -Be 4
+        $contract.Api['Provisioning__AllowContinuousDevelopmentAccess'] | Should -BeExactly 'False'
         $contract.Api['PromptShield__Enabled'] | Should -BeExactly 'True'
         $contract.Worker['ProvisioningWorker__ProcessingEnabled'] | Should -BeExactly 'False'
         @($contract.Api.Values + $contract.Worker.Values | Where-Object { $_ -cnotin @('True', 'False') }).Count | Should -Be 0
@@ -175,7 +174,7 @@ Describe 'Canonical bootstrap fingerprints' {
             -PurviewPolicyProvisioningEnabled $true `
             -PromptShieldEnabled $false
         $runtimeContract.Api['Provisioning__ExecutionEnabled'] | Should -BeExactly 'True'
-        $runtimeContract.Api['Provisioning__RequireExactAdmissionBinding'] | Should -BeExactly 'False'
+        $runtimeContract.Api['Provisioning__AllowContinuousDevelopmentAccess'] | Should -BeExactly 'True'
         $runtimeContract.Api['Purview__Enabled'] | Should -BeExactly 'True'
         $runtimeContract.Api['DatabaseAttestation__Enabled'] | Should -BeExactly 'True'
         $runtimeContract.Worker['ProvisioningWorker__ProcessingEnabled'] | Should -BeExactly 'True'
@@ -217,7 +216,7 @@ Describe 'Canonical bootstrap fingerprints' {
     It 'changes when a deployment-affecting setting changes' {
         $config = New-TestBootstrapConfig
         $changed = Copy-TestBootstrapConfig -Config $config
-        $changed.promptShield.skuName = 'F0'
+        $changed.promptShield.skuName = 'S0'
 
         (Get-BootstrapConfigurationFingerprint -Config $changed) |
             Should -Not -Be (Get-BootstrapConfigurationFingerprint -Config $config)

@@ -7,34 +7,22 @@ namespace Gateway.Api.Options;
 public sealed class DelegatedRegistryActionGate
 {
     private const string ClosedMessage =
-        "Delegated Agent 365 Registry completion is unavailable because its bounded administrator-action gate is closed for this operation.";
+        "Delegated Agent 365 Registry completion is unavailable because its administrator action gate is closed for this deployment.";
 
     private readonly Agent365DelegatedRegistryOptions _options;
-    private readonly TimeProvider _timeProvider;
 
-    public DelegatedRegistryActionGate(
-        IOptions<Agent365DelegatedRegistryOptions> options,
-        TimeProvider timeProvider)
+    public DelegatedRegistryActionGate(IOptions<Agent365DelegatedRegistryOptions> options)
     {
         _options = options.Value;
-        _timeProvider = timeProvider;
     }
 
-    public bool IsOpen(Guid operationId) =>
+    public bool IsOpen =>
         _options.Enabled &&
-        (_options.AllowContinuousDevelopmentAccess ||
-         (ProvisioningAdmissionGate.TryParseUtcExpiry(
-              _options.ActionExpiresAtUtc,
-              out var expiresAtUtc) &&
-          expiresAtUtc > _timeProvider.GetUtcNow())) &&
-        (_options.AllowContinuousDevelopmentAccess ||
-         !_options.RequireExactActionBinding ||
-         (Guid.TryParse(_options.AuthorizedOperationId, out var authorizedOperationId) &&
-          authorizedOperationId == operationId));
+        _options.AllowContinuousDevelopmentAccess;
 
-    public void EnsureOpen(Guid operationId)
+    public void EnsureOpen()
     {
-        if (IsOpen(operationId))
+        if (IsOpen)
         {
             return;
         }

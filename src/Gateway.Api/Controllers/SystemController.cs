@@ -52,6 +52,8 @@ public class SystemController : ControllerBase
         [FromBody] UpdateSystemConfigRequest request,
         CancellationToken cancellationToken)
     {
+        // Forward compatibility-only members so application validation rejects any
+        // non-null write explicitly instead of silently accepting a false control.
         var command = new UpdateSystemConfigCommand(
             request.ProvisioningMode,
             request.DefaultObservabilityMode,
@@ -83,8 +85,6 @@ public class SystemController : ControllerBase
         config with
         {
             ProvisioningExecutionEnabled = _provisioningAdmissionGate.IsRegistrationOpen,
-            AuthorizedRegistrationExternalAgentId =
-                _provisioningAdmissionGate.AuthorizedRegistrationExternalAgentId,
             PurviewPolicyProvisioningEnabled = _purviewPolicyProvisioningClient.IsEnabled,
             PromptShieldAvailable = _promptShieldClient.IsEnabled
         };

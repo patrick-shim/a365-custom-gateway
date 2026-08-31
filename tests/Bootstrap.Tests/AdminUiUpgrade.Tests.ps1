@@ -30,14 +30,14 @@ Describe 'Bootstrap Admin UI-only upgrade surface' {
         $buildIndex = $scriptText.LastIndexOf('Resolve-AdminUiBuild -Configuration')
         $saveIndex | Should -BeGreaterThan -1
         $buildIndex | Should -BeGreaterThan $saveIndex
-        $scriptText | Should -Match "\$repository = 'gateway-admin'"
+        $scriptText | Should -Match '\$repository = ''gateway-admin'''
         $scriptText | Should -Match "'--file', 'src/Gateway\.AdminUi/Dockerfile'"
         $scriptText | Should -Not -Match "'acr', 'build'.*gateway-(?:api|worker|db-migrator)"
     }
 
     It 'enforces the exact What-If and same-resource-group deployment boundary' {
         $scriptText | Should -Match "'deployment', 'group', 'what-if'"
-        $scriptText | Should -Match "\$changeType -in @\('Delete', 'Create'\)"
+        $scriptText | Should -Match '\$changeType -in @\(''Delete'', ''Create''\)'
         $scriptText | Should -Match '-not \$allowed\.Contains\(\$resourceId\)'
         $scriptText | Should -Match 'deployKeyVaultPrivateEndpoint = \$false'
         $scriptText | Should -Match "mode = 'Incremental'"

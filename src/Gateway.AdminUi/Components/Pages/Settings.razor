@@ -7,7 +7,7 @@
 
 <PageTitle>System settings · A365 Gateway</PageTitle>
 
-<PageHeader Eyebrow="Administration" Title="System settings" Description="Manage control-plane defaults, retention, throttling, and recovery thresholds.">
+<PageHeader Eyebrow="Administration" Title="System settings" Description="Manage implemented registration defaults, idempotency lifetime, and ingress throttling.">
     <Actions>
         <FluentButton Appearance="Appearance.Neutral" OnClick="LoadAsync" Disabled="@(loading || saving)">Reload</FluentButton>
     </Actions>
@@ -37,17 +37,9 @@ else if (form is not null)
         }
 
         <section class="form-section" aria-labelledby="defaults-heading">
-            <h2 id="defaults-heading">Provisioning defaults</h2>
-            <p>Applied to new agent registrations unless a supported workflow supplies an explicit override.</p>
+            <h2 id="defaults-heading">Registration defaults</h2>
+            <p>Applied to new agent registrations unless the registration supplies an explicit supported choice.</p>
             <div class="form-grid">
-                <div class="form-field">
-                    <label for="provisioning-mode">Provisioning mode</label>
-                    <InputSelect id="provisioning-mode" class="form-control" @bind-Value="form.ProvisioningMode">
-                        <option value="Automatic">Automatic</option>
-                        <option value="Manual">Manual</option>
-                    </InputSelect>
-                </div>
-
                 <fieldset class="feature-group full" aria-describedby="default-observability-help">
                     <legend>Activity observability defaults</legend>
                     <p id="default-observability-help">New agents use these independent destinations. Gateway platform health, security, and operational diagnostics remain configured separately.</p>
@@ -106,13 +98,10 @@ else if (form is not null)
         </section>
 
         <section class="form-section" aria-labelledby="retention-heading">
-            <h2 id="retention-heading">Data retention</h2>
-            <p>Retention periods are expressed in days and affect control-plane housekeeping.</p>
-            <div class="form-grid form-grid-four">
-                <NumberField Id="retention-receipts" Label="Activity receipts" @bind-Value="form.RetentionDaysActivityReceipts" />
-                <NumberField Id="retention-audit" Label="Audit events" @bind-Value="form.RetentionDaysAuditEvents" />
-                <NumberField Id="retention-idempotency" Label="Idempotency records" @bind-Value="form.RetentionDaysIdempotencyRecords" />
-                <NumberField Id="retention-outbox" Label="Outbox messages" @bind-Value="form.RetentionDaysOutboxMessages" />
+            <h2 id="retention-heading">Idempotency lifetime</h2>
+            <p>The Gateway applies this lifetime when it creates an idempotency record. Other persisted compatibility retention values do not have a cleanup worker and are not editable.</p>
+            <div class="form-grid">
+                <NumberField Id="retention-idempotency" Label="Idempotency records (days)" @bind-Value="form.RetentionDaysIdempotencyRecords" />
             </div>
         </section>
 
@@ -130,20 +119,6 @@ else if (form is not null)
             }
         </section>
 
-        <section class="form-section" aria-labelledby="operations-heading">
-            <h2 id="operations-heading">Recovery thresholds</h2>
-            <p>Microsoft Graph provisioning and the Agent 365 registry preview are deployment-gated worker capabilities, not database settings.</p>
-            <div class="form-grid">
-                <NumberField Id="transition-timeout" Label="Stuck transition timeout (days)" @bind-Value="form.StuckTransitionTimeoutDays" />
-                <div class="subtle-note full" role="note">
-                    Microsoft-resource reconciliation is not implemented in the current adapter. Legacy reconciliation settings are not editable here and do not start background work.
-                </div>
-                <div class="subtle-note full" role="note">
-                    The worker uses managed identity and Microsoft Graph only. There is no unattended CLI fallback. Operators enable real execution through the deployment preflight after tenant permissions, Key Vault access, network reachability, and preview acceptance are verified.
-                </div>
-            </div>
-        </section>
-
         <div class="form-actions">
             <FluentButton Appearance="Appearance.Neutral" OnClick="LoadAsync" Disabled="@(loading || saving)">Discard changes</FluentButton>
             <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent" Disabled="@(saving || !LimitsAreOrdered)">Review and save</FluentButton>
@@ -151,8 +126,8 @@ else if (form is not null)
     </EditForm>
 }
 
-<ConfirmPanel Visible="confirmSave" Busy="saving" Title="Save system settings?" Message="These values affect every gateway agent and background operation." ConfirmLabel="Save settings" OnConfirm="SaveAsync" OnCancel="CancelSave">
-    <AdditionalContent><div class="subtle-note">The update is audited by the control plane. Existing in-flight operations are not restarted by this page.</div></AdditionalContent>
+<ConfirmPanel Visible="confirmSave" Busy="saving" Title="Save system settings?" Message="These values affect new registration defaults, new idempotency records, and subsequent ingress enforcement." ConfirmLabel="Save settings" OnConfirm="SaveAsync" OnCancel="CancelSave">
+    <AdditionalContent><div class="subtle-note">The update is audited by the control plane. Existing registrations and in-flight operations are not reconfigured or restarted by this page.</div></AdditionalContent>
 </ConfirmPanel>
 
 @code {
@@ -243,27 +218,18 @@ else if (form is not null)
 
     private sealed class SettingsForm
     {
-        [Required] public string ProvisioningMode { get; set; } = "Automatic";
         public bool DefaultAgent365ObservabilityEnabled { get; set; } = true;
         public bool DefaultAzureMonitorExportEnabled { get; set; }
         public bool DefaultPurviewEnabled { get; set; }
         public bool DefaultPromptShieldEnabled { get; set; }
         public bool PromptShieldAvailable { get; set; }
         public string DefaultPurviewMode { get; set; } = "AuditOnly";
-        [Range(1, 3_650)] public int RetentionDaysActivityReceipts { get; set; }
-        [Range(1, 3_650)] public int RetentionDaysAuditEvents { get; set; }
         [Range(1, 3_650)] public int RetentionDaysIdempotencyRecords { get; set; }
-        [Range(1, 3_650)] public int RetentionDaysOutboxMessages { get; set; }
         [Range(1, 10_000_000)] public int RateLimitPerClient { get; set; }
         [Range(1, 10_000_000)] public int RateLimitPerAgent { get; set; }
         [Range(1, 10_000_000)] public int RateLimitGlobal { get; set; }
-        public bool ReconciliationEnabled { get; set; }
-        [Range(1, 8_760)] public int ReconciliationIntervalHours { get; set; }
-        [Range(1, 365)] public int StuckTransitionTimeoutDays { get; set; }
-
         public static SettingsForm From(SystemConfigDto config) => new()
         {
-            ProvisioningMode = config.ProvisioningMode,
             DefaultAgent365ObservabilityEnabled = config.DefaultAgent365ObservabilityEnabled
                 ?? LegacyAgent365ObservabilityEnabled(config.DefaultObservabilityMode),
             DefaultAzureMonitorExportEnabled = config.DefaultAzureMonitorExportEnabled
@@ -272,38 +238,32 @@ else if (form is not null)
             DefaultPurviewMode = config.DefaultPurviewMode ?? "AuditOnly",
             DefaultPromptShieldEnabled = config.PromptShieldAvailable && config.DefaultPromptShieldEnabled,
             PromptShieldAvailable = config.PromptShieldAvailable,
-            RetentionDaysActivityReceipts = config.RetentionDaysActivityReceipts,
-            RetentionDaysAuditEvents = config.RetentionDaysAuditEvents,
             RetentionDaysIdempotencyRecords = config.RetentionDaysIdempotencyRecords,
-            RetentionDaysOutboxMessages = config.RetentionDaysOutboxMessages,
             RateLimitPerClient = config.RateLimitPerClient,
             RateLimitPerAgent = config.RateLimitPerAgent,
-            RateLimitGlobal = config.RateLimitGlobal,
-            ReconciliationEnabled = config.ReconciliationEnabled,
-            ReconciliationIntervalHours = config.ReconciliationIntervalHours,
-            StuckTransitionTimeoutDays = config.StuckTransitionTimeoutDays
+            RateLimitGlobal = config.RateLimitGlobal
         };
 
         public UpdateSystemConfigRequest ToRequest() => new(
-            ProvisioningMode,
-            ToLegacyObservabilityMode(DefaultAgent365ObservabilityEnabled, DefaultAzureMonitorExportEnabled),
-            DefaultPurviewEnabled,
-            DefaultPurviewMode,
-            RetentionDaysActivityReceipts,
-            RetentionDaysAuditEvents,
-            RetentionDaysIdempotencyRecords,
-            RetentionDaysOutboxMessages,
-            RateLimitPerClient,
-            RateLimitPerAgent,
-            RateLimitGlobal,
+            ProvisioningMode: null,
+            DefaultObservabilityMode: ToLegacyObservabilityMode(DefaultAgent365ObservabilityEnabled, DefaultAzureMonitorExportEnabled),
+            DefaultPurviewEnabled: DefaultPurviewEnabled,
+            DefaultPurviewMode: DefaultPurviewMode,
+            RetentionDaysActivityReceipts: null,
+            RetentionDaysAuditEvents: null,
+            RetentionDaysIdempotencyRecords: RetentionDaysIdempotencyRecords,
+            RetentionDaysOutboxMessages: null,
+            RateLimitPerClient: RateLimitPerClient,
+            RateLimitPerAgent: RateLimitPerAgent,
+            RateLimitGlobal: RateLimitGlobal,
             ReconciliationEnabled: null,
             ReconciliationIntervalHours: null,
-            StuckTransitionTimeoutDays,
+            StuckTransitionTimeoutDays: null,
             UseGraphAgentRegistration: null,
             UseCliProvisioningFallback: null,
-            DefaultAgent365ObservabilityEnabled,
-            DefaultAzureMonitorExportEnabled,
-            DefaultPromptShieldEnabled);
+            DefaultAgent365ObservabilityEnabled: DefaultAgent365ObservabilityEnabled,
+            DefaultAzureMonitorExportEnabled: DefaultAzureMonitorExportEnabled,
+            DefaultPromptShieldEnabled: DefaultPromptShieldEnabled);
 
         private static string ToLegacyObservabilityMode(bool agent365Enabled, bool azureMonitorEnabled) =>
             (agent365Enabled, azureMonitorEnabled) switch

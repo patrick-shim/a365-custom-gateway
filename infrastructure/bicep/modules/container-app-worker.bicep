@@ -35,7 +35,7 @@ param minReplicas int = 0
 @minValue(1)
 param maxReplicas int = 3
 
-@description('Maximum concurrent Service Bus callbacks in one replica. Provisioning canaries use one as rollout containment; SQL session-owned job locks provide distributed ownership.')
+@description('Maximum concurrent Service Bus callbacks in one replica. SQL session-owned job locks provide distributed ownership.')
 @minValue(1)
 param maxConcurrentCalls int = 5
 
@@ -66,18 +66,6 @@ param entraIdTenantId string
 @description('Gateway service hostname emitted as the server.address observability attribute.')
 param agent365ObservabilityServerAddress string
 
-@description('Client/application ID of the Gateway API whose ExternalAgent app role is assigned to provisioned external-agent service principals.')
-param agent365GatewayApiApplicationClientId string
-
-@description('Bare Gateway API client ID required by the Microsoft identity platform v2 aud claim.')
-param agent365GatewayApiAudience string
-
-@description('HTTPS base URL used for the post-provisioning Agent Identity access proof.')
-param agent365GatewayApiBaseUrl string
-
-@description('HTTPS URI of the Key Vault that receives generated external-agent credentials.')
-param agent365CredentialKeyVaultUri string
-
 @description('Object/principal ID of this worker managed identity, injected after identity bootstrap so provisioning can fail closed if the Graph caller changes.')
 param agent365ProvisioningManagedIdentityPrincipalId string = ''
 
@@ -90,16 +78,6 @@ param processingEnabled bool = true
 
 @description('Enable Microsoft-side provisioning execution. Disabled by default and independent from shared observability processing.')
 param provisioningExecutionEnabled bool = false
-
-@description('Agent 365 registry provider selected by the provisioning adapter.')
-@allowed([
-  'Disabled'
-  'DirectRegistryPreview'
-])
-param agent365RegistryProvider string = 'Disabled'
-
-@description('Explicit development-only gate for the unsupported-for-production Microsoft Graph beta registry provider.')
-param agent365DirectRegistryPreviewEnabled bool = false
 
 @description('Enable the Purview runtime and policy-provisioning module.')
 param purviewEnabled bool = false
@@ -202,22 +180,6 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
               value: agent365ObservabilityServerAddress
             }
             {
-              name: 'Agent365__GatewayApiApplicationClientId'
-              value: agent365GatewayApiApplicationClientId
-            }
-            {
-              name: 'Agent365__GatewayApiAudience'
-              value: agent365GatewayApiAudience
-            }
-            {
-              name: 'Agent365__GatewayApiBaseUrl'
-              value: agent365GatewayApiBaseUrl
-            }
-            {
-              name: 'Agent365__CredentialKeyVaultUri'
-              value: agent365CredentialKeyVaultUri
-            }
-            {
               name: 'Agent365__ProvisioningManagedIdentityPrincipalId'
               value: agent365ProvisioningManagedIdentityPrincipalId
             }
@@ -236,14 +198,6 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
             {
               name: 'ProvisioningWorker__ProvisioningExecutionEnabled'
               value: string(provisioningExecutionEnabled)
-            }
-            {
-              name: 'Agent365__RegistryProvider'
-              value: agent365RegistryProvider
-            }
-            {
-              name: 'Agent365__DirectRegistryPreviewEnabled'
-              value: string(agent365DirectRegistryPreviewEnabled)
             }
             {
               name: 'Purview__Enabled'
@@ -317,12 +271,6 @@ output processingEnabled bool = processingEnabled
 
 @description('Effective provisioning-specific execution gate.')
 output provisioningExecutionEnabled bool = provisioningExecutionEnabled
-
-@description('Effective registry provider.')
-output agent365RegistryProvider string = agent365RegistryProvider
-
-@description('Effective DirectRegistryPreview acknowledgement gate.')
-output agent365DirectRegistryPreviewEnabled bool = agent365DirectRegistryPreviewEnabled
 
 @description('Effective maximum number of worker replicas.')
 output maxReplicas int = maxReplicas

@@ -26,20 +26,6 @@ internal sealed class AgentRegistrationRepository : IAgentRepository
             .FirstOrDefaultAsync(a => a.Id == id, ct);
     }
 
-    public async Task<AgentRegistration?> GetByExternalAgentIdAsync(string externalAgentId, CancellationToken ct)
-    {
-        var externalId = new ExternalAgentId(externalAgentId);
-        return await _dbContext.AgentRegistrations
-            .Include(a => a.FeatureConfiguration)
-            .FirstOrDefaultAsync(a => a.ExternalAgentId == externalId, ct);
-    }
-
-    public async Task<AgentRegistration?> GetByExternalClientIdAsync(string externalClientId, CancellationToken ct)
-    {
-        return await _dbContext.AgentRegistrations
-            .FirstOrDefaultAsync(a => a.ExternalClientId == externalClientId, ct);
-    }
-
     public async Task<(List<AgentRegistration> Items, int TotalCount)> ListAsync(AgentListFilter filter, CancellationToken ct)
     {
         var query = _dbContext.AgentRegistrations

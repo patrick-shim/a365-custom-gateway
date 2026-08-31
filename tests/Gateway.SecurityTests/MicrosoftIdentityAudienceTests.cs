@@ -4,7 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Web;
-using Gateway.LiveCanary;
+using Gateway.LiveVerification;
 using System.Text;
 using System.Text.Json;
 
@@ -48,7 +48,7 @@ public class MicrosoftIdentityAudienceTests
     }
 
     [Fact]
-    public void InteractiveCanaryToken_ShouldRequireExactV2AudienceTenantUserRoleAndScope()
+    public void InteractiveVerificationToken_ShouldRequireExactV2AudienceTenantUserRoleAndScope()
     {
         var token = CreateUnsignedTestJwt(new
         {
@@ -78,7 +78,7 @@ public class MicrosoftIdentityAudienceTests
     [InlineData("oid")]
     [InlineData("roles")]
     [InlineData("scp")]
-    public void InteractiveCanaryToken_ShouldRejectEveryAuthorityBoundaryDrift(string drift)
+    public void InteractiveVerificationToken_ShouldRejectEveryAuthorityBoundaryDrift(string drift)
     {
         var token = CreateUnsignedTestJwt(new
         {
@@ -102,7 +102,7 @@ public class MicrosoftIdentityAudienceTests
     }
 
     [Fact]
-    public void ManagedIdentityCanaryToken_ShouldRejectDelegatedScopeClaims()
+    public void ManagedIdentityVerificationToken_ShouldRejectDelegatedScopeClaims()
     {
         var token = CreateUnsignedTestJwt(new
         {
@@ -126,7 +126,7 @@ public class MicrosoftIdentityAudienceTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void InteractiveCanaryToken_ShouldRejectBroadenedRoleOrScopeSets(bool broadenRoles)
+    public void InteractiveVerificationToken_ShouldRejectBroadenedRoleOrScopeSets(bool broadenRoles)
     {
         var token = CreateUnsignedTestJwt(new
         {
@@ -152,7 +152,7 @@ public class MicrosoftIdentityAudienceTests
     }
 
     [Fact]
-    public void CanaryEvidence_ShouldBindIssuanceAndRevocationToTheExactRegistrationAndKey()
+    public void VerificationEvidence_ShouldBindIssuanceAndRevocationToTheExactRegistrationAndKey()
     {
         var credentialId = Guid.Parse("44444444-4444-4444-8444-444444444444");
         var issued = new IssueCredentialResponse(
@@ -168,14 +168,14 @@ public class MicrosoftIdentityAudienceTests
                 DateTime.UtcNow),
             AlreadyRevoked: true);
 
-        CanaryEvidenceValidator.ValidateIssuedCredential(issued, ApiClientId, "agent-safe");
-        CanaryEvidenceValidator.ValidateRevokedCredential(revoked, ApiClientId, credentialId);
+        VerificationEvidenceValidator.ValidateIssuedCredential(issued, ApiClientId, "agent-safe");
+        VerificationEvidenceValidator.ValidateRevokedCredential(revoked, ApiClientId, credentialId);
 
-        var wrongIssue = () => CanaryEvidenceValidator.ValidateIssuedCredential(
+        var wrongIssue = () => VerificationEvidenceValidator.ValidateIssuedCredential(
             issued with { AgentId = Guid.NewGuid() },
             ApiClientId,
             "agent-safe");
-        var wrongRevocation = () => CanaryEvidenceValidator.ValidateRevokedCredential(
+        var wrongRevocation = () => VerificationEvidenceValidator.ValidateRevokedCredential(
             revoked with { Credential = revoked.Credential with { KeyId = Guid.NewGuid() } },
             ApiClientId,
             credentialId);
@@ -184,7 +184,7 @@ public class MicrosoftIdentityAudienceTests
     }
 
     [Fact]
-    public void CanaryEvidence_ShouldRenderOnlyExactDecisionsAndCanonicalCorrelations()
+    public void VerificationEvidence_ShouldRenderOnlyExactDecisionsAndCanonicalCorrelations()
     {
         var correlationId = Guid.Parse("77777777-7777-4777-8777-777777777777");
         var middlewareCorrelationId = Guid.Parse("88888888-8888-4888-8888-888888888888");
@@ -205,19 +205,19 @@ public class MicrosoftIdentityAudienceTests
             correlationId.ToString("D"),
             middlewareCorrelationId.ToString("D"));
 
-        CanaryEvidenceValidator.ValidateAllowedEvaluation(
+        VerificationEvidenceValidator.ValidateAllowedEvaluation(
                 allowed,
                 expectPromptShieldEnabled: true,
                 expectPurviewEnabled: true)
             .CorrelationId
             .Should().Be(correlationId.ToString("D"));
-        CanaryEvidenceValidator.ValidateBlockedEvaluation(blocked, expectPurviewEnabled: true).CorrelationId
+        VerificationEvidenceValidator.ValidateBlockedEvaluation(blocked, expectPurviewEnabled: true).CorrelationId
             .Should().Be(correlationId.ToString("D"));
 
-        var untrustedDecision = () => CanaryEvidenceValidator.ValidateBlockedEvaluation(
+        var untrustedDecision = () => VerificationEvidenceValidator.ValidateBlockedEvaluation(
             blocked with { PurviewProcessing = "provider-controlled-text" },
             expectPurviewEnabled: true);
-        var malformedCorrelation = () => CanaryEvidenceValidator.ValidateAllowedEvaluation(
+        var malformedCorrelation = () => VerificationEvidenceValidator.ValidateAllowedEvaluation(
             allowed with { HeaderCorrelationId = "provider-controlled-text" },
             expectPromptShieldEnabled: true,
             expectPurviewEnabled: true);
@@ -226,7 +226,7 @@ public class MicrosoftIdentityAudienceTests
     }
 
     [Fact]
-    public void MinimalProfileCanaryEvidence_ShouldRequireBothProtectionsDisabled()
+    public void MinimalProfileVerificationEvidence_ShouldRequireBothProtectionsDisabled()
     {
         var allowed = new PromptEvaluation(
             Guid.NewGuid(),
@@ -237,17 +237,17 @@ public class MicrosoftIdentityAudienceTests
             "77777777-7777-4777-8777-777777777777",
             "88888888-8888-4888-8888-888888888888");
 
-        CanaryEvidenceValidator.ValidateAllowedEvaluation(
+        VerificationEvidenceValidator.ValidateAllowedEvaluation(
                 allowed,
                 expectPromptShieldEnabled: false,
                 expectPurviewEnabled: false)
             .Should().BeEquivalentTo(allowed);
 
-        var unexpectedPromptShield = () => CanaryEvidenceValidator.ValidateAllowedEvaluation(
+        var unexpectedPromptShield = () => VerificationEvidenceValidator.ValidateAllowedEvaluation(
             allowed with { PromptShieldProcessing = "Allowed" },
             expectPromptShieldEnabled: false,
             expectPurviewEnabled: false);
-        var unexpectedPurview = () => CanaryEvidenceValidator.ValidateAllowedEvaluation(
+        var unexpectedPurview = () => VerificationEvidenceValidator.ValidateAllowedEvaluation(
             allowed with { PurviewProcessing = "Allowed" },
             expectPromptShieldEnabled: false,
             expectPurviewEnabled: false);
@@ -256,9 +256,9 @@ public class MicrosoftIdentityAudienceTests
     }
 
     [Fact]
-    public void FullCanaryOptions_ShouldBindExactProtectionExpectations()
+    public void FullVerificationOptions_ShouldBindExactProtectionExpectations()
     {
-        var arguments = CanaryArguments("Full");
+        var arguments = VerificationArguments("Full");
         arguments[Array.IndexOf(arguments, "--expect-prompt-shield-enabled") + 1] = "true";
 
         var options = Options.Parse(arguments);
@@ -271,9 +271,9 @@ public class MicrosoftIdentityAudienceTests
     [InlineData("True")]
     [InlineData("FALSE")]
     [InlineData("1")]
-    public void CanaryOptions_ShouldRejectNonCanonicalProtectionExpectation(string value)
+    public void VerificationOptions_ShouldRejectNonCanonicalProtectionExpectation(string value)
     {
-        var arguments = CanaryArguments("Full");
+        var arguments = VerificationArguments("Full");
         arguments[Array.IndexOf(arguments, "--expect-prompt-shield-enabled") + 1] = value;
 
         var act = () => Options.Parse(arguments);
@@ -283,9 +283,9 @@ public class MicrosoftIdentityAudienceTests
     }
 
     [Fact]
-    public void CanaryOptions_ShouldRequireBothProtectionExpectations()
+    public void VerificationOptions_ShouldRequireBothProtectionExpectations()
     {
-        var arguments = CanaryArguments("Full").ToList();
+        var arguments = VerificationArguments("Full").ToList();
         var optionIndex = arguments.IndexOf("--expect-purview-enabled");
         arguments.RemoveRange(optionIndex, 2);
 
@@ -296,32 +296,32 @@ public class MicrosoftIdentityAudienceTests
     }
 
     [Fact]
-    public void RevokeOnlyCanaryOptions_ShouldRequireAndBindExactRecoveryCredentialId()
+    public void RevokeOnlyVerificationOptions_ShouldRequireAndBindExactRecoveryCredentialId()
     {
         var recoveryCredentialId = Guid.Parse("44444444-4444-4444-8444-444444444444");
 
-        var options = Options.Parse(CanaryArguments(
+        var options = Options.Parse(VerificationArguments(
             "RevokeOnly",
             "--recovery-credential-id",
             recoveryCredentialId.ToString("D")));
 
-        options.OperationMode.Should().Be(CanaryOperationMode.RevokeOnly);
+        options.OperationMode.Should().Be(VerificationOperationMode.RevokeOnly);
         options.RecoveryCredentialId.Should().Be(recoveryCredentialId);
     }
 
     [Fact]
-    public void RevokeOnlyCanaryOptions_ShouldRejectMissingRecoveryCredentialId()
+    public void RevokeOnlyVerificationOptions_ShouldRejectMissingRecoveryCredentialId()
     {
-        var act = () => Options.Parse(CanaryArguments("RevokeOnly"));
+        var act = () => Options.Parse(VerificationArguments("RevokeOnly"));
 
         act.Should().Throw<ArgumentException>()
             .WithMessage("*--recovery-credential-id is required*");
     }
 
     [Fact]
-    public void FullCanaryOptions_ShouldRejectRecoveryCredentialId()
+    public void FullVerificationOptions_ShouldRejectRecoveryCredentialId()
     {
-        var act = () => Options.Parse(CanaryArguments(
+        var act = () => Options.Parse(VerificationArguments(
             "Full",
             "--recovery-credential-id",
             "44444444-4444-4444-8444-444444444444"));
@@ -330,7 +330,7 @@ public class MicrosoftIdentityAudienceTests
             .WithMessage("*accepted only for RevokeOnly*");
     }
 
-    private static string[] CanaryArguments(string operationMode, params string[] additional)
+    private static string[] VerificationArguments(string operationMode, params string[] additional)
     {
         var values = new List<string>
         {

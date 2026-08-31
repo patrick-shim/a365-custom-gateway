@@ -20,11 +20,10 @@
   },
   "promptShield": {
     "enabled": false,
-    "skuName": "S0"
+    "skuName": "F0"
   },
   "purview": {
     "enabled": false,
-    "activateGatewayAdapterAfterPolicyReadback": false,
     "collectionPolicyName": "A365 Gateway AI collection",
     "dlpPolicyName": "A365 Gateway inline DLP",
     "dlpRuleName": "A365 Gateway inline DLP rule",

@@ -56,26 +56,11 @@ param provisioningExecutionEnabled bool = false
 @description('Keep authenticated development registration available without an expiring exact binding. Must remain false outside development.')
 param continuousDevelopmentProvisioningEnabled bool = false
 
-@description('Optional explicit UTC ISO-8601 deadline for provisioning admission. The API fails closed when this is missing, malformed, non-UTC, or expired.')
-param provisioningAdmissionExpiresAtUtc string = ''
-
-@description('Exact external agent ID authorized during the bounded initial-registration window.')
-param provisioningAuthorizedExternalAgentId string = ''
-
-@description('Exact Gateway registration ID authorized for an administrative retry window. Keep empty unless exact-bound retry is intended.')
-param provisioningAuthorizedRetryAgentId string = ''
-
-@description('Enable the development-only delegated administrator Agent 365 Registry action. This remains independently fail-closed from registration admission.')
+@description('Enable the development-only delegated administrator Agent 365 Registry action.')
 param agent365DelegatedRegistryEnabled bool = false
 
 @description('Keep authenticated delegated Registry completion available in continuous development mode.')
 param agent365DelegatedRegistryContinuousDevelopmentAccess bool = false
-
-@description('Independent UTC expiry for the delegated Registry completion action.')
-param agent365DelegatedRegistryActionExpiresAtUtc string = ''
-
-@description('Exact provisioning operation ID authorized for delegated Registry completion.')
-param agent365DelegatedRegistryAuthorizedOperationId string = ''
 
 @description('URI of the Azure Key Vault.')
 param keyVaultUri string
@@ -102,7 +87,7 @@ param entraIdAudience string
 @maxLength(10)
 param agent365ManagerApplicationIds array = []
 
-@description('Enable the Microsoft Purview Graph adapter only after its tenant permissions, policy, licensing, and canary prerequisites are verified.')
+@description('Enable the Microsoft Purview Graph adapter only after tenant permissions, policy, licensing, token roles, and runtime prerequisites are verified.')
 param purviewEnabled bool = false
 
 @description('Enable Azure AI Content Safety Prompt Shields for registration-level prompt evaluation.')
@@ -152,41 +137,6 @@ var managerApplicationEnvironmentVariables = [for (managerApplicationId, index) 
   name: 'Agent365__ManagerApplicationIds__${index}'
   value: string(managerApplicationId)
 }]
-
-var admissionExpiryEnvironmentVariables = empty(provisioningAdmissionExpiresAtUtc) ? [] : [
-  {
-    name: 'Provisioning__AdmissionExpiresAtUtc'
-    value: provisioningAdmissionExpiresAtUtc
-  }
-]
-
-var provisioningBindingEnvironmentVariables = concat(
-  empty(provisioningAuthorizedExternalAgentId) ? [] : [
-    {
-      name: 'Provisioning__AuthorizedExternalAgentId'
-      value: provisioningAuthorizedExternalAgentId
-    }
-  ],
-  empty(provisioningAuthorizedRetryAgentId) ? [] : [
-    {
-      name: 'Provisioning__AuthorizedRetryAgentId'
-      value: provisioningAuthorizedRetryAgentId
-    }
-  ])
-
-var delegatedRegistryActionEnvironmentVariables = concat(
-  empty(agent365DelegatedRegistryActionExpiresAtUtc) ? [] : [
-    {
-      name: 'Agent365__DelegatedRegistry__ActionExpiresAtUtc'
-      value: agent365DelegatedRegistryActionExpiresAtUtc
-    }
-  ],
-  empty(agent365DelegatedRegistryAuthorizedOperationId) ? [] : [
-    {
-      name: 'Agent365__DelegatedRegistry__AuthorizedOperationId'
-      value: agent365DelegatedRegistryAuthorizedOperationId
-    }
-  ])
 
 // ============================================================================
 // Resources
@@ -256,10 +206,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: string(provisioningExecutionEnabled)
             }
             {
-              name: 'Provisioning__RequireExactAdmissionBinding'
-              value: string(!continuousDevelopmentProvisioningEnabled)
-            }
-            {
               name: 'Provisioning__AllowContinuousDevelopmentAccess'
               value: string(continuousDevelopmentProvisioningEnabled)
             }
@@ -306,10 +252,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'Agent365__DelegatedRegistry__Enabled'
               value: string(agent365DelegatedRegistryEnabled)
-            }
-            {
-              name: 'Agent365__DelegatedRegistry__RequireExactActionBinding'
-              value: string(!agent365DelegatedRegistryContinuousDevelopmentAccess)
             }
             {
               name: 'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess'
@@ -391,7 +333,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'ASPNETCORE_ENVIRONMENT'
               value: 'Production'
             }
-          ], managerApplicationEnvironmentVariables, admissionExpiryEnvironmentVariables, provisioningBindingEnvironmentVariables, delegatedRegistryActionEnvironmentVariables)
+          ], managerApplicationEnvironmentVariables)
           probes: [
             {
               type: 'Liveness'

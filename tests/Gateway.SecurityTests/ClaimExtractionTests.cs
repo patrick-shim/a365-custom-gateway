@@ -14,8 +14,6 @@ public class ClaimExtractionTests
     private const string FullOidClaimType =
         "http://schemas.microsoft.com/identity/claims/objectidentifier";
     private const string ShortOidClaimType = "oid";
-    private const string AppIdClaimType = "appid";
-    private const string AzpClaimType = "azp";
 
     // ---------------------------------------------------------------
     // Helper
@@ -103,101 +101,6 @@ public class ClaimExtractionTests
     }
 
     // ---------------------------------------------------------------
-    // GetClientId: primary claim (appid)
-    // ---------------------------------------------------------------
-
-    [Fact]
-    public void GetClientId_Should_ReturnAppIdValue_When_AppIdClaimPresent()
-    {
-        var clientId = Guid.NewGuid().ToString();
-        var principal = CreatePrincipal(new Claim(AppIdClaimType, clientId));
-
-        var result = principal.GetClientId();
-
-        result.Should().Be(clientId);
-    }
-
-    // ---------------------------------------------------------------
-    // GetClientId: fallback claim (azp)
-    // ---------------------------------------------------------------
-
-    [Fact]
-    public void GetClientId_Should_FallBackToAzp_When_AppIdClaimMissing()
-    {
-        var clientId = Guid.NewGuid().ToString();
-        var principal = CreatePrincipal(new Claim(AzpClaimType, clientId));
-
-        var result = principal.GetClientId();
-
-        result.Should().Be(clientId);
-    }
-
-    // ---------------------------------------------------------------
-    // GetClientId: precedence when both claims exist
-    // ---------------------------------------------------------------
-
-    [Fact]
-    public void GetClientId_Should_PreferAppId_When_BothClaimsPresent()
-    {
-        var appId = Guid.NewGuid().ToString();
-        var azp = Guid.NewGuid().ToString();
-        var principal = CreatePrincipal(
-            new Claim(AppIdClaimType, appId),
-            new Claim(AzpClaimType, azp));
-
-        var result = principal.GetClientId();
-
-        result.Should().Be(appId,
-            "the 'appid' claim must take precedence over the 'azp' claim");
-    }
-
-    // ---------------------------------------------------------------
-    // GetClientId: missing claim throws
-    // ---------------------------------------------------------------
-
-    [Fact]
-    public void GetClientId_Should_ThrowInvalidOperationException_When_NoClientIdClaimPresent()
-    {
-        var principal = CreatePrincipal(
-            new Claim("some_unrelated_claim", "some-value"));
-
-        var act = () => principal.GetClientId();
-
-        act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*appid*");
-    }
-
-    [Fact]
-    public void GetClientId_Should_ThrowInvalidOperationException_When_PrincipalHasNoClaims()
-    {
-        var principal = CreatePrincipal();
-
-        var act = () => principal.GetClientId();
-
-        act.Should().Throw<InvalidOperationException>();
-    }
-
-    // ---------------------------------------------------------------
-    // Both methods work with typical Entra ID token claims
-    // ---------------------------------------------------------------
-
-    [Fact]
-    public void BothMethods_Should_ExtractCorrectValues_When_TypicalEntraIdClaimsPresent()
-    {
-        var objectId = Guid.NewGuid().ToString();
-        var clientId = Guid.NewGuid().ToString();
-
-        var principal = CreatePrincipal(
-            new Claim(FullOidClaimType, objectId),
-            new Claim(AppIdClaimType, clientId),
-            new Claim("name", "Test User"),
-            new Claim(ClaimTypes.Role, "Gateway.Administrator"));
-
-        principal.GetObjectId().Should().Be(objectId);
-        principal.GetClientId().Should().Be(clientId);
-    }
-
-    // ---------------------------------------------------------------
     // Edge case: empty claim values
     // ---------------------------------------------------------------
 
@@ -213,13 +116,4 @@ public class ClaimExtractionTests
         result.Should().BeEmpty();
     }
 
-    [Fact]
-    public void GetClientId_Should_ReturnEmptyString_When_AppIdClaimValueIsEmpty()
-    {
-        var principal = CreatePrincipal(new Claim(AppIdClaimType, string.Empty));
-
-        var result = principal.GetClientId();
-
-        result.Should().BeEmpty();
-    }
 }

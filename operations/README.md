@@ -1,61 +1,72 @@
-# Operational scripts
+# Operating an existing Gateway
 
-This directory contains reviewed scripts for an existing Gateway environment. It is
-not the day-zero installation entry point; use `../gateway setup` (or
-`../gateway.cmd setup` on Windows) and
-[`../bootstrap/README.md`](../bootstrap/README.md) for a fresh subscription or a
-deleted resource group.
+This directory contains reviewed scripts and runbooks for a Gateway that already
+has a deployed foundation. It is not the fresh-subscription entry point. For a new
+deployment, use `./gateway setup` and the [bootstrap guide](../bootstrap/README.md).
 
-The evidence and authorization checklist for the first disposable live proof is
-[`../docs/operations/clean-subscription-bootstrap-proof.md`](../docs/operations/clean-subscription-bootstrap-proof.md).
+Start every existing-environment action from current source, read the live
+[deployment checkpoint](../docs/operations/development-deployment-status.md), and
+run the smallest read-only preflight or verification that proves the intended
+target. A successful local command is not evidence that Azure changed.
 
-| Script | Purpose |
+## Routine commands
+
+Run these from the repository root:
+
+| Command | Purpose |
 |---|---|
-| `deploy.ps1` | Deploy current workload Bicep to an existing foundation. |
-| `upgrade-bootstrap-admin-ui.ps1` | Promote only `gateway-admin` in the exact same completed/verified bootstrap resource group; invoked through `../gateway upgrade-admin-ui`, not as a bootstrap mode. |
-| `repair-bootstrap-api-attestation.ps1` | Resume the exact reviewed API-attestation correction for an eligible failed clean bootstrap; builds and updates only `gateway-api`, then runs canonical final verification. |
-| `test-provisioning-prerequisites.ps1` | Run fail-closed, read-only provisioning preflight checks. |
-| `invoke-development-canary.ps1` | Historical evidence helper only; there is no current canary release gate and it must not be replayed. |
-| `setup-sql-user.ps1` | Configure reviewed SQL workload principals. |
-| `bootstrap-provisioning-worker.ps1` | Narrow legacy worker bootstrap/recovery helper; not the repository bootstrap entry point. |
+| `./gateway status` | Read local bootstrap checkpoint/readiness state without Azure calls. |
+| `./gateway verify` | Rerun the canonical read-only deployment verifier. |
+| `./gateway diagnose` | Create a sanitized local diagnostic bundle. |
+| `./gateway open` | Open the recorded verified Admin UI. |
+| `./gateway resume` | Reconcile and continue an interrupted accepted bootstrap. |
 
-The scripts consume templates from [`../infrastructure/`](../infrastructure/README.md)
-and must follow the current checkpoint in
-[`../docs/operations/development-deployment-status.md`](../docs/operations/development-deployment-status.md).
-Run read-only preflight or Bicep what-if before any authorized mutation. Never infer
-live readiness from a successful local invocation, and never print or persist secret
-runtime input.
+Do not delete or edit `.bootstrap/` to force progress. It is the reconciliation
+authority for a bootstrapped environment.
 
-For an Admin UI source-only promotion after the original bootstrap is complete and
-currently verified, run from the repository root:
+## Reviewed scripts
 
-```bash
-./gateway upgrade-admin-ui --config bootstrap/config.json --yes
-```
+| Script | Use |
+|---|---|
+| `test-provisioning-prerequisites.ps1` | Run fail-closed, read-only Agent ID and provisioning preflight checks. |
+| `verify-first-registration.ps1` | Verify one explicitly selected Active registration and temporary-key lifecycle. |
+| `upgrade-bootstrap-admin-ui.ps1` | Promote only the Admin UI in an eligible completed bootstrap deployment; invoke through `./gateway upgrade-admin-ui`. |
+| `FirstRegistrationVerificationState.psm1` | Durable safe state contract for the first-registration verifier. |
 
-This path retains the original bootstrap provenance, writes a separate ignored
-upgrade receipt, builds only `gateway-admin`, disables private-endpoint
-redeployment, and rejects What-If Create/Delete or resources outside the exact
-Admin UI allowlist. It verifies the immutable UI digest and Entra/managed-identity
-boundary, and proves the API, workflow-v3 worker, Service Bus queue counts, and
-accepted bootstrap plan did not change. Its receipt identifies the prior UI digest;
-rollback is not automatic and requires separate review.
+Database migration and workflow-Entra helpers under `tools/` are internal inputs to
+the canonical deployment/recovery paths, not alternate installers.
 
-For the exact failed clean-bootstrap boundary whose completed manual database repair
-is healthy but whose original API image cannot satisfy the v1 database-attestation
-contract, run from the repository root:
+## Runbooks
 
-```bash
-./gateway repair-api-attestation --config bootstrap/config.json --yes
-```
+| Task | Runbook |
+|---|---|
+| Entra apps, roles, and federation | [Entra setup](../docs/operations/entra-setup-runbook.md) |
+| Agent 365 activity/OTel | [Observability setup](../docs/operations/agent365-observability-setup.md) |
+| Purview policies and runtime | [Purview setup](../docs/operations/purview-setup-runbook.md) |
+| Backup and restore | [Backup and recovery](../docs/operations/backup-recovery.md) |
+| Credential and certificate rotation | [Credential rotation](../docs/operations/credential-rotation.md) |
+| Version promotion | [Upgrade strategy](../docs/operations/upgrade-strategy.md) |
+| Security event | [Incident response](../docs/operations/incident-response.md) |
 
-This correction has no Plan, What-If, dry-run, Bicep, or resource-replay path. It
-synthesizes build source from the preserved original accepted snapshot, overlays
-only the two literal-hash-pinned attestation files, builds only `gateway-api`, and
-updates only the existing API Container App to the resulting immutable digest. A
-resumable receipt is written under
-`.bootstrap/evidence/<resource-group>/api-attestation-correction/` before build and
-deployment mutations. Completion requires the exact ACR run and tag digest, one
-healthy receipt-bound API revision, unchanged API configuration/identity and full
-worker/queue boundaries, the exact v1 `Attested` endpoint, and the canonical final
-bootstrap verifier. It never replays an earlier bootstrap step.
+Purview operations must preserve the Microsoft location split: the Know Your Data
+collection uses the fixed tenant-wide enterprise-AI-apps location as
+`LocationType=Group`; blueprint-specific DLP uses the reusable blueprint
+application/client ID as `LocationType=Individual`. Both are Application-plane
+locations.
+
+## Recovery rules
+
+- Diagnose and reconcile before mutating.
+- Preserve failed jobs, queue/dead-letter state, outbox rows, image digests, and
+  correlation evidence until the applicable runbook authorizes a disposition.
+- Never repeat an external create call after an unknown outcome unless the contract
+  defines an exact read-only reconciliation path.
+- Never print secret runtime input, access tokens, authorization headers, clear
+  Gateway keys, prompts, responses, or dependency bodies.
+- Use bootstrap's bounded recovery commands only when its state reports the exact
+  eligible condition.
+- Treat a deleted completed resource group as disaster recovery; do not replay the
+  preserved bootstrap state into missing resource-group credentials.
+
+Declarative assets used by these scripts are documented in the
+[infrastructure index](../infrastructure/README.md).

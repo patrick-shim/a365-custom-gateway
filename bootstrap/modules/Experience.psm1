@@ -246,12 +246,12 @@ function New-GatewayBootstrapConfiguration {
         },
         [ordered]@{
             label = 'Staging foundation'
-            description = 'Deploys staging with Registry creation closed and exact-bound admission retained.'
+            description = 'Deploys staging with Registry creation closed.'
             environment = 'staging'
         },
         [ordered]@{
             label = 'Production-safe foundation'
-            description = 'Deploys the production foundation while the beta Registry dependency remains closed.'
+            description = 'Deploys the production foundation while the preview Registry dependency remains closed.'
             environment = 'prod'
         }
     )
@@ -273,7 +273,7 @@ function New-GatewayBootstrapConfiguration {
     $registryPreview = $false
     if ($environment -eq 'dev') {
         Write-Host ''
-        Write-Host 'Agent 365 Registry creation uses a beta, Global-cloud-only dependency that Microsoft does not support for production.' -ForegroundColor Yellow
+        Write-Host 'Agent 365 Registry creation uses a preview, Global-cloud-only dependency that Microsoft does not support for production.' -ForegroundColor Yellow
         $registryPreview = Read-GatewayYesNo -Prompt 'Explicitly enable continuous Registry preview for this development deployment' -Default $false
     }
 
@@ -300,7 +300,7 @@ function New-GatewayBootstrapConfiguration {
         }
     }
 
-    $purviewEnabled = Read-GatewayYesNo -Prompt 'Configure blueprint-scoped Purview collection and DLP policies' -Default $false
+    $purviewEnabled = Read-GatewayYesNo -Prompt 'Author Purview Know Your Data and DLP policies during bootstrap (runtime remains disabled)' -Default $false
     $sensitiveInformationType = ''
     if ($purviewEnabled) {
         Write-Host 'Purview requires tenant licensing, authoring roles, interactive authentication, and an exact tenant-approved classifier.' -ForegroundColor Yellow
@@ -330,7 +330,6 @@ function New-GatewayBootstrapConfiguration {
         promptShield = [ordered]@{ enabled = $promptShieldEnabled; skuName = $promptShieldSku }
         purview = [ordered]@{
             enabled = $purviewEnabled
-            activateGatewayAdapterAfterPolicyReadback = $false
             collectionPolicyName = "A365 Gateway $projectName AI collection"
             dlpPolicyName = "A365 Gateway $projectName inline DLP"
             dlpRuleName = "A365 Gateway $projectName inline DLP rule"
@@ -622,7 +621,7 @@ function Get-GatewayPlanDescriptor {
     $imperative.Add([ordered]@{ system = 'Azure SQL'; operation = 'Initialize only an empty database and create the two exact runtime principals through one VNet-private, retry-disabled Container Apps Job; temporarily assign that job identity as the singular Entra administrator, restore the original administrator exactly, keep public access Disabled, and prove zero firewall rules'; mutation = $true })
     $imperative.Add([ordered]@{ system = 'Key Vault'; operation = 'Transfer the one-time Admin UI application credential directly to Key Vault without rendering it'; mutation = $true })
     if ($Config.purview.enabled -eq $true) {
-        $imperative.Add([ordered]@{ system = 'Microsoft Purview'; operation = 'Create or verify blueprint-scoped collection/DLP policy objects through an interactive compliance session'; mutation = $true })
+        $imperative.Add([ordered]@{ system = 'Microsoft Purview'; operation = 'Create or verify the fixed tenant-wide Know Your Data Group and the blueprint-specific Individual DLP location through an interactive compliance session'; mutation = $true })
     }
     $imperative.Add([ordered]@{ system = 'Verification'; operation = 'Read back identities, permissions, private-network posture, immutable images, health, and provisioning prerequisites'; mutation = $false })
 
@@ -643,7 +642,7 @@ function Get-GatewayPlanDescriptor {
             promptShields = [bool]$Config.promptShield.enabled
             promptShieldSku = [string]$Config.promptShield.skuName
             purview = [bool]$Config.purview.enabled
-            purviewAdapterAfterReadback = [bool]$Config.purview.activateGatewayAdapterAfterPolicyReadback
+            purviewRuntimeAdapter = $false
             purviewPolicyProfiles = [bool]$Config.purview.policyProvisioningEnabled
             reviewedAgent365ManagerApplicationIds = @($reviewedManagerIds)
         }
@@ -676,11 +675,11 @@ function Get-GatewayPlanDescriptor {
             'NotChecked: subscription quota and every regional data-plane SKU limit; review Azure quota before Apply.',
             'NotChecked: tenant Agent 365 licensing/eligibility and interactive Conditional Access; the imperative requirements step fails closed.',
             'NotChecked: Purview propagation or synthetic verdict behavior; policy readback is configuration evidence only.',
-            $(if ($Config.purview.policyProvisioningEnabled -eq $true) { 'NotChecked: the Microsoft 365 automation application certificate binding and Security & Compliance RBAC; bootstrap verifies only enabled Key Vault secret metadata and keeps profile-dependent provisioning admission closed.' } else { 'Purview protection-profile automation authority is not requested.' }),
+            $(if ($Config.purview.policyProvisioningEnabled -eq $true) { 'NotChecked: the optional Microsoft 365 automation application certificate binding and Security & Compliance RBAC. Bootstrap verifies enabled Key Vault secret metadata; registrations that select a protection profile remain subject to independent fail-closed validation.' } else { 'Purview protection-profile automation authority is not requested.' }),
             'NotChecked: an authenticated browser session, first Active agent, or downstream Agent 365 landing.',
             'The ARM What-If below covers the subscription foundation only; Entra, Graph, Agent 365, SQL initialization, and Purview are listed separately in the imperative manifest.'
         )
-        previewWarning = if ($registryPreview) { 'Development explicitly enables the beta, Global-cloud-only Agent 365 Registry dependency; this is not production support.' } else { 'Registry creation remains closed because the current beta dependency is unsupported for production.' }
+        previewWarning = if ($registryPreview) { 'Development explicitly enables the preview, Global-cloud-only Agent 365 Registry dependency; this is not production support.' } else { 'Registry creation remains closed because the current preview dependency is unsupported for production.' }
         destructiveOperations = @()
     }
 }
@@ -1662,9 +1661,9 @@ function New-GatewayStateAwareWhatIfRecoveryBoundary {
 
     [string[]]$resourceIds = @($InertResourceIds + $SqlPrivateEndpointResourceIds)
     [Array]::Sort($resourceIds, [StringComparer]::Ordinal)
-    if ($resourceIds.Count -ne 30 -or
-        @($resourceIds | Sort-Object -Unique -CaseSensitive).Count -ne 30) {
-        throw 'The state-aware recovery boundary is not the exact reviewed 30-resource graph.'
+    if ($resourceIds.Count -ne 29 -or
+        @($resourceIds | Sort-Object -Unique -CaseSensitive).Count -ne 29) {
+        throw 'The state-aware recovery boundary is not the exact reviewed 29-resource graph.'
     }
     $boundary = [ordered]@{
         schemaVersion = 3
@@ -1689,11 +1688,11 @@ function New-GatewayDefenderStorageAwareWhatIfRecoveryBoundary {
         [Parameter(Mandatory)][string]$SourceFingerprint
     )
 
-    $expectedBaseSchemaVersion = if ($BaseResourceIds.Count -eq 26) { 2 } elseif ($BaseResourceIds.Count -eq 30) { 3 } else { -1 }
-    $expectedBasePhase = if ($BaseResourceIds.Count -eq 26) {
+    $expectedBaseSchemaVersion = if ($BaseResourceIds.Count -eq 25) { 2 } elseif ($BaseResourceIds.Count -eq 29) { 3 } else { -1 }
+    $expectedBasePhase = if ($BaseResourceIds.Count -eq 25) {
         'InertIdentityDeployment'
     }
-    elseif ($BaseResourceIds.Count -eq 30) {
+    elseif ($BaseResourceIds.Count -eq 29) {
         'InertIdentityDeployment+SqlPrivateEndpoint'
     }
     else { '' }
@@ -1722,9 +1721,9 @@ function New-GatewayDefenderStorageAwareWhatIfRecoveryBoundary {
     [string[]]$resourceIds = @($BaseResourceIds + $DefenderStorageResourceIds)
     [Array]::Sort($resourceIds, [StringComparer]::Ordinal)
     $expectedCount = $BaseResourceIds.Count + $expectedDefenderStorageCount
-    if ($expectedCount -notin @(26, 27, 30, 31) -or $resourceIds.Count -ne $expectedCount -or
+    if ($expectedCount -notin @(25, 26, 29, 30) -or $resourceIds.Count -ne $expectedCount -or
         @($resourceIds | Sort-Object -Unique -CaseSensitive).Count -ne $expectedCount) {
-        throw 'The Defender Storage-aware recovery boundary is not the exact reviewed 26-, 27-, 30-, or 31-resource graph.'
+        throw 'The Defender Storage-aware recovery boundary is not the exact reviewed 25-, 26-, 29-, or 30-resource graph.'
     }
     $boundary = [ordered]@{
         schemaVersion = 4
@@ -1759,7 +1758,7 @@ function Assert-GatewayInertWhatIfRecoveryBoundary {
         [string]$Boundary.deploymentOwnershipId -cne $DeploymentOwnershipId -or
         [string]$Boundary.sourceFingerprint -cne $SourceFingerprint -or
         $Boundary.resourceIds -isnot [System.Collections.IList] -or
-        @($Boundary.resourceIds).Count -ne 26 -or
+        @($Boundary.resourceIds).Count -ne 25 -or
         $Boundary.generatedNicBinding -isnot [System.Collections.IDictionary] -or
         $Boundary.masterDatabaseBinding -isnot [System.Collections.IDictionary]) {
         throw 'Recovery Ignore boundary does not match the exact inert deployment contract.'
@@ -2395,7 +2394,6 @@ function Get-GatewayBootstrapStatus {
             ControlPlaneReady = [bool]$controlPlaneReady
             ProvisioningReady = [bool]$provisioningReady
             ProvisioningAdmission = if ($provisioningReady) { 'OpenDevelopmentPreview' } else { 'ClosedOrNotVerified' }
-            FirstAgentActive = 'NotVerifiedByBootstrap'
         }
         endpoints = [ordered]@{ adminUi = $adminUiUrl; api = $apiUrl }
         steps = @($stepRows)
@@ -2417,7 +2415,7 @@ function Show-GatewayBootstrapStatus {
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$Status.nextStep)) { Write-Host "Next: $($Status.nextStep)" }
     if (-not [string]::IsNullOrWhiteSpace([string]$Status.endpoints.adminUi)) { Write-Host "Admin UI: $($Status.endpoints.adminUi)" }
-    Write-Host 'FirstAgentActive requires separate authorized evidence; bootstrap does not infer it.' -ForegroundColor DarkGray
+    Write-Host 'Creating and activating a registration is a post-deployment use task.' -ForegroundColor DarkGray
 }
 
 function Open-GatewayAdminUi {
@@ -2901,7 +2899,6 @@ function Test-GatewayGroupDeploymentEvidence {
         [Parameter(Mandatory)][string]$ApiImage,
         [Parameter(Mandatory)][string]$WorkerImage,
         [Parameter()]$Database,
-        [Parameter()][AllowNull()][System.Collections.IDictionary]$ApiImageSupersession,
         [switch]$AllowRuntimeSupersession
     )
     if (-not $Evidence -or [string]::IsNullOrWhiteSpace([string]$Evidence.deploymentName)) { throw 'Deployment evidence is incomplete; refusing automatic replay.' }
@@ -2918,26 +2915,6 @@ function Test-GatewayGroupDeploymentEvidence {
             [string]$Evidence.runtimeImagePullIdentityId -cne [string]$Foundation.runtimeImagePullIdentityId -or
             [string]$Evidence.runtimeImagePullIdentityPrincipalId -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId -or
             [string]$Evidence.runtimeImagePullAcrPullRoleAssignmentId -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId) { throw 'mismatch' }
-        $effectiveApiImage = $ApiImage
-        $supersedingApiRevision = ''
-        if ($null -ne $ApiImageSupersession) {
-            if ((@($ApiImageSupersession.Keys | Sort-Object) -join '|') -cne
-                'receiptFingerprint|targetApiImage|targetRevisionName') {
-                throw 'mismatch'
-            }
-            Assert-BootstrapFingerprintValue `
-                -Value ([string]$ApiImageSupersession.receiptFingerprint) `
-                -Label 'API image-supersession receipt fingerprint'
-            $expectedSupersedingImagePattern = "^$([regex]::Escape([string]$Evidence.acrLoginServer))/gateway-api@sha256:[0-9a-f]{64}$"
-            if ([string]$ApiImageSupersession.targetApiImage -ceq $ApiImage -or
-                [string]$ApiImageSupersession.targetApiImage -cnotmatch $expectedSupersedingImagePattern -or
-                [string]$ApiImageSupersession.targetRevisionName -cnotmatch
-                    "^ca-gateway-api-$([regex]::Escape([string]$Config.environment))--[a-z0-9-]{1,64}$") {
-                throw 'mismatch'
-            }
-            $effectiveApiImage = [string]$ApiImageSupersession.targetApiImage
-            $supersedingApiRevision = [string]$ApiImageSupersession.targetRevisionName
-        }
         $inertDeploymentName = "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)"
         $runtimeDeploymentName = "a365gw-$($Config.projectName)-bootstrap-runtime-$($Config.environment)"
         if ([string]$Evidence.deploymentName -notin @($inertDeploymentName, $runtimeDeploymentName)) { throw 'mismatch' }
@@ -2992,7 +2969,6 @@ function Test-GatewayGroupDeploymentEvidence {
             sqlServerFqdn = 'sqlServerFqdn'
             serviceBusQueueName = 'serviceBusQueueName'
             serviceBusQueueId = 'serviceBusQueueId'
-            agent365RegistryProvider = 'registryProvider'
         }
         Assert-GatewayDeploymentOutputEvidenceMap `
             -Outputs $deployment.outputs `
@@ -3037,11 +3013,9 @@ function Test-GatewayGroupDeploymentEvidence {
             -Evidence $Evidence `
             -ExpectedValues $expectedDatabaseValues | Out-Null
         $expectedPreview = $isRuntime -and [string]$Config.environment -eq 'dev' -and
-            $Config.agent365.allowDevelopmentRegistryPreview -eq $true -and
-            $Config.purview.policyProvisioningEnabled -ne $true
+            $Config.agent365.allowDevelopmentRegistryPreview -eq $true
         if ([bool]$Evidence.workerProcessingEnabled -ne $isRuntime -or
-            [bool]$Evidence.provisioningExecutionEnabled -ne $expectedPreview -or
-            [string]$Evidence.registryProvider -ne $(if ($expectedPreview) { 'DirectRegistryPreview' } else { 'Disabled' })) { throw 'mismatch' }
+            [bool]$Evidence.provisioningExecutionEnabled -ne $expectedPreview) { throw 'mismatch' }
 
         $api = Invoke-AzJson -Arguments @('containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', "ca-gateway-api-$($Config.environment)")
         $worker = Invoke-AzJson -Arguments @('containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', "ca-gateway-worker-$($Config.environment)-v3")
@@ -3051,32 +3025,13 @@ function Test-GatewayGroupDeploymentEvidence {
             [string]$api.properties.provisioningState -ne 'Succeeded' -or
             [string]$api.tags.bootstrapOwnershipId -cne $canonicalOwnershipId -or
             [string]$api.tags.bootstrapSourceFingerprint -cne $SourceFingerprint -or
-            [string]$api.properties.template.containers[0].image -cne $effectiveApiImage -or
-            (-not [string]::IsNullOrWhiteSpace($supersedingApiRevision) -and (
-                [string]$api.properties.latestRevisionName -cne $supersedingApiRevision -or
-                [string]$api.properties.latestReadyRevisionName -cne $supersedingApiRevision)) -or
+            [string]$api.properties.template.containers[0].image -cne $ApiImage -or
             [string]$worker.name -ne "ca-gateway-worker-$($Config.environment)-v3" -or
             [string]$worker.identity.principalId -ne [string]$Evidence.workerPrincipalId -or
             [string]$worker.properties.provisioningState -ne 'Succeeded' -or
             [string]$worker.tags.bootstrapOwnershipId -cne $canonicalOwnershipId -or
             [string]$worker.tags.bootstrapSourceFingerprint -cne $SourceFingerprint -or
             [string]$worker.properties.template.containers[0].image -cne $WorkerImage) { throw 'mismatch' }
-
-        if (-not [string]::IsNullOrWhiteSpace($supersedingApiRevision)) {
-            $activeApiRevisions = @(Invoke-AzJson -Arguments @(
-                'containerapp', 'revision', 'list',
-                '--resource-group', [string]$Config.resourceGroupName,
-                '--name', "ca-gateway-api-$($Config.environment)",
-                '--query', '[?properties.active==`true`].{name:name,healthState:properties.healthState,runningState:properties.runningState,replicas:properties.replicas}'
-            ))
-            if ($activeApiRevisions.Count -ne 1 -or
-                [string]$activeApiRevisions[0].name -cne $supersedingApiRevision -or
-                [string]$activeApiRevisions[0].healthState -cne 'Healthy' -or
-                [string]$activeApiRevisions[0].runningState -notin @('Running', 'RunningAtMaxScale') -or
-                [int]$activeApiRevisions[0].replicas -lt 1) {
-                throw 'mismatch'
-            }
-        }
 
         if ($isRuntime -or -not $AllowRuntimeSupersession) {
             $expectedManagerIds = @(
@@ -3099,8 +3054,7 @@ function Test-GatewayGroupDeploymentEvidence {
             $storageName = [string]$Matches.name
             $sqlConnection = "Server=tcp:$($Evidence.sqlServerFqdn),1433;Database=GatewayDb;Authentication=Active Directory Managed Identity;Encrypt=True;TrustServerCertificate=False;"
             $serviceBusNamespace = "sb-$($Config.projectName)-$($Config.environment).servicebus.windows.net"
-            $provisioningVaultUri = "https://kv-$($Config.projectName)-$($Config.environment)-prov.vault.azure.net/"
-            $expectedPurviewEnabled = [bool]($isRuntime -and $Config.purview.enabled -eq $true -and $Config.purview.activateGatewayAdapterAfterPolicyReadback -eq $true)
+            $expectedPurviewEnabled = $false
             $booleanEnvironment = Get-GatewayArmBooleanEnvironmentContract `
                 -RuntimeEnabled ([bool]$isRuntime) `
                 -RegistryPreviewEnabled ([bool]$expectedPreview) `
@@ -3112,7 +3066,6 @@ function Test-GatewayGroupDeploymentEvidence {
                 'ServiceBus__FullyQualifiedNamespace' = $serviceBusNamespace
                 'ServiceBus__QueueName' = [string]$Evidence.serviceBusQueueName
                 'Provisioning__ExecutionEnabled' = $booleanEnvironment.Api['Provisioning__ExecutionEnabled']
-                'Provisioning__RequireExactAdmissionBinding' = $booleanEnvironment.Api['Provisioning__RequireExactAdmissionBinding']
                 'Provisioning__AllowContinuousDevelopmentAccess' = $booleanEnvironment.Api['Provisioning__AllowContinuousDevelopmentAccess']
                 'BlobStorage__ServiceUri' = "https://$storageName.blob.core.windows.net/"
                 'BlobStorage__ContainerName' = 'a365-gateway-interactions'
@@ -3125,7 +3078,6 @@ function Test-GatewayGroupDeploymentEvidence {
                 'KeyVault__VaultUri' = [string]$Evidence.keyVaultUri
                 'Agent365__TenantId' = [string]$Config.tenantId
                 'Agent365__DelegatedRegistry__Enabled' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__Enabled']
-                'Agent365__DelegatedRegistry__RequireExactActionBinding' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__RequireExactActionBinding']
                 'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess']
                 'Agent365__DelegatedRegistry__Scopes__0' = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All'
                 'Agent365__DelegatedRegistry__Scopes__1' = 'https://graph.microsoft.com/AgentRegistration.Read.All'
@@ -3156,17 +3108,11 @@ function Test-GatewayGroupDeploymentEvidence {
                 'KeyVault__VaultUri' = [string]$Evidence.keyVaultUri
                 'Agent365__TenantId' = [string]$Config.tenantId
                 'Agent365__ObservabilityServerAddress' = [string]$Evidence.apiFqdn
-                'Agent365__GatewayApiApplicationClientId' = [string]$Identity.gatewayApiClientId
-                'Agent365__GatewayApiAudience' = [string]$Identity.gatewayApiTokenAudience
-                'Agent365__GatewayApiBaseUrl' = "https://$($Evidence.apiFqdn)/"
-                'Agent365__CredentialKeyVaultUri' = $provisioningVaultUri
                 'Agent365__ProvisioningManagedIdentityPrincipalId' = $(if ($isRuntime) { [string]$Evidence.workerPrincipalId } else { '' })
                 'ProvisioningWorker__QueueName' = [string]$Evidence.serviceBusQueueName
                 'ProvisioningWorker__MaxConcurrentCalls' = $(if ($expectedPreview) { '1' } else { '5' })
                 'ProvisioningWorker__ProcessingEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProcessingEnabled']
                 'ProvisioningWorker__ProvisioningExecutionEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProvisioningExecutionEnabled']
-                'Agent365__RegistryProvider' = $(if ($expectedPreview) { 'DirectRegistryPreview' } else { 'Disabled' })
-                'Agent365__DirectRegistryPreviewEnabled' = $booleanEnvironment.Worker['Agent365__DirectRegistryPreviewEnabled']
                 'Purview__Enabled' = $booleanEnvironment.Worker['Purview__Enabled']
                 'Purview__PolicyProvisioningEnabled' = $booleanEnvironment.Worker['Purview__PolicyProvisioningEnabled']
                 'Purview__PolicyProvisioningOrganization' = [string]$Config.purview.policyProvisioningOrganization
@@ -3184,7 +3130,7 @@ function Test-GatewayGroupDeploymentEvidence {
                 -ExpectedLocation ([string]$Config.location) -ExpectedPrincipalId ([string]$Evidence.apiPrincipalId) `
                 -ExpectedImagePullIdentityResourceId ([string]$Evidence.runtimeImagePullIdentityId) `
                 -ExpectedManagedEnvironmentId ([string]$Foundation.containerAppsEnvironmentId) -ExpectedRegistryServer ([string]$Evidence.acrLoginServer) `
-                -ExpectedImage $effectiveApiImage -ExternalIngress $true -ExpectedFqdn ([string]$Evidence.apiFqdn) | Out-Null
+                -ExpectedImage $ApiImage -ExternalIngress $true -ExpectedFqdn ([string]$Evidence.apiFqdn) | Out-Null
             Assert-GatewayExactSystemContainerAppEnvelope -App $worker -ExpectedName "ca-gateway-worker-$($Config.environment)-v3" `
                 -ExpectedLocation ([string]$Config.location) -ExpectedPrincipalId ([string]$Evidence.workerPrincipalId) `
                 -ExpectedImagePullIdentityResourceId ([string]$Evidence.runtimeImagePullIdentityId) `
@@ -3439,13 +3385,17 @@ function Test-GatewayApplicationEvidence {
         }
         else {
             $expectedDisplayName = "A365 Gateway Admin UI - $($Config.projectName)-$($Config.environment)"
+            $expectedRoles = @(Assert-ExactAdminUiGatewayRoleContract `
+                -AppRoles @($application.appRoles) `
+                -DeploymentOwnershipId $ownershipId)
+            $adminRole = @($expectedRoles | Where-Object { [string]$_.value -ceq 'Administrator' })
             $requirements = @($application.requiredResourceAccess)
             $credentials = @($application.passwordCredentials)
             $expectedRedirect = if ([string]::IsNullOrWhiteSpace($ExpectedAdminUiUrl)) { '' } else { "$($ExpectedAdminUiUrl.TrimEnd('/'))/signin-oidc" }
             $expectedLogout = if ([string]::IsNullOrWhiteSpace($ExpectedAdminUiUrl)) { '' } else { "$($ExpectedAdminUiUrl.TrimEnd('/'))/signout-callback-oidc" }
             $actualRedirects = @($application.web.redirectUris)
             if ([string]$application.displayName -cne $expectedDisplayName -or @($application.identifierUris).Count -ne 0 -or
-                @($application.api.oauth2PermissionScopes).Count -ne 0 -or @($application.appRoles).Count -ne 0 -or
+                @($application.api.oauth2PermissionScopes).Count -ne 0 -or
                 $actualRedirects.Count -ne $(if ([string]::IsNullOrWhiteSpace($ExpectedAdminUiUrl)) { 0 } else { 1 }) -or
                 ($actualRedirects.Count -eq 1 -and [string]$actualRedirects[0] -cne $expectedRedirect) -or
                 [string]$application.web.logoutUrl -cne $expectedLogout -or
@@ -3472,8 +3422,10 @@ function Test-GatewayApplicationEvidence {
                 -ServicePrincipalLabel 'Admin UI service principal' `
                 -ExpectedServicePrincipalNames @($clientId) `
                 -ExpectedTags $expectedTags `
-                -ExpectedAppRoles @() `
-                -ExpectedOauth2PermissionScopes @() | Out-Null
+                -ExpectedAppRoles @($application.appRoles) `
+                -ExpectedOauth2PermissionScopes @() `
+                -ExpectedAppRoleAssigneePrincipalId $ownerObjectId `
+                -ExpectedAppRoleId ([string]$adminRole[0].id) | Out-Null
             $gatewayPrincipals = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId%20eq%20'$($Evidence.gatewayApiClientId)'&`$select=id,appId")
             if ($gatewayPrincipals.Count -ne 1 -or
                 [string]$gatewayPrincipals[0].appId -ne [string]$Evidence.gatewayApiClientId) { throw 'mismatch' }

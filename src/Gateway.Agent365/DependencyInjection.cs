@@ -16,7 +16,6 @@ public static class DependencyInjection
             configuration.GetSection(Agent365Options.SectionName));
 
         services.AddSingleton<IAgent365ProvisioningTokenProvider, DefaultAzureProvisioningTokenProvider>();
-        services.AddSingleton<IProvisioningCredentialStore, KeyVaultProvisioningCredentialStore>();
         services.AddHttpClient(nameof(Agent365ProvisioningClient), (serviceProvider, client) =>
         {
             var options = serviceProvider.GetRequiredService<IOptions<Agent365Options>>().Value;
@@ -32,7 +31,6 @@ public static class DependencyInjection
                 serviceProvider.GetRequiredService<IOptions<Agent365Options>>(),
                 serviceProvider.GetRequiredService<IHttpClientFactory>(),
                 serviceProvider.GetRequiredService<IAgent365ProvisioningTokenProvider>(),
-                serviceProvider.GetRequiredService<IProvisioningCredentialStore>(),
                 serviceProvider.GetRequiredService<IAgent365ObservabilityTokenProvider>()));
         services.AddHttpClient(nameof(DelegatedAgent365RegistryClient), (serviceProvider, client) =>
         {
@@ -58,8 +56,6 @@ public static class DependencyInjection
             AllowAutoRedirect = false
         });
         services.AddSingleton<DefaultAzureObservabilityTokenProvider>();
-        services.AddSingleton<IAgentIdentityTokenProvider>(serviceProvider =>
-            serviceProvider.GetRequiredService<DefaultAzureObservabilityTokenProvider>());
         services.AddSingleton<IAgent365ObservabilityTokenProvider>(serviceProvider =>
             serviceProvider.GetRequiredService<DefaultAzureObservabilityTokenProvider>());
         services.AddHttpClient(nameof(ObservabilityExporter), (serviceProvider, client) =>

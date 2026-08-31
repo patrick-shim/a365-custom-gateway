@@ -7,7 +7,4 @@ public interface IAgent365ProvisioningClient
     Task<Agent365ProvisioningStepResult> ExecuteStepAsync(
         Agent365ProvisioningStepRequest request,
         CancellationToken ct);
-
-    Task<Agent365ReconciliationResult> ReconcileAsync(Agent365ResourceReference resource, CancellationToken ct);
-    Task DeleteAsync(Agent365ResourceReference resource, CancellationToken ct);
 }

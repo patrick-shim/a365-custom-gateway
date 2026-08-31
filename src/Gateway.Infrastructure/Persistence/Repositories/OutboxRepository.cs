@@ -28,16 +28,6 @@ internal sealed class OutboxRepository : IOutboxRepository
         await _dbContext.OutboxMessages.AddAsync(message, ct);
     }
 
-    public async Task<List<OutboxMessage>> GetPendingAsync(int batchSize, CancellationToken ct)
-    {
-        return await _dbContext.OutboxMessages
-            .Where(m => m.Status == OutboxMessageStatus.Pending)
-            .OrderBy(m => m.CreatedAtUtc)
-            .ThenBy(m => m.Id)
-            .Take(batchSize)
-            .ToListAsync(ct);
-    }
-
     public async Task<IReadOnlyList<OutboxMessage>> ClaimPendingAsync(
         int batchSize,
         DateTime utcNow,

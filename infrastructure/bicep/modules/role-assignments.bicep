@@ -12,12 +12,6 @@ param workerPrincipalId string
 @description('Name of the Azure Key Vault.')
 param keyVaultName string
 
-@description('Name of the dedicated Key Vault that stores generated provisioning credentials.')
-param workerCredentialKeyVaultName string
-
-@description('Legacy-only switch granting the worker Key Vault Secrets Officer on the provisioning credential vault. Workflow v3 does not require it.')
-param enableWorkerCredentialKeyVaultSecretsOfficer bool = false
-
 @description('Grant the worker read-only secret access to the shared Key Vault for certificate-based Purview policy automation.')
 param enableWorkerKeyVaultSecretsUser bool = false
 
@@ -45,7 +39,6 @@ param enableLegacySystemAssignedAcrPull bool = false
 
 // Built-in role definition GUIDs
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
-var keyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
 var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var serviceBusDataSenderRoleId = '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39'
 var serviceBusDataReceiverRoleId = '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0'
@@ -62,10 +55,6 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
 resource workerPurviewCertificateSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = if (enableWorkerKeyVaultSecretsUser) {
   parent: keyVault
   name: workerPurviewCertificateSecretName
-}
-
-resource workerCredentialKeyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
-  name: workerCredentialKeyVaultName
 }
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
@@ -135,17 +124,6 @@ resource workerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022
   scope: workerPurviewCertificateSecret!
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
-    principalId: workerPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Legacy-only worker credential-vault access. Workflow v3 defaults this off.
-resource workerKeyVaultSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (enableWorkerCredentialKeyVaultSecretsOfficer) {
-  name: guid(subscription().id, workerPrincipalId, workerCredentialKeyVault.id, keyVaultSecretsOfficerRoleId)
-  scope: workerCredentialKeyVault
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsOfficerRoleId)
     principalId: workerPrincipalId
     principalType: 'ServicePrincipal'
   }

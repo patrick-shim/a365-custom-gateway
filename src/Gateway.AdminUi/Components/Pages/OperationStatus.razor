@@ -252,8 +252,8 @@ else
                 <section class="card" aria-labelledby="steps-heading">
                     <div class="card-header">
                         <div>
-                            <h2 id="steps-heading">@(operation.Legacy ? "Historical recorded steps" : "Provisioning phases")</h2>
-                            <span class="section-caption">@(operation.Legacy ? "Raw step names persisted by the historical Gateway workflow" : "Product phases with verified substeps reported by the provisioning worker")</span>
+                            <h2 id="steps-heading">@(operation.Legacy ? "Historical recorded steps" : "Provisioning progress")</h2>
+                            <span class="section-caption">@(operation.Legacy ? "Raw step names persisted by the historical Gateway workflow" : "Functional groups with verified steps reported by the provisioning worker")</span>
                         </div>
                     </div>
                     @if (operation.Steps is not { Count: > 0 })
@@ -287,13 +287,13 @@ else
                             }
                             else
                             {
-                                @foreach (var phase in BuildCurrentPhases(operation.Steps))
+                                @foreach (var group in BuildCurrentGroups(operation.Steps))
                                 {
-                                    <section aria-label="@phase.Title" style="margin-bottom: 1.25rem">
-                                        <h3 style="margin-bottom: .25rem">@phase.Title</h3>
-                                        <p class="section-caption" style="margin-bottom: .75rem">@phase.Description</p>
-                                        <ol class="timeline" aria-label="@($"{phase.Title} steps")">
-                                            @foreach (var step in phase.Steps)
+                                    <section aria-label="@group.Title" style="margin-bottom: 1.25rem">
+                                        <h3 style="margin-bottom: .25rem">@group.Title</h3>
+                                        <p class="section-caption" style="margin-bottom: .75rem">@group.Description</p>
+                                        <ol class="timeline" aria-label="@($"{group.Title} steps")">
+                                            @foreach (var step in group.Steps)
                                             {
                                                 <li class="timeline-item">
                                                     <span class="timeline-dot" aria-hidden="true"></span>
@@ -642,27 +642,27 @@ else
                 ? value
                 : FormatCurrentStep(value);
 
-    private static IReadOnlyList<OperationPhase> BuildCurrentPhases(IReadOnlyList<OperationStepDto> steps)
+    private static IReadOnlyList<OperationGroup> BuildCurrentGroups(IReadOnlyList<OperationStepDto> steps)
     {
-        var blueprint = new OperationPhase(
+        var blueprint = new OperationGroup(
             "1. Blueprint",
             "Resolve or create the reusable Agent Identity blueprint, ensure its principal, and configure Gateway managed-identity federation.");
-        var agentIdentity = new OperationPhase(
+        var agentIdentity = new OperationGroup(
             "2. Agent ID",
             "Create and verify a distinct Microsoft Entra Agent ID under the reusable blueprint.");
-        var agent365Connection = new OperationPhase(
+        var agent365Connection = new OperationGroup(
             "3. Agent 365 connection",
             "Assign Agent 365 observability access, register through the configured preview provider, and verify the Agent 365 connection.");
 
         foreach (var step in steps)
         {
-            var phase = step.Step switch
+            var group = step.Step switch
             {
                 "ResolveBlueprint" or "EnsureBlueprintPrincipal" or "ConfigureGatewayFederation" => blueprint,
                 "CreateAgentIdentity" => agentIdentity,
                 _ => agent365Connection
             };
-            phase.Steps.Add(step);
+            group.Steps.Add(step);
         }
 
         return [blueprint, agentIdentity, agent365Connection];
@@ -711,7 +711,7 @@ else
         disposeCts.Dispose();
     }
 
-    private sealed class OperationPhase(string title, string description)
+    private sealed class OperationGroup(string title, string description)
     {
         public string Title { get; } = title;
         public string Description { get; } = description;

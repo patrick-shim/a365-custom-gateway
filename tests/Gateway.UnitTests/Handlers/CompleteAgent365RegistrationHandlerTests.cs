@@ -338,7 +338,7 @@ public sealed class CompleteAgent365RegistrationHandlerTests
     }
 
     [Fact]
-    public async Task Handle_ShouldRejectHistoricalVersionTwoCanaryBeforeAnyRegistrySideEffect()
+    public async Task Handle_ShouldRejectHistoricalVersionTwoOperationBeforeAnyRegistrySideEffect()
     {
         var fixture = new Fixture();
         var scenario = CreateAwaitingScenario();
@@ -397,8 +397,8 @@ public sealed class CompleteAgent365RegistrationHandlerTests
         {
             Id = Guid.NewGuid(),
             ExternalAgentId = new ExternalAgentId($"agent-{Guid.NewGuid():N}"),
-            Name = "Delegated Registry canary",
-            Description = "Safe synthetic canary",
+            Name = "Delegated Registry verification",
+            Description = "Safe synthetic verification",
             OwnerObjectId = callerObjectId,
             Status = AgentStatus.AwaitingAdminApproval,
             CreatedAtUtc = DateTime.UtcNow.AddMinutes(-5),

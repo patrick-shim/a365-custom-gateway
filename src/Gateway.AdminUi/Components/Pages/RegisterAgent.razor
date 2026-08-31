@@ -399,7 +399,7 @@ else
                                         <option value="@PurviewProfileModeUseExisting">Add to an existing protection profile</option>
                                         <option value="@PurviewProfileModeCreateNew">Create a new protection profile</option>
                                     </InputSelect>
-                                    <span class="field-help">A protection profile is a Gateway-managed Purview collection policy and DLP policy pair. The Gateway preserves every existing blueprint assignment and verifies the new Application scope before creating the Agent ID.</span>
+                                    <span class="field-help">A protection profile combines the fixed tenant-wide Know Your Data scope with a DLP policy whose Individual locations are reviewed blueprint applications. The Gateway preserves every existing DLP location and verifies both Application-plane scopes before creating the Agent ID.</span>
                                 </div>
 
                                 @if (form.PurviewProfileMode == PurviewProfileModeUseExisting)
@@ -692,11 +692,6 @@ else
             promptShieldAvailable = config.PromptShieldAvailable;
             provisioningExecutionEnabled = config.ProvisioningExecutionEnabled;
             purviewPolicyProvisioningEnabled = config.PurviewPolicyProvisioningEnabled;
-            if (provisioningExecutionEnabled &&
-                !string.IsNullOrWhiteSpace(config.AuthorizedRegistrationExternalAgentId))
-            {
-                form.ExternalAgentId = config.AuthorizedRegistrationExternalAgentId;
-            }
         }
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
         {
@@ -775,7 +770,7 @@ else
                             : null)
                     : null);
 
-            var response = await Api.RegisterAgentAsync(request, Guid.NewGuid(), disposeCts.Token);
+            var response = await Api.RegisterAgentAsync(request, disposeCts.Token);
             if (response.GatewayCredential is null)
             {
                 error = new UiErrorInfo(

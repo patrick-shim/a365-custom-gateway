@@ -28,8 +28,8 @@ Describe 'Experience database Job execution-intent propagation' {
     }
 }
 
-Describe 'Experience API correction image boundary' {
-    It 'keeps the original deployment receipt immutable while allowing one exact digest-pinned live API supersession' {
+Describe 'Experience API image boundary' {
+    It 'requires the deployed API to match the accepted immutable image' {
         $tokens = $null
         $parseErrors = $null
         $ast = [Management.Automation.Language.Parser]::ParseFile(
@@ -41,18 +41,11 @@ Describe 'Experience API correction image boundary' {
         }, $true)
         $source = $function.Extent.Text
 
-        $source | Should -Match '\[System\.Collections\.IDictionary\]\$ApiImageSupersession'
-        $source | Should -Match 'receiptFingerprint\|targetApiImage\|targetRevisionName'
-        $source | Should -Match 'gateway-api@sha256:\[0-9a-f\]\{64\}'
-        $source | Should -Match 'ApiImageSupersession\.targetApiImage -ceq \$ApiImage'
         $source | Should -Match 'deployment\.parameters\.apiContainerImage\.value -cne \$ApiImage'
         $source | Should -Match 'deployment\.outputs\.apiContainerImage\.value -cne \$ApiImage'
-        $source | Should -Match 'api\.properties\.template\.containers\[0\]\.image -cne \$effectiveApiImage'
-        $source | Should -Match '-ExpectedImage \$effectiveApiImage -ExternalIngress'
-        $source | Should -Match 'latestReadyRevisionName -cne \$supersedingApiRevision'
-        $source | Should -Match "containerapp', 'revision', 'list'"
-        $source | Should -Match "runningState -notin @\('Running', 'RunningAtMaxScale'\)"
-        $source | Should -Not -Match 'deployment\.parameters\.apiContainerImage\.value -cne \$effectiveApiImage'
+        $source | Should -Match 'api\.properties\.template\.containers\[0\]\.image -cne \$ApiImage'
+        $source | Should -Match '-ExpectedImage \$ApiImage -ExternalIngress'
+        $source | Should -Not -Match 'ApiImageSupersession|supersedingApiRevision|effectiveApiImage'
     }
 }
 
@@ -316,17 +309,15 @@ Describe 'Plan fingerprint recovery-Ignore binding' {
 
 Describe 'Workload deployment output mapping' {
     InModuleScope Experience {
-        It 'maps the real Agent 365 Registry and runtime image-pull ARM outputs to evidence' {
+        It 'maps the runtime image-pull ARM outputs to evidence' {
             $identityId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-runtime-pull-dev'
             $assignmentId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.ContainerRegistry/registries/acrsafe/providers/Microsoft.Authorization/roleAssignments/44444444-4444-4444-8444-444444444444'
             $outputs = [pscustomobject]@{
-                agent365RegistryProvider = [pscustomobject]@{ value = 'DirectRegistryPreview' }
                 runtimeImagePullIdentityId = [pscustomobject]@{ value = $identityId }
                 runtimeImagePullIdentityPrincipalId = [pscustomobject]@{ value = '33333333-3333-4333-8333-333333333333' }
                 runtimeImagePullAcrPullRoleAssignmentId = [pscustomobject]@{ value = $assignmentId }
             }
             $evidence = [pscustomobject]@{
-                registryProvider = 'DirectRegistryPreview'
                 runtimeImagePullIdentityId = $identityId
                 runtimeImagePullIdentityPrincipalId = '33333333-3333-4333-8333-333333333333'
                 runtimeImagePullAcrPullRoleAssignmentId = $assignmentId
@@ -336,27 +327,11 @@ Describe 'Workload deployment output mapping' {
                 -Outputs $outputs `
                 -Evidence $evidence `
                 -OutputToEvidenceName ([ordered]@{
-                    agent365RegistryProvider = 'registryProvider'
                     runtimeImagePullIdentityId = 'runtimeImagePullIdentityId'
                     runtimeImagePullIdentityPrincipalId = 'runtimeImagePullIdentityPrincipalId'
                     runtimeImagePullAcrPullRoleAssignmentId = 'runtimeImagePullAcrPullRoleAssignmentId'
                 }) |
                 Should -BeTrue
-
-            $outputs.PSObject.Properties.Name | Should -Not -Contain 'registryProvider'
-        }
-
-        It 'rejects a different normalized Registry provider value' {
-            $outputs = [pscustomobject]@{
-                agent365RegistryProvider = [pscustomobject]@{ value = 'Disabled' }
-            }
-            $evidence = [pscustomobject]@{ registryProvider = 'DirectRegistryPreview' }
-
-            { Assert-GatewayDeploymentOutputEvidenceMap `
-                -Outputs $outputs `
-                -Evidence $evidence `
-                -OutputToEvidenceName ([ordered]@{ agent365RegistryProvider = 'registryProvider' }) } |
-                Should -Throw '*output-to-evidence contract*'
         }
 
         It 'accepts only the exact source-bound runtime image-pull identity and AcrPull receipt' {
@@ -842,6 +817,7 @@ Describe 'Persisted bootstrap readiness truth' {
 
         $status.readiness.ProvisioningReady | Should -BeTrue
         $status.readiness.ProvisioningAdmission | Should -Be 'OpenDevelopmentPreview'
+        $status.readiness.Contains('FirstAgentActive') | Should -BeFalse
     }
 
     It 'does not trust stale verification output after the verification step fails' {
@@ -944,7 +920,7 @@ Describe 'Azure What-If result boundary' {
                 "$baseResourceId/microsoft.sql/servers/sql-safe"
                 "$baseResourceId/microsoft.sql/servers/sql-safe/databases/master"
                 "$baseResourceId/microsoft.alertsmanagement/smartdetectoralertrules/failure anomalies - ai-safe-dev"
-                0..20 | ForEach-Object { "$baseResourceId/microsoft.test/resources/resource-$('{0:d2}' -f $_)" }
+                0..19 | ForEach-Object { "$baseResourceId/microsoft.test/resources/resource-$('{0:d2}' -f $_)" }
             )
             [Array]::Sort($resourceIds, [StringComparer]::Ordinal)
             $script:recoveryBoundary = [ordered]@{
@@ -1239,13 +1215,13 @@ Describe 'Azure What-If result boundary' {
                 -State $script:recoveryState
 
             $result.applyReady | Should -BeTrue
-            $result.changeCounts['Ignore'] | Should -Be 26
-            @($result.changes | Where-Object changeType -eq 'Ignore').Count | Should -Be 26
+            $result.changeCounts['Ignore'] | Should -Be 25
+            @($result.changes | Where-Object changeType -eq 'Ignore').Count | Should -Be 25
             $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 4
             $result.recoveryIgnoreBoundary.phase |
                 Should -BeExactly 'InertIdentityDeployment+DefenderStorageSystemTopic'
             $result.recoveryIgnoreBoundary.defenderStoragePresent | Should -BeFalse
-            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 26
+            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 25
             $result.recoveryIgnoreBoundary.baseBoundaryFingerprint |
                 Should -BeExactly $script:recoveryBoundary.boundaryFingerprint
             $result.recoveryIgnoreBoundary.defenderStorageBoundaryFingerprint |
@@ -1308,12 +1284,12 @@ Describe 'Azure What-If result boundary' {
             $result.applyReady | Should -BeTrue
             $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 4
             $result.recoveryIgnoreBoundary.defenderStoragePresent | Should -BeFalse
-            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 26
+            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 25
             Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 1 -Exactly
             Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
         }
 
-        It 'accepts exactly 27 Ignore resources when one Defender Storage topic extends the early inert recovery boundary' {
+        It 'accepts exactly 26 Ignore resources when one Defender Storage topic extends the early inert recovery boundary' {
             $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
             $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{
                 sqlServerFqdn = 'sql-safe-dev.database.windows.net'
@@ -1333,11 +1309,11 @@ Describe 'Azure What-If result boundary' {
                 -State $script:recoveryState
 
             $result.applyReady | Should -BeTrue
-            $result.changeCounts['Ignore'] | Should -Be 27
+            $result.changeCounts['Ignore'] | Should -Be 26
             $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 4
             $result.recoveryIgnoreBoundary.phase |
                 Should -BeExactly 'InertIdentityDeployment+DefenderStorageSystemTopic'
-            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 27
+            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 26
             $result.recoveryIgnoreBoundary.defenderStoragePresent | Should -BeTrue
             $result.recoveryIgnoreBoundary.defenderStorageBoundaryFingerprint |
                 Should -BeExactly $script:defenderStoragePresentExtension.boundaryFingerprint
@@ -1348,7 +1324,7 @@ Describe 'Azure What-If result boundary' {
             }
         }
 
-        It 'accepts only the exact 30-resource graph after completed SQL private endpoint and a later failure' {
+        It 'accepts only the exact 29-resource graph after completed SQL private endpoint and a later failure' {
             $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
             $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
             foreach ($stepName in @('Agent 365 seed blueprint', 'Workflow v3 Entra configuration')) {
@@ -1377,12 +1353,12 @@ Describe 'Azure What-If result boundary' {
                 -State $script:recoveryState
 
             $result.applyReady | Should -BeTrue
-            $result.changeCounts['Ignore'] | Should -Be 30
+            $result.changeCounts['Ignore'] | Should -Be 29
             $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 4
             $result.recoveryIgnoreBoundary.phase |
                 Should -BeExactly 'InertIdentityDeployment+SqlPrivateEndpoint+DefenderStorageSystemTopic'
             $result.recoveryIgnoreBoundary.defenderStoragePresent | Should -BeFalse
-            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 30
+            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 29
             $result.recoveryIgnoreBoundary.boundaryFingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
             $result.recoveryIgnoreBoundary.defenderStorageBoundaryFingerprint |
                 Should -BeExactly $script:defenderStorageAbsentExtension.boundaryFingerprint
@@ -1393,7 +1369,7 @@ Describe 'Azure What-If result boundary' {
             Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
         }
 
-        It 'accepts exactly 31 Ignore resources only when one exact Defender Storage topic extends the 30-resource state boundary' {
+        It 'accepts exactly 30 Ignore resources only when one exact Defender Storage topic extends the 29-resource state boundary' {
             $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
             $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
             foreach ($stepName in @('Agent 365 seed blueprint', 'Workflow v3 Entra configuration')) {
@@ -1425,11 +1401,11 @@ Describe 'Azure What-If result boundary' {
                 -State $script:recoveryState
 
             $result.applyReady | Should -BeTrue
-            $result.changeCounts['Ignore'] | Should -Be 31
+            $result.changeCounts['Ignore'] | Should -Be 30
             $result.recoveryIgnoreBoundary.schemaVersion | Should -Be 4
             $result.recoveryIgnoreBoundary.phase |
                 Should -BeExactly 'InertIdentityDeployment+SqlPrivateEndpoint+DefenderStorageSystemTopic'
-            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 31
+            $result.recoveryIgnoreBoundary.resourceIds.Count | Should -Be 30
             $result.recoveryIgnoreBoundary.defenderStoragePresent | Should -BeTrue
             $result.recoveryIgnoreBoundary.boundaryFingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
             Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly -ParameterFilter {
@@ -1439,7 +1415,7 @@ Describe 'Azure What-If result boundary' {
             }
         }
 
-        It 'rejects a 26-resource What-If when independent provider inventory contains one Defender Storage topic' {
+        It 'rejects a 25-resource What-If when independent provider inventory contains one Defender Storage topic' {
             Set-TestEarlyRecoveryState
             Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
             $script:defenderStorageProviderExtension = $script:defenderStoragePresentExtension
@@ -1455,7 +1431,7 @@ Describe 'Azure What-If result boundary' {
             Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
         }
 
-        It 'rejects a 27-resource What-If when independent provider inventory reports typed absence' {
+        It 'rejects a 26-resource What-If when independent provider inventory reports typed absence' {
             Set-TestEarlyRecoveryState
             Set-TestRecoveryWhatIf -IgnoreIds @(
                 $script:recoveryBoundary.resourceIds + $script:defenderStorageTopicId)
@@ -1471,7 +1447,7 @@ Describe 'Azure What-If result boundary' {
             Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
         }
 
-        It 'rejects a 30-resource What-If when independent provider inventory contains one Defender Storage topic' {
+        It 'rejects a 29-resource What-If when independent provider inventory contains one Defender Storage topic' {
             Set-TestLaterRecoveryState
             Set-TestRecoveryWhatIf -IgnoreIds @(
                 $script:recoveryBoundary.resourceIds + $script:sqlPrivateEndpointExtension.resourceIds)
@@ -1488,7 +1464,7 @@ Describe 'Azure What-If result boundary' {
             Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
         }
 
-        It 'rejects a 31-resource What-If when independent provider inventory reports typed absence' {
+        It 'rejects a 30-resource What-If when independent provider inventory reports typed absence' {
             Set-TestLaterRecoveryState
             Set-TestRecoveryWhatIf -IgnoreIds @(
                 $script:recoveryBoundary.resourceIds +
@@ -1506,7 +1482,7 @@ Describe 'Azure What-If result boundary' {
             Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
         }
 
-        It 'rejects a 29-resource later-state Ignore graph instead of treating a missing SQL resource as optional' {
+        It 'rejects a 28-resource later-state Ignore graph instead of treating a missing SQL resource as optional' {
             $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
             $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
             foreach ($stepName in @('Agent 365 seed blueprint', 'Workflow v3 Entra configuration')) {
@@ -1538,7 +1514,7 @@ Describe 'Azure What-If result boundary' {
             Should -Invoke Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension -Times 1 -Exactly
         }
 
-        It 'rejects 32 Ignore resources containing multiple direct Event Grid system topics before provider readback' {
+        It 'rejects 31 Ignore resources containing multiple direct Event Grid system topics before provider readback' {
             $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
             $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
             foreach ($stepName in @('Agent 365 seed blueprint', 'Workflow v3 Entra configuration')) {
@@ -2680,6 +2656,184 @@ Describe 'Resume-time Entra application authentication boundary' {
             )) {
                 $script:servicePrincipalUrl | Should -Match $selectedProperty
             }
+        }
+    }
+}
+
+Describe 'Resume-time Admin UI Gateway role boundary' {
+    InModuleScope Experience {
+        BeforeEach {
+            $script:adminConfig = [pscustomobject]@{ projectName = 'safe'; environment = 'dev' }
+            $script:adminEvidence = [ordered]@{
+                adminUiApplicationObjectId = '11111111-1111-4111-8111-111111111111'
+                adminUiClientId = '22222222-2222-4222-8222-222222222222'
+                adminUiServicePrincipalId = '33333333-3333-4333-8333-333333333333'
+                gatewayApiClientId = '44444444-4444-4444-8444-444444444444'
+                gatewayApiAccessScopeId = '55555555-5555-4555-8555-555555555555'
+                deploymentOwnershipId = '66666666-6666-4666-8666-666666666666'
+                ownerObjectId = '77777777-7777-4777-8777-777777777777'
+            }
+            $script:gatewayApiServicePrincipalId = '88888888-8888-4888-8888-888888888888'
+            $script:adminRoles = @(Get-AdminUiGatewayApplicationRoles `
+                -DeploymentOwnershipId $script:adminEvidence.deploymentOwnershipId)
+            $script:adminApplication = [pscustomobject]@{
+                id = $script:adminEvidence.adminUiApplicationObjectId
+                appId = $script:adminEvidence.adminUiClientId
+                displayName = 'A365 Gateway Admin UI - safe-dev'
+                signInAudience = 'AzureADMyOrg'
+                identifierUris = @()
+                tags = @(
+                    'A365GatewayBootstrap',
+                    'A365GatewayOwnership:66666666-6666-4666-8666-666666666666'
+                )
+                api = [pscustomobject]@{
+                    acceptMappedClaims = $false
+                    preAuthorizedApplications = @()
+                    knownClientApplications = @()
+                    oauth2PermissionScopes = @()
+                }
+                appRoles = @($script:adminRoles)
+                requiredResourceAccess = @([pscustomobject]@{
+                    resourceAppId = $script:adminEvidence.gatewayApiClientId
+                    resourceAccess = @([pscustomobject]@{
+                        id = $script:adminEvidence.gatewayApiAccessScopeId
+                        type = 'Scope'
+                    })
+                })
+                passwordCredentials = @()
+                keyCredentials = @()
+                web = [pscustomobject]@{
+                    redirectUris = @('https://admin.example.test/signin-oidc')
+                    logoutUrl = 'https://admin.example.test/signout-callback-oidc'
+                    homePageUrl = $null
+                    implicitGrantSettings = [pscustomobject]@{
+                        enableAccessTokenIssuance = $false
+                        enableIdTokenIssuance = $false
+                    }
+                }
+                spa = [pscustomobject]@{ redirectUris = @() }
+                publicClient = [pscustomobject]@{ redirectUris = @() }
+                isFallbackPublicClient = $false
+            }
+            $script:adminRoleAssignments = @([pscustomobject]@{
+                principalId = $script:adminEvidence.ownerObjectId
+                resourceId = $script:adminEvidence.adminUiServicePrincipalId
+                appRoleId = [string]($script:adminRoles | Where-Object value -eq 'Administrator').id
+            })
+            $script:adminServicePrincipal = [pscustomobject]@{
+                id = $script:adminEvidence.adminUiServicePrincipalId
+                appId = $script:adminEvidence.adminUiClientId
+                accountEnabled = $true
+                appRoleAssignmentRequired = $false
+                servicePrincipalType = 'Application'
+                servicePrincipalNames = @($script:adminEvidence.adminUiClientId)
+                tags = @(
+                    'A365GatewayBootstrap',
+                    'A365GatewayOwnership:66666666-6666-4666-8666-666666666666'
+                )
+                alternativeNames = @()
+                passwordCredentials = @()
+                keyCredentials = @()
+                appRoles = @($script:adminRoles)
+                oauth2PermissionScopes = @()
+            }
+            Mock Invoke-AzJson { return $script:adminApplication }
+            Mock Assert-ExactBootstrapServicePrincipalBoundary {
+                param(
+                    $ServicePrincipal,
+                    [string]$ExpectedId,
+                    [string]$ExpectedAppId,
+                    $ExpectedAppRoles,
+                    [string]$ExpectedAppRoleAssigneePrincipalId,
+                    [string]$ExpectedAppRoleId
+                )
+                $expectedRoleIds = @($script:adminRoles | ForEach-Object { [string]$_.id } | Sort-Object)
+                $actualExpectedRoleIds = @($ExpectedAppRoles | ForEach-Object { [string]$_.id } | Sort-Object)
+                $administratorRoleId = [string]($script:adminRoles | Where-Object value -eq 'Administrator').id
+                if ([string]$ServicePrincipal.id -cne $ExpectedId -or
+                    [string]$ServicePrincipal.appId -cne $ExpectedAppId -or
+                    ($actualExpectedRoleIds -join '|') -cne ($expectedRoleIds -join '|') -or
+                    $ExpectedAppRoleAssigneePrincipalId -cne [string]$script:adminEvidence.ownerObjectId -or
+                    $ExpectedAppRoleId -cne $administratorRoleId -or
+                    $script:adminRoleAssignments.Count -ne 1) {
+                    throw 'Synthetic exact service-principal boundary mismatch.'
+                }
+                return [ordered]@{ appRoleAssignedTo = @($script:adminRoleAssignments) }
+            }
+            Mock Get-BoundedGraphCollection {
+                param([string]$InitialUrl)
+                if ($InitialUrl -match '/applications/.*/owners') {
+                    return @([pscustomobject]@{ id = $script:adminEvidence.ownerObjectId })
+                }
+                if ($InitialUrl -match "servicePrincipals\?.*appId%20eq%20'$($script:adminEvidence.adminUiClientId)'") {
+                    return @($script:adminServicePrincipal)
+                }
+                if ($InitialUrl -match "servicePrincipals\?.*appId%20eq%20'$($script:adminEvidence.gatewayApiClientId)'") {
+                    return @([pscustomobject]@{
+                        id = $script:gatewayApiServicePrincipalId
+                        appId = $script:adminEvidence.gatewayApiClientId
+                    })
+                }
+                if ($InitialUrl -match "/servicePrincipals/$($script:adminEvidence.adminUiServicePrincipalId)/owners") { return @() }
+                if ($InitialUrl -match "/servicePrincipals/$($script:adminEvidence.adminUiServicePrincipalId)/transitiveMemberOf") { return @() }
+                if ($InitialUrl -match "/servicePrincipals/$($script:adminEvidence.adminUiServicePrincipalId)/appRoleAssignments") { return @() }
+                if ($InitialUrl -match "/servicePrincipals/$($script:adminEvidence.adminUiServicePrincipalId)/appRoleAssignedTo") {
+                    return @($script:adminRoleAssignments)
+                }
+                if ($InitialUrl -match 'oauth2PermissionGrants') {
+                    return @([pscustomobject]@{
+                        resourceId = $script:gatewayApiServicePrincipalId
+                        consentType = 'AllPrincipals'
+                        scope = 'access_as_user'
+                    })
+                }
+                throw "Unexpected Graph URL: $InitialUrl"
+            }
+        }
+
+        It 'accepts only the deterministic four-role app and owner-only Administrator assignment' {
+            Test-GatewayApplicationEvidence `
+                -Config $script:adminConfig `
+                -Evidence $script:adminEvidence `
+                -ObjectIdProperty 'adminUiApplicationObjectId' `
+                -ClientIdProperty 'adminUiClientId' `
+                -ApplicationKind AdminUi `
+                -ExpectedAdminUiUrl 'https://admin.example.test' |
+                Should -BeTrue
+        }
+
+        It 'rejects an extra published role or extra service-principal assignee' {
+            $script:adminApplication.appRoles += [pscustomobject]@{
+                id = '99999999-9999-4999-8999-999999999999'
+                displayName = 'Unapproved'
+                description = 'Unapproved'
+                value = 'Gateway.Unapproved'
+                allowedMemberTypes = @('User')
+                isEnabled = $true
+            }
+            { Test-GatewayApplicationEvidence `
+                -Config $script:adminConfig `
+                -Evidence $script:adminEvidence `
+                -ObjectIdProperty 'adminUiApplicationObjectId' `
+                -ClientIdProperty 'adminUiClientId' `
+                -ApplicationKind AdminUi `
+                -ExpectedAdminUiUrl 'https://admin.example.test' } |
+                Should -Throw '*refusing automatic replay*'
+
+            $script:adminApplication.appRoles = @($script:adminRoles)
+            $script:adminRoleAssignments += [pscustomobject]@{
+                principalId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+                resourceId = $script:adminEvidence.adminUiServicePrincipalId
+                appRoleId = [string]($script:adminRoles | Where-Object value -eq 'Administrator').id
+            }
+            { Test-GatewayApplicationEvidence `
+                -Config $script:adminConfig `
+                -Evidence $script:adminEvidence `
+                -ObjectIdProperty 'adminUiApplicationObjectId' `
+                -ClientIdProperty 'adminUiClientId' `
+                -ApplicationKind AdminUi `
+                -ExpectedAdminUiUrl 'https://admin.example.test' } |
+                Should -Throw '*refusing automatic replay*'
         }
     }
 }

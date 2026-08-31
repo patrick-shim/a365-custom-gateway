@@ -53,7 +53,7 @@ function Assert-BootstrapPrerequisites {
     param([switch]$Install, [switch]$RequirePurview)
 
     Assert-GatewayPlanPrerequisites -Install:$Install | Out-Null
-    if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 or later is required. On Windows, run bootstrap.cmd.' }
+    if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 or later is required. On Windows, run .\\gateway.cmd from the repository root.' }
     if (-not (Test-CommandAvailable 'git')) {
         if (-not $Install -or -not $IsWindows) { throw 'Git is missing. Install it from https://git-scm.com/downloads.' }
         Install-WithWinget 'Git.Git'

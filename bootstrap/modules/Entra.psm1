@@ -326,6 +326,76 @@ function Get-BootstrapApplicationTags {
     )
 }
 
+function Get-AdminUiGatewayApplicationRoles {
+    param([Parameter(Mandatory)][string]$DeploymentOwnershipId)
+
+    Assert-GuidValue -Value $DeploymentOwnershipId -Label 'Deployment ownership identifier'
+    $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+    $contracts = @(
+        [ordered]@{
+            displayName = 'Gateway Administrator'
+            description = 'Full Gateway control-plane administration.'
+            canonicalValue = 'Gateway.Administrator'
+            value = 'Administrator'
+        },
+        [ordered]@{
+            displayName = 'Gateway Operator'
+            description = 'Operate registrations and provisioning.'
+            canonicalValue = 'Gateway.Operator'
+            value = 'Operator'
+        },
+        [ordered]@{
+            displayName = 'Gateway Auditor'
+            description = 'Read Gateway audit and configuration state.'
+            canonicalValue = 'Gateway.Auditor'
+            value = 'Auditor'
+        },
+        [ordered]@{
+            displayName = 'Gateway Support Reader'
+            description = 'Read redacted health and diagnostics.'
+            canonicalValue = 'Gateway.SupportReader'
+            value = 'Reader'
+        }
+    )
+    return @($contracts | ForEach-Object {
+        [ordered]@{
+            id = Get-BootstrapDeterministicGuid -Material "a365gw-bootstrap-admin-ui-role-v1|$canonicalOwnershipId|$($_.canonicalValue)"
+            displayName = [string]$_.displayName
+            description = [string]$_.description
+            value = [string]$_.value
+            allowedMemberTypes = @('User')
+            isEnabled = $true
+        }
+    })
+}
+
+function Assert-ExactAdminUiGatewayRoleContract {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$AppRoles,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId
+    )
+
+    $expectedRoles = @(Get-AdminUiGatewayApplicationRoles -DeploymentOwnershipId $DeploymentOwnershipId)
+    if ($AppRoles.Count -ne $expectedRoles.Count) {
+        throw 'Admin UI application must publish exactly the four canonical user-only Gateway roles.'
+    }
+    foreach ($expectedRole in $expectedRoles) {
+        $matches = @($AppRoles | Where-Object {
+            ([string]$_.id).Equals([string]$expectedRole.id, [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ($matches.Count -ne 1 -or
+            [string]$matches[0].displayName -cne [string]$expectedRole.displayName -or
+            [string]$matches[0].description -cne [string]$expectedRole.description -or
+            [string]$matches[0].value -cne [string]$expectedRole.value -or
+            $matches[0].isEnabled -isnot [bool] -or $matches[0].isEnabled -ne $true -or
+            @($matches[0].allowedMemberTypes).Count -ne 1 -or
+            [string]$matches[0].allowedMemberTypes[0] -cne 'User') {
+            throw 'Admin UI application must publish exactly the four canonical user-only Gateway roles.'
+        }
+    }
+    return $expectedRoles
+}
+
 function Test-ExactStringSet {
     param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Actual, [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Expected)
     $actualSorted = @($Actual | Sort-Object -Unique)
@@ -788,6 +858,7 @@ function Ensure-AdminUiApplication {
         [switch]$ReconcileOnly
     )
     $displayName = "A365 Gateway Admin UI - $($Config.projectName)-$($Config.environment)"
+    $expectedRoles = @(Get-AdminUiGatewayApplicationRoles -DeploymentOwnershipId $DeploymentOwnershipId)
     $application = Get-ExactApplicationByDisplayName -DisplayName $displayName
     if (-not $application) {
         if ($ReconcileOnly) { throw 'The state-owned Admin UI application was not observable during read-only reconciliation.' }
@@ -802,6 +873,7 @@ function Ensure-AdminUiApplication {
                 resourceAppId = [string]$Identity.gatewayApiClientId
                 resourceAccess = @(@{ id = [string]$Identity.gatewayApiAccessScopeId; type = 'Scope' })
             })
+            appRoles = $expectedRoles
         }
     }
     $application = Invoke-AzJson -Arguments @(
@@ -818,11 +890,13 @@ function Ensure-AdminUiApplication {
     $credentials = @($application.passwordCredentials)
     $credentialsAreBootstrapOwned = $credentials.Count -le 1 -and
         @($credentials | Where-Object { [string]$_.displayName -cne 'a365gw-bootstrap-admin-ui' }).Count -eq 0
+    Assert-ExactAdminUiGatewayRoleContract `
+        -AppRoles @($application.appRoles) `
+        -DeploymentOwnershipId $DeploymentOwnershipId | Out-Null
     if ([string]$application.displayName -cne $displayName -or
         [string]$application.signInAudience -cne 'AzureADMyOrg' -or
         @($application.identifierUris).Count -ne 0 -or
         @($application.api.oauth2PermissionScopes).Count -ne 0 -or
-        @($application.appRoles).Count -ne 0 -or
         @($application.keyCredentials).Count -ne 0 -or
         @($application.web.redirectUris).Count -ne 0 -or
         -not [string]::IsNullOrWhiteSpace([string]$application.web.logoutUrl) -or
@@ -847,6 +921,7 @@ function Ensure-AdminUiApplication {
     }
     if (-not $principal) { throw 'Admin UI service principal was not observable during read-only reconciliation.' }
     $adminUiServicePrincipalId = [string]$principal.id
+    $adminRole = @($application.appRoles | Where-Object { [string]$_.value -ceq 'Administrator' })
     $principalBoundaryArguments = @{
         ServicePrincipal = $principal
         ExpectedId = $adminUiServicePrincipalId
@@ -854,10 +929,33 @@ function Ensure-AdminUiApplication {
         ServicePrincipalLabel = 'Admin UI service principal'
         ExpectedServicePrincipalNames = @([string]$application.appId)
         ExpectedTags = $expectedServicePrincipalTags
-        ExpectedAppRoles = @()
+        ExpectedAppRoles = @($application.appRoles)
         ExpectedOauth2PermissionScopes = @()
+        ExpectedAppRoleAssigneePrincipalId = [string]$Identity.userObjectId
+        ExpectedAppRoleId = [string]$adminRole[0].id
     }
-    Assert-ExactBootstrapServicePrincipalBoundary @principalBoundaryArguments | Out-Null
+    $principalBoundary = Assert-ExactBootstrapServicePrincipalBoundary @principalBoundaryArguments -AllowMissingExpectedAppRoleAssignment
+    $userAssignments = @($principalBoundary.appRoleAssignedTo)
+    if ($userAssignments.Count -eq 0) {
+        if ($ReconcileOnly) { throw 'Admin UI Gateway Administrator assignment was not observable during read-only reconciliation.' }
+        Invoke-GraphJsonBody -Method 'POST' -Url "https://graph.microsoft.com/v1.0/servicePrincipals/$($principal.id)/appRoleAssignedTo" -Body @{
+            principalId = [string]$Identity.userObjectId
+            resourceId = [string]$principal.id
+            appRoleId = [string]$adminRole[0].id
+        } | Out-Null
+        for ($attempt = 1; $attempt -le 12; $attempt++) {
+            $principal = Get-ServicePrincipalByAppId -AppId ([string]$application.appId)
+            if (-not $principal) { throw 'Admin UI service principal disappeared during exact role-assignment readback.' }
+            $principalBoundaryArguments.ServicePrincipal = $principal
+            $principalBoundary = Assert-ExactBootstrapServicePrincipalBoundary @principalBoundaryArguments -AllowMissingExpectedAppRoleAssignment
+            $userAssignments = @($principalBoundary.appRoleAssignedTo)
+            if ($userAssignments.Count -eq 1) { break }
+            if ($attempt -lt 12) { Start-Sleep -Seconds 5 }
+        }
+        if ($userAssignments.Count -ne 1) {
+            throw 'The exact Admin UI Gateway Administrator assignment was not observable after creation.'
+        }
+    }
     $grantUrl = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId%20eq%20'$($principal.id)'&`$select=id,clientId,resourceId,consentType,scope"
     $grant = @(Get-BoundedGraphCollection -InitialUrl $grantUrl)
     if ($grant.Count -eq 0) {

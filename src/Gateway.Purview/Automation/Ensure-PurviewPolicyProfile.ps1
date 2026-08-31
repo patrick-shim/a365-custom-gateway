@@ -10,6 +10,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$script:EnterpriseAiAppsCollectionLocationId = 'ee1680d0-702f-4090-b26c-c49091e86531'
 
 function Get-ExactProperty {
     param(
@@ -225,7 +226,17 @@ function Get-ExactDlpRule {
     return $null
 }
 
-function New-ApplicationLocation {
+function New-CollectionLocation {
+    return [ordered]@{
+        Workload = 'Applications'
+        Location = $script:EnterpriseAiAppsCollectionLocationId
+        LocationSource = 'Entra'
+        LocationType = 'Group'
+        Inclusions = @(@{ Type = 'Tenant'; Identity = 'All' })
+    }
+}
+
+function New-DlpApplicationLocation {
     param(
         [Parameter(Mandatory)][string]$ApplicationId,
         [Parameter(Mandatory)][string]$DisplayName
@@ -241,7 +252,7 @@ function New-ApplicationLocation {
     }
 }
 
-function Merge-ApplicationLocation {
+function Merge-DlpApplicationLocation {
     param(
         [object[]]$Locations,
         [Parameter(Mandatory)][string]$ApplicationId,
@@ -260,16 +271,17 @@ function Merge-ApplicationLocation {
         $result.Add($location)
     }
     if (-not $found) {
-        $result.Add((New-ApplicationLocation -ApplicationId $ApplicationId -DisplayName $DisplayName))
+        $result.Add((New-DlpApplicationLocation -ApplicationId $ApplicationId -DisplayName $DisplayName))
     }
     return @($result)
 }
 
-function Assert-ApplicationLocations {
+function Assert-TenantApplicationLocations {
     param(
         [AllowNull()]$Value,
         [AllowNull()][AllowEmptyCollection()][string[]]$ExpectedApplicationIds,
-        [Parameter(Mandatory)][string]$ResourceName
+        [Parameter(Mandatory)][string]$ResourceName,
+        [Parameter(Mandatory)][ValidateSet('Group', 'Individual')][string]$ExpectedLocationType
     )
 
     $locations = @(Convert-ToStructuredArray -Value $Value -Label "$ResourceName Locations")
@@ -277,8 +289,8 @@ function Assert-ApplicationLocations {
     foreach ($location in $locations) {
         if ([string](Get-ExactProperty -InputObject $location -Names @('Workload')) -cne 'Applications' -or
             [string](Get-ExactProperty -InputObject $location -Names @('LocationSource')) -cne 'Entra' -or
-            [string](Get-ExactProperty -InputObject $location -Names @('LocationType')) -cne 'Individual') {
-            throw "Purview resource '$ResourceName' contains an unreviewed non-Application location."
+            [string](Get-ExactProperty -InputObject $location -Names @('LocationType')) -cne $ExpectedLocationType) {
+            throw "Purview resource '$ResourceName' contains an unreviewed Application location shape."
         }
 
         $locationId = [string](Get-ExactProperty -InputObject $location -Names @('Location'))
@@ -317,6 +329,29 @@ function Assert-ApplicationLocations {
         throw "Purview resource '$ResourceName' did not read back the exact authorized Application scope."
     }
     return @($applicationIds)
+}
+
+function Assert-ExactCollectionLocation {
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory)][string]$ResourceName
+    )
+
+    return @(Assert-TenantApplicationLocations -Value $Value `
+        -ExpectedApplicationIds @($script:EnterpriseAiAppsCollectionLocationId) `
+        -ResourceName $ResourceName -ExpectedLocationType 'Group')
+}
+
+function Assert-DlpApplicationLocations {
+    param(
+        [AllowNull()]$Value,
+        [AllowNull()][AllowEmptyCollection()][string[]]$ExpectedApplicationIds,
+        [Parameter(Mandatory)][string]$ResourceName
+    )
+
+    return @(Assert-TenantApplicationLocations -Value $Value `
+        -ExpectedApplicationIds $ExpectedApplicationIds `
+        -ResourceName $ResourceName -ExpectedLocationType 'Individual')
 }
 
 function Assert-NoExtraRuleBehavior {
@@ -410,9 +445,7 @@ function Assert-ExactReadback {
         [Parameter(Mandatory)]$Rule,
         [Parameter(Mandatory)]$InputObject,
         [Parameter(Mandatory)][string]$ExpectedDlpMode,
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedApplicationIds,
-        [AllowNull()][AllowEmptyCollection()][string[]]$ExpectedPolicyApplicationIds,
-        [switch]$AllowScopeTransition
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedDlpApplicationIds
     )
 
     $collectionName = [string]$InputObject.collectionPolicyName
@@ -442,9 +475,9 @@ function Assert-ExactReadback {
     Assert-NoUnknownMeaningfulProperties -Resource $scenario -AllowedNames @(
         'Activities', 'EnforcementPlanes', 'SensitiveTypeIds', 'IsIngestionEnabled'
     ) -Label 'collection policy ScenarioConfig'
-    $collectionApplicationIds = @(Assert-ApplicationLocations -Value (
+    $collectionLocationIds = @(Assert-ExactCollectionLocation -Value (
         Get-ExactProperty -InputObject $Collection -Names @('Locations')) `
-        -ExpectedApplicationIds $ExpectedApplicationIds -ResourceName $collectionName)
+        -ResourceName $collectionName)
     Assert-NoNamedValues -Resource $Collection -Names @(
         'Exclusions', 'ExcludedLocations', 'Exceptions', 'Bypass', 'BypassRules'
     ) -Label 'collection policy'
@@ -480,19 +513,9 @@ function Assert-ExactReadback {
     if (-not (Test-ExactSet -Actual $policyPlanes -Expected @('Application'))) {
         throw 'The DLP policy enforcement plane did not read back exactly.'
     }
-    $effectivePolicyApplicationIds = if ($null -eq $ExpectedPolicyApplicationIds) {
-        $ExpectedApplicationIds
-    }
-    else {
-        $ExpectedPolicyApplicationIds
-    }
-    $policyApplicationIds = @(Assert-ApplicationLocations -Value (
+    $policyApplicationIds = @(Assert-DlpApplicationLocations -Value (
         Get-ExactProperty -InputObject $Policy -Names @('Locations')) `
-        -ExpectedApplicationIds $effectivePolicyApplicationIds -ResourceName $policyName)
-    if (-not $AllowScopeTransition -and
-        -not (Test-ExactSet -Actual $collectionApplicationIds -Expected $policyApplicationIds)) {
-        throw 'The collection and DLP policy Application locations do not match exactly.'
-    }
+        -ExpectedApplicationIds $ExpectedDlpApplicationIds -ResourceName $policyName)
     Assert-NoNamedValues -Resource $Policy -Names @(
         'Exclusions', 'ExcludedLocations', 'Exceptions', 'Bypass', 'BypassRules'
     ) -Label 'DLP policy'
@@ -580,20 +603,32 @@ function Assert-ExactReadback {
         collectionPolicyId = $collectionIdentity
         dlpPolicyId = $policyIdentity
         dlpRuleId = $ruleIdentity
-        blueprintApplicationIds = @($collectionApplicationIds)
         collectionMode = 'Enable'
         collectionActivities = @($activities)
         collectionEnforcementPlanes = @($collectionPlanes)
         collectionSensitiveTypeIds = @($sensitiveTypeIds)
         collectionIngestionEnabled = $true
+        collectionLocation = [ordered]@{
+            workload = 'Applications'
+            locationSource = 'Entra'
+            locationType = 'Group'
+            locationIds = @($collectionLocationIds)
+        }
         dlpMode = $ExpectedDlpMode
         dlpEnforcementPlanes = @($policyPlanes)
+        dlpLocation = [ordered]@{
+            workload = 'Applications'
+            locationSource = 'Entra'
+            locationType = 'Individual'
+            locationIds = @($policyApplicationIds)
+        }
         classifierNames = @($classifierNames)
         ruleActions = @(@{ setting = 'UploadText'; value = 'Block' })
         hasExclusions = $false
         hasBypass = $false
         hasExtraConditions = $false
         hasExtraActions = $false
+        dlpBlueprintApplicationIds = @($policyApplicationIds)
         verifiedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
     }
 }
@@ -611,15 +646,15 @@ function Invoke-ExactPurviewProfile {
         throw 'The blueprint Application ID is invalid.'
     }
     $applicationIdText = $applicationId.ToString('D')
-    $priorApplicationIds = @(Convert-ToExactGuidSet `
-        -Value $InputObject.expectedPriorBlueprintApplicationIds `
-        -Label 'prior authorized Application scope')
-    $expectedApplicationIds = @(Convert-ToExactGuidSet `
-        -Value $InputObject.expectedBlueprintApplicationIds `
-        -Label 'expected Application scope')
-    $computedUnion = @($priorApplicationIds + $applicationIdText | Sort-Object -Unique)
-    if (-not (Test-ExactSet -Actual $expectedApplicationIds -Expected $computedUnion)) {
-        throw 'The expected Purview Application scope is not the exact prior-authority union.'
+    $priorDlpApplicationIds = @(Convert-ToExactGuidSet `
+        -Value $InputObject.expectedPriorDlpBlueprintApplicationIds `
+        -Label 'prior authorized DLP Application scope')
+    $expectedDlpApplicationIds = @(Convert-ToExactGuidSet `
+        -Value $InputObject.expectedDlpBlueprintApplicationIds `
+        -Label 'expected DLP Application scope')
+    $computedDlpUnion = @($priorDlpApplicationIds + $applicationIdText | Sort-Object -Unique)
+    if (-not (Test-ExactSet -Actual $expectedDlpApplicationIds -Expected $computedDlpUnion)) {
+        throw 'The expected Purview DLP Application scope is not the exact prior-authority union.'
     }
 
     $scenarioConfig = @{
@@ -645,75 +680,59 @@ function Invoke-ExactPurviewProfile {
             throw 'Existing Purview resources lack persisted provider-ID authority and cannot be adopted.'
         }
 
-        $collectionScope = @(Assert-ApplicationLocations -Value $collection.Locations `
-            -ExpectedApplicationIds $null `
-            -ResourceName ([string]$InputObject.collectionPolicyName))
-        $policyScope = @(Assert-ApplicationLocations -Value $policy.Locations `
+        Assert-ExactCollectionLocation -Value $collection.Locations `
+            -ResourceName ([string]$InputObject.collectionPolicyName) | Out-Null
+        $policyScope = @(Assert-DlpApplicationLocations -Value $policy.Locations `
             -ExpectedApplicationIds $null `
             -ResourceName ([string]$InputObject.dlpPolicyName))
-        $collectionAtPrior = Test-ExactSet -Actual $collectionScope -Expected $priorApplicationIds
-        $collectionAtExpected = Test-ExactSet -Actual $collectionScope -Expected $expectedApplicationIds
-        $policyAtPrior = Test-ExactSet -Actual $policyScope -Expected $priorApplicationIds
-        $policyAtExpected = Test-ExactSet -Actual $policyScope -Expected $expectedApplicationIds
+        $policyAtPrior = Test-ExactSet -Actual $policyScope -Expected $priorDlpApplicationIds
+        $policyAtExpected = Test-ExactSet -Actual $policyScope -Expected $expectedDlpApplicationIds
         if ($VerifyOnly) {
-            if (-not $collectionAtExpected -or -not $policyAtExpected) {
-                throw 'Purview read-only verification did not return the exact authorized Application scope.'
+            if (-not $policyAtExpected) {
+                throw 'Purview read-only verification did not return the exact authorized DLP Application scope.'
             }
         }
-        elseif ((-not $collectionAtPrior -and -not $collectionAtExpected) -or
-                (-not $policyAtPrior -and -not $policyAtExpected)) {
-            throw 'Purview existing scope is neither the exact prior nor expected authorized Application scope.'
+        elseif (-not $policyAtPrior -and -not $policyAtExpected) {
+            throw 'Purview existing DLP scope is neither the exact prior nor expected authorized DLP Application scope.'
         }
 
         Assert-ExactReadback -Collection $collection -Policy $policy -Rule $rule `
             -InputObject $InputObject -ExpectedDlpMode $ExpectedDlpMode `
-            -ExpectedApplicationIds $collectionScope `
-            -ExpectedPolicyApplicationIds $policyScope `
-            -AllowScopeTransition:(!$VerifyOnly) | Out-Null
+            -ExpectedDlpApplicationIds $policyScope | Out-Null
 
-        if (-not $VerifyOnly) {
+        if (-not $VerifyOnly -and -not $policyAtExpected) {
             $displayName = [string]$InputObject.blueprintDisplayName
-            if (-not $collectionAtExpected) {
-                $collectionLocations = @(Convert-ToStructuredArray -Value $collection.Locations `
-                    -Label ([string]$InputObject.collectionPolicyName))
-                $collectionLocationsJson = Merge-ApplicationLocation -Locations $collectionLocations `
-                    -ApplicationId $applicationIdText -DisplayName $displayName |
-                    ConvertTo-Json -Depth 10 -Compress
-                Set-FeatureConfiguration -Identity $collection.Identity `
-                    -Locations $collectionLocationsJson -ScenarioConfig $scenarioConfig `
-                    -Mode Enable -Confirm:$false | Out-Null
-            }
-            if (-not $policyAtExpected) {
-                $policyLocations = @(Convert-ToStructuredArray -Value $policy.Locations `
-                    -Label ([string]$InputObject.dlpPolicyName))
-                $policyLocationsJson = Merge-ApplicationLocation -Locations $policyLocations `
-                    -ApplicationId $applicationIdText -DisplayName $displayName |
-                    ConvertTo-Json -Depth 10 -Compress
-                Set-DlpCompliancePolicy -Identity $policy.Identity `
-                    -Locations $policyLocationsJson -Mode $ExpectedDlpMode `
-                    -EnforcementPlanes @('Application') -Confirm:$false | Out-Null
-            }
+            $policyLocations = @(Convert-ToStructuredArray -Value $policy.Locations `
+                -Label ([string]$InputObject.dlpPolicyName))
+            $policyLocationsJson = Merge-DlpApplicationLocation -Locations $policyLocations `
+                -ApplicationId $applicationIdText -DisplayName $displayName |
+                ConvertTo-Json -Depth 10 -Compress
+            Set-DlpCompliancePolicy -Identity $policy.Identity `
+                -Locations $policyLocationsJson -Mode $ExpectedDlpMode `
+                -EnforcementPlanes @('Application') -Confirm:$false | Out-Null
         }
     }
     else {
         if ($VerifyOnly) {
             throw 'The expected Purview managed profile was not found during read-only verification.'
         }
-        if ($priorApplicationIds.Count -ne 0 -or
+        if ($priorDlpApplicationIds.Count -ne 0 -or
             -not [string]::IsNullOrWhiteSpace([string]$InputObject.expectedCollectionPolicyId) -or
             -not [string]::IsNullOrWhiteSpace([string]$InputObject.expectedDlpPolicyId) -or
             -not [string]::IsNullOrWhiteSpace([string]$InputObject.expectedDlpRuleId)) {
             throw 'Persisted Purview authority refers to provider resources that are absent.'
         }
 
-        $locationsJson = @((New-ApplicationLocation -ApplicationId $applicationIdText `
+        $collectionLocationsJson = @((New-CollectionLocation)) |
+            ConvertTo-Json -Depth 10 -Compress
+        $dlpLocationsJson = @((New-DlpApplicationLocation -ApplicationId $applicationIdText `
             -DisplayName ([string]$InputObject.blueprintDisplayName))) |
             ConvertTo-Json -Depth 10 -Compress
         New-FeatureConfiguration -FeatureScenario KnowYourData `
             -Name ([string]$InputObject.collectionPolicyName) -Mode Enable `
-            -ScenarioConfig $scenarioConfig -Locations $locationsJson -Confirm:$false | Out-Null
+            -ScenarioConfig $scenarioConfig -Locations $collectionLocationsJson -Confirm:$false | Out-Null
         New-DlpCompliancePolicy -Name ([string]$InputObject.dlpPolicyName) `
-            -Mode $ExpectedDlpMode -Locations $locationsJson `
+            -Mode $ExpectedDlpMode -Locations $dlpLocationsJson `
             -EnforcementPlanes @('Application') -Confirm:$false | Out-Null
         New-DlpComplianceRule -Name ([string]$InputObject.dlpRuleName) `
             -Policy ([string]$InputObject.dlpPolicyName) `
@@ -733,7 +752,7 @@ function Invoke-ExactPurviewProfile {
 
     return Assert-ExactReadback -Collection $collection -Policy $policy -Rule $rule `
         -InputObject $InputObject -ExpectedDlpMode $ExpectedDlpMode `
-        -ExpectedApplicationIds $expectedApplicationIds
+        -ExpectedDlpApplicationIds $expectedDlpApplicationIds
 }
 
 $passwordText = [Console]::In.ReadLine()
@@ -758,7 +777,7 @@ try {
         -Organization $Organization -ShowBanner:$false
 
     foreach ($command in @(
-        'Get-FeatureConfiguration', 'New-FeatureConfiguration', 'Set-FeatureConfiguration',
+        'Get-FeatureConfiguration', 'New-FeatureConfiguration',
         'Get-DlpCompliancePolicy', 'New-DlpCompliancePolicy', 'Set-DlpCompliancePolicy',
         'Get-DlpComplianceRule', 'New-DlpComplianceRule')) {
         try { Get-Command $command -ErrorAction Stop | Out-Null }

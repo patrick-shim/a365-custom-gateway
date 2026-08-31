@@ -193,6 +193,100 @@ Describe 'Exact application authentication surface' {
     }
 }
 
+Describe 'Admin UI Gateway application-role contract' {
+    InModuleScope Entra {
+        BeforeEach {
+            $script:roleOwnershipId = '33333333-3333-4333-8333-333333333333'
+        }
+
+        It 'derives the four canonical user-only roles from ownership and exact role-value casing' {
+            $roles = @(Get-AdminUiGatewayApplicationRoles -DeploymentOwnershipId $script:roleOwnershipId)
+
+            @($roles.value) | Should -Be @(
+                'Administrator',
+                'Operator',
+                'Auditor',
+                'Reader'
+            )
+            @($roles.id) | Should -Be @(
+                '5be000b5-2e38-5fee-9318-f99718772d70',
+                'd1e7fb82-c8d8-5529-b485-6a2d5df24a4a',
+                'dab0436c-f9d4-5cee-b0ce-9a1fe90a705d',
+                '147d6012-177a-5922-b516-5c0d5eabc650'
+            )
+            @($roles | Where-Object {
+                $_.isEnabled -ne $true -or
+                @($_.allowedMemberTypes).Count -ne 1 -or
+                [string]$_.allowedMemberTypes[0] -cne 'User'
+            }).Count | Should -Be 0
+        }
+
+        It 'rejects an extra role and deterministic identifier or canonical metadata drift' {
+            $validRoles = @(Get-AdminUiGatewayApplicationRoles -DeploymentOwnershipId $script:roleOwnershipId)
+            @(Assert-ExactAdminUiGatewayRoleContract `
+                -AppRoles $validRoles `
+                -DeploymentOwnershipId $script:roleOwnershipId).Count | Should -Be 4
+
+            $extraRoles = @($validRoles) + @([pscustomobject]@{
+                id = '99999999-9999-4999-8999-999999999999'
+                displayName = 'Unapproved'
+                description = 'Unapproved'
+                value = 'Gateway.Unapproved'
+                allowedMemberTypes = @('User')
+                isEnabled = $true
+            })
+            { Assert-ExactAdminUiGatewayRoleContract `
+                -AppRoles $extraRoles `
+                -DeploymentOwnershipId $script:roleOwnershipId } |
+                Should -Throw '*exactly the four canonical user-only Gateway roles*'
+
+            foreach ($drift in @(
+                [ordered]@{ property = 'id'; value = '88888888-8888-4888-8888-888888888888' },
+                [ordered]@{ property = 'displayName'; value = 'Drifted role' },
+                [ordered]@{ property = 'description'; value = 'Drifted description.' },
+                [ordered]@{ property = 'value'; value = 'Gateway.Administrator' },
+                [ordered]@{ property = 'allowedMemberTypes'; value = @('Application') },
+                [ordered]@{ property = 'isEnabled'; value = $false }
+            )) {
+                $driftedRoles = @($validRoles | ForEach-Object {
+                    [pscustomobject]@{
+                        id = [string]$_.id
+                        displayName = [string]$_.displayName
+                        description = [string]$_.description
+                        value = [string]$_.value
+                        allowedMemberTypes = @($_.allowedMemberTypes)
+                        isEnabled = $_.isEnabled
+                    }
+                })
+                $driftedRoles[0].PSObject.Properties[[string]$drift.property].Value = $drift.value
+
+                { Assert-ExactAdminUiGatewayRoleContract `
+                    -AppRoles $driftedRoles `
+                    -DeploymentOwnershipId $script:roleOwnershipId } |
+                    Should -Throw '*exactly the four canonical user-only Gateway roles*'
+            }
+        }
+
+        It 'wires the owner-only Administrator assignment into the Admin UI service-principal boundary' {
+            $tokens = $null
+            $errors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile(
+                (Get-Module Entra).Path, [ref]$tokens, [ref]$errors)
+            $errors.Count | Should -Be 0
+            $function = $ast.Find({ param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ceq 'Ensure-AdminUiApplication'
+            }, $true).Extent.Text
+
+            $function | Should -Match 'appRoles = \$expectedRoles'
+            $function | Should -Match 'ExpectedAppRoleAssigneePrincipalId = \[string\]\$Identity\.userObjectId'
+            $function | Should -Match 'ExpectedAppRoleId = \[string\]\$adminRole\[0\]\.id'
+            $function | Should -Match '/appRoleAssignedTo'
+            $function | Should -Not -Match 'gatewayApiServicePrincipalId.+appRoleAssignedTo'
+        }
+    }
+}
+
 Describe 'Exact Gateway-owned service-principal boundary' {
     InModuleScope Entra {
         BeforeEach {

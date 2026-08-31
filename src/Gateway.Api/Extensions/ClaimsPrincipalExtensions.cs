@@ -12,13 +12,6 @@ public static class ClaimsPrincipalExtensions
             ?? throw new InvalidOperationException("Missing oid claim");
     }
 
-    public static string GetClientId(this ClaimsPrincipal principal)
-    {
-        return principal.FindFirstValue("appid")
-            ?? principal.FindFirstValue("azp")
-            ?? throw new InvalidOperationException("Missing appid/azp claim");
-    }
-
     public static Guid GetAgentRegistrationId(this ClaimsPrincipal principal)
     {
         var value = principal.FindFirstValue(

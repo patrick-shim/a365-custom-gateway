@@ -73,7 +73,7 @@ public sealed class AgentDetailsPageTests : BunitContext
             buttonLabels.Contains("Disable agent").Should().Be(canOperate);
             buttonLabels.Contains("Save features").Should().Be(isAdministrator);
             buttonLabels.Contains("Retry provisioning").Should().Be(isAdministrator);
-            buttonLabels.Contains("Delete agent").Should().Be(isAdministrator);
+            buttonLabels.Contains("Delete registration").Should().Be(isAdministrator);
             cut.FindAll("#history-heading").Any().Should().Be(canViewProvisioning);
             cut.FindAll("#audit-heading").Any().Should().Be(canViewAudit);
         });
@@ -128,7 +128,6 @@ public sealed class AgentDetailsPageTests : BunitContext
         });
         _ = _api.DidNotReceive().RetryProvisioningAsync(
             Arg.Any<Guid>(),
-            Arg.Any<Guid>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -158,7 +157,6 @@ public sealed class AgentDetailsPageTests : BunitContext
             .Returns(new AuditEventListResponse([], null));
         _api.RetryProvisioningAsync(
                 agentId,
-                Arg.Any<Guid>(),
                 Arg.Any<CancellationToken>())
             .Returns(new AsyncOperationResponse(agentId, "Provisioning", operationId, null));
 
@@ -177,7 +175,6 @@ public sealed class AgentDetailsPageTests : BunitContext
 
         _ = _api.Received(1).RetryProvisioningAsync(
             agentId,
-            Arg.Any<Guid>(),
             Arg.Any<CancellationToken>());
         Services.GetRequiredService<NavigationManager>().Uri
             .Should().EndWith($"/operations/{operationId:D}");
@@ -249,7 +246,6 @@ public sealed class AgentDetailsPageTests : BunitContext
         _api.UpdateAgentFeaturesAsync(
                 agentId,
                 Arg.Any<UpdateFeaturesRequest>(),
-                Arg.Any<string?>(),
                 Arg.Any<CancellationToken>())
             .Returns(new UpdateFeaturesResponse(
                 agentId,
@@ -276,12 +272,11 @@ public sealed class AgentDetailsPageTests : BunitContext
                 request.ObservabilityMode == expectedLegacyMode &&
                 request.Agent365ObservabilityEnabled == agent365Enabled &&
                 request.AzureMonitorExportEnabled == azureMonitorEnabled),
-            "\"version-1\"",
             Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task DeleteConfirmation_PreservesMicrosoftResources_AndSubmitsSupportedMode()
+    public async Task DeleteConfirmation_SubmitsGatewayRegistrationDeletion()
     {
         var auth = AddAuthorization();
         auth.SetAuthorized("Admin user");
@@ -302,30 +297,25 @@ public sealed class AgentDetailsPageTests : BunitContext
             .Returns(new AuditEventListResponse([], null));
         _api.DeleteAgentAsync(
                 agentId,
-                false,
-                Arg.Any<string?>(),
-                Arg.Any<Guid>(),
                 Arg.Any<CancellationToken>())
             .Returns(new DeleteAgentResponse(
                 agentId,
                 "Deleting",
                 operationId,
-                DeleteMicrosoftResources: false,
                 Links: null));
 
         var cut = Render<AgentDetails>(parameters => parameters
             .Add(component => component.AgentId, agentId));
         cut.WaitForElement("h1");
         var deleteButton = cut.FindAll("fluent-button")
-            .Single(button => button.TextContent.Trim() == "Delete agent");
+            .Single(button => button.TextContent.Trim() == "Delete registration");
 
         await deleteButton.ClickAsync(new MouseEventArgs());
 
         cut.WaitForAssertion(() =>
         {
-            cut.Find("#confirm-message").TextContent.Should().Contain("preserves all linked Microsoft resources");
-            cut.Find(".confirm-extra").TextContent.Should().Contain("automatic Microsoft-resource deletion is not implemented");
-            cut.Markup.Should().NotContain("Also delete linked Microsoft resources");
+            cut.Find("#confirm-message").TextContent.Should().Contain("linked Microsoft resources are not changed");
+            cut.Find(".confirm-extra").TextContent.Should().Contain("child Agent ID");
         });
 
         await cut.FindAll(".confirm-panel fluent-button").Last()
@@ -333,9 +323,6 @@ public sealed class AgentDetailsPageTests : BunitContext
 
         _ = _api.Received(1).DeleteAgentAsync(
             agentId,
-            false,
-            "\"version-1\"",
-            Arg.Any<Guid>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -512,7 +499,6 @@ public sealed class AgentDetailsPageTests : BunitContext
         _api.RevokeAgentIngressCredentialAsync(
                 agentId,
                 firstKeyId,
-                Arg.Any<Guid>(),
                 Arg.Any<CancellationToken>())
             .Returns(new RevokeAgentIngressCredentialResponse(
                 agentId,
@@ -533,7 +519,6 @@ public sealed class AgentDetailsPageTests : BunitContext
         _ = _api.DidNotReceive().RevokeAgentIngressCredentialAsync(
             Arg.Any<Guid>(),
             Arg.Any<Guid>(),
-            Arg.Any<Guid>(),
             Arg.Any<CancellationToken>());
 
         await cut.FindAll(".confirm-panel fluent-button").Last()
@@ -542,7 +527,6 @@ public sealed class AgentDetailsPageTests : BunitContext
         _ = _api.Received(1).RevokeAgentIngressCredentialAsync(
             agentId,
             firstKeyId,
-            Arg.Any<Guid>(),
             Arg.Any<CancellationToken>());
     }
 

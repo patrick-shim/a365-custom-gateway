@@ -58,25 +58,6 @@ public sealed class RegisterAgentPageTests : BunitContext
     }
 
     [Fact]
-    public void ExactBoundRegistration_UsesTheServerAuthorizedGeneratedExternalId()
-    {
-        const string ownerObjectId = "02ed1e89-4ad1-4073-8e90-4aa865784896";
-        const string authorizedExternalId = "agent-canary-exact-bound";
-        _authorization.SetClaims(new Claim("oid", ownerObjectId));
-        _api.GetSystemConfigAsync(Arg.Any<CancellationToken>())
-            .Returns(CreateConfig(
-                "Agent365",
-                agent365Enabled: true,
-                azureMonitorEnabled: false,
-                authorizedRegistrationExternalAgentId: authorizedExternalId));
-
-        var cut = Render<RegisterAgent>();
-
-        cut.Find("#external-agent-id").GetAttribute("value")
-            .Should().Be(authorizedExternalId);
-    }
-
-    [Fact]
     public void BlueprintSelection_DefaultsToExistingTypedInventoryAndAcceptsEqualGraphIdentifiers()
     {
         const string ownerObjectId = "02ed1e89-4ad1-4073-8e90-4aa865784896";
@@ -122,7 +103,7 @@ public sealed class RegisterAgentPageTests : BunitContext
 
         cut.Find("#purview-profile-mode").Change("CreateNew");
         cut.Find("#new-purview-profile-name").Should().NotBeNull();
-        cut.Markup.Should().Contain("preserves every existing blueprint assignment");
+        cut.Markup.Should().Contain("preserves every existing DLP location");
     }
 
     [Fact]
@@ -158,7 +139,6 @@ public sealed class RegisterAgentPageTests : BunitContext
 
         _ = _api.DidNotReceive().RegisterAgentAsync(
             Arg.Any<RegisterAgentRequest>(),
-            Arg.Any<Guid?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -175,7 +155,6 @@ public sealed class RegisterAgentPageTests : BunitContext
         cut.Markup.Should().Contain("Select a reusable Agent ID blueprint");
         _ = _api.DidNotReceive().RegisterAgentAsync(
             Arg.Any<RegisterAgentRequest>(),
-            Arg.Any<Guid?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -253,7 +232,6 @@ public sealed class RegisterAgentPageTests : BunitContext
         cut.FindAll("#existing-blueprint").Should().BeEmpty();
         _ = _api.DidNotReceive().RegisterAgentAsync(
             Arg.Any<RegisterAgentRequest>(),
-            Arg.Any<Guid?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -298,7 +276,6 @@ public sealed class RegisterAgentPageTests : BunitContext
                 new HttpRequestException("Unavailable")));
         _api.RegisterAgentAsync(
                 Arg.Any<RegisterAgentRequest>(),
-                Arg.Any<Guid?>(),
                 Arg.Any<CancellationToken>())
             .Returns(new RegisterAgentResponse(
                 Guid.NewGuid(),
@@ -321,7 +298,6 @@ public sealed class RegisterAgentPageTests : BunitContext
                 request.Blueprint.Mode == "CreateNew" &&
                 request.Blueprint.BlueprintObjectId == null &&
                 request.Blueprint.DisplayName == blueprintDisplayName),
-            Arg.Any<Guid?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -363,7 +339,6 @@ public sealed class RegisterAgentPageTests : BunitContext
 
         _ = _api.DidNotReceive().RegisterAgentAsync(
             Arg.Any<RegisterAgentRequest>(),
-            Arg.Any<Guid?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -428,7 +403,6 @@ public sealed class RegisterAgentPageTests : BunitContext
         var operationId = Guid.NewGuid();
         _api.RegisterAgentAsync(
                 Arg.Any<RegisterAgentRequest>(),
-                Arg.Any<Guid?>(),
                 Arg.Any<CancellationToken>())
             .Returns(new RegisterAgentResponse(
                 Guid.NewGuid(),
@@ -456,7 +430,6 @@ public sealed class RegisterAgentPageTests : BunitContext
                 request.Blueprint.Mode == "UseExisting" &&
                 request.Blueprint.BlueprintObjectId == ExistingBlueprintObjectId.ToString("D") &&
                 request.Blueprint.DisplayName == null),
-            Arg.Any<Guid?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -468,7 +441,6 @@ public sealed class RegisterAgentPageTests : BunitContext
         _authorization.SetClaims(new Claim("oid", ownerObjectId));
         _api.RegisterAgentAsync(
                 Arg.Any<RegisterAgentRequest>(),
-                Arg.Any<Guid?>(),
                 Arg.Any<CancellationToken>())
             .Returns(new RegisterAgentResponse(
                 Guid.NewGuid(),
@@ -492,7 +464,6 @@ public sealed class RegisterAgentPageTests : BunitContext
                 request.Blueprint.Mode == "CreateNew" &&
                 request.Blueprint.BlueprintObjectId == null &&
                 request.Blueprint.DisplayName == blueprintDisplayName),
-            Arg.Any<Guid?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -507,7 +478,6 @@ public sealed class RegisterAgentPageTests : BunitContext
         _authorization.SetClaims(new Claim("oid", signedInOwnerObjectId));
         _api.RegisterAgentAsync(
                 Arg.Any<RegisterAgentRequest>(),
-                Arg.Any<Guid?>(),
                 Arg.Any<CancellationToken>())
             .Returns(new RegisterAgentResponse(
                 Guid.NewGuid(),
@@ -537,7 +507,6 @@ public sealed class RegisterAgentPageTests : BunitContext
                 request.Blueprint.Mode == "CreateNew" &&
                 request.Blueprint.BlueprintObjectId == null &&
                 request.Blueprint.DisplayName == blueprintDisplayName),
-            Arg.Any<Guid?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -567,7 +536,6 @@ public sealed class RegisterAgentPageTests : BunitContext
         var expiresAtUtc = new DateTime(2026, 9, 25, 3, 4, 5, DateTimeKind.Utc);
         _api.RegisterAgentAsync(
                 Arg.Any<RegisterAgentRequest>(),
-                Arg.Any<Guid?>(),
                 Arg.Any<CancellationToken>())
             .Returns(new RegisterAgentResponse(
                 Guid.NewGuid(),
@@ -609,7 +577,6 @@ public sealed class RegisterAgentPageTests : BunitContext
         var operationId = Guid.NewGuid();
         _api.RegisterAgentAsync(
                 Arg.Any<RegisterAgentRequest>(),
-                Arg.Any<Guid?>(),
                 Arg.Any<CancellationToken>())
             .Returns(new RegisterAgentResponse(
                 Guid.NewGuid(),
@@ -653,7 +620,6 @@ public sealed class RegisterAgentPageTests : BunitContext
             TaskCreationOptions.RunContinuationsAsynchronously);
         _api.RegisterAgentAsync(
                 Arg.Any<RegisterAgentRequest>(),
-                Arg.Any<Guid?>(),
                 Arg.Any<CancellationToken>())
             .Returns(completion.Task);
         var cut = Render<RegisterAgent>();
@@ -686,7 +652,6 @@ public sealed class RegisterAgentPageTests : BunitContext
                     request.OwnerObjectId == ownerObjectId &&
                     request.Blueprint != null &&
                     request.Blueprint.BlueprintObjectId == ExistingBlueprintObjectId.ToString("D")),
-                Arg.Any<Guid?>(),
                 Arg.Any<CancellationToken>());
             cut.Markup.Should().Contain("Registering…");
         });
@@ -696,7 +661,6 @@ public sealed class RegisterAgentPageTests : BunitContext
 
         _ = _api.Received(1).RegisterAgentAsync(
             Arg.Any<RegisterAgentRequest>(),
-            Arg.Any<Guid?>(),
             Arg.Any<CancellationToken>());
 
         completion.SetResult(new RegisterAgentResponse(
@@ -726,7 +690,6 @@ public sealed class RegisterAgentPageTests : BunitContext
         var operationId = Guid.NewGuid();
         _api.RegisterAgentAsync(
                 Arg.Any<RegisterAgentRequest>(),
-                Arg.Any<Guid?>(),
                 Arg.Any<CancellationToken>())
             .Returns(new RegisterAgentResponse(
                 Guid.NewGuid(),
@@ -763,7 +726,6 @@ public sealed class RegisterAgentPageTests : BunitContext
         var operationId = Guid.NewGuid();
         _api.RegisterAgentAsync(
                 Arg.Any<RegisterAgentRequest>(),
-                Arg.Any<Guid?>(),
                 Arg.Any<CancellationToken>())
             .Returns(new RegisterAgentResponse(
                 Guid.NewGuid(),
@@ -785,7 +747,6 @@ public sealed class RegisterAgentPageTests : BunitContext
             Arg.Is<RegisterAgentRequest>(request =>
                 request.ExternalAgentId == generatedExternalAgentId &&
                 request.OwnerObjectId == accountableOwnerObjectId),
-            Arg.Any<Guid?>(),
             Arg.Any<CancellationToken>());
     }
 
@@ -806,7 +767,6 @@ public sealed class RegisterAgentPageTests : BunitContext
 
         _ = _api.DidNotReceive().RegisterAgentAsync(
             Arg.Any<RegisterAgentRequest>(),
-            Arg.Any<Guid?>(),
             Arg.Any<CancellationToken>());
         cut.Find("[role='alert']").TextContent.Should().NotBeNullOrWhiteSpace();
         cut.Find("fluent-button[type='submit']").HasAttribute("disabled").Should().BeTrue();
@@ -823,8 +783,7 @@ public sealed class RegisterAgentPageTests : BunitContext
         string legacyMode,
         bool? agent365Enabled,
         bool? azureMonitorEnabled,
-        bool provisioningExecutionEnabled = true,
-        string? authorizedRegistrationExternalAgentId = null) => new(
+        bool provisioningExecutionEnabled = true) => new(
         ProvisioningMode: "Automatic",
         DefaultObservabilityMode: legacyMode,
         DefaultPurviewEnabled: false,
@@ -844,7 +803,6 @@ public sealed class RegisterAgentPageTests : BunitContext
         DefaultAgent365ObservabilityEnabled: agent365Enabled,
         DefaultAzureMonitorExportEnabled: azureMonitorEnabled,
         ProvisioningExecutionEnabled: provisioningExecutionEnabled,
-        AuthorizedRegistrationExternalAgentId: authorizedRegistrationExternalAgentId,
         PurviewPolicyProvisioningEnabled: true);
 
     private static AgentIdentityBlueprintListResponse CreateBlueprintInventory() => new(

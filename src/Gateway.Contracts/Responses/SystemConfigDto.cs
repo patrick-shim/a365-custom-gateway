@@ -2,6 +2,11 @@ using Gateway.Contracts.Dtos;
 
 namespace Gateway.Contracts.Responses;
 
+/// <summary>
+/// Effective configuration and deployment capabilities. Persisted compatibility
+/// members remain in this response for wire compatibility but are read-only and
+/// do not advertise an implemented runtime control.
+/// </summary>
 public record SystemConfigDto(
     string ProvisioningMode,
     string DefaultObservabilityMode,
@@ -22,7 +27,6 @@ public record SystemConfigDto(
     bool? DefaultAgent365ObservabilityEnabled = null,
     bool? DefaultAzureMonitorExportEnabled = null,
     bool ProvisioningExecutionEnabled = false,
-    string? AuthorizedRegistrationExternalAgentId = null,
     bool PurviewPolicyProvisioningEnabled = false,
     bool DefaultPromptShieldEnabled = false,
     bool PromptShieldAvailable = false);

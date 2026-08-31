@@ -118,13 +118,12 @@ public sealed class GatewayApiClientTests
     }
 
     [Fact]
-    public async Task CredentialLifecycleMethods_UseNamedRoutesAndOnlyRevokeUsesIdempotencyKey()
+    public async Task CredentialLifecycleMethods_UseNamedRoutesWithoutUnsupportedMutationHeaders()
     {
         _tokenProvider.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("token");
         var agentId = Guid.NewGuid();
         var credentialId = Guid.NewGuid();
         var issuedCredentialId = Guid.NewGuid();
-        var revokeIdempotencyKey = Guid.NewGuid();
         var responses = new Queue<HttpResponseMessage>(
         [
             RecordingHttpMessageHandler.JsonResponse($$"""
@@ -169,8 +168,7 @@ public sealed class GatewayApiClientTests
         var issued = await client.IssueAgentIngressCredentialAsync(agentId);
         var revoked = await client.RevokeAgentIngressCredentialAsync(
             agentId,
-            credentialId,
-            revokeIdempotencyKey);
+            credentialId);
 
         list.Items.Should().ContainSingle(item => item.KeyId == credentialId);
         issued.GatewayCredential.KeyId.Should().Be(issuedCredentialId);
@@ -192,8 +190,8 @@ public sealed class GatewayApiClientTests
         revokeRequest.Method.Should().Be(HttpMethod.Delete);
         revokeRequest.Uri.AbsolutePath.Should().Be(
             $"/api/v1/agents/{agentId:D}/credentials/{credentialId:D}");
-        revokeRequest.Header("Idempotency-Key")
-            .Should().Be(revokeIdempotencyKey.ToString("D"));
+        revokeRequest.Header("Idempotency-Key").Should().BeNull();
+        revokeRequest.Header("If-Match").Should().BeNull();
     }
 
     [Fact]
@@ -235,11 +233,10 @@ public sealed class GatewayApiClientTests
     }
 
     [Fact]
-    public async Task EnableAgentAsync_UsesSuppliedIdempotencyKey_WithoutAutomaticRetry()
+    public async Task EnableAgentAsync_UsesNamedRouteWithoutUnsupportedMutationHeaders()
     {
         _tokenProvider.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("token");
         var agentId = Guid.NewGuid();
-        var idempotencyKey = Guid.NewGuid();
         var handler = new RecordingHttpMessageHandler(_ =>
             RecordingHttpMessageHandler.JsonResponse($$"""
                 {
@@ -250,45 +247,40 @@ public sealed class GatewayApiClientTests
                 """));
         var client = CreateClient(handler);
 
-        var result = await client.EnableAgentAsync(agentId, idempotencyKey);
+        var result = await client.EnableAgentAsync(agentId);
 
         result.Status.Should().Be("Active");
         var request = handler.Requests.Should().ContainSingle().Subject;
         request.Method.Should().Be(HttpMethod.Post);
         request.Uri.AbsolutePath.Should().Be($"/api/v1/agents/{agentId:D}:enable");
-        request.Header("Idempotency-Key").Should().Be(idempotencyKey.ToString("D"));
+        request.Header("Idempotency-Key").Should().BeNull();
+        request.Header("If-Match").Should().BeNull();
     }
 
     [Fact]
-    public async Task DeleteAgentAsync_SendsConcurrencyAndIdempotencyHeaders()
+    public async Task DeleteAgentAsync_DoesNotSendUnsupportedMutationHeaders()
     {
         _tokenProvider.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("token");
         var agentId = Guid.NewGuid();
         var operationId = Guid.NewGuid();
-        var idempotencyKey = Guid.NewGuid();
         var handler = new RecordingHttpMessageHandler(_ =>
             RecordingHttpMessageHandler.JsonResponse($$"""
                 {
                   "agentId":"{{agentId}}",
                   "status":"Deleting",
-                  "operationId":"{{operationId}}",
-                  "deleteMicrosoftResources":false
+                  "operationId":"{{operationId}}"
                 }
                 """));
         var client = CreateClient(handler);
 
-        await client.DeleteAgentAsync(
-            agentId,
-            deleteMicrosoftResources: false,
-            eTag: "\"version-7\"",
-            idempotencyKey);
+        await client.DeleteAgentAsync(agentId);
 
         var request = handler.Requests.Should().ContainSingle().Subject;
         request.Method.Should().Be(HttpMethod.Delete);
         request.Uri.PathAndQuery.Should().Be(
-            $"/api/v1/agents/{agentId:D}?deleteMicrosoftResources=false");
-        request.Header("If-Match").Should().Be("\"version-7\"");
-        request.Header("Idempotency-Key").Should().Be(idempotencyKey.ToString("D"));
+            $"/api/v1/agents/{agentId:D}");
+        request.Header("If-Match").Should().BeNull();
+        request.Header("Idempotency-Key").Should().BeNull();
     }
 
     [Fact]
@@ -328,7 +320,7 @@ public sealed class GatewayApiClientTests
     }
 
     [Fact]
-    public async Task UpdateAgentFeaturesAsync_GeneratesIdempotencyKey_AndSerializesPatch()
+    public async Task UpdateAgentFeaturesAsync_SerializesPatchWithoutUnsupportedMutationHeaders()
     {
         _tokenProvider.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("token");
         var agentId = Guid.NewGuid();
@@ -344,18 +336,113 @@ public sealed class GatewayApiClientTests
 
         await client.UpdateAgentFeaturesAsync(
             agentId,
-            new UpdateFeaturesRequest("Agent365AzureMonitor", true, "Audit", true, true),
-            "\"version-2\"");
+            new UpdateFeaturesRequest("Agent365AzureMonitor", true, "Audit", true, true));
 
         var request = handler.Requests.Should().ContainSingle().Subject;
         request.Method.Should().Be(HttpMethod.Patch);
-        request.Header("If-Match").Should().Be("\"version-2\"");
-        Guid.TryParse(request.Header("Idempotency-Key"), out _).Should().BeTrue();
+        request.Header("If-Match").Should().BeNull();
+        request.Header("Idempotency-Key").Should().BeNull();
         request.Body.Should().Contain("\"observabilityMode\":\"Agent365AzureMonitor\"");
         request.Body.Should().Contain("\"agent365ObservabilityEnabled\":true");
         request.Body.Should().Contain("\"azureMonitorExportEnabled\":true");
         request.Body.Should().Contain("\"purviewEnabled\":true");
         request.Body.Should().Contain("\"purviewMode\":\"Audit\"");
+    }
+
+    [Fact]
+    public async Task OtherControlPlaneMutations_DoNotSendUnsupportedMutationHeaders()
+    {
+        _tokenProvider.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("token");
+        var agentId = Guid.NewGuid();
+        var registrationOperationId = Guid.NewGuid();
+        var retryOperationId = Guid.NewGuid();
+        var responses = new Queue<HttpResponseMessage>(
+        [
+            RecordingHttpMessageHandler.JsonResponse($$"""
+                {
+                  "agentId":"{{agentId:D}}",
+                  "externalAgentId":"external-agent",
+                  "name":"Research agent",
+                  "status":"Provisioning",
+                  "operationId":"{{registrationOperationId:D}}",
+                  "createdAtUtc":"2026-01-01T00:00:00Z"
+                }
+                """, HttpStatusCode.Created),
+            RecordingHttpMessageHandler.JsonResponse($$"""
+                {
+                  "agentId":"{{agentId:D}}",
+                  "status":"Disabled",
+                  "effectiveAtUtc":"2026-01-01T00:00:00Z"
+                }
+                """),
+            RecordingHttpMessageHandler.JsonResponse($$"""
+                {
+                  "agentId":"{{agentId:D}}",
+                  "status":"Provisioning",
+                  "operationId":"{{retryOperationId:D}}"
+                }
+                """, HttpStatusCode.Accepted),
+            RecordingHttpMessageHandler.JsonResponse(
+                """
+                {
+                  "provisioningMode":"Automatic",
+                  "defaultObservabilityMode":"Agent365",
+                  "defaultPurviewEnabled":false,
+                  "defaultPurviewMode":"AuditOnly",
+                  "retentionDaysActivityReceipts":30,
+                  "retentionDaysAuditEvents":90,
+                  "retentionDaysIdempotencyRecords":7,
+                  "retentionDaysOutboxMessages":14,
+                  "rateLimitPerClient":100,
+                  "rateLimitPerAgent":200,
+                  "rateLimitGlobal":1000,
+                  "reconciliationEnabled":false,
+                  "reconciliationIntervalHours":24,
+                  "stuckTransitionTimeoutDays":7,
+                  "useGraphAgentRegistration":false,
+                  "useCliProvisioningFallback":false
+                }
+                """)
+        ]);
+        var handler = new RecordingHttpMessageHandler(_ => responses.Dequeue());
+        var client = CreateClient(handler);
+
+        await client.RegisterAgentAsync(new RegisterAgentRequest(
+            "external-agent",
+            "Research agent",
+            null,
+            "owner-object-id",
+            "Development",
+            null));
+        await client.DisableAgentAsync(agentId);
+        await client.RetryProvisioningAsync(agentId);
+        await client.UpdateSystemConfigAsync(new UpdateSystemConfigRequest(
+            ProvisioningMode: null,
+            DefaultObservabilityMode: "Agent365",
+            DefaultPurviewEnabled: null,
+            DefaultPurviewMode: null,
+            RetentionDaysActivityReceipts: null,
+            RetentionDaysAuditEvents: null,
+            RetentionDaysIdempotencyRecords: 7,
+            RetentionDaysOutboxMessages: null,
+            RateLimitPerClient: null,
+            RateLimitPerAgent: null,
+            RateLimitGlobal: null,
+            ReconciliationEnabled: null,
+            ReconciliationIntervalHours: null,
+            StuckTransitionTimeoutDays: null,
+            UseGraphAgentRegistration: null,
+            UseCliProvisioningFallback: null));
+
+        handler.Requests.Should().HaveCount(4);
+        handler.Requests.Should().OnlyContain(request =>
+            request.Header("Idempotency-Key") == null &&
+            request.Header("If-Match") == null);
+        handler.Requests.Select(request => request.Uri.AbsolutePath).Should().Equal(
+            "/api/v1/agents",
+            $"/api/v1/agents/{agentId:D}:disable",
+            $"/api/v1/agents/{agentId:D}:retry-provisioning",
+            "/api/v1/system/config");
     }
 
     [Fact]

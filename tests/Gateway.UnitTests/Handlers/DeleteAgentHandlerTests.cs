@@ -55,7 +55,7 @@ public class DeleteAgentHandlerTests
     public async Task Handle_Should_ReturnDeleteAgentResponse_When_AgentIsActive()
     {
         var agent = CreateAgent(AgentStatus.Active);
-        var command = new DeleteAgentCommand(agent.Id, true, "caller-oid-001");
+        var command = new DeleteAgentCommand(agent.Id, "caller-oid-001");
 
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
@@ -66,14 +66,13 @@ public class DeleteAgentHandlerTests
         result.AgentId.Should().Be(agent.Id);
         result.Status.Should().Be(AgentStatus.Deleting.ToString());
         result.OperationId.Should().NotBeEmpty();
-        result.DeleteMicrosoftResources.Should().BeTrue();
     }
 
     [Fact]
     public async Task Handle_Should_KeepAgentUndeletedWhileDeletionIsPending()
     {
         var agent = CreateAgent(AgentStatus.Active);
-        var command = new DeleteAgentCommand(agent.Id, false, "caller-oid-001");
+        var command = new DeleteAgentCommand(agent.Id, "caller-oid-001");
 
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
@@ -89,7 +88,7 @@ public class DeleteAgentHandlerTests
     public async Task Handle_Should_CreateProvisioningJob_When_Deleted()
     {
         var agent = CreateAgent(AgentStatus.Active);
-        var command = new DeleteAgentCommand(agent.Id, true, "caller-oid-001");
+        var command = new DeleteAgentCommand(agent.Id, "caller-oid-001");
 
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
@@ -107,7 +106,7 @@ public class DeleteAgentHandlerTests
     public async Task Handle_Should_CreateOutboxMessage_When_Deleted()
     {
         var agent = CreateAgent(AgentStatus.Active);
-        var command = new DeleteAgentCommand(agent.Id, true, "caller-oid-001");
+        var command = new DeleteAgentCommand(agent.Id, "caller-oid-001");
 
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
@@ -127,7 +126,7 @@ public class DeleteAgentHandlerTests
         ProvisioningJob? createdJob = null;
         OutboxMessage? createdMessage = null;
         var agent = CreateAgent(AgentStatus.Active);
-        var command = new DeleteAgentCommand(agent.Id, true, "caller-oid-001");
+        var command = new DeleteAgentCommand(agent.Id, "caller-oid-001");
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
         _provisioningJobRepository.AddAsync(
@@ -149,14 +148,14 @@ public class DeleteAgentHandlerTests
         payload.Should().NotBeNull();
         payload!.AgentRegistrationId.Should().Be(agent.Id);
         payload.JobId.Should().Be(createdJob!.Id);
-        payload.DeleteMicrosoftResources.Should().BeTrue();
+        payload.CorrelationId.Should().BeNull();
     }
 
     [Fact]
     public async Task Handle_Should_CreateAuditEvent_When_DeletionIsRequested()
     {
         var agent = CreateAgent(AgentStatus.Active);
-        var command = new DeleteAgentCommand(agent.Id, true, "caller-oid-001");
+        var command = new DeleteAgentCommand(agent.Id, "caller-oid-001");
 
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
@@ -174,7 +173,7 @@ public class DeleteAgentHandlerTests
     public async Task Handle_Should_CallSaveChangesExactlyOnce_When_Deleted()
     {
         var agent = CreateAgent(AgentStatus.Active);
-        var command = new DeleteAgentCommand(agent.Id, true, "caller-oid-001");
+        var command = new DeleteAgentCommand(agent.Id, "caller-oid-001");
 
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
@@ -187,7 +186,7 @@ public class DeleteAgentHandlerTests
     [Fact]
     public async Task Handle_Should_ThrowNotFoundException_When_AgentDoesNotExist()
     {
-        var command = new DeleteAgentCommand(Guid.NewGuid(), true, "caller-oid-001");
+        var command = new DeleteAgentCommand(Guid.NewGuid(), "caller-oid-001");
 
         _agentRepository.GetByIdAsync(command.AgentId, Arg.Any<CancellationToken>())
             .Returns((AgentRegistration?)null);
@@ -201,7 +200,7 @@ public class DeleteAgentHandlerTests
     public async Task Handle_Should_ThrowInvalidStateTransitionException_When_AgentIsAlreadyDeleting()
     {
         var agent = CreateAgent(AgentStatus.Deleting);
-        var command = new DeleteAgentCommand(agent.Id, true, "caller-oid-001");
+        var command = new DeleteAgentCommand(agent.Id, "caller-oid-001");
 
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
@@ -217,7 +216,7 @@ public class DeleteAgentHandlerTests
     public async Task Handle_Should_ThrowInvalidStateTransitionException_When_AgentIsAlreadyDeleted()
     {
         var agent = CreateAgent(AgentStatus.Deleted);
-        var command = new DeleteAgentCommand(agent.Id, true, "caller-oid-001");
+        var command = new DeleteAgentCommand(agent.Id, "caller-oid-001");
 
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
             .Returns(agent);
@@ -236,7 +235,7 @@ public class DeleteAgentHandlerTests
         foreach (var status in new[] { AgentStatus.Draft, AgentStatus.Disabled, AgentStatus.Failed, AgentStatus.Active })
         {
             var agent = CreateAgent(status);
-            var command = new DeleteAgentCommand(agent.Id, false, "caller-oid-001");
+            var command = new DeleteAgentCommand(agent.Id, "caller-oid-001");
 
             _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>())
                 .Returns(agent);

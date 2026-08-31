@@ -159,7 +159,7 @@ public sealed class DelegatedAgent365RegistrationTests : IDisposable
     {
         using var disabledFactory = CreateFactory(
             delegatedRegistryEnabled: false,
-            actionExpiresAtUtc: null);
+            allowContinuousDevelopmentAccess: true);
         using var client = disabledFactory.CreateClient();
         _factory.MockDelegatedTokenProvider.ClearReceivedCalls();
         _factory.MockDelegatedRegistryClient.ClearReceivedCalls();
@@ -179,15 +179,12 @@ public sealed class DelegatedAgent365RegistrationTests : IDisposable
     }
 
     [Fact]
-    public async Task Completion_ShouldReturn503BeforeTokenOrRegistryCallForAnUnboundOperation()
+    public async Task Completion_ShouldReturn503BeforeTokenOrRegistryCallWithoutContinuousDevelopmentAccess()
     {
-        var authorizedOperationId = Guid.NewGuid();
-        using var boundFactory = CreateFactory(
+        using var closedFactory = CreateFactory(
             delegatedRegistryEnabled: true,
-            actionExpiresAtUtc: "2099-01-01T00:00:00Z",
-            requireExactActionBinding: true,
-            authorizedOperationId: authorizedOperationId.ToString("D"));
-        using var client = boundFactory.CreateClient();
+            allowContinuousDevelopmentAccess: false);
+        using var client = closedFactory.CreateClient();
         _factory.MockDelegatedTokenProvider.ClearReceivedCalls();
         _factory.MockDelegatedRegistryClient.ClearReceivedCalls();
         HttpClientExtensions.SetDelegatedAdministrator();
@@ -352,18 +349,14 @@ public sealed class DelegatedAgent365RegistrationTests : IDisposable
 
     private WebApplicationFactory<Program> CreateFactory(
         bool delegatedRegistryEnabled,
-        string? actionExpiresAtUtc,
-        bool requireExactActionBinding = false,
-        string? authorizedOperationId = null) =>
+        bool allowContinuousDevelopmentAccess) =>
         _factory.WithWebHostBuilder(builder =>
             builder.ConfigureAppConfiguration((_, configuration) =>
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["Agent365:DelegatedRegistry:Enabled"] = delegatedRegistryEnabled.ToString(),
-                    ["Agent365:DelegatedRegistry:ActionExpiresAtUtc"] = actionExpiresAtUtc,
-                    ["Agent365:DelegatedRegistry:RequireExactActionBinding"] =
-                        requireExactActionBinding.ToString(),
-                    ["Agent365:DelegatedRegistry:AuthorizedOperationId"] = authorizedOperationId
+                    ["Agent365:DelegatedRegistry:AllowContinuousDevelopmentAccess"] =
+                        allowContinuousDevelopmentAccess.ToString()
                 })));
 
     private void ResetDelegatedSubstitutes()
@@ -396,7 +389,7 @@ public sealed class DelegatedAgent365RegistrationTests : IDisposable
         {
             Id = Guid.NewGuid(),
             ExternalAgentId = new ExternalAgentId($"agent-{Guid.NewGuid():N}"),
-            Name = "Delegated Registry E2E canary",
+            Name = "Delegated Registry E2E verification",
             Description = "Synthetic test only",
             OwnerObjectId = callerObjectId,
             Environment = AgentEnvironment.Development,

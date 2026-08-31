@@ -118,8 +118,8 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                     request.ExpectedCollectionPolicyId,
                     request.ExpectedDlpPolicyId,
                     request.ExpectedDlpRuleId,
-                    request.ExpectedPriorBlueprintApplicationIds,
-                    request.ExpectedBlueprintApplicationIds,
+                    request.ExpectedPriorDlpBlueprintApplicationIds,
+                    request.ExpectedDlpBlueprintApplicationIds,
                     sensitiveInformationType = _options.DefaultSensitiveInformationType
                 }),
                 Encoding.UTF8,
@@ -304,11 +304,15 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                 string.IsNullOrWhiteSpace(result.CollectionPolicyId) ||
                 string.IsNullOrWhiteSpace(result.DlpPolicyId) ||
                 string.IsNullOrWhiteSpace(result.DlpRuleId) ||
-                result.BlueprintApplicationIds is null ||
+                result.DlpBlueprintApplicationIds is null ||
                 result.CollectionActivities is null ||
                 result.CollectionEnforcementPlanes is null ||
                 result.CollectionSensitiveTypeIds is null ||
+                result.CollectionLocation is null ||
+                result.CollectionLocation.LocationIds is null ||
                 result.DlpEnforcementPlanes is null ||
+                result.DlpLocation is null ||
+                result.DlpLocation.LocationIds is null ||
                 result.ClassifierNames is null ||
                 result.RuleActions is null ||
                 result.VerifiedAtUtc == default ||
@@ -321,26 +325,40 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                 !MatchesExpectedId(request.ExpectedDlpRuleId, result.DlpRuleId))
                 throw new JsonException("Provider identifiers do not match persisted profile identifiers.");
 
-            if (result.BlueprintApplicationIds.Length !=
-                    result.BlueprintApplicationIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() ||
-                result.BlueprintApplicationIds.Count(value => string.Equals(
+            if (result.DlpBlueprintApplicationIds.Length !=
+                    result.DlpBlueprintApplicationIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() ||
+                result.DlpBlueprintApplicationIds.Count(value => string.Equals(
                     value,
                     request.BlueprintApplicationId,
                     StringComparison.OrdinalIgnoreCase)) != 1 ||
-                result.BlueprintApplicationIds.Any(value =>
+                result.DlpBlueprintApplicationIds.Any(value =>
                     !Guid.TryParse(value, out var parsed) || parsed == Guid.Empty) ||
                 !ExactGuidSet(
-                    result.BlueprintApplicationIds,
-                    request.ExpectedBlueprintApplicationIds!))
-                throw new JsonException("Blueprint Application scope evidence is invalid.");
+                    result.DlpBlueprintApplicationIds,
+                    request.ExpectedDlpBlueprintApplicationIds!))
+                throw new JsonException("DLP blueprint Application scope evidence is invalid.");
+
+            if (!ExactLocation(
+                    result.CollectionLocation,
+                    PurviewPolicyLocationContract.CollectionLocationType,
+                    [PurviewPolicyLocationContract.EnterpriseAiAppsCollectionLocationId]) ||
+                !ExactLocation(
+                    result.DlpLocation,
+                    PurviewPolicyLocationContract.DlpLocationType,
+                    result.DlpBlueprintApplicationIds))
+                throw new JsonException("Purview collection and DLP location evidence is invalid.");
 
             if (!string.Equals(result.CollectionMode, "Enable", StringComparison.Ordinal) ||
                 !ExactSet(result.CollectionActivities, ["UploadText", "DownloadText"]) ||
-                !ExactSet(result.CollectionEnforcementPlanes, ["Application"]) ||
+                !ExactSet(
+                    result.CollectionEnforcementPlanes,
+                    [PurviewPolicyLocationContract.ApplicationEnforcementPlane]) ||
                 !ExactSet(result.CollectionSensitiveTypeIds, ["All"]) ||
                 !result.CollectionIngestionEnabled ||
                 !string.Equals(result.DlpMode, expectedDlpMode, StringComparison.Ordinal) ||
-                !ExactSet(result.DlpEnforcementPlanes, ["Application"]) ||
+                !ExactSet(
+                    result.DlpEnforcementPlanes,
+                    [PurviewPolicyLocationContract.ApplicationEnforcementPlane]) ||
                 !ExactSet(result.ClassifierNames, [sensitiveInformationType]) ||
                 result.RuleActions.Length != 1 ||
                 result.RuleActions[0] is null ||
@@ -358,8 +376,18 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                 result.CollectionEnforcementPlanes,
                 result.CollectionSensitiveTypeIds,
                 result.CollectionIngestionEnabled,
+                new PurviewPolicyLocationReadbackEvidence(
+                    result.CollectionLocation.Workload,
+                    result.CollectionLocation.LocationSource,
+                    result.CollectionLocation.LocationType,
+                    result.CollectionLocation.LocationIds),
                 result.DlpMode,
                 result.DlpEnforcementPlanes,
+                new PurviewPolicyLocationReadbackEvidence(
+                    result.DlpLocation.Workload,
+                    result.DlpLocation.LocationSource,
+                    result.DlpLocation.LocationType,
+                    result.DlpLocation.LocationIds),
                 result.ClassifierNames,
                 result.RuleActions.Select(action =>
                     new PurviewPolicyRuleActionEvidence(action.Setting, action.Value)).ToArray(),
@@ -372,7 +400,7 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                 result.CollectionPolicyId,
                 result.DlpPolicyId,
                 result.DlpRuleId,
-                result.BlueprintApplicationIds,
+                result.DlpBlueprintApplicationIds,
                 evidence,
                 result.VerifiedAtUtc);
         }
@@ -407,6 +435,21 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                normalizedActual.SequenceEqual(normalizedExpected, StringComparer.Ordinal);
     }
 
+    private static bool ExactLocation(
+        AutomationLocation result,
+        string expectedLocationType,
+        IReadOnlyList<string> expectedLocationIds) =>
+        string.Equals(
+            result.Workload,
+            PurviewPolicyLocationContract.ApplicationWorkload,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            result.LocationSource,
+            PurviewPolicyLocationContract.EntraLocationSource,
+            StringComparison.Ordinal) &&
+        string.Equals(result.LocationType, expectedLocationType, StringComparison.Ordinal) &&
+        ExactGuidSet(result.LocationIds, expectedLocationIds);
+
     private static string[]? NormalizeGuidSet(IReadOnlyList<string> values)
     {
         if (values.Count > 512)
@@ -426,23 +469,23 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
 
     internal static void ValidateExpectedScope(PurviewPolicyProvisioningRequest request)
     {
-        if (request.ExpectedPriorBlueprintApplicationIds is null ||
-            request.ExpectedBlueprintApplicationIds is null ||
+        if (request.ExpectedPriorDlpBlueprintApplicationIds is null ||
+            request.ExpectedDlpBlueprintApplicationIds is null ||
             !Guid.TryParse(request.BlueprintApplicationId, out var current) ||
             current == Guid.Empty)
         {
             throw Failure(
                 "PURVIEW_POLICY_EXPECTED_SCOPE_INVALID",
-                "Purview policy provisioning requires an exact persisted Application scope.");
+                "Purview policy provisioning requires an exact persisted DLP Application scope.");
         }
 
-        var prior = NormalizeGuidSet(request.ExpectedPriorBlueprintApplicationIds);
-        var expected = NormalizeGuidSet(request.ExpectedBlueprintApplicationIds);
+        var prior = NormalizeGuidSet(request.ExpectedPriorDlpBlueprintApplicationIds);
+        var expected = NormalizeGuidSet(request.ExpectedDlpBlueprintApplicationIds);
         if (prior is null || expected is null)
         {
             throw Failure(
                 "PURVIEW_POLICY_EXPECTED_SCOPE_INVALID",
-                "Purview policy provisioning requires a bounded set of unique Application IDs.");
+                "Purview policy provisioning requires a bounded set of unique DLP Application IDs.");
         }
 
         var union = prior
@@ -454,7 +497,7 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         {
             throw Failure(
                 "PURVIEW_POLICY_EXPECTED_SCOPE_INVALID",
-                "The expected Purview Application scope is not the exact authorized union.");
+                "The expected Purview DLP Application scope is not the exact authorized union.");
         }
     }
 
@@ -623,14 +666,16 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         string CollectionPolicyId,
         string DlpPolicyId,
         string DlpRuleId,
-        string[] BlueprintApplicationIds,
+        string[] DlpBlueprintApplicationIds,
         string CollectionMode,
         string[] CollectionActivities,
         string[] CollectionEnforcementPlanes,
         string[] CollectionSensitiveTypeIds,
         bool CollectionIngestionEnabled,
+        AutomationLocation CollectionLocation,
         string DlpMode,
         string[] DlpEnforcementPlanes,
+        AutomationLocation DlpLocation,
         string[] ClassifierNames,
         AutomationRuleAction[] RuleActions,
         bool HasExclusions,
@@ -638,6 +683,12 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         bool HasExtraConditions,
         bool HasExtraActions,
         DateTimeOffset VerifiedAtUtc);
+
+    private sealed record AutomationLocation(
+        string Workload,
+        string LocationSource,
+        string LocationType,
+        string[] LocationIds);
 
     private sealed record AutomationRuleAction(
         string Setting,

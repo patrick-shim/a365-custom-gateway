@@ -1363,7 +1363,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
             $compiledNames = @($compiled.parameters.PSObject.Properties.Name | Sort-Object -CaseSensitive)
             $capturedNames = @($script:capturedCompiledParityParameters.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
 
-            $capturedNames.Count | Should -Be 76
+            $capturedNames.Count | Should -Be 68
             ($capturedNames -join '|') | Should -BeExactly ($compiledNames -join '|')
             $script:capturedCompiledParityParameters.allowLegacySystemAssignedImagePull | Should -BeFalse
 
@@ -1718,10 +1718,8 @@ Describe 'Gateway core initial and runtime identity bindings' {
             $booleanValues = [ordered]@{
                 Api = [ordered]@{
                     'Provisioning__ExecutionEnabled' = 'False'
-                    'Provisioning__RequireExactAdmissionBinding' = 'True'
                     'Provisioning__AllowContinuousDevelopmentAccess' = 'False'
                     'Agent365__DelegatedRegistry__Enabled' = 'False'
-                    'Agent365__DelegatedRegistry__RequireExactActionBinding' = 'True'
                     'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = 'False'
                     'Purview__Enabled' = 'False'
                     'PromptShield__Enabled' = 'False'
@@ -1730,7 +1728,6 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 Worker = [ordered]@{
                     'ProvisioningWorker__ProcessingEnabled' = 'False'
                     'ProvisioningWorker__ProvisioningExecutionEnabled' = 'False'
-                    'Agent365__DirectRegistryPreviewEnabled' = 'False'
                     'Purview__Enabled' = 'False'
                     'Purview__PolicyProvisioningEnabled' = 'False'
                 }
@@ -2168,15 +2165,11 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 $script:boundaryAppInsightsId = "$($script:boundaryProviderPrefix)/Microsoft.Insights/components/ai-safe-dev"
                 $script:boundarySmartDetectorId = "$($script:boundaryProviderPrefix)/Microsoft.AlertsManagement/smartDetectorAlertRules/Failure Anomalies - ai-safe-dev"
                 $script:boundarySharedVaultId = "$($script:boundaryProviderPrefix)/Microsoft.KeyVault/vaults/kv-safe-dev"
-                $script:boundaryProvisioningVaultId = "$($script:boundaryProviderPrefix)/Microsoft.KeyVault/vaults/kv-safe-dev-prov"
                 $script:boundaryBaseTags = [ordered]@{
                     project = 'a365-gateway'; environment = 'dev'; managedBy = 'bicep'; projectName = 'safe'
                     deploymentId = 'safe-dev'; bootstrapOwnershipId = $script:coreOwnershipId
                     bootstrapSourceFingerprint = $script:coreSourceFingerprint
                 }
-                $script:boundaryProvisioningTags = [ordered]@{}
-                foreach ($entry in $script:boundaryBaseTags.GetEnumerator()) { $script:boundaryProvisioningTags[$entry.Key] = $entry.Value }
-                $script:boundaryProvisioningTags.workload = 'provisioning-credentials'
                 $script:boundaryPrivateEndpointTags = [ordered]@{}
                 foreach ($entry in $script:boundaryBaseTags.GetEnumerator()) { $script:boundaryPrivateEndpointTags[$entry.Key] = $entry.Value }
                 $script:boundaryPrivateEndpointTags.workload = 'interaction-content'
@@ -2230,8 +2223,6 @@ Describe 'Gateway core initial and runtime identity bindings' {
                     })
                 & $script:addBoundaryResource $script:boundarySharedVaultId 'Microsoft.KeyVault/vaults' 'kv-safe-dev' `
                     'koreacentral' $script:boundaryBaseTags $null
-                & $script:addBoundaryResource $script:boundaryProvisioningVaultId 'Microsoft.KeyVault/vaults' 'kv-safe-dev-prov' `
-                    'koreacentral' $script:boundaryProvisioningTags $null
                 & $script:addBoundaryResource $script:boundaryDnsZoneId 'Microsoft.Network/privateDnsZones' `
                     'privatelink.blob.core.windows.net' 'global' ([ordered]@{}) $null
                 & $script:addBoundaryResource $script:boundaryDnsLinkId 'Microsoft.Network/privateDnsZones/virtualNetworkLinks' `
@@ -2333,7 +2324,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 }
             }
 
-            It 'builds one deterministic sorted 26-resource boundary with exact smart-detector, NIC, and master bindings' {
+            It 'builds one deterministic sorted 25-resource boundary with exact smart-detector, NIC, and master bindings' {
                 $first = New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
                     -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
                     -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
@@ -2345,7 +2336,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
 
                 $first.schemaVersion | Should -Be 2
                 $first.phase | Should -BeExactly 'InertIdentityDeployment'
-                $first.resourceIds.Count | Should -Be 26
+                $first.resourceIds.Count | Should -Be 25
                 ($first.resourceIds -join '|') | Should -BeExactly ((@($first.resourceIds | Sort-Object -CaseSensitive)) -join '|')
                 $first.generatedNicBinding.nicId | Should -BeExactly $script:boundaryNicId.ToLowerInvariant()
                 $first.generatedNicBinding.privateEndpointId | Should -BeExactly $script:boundaryPrivateEndpointId.ToLowerInvariant()
@@ -2378,7 +2369,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
                     -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint `
                     -AdditionalTypeInventoryResourceIds $additionalInventory
 
-                $boundary.resourceIds.Count | Should -Be 26
+                $boundary.resourceIds.Count | Should -Be 25
                 @($boundary.resourceIds | Where-Object { $_ -in @(
                     $sqlPrivateEndpointId.ToLowerInvariant(), $sqlNicId.ToLowerInvariant(),
                     $sqlZoneId.ToLowerInvariant(), $sqlLinkId.ToLowerInvariant()) }).Count | Should -Be 0
@@ -2451,7 +2442,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
                     -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
                     -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint
 
-                $boundary.resourceIds.Count | Should -Be 26
+                $boundary.resourceIds.Count | Should -Be 25
             }
 
             It 'rejects a nonempty private-endpoint DNS zone-group location <Location>' -ForEach @(

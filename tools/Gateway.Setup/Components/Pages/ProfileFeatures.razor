@@ -131,7 +131,7 @@
         <div class="feature-grid">
             <label class="feature-card @(State.Form.AllowDevelopmentRegistryPreview ? "selected" : string.Empty)">
                 <InputCheckbox @bind-Value="State.Form.AllowDevelopmentRegistryPreview" disabled="@(State.ExistingConfigurationLoaded || State.Form.Profile != DeploymentProfile.QuickDevelopment)" />
-                <span><strong>Enable the reviewed Registry beta demo path</strong><small>Explicit dev-only opt-in required for a demo registration to reach Active. The beta dependency remains unsupported for production.</small></span>
+                <span><strong>Enable the reviewed Registry preview demo path</strong><small>Explicit dev-only opt-in required for a demo registration to reach Active. The preview dependency remains unsupported for production.</small></span>
             </label>
             <label class="feature-card @(State.Form.PromptShieldEnabled ? "selected" : string.Empty)">
                 <InputCheckbox @bind-Value="State.Form.PromptShieldEnabled" disabled="@State.ExistingConfigurationLoaded" />
@@ -139,7 +139,7 @@
             </label>
             <label class="feature-card @(State.Form.PurviewEnabled ? "selected" : string.Empty)">
                 <InputCheckbox @bind-Value="State.Form.PurviewEnabled" disabled="@State.ExistingConfigurationLoaded" />
-                <span><strong>Microsoft Purview</strong><small>Authors reviewed blueprint-scoped collection/DLP configuration. Readback is not propagation proof.</small></span>
+                <span><strong>Microsoft Purview policy authoring</strong><small>Authors the fixed tenant-wide Know Your Data scope and blueprint-specific DLP scope. Bootstrap keeps runtime enforcement off until the separate token-role and verdict checks pass.</small></span>
             </label>
         </div>
 
@@ -148,8 +148,8 @@
             <div class="notice @(State.Form.AllowDevelopmentRegistryPreview ? "warning" : "neutral")" role="note">
                 <strong>@(State.Form.AllowDevelopmentRegistryPreview ? "Demo preview explicitly selected" : "Foundation-only until you opt in")</strong>
                 <span>@(State.Form.AllowDevelopmentRegistryPreview
-                    ? "The signed-in Administrator demo flow may cross the one-POST Agent 365 Registry beta boundary after the normal identity, consent, locking, and recovery checks."
-                    : "The Gateway foundation can deploy, but Agent 365 registrations cannot reach Active while Registry beta remains off. Setup will never enable it automatically.")</span>
+                    ? "The signed-in Administrator demo flow may cross the one-POST Agent 365 Registry preview boundary after the normal identity, consent, locking, and recovery checks."
+                    : "The Gateway foundation can deploy, but Agent 365 registrations cannot reach Active while Registry preview remains off. Setup will never enable it automatically.")</span>
             </div>
         }
 
@@ -170,7 +170,7 @@
                 <label for="purview-classifier">Tenant-approved sensitive information type</label>
                 <InputText id="purview-classifier" class="control" @bind-Value="State.Form.PurviewSensitiveInformationType" @oninput="eventArgs => State.Form.PurviewSensitiveInformationType = eventArgs.Value?.ToString() ?? string.Empty" autocomplete="off" disabled="@State.ExistingConfigurationLoaded" />
                 <ValidationMessage For="@(() => State.Form.PurviewSensitiveInformationType)" />
-                <small>Enter the exact reviewed tenant name. Setup never guesses a classifier.</small>
+                <small>Enter the exact reviewed tenant name. Setup never guesses a classifier or treats policy readback as runtime readiness.</small>
             </div>
         }
     </section>
@@ -188,9 +188,9 @@
 
     private string ProfileDescription => State.Form.Profile switch
     {
-        DeploymentProfile.QuickDevelopment => "Complete development foundation; explicitly opt into the reviewed Registry beta demo path below if registrations must reach Active.",
+        DeploymentProfile.QuickDevelopment => "Complete development foundation; explicitly opt into the reviewed Registry preview demo path below if registrations must reach Active.",
         DeploymentProfile.StagingFoundation => "Staging foundation with Registry creation closed and no production-readiness claim.",
-        DeploymentProfile.ProductionSafeFoundation => "Production-safe foundation only; the beta Registry boundary remains closed.",
+        DeploymentProfile.ProductionSafeFoundation => "Production-safe foundation only; the preview Registry boundary remains closed.",
         _ => string.Empty
     };
 

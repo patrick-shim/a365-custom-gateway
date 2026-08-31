@@ -53,8 +53,7 @@ public sealed class SetupCenterPageTests : BunitContext
             cut.Markup.Should().Contain("InfrastructureReady");
             cut.Markup.Should().Contain("ControlPlaneReady");
             cut.Markup.Should().Contain("ProvisioningReady");
-            cut.Markup.Should().Contain("FirstAgentActive");
-            cut.Markup.Should().NotContain("CanaryProven");
+            cut.Markup.Should().Contain("ActiveRegistration");
             cut.FindAll(".readiness-card").Should().HaveCount(4);
             cut.Markup.Should().Contain("Admission open");
             cut.FindAll("[href='/agents/register']").Should().NotBeEmpty();
@@ -83,7 +82,7 @@ public sealed class SetupCenterPageTests : BunitContext
     }
 
     [Fact]
-    public void ActiveGatewayRow_CompletesTheFinalSetupMilestone()
+    public void ActiveGatewayRow_ReportsPostDeploymentRegistrationEvidence()
     {
         var auth = AddAuthorization();
         auth.SetAuthorized("Operator user");
@@ -101,14 +100,13 @@ public sealed class SetupCenterPageTests : BunitContext
 
         cut.WaitForAssertion(() =>
         {
-            cut.Find("#next-safe-action-heading").TextContent.Should().Be("Gateway setup is complete");
+            cut.Find("#next-safe-action-heading").TextContent.Should().Be("Review the Active registration");
             var firstAgentCard = cut.FindAll(".readiness-card")
-                .Single(element => element.TextContent.Contains("FirstAgentActive", StringComparison.Ordinal));
+                .Single(element => element.TextContent.Contains("ActiveRegistration", StringComparison.Ordinal));
             firstAgentCard.QuerySelector(".readiness-state")!.TextContent.Should().Be("Complete");
             firstAgentCard.QuerySelector(".readiness-state-positive").Should().NotBeNull();
-            firstAgentCard.TextContent.Should().Contain("final setup milestone");
-            cut.Markup.Should().Contain("Finish when the first agent is Active");
-            cut.Markup.Should().NotContain("CanaryProven");
+            firstAgentCard.TextContent.Should().Contain("registration evidence");
+            cut.Markup.Should().Contain("Confirm the registration becomes Active");
         });
     }
 

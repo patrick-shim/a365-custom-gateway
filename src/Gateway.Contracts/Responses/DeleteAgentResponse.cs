@@ -6,5 +6,4 @@ public record DeleteAgentResponse(
     Guid AgentId,
     string Status,
     Guid OperationId,
-    bool DeleteMicrosoftResources,
     LinksDto? Links);

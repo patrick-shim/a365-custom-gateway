@@ -48,7 +48,7 @@ public class OperationsController : ControllerBase
                     result.RequiredAction,
                     "CompleteAgent365Registration",
                     StringComparison.Ordinal) &&
-                _actionGate.IsOpen(operationId)
+                _actionGate.IsOpen
         });
     }
 
@@ -63,7 +63,7 @@ public class OperationsController : ControllerBase
         Guid operationId,
         CancellationToken cancellationToken)
     {
-        _actionGate.EnsureOpen(operationId);
+        _actionGate.EnsureOpen();
 
         CompleteAgent365RegistrationResponse result;
         try

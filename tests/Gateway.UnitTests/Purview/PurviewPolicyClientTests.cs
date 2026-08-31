@@ -448,7 +448,13 @@ public sealed class PurviewPolicyProvisioningReadbackTests
             "Credit Card Number");
 
         result.CollectionPolicyId.Should().Be("collection-id");
-        result.BlueprintApplicationIds.Should().ContainSingle(BlueprintApplicationId);
+        result.DlpBlueprintApplicationIds.Should().ContainSingle(BlueprintApplicationId);
+        result.Evidence.CollectionLocation.LocationIds.Should().ContainSingle(
+            PurviewPolicyLocationContract.EnterpriseAiAppsCollectionLocationId);
+        result.Evidence.CollectionLocation.LocationType.Should().Be(
+            PurviewPolicyLocationContract.CollectionLocationType);
+        result.Evidence.DlpLocation.LocationType.Should().Be(
+            PurviewPolicyLocationContract.DlpLocationType);
         result.Evidence.RuleActions.Should().ContainSingle(action =>
             action.Setting == "UploadText" && action.Value == "Block");
     }
@@ -469,7 +475,7 @@ public sealed class PurviewPolicyProvisioningReadbackTests
     public void ParseResult_WrongBlueprintApplicationScope_IsRejected()
     {
         var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
-            CreateOutput(blueprintApplicationIds:
+            CreateOutput(dlpBlueprintApplicationIds:
                 ["22222222-2222-4222-8222-222222222222"]),
             CreateRequest(),
             "Credit Card Number");
@@ -482,8 +488,46 @@ public sealed class PurviewPolicyProvisioningReadbackTests
     public void ParseResult_ExtraProviderApplicationScope_IsRejected()
     {
         var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
-            CreateOutput(blueprintApplicationIds:
+            CreateOutput(dlpBlueprintApplicationIds:
                 [BlueprintApplicationId, "22222222-2222-4222-8222-222222222222"]),
+            CreateRequest(),
+            "Credit Card Number");
+
+        var exception = action.Should().Throw<PurviewPolicyException>();
+        exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
+    }
+
+    [Fact]
+    public void ParseResult_BlueprintScopedCollectionLocation_IsRejected()
+    {
+        var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
+            CreateOutput(
+                collectionLocationId: BlueprintApplicationId,
+                collectionLocationType: PurviewPolicyLocationContract.DlpLocationType),
+            CreateRequest(),
+            "Credit Card Number");
+
+        var exception = action.Should().Throw<PurviewPolicyException>();
+        exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
+    }
+
+    [Fact]
+    public void ParseResult_GroupScopedDlpLocation_IsRejected()
+    {
+        var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
+            CreateOutput(dlpLocationType: PurviewPolicyLocationContract.CollectionLocationType),
+            CreateRequest(),
+            "Credit Card Number");
+
+        var exception = action.Should().Throw<PurviewPolicyException>();
+        exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
+    }
+
+    [Fact]
+    public void ParseResult_DlpLocationIdsDifferFromAuthorizedScope_IsRejected()
+    {
+        var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
+            CreateOutput(dlpLocationIds: ["22222222-2222-4222-8222-222222222222"]),
             CreateRequest(),
             "Credit Card Number");
 
@@ -496,9 +540,9 @@ public sealed class PurviewPolicyProvisioningReadbackTests
     {
         var request = CreateRequest() with
         {
-            ExpectedPriorBlueprintApplicationIds =
+            ExpectedPriorDlpBlueprintApplicationIds =
                 ["22222222-2222-4222-8222-222222222222"],
-            ExpectedBlueprintApplicationIds = [BlueprintApplicationId]
+            ExpectedDlpBlueprintApplicationIds = [BlueprintApplicationId]
         };
 
         var action = () =>
@@ -595,23 +639,42 @@ public sealed class PurviewPolicyProvisioningReadbackTests
 
     private static string CreateOutput(
         string collectionPolicyId = "collection-id",
-        string[]? blueprintApplicationIds = null,
+        string[]? dlpBlueprintApplicationIds = null,
+        string collectionLocationId = PurviewPolicyLocationContract.EnterpriseAiAppsCollectionLocationId,
+        string collectionLocationType = PurviewPolicyLocationContract.CollectionLocationType,
+        string dlpLocationType = PurviewPolicyLocationContract.DlpLocationType,
+        string[]? dlpLocationIds = null,
         bool hasExtraConditions = false,
         bool hasExtraActions = false)
     {
+        var expectedDlpApplicationIds = dlpBlueprintApplicationIds ?? [BlueprintApplicationId];
         var json = JsonSerializer.Serialize(new
         {
             collectionPolicyId,
             dlpPolicyId = "policy-id",
             dlpRuleId = "rule-id",
-            blueprintApplicationIds = blueprintApplicationIds ?? [BlueprintApplicationId],
+            dlpBlueprintApplicationIds = expectedDlpApplicationIds,
             collectionMode = "Enable",
             collectionActivities = new[] { "UploadText", "DownloadText" },
             collectionEnforcementPlanes = new[] { "Application" },
             collectionSensitiveTypeIds = new[] { "All" },
             collectionIngestionEnabled = true,
+            collectionLocation = new
+            {
+                workload = PurviewPolicyLocationContract.ApplicationWorkload,
+                locationSource = PurviewPolicyLocationContract.EntraLocationSource,
+                locationType = collectionLocationType,
+                locationIds = new[] { collectionLocationId }
+            },
             dlpMode = "Enable",
             dlpEnforcementPlanes = new[] { "Application" },
+            dlpLocation = new
+            {
+                workload = PurviewPolicyLocationContract.ApplicationWorkload,
+                locationSource = PurviewPolicyLocationContract.EntraLocationSource,
+                locationType = dlpLocationType,
+                locationIds = dlpLocationIds ?? expectedDlpApplicationIds
+            },
             classifierNames = new[] { "Credit Card Number" },
             ruleActions = new[] { new { setting = "UploadText", value = "Block" } },
             hasExclusions = false,
