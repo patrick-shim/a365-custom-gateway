@@ -118,6 +118,20 @@ Describe 'Bootstrap JSON Schema configuration validation' {
         { Read-BootstrapConfig -Path $path } | Should -Throw '*JSON Schema validation*'
     }
 
+    It 'migrates the exact legacy false runtime-adapter switch in memory' {
+        $config = New-TestBootstrapConfig
+        $config.purview | Add-Member `
+            -NotePropertyName activateGatewayAdapterAfterPolicyReadback `
+            -NotePropertyValue $false
+        $path = Join-Path $TestDrive 'legacy-safe-runtime-activation.json'
+        Write-TestBootstrapConfig -Config $config -Path $path
+
+        $loaded = Read-BootstrapConfig -Path $path
+
+        $loaded.purview.PSObject.Properties.Name |
+            Should -Not -Contain 'activateGatewayAdapterAfterPolicyReadback'
+    }
+
     It 'does not echo malformed JSON content in its parse error' {
         $path = Join-Path $TestDrive 'malformed.json'
         '{ "value": "private-marker" ' | Set-Content -LiteralPath $path -Encoding utf8NoBOM

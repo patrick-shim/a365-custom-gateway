@@ -219,7 +219,17 @@ for roles, certificate handling, and bounded validation.
 
 ## Recovery
 
-If deployment stops:
+If Plan stops, the setup UI identifies the safe boundary that stopped—configuration,
+local prerequisites/Bicep, Azure account selection, Azure What-If, Agent ID blueprint
+validation, or changing inputs. Correct that item and select **Run Plan again**. Apply
+and Resume remain unavailable until Plan produces one apply-ready fingerprint.
+
+`doctor` checks the Windows Azure CLI/Bicep path through the same command boundary
+used by Plan and Apply. `diagnose` can still write a safe bundle when configuration is
+missing or invalid; in that case it reports configuration as unavailable and includes
+no deployment identifiers.
+
+If an accepted deployment stops:
 
 ```bash
 ./gateway status

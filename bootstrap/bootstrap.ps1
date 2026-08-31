@@ -344,14 +344,18 @@ function Invoke-GatewayPlanWorkflow {
         [switch]$StreamOnly
     )
 
+    $script:GatewayFailureStage = 'Plan review'
+    $script:GatewayFailureCode = 'plan_state'
     Assert-BootstrapStateAllowsSourcePlan -State $State | Out-Null
     Clear-BootstrapAcceptedPlan -State $State -StatePath $StatePath | Out-Null
     $planEventBase = [ordered]@{ step = 'Plan review'; index = 1; total = (Get-GatewayBootstrapStepNames).Count }
     Write-GatewayExperienceEvent -Type Info -Message 'Checking local Git, Azure CLI, .NET 10, and Bicep prerequisites before compiling the authenticated plan. Missing supported tools may be installed locally when prerequisite installation is enabled.' -Data ([ordered]@{
-        step = $planEventBase.step; index = $planEventBase.index; total = $planEventBase.total; category = 'localPrerequisites'
+        step = $planEventBase.step; category = 'localPrerequisites'
     }) -OutputFormat $Format
+    $script:GatewayFailureCode = 'plan_prerequisites'
     Assert-GatewayPlanPrerequisites -Install:$InstallLocalPrerequisites | Out-Null
     Write-GatewayExperienceEvent -Type PhaseStarted -Message 'Validating bootstrap source and compiling every bootstrap Bicep template...' -Data $planEventBase -OutputFormat $Format
+    $script:GatewayFailureCode = 'plan_source'
     $root = Get-RepositoryRoot
     $sourceFingerprintBefore = Get-BootstrapSourceFingerprint
     $deploymentSourceFingerprint = Get-BootstrapEffectiveDeploymentSourceFingerprint -State $State -ExecutionSourceFingerprint $sourceFingerprintBefore
@@ -367,12 +371,16 @@ function Invoke-GatewayPlanWorkflow {
     # Plan is read-only, but its ARM What-If and Graph collision checks must use
     # the same exact subscription/tenant boundary as Apply. Without this context,
     # the in-process Graph client correctly refuses token acquisition.
+    $script:GatewayFailureCode = 'plan_account'
     Clear-BootstrapAzureSubscriptionContext
     Set-BootstrapAzureSubscriptionContext `
         -SubscriptionId ([string]$Configuration.subscriptionId) `
         -TenantId ([string]$Configuration.tenantId)
+    $script:GatewayFailureCode = 'plan_what_if'
     $whatIf = Invoke-GatewayFoundationWhatIf -Config $Configuration -RepositoryRoot $root -DeploymentOwnershipId ([string]$State.deploymentOwnershipId) -SourceFingerprint $deploymentSourceFingerprint -State $State
+    $script:GatewayFailureCode = 'plan_blueprint'
     Assert-GatewaySeedBlueprintPlanBoundary -Descriptor $descriptor -Config $Configuration -State $State | Out-Null
+    $script:GatewayFailureCode = 'plan_stable_inputs'
     $sourceFingerprintAfter = Get-BootstrapSourceFingerprint
     $configurationFingerprintAfter = Get-BootstrapConfigurationFingerprint -Config $Configuration
     Assert-GatewayStablePlanInputs `
@@ -505,7 +513,53 @@ function Invoke-GatewayPlanWorkflow {
     }
 }
 
+function Get-GatewaySafeFailureEvent {
+    param(
+        [Parameter(Mandatory)][string]$FailureCode,
+        [Parameter(Mandatory)][string]$FailureStage,
+        [Parameter(Mandatory)][string]$CommandMode
+    )
+
+    $message = switch ($FailureCode) {
+        'configuration' { 'Bootstrap configuration could not be loaded. Run gateway doctor, then reopen Setup or run Plan again.' }
+        'state' { 'Bootstrap state could not be loaded safely. Keep .bootstrap intact, run gateway diagnose, then retry the same command.' }
+        'diagnose' { 'Diagnose could not write its safe bundle. Run gateway doctor and review local file access.' }
+        'plan_state' { 'The preserved bootstrap state does not allow a new Plan. Keep .bootstrap intact and run gateway diagnose.' }
+        'plan_prerequisites' { 'Local prerequisite validation failed. Run gateway doctor, correct its failed item, then run Plan again.' }
+        'plan_source' { 'Repository or Bicep validation failed. Run gateway doctor, correct the reported tool or source issue, then run Plan again.' }
+        'plan_account' { 'The configured Azure tenant and subscription could not be selected. Run az login, verify the active subscription, then run Plan again.' }
+        'plan_what_if' { 'Azure What-If could not produce a reviewable result. Check the Azure session, subscription access, required providers, policy, region, and quota, then run Plan again.' }
+        'plan_blueprint' { 'The Agent ID blueprint boundary check did not complete. Confirm tenant eligibility and Graph access, then run Plan again.' }
+        'plan_stable_inputs' { 'Source or configuration changed while Plan was running. Stop edits and run Plan again.' }
+        'plan_acceptance' { 'Plan could not be accepted because its reviewed fingerprint or apply-ready result did not match. Run Plan again.' }
+        'status' { 'Bootstrap status could not be calculated from the preserved local checkpoints. Keep .bootstrap intact and run gateway diagnose.' }
+        'open' { 'The verified Admin UI endpoint could not be opened. Run gateway verify, then run gateway open again.' }
+        'verification' { 'Deployment verification stopped before it could prove the current live boundary. Keep .bootstrap intact and run gateway diagnose.' }
+        'deployment' { 'Deployment stopped at a persisted checkpoint. Keep .bootstrap intact, run gateway diagnose, then Resume.' }
+        default {
+            if ($CommandMode -eq 'Plan') {
+                'Plan stopped before approval. Run gateway doctor, correct the reported failure, then run Plan again.'
+            }
+            else {
+                'Gateway bootstrap stopped safely. Keep .bootstrap intact and run gateway diagnose before retrying.'
+            }
+        }
+    }
+    $isPlanFailure = $FailureCode.StartsWith('plan_', [StringComparison]::Ordinal)
+    return [ordered]@{
+        message = $message
+        data = [ordered]@{
+            step = $FailureStage
+            category = if ($isPlanFailure) { 'planFailure' } else { 'bootstrapFailure' }
+            failureCode = $FailureCode
+            resumable = [bool]($FailureCode -eq 'deployment')
+        }
+    }
+}
+
 Set-BootstrapStructuredOutput -Enabled ([bool]($OutputFormat -eq 'Json'))
+$script:GatewayFailureStage = 'Bootstrap'
+$script:GatewayFailureCode = 'bootstrap'
 try {
 if ($EventStreamOnly -and $OutputFormat -ne 'Json') {
     Write-GatewayExperienceEvent -Type Warning -Message 'EventStreamOnly requires JSON output.' -Data ([ordered]@{ step = 'Bootstrap'; index = 1; total = (Get-GatewayBootstrapStepNames).Count }) -OutputFormat $OutputFormat
@@ -538,6 +592,44 @@ if ($Mode -eq 'Init') {
     return
 }
 
+if ($Mode -eq 'Diagnose') {
+    $script:GatewayFailureStage = 'Diagnostics'
+    $script:GatewayFailureCode = 'diagnose'
+    $doctor = Get-GatewayDoctorReport -ConfigPath $Config
+    $configuration = $null
+    $status = $null
+    $configurationStatus = if (Test-Path -LiteralPath $Config) { 'Invalid' } else { 'Missing' }
+    if (Test-Path -LiteralPath $Config) {
+        try {
+            $configuration = Read-BootstrapConfig -Path $Config
+            $configurationStatus = 'Validated'
+        }
+        catch {
+            $configuration = $null
+            $configurationStatus = 'Invalid'
+        }
+        if ($null -ne $configuration) {
+            try {
+                $statePath = Get-BootstrapStatePath -Config $configuration
+                $state = Read-BootstrapState -Path $statePath -Config $configuration
+                $status = Get-GatewayBootstrapStatus -Config $configuration -State $state -StatePath $statePath
+            }
+            catch {
+                $status = $null
+                $configurationStatus = 'StateUnavailable'
+            }
+        }
+    }
+    $diagnostic = Write-GatewayDiagnosticBundle -Config $configuration -Doctor $doctor -Status $status -ConfigurationStatus $configurationStatus -Path $DiagnosticPath
+    if ($OutputFormat -eq 'Json') {
+        Write-GatewayResult -Value ([ordered]@{ diagnosticPath = $diagnostic.diagnosticPath; safeFieldsOnly = $true }) -OutputFormat Json
+    }
+    else {
+        Write-GatewayExperienceEvent -Type Result -Message "Safe diagnostic bundle written to $($diagnostic.diagnosticPath). It excludes credentials, tokens, Gateway keys, prompts, responses, and dependency bodies."
+    }
+    return
+}
+
 if ($Mode -eq 'Up' -and -not (Test-Path -LiteralPath $Config)) {
     Write-GatewayExperienceEvent -Type Info -Message 'No bootstrap configuration exists; starting the guided setup wizard.' -Data ([ordered]@{
         step = 'Configuration'; index = 1; total = (Get-GatewayBootstrapStepNames).Count
@@ -545,42 +637,39 @@ if ($Mode -eq 'Up' -and -not (Test-Path -LiteralPath $Config)) {
     $null = New-GatewayBootstrapConfiguration -Path $Config -NonInteractive:$NonInteractive -Force:$Force
 }
 
+$script:GatewayFailureStage = 'Configuration'
+$script:GatewayFailureCode = 'configuration'
 if (-not (Test-Path -LiteralPath $Config)) {
     throw "Bootstrap configuration '$Config' does not exist. Run gateway init, or supply -Config with a reviewed non-secret configuration."
 }
 
 $configuration = Read-BootstrapConfig -Path $Config
+$script:GatewayFailureStage = 'Bootstrap state'
+$script:GatewayFailureCode = 'state'
 $statePath = Get-BootstrapStatePath -Config $configuration
 $state = Read-BootstrapState -Path $statePath -Config $configuration
 
 if ($Mode -eq 'Verify') {
+    $script:GatewayFailureStage = 'Verification'
+    $script:GatewayFailureCode = 'verification'
     Assert-BootstrapStateAllowsSourcePlan -State $state | Out-Null
 }
 
 if ($Mode -eq 'Status') {
+    $script:GatewayFailureStage = 'Status'
+    $script:GatewayFailureCode = 'status'
     $status = Get-GatewayBootstrapStatus -Config $configuration -State $state -StatePath $statePath
     Show-GatewayBootstrapStatus -Status $status -OutputFormat $OutputFormat
     return
 }
 
 if ($Mode -eq 'Open') {
+    $script:GatewayFailureStage = 'Open Admin UI'
+    $script:GatewayFailureCode = 'open'
     $status = Get-GatewayBootstrapStatus -Config $configuration -State $state -StatePath $statePath
     $opened = Open-GatewayAdminUi -Status $status
     if ($OutputFormat -eq 'Json') { Write-GatewayResult -Value $opened -OutputFormat Json }
     else { Write-GatewayExperienceEvent -Type Result -Message "Opened $($opened.adminUiUrl)" }
-    return
-}
-
-if ($Mode -eq 'Diagnose') {
-    $doctor = Get-GatewayDoctorReport -ConfigPath $Config
-    $status = Get-GatewayBootstrapStatus -Config $configuration -State $state -StatePath $statePath
-    $diagnostic = Write-GatewayDiagnosticBundle -Config $configuration -Doctor $doctor -Status $status -Path $DiagnosticPath
-    if ($OutputFormat -eq 'Json') {
-        Write-GatewayResult -Value ([ordered]@{ diagnosticPath = $diagnostic.diagnosticPath; safeFieldsOnly = $true }) -OutputFormat Json
-    }
-    else {
-        Write-GatewayExperienceEvent -Type Result -Message "Safe diagnostic bundle written to $($diagnostic.diagnosticPath). It excludes credentials, tokens, Gateway keys, prompts, responses, and dependency bodies."
-    }
     return
 }
 
@@ -1099,6 +1188,8 @@ try {
 
     if ($Mode -in @('Plan', 'Up', 'Resume')) {
         $plan = Invoke-GatewayPlanWorkflow -Configuration $configuration -State $state -StatePath $statePath -Format $OutputFormat -InstallLocalPrerequisites:$InstallPrerequisites -StreamOnly:$EventStreamOnly
+        $script:GatewayFailureStage = 'Plan review'
+        $script:GatewayFailureCode = 'plan_acceptance'
         if (-not [string]::IsNullOrWhiteSpace($ExpectedPlanFingerprint) -and
             $ExpectedPlanFingerprint -cne [string]$plan.planFingerprint) {
             Clear-BootstrapAcceptedPlan -State $state -StatePath $statePath | Out-Null
@@ -1166,6 +1257,8 @@ try {
     }
 
     if ($Mode -in @('Apply', 'Resume')) {
+        $script:GatewayFailureStage = 'Deployment'
+        $script:GatewayFailureCode = 'deployment'
         $recordedPlanFingerprint = [string]$state.acceptedPlan.planFingerprint
         $activeAcceptedSourceFingerprint = [string]$state.acceptedPlan.sourceFingerprint
         $activeDeploymentSourceFingerprint = Get-BootstrapEffectiveDeploymentSourceFingerprint -State $state -ExecutionSourceFingerprint $activeAcceptedSourceFingerprint
@@ -1541,12 +1634,8 @@ finally {
 }
 }
 catch {
-    Write-GatewayExperienceEvent -Type Warning -Message 'Gateway bootstrap stopped safely. Dependency details were withheld. Review the last safe step, run gateway diagnose, and resume.' -Data ([ordered]@{
-        step = 'Bootstrap'
-        index = 1
-        total = (Get-GatewayBootstrapStepNames).Count
-        resumable = $true
-    }) -OutputFormat $OutputFormat
+    $failure = Get-GatewaySafeFailureEvent -FailureCode $script:GatewayFailureCode -FailureStage $script:GatewayFailureStage -CommandMode $Mode
+    Write-GatewayExperienceEvent -Type Warning -Message $failure.message -Data $failure.data -OutputFormat $OutputFormat
     exit 1
 }
 finally {

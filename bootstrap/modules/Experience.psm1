@@ -173,10 +173,22 @@ function Get-GatewayBootstrapClientIpv4 {
 function Invoke-GatewayAzJson {
     param([Parameter(Mandatory)][string[]]$Arguments)
 
-    $raw = & az @Arguments --output json --only-show-errors 2>$null | Out-String
-    if ($LASTEXITCODE -ne 0) { throw 'Azure CLI request failed. Run gateway doctor, refresh the Azure sign-in, and try again.' }
+    try {
+        $raw = Invoke-BootstrapCommand `
+            -FilePath 'az' `
+            -ArgumentList (@($Arguments) + @('--output', 'json', '--only-show-errors')) `
+            -CaptureStdoutOnly
+    }
+    catch {
+        throw 'Azure CLI request failed. Run gateway doctor, refresh the Azure sign-in, and try again.'
+    }
     if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-    return $raw | ConvertFrom-Json -Depth 100
+    try {
+        return $raw | ConvertFrom-Json -Depth 100 -ErrorAction Stop
+    }
+    catch {
+        throw 'Azure CLI returned malformed JSON. Provider output was suppressed.'
+    }
 }
 
 function Get-GatewayAzureSubscriptions {
@@ -391,9 +403,27 @@ function Get-GatewayCommandVersion {
     param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string[]]$Arguments)
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) { return $null }
     try {
-        $value = (& $Name @Arguments 2>$null | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0) { return $null }
+        $value = Invoke-BootstrapCommand `
+            -FilePath $Name `
+            -ArgumentList $Arguments `
+            -CaptureStdoutOnly
         return ConvertTo-GatewaySafeDisplayText -Value (($value -split "`r?`n")[0]) -MaximumLength 120
+    }
+    catch { return $null }
+}
+
+function Get-GatewayAzureCliVersion {
+    if (-not (Get-Command az -ErrorAction SilentlyContinue)) { return $null }
+    try {
+        $raw = Invoke-BootstrapCommand `
+            -FilePath 'az' `
+            -ArgumentList @('version', '--output', 'json', '--only-show-errors') `
+            -CaptureStdoutOnly
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        $metadata = $raw | ConvertFrom-Json -Depth 20 -ErrorAction Stop
+        $property = $metadata.PSObject.Properties['azure-cli']
+        if ($null -eq $property -or [string]::IsNullOrWhiteSpace([string]$property.Value)) { return $null }
+        return ConvertTo-GatewaySafeDisplayText -Value ([string]$property.Value) -MaximumLength 120
     }
     catch { return $null }
 }
@@ -408,7 +438,7 @@ function Get-GatewayDoctorReport {
     $gitVersion = Get-GatewayCommandVersion -Name 'git' -Arguments @('--version')
     $checks.Add((New-GatewayDoctorCheck -Name 'Git' -Status $(if ($gitVersion) { 'Pass' } else { 'Fail' }) -Value $gitVersion -Remediation 'Install Git from https://git-scm.com/downloads.'))
 
-    $azVersion = Get-GatewayCommandVersion -Name 'az' -Arguments @('version', '--query', '"azure-cli"', '--output', 'tsv')
+    $azVersion = Get-GatewayAzureCliVersion
     $checks.Add((New-GatewayDoctorCheck -Name 'Azure CLI' -Status $(if ($azVersion) { 'Pass' } else { 'Fail' }) -Value $azVersion -Remediation 'Install Azure CLI from https://aka.ms/azure-cli.'))
 
     $bicepVersion = if ($azVersion) { Get-GatewayCommandVersion -Name 'az' -Arguments @('bicep', 'version') } else { $null }
@@ -1832,25 +1862,6 @@ function Invoke-GatewayFoundationWhatIf {
     }
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Plan source fingerprint'
 
-    $account = $null
-    try {
-        $matches = Invoke-GatewayAzJson -Arguments @(
-            'account', 'list', '--all',
-            '--query', "[?id=='$($Config.subscriptionId)' && tenantId=='$($Config.tenantId)' && state=='Enabled'] | [0].{id:id,tenantId:tenantId}"
-        )
-        if ($matches) { $account = $matches }
-    }
-    catch { }
-    if (-not $account) {
-        return [ordered]@{
-            executed = $false
-            applyReady = $false
-            reason = 'No cached Azure CLI account matched the configured tenant and subscription. Run az login, then rerun Plan.'
-            recoveryIgnoreBoundary = $null
-            changes = @()
-        }
-    }
-
     $deploymentName = "a365gw-plan-$($Config.projectName)-$($Config.environment)"
     $result = Invoke-AzJson -Arguments @(
         'deployment', 'sub', 'what-if',
@@ -2433,15 +2444,22 @@ function Open-GatewayAdminUi {
 
 function Write-GatewayDiagnosticBundle {
     param(
-        [Parameter(Mandatory)]$Config,
+        [Parameter()][AllowNull()]$Config,
         [Parameter(Mandatory)]$Doctor,
-        [Parameter(Mandatory)]$Status,
+        [Parameter()][AllowNull()]$Status,
+        [Parameter()][ValidateSet('Validated', 'Missing', 'Invalid', 'StateUnavailable', 'Unavailable')]
+        [string]$ConfigurationStatus = '',
         [Parameter()][string]$Path = ''
     )
 
     $root = Get-RepositoryRoot
+    $hasConfiguration = $null -ne $Config
+    if ([string]::IsNullOrWhiteSpace($ConfigurationStatus)) {
+        $ConfigurationStatus = if ($hasConfiguration) { 'Validated' } else { 'Unavailable' }
+    }
     if ([string]::IsNullOrWhiteSpace($Path)) {
-        $Path = Join-Path $root ".bootstrap/diagnostics/$($Config.projectName)-$($Config.environment)-$([DateTimeOffset]::UtcNow.ToString('yyyyMMdd-HHmmss')).json"
+        $prefix = if ($hasConfiguration) { "$($Config.projectName)-$($Config.environment)" } else { 'gateway-diagnose' }
+        $Path = Join-Path $root ".bootstrap/diagnostics/$prefix-$([DateTimeOffset]::UtcNow.ToString('yyyyMMdd-HHmmss')).json"
     }
     $resolvedPath = [IO.Path]::GetFullPath($Path)
     $directory = Split-Path -Parent $resolvedPath
@@ -2457,27 +2475,26 @@ function Write-GatewayDiagnosticBundle {
             remediation = ConvertTo-GatewaySafeDisplayText -Value $_.remediation -MaximumLength 240
         }
     })
-    $bundle = [ordered]@{
-        schemaVersion = 1
-        createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
-        deployment = [ordered]@{
+    $safeDeployment = if ($hasConfiguration) {
+        [ordered]@{
+            available = $true
+            configurationStatus = $ConfigurationStatus
             id = "$($Config.projectName)-$($Config.environment)"
             tenantId = [string]$Config.tenantId
             subscriptionId = [string]$Config.subscriptionId
             resourceGroupName = [string]$Config.resourceGroupName
             location = [string]$Config.location
         }
-        source = [ordered]@{ commit = $commit; workingTreeDirty = $dirty }
-        doctor = [ordered]@{
-            checkedAtUtc = [string]$Doctor.checkedAtUtc
-            readyForPlan = [bool]$Doctor.readyForPlan
-            readyForApply = [bool]$Doctor.readyForApply
-            failures = [int]$Doctor.failures
-            warnings = [int]$Doctor.warnings
-            notChecked = [int]$Doctor.notChecked
-            checks = $safeDoctorChecks
+    }
+    else {
+        [ordered]@{
+            available = $false
+            configurationStatus = $ConfigurationStatus
+            id = 'Unavailable'
         }
-        status = [ordered]@{
+    }
+    $safeStatus = if ($null -ne $Status) {
+        [ordered]@{
             statusBasis = $Status.statusBasis
             liveReadbackPerformed = [bool]$Status.liveReadbackPerformed
             overallStatus = $Status.overallStatus
@@ -2489,6 +2506,41 @@ function Write-GatewayDiagnosticBundle {
             endpoints = $Status.endpoints
             steps = $Status.steps
         }
+    }
+    else {
+        [ordered]@{
+            statusBasis = 'ConfigurationUnavailable'
+            liveReadbackPerformed = $false
+            overallStatus = 'Unavailable'
+            progressPercent = 0
+            completedSteps = 0
+            totalSteps = $script:GatewayBootstrapSteps.Count
+            nextStep = 'Configuration'
+            readiness = [ordered]@{
+                InfrastructureReady = $false
+                ControlPlaneReady = $false
+                ProvisioningReady = $false
+                ProvisioningAdmission = 'ClosedOrNotVerified'
+            }
+            endpoints = [ordered]@{ adminUi = ''; api = '' }
+            steps = @()
+        }
+    }
+    $bundle = [ordered]@{
+        schemaVersion = 1
+        createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        deployment = $safeDeployment
+        source = [ordered]@{ commit = $commit; workingTreeDirty = $dirty }
+        doctor = [ordered]@{
+            checkedAtUtc = [string]$Doctor.checkedAtUtc
+            readyForPlan = [bool]$Doctor.readyForPlan
+            readyForApply = [bool]$Doctor.readyForApply
+            failures = [int]$Doctor.failures
+            warnings = [int]$Doctor.warnings
+            notChecked = [int]$Doctor.notChecked
+            checks = $safeDoctorChecks
+        }
+        status = $safeStatus
         exclusions = @('credentials', 'tokens', 'assertions', 'authorization headers', 'Gateway keys', 'prompts', 'responses', 'raw dependency bodies')
     }
     $temporaryPath = Join-Path $directory ".$([IO.Path]::GetFileName($resolvedPath)).$([guid]::NewGuid().ToString('N')).tmp"

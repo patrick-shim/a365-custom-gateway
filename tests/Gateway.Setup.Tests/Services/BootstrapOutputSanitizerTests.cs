@@ -10,6 +10,23 @@ public sealed class BootstrapOutputSanitizerTests
         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     [Fact]
+    public void TypedPlanFailure_ShowsTheAuthoredBoundaryWithoutFakeFivePercentProgress()
+    {
+        const string line = """
+            {"schemaVersion":1,"type":"Warning","message":"Repository or Bicep validation failed. Run gateway doctor, correct the reported tool or source issue, then run Plan again.","data":{"step":"Plan review","category":"planFailure","failureCode":"plan_source","resumable":false}}
+            """;
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.Kind.Should().Be(BootstrapProgressKind.Warning);
+        result.DisplayLabel.Should().Be("Plan stopped here");
+        result.Message.Should().Contain("Bicep validation failed");
+        result.ProgressPercent.Should().Be(0);
+        result.PlanResultClaimObserved.Should().BeFalse();
+        result.PlanFingerprint.Should().BeNull();
+    }
+
+    [Fact]
     public void StructuredEvent_RendersOnlyAllowlistedSanitizedFields()
     {
         const string line = """

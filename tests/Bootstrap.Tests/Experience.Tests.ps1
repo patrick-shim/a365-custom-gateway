@@ -173,6 +173,154 @@ Describe 'Experience Azure resource-provider readback boundary' {
     }
 }
 
+Describe 'Experience Windows-safe Azure CLI command boundary' {
+    InModuleScope Experience {
+        BeforeEach {
+            Mock Get-Command {
+                [pscustomobject]@{ Name = 'az'; Source = 'C:\safe\az.cmd' }
+            } -ParameterFilter { [string]$Name -ceq 'az' }
+        }
+
+        It 'reads the Azure CLI version as JSON without a fragile query argument' {
+            Mock Invoke-BootstrapCommand { '{"azure-cli":"2.76.0"}' }
+
+            Get-GatewayAzureCliVersion | Should -BeExactly '2.76.0'
+
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                [bool]$CaptureStdoutOnly -and
+                [string]::Join('|', $ArgumentList) -ceq 'version|--output|json|--only-show-errors'
+            }
+        }
+
+        It 'uses the shared native-command wrapper for Bicep version detection' {
+            Mock Invoke-BootstrapCommand { "Bicep CLI version 0.31.92`nignored" }
+
+            Get-GatewayCommandVersion -Name 'az' -Arguments @('bicep', 'version') |
+                Should -BeExactly 'Bicep CLI version 0.31.92'
+
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                [bool]$CaptureStdoutOnly -and
+                [string]::Join('|', $ArgumentList) -ceq 'bicep|version'
+            }
+        }
+
+        It 'uses the shared native-command wrapper for Azure JSON reads' {
+            Mock Invoke-BootstrapCommand { '{"id":"11111111-1111-4111-8111-111111111111"}' }
+
+            $result = Invoke-GatewayAzJson -Arguments @('account', 'show', '--query', '{id:id}')
+
+            $result.id | Should -BeExactly '11111111-1111-4111-8111-111111111111'
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                [bool]$CaptureStdoutOnly -and
+                [string]::Join('|', $ArgumentList) -ceq
+                    'account|show|--query|{id:id}|--output|json|--only-show-errors'
+            }
+        }
+    }
+}
+
+Describe 'Experience diagnostic bundle without configuration' {
+    It 'writes a safe deployment-unavailable bundle when configuration cannot load' {
+        $path = Join-Path $TestDrive 'diagnose-invalid-config.json'
+        $doctor = [pscustomobject]@{
+            checkedAtUtc = '2026-08-31T00:00:00.0000000+00:00'
+            readyForPlan = $false
+            readyForApply = $false
+            failures = 1
+            warnings = 0
+            notChecked = 4
+            checks = @([pscustomobject]@{
+                name = 'Configuration'
+                status = 'Fail'
+                value = 'Configuration validation failed'
+                remediation = 'Run gateway setup to review and rewrite the configuration.'
+            })
+        }
+
+        $result = Write-GatewayDiagnosticBundle `
+            -Config $null `
+            -Doctor $doctor `
+            -Status $null `
+            -ConfigurationStatus Invalid `
+            -Path $path
+
+        $result.safeFieldsOnly | Should -BeTrue
+        $result.bundle.deployment.available | Should -BeFalse
+        $result.bundle.deployment.configurationStatus | Should -BeExactly 'Invalid'
+        $result.bundle.deployment.PSObject.Properties.Name | Should -Not -Contain 'tenantId'
+        $result.bundle.status.statusBasis | Should -BeExactly 'ConfigurationUnavailable'
+        $result.bundle.status.liveReadbackPerformed | Should -BeFalse
+        $result.bundle.status.steps.Count | Should -Be 0
+        (Get-Content -LiteralPath $path -Raw) | Should -Not -Match '11111111|22222222'
+    }
+}
+
+Describe 'Bootstrap actionable failure and diagnostic routing' {
+    BeforeAll {
+        $script:bootstrapPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../bootstrap/bootstrap.ps1'))
+        $tokens = $null
+        $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            $script:bootstrapPath,
+            [ref]$tokens,
+            [ref]$errors)
+        $errors.Count | Should -Be 0
+        $definition = $ast.Find({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Get-GatewaySafeFailureEvent'
+        }, $true)
+        $null -ne $definition | Should -BeTrue
+        Invoke-Expression $definition.Extent.Text
+        $script:bootstrapSource = Get-Content -LiteralPath $script:bootstrapPath -Raw
+    }
+
+    It 'reports the exact safe Plan boundary without fake deployment progress' {
+        $failure = Get-GatewaySafeFailureEvent `
+            -FailureCode plan_source `
+            -FailureStage 'Plan review' `
+            -CommandMode Plan
+
+        $failure.message | Should -Match 'Repository or Bicep validation failed'
+        $failure.data.category | Should -BeExactly 'planFailure'
+        $failure.data.failureCode | Should -BeExactly 'plan_source'
+        $failure.data.resumable | Should -BeFalse
+        $failure.data.Contains('index') | Should -BeFalse
+        $failure.data.Contains('total') | Should -BeFalse
+    }
+
+    It 'marks only a stopped deployment as resumable' {
+        $failure = Get-GatewaySafeFailureEvent `
+            -FailureCode deployment `
+            -FailureStage Deployment `
+            -CommandMode Resume
+
+        $failure.data.category | Should -BeExactly 'bootstrapFailure'
+        $failure.data.resumable | Should -BeTrue
+        $failure.message | Should -Match 'then Resume'
+    }
+
+    It 'routes Diagnose before mandatory configuration and state loading' {
+        $diagnoseIndex = $script:bootstrapSource.IndexOf("if (`$Mode -eq 'Diagnose')", [StringComparison]::Ordinal)
+        $diagnosticBundleIndex = $script:bootstrapSource.IndexOf(
+            'Write-GatewayDiagnosticBundle',
+            $diagnoseIndex + 1,
+            [StringComparison]::Ordinal)
+        $requiredConfigurationIndex = $script:bootstrapSource.IndexOf(
+            "`$script:GatewayFailureStage = 'Configuration'",
+            $diagnosticBundleIndex + 1,
+            [StringComparison]::Ordinal)
+
+        $diagnoseIndex | Should -BeGreaterOrEqual 0
+        $diagnosticBundleIndex | Should -BeGreaterThan $diagnoseIndex
+        $requiredConfigurationIndex | Should -BeGreaterThan $diagnoseIndex
+        $requiredConfigurationIndex | Should -BeGreaterThan $diagnosticBundleIndex
+    }
+}
+
 Describe 'ACR ARM-audience authoritative readback boundary' {
     It 'uses the exact ARM resource API for every bootstrap policy readback' {
         $experiencePath = (Get-Module Experience).Path
@@ -1169,6 +1317,7 @@ Describe 'Azure What-If result boundary' {
                     $formatIndex + 1 -lt $Arguments.Count -and
                     $Arguments[$formatIndex + 1] -ceq 'ResourceIdOnly'
             }
+            Should -Invoke Invoke-GatewayAzJson -Times 0 -Exactly
         }
 
         It 'accepts the current Azure CLI top-level changes contract' {

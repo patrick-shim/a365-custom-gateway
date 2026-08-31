@@ -34,15 +34,26 @@ function Assert-GatewayPlanPrerequisites {
             Update-BootstrapProcessPath
         }
     }
-    $dotnetVersion = (Invoke-BootstrapCommand -FilePath 'dotnet' -ArgumentList @('--version')).Trim()
+    $dotnetVersion = (Invoke-BootstrapCommand `
+        -FilePath 'dotnet' `
+        -ArgumentList @('--version') `
+        -CaptureStdoutOnly).Trim()
     if ($dotnetVersion -notmatch '^10\.') { throw "The repository requires .NET SDK 10; the installed SDK does not match." }
 
     $bicepVersion = ''
-    try { $bicepVersion = (Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @('bicep', 'version')).Trim() }
+    try {
+        $bicepVersion = (Invoke-BootstrapCommand `
+            -FilePath 'az' `
+            -ArgumentList @('bicep', 'version') `
+            -CaptureStdoutOnly).Trim()
+    }
     catch {
         if (-not $Install) { throw 'Azure Bicep CLI is missing. Run az bicep install, then retry.' }
         Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @('bicep', 'install', '--only-show-errors') -NoCapture | Out-Null
-        $bicepVersion = (Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @('bicep', 'version')).Trim()
+        $bicepVersion = (Invoke-BootstrapCommand `
+            -FilePath 'az' `
+            -ArgumentList @('bicep', 'version') `
+            -CaptureStdoutOnly).Trim()
     }
     if ([string]::IsNullOrWhiteSpace($bicepVersion)) { throw 'Azure Bicep CLI could not be verified after local prerequisite setup.' }
     return [ordered]@{ powerShell = $PSVersionTable.PSVersion.ToString(); git = $true; azureCli = $true; dotnet = $dotnetVersion; bicep = $bicepVersion }
@@ -70,10 +81,36 @@ function Assert-BootstrapPrerequisites {
         Update-BootstrapProcessPath
     }
 
-    $dotnetVersion = (& dotnet --version).Trim()
-    if ($LASTEXITCODE -ne 0 -or $dotnetVersion -notmatch '^10\.') { throw "The repository requires .NET SDK 10; found '$dotnetVersion'." }
-    $bicepVersion = (Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @('bicep', 'version')).Trim()
+    $dotnetVersion = (Invoke-BootstrapCommand `
+        -FilePath 'dotnet' `
+        -ArgumentList @('--version') `
+        -CaptureStdoutOnly).Trim()
+    if ($dotnetVersion -notmatch '^10\.') { throw 'The repository requires .NET SDK 10; the installed SDK does not match.' }
+    $bicepVersion = (Invoke-BootstrapCommand `
+        -FilePath 'az' `
+        -ArgumentList @('bicep', 'version') `
+        -CaptureStdoutOnly).Trim()
     if ([string]::IsNullOrWhiteSpace($bicepVersion)) { throw 'Azure CLI could not verify Bicep.' }
+
+    $azureCliVersion = ''
+    try {
+        $azureCliVersionMetadata = Invoke-BootstrapCommand `
+            -FilePath 'az' `
+            -ArgumentList @('version', '--output', 'json', '--only-show-errors') `
+            -CaptureStdoutOnly |
+                ConvertFrom-Json -Depth 20 -ErrorAction Stop
+        $azureCliVersion = [string]$azureCliVersionMetadata.PSObject.Properties['azure-cli'].Value
+    }
+    catch {
+        throw 'Azure CLI version metadata could not be verified.'
+    }
+    if ([string]::IsNullOrWhiteSpace($azureCliVersion)) {
+        throw 'Azure CLI version metadata could not be verified.'
+    }
+    $gitVersion = (Invoke-BootstrapCommand `
+        -FilePath 'git' `
+        -ArgumentList @('--version') `
+        -CaptureStdoutOnly).Trim()
 
     if ($RequirePurview) {
         if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
@@ -84,9 +121,9 @@ function Assert-BootstrapPrerequisites {
 
     return [ordered]@{
         powerShell = $PSVersionTable.PSVersion.ToString()
-        azureCli = (& az version --query '"azure-cli"' -o tsv).Trim()
+        azureCli = $azureCliVersion
         dotnet = $dotnetVersion
-        git = (& git --version | Out-String).Trim()
+        git = $gitVersion
         bicep = $bicepVersion
         agent365BlueprintProvider = 'MicrosoftGraphV1DirectNoCredential'
         exchangeOnlineManagementInstalled = [bool](Get-Module -ListAvailable -Name ExchangeOnlineManagement)

@@ -1222,12 +1222,32 @@ function Read-BootstrapConfig {
         throw "Bootstrap configuration '$resolved' is not valid JSON."
     }
 
+    # Setup briefly emitted this property with the only supported value, false.
+    # Accept that exact legacy output long enough to migrate it in memory, while
+    # continuing to reject true, non-boolean values, casing variants, and every
+    # other undeclared property through the current schema.
+    $schemaInput = $raw
+    $purviewProperties = @($config.PSObject.Properties | Where-Object { $_.Name -ceq 'purview' })
+    if ($purviewProperties.Count -eq 1 -and $null -ne $purviewProperties[0].Value) {
+        $purview = $purviewProperties[0].Value
+        $legacyProperties = @($purview.PSObject.Properties | Where-Object {
+            $_.Name -ceq 'activateGatewayAdapterAfterPolicyReadback'
+        })
+        if ($legacyProperties.Count -eq 1) {
+            if ($legacyProperties[0].Value -isnot [bool] -or [bool]$legacyProperties[0].Value) {
+                throw 'Bootstrap configuration failed JSON Schema validation. Review property names, types, formats, and allowed values against bootstrap/config.schema.json; rejected input values were suppressed.'
+            }
+            $purview.PSObject.Properties.Remove('activateGatewayAdapterAfterPolicyReadback')
+            $schemaInput = $config | ConvertTo-Json -Depth 30 -Compress
+        }
+    }
+
     $schemaPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../config.schema.json'))
     if (-not (Test-Path -LiteralPath $schemaPath -PathType Leaf)) {
         throw "Bootstrap configuration schema is missing at '$schemaPath'."
     }
     $schemaErrors = @()
-    $schemaValid = Test-Json -Json $raw -SchemaFile $schemaPath -ErrorVariable +schemaErrors `
+    $schemaValid = Test-Json -Json $schemaInput -SchemaFile $schemaPath -ErrorVariable +schemaErrors `
         -ErrorAction SilentlyContinue -WarningAction SilentlyContinue -InformationAction SilentlyContinue
     if (-not $schemaValid) {
         throw 'Bootstrap configuration failed JSON Schema validation. Review property names, types, formats, and allowed values against bootstrap/config.schema.json; rejected input values were suppressed.'

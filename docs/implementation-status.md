@@ -100,21 +100,28 @@ The consolidated source gate completed on 2026-08-31:
 |---|---:|---:|---:|
 | Gateway.UnitTests | 632 | 0 | 0 |
 | Gateway.AdminUi.Tests | 157 | 0 | 0 |
-| Gateway.Setup.Tests | 132 | 0 | 0 |
+| Gateway.Setup.Tests | 135 | 0 | 0 |
 | Gateway.ObservabilityRuntime.Tests | 158 | 0 | 0 |
 | Gateway.ArchitectureTests | 115 | 0 | 0 |
 | Gateway.IntegrationTests | 85 | 0 | 0 |
 | Gateway.EndToEndTests | 102 | 0 | 0 |
 | Gateway.SecurityTests | 126 | 0 | 0 |
-| **.NET total** | **1,507** | **0** | **0** |
+| **.NET total** | **1,510** | **0** | **0** |
 
-The PowerShell source gate discovered 566 tests in 22 files: 565 passed, none
+The PowerShell source gate discovered 575 tests in 23 files: 574 passed, none
 failed, and one Windows-only launcher case was intentionally skipped on macOS. It
 validated 17 PowerShell source files and two JSON contracts, then compiled 26 Bicep
 templates and three Bicep parameter files. Release build completed with zero
 warnings and zero errors; `dotnet format --verify-no-changes`, whitespace, launcher
 syntax, OpenAPI YAML parsing, local documentation links, and ignored secret/state
 path checks also passed.
+
+Setup regression coverage now includes Windows-safe Azure CLI/Bicep invocation,
+in-memory migration of the one obsolete false-only Setup property, configuration-
+independent diagnostics, stage-specific Plan failures without fake progress, and
+an explicit Plan retry action. Configuration readers normalize the previously
+emitted false-only field while continuing to reject enabled or unknown fields; new
+writes omit it.
 
 ## Known external limitations
 

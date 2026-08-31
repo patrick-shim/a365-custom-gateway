@@ -169,7 +169,7 @@ These commands are safe entry points from the repository root:
 | `./gateway status` | Show local checkpoint/readiness state without Azure calls. |
 | `./gateway verify` | Rerun read-only live deployment verification. |
 | `./gateway resume` | Reconcile and continue an interrupted accepted deployment. |
-| `./gateway diagnose` | Write a sanitized diagnostic bundle. |
+| `./gateway diagnose` | Write a sanitized diagnostic bundle, including when configuration cannot load. |
 | `./gateway open` | Open the recorded verified Admin UI endpoint. |
 
 Use [operations](operations/README.md) for an existing environment and

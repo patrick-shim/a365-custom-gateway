@@ -129,7 +129,7 @@ internal static partial class BootstrapOutputSanitizer
             }
 
             var progress = data.ValueKind == JsonValueKind.Object
-                ? CalculateProgress(discriminator!, data)
+                ? CalculateProgress(discriminator!, data, step, category)
                 : null;
 
             BootstrapVerifiedEndpoints? verifiedEndpoints = null;
@@ -211,8 +211,18 @@ internal static partial class BootstrapOutputSanitizer
         return kind != BootstrapProgressKind.Withheld;
     }
 
-    private static int? CalculateProgress(string type, JsonElement data)
+    private static int? CalculateProgress(
+        string type,
+        JsonElement data,
+        string? step,
+        string? category)
     {
+        if (string.Equals(step, "Plan review", StringComparison.Ordinal) &&
+            !string.Equals(category, "planResult", StringComparison.Ordinal))
+        {
+            return 0;
+        }
+
         if (!data.TryGetProperty("index", out var indexElement) ||
             !indexElement.TryGetInt32(out var index) ||
             !data.TryGetProperty("total", out var totalElement) ||
@@ -232,6 +242,8 @@ internal static partial class BootstrapOutputSanitizer
 
     private static string? MapPlanReviewLabel(string? category) => category switch
     {
+        "localPrerequisites" => "Local prerequisites",
+        "planFailure" => "Plan stopped here",
         "scope" => "Scope and fingerprint",
         "features" => "Feature flags",
         "resourceFamily" => "Azure resource family",

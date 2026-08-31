@@ -119,6 +119,7 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
             configuration.Agent365.ReviewedManagerApplicationIds is null ||
             configuration.PromptShield is null ||
             configuration.Purview is null ||
+            configuration.Purview.ActivateGatewayAdapterAfterPolicyReadback ||
             configuration.Purview.PolicyProvisioningEnabled ||
             configuration.Purview.PolicyProvisioningOrganization != string.Empty ||
             configuration.Purview.PolicyProvisioningApplicationId != string.Empty ||

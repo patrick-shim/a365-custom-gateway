@@ -91,6 +91,45 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    public async Task LoadAsync_ImportsLegacyFalseRuntimeAdapterSwitchAndRewriteRemovesIt()
+    {
+        await WriteValidAsync(ValidForm());
+        var path = Path.Combine(root, "bootstrap", "config.json");
+        var json = await File.ReadAllTextAsync(path);
+        await File.WriteAllTextAsync(path, json.Replace(
+            "\"policyProvisioningEnabled\": false",
+            "\"activateGatewayAdapterAfterPolicyReadback\": false,\n    \"policyProvisioningEnabled\": false",
+            StringComparison.Ordinal));
+
+        var result = await NewLoader().LoadAsync();
+
+        result.Status.Should().Be(ExistingConfigurationStatus.Loaded);
+        result.Form.Should().NotBeNull();
+        await new BootstrapConfigWriter(
+            new RepositoryLayout(root),
+            new AtomicFileWriter()).WriteAsync(result.Form);
+        (await File.ReadAllTextAsync(path))
+            .Should().NotContain("activateGatewayAdapterAfterPolicyReadback");
+    }
+
+    [Fact]
+    public async Task LoadAsync_RejectsLegacyRuntimeAdapterSwitchWhenTrue()
+    {
+        await WriteValidAsync(ValidForm());
+        var path = Path.Combine(root, "bootstrap", "config.json");
+        var json = await File.ReadAllTextAsync(path);
+        await File.WriteAllTextAsync(path, json.Replace(
+            "\"policyProvisioningEnabled\": false",
+            "\"activateGatewayAdapterAfterPolicyReadback\": true,\n    \"policyProvisioningEnabled\": false",
+            StringComparison.Ordinal));
+
+        var result = await NewLoader().LoadAsync();
+
+        result.Status.Should().Be(ExistingConfigurationStatus.Rejected);
+        result.Form.Should().BeNull();
+    }
+
+    [Fact]
     public async Task LoadAsync_RejectsOversizedConfigurationBeforeParsing()
     {
         Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
