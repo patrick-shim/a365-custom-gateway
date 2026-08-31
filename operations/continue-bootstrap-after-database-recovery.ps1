@@ -35,6 +35,8 @@ Import-Module (Join-Path $repositoryRoot 'bootstrap/modules/Common.psm1') -Force
 $script:continuationToolPath = $PSCommandPath
 $script:adminUiVerifierModulePath = Join-Path $repositoryRoot 'bootstrap/modules/Experience.psm1'
 $script:keyVaultVerifierModulePath = Join-Path $repositoryRoot 'bootstrap/modules/Verification.psm1'
+$script:preflightVerifierPath = Join-Path $repositoryRoot 'operations/test-provisioning-prerequisites.ps1'
+$script:reviewedPreflightVerifierFingerprint = 'sha256:58d00078577cf08d7201a2221faa5c88eb76c7955503292a60e6f94c41c9cf84'
 $script:continuationReceipt = $null
 $script:continuationReceiptPath = ''
 $script:continuationState = $null
@@ -148,6 +150,7 @@ function Assert-BoundedAdminUiVerifierCompatibility {
     $reviewedVerifierPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $null = $reviewedVerifierPaths.Add('bootstrap/modules/Experience.psm1')
     $null = $reviewedVerifierPaths.Add('bootstrap/modules/Verification.psm1')
+    $null = $reviewedVerifierPaths.Add('operations/test-provisioning-prerequisites.ps1')
     foreach ($path in $currentByPath.Keys) {
         if (-not $recoveryByPath.ContainsKey($path)) {
             throw 'The current bootstrap source differs from the recovery snapshot beyond the reviewed verifier correction.'
@@ -182,21 +185,49 @@ function Assert-BoundedKeyVaultVerifierCompatibility {
     ) -join "`n"
     $legacyClause = "            [string]`$vault.defaultAction -cne 'Allow' -or [string]`$vault.bypass -cne 'AzureServices' -or"
     $correctedClause = '            -not $vaultNetworkAclsAreExact -or'
+    $legacyRootClause = '    $root = Get-BootstrapExecutionSourceRoot'
+    $correctedRootClause = "    `$root = [IO.Path]::GetFullPath((Join-Path `$PSScriptRoot '../..'))"
     $blockIndex = $currentText.IndexOf($reviewedBlock, [StringComparison]::Ordinal)
     $clauseIndex = $currentText.IndexOf($correctedClause, [StringComparison]::Ordinal)
+    $rootClauseIndex = $currentText.IndexOf($correctedRootClause, [StringComparison]::Ordinal)
     if ($blockIndex -lt 0 -or
         $currentText.IndexOf($reviewedBlock, $blockIndex + $reviewedBlock.Length, [StringComparison]::Ordinal) -ge 0 -or
         $clauseIndex -lt 0 -or
-        $currentText.IndexOf($correctedClause, $clauseIndex + $correctedClause.Length, [StringComparison]::Ordinal) -ge 0) {
-        throw 'The current Key Vault verifier does not contain exactly one reviewed provider-normalized network-ACL correction.'
+        $currentText.IndexOf($correctedClause, $clauseIndex + $correctedClause.Length, [StringComparison]::Ordinal) -ge 0 -or
+        $rootClauseIndex -lt 0 -or
+        $currentText.IndexOf($correctedRootClause, $rootClauseIndex + $correctedRootClause.Length, [StringComparison]::Ordinal) -ge 0) {
+        throw 'The current Verification module does not contain exactly the reviewed provider-normalized corrections.'
     }
     $legacyEquivalent = $currentText.Remove($blockIndex, $reviewedBlock.Length)
     $clauseIndex = $legacyEquivalent.IndexOf($correctedClause, [StringComparison]::Ordinal)
     $legacyEquivalent = $legacyEquivalent.Remove($clauseIndex, $correctedClause.Length).Insert($clauseIndex, $legacyClause)
+    $rootClauseIndex = $legacyEquivalent.IndexOf($correctedRootClause, [StringComparison]::Ordinal)
+    $legacyEquivalent = $legacyEquivalent.Remove($rootClauseIndex, $correctedRootClause.Length).Insert($rootClauseIndex, $legacyRootClause)
     if (-not [string]::Equals($legacyEquivalent, $recoveryText, [StringComparison]::Ordinal)) {
-        throw 'The current Key Vault verifier differs from the recovery snapshot beyond the reviewed provider-normalized network-ACL correction.'
+        throw 'The current Verification module differs from the recovery snapshot beyond the reviewed provider-normalized corrections.'
     }
     return "sha256:$((Get-FileHash -LiteralPath $currentPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+}
+
+function Assert-BoundedPreflightVerifierCompatibility {
+    param([Parameter(Mandatory)][string]$RecoveryPreflightPath)
+
+    $currentPath = [IO.Path]::GetFullPath($script:preflightVerifierPath)
+    $recoveryPath = [IO.Path]::GetFullPath($RecoveryPreflightPath)
+    $recoveryRoot = Split-Path -Parent (Split-Path -Parent $recoveryPath)
+    if (-not ([IO.Path]::GetFullPath((Join-Path $recoveryRoot 'operations/test-provisioning-prerequisites.ps1'))).Equals(
+            $recoveryPath,
+            [StringComparison]::Ordinal)) {
+        throw 'The recovery provisioning preflight is outside its exact accepted-source location.'
+    }
+    Assert-BootstrapFingerprintValue `
+        -Value $script:reviewedPreflightVerifierFingerprint `
+        -Label 'Reviewed provisioning preflight verifier fingerprint'
+    $currentFingerprint = "sha256:$((Get-FileHash -LiteralPath $currentPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+    if ($currentFingerprint -cne $script:reviewedPreflightVerifierFingerprint) {
+        throw 'The current provisioning preflight differs from the exact reviewed optional-empty provider-normalization correction.'
+    }
+    return $currentFingerprint
 }
 
 function Enable-BoundedAdminUiRegistryIdentityCasingCorrection {
@@ -325,6 +356,12 @@ function Get-ContinuationBoundary {
     Assert-BootstrapFingerprintValue -Value $keyVaultVerifierFingerprint -Label 'Key Vault verifier fingerprint'
     $keyVaultRecoveryVerifierFingerprint = "sha256:$((Get-FileHash -LiteralPath $recoveryVerificationPath -Algorithm SHA256).Hash.ToLowerInvariant())"
     Assert-BootstrapFingerprintValue -Value $keyVaultRecoveryVerifierFingerprint -Label 'Key Vault recovery verifier fingerprint'
+    $recoveryPreflightPath = Join-Path $recoverySourceRoot 'operations/test-provisioning-prerequisites.ps1'
+    $preflightVerifierFingerprint = Assert-BoundedPreflightVerifierCompatibility `
+        -RecoveryPreflightPath $recoveryPreflightPath
+    Assert-BootstrapFingerprintValue -Value $preflightVerifierFingerprint -Label 'Provisioning preflight verifier fingerprint'
+    $recoveryPreflightVerifierFingerprint = "sha256:$((Get-FileHash -LiteralPath $recoveryPreflightPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+    Assert-BootstrapFingerprintValue -Value $recoveryPreflightVerifierFingerprint -Label 'Recovery provisioning preflight verifier fingerprint'
     $originalSourceRoot = Resolve-BootstrapAcceptedSourceRoot -State $State
     if ([string]$State.acceptedPlan.sourceFingerprint -cne [string]$recoveryPlan.originalSourceFingerprint -or
         (Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan) -cne
@@ -435,6 +472,9 @@ function Get-ContinuationBoundary {
         keyVaultVerifierFingerprint = $keyVaultVerifierFingerprint
         keyVaultRecoveryVerifierFingerprint = $keyVaultRecoveryVerifierFingerprint
         keyVaultVerifierCorrection = 'DisabledPublicAccessNullNetworkAclsV1'
+        preflightVerifierFingerprint = $preflightVerifierFingerprint
+        recoveryPreflightVerifierFingerprint = $recoveryPreflightVerifierFingerprint
+        preflightVerifierCorrection = 'OptionalEmptyContainerEnvironmentOmissionV1'
         validatedSteps = @($completedBoundary)
         continuationSteps = $continuationStepNames
         purviewDisabled = $true
@@ -686,6 +726,15 @@ try {
         $runtimeRecoveryVerificationFingerprint -cne [string]$boundary.contract.keyVaultRecoveryVerifierFingerprint -or
         [string]$boundary.contract.keyVaultVerifierCorrection -cne 'DisabledPublicAccessNullNetworkAclsV1') {
         throw 'The bounded Key Vault verifier changed after continuation authorization.'
+    }
+    $recoveryPreflightPath = [IO.Path]::GetFullPath((Join-Path $recoverySourceRoot 'operations/test-provisioning-prerequisites.ps1'))
+    $runtimePreflightVerifierFingerprint = Assert-BoundedPreflightVerifierCompatibility `
+        -RecoveryPreflightPath $recoveryPreflightPath
+    $runtimeRecoveryPreflightFingerprint = "sha256:$((Get-FileHash -LiteralPath $recoveryPreflightPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+    if ($runtimePreflightVerifierFingerprint -cne [string]$boundary.contract.preflightVerifierFingerprint -or
+        $runtimeRecoveryPreflightFingerprint -cne [string]$boundary.contract.recoveryPreflightVerifierFingerprint -or
+        [string]$boundary.contract.preflightVerifierCorrection -cne 'OptionalEmptyContainerEnvironmentOmissionV1') {
+        throw 'The bounded provisioning preflight verifier changed after continuation authorization.'
     }
     $currentVerificationPath = [IO.Path]::GetFullPath($script:keyVaultVerifierModulePath)
     Import-Module $currentVerificationPath -Force -DisableNameChecking

@@ -51,6 +51,15 @@ Describe 'Final verification strict-mode delegated-scope cardinality' {
         $script:finalVerificationSource | Should -Match 'Get-GatewayDatabaseBootstrapExecutionEvidence'
         $script:finalVerificationSource | Should -Match 'Assert-GatewayExactAzureRoleAssignments[^\r\n]+-Database \$Database'
     }
+
+    It 'executes the provisioning preflight beside the loaded Verification module' {
+        $repositoryRootAssignment = '$root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ''../..''))'
+        $currentPreflightInvocation = '& (Join-Path $root ''operations/test-provisioning-prerequisites.ps1'')'
+
+        $script:finalVerificationSource | Should -Match ([regex]::Escape($repositoryRootAssignment))
+        $script:finalVerificationSource | Should -Match ([regex]::Escape($currentPreflightInvocation))
+        $script:finalVerificationSource | Should -Not -Match 'Get-BootstrapExecutionSourceRoot'
+    }
 }
 
 Describe 'Final Entra and runtime admission boundaries' {
@@ -881,6 +890,28 @@ Describe 'Provisioning preflight account and OBO environment boundary' {
                 [pscustomobject]@{ name = 'Provisioning__AdmissionExpiresAtUtc'; value = $FutureExpiry }
             )
         }
+        function New-ExactDelegatedActionAccessEntries {
+            param(
+                [Parameter(Mandatory = $true)][string]$FutureExpiry,
+                [Parameter(Mandatory = $true)][string]$OperationId
+            )
+            return @(
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Enabled'; value = 'true' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__RequireExactActionBinding'; value = 'true' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess'; value = 'false' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Scopes__0'; value = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__Scopes__1'; value = 'https://graph.microsoft.com/AgentRegistration.Read.All' }
+                [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__SourceType'; value = 'SignedAssertionFromManagedIdentity' }
+                [pscustomobject]@{ name = 'EntraId__ClientCredentials__0__TokenExchangeUrl'; value = 'api://AzureADTokenExchange' }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__ActionExpiresAtUtc'; value = $FutureExpiry }
+                [pscustomobject]@{ name = 'Agent365__DelegatedRegistry__AuthorizedOperationId'; value = $OperationId }
+                [pscustomobject]@{ name = 'Provisioning__RequireExactAdmissionBinding'; value = 'true' }
+                [pscustomobject]@{ name = 'Provisioning__AllowContinuousDevelopmentAccess'; value = 'false' }
+                [pscustomobject]@{ name = 'Provisioning__AuthorizedExternalAgentId'; value = '' }
+                [pscustomobject]@{ name = 'Provisioning__AuthorizedRetryAgentId'; value = '' }
+                [pscustomobject]@{ name = 'Provisioning__AdmissionExpiresAtUtc'; value = '' }
+            )
+        }
         function New-AccessContainerApp {
             param([Parameter(Mandatory = $true)][object[]]$Entries)
             return [pscustomobject]@{
@@ -950,6 +981,117 @@ Describe 'Provisioning preflight account and OBO environment boundary' {
         Invoke-ContinuousDevelopmentAccessChecks -ContainerApp $containerApp
 
         $script:preflightFailures.Count | Should -Be 0
+    }
+
+    It 'allows only the five expected-empty binding reads to request provider-normalized absence' {
+        $allowAbsentCalls = @($script:preflightAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -ceq 'Get-ExactPlainContainerEnvironmentValue' -and
+                @($node.CommandElements | Where-Object {
+                    $_ -is [Management.Automation.Language.CommandParameterAst] -and
+                    $_.ParameterName -ceq 'AllowAbsent'
+                }).Count -eq 1
+        }, $true))
+        $expectedBindings = [ordered]@{
+            'Agent365__DelegatedRegistry__ActionExpiresAtUtc' = 'ExpectedActionExpiresAtUtc'
+            'Agent365__DelegatedRegistry__AuthorizedOperationId' = 'ExpectedAuthorizedOperationId'
+            'Provisioning__AuthorizedExternalAgentId' = 'ExpectedExternalAgentId'
+            'Provisioning__AuthorizedRetryAgentId' = 'ExpectedRetryAgentId'
+            'Provisioning__AdmissionExpiresAtUtc' = 'ExpectedAdmissionExpiresAtUtc'
+        }
+
+        $allowAbsentCalls.Count | Should -Be 5
+        foreach ($binding in $expectedBindings.GetEnumerator()) {
+            $matches = @($allowAbsentCalls | Where-Object {
+                $_.Extent.Text.Contains("-Name '$($binding.Key)'", [StringComparison]::Ordinal) -and
+                $_.Extent.Text.Contains("[string]::IsNullOrEmpty(`$$($binding.Value))", [StringComparison]::Ordinal)
+            })
+            $matches.Count | Should -Be 1
+        }
+    }
+
+    It 'accepts omission of all five expected-empty optional bindings in continuous mode' {
+        $optionalBindingNames = @(
+            'Agent365__DelegatedRegistry__ActionExpiresAtUtc',
+            'Agent365__DelegatedRegistry__AuthorizedOperationId',
+            'Provisioning__AuthorizedExternalAgentId',
+            'Provisioning__AuthorizedRetryAgentId',
+            'Provisioning__AdmissionExpiresAtUtc'
+        )
+        $entries = @(New-ContinuousDevelopmentAccessEntries | Where-Object {
+            [string]$_.name -notin $optionalBindingNames
+        })
+
+        Invoke-ContinuousDevelopmentAccessChecks -ContainerApp (New-AccessContainerApp -Entries $entries)
+
+        $script:preflightFailures.Count | Should -Be 0
+    }
+
+    It 'accepts omission of inactive empty bindings in both exact-bound modes' {
+        $futureExpiry = [DateTimeOffset]::UtcNow.AddHours(1).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $operationId = '88888888-8888-4888-8888-888888888888'
+        $registrationEntries = @(New-ExactRegistrationAccessEntries -FutureExpiry $futureExpiry | Where-Object {
+            [string]$_.name -notin @(
+                'Agent365__DelegatedRegistry__ActionExpiresAtUtc',
+                'Agent365__DelegatedRegistry__AuthorizedOperationId',
+                'Provisioning__AuthorizedRetryAgentId'
+            )
+        })
+        Invoke-ExactRegistrationAccessChecks `
+            -ContainerApp (New-AccessContainerApp -Entries $registrationEntries) `
+            -FutureExpiry $futureExpiry
+        $script:preflightFailures.Count | Should -Be 0
+
+        $script:preflightFailures.Clear()
+        $delegatedActionEntries = @(New-ExactDelegatedActionAccessEntries `
+            -FutureExpiry $futureExpiry `
+            -OperationId $operationId | Where-Object {
+                [string]$_.name -notin @(
+                    'Provisioning__AuthorizedExternalAgentId',
+                    'Provisioning__AuthorizedRetryAgentId',
+                    'Provisioning__AdmissionExpiresAtUtc'
+                )
+            })
+        $delegatedActionContainerApp = New-AccessContainerApp -Entries $delegatedActionEntries
+        Test-DeployedDelegatedRegistryConfiguration `
+            -ContainerApp $delegatedActionContainerApp `
+            -ExpectedEnabled $true `
+            -ExpectedContinuousDevelopmentAccess $false `
+            -ExpectedActionExpiresAtUtc $futureExpiry `
+            -ExpectedAuthorizedOperationId $operationId
+        Test-DeployedProvisioningBindings `
+            -ContainerApp $delegatedActionContainerApp `
+            -ExpectedEnabled $false `
+            -ExpectedContinuousDevelopmentAccess $false `
+            -ExpectedExternalAgentId '' `
+            -ExpectedRetryAgentId '' `
+            -ExpectedAdmissionExpiresAtUtc ''
+        $script:preflightFailures.Count | Should -Be 0
+    }
+
+    It 'rejects omitted non-empty bindings and present optional entries without a plain value' {
+        $futureExpiry = [DateTimeOffset]::UtcNow.AddHours(1).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $missingRequiredBinding = @(New-ExactRegistrationAccessEntries -FutureExpiry $futureExpiry | Where-Object {
+            [string]$_.name -cne 'Provisioning__AuthorizedExternalAgentId'
+        })
+        Invoke-ExactRegistrationAccessChecks `
+            -ContainerApp (New-AccessContainerApp -Entries $missingRequiredBinding) `
+            -FutureExpiry $futureExpiry
+        $script:preflightFailures.Count | Should -BeGreaterThan 0
+
+        $script:preflightFailures.Clear()
+        $presentWithoutValue = @(New-ContinuousDevelopmentAccessEntries | ForEach-Object {
+            if ([string]$_.name -ceq 'Provisioning__AuthorizedRetryAgentId') {
+                [pscustomobject]@{ name = [string]$_.name }
+            }
+            else {
+                $_
+            }
+        })
+        Invoke-ContinuousDevelopmentAccessChecks `
+            -ContainerApp (New-AccessContainerApp -Entries $presentWithoutValue)
+        $script:preflightFailures.Count | Should -BeGreaterThan 0
     }
 
     It 'fails every continuous-mode security-critical setting closed on case-conflicting duplicates and secret references' {

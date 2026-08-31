@@ -768,7 +768,7 @@ function Test-GatewayBootstrapDeployment {
         [Parameter()][AllowNull()][System.Collections.IDictionary]$ManualDatabaseRepairPlan,
         [switch]$NonInteractive
     )
-    $root = Get-BootstrapExecutionSourceRoot
+    $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
     $isRecovery = $null -ne $DatabaseRecoveryPlan
     $isManualRepair = $null -ne $ManualDatabaseRepairPlan
     if ($isRecovery -and $isManualRepair) { throw 'Automatic recovery and manual repair evidence cannot be verified together.' }

@@ -14,7 +14,7 @@
     values, receives messages, replays messages, purges a DLQ, or changes Azure state.
 
     RequireExecutionReady normally expects both execution gates enabled. During the
-    required worker-first canary staging step, ExpectApiAdmissionClosed instead
+    required worker-first bounded staging step, ExpectApiAdmissionClosed instead
     requires the worker execution gates on while API registration admission remains
     off.
 #>
@@ -430,7 +430,8 @@ function Get-ContainerEnvironmentValue {
 function Get-ExactPlainContainerEnvironmentValue {
     param(
         [Parameter(Mandatory = $true)][object]$ContainerApp,
-        [Parameter(Mandatory = $true)][string]$Name
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $false)][switch]$AllowAbsent
     )
 
     $containers = @($ContainerApp.properties.template.containers)
@@ -445,6 +446,9 @@ function Get-ExactPlainContainerEnvironmentValue {
             $Name,
             [System.StringComparison]::OrdinalIgnoreCase)
     })
+    if ($settings.Count -eq 0 -and $AllowAbsent.IsPresent) {
+        return [string]::Empty
+    }
     if ($settings.Count -ne 1) {
         Add-Failure "Deployed API setting '$Name' must appear exactly once."
         return $null
@@ -458,7 +462,8 @@ function Get-ExactPlainContainerEnvironmentValue {
     else {
         ''
     }
-    if ($null -eq $valueProperty -or -not [string]::IsNullOrWhiteSpace($secretReference)) {
+    if ($null -eq $valueProperty -or $null -eq $valueProperty.Value -or
+        -not [string]::IsNullOrWhiteSpace($secretReference)) {
         Add-Failure "Deployed API setting '$Name' must use one plain value and no secret reference."
         return $null
     }
@@ -875,10 +880,12 @@ function Test-DeployedDelegatedRegistryConfiguration {
 
     $deployedActionExpiresAtUtc = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $ContainerApp `
-        -Name 'Agent365__DelegatedRegistry__ActionExpiresAtUtc'
+        -Name 'Agent365__DelegatedRegistry__ActionExpiresAtUtc' `
+        -AllowAbsent:([string]::IsNullOrEmpty($ExpectedActionExpiresAtUtc))
     $deployedAuthorizedOperationId = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $ContainerApp `
-        -Name 'Agent365__DelegatedRegistry__AuthorizedOperationId'
+        -Name 'Agent365__DelegatedRegistry__AuthorizedOperationId' `
+        -AllowAbsent:([string]::IsNullOrEmpty($ExpectedAuthorizedOperationId))
     if (-not (Test-EquivalentOptionalUtcInstant `
             -Actual ([string]$deployedActionExpiresAtUtc) `
             -Expected $ExpectedActionExpiresAtUtc) -or
@@ -959,13 +966,16 @@ function Test-DeployedProvisioningBindings {
 
     $deployedExternalAgentId = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $ContainerApp `
-        -Name 'Provisioning__AuthorizedExternalAgentId'
+        -Name 'Provisioning__AuthorizedExternalAgentId' `
+        -AllowAbsent:([string]::IsNullOrEmpty($ExpectedExternalAgentId))
     $deployedRetryAgentId = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $ContainerApp `
-        -Name 'Provisioning__AuthorizedRetryAgentId'
+        -Name 'Provisioning__AuthorizedRetryAgentId' `
+        -AllowAbsent:([string]::IsNullOrEmpty($ExpectedRetryAgentId))
     $deployedAdmissionExpiresAtUtc = Get-ExactPlainContainerEnvironmentValue `
         -ContainerApp $ContainerApp `
-        -Name 'Provisioning__AdmissionExpiresAtUtc'
+        -Name 'Provisioning__AdmissionExpiresAtUtc' `
+        -AllowAbsent:([string]::IsNullOrEmpty($ExpectedAdmissionExpiresAtUtc))
     if (-not [string]::Equals(
             [string]$deployedExternalAgentId,
             $ExpectedExternalAgentId,
@@ -1238,7 +1248,7 @@ elseif ($RegistryProvider -ne 'Disabled' -or
 }
 
 if ($ExpectApiAdmissionClosed -and -not $RequireExecutionReady) {
-    Add-Failure 'ExpectApiAdmissionClosed is valid only with RequireExecutionReady for the worker-first canary staging state.'
+    Add-Failure 'ExpectApiAdmissionClosed is valid only with RequireExecutionReady for the worker-first bounded staging state.'
 }
 Test-ContinuousDevelopmentAccessInputContract `
     -ContinuousDevelopmentAccessExpected $ExpectContinuousDevelopmentAccess.IsPresent `
@@ -1346,7 +1356,7 @@ if ($RequireDeployedConfigurationMatch -and $null -ne $apiApp) {
         $deployedRegistrationGate,
         $expectedRegistrationGate,
         [System.StringComparison]::OrdinalIgnoreCase)) {
-        Add-Failure 'The deployed API registration gate does not match the expected staged canary state.'
+        Add-Failure 'The deployed API registration gate does not match the expected staged deployment state.'
     }
     else {
         if ($ExpectDelegatedRegistryActionOpen) {
@@ -1624,10 +1634,10 @@ if ($null -ne $workerApp) {
                 -Name 'ProvisioningWorker__MaxConcurrentCalls'
 
             if ($deployedMaxReplicas -ne 1 -or $deployedMaxConcurrentCalls -ne '1') {
-                Add-Failure 'The provisioning canary is not constrained to one worker replica and one Service Bus callback.'
+                Add-Failure 'The provisioning deployment is not constrained to one worker replica and one Service Bus callback.'
             }
             else {
-                Write-Pass 'The provisioning canary is constrained to one worker replica and one Service Bus callback.'
+                Write-Pass 'The provisioning deployment is constrained to one worker replica and one Service Bus callback.'
             }
         }
     }

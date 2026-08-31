@@ -137,6 +137,7 @@ Describe 'Recovered bootstrap continuation state contract' {
         . (Join-Path $repositoryRoot 'operations/continue-bootstrap-after-database-recovery.ps1')
         $boundedVerifierImplementation = ${function:Assert-BoundedAdminUiVerifierCompatibility}
         $boundedKeyVaultVerifierImplementation = ${function:Assert-BoundedKeyVaultVerifierCompatibility}
+        $boundedPreflightVerifierImplementation = ${function:Assert-BoundedPreflightVerifierCompatibility}
 
         function New-TestRecoveredBoundary {
             $originalSource = 'sha256:' + ('1' * 64)
@@ -208,6 +209,7 @@ Describe 'Recovered bootstrap continuation state contract' {
         Mock Resolve-BootstrapAcceptedSourceRoot { '/safe/original' }
         Mock Assert-BoundedAdminUiVerifierCompatibility { 'sha256:' + ('7' * 64) }
         Mock Assert-BoundedKeyVaultVerifierCompatibility { 'sha256:' + ('9' * 64) }
+        Mock Assert-BoundedPreflightVerifierCompatibility { 'sha256:' + ('a' * 64) }
         Mock Get-FileHash { [pscustomobject]@{ Hash = ('8' * 64) } }
     }
 
@@ -224,6 +226,9 @@ Describe 'Recovered bootstrap continuation state contract' {
         $boundary.contract.keyVaultVerifierFingerprint | Should -Be ('sha256:' + ('9' * 64))
         $boundary.contract.keyVaultRecoveryVerifierFingerprint | Should -Be ('sha256:' + ('8' * 64))
         $boundary.contract.keyVaultVerifierCorrection | Should -Be 'DisabledPublicAccessNullNetworkAclsV1'
+        $boundary.contract.preflightVerifierFingerprint | Should -Be ('sha256:' + ('a' * 64))
+        $boundary.contract.recoveryPreflightVerifierFingerprint | Should -Be ('sha256:' + ('8' * 64))
+        $boundary.contract.preflightVerifierCorrection | Should -Be 'OptionalEmptyContainerEnvironmentOmissionV1'
         Should -Invoke Assert-BootstrapDatabaseRecoveryHistory -Times 1 -Exactly
     }
 
@@ -271,6 +276,8 @@ Describe 'Recovered bootstrap continuation state contract' {
     It 'accepts only the reviewed Key Vault null-ACL projection correction' {
         $legacyClause = "            [string]`$vault.defaultAction -cne 'Allow' -or [string]`$vault.bypass -cne 'AzureServices' -or"
         $correctedClause = '            -not $vaultNetworkAclsAreExact -or'
+        $legacyRootClause = '    $root = Get-BootstrapExecutionSourceRoot'
+        $correctedRootClause = "    `$root = [IO.Path]::GetFullPath((Join-Path `$PSScriptRoot '../..'))"
         $reviewedBlockLines = @(
             '        $vaultDefaultAction = [string]$vault.defaultAction',
             '        $vaultBypass = [string]$vault.bypass',
@@ -284,8 +291,8 @@ Describe 'Recovered bootstrap continuation state contract' {
         $recoveryPath = Join-Path $recoveryRoot 'bootstrap/modules/Verification.psm1'
         [IO.Directory]::CreateDirectory((Split-Path -Parent $currentPath)) | Out-Null
         [IO.Directory]::CreateDirectory((Split-Path -Parent $recoveryPath)) | Out-Null
-        [IO.File]::WriteAllText($recoveryPath, (@('before', $legacyClause, 'after', '') -join "`n"))
-        [IO.File]::WriteAllText($currentPath, (@('before') + $reviewedBlockLines + @($correctedClause, 'after', '') -join "`n"))
+        [IO.File]::WriteAllText($recoveryPath, (@('before', $legacyClause, $legacyRootClause, 'after', '') -join "`n"))
+        [IO.File]::WriteAllText($currentPath, (@('before') + $reviewedBlockLines + @($correctedClause, $correctedRootClause, 'after', '') -join "`n"))
         $previousPath = $script:keyVaultVerifierModulePath
         try {
             $script:keyVaultVerifierModulePath = $currentPath
@@ -293,10 +300,36 @@ Describe 'Recovered bootstrap continuation state contract' {
                 Should -Match '^sha256:[0-9a-f]{64}$'
             [IO.File]::AppendAllText($currentPath, "unreviewed`n")
             { & $boundedKeyVaultVerifierImplementation -RecoveryVerificationPath $recoveryPath } |
-                Should -Throw '*differs*reviewed*network-ACL*correction*'
+                Should -Throw '*differs*reviewed*provider-normalized*correction*'
         }
         finally {
             $script:keyVaultVerifierModulePath = $previousPath
+        }
+    }
+
+    It 'pins the provider-normalized provisioning preflight to one reviewed file hash' {
+        $currentRoot = Join-Path $TestDrive 'current-preflight'
+        $recoveryRoot = Join-Path $TestDrive 'recovery-preflight'
+        $currentPath = Join-Path $currentRoot 'operations/test-provisioning-prerequisites.ps1'
+        $recoveryPath = Join-Path $recoveryRoot 'operations/test-provisioning-prerequisites.ps1'
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $currentPath)) | Out-Null
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $recoveryPath)) | Out-Null
+        [IO.File]::WriteAllText($currentPath, "reviewed`n")
+        [IO.File]::WriteAllText($recoveryPath, "frozen`n")
+        $previousPath = $script:preflightVerifierPath
+        $previousFingerprint = $script:reviewedPreflightVerifierFingerprint
+        try {
+            $script:preflightVerifierPath = $currentPath
+            $script:reviewedPreflightVerifierFingerprint = 'sha256:' + ('8' * 64)
+            & $boundedPreflightVerifierImplementation -RecoveryPreflightPath $recoveryPath |
+                Should -Be ('sha256:' + ('8' * 64))
+            $script:reviewedPreflightVerifierFingerprint = 'sha256:' + ('9' * 64)
+            { & $boundedPreflightVerifierImplementation -RecoveryPreflightPath $recoveryPath } |
+                Should -Throw '*differs*exact reviewed*provider-normalization*'
+        }
+        finally {
+            $script:preflightVerifierPath = $previousPath
+            $script:reviewedPreflightVerifierFingerprint = $previousFingerprint
         }
     }
 
