@@ -263,6 +263,8 @@ Describe 'Cross-platform guided setup prerequisite contract' {
         $launcher | Should -Match 'Setup requires PowerShell 7'
         $launcher | Should -Match 'Setup requires the \.NET 10 SDK'
         $launcher | Should -Match 'Setup requires Azure CLI'
+        $launcher | Should -Match ([regex]::Escape('--repo-root "%~dp0."'))
+        $launcher | Should -Not -Match ([regex]::Escape('--repo-root "%~dp0"'))
         $launcher | Should -Match 'if /I "%COMMAND%"=="recover-database" set "GATEWAY_MODE=RecoverDatabase"'
         $launcher | Should -Match 'if /I "%COMMAND%"=="repair-database" set "GATEWAY_MODE=RepairDatabase"'
         $launcher | Should -Not -Match 'continue-bootstrap|repair-api-attestation'

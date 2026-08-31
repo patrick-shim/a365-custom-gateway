@@ -210,7 +210,10 @@ exit /b 2
 :run_setup
 call :check_setup_prerequisites
 if errorlevel 1 exit /b 1
-dotnet run --project "%~dp0tools\Gateway.Setup\Gateway.Setup.csproj" -- --repo-root "%~dp0" %SETUP_NO_OPEN%
+rem %~dp0 always ends in a backslash. Keep a dot inside the quoted native
+rem argument so Windows does not interpret that backslash as escaping the quote.
+rem .NET Path.GetFullPath normalizes the resulting "\." suffix.
+dotnet run --project "%~dp0tools\Gateway.Setup\Gateway.Setup.csproj" -- --repo-root "%~dp0." %SETUP_NO_OPEN%
 exit /b %errorlevel%
 
 :check_setup_prerequisites
