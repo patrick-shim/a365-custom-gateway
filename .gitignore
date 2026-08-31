@@ -64,15 +64,15 @@ appsettings.Development.json
 appsettings.Local.json
 .secrets
 
-## Agent tooling
-# Keep shared Claude agents and skills in source control; keep machine-local settings private.
-.claude/*
-!.claude/agents/
-!.claude/agents/**
-!.claude/skills/
-!.claude/skills/**
-.claude/settings.json
-.claude/settings.local.json
+## Local-only repository tooling and metadata
+/.agents/skills/
+/.claude/
+/.codex/agents/
+/.devcontainer/
+/.github/
+/AGENTS.md
+/CONTRIBUTING.md
+/SECURITY.md
 .secret
 .secret.*
 
