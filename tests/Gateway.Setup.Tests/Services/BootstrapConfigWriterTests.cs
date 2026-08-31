@@ -60,6 +60,27 @@ public sealed class BootstrapConfigWriterTests : IDisposable
     }
 
     [Fact]
+    public async Task WriteAsync_AcceptsMultipleReviewedManagerApplicationIds()
+    {
+        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
+        var form = ValidForm();
+        form.SetReviewedManagerApplicationIds(
+        [
+            Guid.Parse("33333333-3333-4333-8333-333333333333"),
+            Guid.Parse("44444444-4444-4444-8444-444444444444")
+        ]);
+        form.PurviewEnabled = true;
+        form.PurviewSensitiveInformationType = "Credit Card Number";
+
+        var result = await NewWriter().WriteAsync(form);
+
+        result.Configuration.Agent365.ReviewedManagerApplicationIds.Should().Equal(
+            Guid.Parse("33333333-3333-4333-8333-333333333333"),
+            Guid.Parse("44444444-4444-4444-8444-444444444444"));
+        result.Configuration.Purview.SensitiveInformationType.Should().Be("Credit Card Number");
+    }
+
+    [Fact]
     public async Task WriteAsync_RejectsCredentialLikeContentBeforeReplacingExistingFile()
     {
         Directory.CreateDirectory(Path.Combine(root, "bootstrap"));

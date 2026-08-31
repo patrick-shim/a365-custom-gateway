@@ -78,7 +78,13 @@ internal sealed class BootstrapConfigWriter(
         yield return form.ResourceGroupName;
         yield return form.AlertEmail;
         yield return form.SeedBlueprintName;
-        yield return form.ReviewedManagerApplicationIds;
+        // The form renders reviewed manager application IDs one per line. They
+        // have already passed strict GUID parsing in SetupConfigurationForm, so
+        // scan their canonical values instead of the newline-delimited UI text.
+        foreach (var applicationId in form.GetReviewedManagerApplicationIds())
+        {
+            yield return applicationId.ToString("D");
+        }
         yield return form.PromptShieldSkuName;
         yield return form.PurviewSensitiveInformationType;
         yield return form.PurviewCollectionPolicyName;
