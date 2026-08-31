@@ -71,6 +71,7 @@ appsettings.Local.json
 /.devcontainer/
 /.github/
 /AGENTS.md
+/CLAUDE.md
 /CONTRIBUTING.md
 /SECURITY.md
 .secret
