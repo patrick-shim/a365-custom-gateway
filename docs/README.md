@@ -56,6 +56,3 @@ truth. [Development deployment status](operations/development-deployment-status.
 records authorized live evidence and safe resume context. Contributors should read
 both before changing deployment or provisioning behavior; ordinary installers do
 not need either file to follow the quickstart.
-
-See [CONTRIBUTING](../CONTRIBUTING.md) for the development workflow and
-[SECURITY](../SECURITY.md) for vulnerability reporting and secret-handling rules.

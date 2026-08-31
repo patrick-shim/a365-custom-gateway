@@ -1,7 +1,9 @@
 # Admin UI contributor guide
 
-Follow the required reading order in `AGENTS.md` before changing the portal. The
-API contract and server-advertised capability flags are authoritative.
+Read the current [implementation status](../implementation-status.md) and
+[deployment status](../operations/development-deployment-status.md) before changing
+the portal. The API contract and server-advertised capability flags are
+authoritative.
 
 ## Purpose
 

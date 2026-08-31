@@ -1,7 +1,8 @@
 # Provisioning contributor guide
 
-Follow the required reading order in `AGENTS.md` before changing provisioning. Read
-the current deployment checkpoint and applicable runbook before any live action.
+Read the current [implementation status](../implementation-status.md),
+[deployment status](../operations/development-deployment-status.md), and applicable
+runbook before changing provisioning or taking any live action.
 
 ## Ownership
 

@@ -186,8 +186,6 @@ cleanup command.
 - [System architecture](docs/architecture/system-architecture.md)
 - [Backup and recovery](docs/operations/backup-recovery.md)
 - [Incident response](docs/operations/incident-response.md)
-- [Contributing](CONTRIBUTING.md)
-- [Security policy](SECURITY.md)
 
 Current implementation and deployment evidence lives in
 [implementation status](docs/implementation-status.md) and
