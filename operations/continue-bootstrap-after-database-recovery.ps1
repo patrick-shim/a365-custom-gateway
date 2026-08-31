@@ -34,6 +34,7 @@ Import-Module (Join-Path $repositoryRoot 'bootstrap/modules/Common.psm1') -Force
 
 $script:continuationToolPath = $PSCommandPath
 $script:adminUiVerifierModulePath = Join-Path $repositoryRoot 'bootstrap/modules/Experience.psm1'
+$script:keyVaultVerifierModulePath = Join-Path $repositoryRoot 'bootstrap/modules/Verification.psm1'
 $script:continuationReceipt = $null
 $script:continuationReceiptPath = ''
 $script:continuationState = $null
@@ -144,11 +145,14 @@ function Assert-BoundedAdminUiVerifierCompatibility {
     if ($currentByPath.Count -ne $recoveryByPath.Count) {
         throw 'The current bootstrap source differs from the recovery snapshot beyond the reviewed verifier correction.'
     }
+    $reviewedVerifierPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $null = $reviewedVerifierPaths.Add('bootstrap/modules/Experience.psm1')
+    $null = $reviewedVerifierPaths.Add('bootstrap/modules/Verification.psm1')
     foreach ($path in $currentByPath.Keys) {
         if (-not $recoveryByPath.ContainsKey($path)) {
             throw 'The current bootstrap source differs from the recovery snapshot beyond the reviewed verifier correction.'
         }
-        if ($path -cne $relativeVerifierPath -and $currentByPath[$path] -cne $recoveryByPath[$path]) {
+        if (-not $reviewedVerifierPaths.Contains($path) -and $currentByPath[$path] -cne $recoveryByPath[$path]) {
             throw 'The current bootstrap source differs from the recovery snapshot beyond the reviewed verifier correction.'
         }
     }
@@ -159,6 +163,40 @@ function Assert-BoundedAdminUiVerifierCompatibility {
         throw 'The reviewed Admin UI verifier hashes do not match their exact source manifests.'
     }
     return "sha256:$currentVerifierSha256"
+}
+
+function Assert-BoundedKeyVaultVerifierCompatibility {
+    param([Parameter(Mandatory)][string]$RecoveryVerificationPath)
+
+    $currentPath = [IO.Path]::GetFullPath($script:keyVaultVerifierModulePath)
+    $recoveryPath = [IO.Path]::GetFullPath($RecoveryVerificationPath)
+    $currentText = [IO.File]::ReadAllText($currentPath)
+    $recoveryText = [IO.File]::ReadAllText($recoveryPath)
+    $reviewedBlock = @(
+        '        $vaultDefaultAction = [string]$vault.defaultAction',
+        '        $vaultBypass = [string]$vault.bypass',
+        '        $vaultNetworkAclsAreExact =',
+        "            (`$vaultDefaultAction -ceq 'Allow' -and `$vaultBypass -ceq 'AzureServices') -or",
+        '            ([string]::IsNullOrEmpty($vaultDefaultAction) -and [string]::IsNullOrEmpty($vaultBypass))',
+        ''
+    ) -join "`n"
+    $legacyClause = "            [string]`$vault.defaultAction -cne 'Allow' -or [string]`$vault.bypass -cne 'AzureServices' -or"
+    $correctedClause = '            -not $vaultNetworkAclsAreExact -or'
+    $blockIndex = $currentText.IndexOf($reviewedBlock, [StringComparison]::Ordinal)
+    $clauseIndex = $currentText.IndexOf($correctedClause, [StringComparison]::Ordinal)
+    if ($blockIndex -lt 0 -or
+        $currentText.IndexOf($reviewedBlock, $blockIndex + $reviewedBlock.Length, [StringComparison]::Ordinal) -ge 0 -or
+        $clauseIndex -lt 0 -or
+        $currentText.IndexOf($correctedClause, $clauseIndex + $correctedClause.Length, [StringComparison]::Ordinal) -ge 0) {
+        throw 'The current Key Vault verifier does not contain exactly one reviewed provider-normalized network-ACL correction.'
+    }
+    $legacyEquivalent = $currentText.Remove($blockIndex, $reviewedBlock.Length)
+    $clauseIndex = $legacyEquivalent.IndexOf($correctedClause, [StringComparison]::Ordinal)
+    $legacyEquivalent = $legacyEquivalent.Remove($clauseIndex, $correctedClause.Length).Insert($clauseIndex, $legacyClause)
+    if (-not [string]::Equals($legacyEquivalent, $recoveryText, [StringComparison]::Ordinal)) {
+        throw 'The current Key Vault verifier differs from the recovery snapshot beyond the reviewed provider-normalized network-ACL correction.'
+    }
+    return "sha256:$((Get-FileHash -LiteralPath $currentPath -Algorithm SHA256).Hash.ToLowerInvariant())"
 }
 
 function Enable-BoundedAdminUiRegistryIdentityCasingCorrection {
@@ -281,6 +319,12 @@ function Get-ContinuationBoundary {
     Assert-BootstrapFingerprintValue -Value $adminUiVerifierFingerprint -Label 'Admin UI verifier fingerprint'
     $adminUiRecoveryExperienceFingerprint = "sha256:$((Get-FileHash -LiteralPath $recoveryExperiencePath -Algorithm SHA256).Hash.ToLowerInvariant())"
     Assert-BootstrapFingerprintValue -Value $adminUiRecoveryExperienceFingerprint -Label 'Admin UI recovery verifier fingerprint'
+    $recoveryVerificationPath = Join-Path $recoverySourceRoot 'bootstrap/modules/Verification.psm1'
+    $keyVaultVerifierFingerprint = Assert-BoundedKeyVaultVerifierCompatibility `
+        -RecoveryVerificationPath $recoveryVerificationPath
+    Assert-BootstrapFingerprintValue -Value $keyVaultVerifierFingerprint -Label 'Key Vault verifier fingerprint'
+    $keyVaultRecoveryVerifierFingerprint = "sha256:$((Get-FileHash -LiteralPath $recoveryVerificationPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+    Assert-BootstrapFingerprintValue -Value $keyVaultRecoveryVerifierFingerprint -Label 'Key Vault recovery verifier fingerprint'
     $originalSourceRoot = Resolve-BootstrapAcceptedSourceRoot -State $State
     if ([string]$State.acceptedPlan.sourceFingerprint -cne [string]$recoveryPlan.originalSourceFingerprint -or
         (Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan) -cne
@@ -388,6 +432,9 @@ function Get-ContinuationBoundary {
         adminUiVerifierFingerprint = $adminUiVerifierFingerprint
         adminUiRecoveryExperienceFingerprint = $adminUiRecoveryExperienceFingerprint
         adminUiVerifierCorrection = 'AzureResourceIdOrdinalIgnoreCaseV1'
+        keyVaultVerifierFingerprint = $keyVaultVerifierFingerprint
+        keyVaultRecoveryVerifierFingerprint = $keyVaultRecoveryVerifierFingerprint
+        keyVaultVerifierCorrection = 'DisabledPublicAccessNullNetworkAclsV1'
         validatedSteps = @($completedBoundary)
         continuationSteps = $continuationStepNames
         purviewDisabled = $true
@@ -517,6 +564,30 @@ function Invoke-ExactReconciliation {
     catch { return [ordered]@{ recovered = $false } }
 }
 
+function Test-ContinuationNetworkHardening {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Evidence
+    )
+
+    $expectedSharedVault = "kv-$($Config.projectName)-$($Config.environment)"
+    $expectedProvisioningVault = "kv-$($Config.projectName)-$($Config.environment)-prov"
+    if ([string]$Evidence.sharedKeyVault -cne $expectedSharedVault -or
+        [string]$Evidence.provisioningKeyVault -cne $expectedProvisioningVault -or
+        [string]$Evidence.publicNetworkAccess -cne 'Disabled' -or
+        $Evidence.exactPostMutationReadback -ne $true) {
+        return $false
+    }
+    foreach ($vault in @($expectedSharedVault, $expectedProvisioningVault)) {
+        $actual = Invoke-AzTsv -Arguments @(
+            'keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName,
+            '--name', $vault, '--query', 'properties.publicNetworkAccess'
+        )
+        if ($actual -cne 'Disabled') { return $false }
+    }
+    return $true
+}
+
 if ($MyInvocation.InvocationName -ceq '.') { return }
 
 $lock = $null
@@ -587,7 +658,7 @@ try {
     $script:continuationStatePath = $statePath
 
     $recoverySourceRoot = [string]$boundary.recoverySourceRoot
-    foreach ($module in @('Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'Verification')) {
+    foreach ($module in @('Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview')) {
         Import-Module (Join-Path $recoverySourceRoot "bootstrap/modules/$module.psm1") -Force -DisableNameChecking
     }
     $runtimeAdminUiVerifierFingerprint = Assert-BoundedAdminUiVerifierCompatibility `
@@ -607,6 +678,25 @@ try {
         throw 'The exact recovery Experience module is absent, ambiguous, modified, or outside the reviewed correction contract.'
     }
     Enable-BoundedAdminUiRegistryIdentityCasingCorrection -ExperienceModule $experienceModules[0] | Out-Null
+    $recoveryVerificationPath = [IO.Path]::GetFullPath((Join-Path $recoverySourceRoot 'bootstrap/modules/Verification.psm1'))
+    $runtimeKeyVaultVerifierFingerprint = Assert-BoundedKeyVaultVerifierCompatibility `
+        -RecoveryVerificationPath $recoveryVerificationPath
+    $runtimeRecoveryVerificationFingerprint = "sha256:$((Get-FileHash -LiteralPath $recoveryVerificationPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+    if ($runtimeKeyVaultVerifierFingerprint -cne [string]$boundary.contract.keyVaultVerifierFingerprint -or
+        $runtimeRecoveryVerificationFingerprint -cne [string]$boundary.contract.keyVaultRecoveryVerifierFingerprint -or
+        [string]$boundary.contract.keyVaultVerifierCorrection -cne 'DisabledPublicAccessNullNetworkAclsV1') {
+        throw 'The bounded Key Vault verifier changed after continuation authorization.'
+    }
+    $currentVerificationPath = [IO.Path]::GetFullPath($script:keyVaultVerifierModulePath)
+    Import-Module $currentVerificationPath -Force -DisableNameChecking
+    $verificationModules = @(Get-Module Verification -All)
+    if ($verificationModules.Count -ne 1 -or
+        [string]::IsNullOrWhiteSpace([string]$verificationModules[0].Path) -or
+        -not ([IO.Path]::GetFullPath([string]$verificationModules[0].Path)).Equals(
+            $currentVerificationPath,
+            [StringComparison]::Ordinal)) {
+        throw 'The exact reviewed Key Vault verifier module is absent, ambiguous, or outside the corrected-source contract.'
+    }
     $originalSourceRoot = [string]$boundary.originalSourceRoot
     Set-BootstrapExecutionSourceRoot -Path $originalSourceRoot
     if ((Get-BootstrapSourceFingerprint -Root (Get-BootstrapExecutionSourceRoot)) -cne [string]$boundary.contract.originalSourceFingerprint) {
@@ -742,7 +832,11 @@ try {
         return $created
     }
 
-    $null = Invoke-ContinuationStateStep -Name 'Network hardening' -AlwaysRun -Action {
+    $null = Invoke-ContinuationStateStep -Name 'Network hardening' -Validate {
+        Test-ContinuationNetworkHardening `
+            -Config $configuration `
+            -Evidence $state.steps['Network hardening'].evidence
+    } -Action {
         Set-GatewayNetworkHardening -Config $configuration
     }
 

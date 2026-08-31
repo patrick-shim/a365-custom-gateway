@@ -543,12 +543,17 @@ function Assert-GatewayExactAzureLocalCredentialControls {
             'keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $vaultName,
             '--query', '{tenantId:properties.tenantId,enableRbacAuthorization:properties.enableRbacAuthorization,enableSoftDelete:properties.enableSoftDelete,softDeleteRetentionInDays:properties.softDeleteRetentionInDays,enablePurgeProtection:properties.enablePurgeProtection,enabledForDeployment:properties.enabledForDeployment,enabledForDiskEncryption:properties.enabledForDiskEncryption,enabledForTemplateDeployment:properties.enabledForTemplateDeployment,publicNetworkAccess:properties.publicNetworkAccess,defaultAction:properties.networkAcls.defaultAction,bypass:properties.networkAcls.bypass,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
         )
+        $vaultDefaultAction = [string]$vault.defaultAction
+        $vaultBypass = [string]$vault.bypass
+        $vaultNetworkAclsAreExact =
+            ($vaultDefaultAction -ceq 'Allow' -and $vaultBypass -ceq 'AzureServices') -or
+            ([string]::IsNullOrEmpty($vaultDefaultAction) -and [string]::IsNullOrEmpty($vaultBypass))
         if (-not ([string]$vault.tenantId).Equals([string]$Config.tenantId, [StringComparison]::OrdinalIgnoreCase) -or
             $vault.enableRbacAuthorization -ne $true -or $vault.enableSoftDelete -ne $true -or
             [int]$vault.softDeleteRetentionInDays -ne 90 -or $vault.enablePurgeProtection -ne $true -or
             $vault.enabledForDeployment -ne $false -or $vault.enabledForDiskEncryption -ne $false -or
             $vault.enabledForTemplateDeployment -ne $false -or [string]$vault.publicNetworkAccess -cne 'Disabled' -or
-            [string]$vault.defaultAction -cne 'Allow' -or [string]$vault.bypass -cne 'AzureServices' -or
+            -not $vaultNetworkAclsAreExact -or
             [string]$vault.ownershipId -cne [string]$Runtime.deploymentOwnershipId -or
             [string]$vault.sourceFingerprint -cne [string]$Runtime.sourceFingerprint) {
             throw 'Key Vault RBAC, recovery, deployment, network, tenant, or source controls are not exact.'

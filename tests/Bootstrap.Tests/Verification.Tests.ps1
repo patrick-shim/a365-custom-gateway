@@ -663,6 +663,8 @@ Describe 'Exact Azure local-credential and transport controls' {
             $script:acrAdminEnabled = $false
             $script:acrArmAudienceStatus = 'enabled'
             $script:storageSharedKeys = $false
+            $script:keyVaultDefaultAction = 'Allow'
+            $script:keyVaultBypass = 'AzureServices'
             $script:controlRegistryId = '/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/rg-safe-dev/providers/Microsoft.ContainerRegistry/registries/acrsafe'
             Mock Invoke-AzTsv { return 'true' }
             Mock Invoke-AzJson {
@@ -696,7 +698,8 @@ Describe 'Exact Azure local-credential and transport controls' {
                             tenantId = $script:controlConfig.tenantId; enableRbacAuthorization = $true
                             enableSoftDelete = $true; softDeleteRetentionInDays = 90; enablePurgeProtection = $true
                             enabledForDeployment = $false; enabledForDiskEncryption = $false; enabledForTemplateDeployment = $false
-                            publicNetworkAccess = 'Disabled'; defaultAction = 'Allow'; bypass = 'AzureServices'
+                            publicNetworkAccess = 'Disabled'
+                            defaultAction = $script:keyVaultDefaultAction; bypass = $script:keyVaultBypass
                             ownershipId = $script:controlRuntime.deploymentOwnershipId
                             sourceFingerprint = $script:controlRuntime.sourceFingerprint
                         }
@@ -723,7 +726,7 @@ Describe 'Exact Azure local-credential and transport controls' {
             }
         }
 
-        It 'accepts only the exact no-local-secret and TLS/network matrix' {
+        It 'accepts the exact no-local-secret and TLS/network matrix with explicit Key Vault ACL values' {
             Assert-GatewayExactAzureLocalCredentialControls -Config $script:controlConfig -Runtime $script:controlRuntime |
                 Should -BeTrue
             Should -Invoke Invoke-AzJson -Times 7 -Exactly
@@ -736,6 +739,34 @@ Describe 'Exact Azure local-credential and transport controls' {
                 [string]$Arguments[[Array]::IndexOf([object[]]$Arguments, '--api-version') + 1] -ceq '2023-11-01-preview' -and
                 [string]$Arguments[-1] -like '*properties.policies.azureADAuthenticationAsArmPolicy.status*'
             }
+        }
+
+        It 'accepts provider-normalized absence of both Key Vault ACL values while public access is disabled' {
+            $script:keyVaultDefaultAction = $null
+            $script:keyVaultBypass = ''
+
+            Assert-GatewayExactAzureLocalCredentialControls -Config $script:controlConfig -Runtime $script:controlRuntime |
+                Should -BeTrue
+        }
+
+        It 'rejects partial provider-normalized absence of Key Vault ACL values' {
+            $script:keyVaultDefaultAction = $null
+            $script:keyVaultBypass = 'AzureServices'
+            { Assert-GatewayExactAzureLocalCredentialControls -Config $script:controlConfig -Runtime $script:controlRuntime } |
+                Should -Throw '*Key Vault RBAC*'
+
+            $script:keyVaultDefaultAction = 'Allow'
+            $script:keyVaultBypass = ''
+            { Assert-GatewayExactAzureLocalCredentialControls -Config $script:controlConfig -Runtime $script:controlRuntime } |
+                Should -Throw '*Key Vault RBAC*'
+        }
+
+        It 'rejects noncanonical Key Vault ACL values' {
+            $script:keyVaultDefaultAction = 'Deny'
+            $script:keyVaultBypass = 'None'
+
+            { Assert-GatewayExactAzureLocalCredentialControls -Config $script:controlConfig -Runtime $script:controlRuntime } |
+                Should -Throw '*Key Vault RBAC*'
         }
 
         It 'rejects drift that enables ACR admin credentials' {

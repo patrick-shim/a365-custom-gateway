@@ -53,6 +53,7 @@ Describe 'Recovered bootstrap continuation' {
         $text | Should -Match 'originalAcceptedPlanRecordFingerprint'
         $text | Should -Match 'originalExecutionSource'
         $text | Should -Match 'recoveryExecutionSource'
+        $text | Should -Match 'Import-Module \$currentVerificationPath -Force'
     }
 
     It 'validates completed steps 1-11 with the canonical read-only functions' {
@@ -105,6 +106,8 @@ Describe 'Recovered bootstrap continuation' {
         $text | Should -Match "Admin UI Key Vault credential'[\s\S]*?-NoAutomaticReplayAfterStart"
         $text | Should -Match 'Purview policies''[\s\S]*?-Reconcile[\s\S]*?-NoAutomaticReplayAfterStart:\(\$configuration\.purview\.enabled -eq \$true\)'
         $text | Should -Match "Admin UI deployment'[\s\S]*?-NoAutomaticReplayAfterStart"
+        $text | Should -Match "Network hardening'[\s\S]*?-Validate[\s\S]*?Test-ContinuationNetworkHardening"
+        $text | Should -Not -Match "Network hardening'\s+-AlwaysRun"
         $commands | Should -Contain 'Invoke-BootstrapStateStep'
     }
 
@@ -133,6 +136,7 @@ Describe 'Recovered bootstrap continuation state contract' {
         $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
         . (Join-Path $repositoryRoot 'operations/continue-bootstrap-after-database-recovery.ps1')
         $boundedVerifierImplementation = ${function:Assert-BoundedAdminUiVerifierCompatibility}
+        $boundedKeyVaultVerifierImplementation = ${function:Assert-BoundedKeyVaultVerifierCompatibility}
 
         function New-TestRecoveredBoundary {
             $originalSource = 'sha256:' + ('1' * 64)
@@ -203,6 +207,7 @@ Describe 'Recovered bootstrap continuation state contract' {
         Mock Resolve-BootstrapDatabaseRecoveryPlanSourceRoot { '/safe/corrected' }
         Mock Resolve-BootstrapAcceptedSourceRoot { '/safe/original' }
         Mock Assert-BoundedAdminUiVerifierCompatibility { 'sha256:' + ('7' * 64) }
+        Mock Assert-BoundedKeyVaultVerifierCompatibility { 'sha256:' + ('9' * 64) }
         Mock Get-FileHash { [pscustomobject]@{ Hash = ('8' * 64) } }
     }
 
@@ -216,6 +221,9 @@ Describe 'Recovered bootstrap continuation state contract' {
         $boundary.contract.adminUiVerifierFingerprint | Should -Be ('sha256:' + ('7' * 64))
         $boundary.contract.adminUiRecoveryExperienceFingerprint | Should -Be ('sha256:' + ('8' * 64))
         $boundary.contract.adminUiVerifierCorrection | Should -Be 'AzureResourceIdOrdinalIgnoreCaseV1'
+        $boundary.contract.keyVaultVerifierFingerprint | Should -Be ('sha256:' + ('9' * 64))
+        $boundary.contract.keyVaultRecoveryVerifierFingerprint | Should -Be ('sha256:' + ('8' * 64))
+        $boundary.contract.keyVaultVerifierCorrection | Should -Be 'DisabledPublicAccessNullNetworkAclsV1'
         Should -Invoke Assert-BootstrapDatabaseRecoveryHistory -Times 1 -Exactly
     }
 
@@ -260,6 +268,38 @@ Describe 'Recovered bootstrap continuation state contract' {
         }
     }
 
+    It 'accepts only the reviewed Key Vault null-ACL projection correction' {
+        $legacyClause = "            [string]`$vault.defaultAction -cne 'Allow' -or [string]`$vault.bypass -cne 'AzureServices' -or"
+        $correctedClause = '            -not $vaultNetworkAclsAreExact -or'
+        $reviewedBlockLines = @(
+            '        $vaultDefaultAction = [string]$vault.defaultAction',
+            '        $vaultBypass = [string]$vault.bypass',
+            '        $vaultNetworkAclsAreExact =',
+            "            (`$vaultDefaultAction -ceq 'Allow' -and `$vaultBypass -ceq 'AzureServices') -or",
+            '            ([string]::IsNullOrEmpty($vaultDefaultAction) -and [string]::IsNullOrEmpty($vaultBypass))'
+        )
+        $currentRoot = Join-Path $TestDrive 'current-keyvault'
+        $recoveryRoot = Join-Path $TestDrive 'recovery-keyvault'
+        $currentPath = Join-Path $currentRoot 'bootstrap/modules/Verification.psm1'
+        $recoveryPath = Join-Path $recoveryRoot 'bootstrap/modules/Verification.psm1'
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $currentPath)) | Out-Null
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $recoveryPath)) | Out-Null
+        [IO.File]::WriteAllText($recoveryPath, (@('before', $legacyClause, 'after', '') -join "`n"))
+        [IO.File]::WriteAllText($currentPath, (@('before') + $reviewedBlockLines + @($correctedClause, 'after', '') -join "`n"))
+        $previousPath = $script:keyVaultVerifierModulePath
+        try {
+            $script:keyVaultVerifierModulePath = $currentPath
+            & $boundedKeyVaultVerifierImplementation -RecoveryVerificationPath $recoveryPath |
+                Should -Match '^sha256:[0-9a-f]{64}$'
+            [IO.File]::AppendAllText($currentPath, "unreviewed`n")
+            { & $boundedKeyVaultVerifierImplementation -RecoveryVerificationPath $recoveryPath } |
+                Should -Throw '*differs*reviewed*network-ACL*correction*'
+        }
+        finally {
+            $script:keyVaultVerifierModulePath = $previousPath
+        }
+    }
+
     It 'writes the safe continuation receipt with owner-only Unix permissions' {
         $path = Join-Path $TestDrive 'continuation-receipt.json'
         $receipt = [ordered]@{ schemaVersion = 1; marker = 'safe-identifiers-only' }
@@ -268,6 +308,29 @@ Describe 'Recovered bootstrap continuation state contract' {
         if (-not $IsWindows) {
             [IO.File]::GetUnixFileMode($path) | Should -Be ([IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite)
         }
+    }
+
+    It 'reuses completed network hardening only after exact evidence and live readback' {
+        $config = [pscustomobject]@{
+            projectName = 'safe'
+            environment = 'dev'
+            resourceGroupName = 'rg-safe'
+        }
+        $evidence = [ordered]@{
+            sharedKeyVault = 'kv-safe-dev'
+            provisioningKeyVault = 'kv-safe-dev-prov'
+            publicNetworkAccess = 'Disabled'
+            exactPostMutationReadback = $true
+        }
+        Mock Invoke-AzTsv { 'Disabled' }
+        Test-ContinuationNetworkHardening -Config $config -Evidence $evidence | Should -BeTrue
+        Should -Invoke Invoke-AzTsv -Times 2 -Exactly
+
+        $evidence.publicNetworkAccess = 'Enabled'
+        Test-ContinuationNetworkHardening -Config $config -Evidence $evidence | Should -BeFalse
+        $evidence.publicNetworkAccess = 'Disabled'
+        Mock Invoke-AzTsv { 'Enabled' }
+        Test-ContinuationNetworkHardening -Config $config -Evidence $evidence | Should -BeFalse
     }
 
     It 'revalidates every local continuation checkpoint before trusting Verified' {
