@@ -1,10 +1,42 @@
 $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-Import-Module ExchangeOnlineManagement -ErrorAction Stop
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Common.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Purview.psm1') -Force
 
 Describe 'Purview Security and Compliance tenant boundary' {
     InModuleScope Purview {
+        BeforeAll {
+            function Connect-IPPSSession {
+                [CmdletBinding()]
+                param(
+                    [string]$UserPrincipalName,
+                    [string]$AzureADAuthorizationEndpointUri,
+                    [string]$AccessToken,
+                    [bool]$ShowBanner
+                )
+            }
+
+            function Connect-ExchangeOnline {
+                [CmdletBinding()]
+                param(
+                    [string]$ConnectionUri,
+                    [string]$AzureADAuthorizationEndpointUri,
+                    [string]$UserPrincipalName,
+                    [switch]$Device,
+                    [bool]$ShowBanner
+                )
+            }
+
+            function Disconnect-ExchangeOnline {
+                [CmdletBinding(SupportsShouldProcess)]
+                param([string]$ConnectionId)
+            }
+
+            function Get-ConnectionInformation {
+                [CmdletBinding()]
+                param()
+            }
+        }
+
         BeforeEach {
             $script:tenantId = '11111111-1111-4111-8111-111111111111'
             $script:userPrincipalName = 'operator@example.test'
