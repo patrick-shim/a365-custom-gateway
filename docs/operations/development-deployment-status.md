@@ -36,6 +36,22 @@ The next clean deployment is user-operated and must use a new deployment identit
 Do not point a fresh local bootstrap state at an existing resource group or reuse
 state from a deleted resource group.
 
+## Current user-operated clean-subscription checkpoint
+
+A current clean-subscription run completed prerequisites, authentication, provider
+registration, the Azure foundation, the Gateway API identity, and all immutable
+images. The inert identity deployment then stopped before creating its deployment
+record because the Prompt Shields role-assignment scope used a module output in a
+validation-time resource-name expression. Read-only checks found no inert deployment
+record and no Gateway API or workflow-v3 worker Container App.
+
+The current source uses the deterministic Content Safety account name at that scope
+and includes an exact one-generation continuation boundary. Local verification is
+green, but this correction is not live deployment evidence. Preserve the existing
+resource group and ignored `.bootstrap` state, pull the corrected source, and use
+the supported Resume command. The completed foundation and images must be
+independently revalidated and reused; they must not be rebuilt.
+
 ## Optional protection evidence
 
 Prompt Shields reached Azure AI Content Safety successfully in the internal

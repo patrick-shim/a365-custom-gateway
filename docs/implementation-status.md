@@ -53,6 +53,14 @@ identifiers only. The tool has no destroy mode. If a completed resource group wa
 deleted, do not replay its preserved state; use a new isolated deployment identity
 or an independently reviewed recovery procedure.
 
+The bootstrap also contains one bounded source-continuation contract for the
+immediately preceding Prompt Shields template defect: it applies only when the
+original run completed the foundation and immutable images, then failed the inert
+deployment without evidence. It requires the exact reviewed source delta, retains
+the original deployment provenance, revalidates and reuses the completed prefix,
+and executes the corrected inert deployment from a separately fingerprinted source
+snapshot. It is not a general source-upgrade or resource-adoption mechanism.
+
 Setup validates the typed bootstrap schema and field-specific Azure constraints; it
 does not infer whether a deployment name is credential-like from the name's text.
 Unknown properties and unsupported advanced configuration remain rejected. Azure
@@ -122,6 +130,12 @@ independent diagnostics, stage-specific Plan failures without fake progress, and
 an explicit Plan retry action. Configuration readers normalize the previously
 emitted false-only field while continuing to reject enabled or unknown fields; new
 writes omit it.
+
+The current source-continuation change additionally passed all 553 bootstrap tests:
+552 passed, none failed, and one Windows-only launcher case was skipped on macOS.
+The five changed PowerShell files parse cleanly, the corrected main Bicep template
+compiles, and an archive comparison against the affected source generation contains
+exactly the six reviewed deployment-source files.
 
 ## Known external limitations
 

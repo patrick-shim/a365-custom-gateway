@@ -611,7 +611,7 @@ module roleAssignments './modules/role-assignments.bicep' = {
 }
 
 resource deployedContentSafety 'Microsoft.CognitiveServices/accounts@2023-05-01' existing = if (promptShieldEnabled) {
-  name: contentSafety!.outputs.accountName
+  name: names.contentSafety
 }
 
 resource promptShieldCognitiveServicesUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (promptShieldEnabled) {

@@ -919,8 +919,40 @@ function Get-GatewayInertWhatIfRecoveryStateContext {
         [AllowNull()][System.Collections.IDictionary]$State,
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter()][string]$ExecutionSourceFingerprint = ''
     )
+
+    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) {
+        $ExecutionSourceFingerprint = $SourceFingerprint
+    }
+    Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'What-If execution source fingerprint'
+
+    $sourceCorrection = $null
+    if ($null -ne $State -and $State -is [System.Collections.IDictionary] -and
+        $State.Contains('preInertSourceCorrectionPlan')) {
+        $recordedCorrection = $State.preInertSourceCorrectionPlan
+        if ($recordedCorrection -isnot [System.Collections.IDictionary]) { return $null }
+        if ([string]$recordedCorrection.status -ceq 'Accepted') {
+            $sourceCorrection = Assert-BootstrapPreInertSourceCorrectionPlan `
+                -State $State `
+                -ExecutionSourceFingerprint $ExecutionSourceFingerprint
+        }
+        elseif ([string]$recordedCorrection.status -ceq 'Completed') {
+            $effectiveDeploymentSourceFingerprint = Get-BootstrapEffectiveDeploymentSourceFingerprint `
+                -State $State `
+                -ExecutionSourceFingerprint $ExecutionSourceFingerprint
+            if ($effectiveDeploymentSourceFingerprint -cne $SourceFingerprint) { return $null }
+            # Get-BootstrapEffectiveDeploymentSourceFingerprint validates the
+            # completed correction plus any completed database-recovery/manual-
+            # repair continuation before composing their source generations.
+            $sourceCorrection = $recordedCorrection
+        }
+        else { return $null }
+        if ([string]$sourceCorrection.originalDeploymentSourceFingerprint -cne $SourceFingerprint) {
+            return $null
+        }
+    }
 
     if ($null -eq $State -or $State -isnot [System.Collections.IDictionary] -or
         -not $State.Contains('steps') -or $State.steps -isnot [System.Collections.IDictionary] -or
@@ -932,22 +964,76 @@ function Get-GatewayInertWhatIfRecoveryStateContext {
         return $null
     }
 
-    foreach ($sourceRecordName in @('created', 'lastWritten')) {
-        if (-not $State.source.Contains($sourceRecordName) -or
-            $State.source[$sourceRecordName] -isnot [System.Collections.IDictionary] -or
-            -not $State.source[$sourceRecordName].Contains('bootstrapSourceFingerprint') -or
-            [string]$State.source[$sourceRecordName].bootstrapSourceFingerprint -cne $SourceFingerprint) {
+    $expectedCreatedSourceFingerprint = $SourceFingerprint
+    $expectedLastWrittenSourceFingerprint = if ($null -ne $sourceCorrection) {
+        $ExecutionSourceFingerprint
+    }
+    else {
+        $SourceFingerprint
+    }
+    foreach ($sourceRecord in ([ordered]@{
+        created = $expectedCreatedSourceFingerprint
+        lastWritten = $expectedLastWrittenSourceFingerprint
+    }).GetEnumerator()) {
+        if (-not $State.source.Contains([string]$sourceRecord.Key) -or
+            $State.source[[string]$sourceRecord.Key] -isnot [System.Collections.IDictionary] -or
+            -not $State.source[[string]$sourceRecord.Key].Contains('bootstrapSourceFingerprint') -or
+            [string]$State.source[[string]$sourceRecord.Key].bootstrapSourceFingerprint -cne [string]$sourceRecord.Value) {
             return $null
         }
+    }
+
+    $testExpectedStepSourceFingerprint = {
+        param([int]$StepIndex, [string]$ActualSourceFingerprint)
+        if ($null -eq $sourceCorrection) {
+            return $ActualSourceFingerprint -ceq $SourceFingerprint
+        }
+        if ([string]$sourceCorrection.status -ceq 'Accepted') {
+            # A correction stays Accepted until the corrected inert step is
+            # durably Completed. A crash can therefore leave either always-run
+            # step on the corrected snapshot, and can leave step 7 Running,
+            # Failed, or Completed on that snapshot. Steps 3-6 remain bound to
+            # the original deployment source throughout this transition.
+            if ($StepIndex -in 0, 1) {
+                return $ActualSourceFingerprint -cin @($SourceFingerprint, $ExecutionSourceFingerprint)
+            }
+            if ($StepIndex -ge 6) {
+                return $ActualSourceFingerprint -ceq $ExecutionSourceFingerprint
+            }
+            return $ActualSourceFingerprint -ceq $SourceFingerprint
+        }
+        $correctionExecutionSourceFingerprint = [string]$sourceCorrection.correctedExecutionSourceFingerprint
+        # The completed correction deliberately preserves original deployment
+        # provenance on steps 3-6 and the exact inert result on the correction
+        # source. A later completed database recovery/repair may advance the
+        # current execution generation without rewriting those durable steps.
+        if ($StepIndex -in 0, 1) {
+            return $ActualSourceFingerprint -cin @(
+                $correctionExecutionSourceFingerprint,
+                $ExecutionSourceFingerprint)
+        }
+        if ($StepIndex -eq 6) {
+            return $ActualSourceFingerprint -ceq $correctionExecutionSourceFingerprint
+        }
+        if ($StepIndex -ge 10 -and
+            $ExecutionSourceFingerprint -cne $correctionExecutionSourceFingerprint) {
+            return $ActualSourceFingerprint -ceq $ExecutionSourceFingerprint
+        }
+        if ($StepIndex -ge 7) {
+            return $ActualSourceFingerprint -ceq $correctionExecutionSourceFingerprint
+        }
+        return $ActualSourceFingerprint -ceq $SourceFingerprint
     }
 
     $requiredCompletedSteps = @('Azure foundation', 'Gateway API identity', 'Immutable workload images')
     foreach ($stepName in $requiredCompletedSteps) {
         if (-not $State.steps.Contains($stepName)) { return $null }
         $step = $State.steps[$stepName]
+        $requiredStepIndex = [Array]::IndexOf(@(Get-GatewayBootstrapStepNames), $stepName)
         if ($step -isnot [System.Collections.IDictionary] -or
             -not $step.Contains('status') -or [string]$step.status -cne 'Completed' -or
-            -not $step.Contains('sourceFingerprint') -or [string]$step.sourceFingerprint -cne $SourceFingerprint -or
+            -not $step.Contains('sourceFingerprint') -or
+            -not (& $testExpectedStepSourceFingerprint $requiredStepIndex ([string]$step.sourceFingerprint)) -or
             -not $step.Contains('evidence') -or $null -eq $step.evidence) {
             return $null
         }
@@ -956,9 +1042,11 @@ function Get-GatewayInertWhatIfRecoveryStateContext {
     $inertStepName = 'Inert identity deployment'
     if (-not $State.steps.Contains($inertStepName)) { return $null }
     $inertStep = $State.steps[$inertStepName]
+    $inertStepIndex = [Array]::IndexOf(@(Get-GatewayBootstrapStepNames), $inertStepName)
     if ($inertStep -isnot [System.Collections.IDictionary] -or
         -not $inertStep.Contains('status') -or [string]$inertStep.status -cnotin @('Running', 'Failed', 'Completed') -or
-        -not $inertStep.Contains('sourceFingerprint') -or [string]$inertStep.sourceFingerprint -cne $SourceFingerprint) {
+        -not $inertStep.Contains('sourceFingerprint') -or
+        -not (& $testExpectedStepSourceFingerprint $inertStepIndex ([string]$inertStep.sourceFingerprint))) {
         return $null
     }
 
@@ -982,7 +1070,7 @@ function Get-GatewayInertWhatIfRecoveryStateContext {
             -not $step.Contains('status') -or
             [string]$step.status -cnotin @('Running', 'Failed', 'Completed') -or
             -not $step.Contains('sourceFingerprint') -or
-            [string]$step.sourceFingerprint -cne $SourceFingerprint) {
+            -not (& $testExpectedStepSourceFingerprint $index ([string]$step.sourceFingerprint))) {
             return $null
         }
         if ($index -lt $lastObservedIndex -and [string]$step.status -cne 'Completed') { return $null }
@@ -1846,6 +1934,327 @@ function Assert-GatewayInertWhatIfRecoveryBoundary {
     return $resourceIds
 }
 
+function New-GatewayPreInertSourceCorrectionWhatIfBoundary {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$CorrectionPlan,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$DeploymentSourceFingerprint,
+        [Parameter(Mandatory)][string]$ExecutionSourceFingerprint
+    )
+
+    if ([string]$CorrectionPlan.status -cne 'Accepted' -or
+        [string]$CorrectionPlan.deploymentOwnershipId -cne $DeploymentOwnershipId -or
+        [string]$CorrectionPlan.configurationFingerprint -cne (Get-BootstrapConfigurationFingerprint -Config $Config) -or
+        [string]$CorrectionPlan.originalDeploymentSourceFingerprint -cne $DeploymentSourceFingerprint -or
+        [string]$CorrectionPlan.correctedExecutionSourceFingerprint -cne $ExecutionSourceFingerprint) {
+        throw 'The pending pre-inert source correction is outside the exact plan, configuration, ownership, or source boundary.'
+    }
+
+    [string[]]$expectedStepNames = @((Get-GatewayBootstrapStepNames) | Select-Object -First 7)
+    [string[]]$actualStepNames = @($State.steps.Keys | ForEach-Object { [string]$_ })
+    [Array]::Sort($expectedStepNames, [StringComparer]::Ordinal)
+    [Array]::Sort($actualStepNames, [StringComparer]::Ordinal)
+    if (($expectedStepNames -join "`n") -cne ($actualStepNames -join "`n") -or
+        -not $State.Contains('outputs') -or $State.outputs -isnot [System.Collections.IDictionary] -or
+        $State.outputs.Count -ne 0) {
+        throw 'The pending pre-inert source correction requires exactly steps 1-7 and an empty output boundary.'
+    }
+
+    $prefixStepNames = @((Get-GatewayBootstrapStepNames) | Select-Object -First 6)
+    for ($index = 0; $index -lt $prefixStepNames.Count; $index++) {
+        $stepName = [string]$prefixStepNames[$index]
+        $step = $State.steps[[string]$stepName]
+        $isOriginalCompleted = $step -is [System.Collections.IDictionary] -and
+            [string]$step.status -ceq 'Completed' -and
+            [string]$step.sourceFingerprint -ceq $DeploymentSourceFingerprint -and
+            $step.Contains('evidence') -and $null -ne $step.evidence
+        $isCorrectedAlwaysRunTransition = $index -lt 2 -and
+            $step -is [System.Collections.IDictionary] -and
+            [string]$step.status -cin @('Running', 'Failed', 'Completed') -and
+            [string]$step.sourceFingerprint -ceq $ExecutionSourceFingerprint -and
+            ([string]$step.status -cne 'Completed' -or
+                ($step.Contains('evidence') -and $null -ne $step.evidence))
+        if (-not $isOriginalCompleted -and -not $isCorrectedAlwaysRunTransition) {
+            throw 'The pending pre-inert source correction requires exact completed original-source evidence through immutable images.'
+        }
+    }
+    $inertStep = $State.steps['Inert identity deployment']
+    $isOriginalFailure = $inertStep -is [System.Collections.IDictionary] -and
+        [string]$inertStep.status -ceq 'Failed' -and
+        [string]$inertStep.sourceFingerprint -ceq $DeploymentSourceFingerprint -and
+        -not $inertStep.Contains('evidence')
+    $isCorrectedStartedOutcome = $inertStep -is [System.Collections.IDictionary] -and
+        [string]$inertStep.status -cin @('Running', 'Failed', 'Completed') -and
+        [string]$inertStep.sourceFingerprint -ceq $ExecutionSourceFingerprint -and
+        ([string]$inertStep.status -cne 'Completed' -or
+            ($inertStep.Contains('evidence') -and $null -ne $inertStep.evidence))
+    if (-not $isOriginalFailure -and -not $isCorrectedStartedOutcome) {
+        throw 'The pending pre-inert source correction has an unsupported step-7 source, status, or evidence boundary.'
+    }
+    foreach ($record in ([ordered]@{
+        created = $DeploymentSourceFingerprint
+        lastWritten = $ExecutionSourceFingerprint
+    }).GetEnumerator()) {
+        if (-not $State.source.Contains([string]$record.Key) -or
+            $State.source[[string]$record.Key] -isnot [System.Collections.IDictionary] -or
+            [string]$State.source[[string]$record.Key].bootstrapSourceFingerprint -cne [string]$record.Value) {
+            throw 'The pending pre-inert source correction state does not preserve distinct deployment and execution source provenance.'
+        }
+    }
+    $foundation = $State.steps['Azure foundation'].evidence
+    $images = $State.steps['Immutable workload images'].evidence
+    if ([string]$foundation.deploymentOwnershipId -cne $DeploymentOwnershipId -or
+        [string]$foundation.sourceFingerprint -cne $DeploymentSourceFingerprint -or
+        [string]$images.deploymentOwnershipId -cne $DeploymentOwnershipId -or
+        [string]$images.sourceFingerprint -cne $DeploymentSourceFingerprint) {
+        throw 'The pending pre-inert source correction evidence does not retain original deployment provenance.'
+    }
+
+    $boundary = [ordered]@{
+        schemaVersion = 1
+        boundaryKind = 'PreInertSourceCorrectionWhatIf'
+        correctionKind = [string]$CorrectionPlan.correctionKind
+        correctionPlanFingerprint = [string]$CorrectionPlan.planFingerprint
+        originalBoundaryFingerprint = [string]$CorrectionPlan.originalBoundaryFingerprint
+        deploymentOwnershipId = $DeploymentOwnershipId
+        deploymentSourceFingerprint = $DeploymentSourceFingerprint
+        executionSourceFingerprint = $ExecutionSourceFingerprint
+        currentStateBoundaryFingerprint = Get-BootstrapObjectFingerprint -InputObject ([ordered]@{
+            source = $State.source
+            steps = $State.steps
+            outputs = $State.outputs
+        })
+    }
+    $boundary['boundaryFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $boundary
+    return $boundary
+}
+
+function New-GatewayPreInertFoundationWhatIfBoundary {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Foundation,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$SourceCorrectionBoundary,
+        [Parameter(Mandatory)][object[]]$Changes
+    )
+
+    if ([string]$SourceCorrectionBoundary.boundaryKind -cne 'PreInertSourceCorrectionWhatIf') {
+        throw 'The foundation Ignore graph requires the exact pending source-correction boundary.'
+    }
+    foreach ($fingerprintName in @(
+        'correctionPlanFingerprint', 'deploymentSourceFingerprint',
+        'executionSourceFingerprint', 'currentStateBoundaryFingerprint', 'boundaryFingerprint'
+    )) {
+        Assert-BootstrapFingerprintValue `
+            -Value ([string]$SourceCorrectionBoundary[$fingerprintName]) `
+            -Label "Pre-inert source-correction $fingerprintName"
+    }
+
+    $subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
+    $resourceGroupName = [string]$Config.resourceGroupName
+    if ([string]::IsNullOrWhiteSpace($resourceGroupName) -or
+        $resourceGroupName -match '[\s/?#]') {
+        throw 'The pending correction resource-group boundary is malformed.'
+    }
+    $resourceGroupId = "/subscriptions/$subscriptionId/resourcegroups/$($resourceGroupName.ToLowerInvariant())"
+    $providerBase = "$resourceGroupId/providers"
+
+    $expectedDeploymentName = "a365gw-$($Config.projectName)-bootstrap-foundation-$($Config.environment)"
+    $expectedEnvironmentName = "cae-$($Config.projectName)-$($Config.environment)-vnet"
+    $expectedVirtualNetworkName = "vnet-$($Config.projectName)-$($Config.environment)"
+    $expectedPrivateEndpointSubnetName = 'snet-private-endpoints'
+    $expectedLogAnalyticsName = "log-$($Config.projectName)-$($Config.environment)"
+    $expectedRuntimeIdentityName = "id-gateway-runtime-pull-$($Config.environment)"
+    $expectedEnvironmentId = "$providerBase/microsoft.app/managedenvironments/$expectedEnvironmentName"
+    $expectedVirtualNetworkId = "$providerBase/microsoft.network/virtualnetworks/$expectedVirtualNetworkName"
+    $expectedPrivateEndpointSubnetId = "$expectedVirtualNetworkId/subnets/$expectedPrivateEndpointSubnetName"
+    $expectedRuntimeIdentityId = "$providerBase/microsoft.managedidentity/userassignedidentities/$expectedRuntimeIdentityName"
+
+    $acrName = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'acrName')
+    $expectedAcrPrefix = "acr$($Config.projectName)$($Config.environment)"
+    if ($acrName -cnotmatch ('^' + [regex]::Escape($expectedAcrPrefix) + '[a-z0-9]{6}$')) {
+        throw 'The pending correction foundation evidence has an unexpected registry name.'
+    }
+    $registryId = "$providerBase/microsoft.containerregistry/registries/$acrName"
+    $diagnosticSettingId = "$registryId/providers/microsoft.insights/diagnosticsettings/$acrName-diag"
+
+    $principalId = [string](Get-GatewayOptionalObjectProperty `
+        -Object $Foundation -Name 'runtimeImagePullIdentityPrincipalId')
+    $parsedPrincipalId = [guid]::Empty
+    if (-not [guid]::TryParse($principalId, [ref]$parsedPrincipalId) -or
+        $parsedPrincipalId -eq [guid]::Empty -or
+        $principalId -cne $parsedPrincipalId.ToString('D')) {
+        throw 'The pending correction foundation evidence has an invalid runtime image-pull principal.'
+    }
+
+    $roleAssignmentId = [string](Get-GatewayOptionalObjectProperty `
+        -Object $Foundation -Name 'runtimeImagePullAcrPullRoleAssignmentId')
+    $normalizedRoleAssignmentId = $roleAssignmentId.ToLowerInvariant()
+    $roleAssignmentPrefix = "$registryId/providers/microsoft.authorization/roleassignments/"
+    $roleAssignmentGuid = if ($normalizedRoleAssignmentId.StartsWith(
+        $roleAssignmentPrefix, [StringComparison]::Ordinal)) {
+        $normalizedRoleAssignmentId.Substring($roleAssignmentPrefix.Length)
+    }
+    else { '' }
+    $parsedRoleAssignmentId = [guid]::Empty
+    if ($roleAssignmentGuid.Contains('/', [StringComparison]::Ordinal) -or
+        -not [guid]::TryParse($roleAssignmentGuid, [ref]$parsedRoleAssignmentId) -or
+        $parsedRoleAssignmentId -eq [guid]::Empty -or
+        $roleAssignmentGuid -cne $parsedRoleAssignmentId.ToString('D')) {
+        throw 'The pending correction foundation evidence has an invalid ACR-scoped AcrPull assignment.'
+    }
+
+    foreach ($binding in @(
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'deploymentName'); expected = $expectedDeploymentName; label = 'deployment name'; exactCase = $true },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'deploymentOwnershipId'); expected = [string]$SourceCorrectionBoundary.deploymentOwnershipId; label = 'deployment owner'; exactCase = $true },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'sourceFingerprint'); expected = [string]$SourceCorrectionBoundary.deploymentSourceFingerprint; label = 'deployment source'; exactCase = $true },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'resourceGroupName'); expected = $resourceGroupName; label = 'resource group'; exactCase = $true },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'containerAppsEnvironmentName'); expected = $expectedEnvironmentName; label = 'Container Apps environment name'; exactCase = $true },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'containerAppsEnvironmentId'); expected = $expectedEnvironmentId; label = 'Container Apps environment ID'; exactCase = $false },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'virtualNetworkName'); expected = $expectedVirtualNetworkName; label = 'virtual network name'; exactCase = $true },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'virtualNetworkId'); expected = $expectedVirtualNetworkId; label = 'virtual network ID'; exactCase = $false },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'privateEndpointSubnetName'); expected = $expectedPrivateEndpointSubnetName; label = 'private-endpoint subnet name'; exactCase = $true },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'privateEndpointSubnetId'); expected = $expectedPrivateEndpointSubnetId; label = 'private-endpoint subnet ID'; exactCase = $false },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'logAnalyticsWorkspaceName'); expected = $expectedLogAnalyticsName; label = 'Log Analytics name'; exactCase = $true },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'acrLoginServer'); expected = "$acrName.azurecr.io"; label = 'registry login server'; exactCase = $true },
+        [ordered]@{ actual = [string](Get-GatewayOptionalObjectProperty -Object $Foundation -Name 'runtimeImagePullIdentityId'); expected = $expectedRuntimeIdentityId; label = 'runtime image-pull identity ID'; exactCase = $false }
+    )) {
+        $matches = if ([bool]$binding.exactCase) {
+            [string]$binding.actual -ceq [string]$binding.expected
+        }
+        else {
+            ([string]$binding.actual).Equals([string]$binding.expected, [StringComparison]::OrdinalIgnoreCase)
+        }
+        if (-not $matches) {
+            throw "The pending correction foundation evidence has a mismatched $($binding.label)."
+        }
+    }
+
+    [string[]]$expectedResourceIds = @(
+        $resourceGroupId
+        $expectedEnvironmentId
+        $registryId
+        $normalizedRoleAssignmentId
+        $diagnosticSettingId
+        $expectedRuntimeIdentityId
+        $expectedVirtualNetworkId
+        "$providerBase/microsoft.operationalinsights/workspaces/$expectedLogAnalyticsName"
+    )
+    [Array]::Sort($expectedResourceIds, [StringComparer]::Ordinal)
+    if ($Changes.Count -ne $expectedResourceIds.Count -or
+        @($Changes | Where-Object { [string]$_.changeType -cne 'Ignore' }).Count -ne 0) {
+        throw 'The pending correction What-If must contain exactly the eight reviewed foundation Ignore resources.'
+    }
+    [string[]]$observedResourceIds = @($Changes | ForEach-Object {
+        if (-not (Test-GatewayRecoveryWhatIfResourceIdLexicalBoundary `
+            -ResourceId ([string]$_.resourceId) -Config $Config)) {
+            throw 'The pending correction What-If contains a malformed Ignore resource ID.'
+        }
+        ([string]$_.resourceId).ToLowerInvariant()
+    })
+    [Array]::Sort($observedResourceIds, [StringComparer]::Ordinal)
+    if (@($observedResourceIds | Sort-Object -Unique -CaseSensitive).Count -ne $observedResourceIds.Count -or
+        ($observedResourceIds -join "`n") -cne ($expectedResourceIds -join "`n")) {
+        throw 'The pending correction What-If does not exactly match the eight-resource foundation graph.'
+    }
+
+    $inertDeploymentName = "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)"
+    $deploymentCountText = Invoke-AzTsv -Arguments @(
+        'deployment', 'group', 'list', '--subscription', $subscriptionId,
+        '--resource-group', $resourceGroupName,
+        '--query', "length([?name=='$inertDeploymentName'])"
+    )
+    $deploymentCount = 0
+    if (-not [int]::TryParse($deploymentCountText, [ref]$deploymentCount) -or $deploymentCount -ne 0) {
+        throw 'The pending correction target does not have an exact zero-deployment inert boundary.'
+    }
+    $targetContainerApps = [ordered]@{}
+    foreach ($containerAppName in @(
+        "ca-gateway-api-$($Config.environment)",
+        "ca-gateway-worker-$($Config.environment)-v3"
+    )) {
+        $resourceCountText = Invoke-AzTsv -Arguments @(
+            'resource', 'list', '--subscription', $subscriptionId,
+            '--resource-group', $resourceGroupName,
+            '--name', $containerAppName,
+            '--resource-type', 'Microsoft.App/containerApps', '--query', 'length(@)'
+        )
+        $resourceCount = 0
+        if (-not [int]::TryParse($resourceCountText, [ref]$resourceCount) -or $resourceCount -ne 0) {
+            throw "The pending correction target '$containerAppName' was not proven absent."
+        }
+        $targetContainerApps[$containerAppName] = $resourceCount
+    }
+
+    $boundary = [ordered]@{
+        schemaVersion = 1
+        boundaryKind = 'PreInertSourceCorrectionFoundationWhatIf'
+        correctionKind = [string]$SourceCorrectionBoundary.correctionKind
+        correctionPlanFingerprint = [string]$SourceCorrectionBoundary.correctionPlanFingerprint
+        sourceCorrectionBoundaryFingerprint = [string]$SourceCorrectionBoundary.boundaryFingerprint
+        sourceCorrectionStateBoundaryFingerprint = [string]$SourceCorrectionBoundary.currentStateBoundaryFingerprint
+        deploymentOwnershipId = [string]$SourceCorrectionBoundary.deploymentOwnershipId
+        deploymentSourceFingerprint = [string]$SourceCorrectionBoundary.deploymentSourceFingerprint
+        executionSourceFingerprint = [string]$SourceCorrectionBoundary.executionSourceFingerprint
+        foundationEvidenceFingerprint = Get-BootstrapObjectFingerprint -InputObject $Foundation
+        inertDeployment = [ordered]@{ name = $inertDeploymentName; count = $deploymentCount }
+        targetContainerApps = $targetContainerApps
+        resourceIds = $expectedResourceIds
+    }
+    $boundary['boundaryFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $boundary
+    return $boundary
+}
+
+function New-GatewaySourceCorrectionAwareWhatIfBoundary {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$CorrectionPlan,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$RecoveryBoundary,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$DeploymentSourceFingerprint,
+        [Parameter(Mandatory)][string]$ExecutionSourceFingerprint
+    )
+
+    $boundary = [ordered]@{
+        schemaVersion = 1
+        boundaryKind = 'SourceCorrectionAwareRecoveryWhatIf'
+        correctionKind = [string]$CorrectionPlan.correctionKind
+        correctionPlanFingerprint = [string]$CorrectionPlan.planFingerprint
+        correctionCompletionBoundaryFingerprint = [string]$CorrectionPlan.completionBoundaryFingerprint
+        deploymentOwnershipId = $DeploymentOwnershipId
+        deploymentSourceFingerprint = $DeploymentSourceFingerprint
+        executionSourceFingerprint = $ExecutionSourceFingerprint
+        recoveredIgnoreBoundary = $RecoveryBoundary
+    }
+    $boundary['boundaryFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $boundary
+    return $boundary
+}
+
+function New-GatewayPendingSourceCorrectionRecoveryWhatIfBoundary {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$SourceCorrectionBoundary,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$RecoveryBoundary
+    )
+
+    if ([string]$SourceCorrectionBoundary.boundaryKind -cne 'PreInertSourceCorrectionWhatIf') {
+        throw 'Pending source-correction recovery requires the exact current correction-state boundary.'
+    }
+    $boundary = [ordered]@{
+        schemaVersion = 1
+        boundaryKind = 'PendingSourceCorrectionRecoveryWhatIf'
+        correctionKind = [string]$SourceCorrectionBoundary.correctionKind
+        correctionPlanFingerprint = [string]$SourceCorrectionBoundary.correctionPlanFingerprint
+        sourceCorrectionBoundaryFingerprint = [string]$SourceCorrectionBoundary.boundaryFingerprint
+        sourceCorrectionStateBoundaryFingerprint = [string]$SourceCorrectionBoundary.currentStateBoundaryFingerprint
+        deploymentOwnershipId = [string]$SourceCorrectionBoundary.deploymentOwnershipId
+        deploymentSourceFingerprint = [string]$SourceCorrectionBoundary.deploymentSourceFingerprint
+        executionSourceFingerprint = [string]$SourceCorrectionBoundary.executionSourceFingerprint
+        recoveredIgnoreBoundary = $RecoveryBoundary
+    }
+    $boundary['boundaryFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $boundary
+    return $boundary
+}
+
 function Invoke-GatewayFoundationWhatIf {
     [CmdletBinding()]
     param(
@@ -1853,6 +2262,7 @@ function Invoke-GatewayFoundationWhatIf {
         [Parameter(Mandatory)][string]$RepositoryRoot,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter()][string]$ExecutionSourceFingerprint = '',
         [AllowNull()][System.Collections.IDictionary]$State
     )
 
@@ -1861,6 +2271,52 @@ function Invoke-GatewayFoundationWhatIf {
         throw 'Plan ownership ID must be the canonical lowercase GUID from the current bootstrap state.'
     }
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Plan source fingerprint'
+    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) {
+        $ExecutionSourceFingerprint = $SourceFingerprint
+    }
+    Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Plan execution source fingerprint'
+
+    $sourceCorrectionPlan = $null
+    $sourceCorrectionBoundary = $null
+    if ($null -ne $State -and $State -is [System.Collections.IDictionary] -and
+        $State.Contains('preInertSourceCorrectionPlan')) {
+        $recordedCorrectionPlan = $State.preInertSourceCorrectionPlan
+        if ($recordedCorrectionPlan -isnot [System.Collections.IDictionary]) {
+            throw 'The persisted pre-inert source correction has an invalid contract.'
+        }
+        if ([string]$recordedCorrectionPlan.status -ceq 'Accepted') {
+            $sourceCorrectionPlan = Assert-BootstrapPreInertSourceCorrectionPlan `
+                -State $State `
+                -ExecutionSourceFingerprint $ExecutionSourceFingerprint
+        }
+        elseif ([string]$recordedCorrectionPlan.status -ceq 'Completed') {
+            $effectiveDeploymentSourceFingerprint = Get-BootstrapEffectiveDeploymentSourceFingerprint `
+                -State $State `
+                -ExecutionSourceFingerprint $ExecutionSourceFingerprint
+            if ($effectiveDeploymentSourceFingerprint -cne $SourceFingerprint) {
+                throw 'The completed source-correction chain does not map this execution source to the deployment source.'
+            }
+            $sourceCorrectionPlan = $recordedCorrectionPlan
+        }
+        else {
+            throw 'The persisted pre-inert source correction has an unsupported status.'
+        }
+        if ([string]$sourceCorrectionPlan.originalDeploymentSourceFingerprint -cne $SourceFingerprint) {
+            throw 'The pre-inert source correction does not authorize this deployment source fingerprint.'
+        }
+        if ([string]$sourceCorrectionPlan.status -ceq 'Accepted') {
+            $sourceCorrectionBoundary = New-GatewayPreInertSourceCorrectionWhatIfBoundary `
+                -State $State `
+                -CorrectionPlan $sourceCorrectionPlan `
+                -Config $Config `
+                -DeploymentOwnershipId $canonicalOwnershipId `
+                -DeploymentSourceFingerprint $SourceFingerprint `
+                -ExecutionSourceFingerprint $ExecutionSourceFingerprint
+        }
+    }
+    elseif ($ExecutionSourceFingerprint -cne $SourceFingerprint) {
+        throw 'Distinct deployment and execution source fingerprints require an exact durable source-correction plan.'
+    }
 
     $deploymentName = "a365gw-plan-$($Config.projectName)-$($Config.environment)"
     $result = Invoke-AzJson -Arguments @(
@@ -1959,7 +2415,7 @@ function Invoke-GatewayFoundationWhatIf {
             reason = 'Azure What-If returned a missing or malformed result contract. No mutation is authorized.'
             deploymentName = $deploymentName
             changeCounts = [ordered]@{}
-            recoveryIgnoreBoundary = $null
+            recoveryIgnoreBoundary = $sourceCorrectionBoundary
             changes = @()
         }
     }
@@ -1982,14 +2438,31 @@ function Invoke-GatewayFoundationWhatIf {
     if (@($canonicalResourceIds | Sort-Object -Unique).Count -ne $canonicalResourceIds.Count) {
         $unreviewableChanges += [ordered]@{ changeType = 'MalformedDuplicateResource'; resourceId = '' }
     }
-    $recoveryIgnoreBoundary = $null
+    $recoveryIgnoreBoundary = $sourceCorrectionBoundary
     $ignoreChanges = @($changes | Where-Object { [string]$_.changeType -ceq 'Ignore' })
-    if ($ignoreChanges.Count -gt 0 -and $unreviewableChanges.Count -eq 0) {
+    $pendingCorrectionWithoutInertEvidence = $null -ne $sourceCorrectionPlan -and
+        [string]$sourceCorrectionPlan.status -ceq 'Accepted' -and
+        $State.steps['Inert identity deployment'] -is [System.Collections.IDictionary] -and
+        -not $State.steps['Inert identity deployment'].Contains('evidence')
+    if ($pendingCorrectionWithoutInertEvidence -and $unreviewableChanges.Count -eq 0) {
+        try {
+            $recoveryIgnoreBoundary = New-GatewayPreInertFoundationWhatIfBoundary `
+                -Config $Config `
+                -Foundation $State.steps['Azure foundation'].evidence `
+                -SourceCorrectionBoundary $sourceCorrectionBoundary `
+                -Changes $changes
+        }
+        catch {
+            $unreviewableChanges += [ordered]@{ changeType = 'UnauthorizedIgnore'; resourceId = '' }
+        }
+    }
+    elseif ($ignoreChanges.Count -gt 0 -and $unreviewableChanges.Count -eq 0) {
         $recoveryState = Get-GatewayInertWhatIfRecoveryStateContext `
             -State $State `
             -Config $Config `
             -DeploymentOwnershipId $canonicalOwnershipId `
-            -SourceFingerprint $SourceFingerprint
+            -SourceFingerprint $SourceFingerprint `
+            -ExecutionSourceFingerprint $ExecutionSourceFingerprint
         if ($null -eq $recoveryState) {
             $unreviewableChanges += [ordered]@{ changeType = 'UnauthorizedIgnore'; resourceId = '' }
         }
@@ -2039,6 +2512,7 @@ function Invoke-GatewayFoundationWhatIf {
                     -WorkerImage $recoveryState.workerImage `
                     -DeploymentOwnershipId $canonicalOwnershipId `
                     -SourceFingerprint $SourceFingerprint `
+                    -ExecutionSourceFingerprint $ExecutionSourceFingerprint `
                     -AdditionalTypeInventoryResourceIds $additionalTypeInventoryResourceIds)
                 if ($recoveryResults.Count -ne 1 -or $recoveryResults[0] -isnot [System.Collections.IDictionary]) {
                     throw 'Recovery provider readback returned an invalid result envelope.'
@@ -2114,12 +2588,34 @@ function Invoke-GatewayFoundationWhatIf {
                     ($observedIgnoreIds -join "`n") -cne ($expectedIgnoreIds -join "`n")) {
                     throw 'What-If Ignore predictions did not exactly match the recovered state-aware resource graph.'
                 }
-                $recoveryIgnoreBoundary = $resolvedRecoveryBoundary
+                $recoveryIgnoreBoundary = if ($null -ne $sourceCorrectionPlan -and
+                    [string]$sourceCorrectionPlan.status -ceq 'Accepted') {
+                    New-GatewayPendingSourceCorrectionRecoveryWhatIfBoundary `
+                        -SourceCorrectionBoundary $sourceCorrectionBoundary `
+                        -RecoveryBoundary $resolvedRecoveryBoundary
+                }
+                elseif ($null -ne $sourceCorrectionPlan -and
+                    [string]$sourceCorrectionPlan.status -ceq 'Completed') {
+                    New-GatewaySourceCorrectionAwareWhatIfBoundary `
+                        -CorrectionPlan $sourceCorrectionPlan `
+                        -RecoveryBoundary $resolvedRecoveryBoundary `
+                        -DeploymentOwnershipId $canonicalOwnershipId `
+                        -DeploymentSourceFingerprint $SourceFingerprint `
+                        -ExecutionSourceFingerprint $ExecutionSourceFingerprint
+                }
+                else {
+                    $resolvedRecoveryBoundary
+                }
             }
             catch {
                 $unreviewableChanges += [ordered]@{ changeType = 'UnauthorizedIgnore'; resourceId = '' }
             }
         }
+    }
+    elseif ($null -ne $sourceCorrectionPlan -and
+        [string]$sourceCorrectionPlan.status -ceq 'Accepted' -and
+        $unreviewableChanges.Count -eq 0) {
+        $unreviewableChanges += [ordered]@{ changeType = 'UnauthorizedIgnore'; resourceId = '' }
     }
     return [ordered]@{
         executed = $true

@@ -1010,7 +1010,8 @@ function Deploy-GatewayCore {
         [Parameter()][switch]$EnablePurview,
         [Parameter()][AllowNull()]$RecoveredEvidence,
         [Parameter()][scriptblock]$Checkpoint,
-        [Parameter()][switch]$SucceededRecoveryOnly
+        [Parameter()][switch]$SucceededRecoveryOnly,
+        [Parameter()][string]$ExecutionSourceFingerprint = ''
     )
     if ($SucceededRecoveryOnly -and -not $Initial) {
         throw 'Succeeded-only workload recovery is available only for the initial inert deployment.'
@@ -1021,8 +1022,12 @@ function Deploy-GatewayCore {
         throw 'Deployment ownership ID must be a canonical lowercase GUID from the current bootstrap state.'
     }
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Deployment source fingerprint'
-    if ((Get-BootstrapSourceFingerprint -Root $root) -cne $SourceFingerprint) {
-        throw 'The workload deployment source no longer matches the accepted content-addressed snapshot.'
+    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) {
+        $ExecutionSourceFingerprint = $SourceFingerprint
+    }
+    Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Workload execution source fingerprint'
+    if ((Get-BootstrapSourceFingerprint -Root $root) -cne $ExecutionSourceFingerprint) {
+        throw 'The workload execution source no longer matches the accepted content-addressed snapshot.'
     }
     $subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
     $tenantId = ([guid][string]$Config.tenantId).ToString('D')
@@ -1782,11 +1787,13 @@ function Get-GatewayInertWhatIfRecoveryBoundary {
         [Parameter(Mandatory)][string]$WorkerImage,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
-        [AllowNull()][System.Collections.IDictionary]$AdditionalTypeInventoryResourceIds
+        [AllowNull()][System.Collections.IDictionary]$AdditionalTypeInventoryResourceIds,
+        [Parameter()][string]$ExecutionSourceFingerprint = ''
     )
     $evidence = Deploy-GatewayCore -Config $Config -Foundation $Foundation -Identity $Identity `
         -ApiImage $ApiImage -WorkerImage $WorkerImage -WorkerPrincipalId '' -ManagerApplicationIds @() `
         -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
+        -ExecutionSourceFingerprint $ExecutionSourceFingerprint `
         -Initial -SucceededRecoveryOnly
     $boundary = New-GatewayInertWhatIfRecoveryBoundary -Config $Config -Foundation $Foundation `
         -Evidence $evidence -ApiImage $ApiImage -WorkerImage $WorkerImage `
@@ -2787,16 +2794,21 @@ function Deploy-GatewayAdminUi {
         [Parameter(Mandatory)][string]$AdminUiImage,
         [Parameter(Mandatory)][string]$AdminUiSecretUri,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter()][string]$ExecutionSourceFingerprint = ''
     )
     $root = Get-BootstrapExecutionSourceRoot
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
     if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
         throw 'Admin UI deployment ownership ID must be a canonical lowercase GUID from the current bootstrap state.'
     }
-    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI source fingerprint'
-    if ((Get-BootstrapSourceFingerprint -Root $root) -cne $SourceFingerprint) {
-        throw 'The Admin UI deployment source no longer matches the accepted content-addressed snapshot.'
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI deployment source fingerprint'
+    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) {
+        $ExecutionSourceFingerprint = $SourceFingerprint
+    }
+    Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Admin UI execution source fingerprint'
+    if ((Get-BootstrapSourceFingerprint -Root $root) -cne $ExecutionSourceFingerprint) {
+        throw 'The Admin UI execution source no longer matches the accepted content-addressed snapshot.'
     }
     $deploymentName = "a365gw-$($Config.projectName)-bootstrap-admin-$($Config.environment)"
     $deploymentCountText = Invoke-AzTsv -Arguments @(

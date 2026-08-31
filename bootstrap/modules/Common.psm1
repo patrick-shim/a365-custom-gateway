@@ -11,6 +11,26 @@ $script:BootstrapAzureTenantId = ''
 $script:BootstrapGraphAccessToken = ''
 $script:BootstrapGraphAccessTokenExpiresOn = 0L
 $script:BootstrapGraphHttpClient = $null
+$script:BootstrapPreInertCorrectionStepNames = @(
+    'Prerequisites',
+    'Azure authentication',
+    'Azure provider registration',
+    'Azure foundation',
+    'Gateway API identity',
+    'Immutable workload images',
+    'Inert identity deployment'
+)
+$script:BootstrapPreInertCorrectionChangedPaths = @(
+    'bootstrap/bootstrap.ps1',
+    'bootstrap/modules/Azure.psm1',
+    'bootstrap/modules/Common.psm1',
+    'bootstrap/modules/Database.psm1',
+    'bootstrap/modules/Experience.psm1',
+    'infrastructure/bicep/main.bicep'
+)
+$script:BootstrapPreInertCorrectionBicepPath = 'infrastructure/bicep/main.bicep'
+$script:BootstrapPreInertCorrectionOriginalBicepLine = '  name: contentSafety!.outputs.accountName'
+$script:BootstrapPreInertCorrectionCorrectedBicepLine = '  name: names.contentSafety'
 
 function Clear-BootstrapAzureSubscriptionContext {
     $script:BootstrapAzureSubscriptionId = ''
@@ -1115,6 +1135,620 @@ function Resolve-BootstrapAcceptedSourceRoot {
     return $snapshot
 }
 
+function Get-BootstrapPreInertSourceCorrectionSnapshotRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Plan,
+        [Parameter(Mandatory)][ValidateSet('Original', 'Corrected')][string]$Generation
+    )
+
+    $canonicalOwnershipId = ([guid][string]$State.deploymentOwnershipId).ToString('D')
+    if ($Generation -ceq 'Original') {
+        if ($Plan.originalAcceptedPlan -isnot [System.Collections.IDictionary]) {
+            throw 'The pre-inert source correction has no preserved original accepted-plan metadata.'
+        }
+        $snapshotPlanFingerprint = [string]$Plan.originalAcceptedPlan.planFingerprint
+        $sourceFingerprint = [string]$Plan.originalDeploymentSourceFingerprint
+        $relative = [string]$Plan.originalAcceptedPlan.executionSource
+        $label = 'original accepted'
+    }
+    else {
+        $snapshotPlanFingerprint = [string]$Plan.planFingerprint
+        $sourceFingerprint = [string]$Plan.correctedExecutionSourceFingerprint
+        $relative = [string]$Plan.correctedExecutionSource
+        $label = 'corrected execution'
+    }
+    Assert-BootstrapFingerprintValue -Value $snapshotPlanFingerprint -Label "Pre-inert correction $label plan fingerprint"
+    Assert-BootstrapFingerprintValue -Value $sourceFingerprint -Label "Pre-inert correction $label source fingerprint"
+    $expectedRelative = ".bootstrap/accepted-source/$canonicalOwnershipId/$($snapshotPlanFingerprint.Substring(7))"
+    if ($relative -cne $expectedRelative) {
+        throw "The pre-inert correction $label snapshot is not bound to its exact ownership and plan fingerprint."
+    }
+
+    $root = Get-RepositoryRoot
+    $acceptedRoot = [IO.Path]::GetFullPath((Join-Path $root '.bootstrap/accepted-source'))
+    $snapshot = [IO.Path]::GetFullPath((Join-Path $root $relative))
+    if (-not $snapshot.StartsWith($acceptedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal) -or
+        -not (Test-Path -LiteralPath $snapshot -PathType Container) -or
+        (Get-BootstrapSourceFingerprint -Root $snapshot) -cne $sourceFingerprint) {
+        throw "The pre-inert correction $label snapshot is absent, modified, or outside its managed boundary."
+    }
+    return $snapshot
+}
+
+function Get-BootstrapBytePatternOffsets {
+    param(
+        [Parameter(Mandatory)][byte[]]$Bytes,
+        [Parameter(Mandatory)][byte[]]$Pattern
+    )
+
+    $offsets = [Collections.Generic.List[int]]::new()
+    if ($Pattern.Length -eq 0 -or $Bytes.Length -lt $Pattern.Length) { return @() }
+    for ($offset = 0; $offset -le $Bytes.Length - $Pattern.Length; $offset++) {
+        $matches = $true
+        for ($index = 0; $index -lt $Pattern.Length; $index++) {
+            if ($Bytes[$offset + $index] -ne $Pattern[$index]) {
+                $matches = $false
+                break
+            }
+        }
+        if ($matches) { $offsets.Add($offset) }
+    }
+    return @($offsets)
+}
+
+function Assert-BootstrapExactPreInertBicepCorrection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$OriginalRoot,
+        [Parameter(Mandatory)][string]$CorrectedRoot
+    )
+
+    $originalPath = Join-Path $OriginalRoot $script:BootstrapPreInertCorrectionBicepPath
+    $correctedPath = Join-Path $CorrectedRoot $script:BootstrapPreInertCorrectionBicepPath
+    if (-not (Test-Path -LiteralPath $originalPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $correctedPath -PathType Leaf)) {
+        throw 'The pre-inert source correction requires both exact infrastructure/bicep/main.bicep generations.'
+    }
+    $originalBytes = [IO.File]::ReadAllBytes($originalPath)
+    $correctedBytes = [IO.File]::ReadAllBytes($correctedPath)
+    $oldBytes = [Text.Encoding]::UTF8.GetBytes($script:BootstrapPreInertCorrectionOriginalBicepLine)
+    $newBytes = [Text.Encoding]::UTF8.GetBytes($script:BootstrapPreInertCorrectionCorrectedBicepLine)
+    $offsets = @(Get-BootstrapBytePatternOffsets -Bytes $originalBytes -Pattern $oldBytes)
+    if ($offsets.Count -ne 1) {
+        throw 'The original pre-inert Bicep source does not contain exactly one reviewed Prompt Shields account-name reference.'
+    }
+    $offset = [int]$offsets[0]
+    $expectedLength = $originalBytes.Length - $oldBytes.Length + $newBytes.Length
+    $expectedBytes = [byte[]]::new($expectedLength)
+    if ($offset -gt 0) { [Array]::Copy($originalBytes, 0, $expectedBytes, 0, $offset) }
+    [Array]::Copy($newBytes, 0, $expectedBytes, $offset, $newBytes.Length)
+    $suffixLength = $originalBytes.Length - ($offset + $oldBytes.Length)
+    if ($suffixLength -gt 0) {
+        [Array]::Copy(
+            $originalBytes,
+            $offset + $oldBytes.Length,
+            $expectedBytes,
+            $offset + $newBytes.Length,
+            $suffixLength)
+    }
+    if (-not [Linq.Enumerable]::SequenceEqual[byte]($expectedBytes, $correctedBytes)) {
+        throw 'The pre-inert Bicep correction must be the exact reviewed one-line Prompt Shields account-name replacement.'
+    }
+    return $true
+}
+
+function Get-BootstrapPreInertSourceCorrectionDelta {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$OriginalRoot,
+        [Parameter(Mandatory)][string]$CorrectedRoot
+    )
+
+    $original = [ordered]@{}
+    foreach ($entry in @(Get-BootstrapSourceManifest -Root $OriginalRoot)) {
+        $path = [string]$entry.path
+        $hash = [string]$entry.sha256
+        if ([string]::IsNullOrWhiteSpace($path) -or $hash -cnotmatch '^[0-9a-f]{64}$' -or $original.Contains($path)) {
+            throw 'The original accepted source manifest is malformed or contains duplicate paths.'
+        }
+        $original[$path] = $hash
+    }
+    $corrected = [ordered]@{}
+    foreach ($entry in @(Get-BootstrapSourceManifest -Root $CorrectedRoot)) {
+        $path = [string]$entry.path
+        $hash = [string]$entry.sha256
+        if ([string]::IsNullOrWhiteSpace($path) -or $hash -cnotmatch '^[0-9a-f]{64}$' -or $corrected.Contains($path)) {
+            throw 'The corrected execution source manifest is malformed or contains duplicate paths.'
+        }
+        $corrected[$path] = $hash
+    }
+
+    [string[]]$allPaths = @($original.Keys + $corrected.Keys | Sort-Object -Unique)
+    $delta = [Collections.Generic.List[object]]::new()
+    foreach ($path in $allPaths) {
+        if (-not $original.Contains($path) -or -not $corrected.Contains($path)) {
+            throw 'The pre-inert source correction may not add or remove deployment source files.'
+        }
+        if ([string]$original[$path] -cne [string]$corrected[$path]) {
+            if ($script:BootstrapPreInertCorrectionChangedPaths -cnotcontains $path) {
+                throw "The pre-inert source correction changed non-allowlisted deployment source '$path'."
+            }
+            $delta.Add([ordered]@{
+                path = $path
+                originalSha256 = [string]$original[$path]
+                correctedSha256 = [string]$corrected[$path]
+            })
+        }
+    }
+    [string[]]$changedPaths = @($delta | ForEach-Object { [string]$_.path })
+    [Array]::Sort($changedPaths, [StringComparer]::Ordinal)
+    [string[]]$expectedPaths = @($script:BootstrapPreInertCorrectionChangedPaths)
+    [Array]::Sort($expectedPaths, [StringComparer]::Ordinal)
+    if (($changedPaths -join "`n") -cne ($expectedPaths -join "`n")) {
+        throw 'The pre-inert source correction must change exactly the reviewed source-bridge files and no others.'
+    }
+    Assert-BootstrapExactPreInertBicepCorrection -OriginalRoot $OriginalRoot -CorrectedRoot $CorrectedRoot | Out-Null
+    return @($delta | Sort-Object { [string]$_.path })
+}
+
+function Get-BootstrapPreInertSourceCorrectionBoundaryFingerprint {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$OriginalSourceFingerprint,
+        [Parameter()][string]$CorrectedSourceFingerprint = '',
+        [switch]$Completed
+    )
+
+    if ($Completed) {
+        Assert-BootstrapFingerprintValue -Value $CorrectedSourceFingerprint -Label 'Completed pre-inert correction source fingerprint'
+    }
+
+    $expectedSteps = @($script:BootstrapPreInertCorrectionStepNames)
+    [string[]]$actualSteps = @($State.steps.Keys | ForEach-Object { [string]$_ })
+    [Array]::Sort($actualSteps, [StringComparer]::Ordinal)
+    [string[]]$sortedExpectedSteps = @($expectedSteps)
+    [Array]::Sort($sortedExpectedSteps, [StringComparer]::Ordinal)
+    if (($actualSteps -join "`n") -cne ($sortedExpectedSteps -join "`n")) {
+        throw 'Pre-inert source correction requires exactly bootstrap steps 1-7 and no later or unknown step state.'
+    }
+    if (-not $Completed -and $State.outputs.Count -ne 0) {
+        throw 'Pre-inert source correction requires an empty output boundary before the inert deployment succeeds.'
+    }
+
+    for ($index = 0; $index -lt 6; $index++) {
+        $name = [string]$expectedSteps[$index]
+        $step = $State.steps[$name]
+        $expectedSourceFingerprint = if ($Completed -and $index -lt 2) {
+            $CorrectedSourceFingerprint
+        }
+        else {
+            $OriginalSourceFingerprint
+        }
+        if ($step -isnot [System.Collections.IDictionary] -or
+            [string]$step.status -cne 'Completed' -or
+            [string]$step.sourceFingerprint -cne $expectedSourceFingerprint -or
+            -not $step.Contains('evidence') -or $null -eq $step.evidence) {
+            throw "Pre-inert source correction requires the exact completed source/evidence generation for bootstrap step '$name'."
+        }
+    }
+    $inertStep = $State.steps[[string]$expectedSteps[6]]
+    if ($inertStep -isnot [System.Collections.IDictionary] -or
+        -not $inertStep.Contains('sourceFingerprint')) {
+        throw 'Pre-inert source correction requires the exact inert-deployment step boundary.'
+    }
+    if (-not $Completed) {
+        if ([string]$inertStep.status -cne 'Failed' -or
+            [string]$inertStep.sourceFingerprint -cne $OriginalSourceFingerprint -or
+            $inertStep.Contains('evidence')) {
+            throw 'Pre-inert source correction is allowed only when step 7 failed under the original source without any persisted evidence.'
+        }
+    }
+    elseif ([string]$inertStep.status -cne 'Completed' -or
+        [string]$inertStep.sourceFingerprint -cne $CorrectedSourceFingerprint -or
+        -not $inertStep.Contains('evidence') -or $null -eq $inertStep.evidence) {
+        throw 'Pre-inert source correction completion requires exact completed corrected-source step-7 evidence.'
+    }
+
+    $boundary = [ordered]@{
+        deploymentOwnershipId = ([guid][string]$State.deploymentOwnershipId).ToString('D')
+        configurationFingerprint = [string]$State.configurationFingerprint
+        source = ConvertTo-BootstrapCanonicalValue -Value $State.source
+        steps = ConvertTo-BootstrapCanonicalValue -Value $State.steps
+        outputs = ConvertTo-BootstrapCanonicalValue -Value $State.outputs
+    }
+    return Get-BootstrapObjectFingerprint -InputObject $boundary
+}
+
+function Assert-BootstrapPreInertSourceCorrectionCreationBoundary {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
+
+    if (-not $State.Contains('acceptedPlan') -or $State.acceptedPlan -isnot [System.Collections.IDictionary]) {
+        throw 'Pre-inert source correction requires the preserved original accepted deployment plan.'
+    }
+    if ($State.Contains('databaseRecoveryPlan') -or $State.Contains('manualDatabaseRepairPlan')) {
+        throw 'Pre-inert source correction cannot be combined with database recovery or repair state.'
+    }
+    $acceptedPlan = $State.acceptedPlan
+    foreach ($name in @('planFingerprint', 'configurationFingerprint', 'sourceFingerprint', 'bootstrapClientIpv4', 'executionSource', 'bootstrapVersion', 'acceptedAtUtc')) {
+        if (-not $acceptedPlan.Contains($name)) {
+            throw 'The original accepted deployment plan is missing required immutable snapshot metadata.'
+        }
+    }
+    Assert-BootstrapFingerprintValue -Value ([string]$acceptedPlan.planFingerprint) -Label 'Original accepted plan fingerprint'
+    Assert-BootstrapFingerprintValue -Value ([string]$acceptedPlan.sourceFingerprint) -Label 'Original accepted source fingerprint'
+    if ([string]$acceptedPlan.configurationFingerprint -cne [string]$State.configurationFingerprint -or
+        [string]$acceptedPlan.bootstrapVersion -cne $script:BootstrapVersion) {
+        throw 'The original accepted deployment plan does not match this exact configuration and bootstrap version.'
+    }
+    foreach ($recordName in @('created', 'lastWritten')) {
+        if (-not $State.source.Contains($recordName) -or
+            $State.source[$recordName] -isnot [System.Collections.IDictionary] -or
+            [string]$State.source[$recordName].bootstrapSourceFingerprint -cne [string]$acceptedPlan.sourceFingerprint) {
+            throw 'Pre-inert source correction requires exact original source provenance for the recorded deployment state.'
+        }
+    }
+    $originalRoot = Resolve-BootstrapAcceptedSourceRoot -State $State
+    $boundaryFingerprint = Get-BootstrapPreInertSourceCorrectionBoundaryFingerprint `
+        -State $State `
+        -OriginalSourceFingerprint ([string]$acceptedPlan.sourceFingerprint)
+    return [ordered]@{
+        originalRoot = $originalRoot
+        boundaryFingerprint = $boundaryFingerprint
+    }
+}
+
+function Get-BootstrapPreInertSourceCorrectionPlanCore {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Plan)
+
+    return [ordered]@{
+        schemaVersion = [int]$Plan.schemaVersion
+        correctionKind = [string]$Plan.correctionKind
+        generation = [int]$Plan.generation
+        configurationFingerprint = [string]$Plan.configurationFingerprint
+        deploymentOwnershipId = [string]$Plan.deploymentOwnershipId
+        originalDeploymentSourceFingerprint = [string]$Plan.originalDeploymentSourceFingerprint
+        correctedExecutionSourceFingerprint = [string]$Plan.correctedExecutionSourceFingerprint
+        originalAcceptedPlanFingerprint = [string]$Plan.originalAcceptedPlanFingerprint
+        originalAcceptedPlan = ConvertTo-BootstrapCanonicalValue -Value $Plan.originalAcceptedPlan
+        originalBoundaryFingerprint = [string]$Plan.originalBoundaryFingerprint
+        allowedChangedPaths = @($Plan.allowedChangedPaths)
+        sourceDelta = ConvertTo-BootstrapCanonicalValue -Value $Plan.sourceDelta
+        semanticCorrection = ConvertTo-BootstrapCanonicalValue -Value $Plan.semanticCorrection
+    }
+}
+
+function Assert-BootstrapPendingPreInertSourceCorrectionBoundary {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Plan
+    )
+
+    [string[]]$actualSteps = @($State.steps.Keys | ForEach-Object { [string]$_ })
+    [Array]::Sort($actualSteps, [StringComparer]::Ordinal)
+    [string[]]$expectedSteps = @($script:BootstrapPreInertCorrectionStepNames)
+    [Array]::Sort($expectedSteps, [StringComparer]::Ordinal)
+    if (($actualSteps -join "`n") -cne ($expectedSteps -join "`n") -or
+        $State.outputs -isnot [System.Collections.IDictionary] -or $State.outputs.Count -ne 0) {
+        throw 'The pending pre-inert source correction requires exactly steps 1-7, no later step, and no deployment outputs.'
+    }
+    for ($index = 0; $index -lt 6; $index++) {
+        $name = [string]$script:BootstrapPreInertCorrectionStepNames[$index]
+        $step = $State.steps[$name]
+        if ($step -isnot [System.Collections.IDictionary]) {
+            throw 'The pending pre-inert source correction has malformed step evidence.'
+        }
+        $isOriginalCompleted = [string]$step.status -ceq 'Completed' -and
+            [string]$step.sourceFingerprint -ceq [string]$Plan.originalDeploymentSourceFingerprint -and
+            $step.Contains('evidence') -and $null -ne $step.evidence
+        $isCorrectedAlwaysRun = $index -lt 2 -and
+            [string]$step.status -cin @('Running', 'Failed', 'Completed') -and
+            [string]$step.sourceFingerprint -ceq [string]$Plan.correctedExecutionSourceFingerprint -and
+            ([string]$step.status -cne 'Completed' -or
+                ($step.Contains('evidence') -and $null -ne $step.evidence))
+        if (-not $isOriginalCompleted -and -not $isCorrectedAlwaysRun) {
+            throw 'The pending pre-inert source correction no longer has its exact original prefix or corrected AlwaysRun transition.'
+        }
+    }
+    $inertStep = $State.steps['Inert identity deployment']
+    if ($inertStep -isnot [System.Collections.IDictionary]) {
+        throw 'The pending pre-inert source correction has malformed inert-deployment state.'
+    }
+    $isOriginalFailure = [string]$inertStep.status -ceq 'Failed' -and
+        [string]$inertStep.sourceFingerprint -ceq [string]$Plan.originalDeploymentSourceFingerprint -and
+        -not $inertStep.Contains('evidence')
+    $isCorrectedStartedOutcome = [string]$inertStep.status -cin @('Running', 'Failed') -and
+        [string]$inertStep.sourceFingerprint -ceq [string]$Plan.correctedExecutionSourceFingerprint
+    $isCorrectedCompleted = [string]$inertStep.status -ceq 'Completed' -and
+        [string]$inertStep.sourceFingerprint -ceq [string]$Plan.correctedExecutionSourceFingerprint -and
+        $inertStep.Contains('evidence') -and $null -ne $inertStep.evidence
+    if (-not $isOriginalFailure -and -not $isCorrectedStartedOutcome -and -not $isCorrectedCompleted) {
+        throw 'The pending pre-inert source correction no longer has an exact original failure, corrected started outcome, or corrected completion at step 7.'
+    }
+    foreach ($recordName in @('created', 'lastWritten')) {
+        if (-not $State.source.Contains($recordName) -or
+            $State.source[$recordName] -isnot [System.Collections.IDictionary] -or
+            -not $State.source[$recordName].Contains('bootstrapSourceFingerprint')) {
+            throw 'The pending pre-inert source correction has incomplete source provenance.'
+        }
+    }
+    if ([string]$State.source.created.bootstrapSourceFingerprint -cne [string]$Plan.originalDeploymentSourceFingerprint -or
+        [string]$State.source.lastWritten.bootstrapSourceFingerprint -cnotin @(
+            [string]$Plan.originalDeploymentSourceFingerprint,
+            [string]$Plan.correctedExecutionSourceFingerprint)) {
+        throw 'The pending pre-inert source correction no longer preserves the exact original/corrected source provenance pair.'
+    }
+    return $true
+}
+
+function Assert-BootstrapPreInertSourceCorrectionPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter()][string]$ExecutionSourceFingerprint = ''
+    )
+
+    if (-not $State.Contains('preInertSourceCorrectionPlan') -or
+        $State.preInertSourceCorrectionPlan -isnot [System.Collections.IDictionary]) {
+        throw 'No bounded pre-inert source correction plan exists for this bootstrap state.'
+    }
+    $plan = $State.preInertSourceCorrectionPlan
+    if ([string]$plan.status -cnotin @('Accepted', 'Completed')) {
+        throw 'The pre-inert source correction plan has an unsupported state.'
+    }
+    [string[]]$requiredKeys = @(
+        'allowedChangedPaths', 'configurationFingerprint', 'correctedExecutionSource',
+        'correctedExecutionSourceFingerprint', 'correctionKind', 'createdAtUtc',
+        'deploymentOwnershipId', 'generation', 'originalAcceptedPlan',
+        'originalAcceptedPlanFingerprint', 'originalBoundaryFingerprint',
+        'originalDeploymentSourceFingerprint', 'planFingerprint', 'schemaVersion',
+        'semanticCorrection', 'sourceDelta', 'status'
+    )
+    if ([string]$plan.status -ceq 'Completed') {
+        $requiredKeys += @('completedAtUtc', 'completionBoundaryFingerprint', 'inertEvidenceFingerprint')
+    }
+    [string[]]$actualKeys = @($plan.Keys | ForEach-Object { [string]$_ })
+    [Array]::Sort($requiredKeys, [StringComparer]::Ordinal)
+    [Array]::Sort($actualKeys, [StringComparer]::Ordinal)
+    if (($requiredKeys -join "`n") -cne ($actualKeys -join "`n")) {
+        throw 'The pre-inert source correction plan contains incomplete or unsupported metadata.'
+    }
+    if ([int]$plan.schemaVersion -ne 1 -or
+        [string]$plan.correctionKind -cne 'PromptShieldPreInertBicepReference' -or
+        [int]$plan.generation -ne 1 -or
+        [string]$plan.configurationFingerprint -cne [string]$State.configurationFingerprint -or
+        [string]$plan.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D')) {
+        throw 'The pre-inert source correction plan does not match its one-generation configuration and ownership boundary.'
+    }
+    foreach ($name in @(
+        'planFingerprint', 'originalAcceptedPlanFingerprint', 'originalBoundaryFingerprint',
+        'originalDeploymentSourceFingerprint', 'correctedExecutionSourceFingerprint')) {
+        Assert-BootstrapFingerprintValue -Value ([string]$plan[$name]) -Label "Pre-inert source correction $name"
+    }
+    if ([string]$plan.originalDeploymentSourceFingerprint -ceq [string]$plan.correctedExecutionSourceFingerprint) {
+        throw 'The pre-inert source correction must bind two distinct source generations.'
+    }
+    if ($plan.originalAcceptedPlan -isnot [System.Collections.IDictionary] -or
+        (Get-BootstrapObjectFingerprint -InputObject $plan.originalAcceptedPlan) -cne [string]$plan.originalAcceptedPlanFingerprint -or
+        [string]$plan.originalAcceptedPlan.sourceFingerprint -cne [string]$plan.originalDeploymentSourceFingerprint -or
+        [string]$plan.originalAcceptedPlan.configurationFingerprint -cne [string]$State.configurationFingerprint) {
+        throw 'The pre-inert source correction no longer matches its preserved original accepted-plan metadata.'
+    }
+    $core = Get-BootstrapPreInertSourceCorrectionPlanCore -Plan $plan
+    if ((Get-BootstrapObjectFingerprint -InputObject $core) -cne [string]$plan.planFingerprint) {
+        throw 'The pre-inert source correction plan fingerprint no longer matches its immutable contract.'
+    }
+    [string[]]$allowedPaths = @($plan.allowedChangedPaths | ForEach-Object { [string]$_ })
+    [Array]::Sort($allowedPaths, [StringComparer]::Ordinal)
+    [string[]]$expectedPaths = @($script:BootstrapPreInertCorrectionChangedPaths)
+    [Array]::Sort($expectedPaths, [StringComparer]::Ordinal)
+    if (($allowedPaths -join "`n") -cne ($expectedPaths -join "`n") -or
+        [string]$plan.semanticCorrection.path -cne $script:BootstrapPreInertCorrectionBicepPath -or
+        [string]$plan.semanticCorrection.originalLine -cne $script:BootstrapPreInertCorrectionOriginalBicepLine -or
+        [string]$plan.semanticCorrection.correctedLine -cne $script:BootstrapPreInertCorrectionCorrectedBicepLine -or
+        [int]$plan.semanticCorrection.replacementCount -ne 1) {
+        throw 'The pre-inert source correction does not match the exact reviewed path and semantic delta allowlist.'
+    }
+
+    $originalRoot = Get-BootstrapPreInertSourceCorrectionSnapshotRoot -State $State -Plan $plan -Generation Original
+    $correctedRoot = Get-BootstrapPreInertSourceCorrectionSnapshotRoot -State $State -Plan $plan -Generation Corrected
+    $actualDelta = @(Get-BootstrapPreInertSourceCorrectionDelta -OriginalRoot $originalRoot -CorrectedRoot $correctedRoot)
+    if ((Get-BootstrapObjectFingerprint -InputObject $actualDelta) -cne
+        (Get-BootstrapObjectFingerprint -InputObject $plan.sourceDelta)) {
+        throw 'The pre-inert source correction delta no longer matches its immutable source snapshots.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) {
+        Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Pre-inert corrected execution source fingerprint'
+        if ($ExecutionSourceFingerprint -cne [string]$plan.correctedExecutionSourceFingerprint) {
+            throw 'The pre-inert source correction does not authorize this execution source generation.'
+        }
+    }
+    if ([string]$plan.status -ceq 'Accepted') {
+        Assert-BootstrapPendingPreInertSourceCorrectionBoundary -State $State -Plan $plan | Out-Null
+    }
+    else {
+        foreach ($name in @('completionBoundaryFingerprint', 'inertEvidenceFingerprint')) {
+            Assert-BootstrapFingerprintValue -Value ([string]$plan[$name]) -Label "Completed pre-inert correction $name"
+        }
+        $inertStep = $State.steps['Inert identity deployment']
+        $allowedAlwaysRunSources = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        $null = $allowedAlwaysRunSources.Add([string]$plan.correctedExecutionSourceFingerprint)
+        if ($State.Contains('manualDatabaseRepairPlan') -and
+            $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
+            [string]$State.manualDatabaseRepairPlan.status -ceq 'Completed' -and
+            [string]$State.manualDatabaseRepairPlan.originalSourceFingerprint -ceq [string]$plan.correctedExecutionSourceFingerprint -and
+            [string]$State.manualDatabaseRepairPlan.deploymentOwnershipId -ceq ([guid][string]$State.deploymentOwnershipId).ToString('D')) {
+            Assert-BootstrapFingerprintValue -Value ([string]$State.manualDatabaseRepairPlan.repairSourceFingerprint) -Label 'Completed manual repair continuation source fingerprint'
+            $null = $allowedAlwaysRunSources.Add([string]$State.manualDatabaseRepairPlan.repairSourceFingerprint)
+        }
+        elseif ($State.Contains('databaseRecoveryPlan') -and
+            $State.databaseRecoveryPlan -is [System.Collections.IDictionary] -and
+            [string]$State.databaseRecoveryPlan.status -ceq 'Completed' -and
+            [string]$State.databaseRecoveryPlan.originalSourceFingerprint -ceq [string]$plan.correctedExecutionSourceFingerprint -and
+            [string]$State.databaseRecoveryPlan.deploymentOwnershipId -ceq ([guid][string]$State.deploymentOwnershipId).ToString('D')) {
+            Assert-BootstrapFingerprintValue -Value ([string]$State.databaseRecoveryPlan.correctedSourceFingerprint) -Label 'Completed database recovery continuation source fingerprint'
+            $null = $allowedAlwaysRunSources.Add([string]$State.databaseRecoveryPlan.correctedSourceFingerprint)
+        }
+        for ($index = 0; $index -lt 6; $index++) {
+            $name = [string]$script:BootstrapPreInertCorrectionStepNames[$index]
+            $step = $State.steps[$name]
+            if ($step -isnot [System.Collections.IDictionary] -or
+                [string]$step.status -cne 'Completed' -or
+                -not $step.Contains('evidence') -or $null -eq $step.evidence) {
+                throw 'The completed pre-inert correction no longer matches the exact step 1-6 source/evidence generations.'
+            }
+            if ($index -lt 2) {
+                if (-not $allowedAlwaysRunSources.Contains([string]$step.sourceFingerprint)) {
+                    throw 'The completed pre-inert correction has an unauthorized AlwaysRun source generation.'
+                }
+            }
+            elseif ([string]$step.sourceFingerprint -cne [string]$plan.originalDeploymentSourceFingerprint) {
+                throw 'The completed pre-inert correction no longer matches original-source evidence for steps 3-6.'
+            }
+        }
+        if ($inertStep -isnot [System.Collections.IDictionary] -or
+            [string]$inertStep.status -cne 'Completed' -or
+            [string]$inertStep.sourceFingerprint -cne [string]$plan.correctedExecutionSourceFingerprint -or
+            -not $inertStep.Contains('evidence') -or $null -eq $inertStep.evidence -or
+            (Get-BootstrapObjectFingerprint -InputObject $inertStep.evidence) -cne [string]$plan.inertEvidenceFingerprint) {
+            throw 'The completed pre-inert correction no longer matches exact corrected step-7 evidence.'
+        }
+    }
+    return $plan
+}
+
+function Set-BootstrapPreInertSourceCorrectionPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$StatePath
+    )
+
+    $currentSourceFingerprint = Get-BootstrapSourceFingerprint
+    Assert-BootstrapFingerprintValue -Value $currentSourceFingerprint -Label 'Current bootstrap source fingerprint'
+    if ($State.Contains('preInertSourceCorrectionPlan')) {
+        $plan = Assert-BootstrapPreInertSourceCorrectionPlan -State $State
+        if ($currentSourceFingerprint -ceq [string]$plan.correctedExecutionSourceFingerprint) {
+            return $plan
+        }
+        if (($State.Contains('databaseRecoveryPlan') -and
+                $State.databaseRecoveryPlan -is [System.Collections.IDictionary] -and
+                [string]$State.databaseRecoveryPlan.status -ceq 'Completed') -or
+            ($State.Contains('manualDatabaseRepairPlan') -and
+                $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
+                [string]$State.manualDatabaseRepairPlan.status -ceq 'Completed')) {
+            $effective = Get-BootstrapEffectiveDeploymentSourceFingerprint `
+                -State $State `
+                -ExecutionSourceFingerprint $currentSourceFingerprint
+            if ($effective -ceq [string]$plan.originalDeploymentSourceFingerprint) {
+                return $plan
+            }
+        }
+        throw 'The existing pre-inert source correction does not authorize this source generation.'
+    }
+    $recordedSourceFingerprint = [string]$State.source.lastWritten.bootstrapSourceFingerprint
+    Assert-BootstrapFingerprintValue -Value $recordedSourceFingerprint -Label 'Recorded bootstrap evidence source fingerprint'
+    if ($currentSourceFingerprint -ceq $recordedSourceFingerprint) { return $null }
+    if (-not (Test-BootstrapStateHasEvidence -State $State)) { return $null }
+    if ($State.Contains('databaseRecoveryPlan') -or $State.Contains('manualDatabaseRepairPlan')) {
+        # Established database recovery/repair helpers own their corrected source
+        # generations. The pre-inert bridge must not reinterpret or replace them.
+        return $null
+    }
+
+    $creation = Assert-BootstrapPreInertSourceCorrectionCreationBoundary -State $State
+    $originalAcceptedPlan = ConvertTo-BootstrapCanonicalValue -Value $State.acceptedPlan
+    $sourceDelta = @(Get-BootstrapPreInertSourceCorrectionDelta `
+        -OriginalRoot ([string]$creation.originalRoot) `
+        -CorrectedRoot (Get-RepositoryRoot))
+    $core = [ordered]@{
+        schemaVersion = 1
+        correctionKind = 'PromptShieldPreInertBicepReference'
+        generation = 1
+        configurationFingerprint = [string]$State.configurationFingerprint
+        deploymentOwnershipId = ([guid][string]$State.deploymentOwnershipId).ToString('D')
+        originalDeploymentSourceFingerprint = [string]$State.acceptedPlan.sourceFingerprint
+        correctedExecutionSourceFingerprint = $currentSourceFingerprint
+        originalAcceptedPlanFingerprint = Get-BootstrapObjectFingerprint -InputObject $originalAcceptedPlan
+        originalAcceptedPlan = $originalAcceptedPlan
+        originalBoundaryFingerprint = [string]$creation.boundaryFingerprint
+        allowedChangedPaths = @($script:BootstrapPreInertCorrectionChangedPaths)
+        sourceDelta = ConvertTo-BootstrapCanonicalValue -Value $sourceDelta
+        semanticCorrection = [ordered]@{
+            path = $script:BootstrapPreInertCorrectionBicepPath
+            originalLine = $script:BootstrapPreInertCorrectionOriginalBicepLine
+            correctedLine = $script:BootstrapPreInertCorrectionCorrectedBicepLine
+            replacementCount = 1
+        }
+    }
+    $planFingerprint = Get-BootstrapObjectFingerprint -InputObject $core
+    $correctedExecutionSource = New-BootstrapAcceptedSourceSnapshot `
+        -State $State `
+        -PlanFingerprint $planFingerprint `
+        -SourceFingerprint $currentSourceFingerprint
+    $plan = ConvertTo-BootstrapCanonicalValue -Value $core
+    $plan['planFingerprint'] = $planFingerprint
+    $plan['correctedExecutionSource'] = $correctedExecutionSource
+    $plan['status'] = 'Accepted'
+    $plan['createdAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+    $State['preInertSourceCorrectionPlan'] = $plan
+    Save-BootstrapState -State $State -Path $StatePath
+    return $plan
+}
+
+function Complete-BootstrapPreInertSourceCorrectionPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$StatePath
+    )
+
+    if (-not $State.Contains('preInertSourceCorrectionPlan')) { return $null }
+    $plan = Assert-BootstrapPreInertSourceCorrectionPlan -State $State
+    if ([string]$plan.status -ceq 'Completed') { return $plan }
+    $expectedSteps = @($script:BootstrapPreInertCorrectionStepNames)
+    [string[]]$actualSteps = @($State.steps.Keys | ForEach-Object { [string]$_ })
+    [Array]::Sort($actualSteps, [StringComparer]::Ordinal)
+    [string[]]$sortedExpectedSteps = @($expectedSteps)
+    [Array]::Sort($sortedExpectedSteps, [StringComparer]::Ordinal)
+    if (($actualSteps -join "`n") -cne ($sortedExpectedSteps -join "`n")) {
+        throw 'Pre-inert source correction may complete only immediately after exact corrected step-7 evidence and before any later step.'
+    }
+    for ($index = 0; $index -lt 6; $index++) {
+        $step = $State.steps[[string]$expectedSteps[$index]]
+        $expectedSourceFingerprint = if ($index -lt 2) {
+            [string]$plan.correctedExecutionSourceFingerprint
+        }
+        else {
+            [string]$plan.originalDeploymentSourceFingerprint
+        }
+        if ($step -isnot [System.Collections.IDictionary] -or
+            [string]$step.status -cne 'Completed' -or
+            [string]$step.sourceFingerprint -cne $expectedSourceFingerprint -or
+            -not $step.Contains('evidence') -or $null -eq $step.evidence) {
+            throw 'Pre-inert source correction completion requires corrected steps 1-2 and unchanged original-source evidence for steps 3-6.'
+        }
+    }
+    $inertStep = $State.steps['Inert identity deployment']
+    if ($inertStep -isnot [System.Collections.IDictionary] -or
+        [string]$inertStep.status -cne 'Completed' -or
+        [string]$inertStep.sourceFingerprint -cne [string]$plan.correctedExecutionSourceFingerprint -or
+        -not $inertStep.Contains('evidence') -or $null -eq $inertStep.evidence) {
+        throw 'Pre-inert source correction completion requires exact completed corrected-source step-7 evidence.'
+    }
+    $plan['status'] = 'Completed'
+    $plan['completedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+    $plan['inertEvidenceFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $inertStep.evidence
+    $plan['completionBoundaryFingerprint'] = Get-BootstrapPreInertSourceCorrectionBoundaryFingerprint `
+        -State $State `
+        -OriginalSourceFingerprint ([string]$plan.originalDeploymentSourceFingerprint) `
+        -CorrectedSourceFingerprint ([string]$plan.correctedExecutionSourceFingerprint) `
+        -Completed
+    Save-BootstrapState -State $State -Path $StatePath
+    return Assert-BootstrapPreInertSourceCorrectionPlan -State $State
+}
+
 function Resolve-BootstrapDatabaseRecoveryPlanSourceRoot {
     [CmdletBinding()]
     param(
@@ -1167,6 +1801,7 @@ function Get-BootstrapEffectiveDeploymentSourceFingerprint {
         $ExecutionSourceFingerprint = Get-BootstrapSourceFingerprint
     }
     Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Bootstrap execution source fingerprint'
+    $effectiveSourceFingerprint = $ExecutionSourceFingerprint
     if ($State.Contains('manualDatabaseRepairPlan') -and
         $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
         [string]$State.manualDatabaseRepairPlan.status -ceq 'Completed') {
@@ -1179,22 +1814,32 @@ function Get-BootstrapEffectiveDeploymentSourceFingerprint {
             [string]$repair.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D')) {
             throw 'The completed manual database repair does not authorize this execution source or deployment ownership.'
         }
-        return [string]$repair.originalSourceFingerprint
+        $effectiveSourceFingerprint = [string]$repair.originalSourceFingerprint
     }
-    if (-not $State.Contains('databaseRecoveryPlan') -or
-        $State.databaseRecoveryPlan -isnot [System.Collections.IDictionary] -or
-        [string]$State.databaseRecoveryPlan.status -cne 'Completed') {
-        return $ExecutionSourceFingerprint
+    elseif ($State.Contains('databaseRecoveryPlan') -and
+        $State.databaseRecoveryPlan -is [System.Collections.IDictionary] -and
+        [string]$State.databaseRecoveryPlan.status -ceq 'Completed') {
+        $recoveryPlan = $State.databaseRecoveryPlan
+        Assert-BootstrapFingerprintValue -Value ([string]$recoveryPlan.correctedSourceFingerprint) -Label 'Completed database recovery corrected source fingerprint'
+        Assert-BootstrapFingerprintValue -Value ([string]$recoveryPlan.originalSourceFingerprint) -Label 'Completed database recovery original source fingerprint'
+        Assert-BootstrapFingerprintValue -Value ([string]$recoveryPlan.databaseEvidenceFingerprint) -Label 'Completed database recovery evidence fingerprint'
+        if ([string]$recoveryPlan.correctedSourceFingerprint -cne $ExecutionSourceFingerprint -or
+            [string]$recoveryPlan.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D')) {
+            throw 'The completed database recovery does not authorize this execution source or deployment ownership.'
+        }
+        $effectiveSourceFingerprint = [string]$recoveryPlan.originalSourceFingerprint
     }
-    $recoveryPlan = $State.databaseRecoveryPlan
-    Assert-BootstrapFingerprintValue -Value ([string]$recoveryPlan.correctedSourceFingerprint) -Label 'Completed database recovery corrected source fingerprint'
-    Assert-BootstrapFingerprintValue -Value ([string]$recoveryPlan.originalSourceFingerprint) -Label 'Completed database recovery original source fingerprint'
-    Assert-BootstrapFingerprintValue -Value ([string]$recoveryPlan.databaseEvidenceFingerprint) -Label 'Completed database recovery evidence fingerprint'
-    if ([string]$recoveryPlan.correctedSourceFingerprint -cne $ExecutionSourceFingerprint -or
-        [string]$recoveryPlan.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D')) {
-        throw 'The completed database recovery does not authorize this execution source or deployment ownership.'
+
+    if ($State.Contains('preInertSourceCorrectionPlan')) {
+        $correction = Assert-BootstrapPreInertSourceCorrectionPlan -State $State
+        if ($effectiveSourceFingerprint -ceq [string]$correction.correctedExecutionSourceFingerprint) {
+            $effectiveSourceFingerprint = [string]$correction.originalDeploymentSourceFingerprint
+        }
+        elseif ($effectiveSourceFingerprint -cne [string]$correction.originalDeploymentSourceFingerprint) {
+            throw 'The pre-inert source correction does not map this effective execution source to the original deployment generation.'
+        }
     }
-    return [string]$recoveryPlan.originalSourceFingerprint
+    return $effectiveSourceFingerprint
 }
 
 function Set-BootstrapExecutionSourceRoot {
@@ -1443,6 +2088,14 @@ function Assert-BootstrapStateAllowsSourcePlan {
                 $databaseStep.evidence -is [System.Collections.IDictionary] -and
                 [string]$databaseStep.evidence.databaseRecoveryPlanFingerprint -ceq [string]$recovery.planFingerprint -and
                 (Get-BootstrapObjectFingerprint -InputObject $databaseStep.evidence) -ceq [string]$recovery.databaseEvidenceFingerprint) {
+                return $true
+            }
+        }
+        if ($State.Contains('preInertSourceCorrectionPlan')) {
+            $correction = Assert-BootstrapPreInertSourceCorrectionPlan `
+                -State $State `
+                -ExecutionSourceFingerprint $current
+            if ([string]$correction.originalDeploymentSourceFingerprint -ceq $recorded) {
                 return $true
             }
         }
@@ -2499,9 +3152,13 @@ function Invoke-BootstrapStateStep {
         [Parameter()][scriptblock]$Validate,
         [Parameter()][scriptblock]$Reconcile,
         [switch]$NoAutomaticReplayAfterStart,
+        [switch]$ValidateAndReuseOnly,
         [switch]$AlwaysRun
     )
     Write-BootstrapStep $Name
+    if ($ValidateAndReuseOnly -and $AlwaysRun) {
+        throw "Bootstrap step '$Name' cannot combine validation/reuse-only mode with AlwaysRun behavior."
+    }
     $stepSourceFingerprint = if ($State.Contains('acceptedPlan') -and
         $State.acceptedPlan -is [System.Collections.IDictionary] -and
         $State.acceptedPlan.Contains('sourceFingerprint')) {
@@ -2512,6 +3169,34 @@ function Invoke-BootstrapStateStep {
     }
     Assert-BootstrapFingerprintValue -Value $stepSourceFingerprint -Label "Bootstrap step '$Name' source fingerprint"
     $existing = $State.steps[$Name]
+    if ($ValidateAndReuseOnly) {
+        if ($existing -isnot [System.Collections.IDictionary] -or
+            [string]$existing.status -cne 'Completed' -or
+            -not $existing.Contains('evidence') -or $null -eq $existing.evidence) {
+            Write-BootstrapEvent -Status Failed -StepName $Name
+            throw "Bootstrap step '$Name' is validation/reuse-only for this source correction, but no exact completed evidence exists. No action was executed and state was preserved."
+        }
+        if (-not $Validate) {
+            Write-BootstrapEvent -Status Failed -StepName $Name
+            throw "Bootstrap step '$Name' is validation/reuse-only for this source correction and requires an independent read-only validator. No action was executed and state was preserved."
+        }
+        try {
+            [object[]]$validationResult = @(& $Validate)
+            if ($validationResult.Count -ne 1 -or $validationResult[0] -isnot [bool]) {
+                throw 'Validator must return exactly one Boolean value.'
+            }
+            if ([bool]$validationResult[0] -ne $true) {
+                throw 'Exact completed evidence did not pass independent readback.'
+            }
+        }
+        catch {
+            Write-BootstrapEvent -Status Failed -StepName $Name
+            throw "Bootstrap step '$Name' could not be revalidated under its validation/reuse-only source-correction boundary. No action was executed and the exact completed record was preserved."
+        }
+        Write-BootstrapSuccess "$Name already complete and revalidated"
+        Write-BootstrapEvent -Status Completed -StepName $Name -Reused -Revalidated
+        return $existing.evidence
+    }
     if (-not $AlwaysRun -and $existing -and $existing.status -in @('Running', 'Failed') -and $NoAutomaticReplayAfterStart) {
         if (-not $Reconcile) {
             Write-BootstrapEvent -Status Failed -StepName $Name

@@ -1344,6 +1344,30 @@ Describe 'Gateway core initial and runtime identity bindings' {
             }
         }
 
+        It 'checks a corrected execution snapshot while retaining the original core deployment provenance' {
+            $script:coreExecutionSourceFingerprint = "sha256:$('d' * 64)"
+            Mock Get-BootstrapSourceFingerprint { return $script:coreExecutionSourceFingerprint }
+            $arguments = $script:coreInitialArguments.Clone()
+            $arguments.ExecutionSourceFingerprint = $script:coreExecutionSourceFingerprint
+
+            { Deploy-GatewayCore @arguments } | Should -Throw '*core-deployment-reached*'
+
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
+                [string]$Parameters.bootstrapSourceFingerprint -ceq $script:coreSourceFingerprint
+            }
+        }
+
+        It 'rejects a loaded core snapshot that differs from the explicit execution fingerprint before Azure discovery' {
+            $arguments = $script:coreInitialArguments.Clone()
+            $arguments.ExecutionSourceFingerprint = "sha256:$('d' * 64)"
+
+            { Deploy-GatewayCore @arguments } |
+                Should -Throw '*workload execution source no longer matches the accepted content-addressed snapshot*'
+
+            Should -Invoke Invoke-AzTsv -Times 0 -Exactly
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
+        }
+
         It 'keeps the exact deployment map in case-sensitive parity with compiled main.bicep and rejects legacy image pull' {
             $script:capturedCompiledParityParameters = $null
             Mock Invoke-AzTsv { return '0' }
@@ -1393,6 +1417,15 @@ Describe 'Gateway core initial and runtime identity bindings' {
             @($smartDetector.properties.actionGroups.groupIds).Count | Should -Be 1
             [string]$smartDetector.properties.actionGroups.groupIds[0] | Should -BeExactly `
                 "[resourceId('Microsoft.Insights/actionGroups', parameters('actionGroupName'))]"
+
+            $promptShieldRoleAssignment = $compiled.resources.PSObject.Properties['promptShieldCognitiveServicesUser'].Value
+            $promptShieldRoleAssignment | Should -Not -BeNullOrEmpty
+            [string]$promptShieldRoleAssignment.name | Should -BeExactly `
+                "[guid(resourceId('Microsoft.CognitiveServices/accounts', variables('names').contentSafety), variables('names').apiApp, 'Cognitive Services User')]"
+            [string]$promptShieldRoleAssignment.scope | Should -BeExactly `
+                "[resourceId('Microsoft.CognitiveServices/accounts', variables('names').contentSafety)]"
+            [string]$promptShieldRoleAssignment.name | Should -Not -Match "reference\('contentSafety'\)"
+            [string]$promptShieldRoleAssignment.scope | Should -Not -Match "reference\('contentSafety'\)"
 
             $actual = [ordered]@{}
             foreach ($entry in $script:capturedCompiledParityParameters.GetEnumerator()) {
@@ -2583,6 +2616,106 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 Should -Invoke Get-GatewayInertBoundaryResource -Times 0 -Exactly
                 Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
             }
+        }
+    }
+}
+
+Describe 'Gateway Admin UI deployment source binding' {
+    InModuleScope Azure {
+        BeforeEach {
+            $script:adminDeploymentSourceFingerprint = "sha256:$('b' * 64)"
+            $script:adminExecutionSourceFingerprint = "sha256:$('d' * 64)"
+            $script:adminOwnershipId = '77777777-7777-4777-8777-777777777777'
+            $script:adminImage = "acrsafe.azurecr.io/gateway-admin@sha256:$('3' * 64)"
+            $script:adminConfig = [pscustomobject]@{
+                environment = 'dev'
+                projectName = 'safe'
+                resourceGroupName = 'rg-safe-dev'
+                tenantId = '11111111-1111-4111-8111-111111111111'
+            }
+            $script:adminFoundation = [pscustomobject]@{
+                containerAppsEnvironmentName = 'cae-safe-dev-vnet'
+                privateEndpointSubnetId = '/subscriptions/10101010-1010-4010-8010-101010101010/resourceGroups/rg-safe-dev/providers/Microsoft.Network/virtualNetworks/vnet-safe-dev/subnets/snet-private-endpoints'
+                virtualNetworkId = '/subscriptions/10101010-1010-4010-8010-101010101010/resourceGroups/rg-safe-dev/providers/Microsoft.Network/virtualNetworks/vnet-safe-dev'
+            }
+            $script:adminIdentity = [pscustomobject]@{
+                gatewayApiScopeBaseUri = 'api://a365-gateway-safe-dev'
+            }
+            $script:adminApplicationIdentity = [pscustomobject]@{
+                adminUiClientId = '66666666-6666-4666-8666-666666666666'
+            }
+            $script:newAdminDeployment = {
+                return [pscustomobject]@{
+                    properties = [pscustomobject]@{
+                        outputs = [pscustomobject]@{
+                            deploymentOwnershipId = [pscustomobject]@{ value = $script:adminOwnershipId }
+                            bootstrapSourceFingerprint = [pscustomobject]@{ value = $script:adminDeploymentSourceFingerprint }
+                            adminUiContainerImage = [pscustomobject]@{ value = $script:adminImage }
+                            adminUiFqdn = [pscustomobject]@{ value = 'ca-gateway-admin-dev.example.invalid' }
+                            adminUiUrl = [pscustomobject]@{ value = 'https://ca-gateway-admin-dev.example.invalid' }
+                            adminUiPrincipalId = [pscustomobject]@{ value = '88888888-8888-4888-8888-888888888888' }
+                            adminUiSignInRedirectUri = [pscustomobject]@{ value = 'https://ca-gateway-admin-dev.example.invalid/signin-oidc' }
+                            adminUiSignedOutCallbackUri = [pscustomobject]@{ value = 'https://ca-gateway-admin-dev.example.invalid/signout-callback-oidc' }
+                        }
+                    }
+                }
+            }
+            Mock Get-BootstrapExecutionSourceRoot { return $TestDrive }
+            Mock Get-BootstrapSourceFingerprint { return $script:adminDeploymentSourceFingerprint }
+            Mock Invoke-AzTsv { return '0' }
+            Mock Invoke-ArmDeploymentWithSecureParameters { return & $script:newAdminDeployment }
+        }
+
+        It 'checks a corrected execution snapshot while retaining the original Admin UI deployment provenance' {
+            Mock Get-BootstrapSourceFingerprint { return $script:adminExecutionSourceFingerprint }
+
+            $result = Deploy-GatewayAdminUi `
+                -Config $script:adminConfig `
+                -Foundation $script:adminFoundation `
+                -Identity $script:adminIdentity `
+                -AdminIdentity $script:adminApplicationIdentity `
+                -AdminUiImage $script:adminImage `
+                -AdminUiSecretUri 'https://kv-safe-dev.vault.azure.net/secrets/admin-ui' `
+                -DeploymentOwnershipId $script:adminOwnershipId `
+                -SourceFingerprint $script:adminDeploymentSourceFingerprint `
+                -ExecutionSourceFingerprint $script:adminExecutionSourceFingerprint
+
+            $result.sourceFingerprint | Should -BeExactly $script:adminDeploymentSourceFingerprint
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
+                [string]$Parameters.bootstrapSourceFingerprint -ceq $script:adminDeploymentSourceFingerprint
+            }
+        }
+
+        It 'defaults the Admin UI execution fingerprint to the deployment fingerprint' {
+            $result = Deploy-GatewayAdminUi `
+                -Config $script:adminConfig `
+                -Foundation $script:adminFoundation `
+                -Identity $script:adminIdentity `
+                -AdminIdentity $script:adminApplicationIdentity `
+                -AdminUiImage $script:adminImage `
+                -AdminUiSecretUri 'https://kv-safe-dev.vault.azure.net/secrets/admin-ui' `
+                -DeploymentOwnershipId $script:adminOwnershipId `
+                -SourceFingerprint $script:adminDeploymentSourceFingerprint
+
+            $result.sourceFingerprint | Should -BeExactly $script:adminDeploymentSourceFingerprint
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly
+        }
+
+        It 'rejects a loaded Admin UI snapshot that differs from the explicit execution fingerprint before Azure discovery' {
+            { Deploy-GatewayAdminUi `
+                    -Config $script:adminConfig `
+                    -Foundation $script:adminFoundation `
+                    -Identity $script:adminIdentity `
+                    -AdminIdentity $script:adminApplicationIdentity `
+                    -AdminUiImage $script:adminImage `
+                    -AdminUiSecretUri 'https://kv-safe-dev.vault.azure.net/secrets/admin-ui' `
+                    -DeploymentOwnershipId $script:adminOwnershipId `
+                    -SourceFingerprint $script:adminDeploymentSourceFingerprint `
+                    -ExecutionSourceFingerprint $script:adminExecutionSourceFingerprint } |
+                Should -Throw '*Admin UI execution source no longer matches the accepted content-addressed snapshot*'
+
+            Should -Invoke Invoke-AzTsv -Times 0 -Exactly
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
         }
     }
 }

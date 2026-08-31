@@ -1009,6 +1009,38 @@ Describe 'Private database bootstrap recovery and evidence contract' {
             }
         }
 
+        It 'keeps corrected execution source separate from original database deployment provenance' {
+            $script:correctedSourceFingerprint = "sha256:$('c' * 64)"
+            Mock Get-RepositoryRoot { return $TestDrive }
+            Mock Get-BootstrapExecutionSourceRoot { return $TestDrive }
+            Mock Get-BootstrapSourceFingerprint { return $script:correctedSourceFingerprint }
+            Mock Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple { throw 'source-boundary-passed' }
+
+            $invokeParameters = @{
+                Config = $script:config
+                Foundation = [ordered]@{}
+                SqlPrivateEndpoint = [ordered]@{}
+                SqlServerFqdn = $script:sqlServerFqdn
+                ApiPrincipalId = $script:apiPrincipalId
+                WorkerPrincipalId = $script:workerPrincipalId
+                DeploymentOwnershipId = $script:ownershipId
+                DatabaseMigratorImage = $script:jobImage
+                OriginalEntraAdministratorObjectId = $script:originalAdministratorObjectId
+                OriginalEntraAdministratorLogin = $script:originalAdministratorLogin
+                BootstrapClientIpv4 = '10.20.30.40'
+                ExecutionSourceFingerprint = $script:correctedSourceFingerprint
+                DeploymentSourceFingerprint = $script:sourceFingerprint
+            }
+
+            { Initialize-GatewayDatabase @invokeParameters } | Should -Throw '*source-boundary-passed*'
+            Should -Invoke Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple -Times 1 -Exactly
+
+            $invokeParameters['ExecutionSourceFingerprint'] = "sha256:$('d' * 64)"
+            { Initialize-GatewayDatabase @invokeParameters } |
+                Should -Throw '*execution source no longer matches the accepted content-addressed snapshot*'
+            Should -Invoke Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple -Times 1 -Exactly
+        }
+
         It 'settles a previously started execution before restoring SQL admin after a Resume preparation failure' {
             $script:testRepositoryRoot = $TestDrive
             $script:receipt.executionName = "$($script:jobName)-abc12"

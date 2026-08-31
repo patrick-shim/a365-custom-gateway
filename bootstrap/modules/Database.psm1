@@ -1978,17 +1978,41 @@ function Initialize-GatewayDatabase {
         [Parameter(Mandatory)][string]$OriginalEntraAdministratorObjectId,
         [Parameter(Mandatory)][string]$OriginalEntraAdministratorLogin,
         [Parameter(Mandatory)][string]$BootstrapClientIpv4,
+        [Parameter()][string]$ExecutionSourceFingerprint = '',
+        [Parameter()][string]$DeploymentSourceFingerprint = '',
         [Parameter()][AllowNull()][System.Collections.IDictionary]$RecoveryPlan,
         [Parameter()][AllowNull()][System.Collections.IDictionary]$ManualRepairPlan
     )
     $repositoryRoot = Get-RepositoryRoot
     $root = Get-BootstrapExecutionSourceRoot
-    $executionSourceFingerprint = Get-BootstrapSourceFingerprint -Root $root
+    $observedExecutionSourceFingerprint = Get-BootstrapSourceFingerprint -Root $root
+    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) {
+        $ExecutionSourceFingerprint = $observedExecutionSourceFingerprint
+    }
+    Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Database-bootstrap execution source fingerprint'
+    if ($observedExecutionSourceFingerprint -cne $ExecutionSourceFingerprint) {
+        throw 'The database-bootstrap execution source no longer matches the accepted content-addressed snapshot.'
+    }
     $isRecovery = $null -ne $RecoveryPlan
     $isManualRepair = $null -ne $ManualRepairPlan
     if ($isRecovery -and $isManualRepair) { throw 'Automatic recovery and manual database repair are distinct one-shot boundaries.' }
     $isResumeAfterSchema = $isRecovery -or $isManualRepair
-    $acceptedSourceFingerprint = if ($isRecovery) { [string]$RecoveryPlan.originalSourceFingerprint } elseif ($isManualRepair) { [string]$ManualRepairPlan.originalSourceFingerprint } else { $executionSourceFingerprint }
+    $acceptedSourceFingerprint = if ($isRecovery) {
+        [string]$RecoveryPlan.originalSourceFingerprint
+    }
+    elseif ($isManualRepair) {
+        [string]$ManualRepairPlan.originalSourceFingerprint
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($DeploymentSourceFingerprint)) {
+        $DeploymentSourceFingerprint
+    }
+    else {
+        $ExecutionSourceFingerprint
+    }
+    if (-not [string]::IsNullOrWhiteSpace($DeploymentSourceFingerprint) -and
+        $DeploymentSourceFingerprint -cne $acceptedSourceFingerprint) {
+        throw 'The database-bootstrap deployment provenance does not match the accepted continuation boundary.'
+    }
     $recoverySourceFingerprint = if ($isRecovery) { [string]$RecoveryPlan.correctedSourceFingerprint } else { '' }
     $recoveryPlanFingerprint = if ($isRecovery) { [string]$RecoveryPlan.planFingerprint } else { '' }
     $manualRepairSourceFingerprint = if ($isManualRepair) { [string]$ManualRepairPlan.repairSourceFingerprint } else { '' }

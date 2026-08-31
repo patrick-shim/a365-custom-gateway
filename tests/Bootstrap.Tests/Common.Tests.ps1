@@ -24,6 +24,48 @@ BeforeAll {
         )
         $Config | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $Path -Encoding utf8NoBOM
     }
+
+    function New-TestPreInertCorrectionRoots {
+        param([Parameter(Mandatory)][string]$BasePath)
+
+        $originalRoot = Join-Path $BasePath 'original'
+        $correctedRoot = Join-Path $BasePath 'corrected'
+        $changedPaths = @(
+            'bootstrap/bootstrap.ps1',
+            'bootstrap/modules/Azure.psm1',
+            'bootstrap/modules/Common.psm1',
+            'bootstrap/modules/Database.psm1',
+            'bootstrap/modules/Experience.psm1',
+            'infrastructure/bicep/main.bicep'
+        )
+        foreach ($path in $changedPaths) {
+            foreach ($root in @($originalRoot, $correctedRoot)) {
+                $target = Join-Path $root $path
+                New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+            }
+            if ($path -ceq 'infrastructure/bicep/main.bicep') {
+                @(
+                    'resource deployedContentSafety existing = {',
+                    '  name: contentSafety!.outputs.accountName',
+                    '}'
+                ) -join "`n" | Set-Content -LiteralPath (Join-Path $originalRoot $path) -Encoding utf8NoBOM -NoNewline
+                @(
+                    'resource deployedContentSafety existing = {',
+                    '  name: names.contentSafety',
+                    '}'
+                ) -join "`n" | Set-Content -LiteralPath (Join-Path $correctedRoot $path) -Encoding utf8NoBOM -NoNewline
+            }
+            else {
+                "original-$path" | Set-Content -LiteralPath (Join-Path $originalRoot $path) -Encoding utf8NoBOM -NoNewline
+                "corrected-$path" | Set-Content -LiteralPath (Join-Path $correctedRoot $path) -Encoding utf8NoBOM -NoNewline
+            }
+        }
+        return [ordered]@{
+            originalRoot = $originalRoot
+            correctedRoot = $correctedRoot
+            changedPaths = $changedPaths
+        }
+    }
 }
 
 Describe 'Bootstrap JSON Schema configuration validation' {
@@ -676,6 +718,142 @@ Describe 'Bootstrap state compatibility and atomic persistence' {
 
         @($warnings).Count | Should -Be 0
     }
+
+    It 'reuses completed correction-prefix evidence only after exact validation without invoking the action' {
+        $config = New-TestBootstrapConfig
+        $state = New-BootstrapState -Config $config
+        $evidence = [ordered]@{ resourceId = 'original-source-resource-id' }
+        $state.steps['Correction prefix'] = [ordered]@{
+            status = 'Completed'
+            startedAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(-2).ToString('O')
+            completedAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(-1).ToString('O')
+            sourceFingerprint = 'sha256:' + ('a' * 64)
+            evidence = $evidence
+        }
+        $path = Join-Path $TestDrive 'correction-prefix-reuse.json'
+        Save-BootstrapState -State $state -Path $path
+        $before = Get-BootstrapObjectFingerprint -InputObject $state.steps['Correction prefix']
+        $script:correctionPrefixActionRuns = 0
+        $script:correctionPrefixReconcileRuns = 0
+
+        $result = Invoke-BootstrapStateStep `
+            -Name 'Correction prefix' `
+            -State $state `
+            -StatePath $path `
+            -ValidateAndReuseOnly `
+            -NoAutomaticReplayAfterStart `
+            -Reconcile {
+                $script:correctionPrefixReconcileRuns++
+                throw 'must-not-reconcile'
+            } `
+            -Validate { return $true } `
+            -Action {
+                $script:correctionPrefixActionRuns++
+                return [ordered]@{ resourceId = 'must-not-run' }
+            }
+
+        $result.resourceId | Should -BeExactly 'original-source-resource-id'
+        $script:correctionPrefixActionRuns | Should -Be 0
+        $script:correctionPrefixReconcileRuns | Should -Be 0
+        (Get-BootstrapObjectFingerprint -InputObject $state.steps['Correction prefix']) | Should -BeExactly $before
+    }
+
+    It 'preserves the exact completed correction-prefix record when validation is absent, false, noisy, or throws' {
+        $config = New-TestBootstrapConfig
+        $state = New-BootstrapState -Config $config
+        $state.steps['Correction prefix'] = [ordered]@{
+            status = 'Completed'
+            startedAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(-2).ToString('O')
+            completedAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(-1).ToString('O')
+            sourceFingerprint = 'sha256:' + ('a' * 64)
+            evidence = [ordered]@{ resourceId = 'preserve-exactly' }
+        }
+        $path = Join-Path $TestDrive 'correction-prefix-failures.json'
+        Save-BootstrapState -State $state -Path $path
+        $beforeRecord = Get-BootstrapObjectFingerprint -InputObject $state.steps['Correction prefix']
+        $beforeFile = Get-Content -LiteralPath $path -Raw
+        $script:correctionPrefixActionRuns = 0
+        $script:correctionPrefixReconcileRuns = 0
+        $cases = @(
+            $null,
+            { return $false },
+            { 'noise'; return $true },
+            { throw 'provider-marker-that-must-not-be-persisted' }
+        )
+
+        foreach ($validator in $cases) {
+            $parameters = @{
+                Name = 'Correction prefix'
+                State = $state
+                StatePath = $path
+                ValidateAndReuseOnly = $true
+                NoAutomaticReplayAfterStart = $true
+                Reconcile = {
+                    $script:correctionPrefixReconcileRuns++
+                    throw 'must-not-reconcile'
+                }
+                Action = {
+                    $script:correctionPrefixActionRuns++
+                    return [ordered]@{ resourceId = 'must-not-run' }
+                }
+            }
+            if ($null -ne $validator) { $parameters.Validate = $validator }
+
+            { Invoke-BootstrapStateStep @parameters } |
+                Should -Throw '*validation/reuse-only*preserved*'
+
+            (Get-BootstrapObjectFingerprint -InputObject $state.steps['Correction prefix']) |
+                Should -BeExactly $beforeRecord
+            (Get-Content -LiteralPath $path -Raw) | Should -BeExactly $beforeFile
+        }
+        $script:correctionPrefixActionRuns | Should -Be 0
+        $script:correctionPrefixReconcileRuns | Should -Be 0
+    }
+
+    It 'rejects AlwaysRun before a validation/reuse-only action can execute' {
+        $config = New-TestBootstrapConfig
+        $state = New-BootstrapState -Config $config
+        $state.steps['Correction prefix'] = [ordered]@{
+            status = 'Completed'
+            evidence = [ordered]@{ resourceId = 'preserve-exactly' }
+        }
+        $script:correctionPrefixActionRuns = 0
+
+        { Invoke-BootstrapStateStep `
+                -Name 'Correction prefix' `
+                -State $state `
+                -StatePath (Join-Path $TestDrive 'correction-prefix-always-run.json') `
+                -ValidateAndReuseOnly `
+                -AlwaysRun `
+                -Validate { return $true } `
+                -Action { $script:correctionPrefixActionRuns++ } } |
+            Should -Throw '*cannot combine validation/reuse-only mode with AlwaysRun*'
+
+        $script:correctionPrefixActionRuns | Should -Be 0
+    }
+
+    It 'never executes a correction-prefix action when exact completed evidence is absent' {
+        $config = New-TestBootstrapConfig
+        $state = New-BootstrapState -Config $config
+        $path = Join-Path $TestDrive 'correction-prefix-absent.json'
+        Save-BootstrapState -State $state -Path $path
+        $script:correctionPrefixActionRuns = 0
+
+        { Invoke-BootstrapStateStep `
+                -Name 'Correction prefix' `
+                -State $state `
+                -StatePath $path `
+                -ValidateAndReuseOnly `
+                -Validate { return $true } `
+                -Action {
+                    $script:correctionPrefixActionRuns++
+                    return [ordered]@{ resourceId = 'must-not-run' }
+                } } |
+            Should -Throw '*no exact completed evidence exists*state was preserved*'
+
+        $script:correctionPrefixActionRuns | Should -Be 0
+        $state.steps.Contains('Correction prefix') | Should -BeFalse
+    }
 }
 
 Describe 'External command redaction' {
@@ -1202,5 +1380,368 @@ Describe 'Accepted deployment plan binding' {
 
         { Save-BootstrapState -State $state -Path $path } |
             Should -Throw '*execution snapshot is absent, modified*'
+    }
+}
+
+Describe 'Bounded pre-inert Prompt Shields source correction' {
+    It 'accepts only the exact six-file bridge and one-line Bicep semantic correction' {
+        $roots = New-TestPreInertCorrectionRoots -BasePath (Join-Path $TestDrive 'exact-delta')
+
+        $delta = @(Get-BootstrapPreInertSourceCorrectionDelta `
+            -OriginalRoot $roots.originalRoot `
+            -CorrectedRoot $roots.correctedRoot)
+
+        @($delta.path) | Should -Be @($roots.changedPaths | Sort-Object)
+        Assert-BootstrapExactPreInertBicepCorrection `
+            -OriginalRoot $roots.originalRoot `
+            -CorrectedRoot $roots.correctedRoot | Should -BeTrue
+    }
+
+    It 'rejects an extra source change and any second Bicep edit' {
+        $extraRoots = New-TestPreInertCorrectionRoots -BasePath (Join-Path $TestDrive 'extra-delta')
+        foreach ($root in @($extraRoots.originalRoot, $extraRoots.correctedRoot)) {
+            New-Item -ItemType Directory -Path (Join-Path $root 'src') -Force | Out-Null
+        }
+        'original' | Set-Content -LiteralPath (Join-Path $extraRoots.originalRoot 'src/Extra.cs') -NoNewline
+        'corrected' | Set-Content -LiteralPath (Join-Path $extraRoots.correctedRoot 'src/Extra.cs') -NoNewline
+
+        { Get-BootstrapPreInertSourceCorrectionDelta `
+                -OriginalRoot $extraRoots.originalRoot `
+                -CorrectedRoot $extraRoots.correctedRoot } |
+            Should -Throw '*non-allowlisted*'
+
+        $semanticRoots = New-TestPreInertCorrectionRoots -BasePath (Join-Path $TestDrive 'semantic-delta')
+        Add-Content -LiteralPath (Join-Path $semanticRoots.correctedRoot 'infrastructure/bicep/main.bicep') `
+            -Value "`n// second change" -NoNewline
+
+        { Get-BootstrapPreInertSourceCorrectionDelta `
+                -OriginalRoot $semanticRoots.originalRoot `
+                -CorrectedRoot $semanticRoots.correctedRoot } |
+            Should -Throw '*exact reviewed one-line*'
+    }
+
+    InModuleScope Common {
+        BeforeAll {
+            function New-TestPreInertCorrectionRoots {
+                param([Parameter(Mandatory)][string]$BasePath)
+
+                $originalRoot = Join-Path $BasePath 'original'
+                $correctedRoot = Join-Path $BasePath 'corrected'
+                $changedPaths = @(
+                    'bootstrap/bootstrap.ps1',
+                    'bootstrap/modules/Azure.psm1',
+                    'bootstrap/modules/Common.psm1',
+                    'bootstrap/modules/Database.psm1',
+                    'bootstrap/modules/Experience.psm1',
+                    'infrastructure/bicep/main.bicep'
+                )
+                foreach ($path in $changedPaths) {
+                    foreach ($root in @($originalRoot, $correctedRoot)) {
+                        $target = Join-Path $root $path
+                        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+                    }
+                    if ($path -ceq 'infrastructure/bicep/main.bicep') {
+                        @(
+                            'resource deployedContentSafety existing = {',
+                            '  name: contentSafety!.outputs.accountName',
+                            '}'
+                        ) -join "`n" | Set-Content -LiteralPath (Join-Path $originalRoot $path) -Encoding utf8NoBOM -NoNewline
+                        @(
+                            'resource deployedContentSafety existing = {',
+                            '  name: names.contentSafety',
+                            '}'
+                        ) -join "`n" | Set-Content -LiteralPath (Join-Path $correctedRoot $path) -Encoding utf8NoBOM -NoNewline
+                    }
+                    else {
+                        "original-$path" | Set-Content -LiteralPath (Join-Path $originalRoot $path) -Encoding utf8NoBOM -NoNewline
+                        "corrected-$path" | Set-Content -LiteralPath (Join-Path $correctedRoot $path) -Encoding utf8NoBOM -NoNewline
+                    }
+                }
+                return [ordered]@{
+                    originalRoot = $originalRoot
+                    correctedRoot = $correctedRoot
+                    changedPaths = $changedPaths
+                }
+            }
+        }
+
+        BeforeEach {
+            $script:correctionRoots = New-TestPreInertCorrectionRoots -BasePath (Join-Path $TestDrive 'state-plan')
+            $script:originalSourceFingerprint = Get-BootstrapObjectFingerprint -InputObject `
+                @(Get-BootstrapSourceManifest -Root $script:correctionRoots.originalRoot)
+            $script:correctedSourceFingerprint = Get-BootstrapObjectFingerprint -InputObject `
+                @(Get-BootstrapSourceManifest -Root $script:correctionRoots.correctedRoot)
+            $script:currentSourceFingerprint = $script:correctedSourceFingerprint
+            $script:configurationFingerprint = 'sha256:' + ('c' * 64)
+            $script:ownershipId = '11111111-1111-4111-8111-111111111111'
+            $script:originalPlanFingerprint = 'sha256:' + ('a' * 64)
+            $script:originalAcceptedPlan = [ordered]@{
+                planFingerprint = $script:originalPlanFingerprint
+                configurationFingerprint = $script:configurationFingerprint
+                sourceFingerprint = $script:originalSourceFingerprint
+                bootstrapClientIpv4 = '192.0.2.10'
+                executionSource = ".bootstrap/accepted-source/$($script:ownershipId)/$($script:originalPlanFingerprint.Substring(7))"
+                bootstrapVersion = '2.0.0'
+                acceptedAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(-90).ToString('O')
+            }
+            $script:correctionState = [ordered]@{
+                schemaVersion = 2
+                bootstrapVersion = '2.0.0'
+                deploymentOwnershipId = $script:ownershipId
+                configurationFingerprint = $script:configurationFingerprint
+                source = [ordered]@{
+                    created = [ordered]@{
+                        repositoryCommit = 'unknown'
+                        bootstrapSourceFingerprint = $script:originalSourceFingerprint
+                    }
+                    lastWritten = [ordered]@{
+                        repositoryCommit = 'unknown'
+                        bootstrapSourceFingerprint = $script:originalSourceFingerprint
+                    }
+                }
+                acceptedPlan = $script:originalAcceptedPlan
+                steps = [ordered]@{}
+                outputs = [ordered]@{}
+            }
+            $stepNames = @(
+                'Prerequisites',
+                'Azure authentication',
+                'Azure provider registration',
+                'Azure foundation',
+                'Gateway API identity',
+                'Immutable workload images'
+            )
+            for ($index = 0; $index -lt $stepNames.Count; $index++) {
+                $script:correctionState.steps[$stepNames[$index]] = [ordered]@{
+                    status = 'Completed'
+                    sourceFingerprint = $script:originalSourceFingerprint
+                    evidence = [ordered]@{ index = $index + 1 }
+                }
+            }
+            $script:correctionState.steps['Inert identity deployment'] = [ordered]@{
+                status = 'Failed'
+                sourceFingerprint = $script:originalSourceFingerprint
+                message = 'Bootstrap step failed.'
+            }
+
+            Mock Get-RepositoryRoot { return $script:correctionRoots.correctedRoot }
+            Mock Get-BootstrapSourceFingerprint {
+                param([string]$Root = '')
+                if ([string]::IsNullOrWhiteSpace($Root)) { return $script:currentSourceFingerprint }
+                if ([IO.Path]::GetFullPath($Root) -ceq [IO.Path]::GetFullPath($script:correctionRoots.originalRoot)) {
+                    return $script:originalSourceFingerprint
+                }
+                return $script:correctedSourceFingerprint
+            }
+            Mock Resolve-BootstrapAcceptedSourceRoot { return $script:correctionRoots.originalRoot }
+            Mock New-BootstrapAcceptedSourceSnapshot {
+                param($State, $PlanFingerprint, $SourceFingerprint)
+                return ".bootstrap/accepted-source/$($script:ownershipId)/$($PlanFingerprint.Substring(7))"
+            }
+            Mock Get-BootstrapPreInertSourceCorrectionSnapshotRoot {
+                param($State, $Plan, $Generation)
+                if ([string]$Generation -ceq 'Original') { return $script:correctionRoots.originalRoot }
+                return $script:correctionRoots.correctedRoot
+            }
+            Mock Save-BootstrapState { }
+        }
+
+        It 'persists one generation, preserves the original accepted snapshot, and maps corrected execution to original deployment' {
+            $plan = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'state.json')
+
+            $plan.status | Should -BeExactly 'Accepted'
+            $plan.generation | Should -Be 1
+            $plan.originalDeploymentSourceFingerprint | Should -BeExactly $script:originalSourceFingerprint
+            $plan.correctedExecutionSourceFingerprint | Should -BeExactly $script:correctedSourceFingerprint
+            $plan.originalAcceptedPlanFingerprint | Should -BeExactly `
+                (Get-BootstrapObjectFingerprint -InputObject $script:originalAcceptedPlan)
+            $plan.originalAcceptedPlan.executionSource | Should -BeExactly $script:originalAcceptedPlan.executionSource
+            @($plan.allowedChangedPaths) | Should -Be @($script:BootstrapPreInertCorrectionChangedPaths)
+
+            Assert-BootstrapStateAllowsSourcePlan -State $script:correctionState | Should -BeTrue
+            Get-BootstrapEffectiveDeploymentSourceFingerprint `
+                -State $script:correctionState `
+                -ExecutionSourceFingerprint $script:correctedSourceFingerprint |
+                Should -BeExactly $script:originalSourceFingerprint
+
+            $second = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'state.json')
+            $second.planFingerprint | Should -BeExactly $plan.planFingerprint
+            Should -Invoke Save-BootstrapState -Times 1 -Exactly
+        }
+
+        It 'does not create a correction plan for ordinary source refresh before any durable evidence' {
+            $emptyState = [ordered]@{
+                deploymentOwnershipId = $script:ownershipId
+                configurationFingerprint = $script:configurationFingerprint
+                source = [ordered]@{
+                    created = [ordered]@{ bootstrapSourceFingerprint = $script:originalSourceFingerprint }
+                    lastWritten = [ordered]@{ bootstrapSourceFingerprint = $script:originalSourceFingerprint }
+                }
+                steps = [ordered]@{}
+                outputs = [ordered]@{}
+            }
+
+            $result = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $emptyState `
+                -StatePath (Join-Path $TestDrive 'empty-source-refresh.json')
+
+            $result | Should -BeNullOrEmpty
+            $emptyState.Contains('preInertSourceCorrectionPlan') | Should -BeFalse
+            Should -Invoke Save-BootstrapState -Times 0 -Exactly
+        }
+
+        It 'defers changed-source handling to an established database recovery or manual repair plan' {
+            foreach ($case in @(
+                [ordered]@{ name = 'databaseRecoveryPlan'; status = 'Running' },
+                [ordered]@{ name = 'manualDatabaseRepairPlan'; status = 'Failed' }
+            )) {
+                $planName = [string]$case.name
+                $script:correctionState[$planName] = [ordered]@{ status = [string]$case.status }
+                $before = Get-BootstrapObjectFingerprint -InputObject $script:correctionState
+
+                $result = Set-BootstrapPreInertSourceCorrectionPlan `
+                    -State $script:correctionState `
+                    -StatePath (Join-Path $TestDrive "$planName.json")
+
+                $result | Should -BeNullOrEmpty
+                $script:correctionState.Contains('preInertSourceCorrectionPlan') | Should -BeFalse
+                (Get-BootstrapObjectFingerprint -InputObject $script:correctionState) | Should -BeExactly $before
+                $script:correctionState.Remove($planName)
+            }
+            Should -Invoke Save-BootstrapState -Times 0 -Exactly
+        }
+
+        It 'rejects evidence at step 7, a later step, or a non-original step 1-6 generation' {
+            $script:correctionState.steps['Inert identity deployment'].evidence = [ordered]@{ partial = $true }
+            { Set-BootstrapPreInertSourceCorrectionPlan `
+                    -State $script:correctionState `
+                    -StatePath (Join-Path $TestDrive 'evidence.json') } |
+                Should -Throw '*without any persisted evidence*'
+
+            $script:correctionState.steps['Inert identity deployment'].Remove('evidence')
+            $script:correctionState.steps['Agent 365 seed blueprint'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:originalSourceFingerprint
+                evidence = [ordered]@{ id = 'safe' }
+            }
+            { Set-BootstrapPreInertSourceCorrectionPlan `
+                    -State $script:correctionState `
+                    -StatePath (Join-Path $TestDrive 'later.json') } |
+                Should -Throw '*steps 1-7 and no later*'
+
+            $script:correctionState.steps.Remove('Agent 365 seed blueprint')
+            $script:correctionState.steps['Immutable workload images'].sourceFingerprint = $script:correctedSourceFingerprint
+            { Set-BootstrapPreInertSourceCorrectionPlan `
+                    -State $script:correctionState `
+                    -StatePath (Join-Path $TestDrive 'mixed.json') } |
+                Should -Throw '*exact completed source/evidence generation*'
+        }
+
+        It 'keeps corrected step-7 Running or Failed checkpoints eligible for exact provider recovery' {
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'accepted-recovery.json')
+
+            foreach ($status in @('Running', 'Failed')) {
+                $script:correctionState.steps['Inert identity deployment'] = [ordered]@{
+                    status = $status
+                    sourceFingerprint = $script:correctedSourceFingerprint
+                    evidence = [ordered]@{ deploymentCheckpoint = 'succeeded-candidate' }
+                }
+
+                Assert-BootstrapPreInertSourceCorrectionPlan `
+                    -State $script:correctionState `
+                    -ExecutionSourceFingerprint $script:correctedSourceFingerprint |
+                    Should -Not -BeNullOrEmpty
+            }
+        }
+
+        It 'completes only with corrected AlwaysRun steps 1-2, original reused steps 3-6, and corrected step 7' {
+            $plan = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'accepted.json')
+            foreach ($name in @('Prerequisites', 'Azure authentication')) {
+                $script:correctionState.steps[$name].sourceFingerprint = $script:correctedSourceFingerprint
+            }
+            $script:correctionState.steps['Inert identity deployment'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:correctedSourceFingerprint
+                evidence = [ordered]@{ apiPrincipalId = 'safe-principal-id' }
+            }
+
+            $completed = Complete-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'completed.json')
+
+            $completed.status | Should -BeExactly 'Completed'
+            $completed.inertEvidenceFingerprint | Should -BeExactly `
+                (Get-BootstrapObjectFingerprint -InputObject $script:correctionState.steps['Inert identity deployment'].evidence)
+            Get-BootstrapEffectiveDeploymentSourceFingerprint `
+                -State $script:correctionState `
+                -ExecutionSourceFingerprint $script:correctedSourceFingerprint |
+                Should -BeExactly $script:originalSourceFingerprint
+
+            $script:correctionState.steps['Azure provider registration'].sourceFingerprint = $script:correctedSourceFingerprint
+            { Assert-BootstrapPreInertSourceCorrectionPlan -State $script:correctionState } |
+                Should -Throw '*original-source evidence for steps 3-6*'
+        }
+
+        It 'refuses completion while either AlwaysRun step still carries the original fingerprint' {
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'accepted-incomplete.json')
+            $script:correctionState.steps['Inert identity deployment'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:correctedSourceFingerprint
+                evidence = [ordered]@{ apiPrincipalId = 'safe-principal-id' }
+            }
+
+            { Complete-BootstrapPreInertSourceCorrectionPlan `
+                    -State $script:correctionState `
+                    -StatePath (Join-Path $TestDrive 'incomplete.json') } |
+                Should -Throw '*corrected steps 1-2*'
+        }
+
+        It 'composes a later completed database-recovery source without losing original deployment provenance' {
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'accepted-composed.json')
+            foreach ($name in @('Prerequisites', 'Azure authentication')) {
+                $script:correctionState.steps[$name].sourceFingerprint = $script:correctedSourceFingerprint
+            }
+            $script:correctionState.steps['Inert identity deployment'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:correctedSourceFingerprint
+                evidence = [ordered]@{ apiPrincipalId = 'safe-principal-id' }
+            }
+            $null = Complete-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'completed-composed.json')
+
+            $recoverySourceFingerprint = 'sha256:' + ('d' * 64)
+            $script:currentSourceFingerprint = $recoverySourceFingerprint
+            $script:correctionState.databaseRecoveryPlan = [ordered]@{
+                status = 'Completed'
+                deploymentOwnershipId = $script:ownershipId
+                originalSourceFingerprint = $script:correctedSourceFingerprint
+                correctedSourceFingerprint = $recoverySourceFingerprint
+                databaseEvidenceFingerprint = 'sha256:' + ('e' * 64)
+            }
+            $script:correctionState.steps['Prerequisites'].sourceFingerprint = $recoverySourceFingerprint
+
+            $existing = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'composed-resume.json')
+
+            $existing.status | Should -BeExactly 'Completed'
+            Get-BootstrapEffectiveDeploymentSourceFingerprint `
+                -State $script:correctionState `
+                -ExecutionSourceFingerprint $recoverySourceFingerprint |
+                Should -BeExactly $script:originalSourceFingerprint
+        }
     }
 }
