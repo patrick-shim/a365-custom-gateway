@@ -1857,6 +1857,73 @@ function New-GatewayDefenderStorageAwareWhatIfRecoveryBoundary {
     return $boundary
 }
 
+function New-GatewayFoundationGovernanceNsgAwareWhatIfRecoveryBoundary {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$BaseBoundary,
+        [Parameter(Mandatory)][string[]]$BaseResourceIds,
+        [Parameter(Mandatory)][string[]]$GovernanceNsgResourceIds,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    $expectedBasePhase = if ($BaseResourceIds.Count -in @(25, 26)) {
+        'InertIdentityDeployment+DefenderStorageSystemTopic'
+    }
+    elseif ($BaseResourceIds.Count -in @(29, 30)) {
+        'InertIdentityDeployment+SqlPrivateEndpoint+DefenderStorageSystemTopic'
+    }
+    else { '' }
+    $expectedDefenderStoragePresent = $BaseResourceIds.Count -in @(26, 30)
+    if ([int]$BaseBoundary.schemaVersion -ne 4 -or
+        [string]$BaseBoundary.phase -cne $expectedBasePhase -or
+        $BaseBoundary.defenderStoragePresent -isnot [bool] -or
+        [bool]$BaseBoundary.defenderStoragePresent -ne $expectedDefenderStoragePresent -or
+        [string]$BaseBoundary.deploymentOwnershipId -cne $DeploymentOwnershipId -or
+        [string]$BaseBoundary.sourceFingerprint -cne $SourceFingerprint -or
+        $BaseBoundary.resourceIds -isnot [System.Collections.IList] -or
+        (@($BaseBoundary.resourceIds) -join "`n") -cne ($BaseResourceIds -join "`n")) {
+        throw 'The governance NSG recovery base is not the exact reviewed state-aware boundary.'
+    }
+    Assert-BootstrapFingerprintValue `
+        -Value ([string]$BaseBoundary.boundaryFingerprint) `
+        -Label 'Governance NSG recovery base-boundary fingerprint'
+
+    [string[]]$expectedGovernanceNsgResourceIds = @(
+        Get-GatewayFoundationGovernanceNsgWhatIfResourceIds -Config $Config)
+    [string[]]$canonicalGovernanceNsgResourceIds = @($GovernanceNsgResourceIds | ForEach-Object {
+        ConvertTo-GatewayRecoveryWhatIfResourceId `
+            -ResourceId ([string]$_) `
+            -Config $Config `
+            -RequireCanonicalLowercase
+    })
+    [Array]::Sort($canonicalGovernanceNsgResourceIds, [StringComparer]::Ordinal)
+    if (($canonicalGovernanceNsgResourceIds -join "`n") -cne
+        ($expectedGovernanceNsgResourceIds -join "`n")) {
+        throw 'The governance NSG recovery extension is not the exact deterministic two-resource pair.'
+    }
+
+    [string[]]$resourceIds = @($BaseResourceIds + $canonicalGovernanceNsgResourceIds)
+    [Array]::Sort($resourceIds, [StringComparer]::Ordinal)
+    $expectedCount = $BaseResourceIds.Count + 2
+    if ($expectedCount -notin @(27, 28, 31, 32) -or
+        $resourceIds.Count -ne $expectedCount -or
+        @($resourceIds | Sort-Object -Unique -CaseSensitive).Count -ne $expectedCount) {
+        throw 'The governance NSG-aware recovery boundary is not an exact reviewed resource graph.'
+    }
+    $boundary = [ordered]@{
+        schemaVersion = 5
+        phase = "$expectedBasePhase+FoundationGovernanceNsg"
+        deploymentOwnershipId = $DeploymentOwnershipId
+        sourceFingerprint = $SourceFingerprint
+        resourceIds = $resourceIds
+        baseBoundaryFingerprint = [string]$BaseBoundary.boundaryFingerprint
+        externalGovernanceNsgResourceIds = $expectedGovernanceNsgResourceIds
+    }
+    $boundary.boundaryFingerprint = Get-BootstrapObjectFingerprint -InputObject $boundary
+    return $boundary
+}
+
 function Assert-GatewayInertWhatIfRecoveryBoundary {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Boundary,
@@ -2031,6 +2098,28 @@ function New-GatewayPreInertSourceCorrectionWhatIfBoundary {
     return $boundary
 }
 
+function Get-GatewayFoundationGovernanceNsgWhatIfResourceIds {
+    param([Parameter(Mandatory)]$Config)
+
+    $subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
+    $resourceGroupName = [string]$Config.resourceGroupName
+    $virtualNetworkName = "vnet-$($Config.projectName)-$($Config.environment)"
+    $providerBase = "/subscriptions/$subscriptionId/resourcegroups/$($resourceGroupName.ToLowerInvariant())/providers"
+    [string[]]$resourceIds = @(
+        "$providerBase/microsoft.network/networksecuritygroups/$virtualNetworkName-snet-container-apps-nsg-$($Config.location)"
+        "$providerBase/microsoft.network/networksecuritygroups/$virtualNetworkName-snet-private-endpoints-nsg-$($Config.location)"
+    ) | ForEach-Object { ([string]$_).ToLowerInvariant() }
+    [Array]::Sort($resourceIds, [StringComparer]::Ordinal)
+    if ($resourceIds.Count -ne 2 -or
+        @($resourceIds | Sort-Object -Unique -CaseSensitive).Count -ne 2 -or
+        @($resourceIds | Where-Object {
+            -not (Test-GatewayRecoveryWhatIfResourceIdLexicalBoundary -ResourceId $_ -Config $Config)
+        }).Count -ne 0) {
+        throw 'The deterministic foundation governance NSG resource IDs are malformed.'
+    }
+    return $resourceIds
+}
+
 function New-GatewayPreInertFoundationWhatIfBoundary {
     param(
         [Parameter(Mandatory)]$Config,
@@ -2143,10 +2232,7 @@ function New-GatewayPreInertFoundationWhatIfBoundary {
     )
     [Array]::Sort($expectedDeployResourceIds, [StringComparer]::Ordinal)
     [string[]]$expectedGovernanceIgnoreResourceIds = @(
-        "$providerBase/microsoft.network/networksecuritygroups/$expectedVirtualNetworkName-snet-container-apps-nsg-$($Config.location)"
-        "$providerBase/microsoft.network/networksecuritygroups/$expectedVirtualNetworkName-snet-private-endpoints-nsg-$($Config.location)"
-    )
-    [Array]::Sort($expectedGovernanceIgnoreResourceIds, [StringComparer]::Ordinal)
+        Get-GatewayFoundationGovernanceNsgWhatIfResourceIds -Config $Config)
 
     [string[]]$observedDeployResourceIds = @($Changes | Where-Object {
         [string]$_.changeType -ceq 'Deploy'
@@ -2495,8 +2581,22 @@ function Invoke-GatewayFoundationWhatIf {
                 if (@($observedIgnoreIds | Sort-Object -Unique -CaseSensitive).Count -ne $observedIgnoreIds.Count) {
                     throw 'What-If returned duplicate normalized Ignore resource IDs.'
                 }
+                [string[]]$expectedGovernanceNsgResourceIds = @(
+                    Get-GatewayFoundationGovernanceNsgWhatIfResourceIds -Config $Config)
+                [string[]]$observedGovernanceNsgResourceIds = @($observedIgnoreIds | Where-Object {
+                    $expectedGovernanceNsgResourceIds -ccontains $_
+                })
+                [Array]::Sort($observedGovernanceNsgResourceIds, [StringComparer]::Ordinal)
+                if ($observedGovernanceNsgResourceIds.Count -ne 0 -and
+                    ($observedGovernanceNsgResourceIds -join "`n") -cne
+                        ($expectedGovernanceNsgResourceIds -join "`n")) {
+                    throw 'What-If returned only part of the deterministic foundation governance NSG pair.'
+                }
+                [string[]]$observedRecoveryIgnoreIds = @($observedIgnoreIds | Where-Object {
+                    $expectedGovernanceNsgResourceIds -cnotcontains $_
+                })
                 $systemTopicPrefix = ("/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.EventGrid/systemTopics/").ToLowerInvariant()
-                [string[]]$observedSystemTopicIgnoreIds = @($observedIgnoreIds | Where-Object {
+                [string[]]$observedSystemTopicIgnoreIds = @($observedRecoveryIgnoreIds | Where-Object {
                     $_.StartsWith($systemTopicPrefix, [StringComparison]::Ordinal) -and
                     -not $_.Substring($systemTopicPrefix.Length).Contains('/', [StringComparison]::Ordinal)
                 })
@@ -2604,10 +2704,19 @@ function Invoke-GatewayFoundationWhatIf {
                     -DeploymentOwnershipId $canonicalOwnershipId `
                     -SourceFingerprint $SourceFingerprint
                 $expectedIgnoreIds = @($resolvedRecoveryBoundary.resourceIds)
-                [Array]::Sort($observedIgnoreIds, [StringComparer]::Ordinal)
-                if ($observedIgnoreIds.Count -ne $expectedIgnoreIds.Count -or
-                    ($observedIgnoreIds -join "`n") -cne ($expectedIgnoreIds -join "`n")) {
+                [Array]::Sort($observedRecoveryIgnoreIds, [StringComparer]::Ordinal)
+                if ($observedRecoveryIgnoreIds.Count -ne $expectedIgnoreIds.Count -or
+                    ($observedRecoveryIgnoreIds -join "`n") -cne ($expectedIgnoreIds -join "`n")) {
                     throw 'What-If Ignore predictions did not exactly match the recovered state-aware resource graph.'
+                }
+                if ($observedGovernanceNsgResourceIds.Count -eq 2) {
+                    $resolvedRecoveryBoundary = New-GatewayFoundationGovernanceNsgAwareWhatIfRecoveryBoundary `
+                        -Config $Config `
+                        -BaseBoundary $resolvedRecoveryBoundary `
+                        -BaseResourceIds $expectedIgnoreIds `
+                        -GovernanceNsgResourceIds $observedGovernanceNsgResourceIds `
+                        -DeploymentOwnershipId $canonicalOwnershipId `
+                        -SourceFingerprint $SourceFingerprint
                 }
                 $recoveryIgnoreBoundary = if ($null -ne $sourceCorrectionPlan -and
                     [string]$sourceCorrectionPlan.status -ceq 'Accepted') {

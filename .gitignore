@@ -56,7 +56,7 @@ launchSettings.json
 publish/
 PublishScripts/
 
-## Environment
+## Environment and credentials
 .env
 .env.*
 !.env.example
@@ -66,9 +66,10 @@ appsettings.Local.json
 .secret
 .secret.*
 
-## Bootstrap runtime state (safe identifiers still remain machine-local)
+## Machine-local bootstrap and delivery runtime
 .bootstrap/
 bootstrap/config.json
+.agents/runtime/
 
 ## OS
 .DS_Store

@@ -1504,7 +1504,8 @@ Describe 'Azure What-If result boundary' {
                     correctedExecutionSourceFingerprint = $executionSourceFingerprint
                 }
             }
-            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            Set-TestRecoveryWhatIf -IgnoreIds @(
+                $script:recoveryBoundary.resourceIds + $script:foundationGovernanceNsgIds)
 
             $result = Invoke-GatewayFoundationWhatIf `
                 -Config $script:config `
@@ -1521,12 +1522,58 @@ Describe 'Azure What-If result boundary' {
                 Should -BeExactly $script:whatIfSourceFingerprint
             $result.recoveryIgnoreBoundary.executionSourceFingerprint |
                 Should -BeExactly $executionSourceFingerprint
-            $result.recoveryIgnoreBoundary.recoveredIgnoreBoundary.resourceIds.Count | Should -Be 25
+            $result.recoveryIgnoreBoundary.recoveredIgnoreBoundary.resourceIds.Count | Should -Be 27
+            $result.recoveryIgnoreBoundary.recoveredIgnoreBoundary.phase |
+                Should -BeExactly 'InertIdentityDeployment+DefenderStorageSystemTopic+FoundationGovernanceNsg'
+            @($result.recoveryIgnoreBoundary.recoveredIgnoreBoundary.externalGovernanceNsgResourceIds) |
+                Should -Be $script:foundationGovernanceNsgIds
             Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 1 -Exactly -ParameterFilter {
                 $SourceFingerprint -ceq $script:whatIfSourceFingerprint -and
                     $ExecutionSourceFingerprint -ceq $executionSourceFingerprint
             }
             Should -Invoke Test-GatewayGroupDeploymentEvidence -Times 1 -Exactly
+        }
+
+        It 'rejects partial, unknown, or duplicate governance NSG extensions during corrected recovery' {
+            $executionSourceFingerprint = "sha256:$('c' * 64)"
+            $script:recoveryState.source.lastWritten.bootstrapSourceFingerprint = $executionSourceFingerprint
+            $script:recoveryState.steps['Inert identity deployment'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $executionSourceFingerprint
+                evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
+            }
+            $script:recoveryState['outputs'] = [ordered]@{}
+            $script:recoveryState['preInertSourceCorrectionPlan'] = [ordered]@{ status = 'Accepted' }
+            Mock Assert-BootstrapPreInertSourceCorrectionPlan {
+                return [ordered]@{
+                    status = 'Accepted'
+                    correctionKind = 'PromptShieldPreInertBicepReference'
+                    planFingerprint = "sha256:$('d' * 64)"
+                    originalBoundaryFingerprint = "sha256:$('e' * 64)"
+                    configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $script:config
+                    deploymentOwnershipId = $script:whatIfOwnershipId
+                    originalDeploymentSourceFingerprint = $script:whatIfSourceFingerprint
+                    correctedExecutionSourceFingerprint = $executionSourceFingerprint
+                }
+            }
+            $unknownNsgId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourcegroups/rg-safe-dev/providers/microsoft.network/networksecuritygroups/unexpected-governance-nsg-koreacentral'
+            foreach ($ignoreIds in @(
+                @($script:recoveryBoundary.resourceIds + $script:foundationGovernanceNsgIds[0]),
+                @($script:recoveryBoundary.resourceIds + $script:foundationGovernanceNsgIds + $unknownNsgId),
+                @($script:recoveryBoundary.resourceIds + $script:foundationGovernanceNsgIds + $script:foundationGovernanceNsgIds[0])
+            )) {
+                Set-TestRecoveryWhatIf -IgnoreIds $ignoreIds
+
+                $result = Invoke-GatewayFoundationWhatIf `
+                    -Config $script:config `
+                    -RepositoryRoot '/safe/source' `
+                    -DeploymentOwnershipId $script:whatIfOwnershipId `
+                    -SourceFingerprint $script:whatIfSourceFingerprint `
+                    -ExecutionSourceFingerprint $executionSourceFingerprint `
+                    -State $script:recoveryState
+
+                $result.applyReady | Should -BeFalse
+            }
         }
 
         It 'accepts only the exact completed correction step-source split for future Resume planning' {
@@ -1611,7 +1658,9 @@ Describe 'Azure What-If result boundary' {
                 evidence = [ordered]@{ deploymentName = 'a365gw-safe-bootstrap-sql-private-dev' }
             }
             Set-TestRecoveryWhatIf -IgnoreIds @(
-                $script:recoveryBoundary.resourceIds + $script:sqlPrivateEndpointExtension.resourceIds)
+                $script:recoveryBoundary.resourceIds +
+                $script:sqlPrivateEndpointExtension.resourceIds +
+                $script:foundationGovernanceNsgIds)
 
             foreach ($continuation in @(
                 [ordered]@{

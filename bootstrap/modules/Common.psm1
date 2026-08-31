@@ -1417,6 +1417,31 @@ function Get-BootstrapPreInertSourceCorrectionBoundaryFingerprint {
     return Get-BootstrapObjectFingerprint -InputObject $boundary
 }
 
+function Get-BootstrapPreInertSourceCorrectionImmutableCompletionFingerprint {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Plan
+    )
+
+    $steps = [ordered]@{}
+    foreach ($name in @($script:BootstrapPreInertCorrectionStepNames | Select-Object -Skip 2)) {
+        if (-not $State.steps.Contains([string]$name) -or
+            $State.steps[[string]$name] -isnot [System.Collections.IDictionary]) {
+            throw 'The completed pre-inert correction immutable prefix is missing a required step.'
+        }
+        $steps[[string]$name] = ConvertTo-BootstrapCanonicalValue -Value $State.steps[[string]$name]
+    }
+    return Get-BootstrapObjectFingerprint -InputObject ([ordered]@{
+        schemaVersion = 1
+        correctionPlanFingerprint = [string]$Plan.planFingerprint
+        deploymentOwnershipId = [string]$Plan.deploymentOwnershipId
+        configurationFingerprint = [string]$Plan.configurationFingerprint
+        originalDeploymentSourceFingerprint = [string]$Plan.originalDeploymentSourceFingerprint
+        correctedExecutionSourceFingerprint = [string]$Plan.correctedExecutionSourceFingerprint
+        immutableSteps = $steps
+    })
+}
+
 function Assert-BootstrapPreInertSourceCorrectionCreationBoundary {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
 
@@ -1596,6 +1621,90 @@ function Assert-BootstrapPendingPreInertSourceCorrectionBoundary {
     return $true
 }
 
+function Assert-BootstrapSupersededPreInertSourceCorrectionPlan {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Plan
+    )
+
+    if ($Plan.supersededCorrectionPlan -isnot [System.Collections.IDictionary]) {
+        throw 'The amended pre-inert source correction has no valid superseded generation-one plan.'
+    }
+    $superseded = $Plan.supersededCorrectionPlan
+    [string[]]$requiredKeys = @(
+        'allowedChangedPaths', 'configurationFingerprint', 'correctedExecutionSource',
+        'correctedExecutionSourceFingerprint', 'correctionKind', 'createdAtUtc',
+        'deploymentOwnershipId', 'generation', 'originalAcceptedPlan',
+        'originalAcceptedPlanFingerprint', 'originalBoundaryFingerprint',
+        'originalDeploymentSourceFingerprint', 'planFingerprint', 'schemaVersion',
+        'semanticCorrection', 'sourceDelta', 'status'
+    )
+    [string[]]$actualKeys = @($superseded.Keys | ForEach-Object { [string]$_ })
+    [Array]::Sort($requiredKeys, [StringComparer]::Ordinal)
+    [Array]::Sort($actualKeys, [StringComparer]::Ordinal)
+    if (($requiredKeys -join "`n") -cne ($actualKeys -join "`n") -or
+        [int]$superseded.schemaVersion -ne 1 -or
+        [int]$superseded.generation -ne 1 -or
+        [string]$superseded.status -cne 'Accepted' -or
+        [string]$superseded.correctionKind -cne 'PromptShieldPreInertBicepReference' -or
+        [string]$superseded.configurationFingerprint -cne [string]$Plan.configurationFingerprint -or
+        [string]$superseded.deploymentOwnershipId -cne [string]$Plan.deploymentOwnershipId -or
+        [string]$superseded.originalDeploymentSourceFingerprint -cne [string]$Plan.originalDeploymentSourceFingerprint -or
+        [string]$superseded.originalAcceptedPlanFingerprint -cne [string]$Plan.originalAcceptedPlanFingerprint -or
+        [string]$superseded.originalBoundaryFingerprint -cne [string]$Plan.originalBoundaryFingerprint -or
+        [string]$superseded.correctedExecutionSourceFingerprint -cne $script:BootstrapPreInertCorrectionAmendableSourceFingerprint) {
+        throw 'The amended pre-inert source correction does not preserve the exact accepted generation-one contract.'
+    }
+    foreach ($name in @(
+        'planFingerprint', 'originalAcceptedPlanFingerprint', 'originalBoundaryFingerprint',
+        'originalDeploymentSourceFingerprint', 'correctedExecutionSourceFingerprint')) {
+        Assert-BootstrapFingerprintValue -Value ([string]$superseded[$name]) -Label "Superseded pre-inert source correction $name"
+    }
+    Assert-BootstrapFingerprintValue `
+        -Value ([string]$Plan.supersededCorrectionPlanFingerprint) `
+        -Label 'Superseded pre-inert source correction object fingerprint'
+    if ((Get-BootstrapObjectFingerprint -InputObject $superseded) -cne
+        [string]$Plan.supersededCorrectionPlanFingerprint) {
+        throw 'The superseded pre-inert source correction object fingerprint no longer matches.'
+    }
+    $supersededCore = Get-BootstrapPreInertSourceCorrectionPlanCore -Plan $superseded
+    if ((Get-BootstrapObjectFingerprint -InputObject $supersededCore) -cne
+        [string]$superseded.planFingerprint) {
+        throw 'The superseded pre-inert source correction plan fingerprint no longer matches.'
+    }
+    if ($superseded.originalAcceptedPlan -isnot [System.Collections.IDictionary] -or
+        (Get-BootstrapObjectFingerprint -InputObject $superseded.originalAcceptedPlan) -cne
+            [string]$superseded.originalAcceptedPlanFingerprint -or
+        (Get-BootstrapObjectFingerprint -InputObject $superseded.originalAcceptedPlan) -cne
+            (Get-BootstrapObjectFingerprint -InputObject $Plan.originalAcceptedPlan)) {
+        throw 'The superseded pre-inert source correction no longer preserves the original accepted plan.'
+    }
+
+    [string[]]$allowedPaths = @($superseded.allowedChangedPaths | ForEach-Object { [string]$_ })
+    [Array]::Sort($allowedPaths, [StringComparer]::Ordinal)
+    [string[]]$expectedPaths = @($script:BootstrapPreInertCorrectionChangedPaths)
+    [Array]::Sort($expectedPaths, [StringComparer]::Ordinal)
+    if (($allowedPaths -join "`n") -cne ($expectedPaths -join "`n") -or
+        [string]$superseded.semanticCorrection.path -cne $script:BootstrapPreInertCorrectionBicepPath -or
+        [string]$superseded.semanticCorrection.originalLine -cne $script:BootstrapPreInertCorrectionOriginalBicepLine -or
+        [string]$superseded.semanticCorrection.correctedLine -cne $script:BootstrapPreInertCorrectionCorrectedBicepLine -or
+        [int]$superseded.semanticCorrection.replacementCount -ne 1) {
+        throw 'The superseded pre-inert source correction no longer matches the reviewed semantic delta.'
+    }
+
+    $originalRoot = Get-BootstrapPreInertSourceCorrectionSnapshotRoot `
+        -State $State -Plan $superseded -Generation Original
+    $priorCorrectedRoot = Get-BootstrapPreInertSourceCorrectionSnapshotRoot `
+        -State $State -Plan $superseded -Generation Corrected
+    $actualDelta = @(Get-BootstrapPreInertSourceCorrectionDelta `
+        -OriginalRoot $originalRoot -CorrectedRoot $priorCorrectedRoot)
+    if ((Get-BootstrapObjectFingerprint -InputObject $actualDelta) -cne
+        (Get-BootstrapObjectFingerprint -InputObject $superseded.sourceDelta)) {
+        throw 'The superseded pre-inert source correction delta no longer matches its immutable snapshots.'
+    }
+    return $priorCorrectedRoot
+}
+
 function Assert-BootstrapPreInertSourceCorrectionPlan {
     [CmdletBinding()]
     param(
@@ -1619,8 +1728,19 @@ function Assert-BootstrapPreInertSourceCorrectionPlan {
         'originalDeploymentSourceFingerprint', 'planFingerprint', 'schemaVersion',
         'semanticCorrection', 'sourceDelta', 'status'
     )
+    $isGenerationOne = [int]$plan.schemaVersion -eq 1 -and [int]$plan.generation -eq 1
+    $isGenerationTwo = [int]$plan.schemaVersion -eq 2 -and [int]$plan.generation -eq 2
+    if ($isGenerationTwo) {
+        $requiredKeys += @(
+            'amendedAtUtc', 'amendmentChangedPaths', 'amendmentSourceDelta',
+            'supersededCorrectionPlan', 'supersededCorrectionPlanFingerprint'
+        )
+    }
     if ([string]$plan.status -ceq 'Completed') {
-        $requiredKeys += @('completedAtUtc', 'completionBoundaryFingerprint', 'inertEvidenceFingerprint')
+        $requiredKeys += @(
+            'completedAtUtc', 'completionBoundaryFingerprint',
+            'immutableCompletionPrefixFingerprint', 'inertEvidenceFingerprint'
+        )
     }
     [string[]]$actualKeys = @($plan.Keys | ForEach-Object { [string]$_ })
     [Array]::Sort($requiredKeys, [StringComparer]::Ordinal)
@@ -1628,12 +1748,11 @@ function Assert-BootstrapPreInertSourceCorrectionPlan {
     if (($requiredKeys -join "`n") -cne ($actualKeys -join "`n")) {
         throw 'The pre-inert source correction plan contains incomplete or unsupported metadata.'
     }
-    if ([int]$plan.schemaVersion -ne 1 -or
+    if ((-not $isGenerationOne -and -not $isGenerationTwo) -or
         [string]$plan.correctionKind -cne 'PromptShieldPreInertBicepReference' -or
-        [int]$plan.generation -ne 1 -or
         [string]$plan.configurationFingerprint -cne [string]$State.configurationFingerprint -or
         [string]$plan.deploymentOwnershipId -cne ([guid][string]$State.deploymentOwnershipId).ToString('D')) {
-        throw 'The pre-inert source correction plan does not match its one-generation configuration and ownership boundary.'
+        throw 'The pre-inert source correction plan does not match its bounded generation, configuration, and ownership contract.'
     }
     foreach ($name in @(
         'planFingerprint', 'originalAcceptedPlanFingerprint', 'originalBoundaryFingerprint',
@@ -1672,6 +1791,25 @@ function Assert-BootstrapPreInertSourceCorrectionPlan {
         (Get-BootstrapObjectFingerprint -InputObject $plan.sourceDelta)) {
         throw 'The pre-inert source correction delta no longer matches its immutable source snapshots.'
     }
+    if ($isGenerationTwo) {
+        $priorCorrectedRoot = Assert-BootstrapSupersededPreInertSourceCorrectionPlan `
+            -State $State `
+            -Plan $plan
+        [string[]]$amendmentChangedPaths = @($plan.amendmentChangedPaths | ForEach-Object { [string]$_ })
+        [Array]::Sort($amendmentChangedPaths, [StringComparer]::Ordinal)
+        [string[]]$expectedAmendmentChangedPaths = @($script:BootstrapPreInertCorrectionAmendmentChangedPaths)
+        [Array]::Sort($expectedAmendmentChangedPaths, [StringComparer]::Ordinal)
+        if (($amendmentChangedPaths -join "`n") -cne ($expectedAmendmentChangedPaths -join "`n")) {
+            throw 'The pre-inert source amendment changed an unsupported source path.'
+        }
+        $actualAmendmentDelta = @(Get-BootstrapPreInertSourceCorrectionAmendmentDelta `
+            -PriorCorrectedRoot $priorCorrectedRoot `
+            -AmendedRoot $correctedRoot)
+        if ((Get-BootstrapObjectFingerprint -InputObject $actualAmendmentDelta) -cne
+            (Get-BootstrapObjectFingerprint -InputObject $plan.amendmentSourceDelta)) {
+            throw 'The pre-inert source amendment delta no longer matches its immutable source snapshots.'
+        }
+    }
     if (-not [string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) {
         Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Pre-inert corrected execution source fingerprint'
         if ($ExecutionSourceFingerprint -cne [string]$plan.correctedExecutionSourceFingerprint) {
@@ -1682,7 +1820,9 @@ function Assert-BootstrapPreInertSourceCorrectionPlan {
         Assert-BootstrapPendingPreInertSourceCorrectionBoundary -State $State -Plan $plan | Out-Null
     }
     else {
-        foreach ($name in @('completionBoundaryFingerprint', 'inertEvidenceFingerprint')) {
+        foreach ($name in @(
+            'completionBoundaryFingerprint', 'immutableCompletionPrefixFingerprint',
+            'inertEvidenceFingerprint')) {
             Assert-BootstrapFingerprintValue -Value ([string]$plan[$name]) -Label "Completed pre-inert correction $name"
         }
         $inertStep = $State.steps['Inert identity deployment']
@@ -1728,6 +1868,11 @@ function Assert-BootstrapPreInertSourceCorrectionPlan {
             (Get-BootstrapObjectFingerprint -InputObject $inertStep.evidence) -cne [string]$plan.inertEvidenceFingerprint) {
             throw 'The completed pre-inert correction no longer matches exact corrected step-7 evidence.'
         }
+        if ((Get-BootstrapPreInertSourceCorrectionImmutableCompletionFingerprint `
+                -State $State `
+                -Plan $plan) -cne [string]$plan.immutableCompletionPrefixFingerprint) {
+            throw 'The completed pre-inert correction immutable completion prefix fingerprint no longer matches steps 3-7.'
+        }
     }
     return $plan
 }
@@ -1745,6 +1890,64 @@ function Set-BootstrapPreInertSourceCorrectionPlan {
         $plan = Assert-BootstrapPreInertSourceCorrectionPlan -State $State
         if ($currentSourceFingerprint -ceq [string]$plan.correctedExecutionSourceFingerprint) {
             return $plan
+        }
+        $canAmendExactFailedPlan = [int]$plan.schemaVersion -eq 1 -and
+            [int]$plan.generation -eq 1 -and
+            [string]$plan.status -ceq 'Accepted' -and
+            [string]$plan.correctedExecutionSourceFingerprint -ceq
+                $script:BootstrapPreInertCorrectionAmendableSourceFingerprint -and
+            -not $State.Contains('acceptedPlan') -and
+            -not $State.Contains('databaseRecoveryPlan') -and
+            -not $State.Contains('manualDatabaseRepairPlan')
+        if ($canAmendExactFailedPlan) {
+            Assert-BootstrapPreInertSourceCorrectionAmendmentBoundary `
+                -State $State `
+                -Plan $plan | Out-Null
+            $originalRoot = Get-BootstrapPreInertSourceCorrectionSnapshotRoot `
+                -State $State -Plan $plan -Generation Original
+            $priorCorrectedRoot = Get-BootstrapPreInertSourceCorrectionSnapshotRoot `
+                -State $State -Plan $plan -Generation Corrected
+            $amendedRoot = Get-RepositoryRoot
+            $amendmentSourceDelta = @(Get-BootstrapPreInertSourceCorrectionAmendmentDelta `
+                -PriorCorrectedRoot $priorCorrectedRoot `
+                -AmendedRoot $amendedRoot)
+            $sourceDelta = @(Get-BootstrapPreInertSourceCorrectionDelta `
+                -OriginalRoot $originalRoot `
+                -CorrectedRoot $amendedRoot)
+            $supersededPlan = ConvertTo-BootstrapCanonicalValue -Value $plan
+            $amendmentCore = [ordered]@{
+                schemaVersion = 2
+                correctionKind = [string]$plan.correctionKind
+                generation = 2
+                configurationFingerprint = [string]$plan.configurationFingerprint
+                deploymentOwnershipId = [string]$plan.deploymentOwnershipId
+                originalDeploymentSourceFingerprint = [string]$plan.originalDeploymentSourceFingerprint
+                correctedExecutionSourceFingerprint = $currentSourceFingerprint
+                originalAcceptedPlanFingerprint = [string]$plan.originalAcceptedPlanFingerprint
+                originalAcceptedPlan = ConvertTo-BootstrapCanonicalValue -Value $plan.originalAcceptedPlan
+                originalBoundaryFingerprint = [string]$plan.originalBoundaryFingerprint
+                allowedChangedPaths = @($plan.allowedChangedPaths)
+                sourceDelta = ConvertTo-BootstrapCanonicalValue -Value $sourceDelta
+                semanticCorrection = ConvertTo-BootstrapCanonicalValue -Value $plan.semanticCorrection
+                supersededCorrectionPlanFingerprint = Get-BootstrapObjectFingerprint -InputObject $supersededPlan
+                supersededCorrectionPlan = $supersededPlan
+                amendmentChangedPaths = @($script:BootstrapPreInertCorrectionAmendmentChangedPaths)
+                amendmentSourceDelta = ConvertTo-BootstrapCanonicalValue -Value $amendmentSourceDelta
+            }
+            $amendedPlanFingerprint = Get-BootstrapObjectFingerprint -InputObject $amendmentCore
+            $correctedExecutionSource = New-BootstrapAcceptedSourceSnapshot `
+                -State $State `
+                -PlanFingerprint $amendedPlanFingerprint `
+                -SourceFingerprint $currentSourceFingerprint
+            $amendedPlan = ConvertTo-BootstrapCanonicalValue -Value $amendmentCore
+            $amendedPlan['planFingerprint'] = $amendedPlanFingerprint
+            $amendedPlan['correctedExecutionSource'] = $correctedExecutionSource
+            $amendedPlan['status'] = 'Accepted'
+            $amendedPlan['createdAtUtc'] = [string]$plan.createdAtUtc
+            $amendedPlan['amendedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+            $State['preInertSourceCorrectionPlan'] = $amendedPlan
+            Save-BootstrapState -State $State -Path $StatePath
+            return $amendedPlan
         }
         if (($State.Contains('databaseRecoveryPlan') -and
                 $State.databaseRecoveryPlan -is [System.Collections.IDictionary] -and
@@ -1854,6 +2057,8 @@ function Complete-BootstrapPreInertSourceCorrectionPlan {
     $plan['status'] = 'Completed'
     $plan['completedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
     $plan['inertEvidenceFingerprint'] = Get-BootstrapObjectFingerprint -InputObject $inertStep.evidence
+    $plan['immutableCompletionPrefixFingerprint'] = `
+        Get-BootstrapPreInertSourceCorrectionImmutableCompletionFingerprint -State $State -Plan $plan
     $plan['completionBoundaryFingerprint'] = Get-BootstrapPreInertSourceCorrectionBoundaryFingerprint `
         -State $State `
         -OriginalSourceFingerprint ([string]$plan.originalDeploymentSourceFingerprint) `
@@ -2161,6 +2366,10 @@ function Assert-BootstrapStateAllowsSourcePlan {
     $recorded = [string]$State.source.lastWritten.bootstrapSourceFingerprint
     Assert-BootstrapFingerprintValue -Value $recorded -Label 'Recorded evidence source fingerprint'
     $current = Get-BootstrapSourceFingerprint
+    $validatedSourceCorrection = $null
+    if ($State.Contains('preInertSourceCorrectionPlan')) {
+        $validatedSourceCorrection = Assert-BootstrapPreInertSourceCorrectionPlan -State $State
+    }
     if ($recorded -cne $current) {
         if ($State.Contains('manualDatabaseRepairPlan') -and
             $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
@@ -2205,7 +2414,7 @@ function Assert-BootstrapStateAllowsSourcePlan {
                 return $true
             }
         }
-        if ($State.Contains('preInertSourceCorrectionPlan')) {
+        if ($null -ne $validatedSourceCorrection) {
             $correction = Assert-BootstrapPreInertSourceCorrectionPlan `
                 -State $State `
                 -ExecutionSourceFingerprint $current

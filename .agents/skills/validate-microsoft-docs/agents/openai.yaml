@@ -1,0 +1,4 @@
+interface:
+  display_name: "Validate Microsoft Docs"
+  short_description: "Verify A365 Microsoft APIs and permissions"
+  default_prompt: "Use $validate-microsoft-docs to verify this Microsoft capability before implementation."

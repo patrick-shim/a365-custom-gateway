@@ -1629,6 +1629,128 @@ Describe 'Bounded pre-inert Prompt Shields source correction' {
                 Should -Throw '*does not authorize this source generation*'
         }
 
+        It 'rejects a generation-two amendment when B-to-C changes any non-allowlisted source file' {
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-one-extra-path.json')
+            $script:correctionState.Remove('acceptedPlan')
+            $script:correctionState.source.lastWritten.bootstrapSourceFingerprint = $script:correctedSourceFingerprint
+            'unexpected-database-change' | Set-Content `
+                -LiteralPath (Join-Path $script:correctionRoots.amendedRoot 'bootstrap/modules/Database.psm1') `
+                -Encoding utf8NoBOM `
+                -NoNewline
+            $script:amendedSourceFingerprint = Get-BootstrapObjectFingerprint -InputObject `
+                @(Get-BootstrapSourceManifest -Root $script:correctionRoots.amendedRoot)
+            $script:currentSourceFingerprint = $script:amendedSourceFingerprint
+            $script:currentCorrectionRoot = $script:correctionRoots.amendedRoot
+
+            { Set-BootstrapPreInertSourceCorrectionPlan `
+                    -State $script:correctionState `
+                    -StatePath (Join-Path $TestDrive 'generation-two-extra-path.json') } |
+                Should -Throw "*changed non-allowlisted deployment source 'bootstrap/modules/Database.psm1'*"
+            $script:correctionState.preInertSourceCorrectionPlan.generation | Should -Be 1
+        }
+
+        It 'rejects tampering with the preserved generation-one plan inside generation two' {
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-one-tamper.json')
+            $script:correctionState.Remove('acceptedPlan')
+            $script:correctionState.source.lastWritten.bootstrapSourceFingerprint = $script:correctedSourceFingerprint
+            $script:currentSourceFingerprint = $script:amendedSourceFingerprint
+            $script:currentCorrectionRoot = $script:correctionRoots.amendedRoot
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-two-tamper.json')
+            $script:correctionState.source.lastWritten.bootstrapSourceFingerprint = $script:amendedSourceFingerprint
+            $script:correctionState.preInertSourceCorrectionPlan.supersededCorrectionPlan.createdAtUtc = `
+                [DateTimeOffset]::UtcNow.AddYears(-1).ToString('O')
+
+            { Assert-BootstrapPreInertSourceCorrectionPlan -State $script:correctionState } |
+                Should -Throw '*immutable contract*'
+        }
+
+        It 'rejects malformed generation-two metadata when recorded and current source are equal' {
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-one-equal-source.json')
+            $script:correctionState.Remove('acceptedPlan')
+            $script:correctionState.source.lastWritten.bootstrapSourceFingerprint = $script:correctedSourceFingerprint
+            $script:currentSourceFingerprint = $script:amendedSourceFingerprint
+            $script:currentCorrectionRoot = $script:correctionRoots.amendedRoot
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-two-equal-source.json')
+            $script:correctionState.source.lastWritten.bootstrapSourceFingerprint = $script:amendedSourceFingerprint
+            $script:correctionState.preInertSourceCorrectionPlan.amendmentChangedPaths[0] = `
+                'bootstrap/modules/Database.psm1'
+
+            { Assert-BootstrapStateAllowsSourcePlan -State $script:correctionState } |
+                Should -Throw '*immutable contract*'
+        }
+
+        It 'completes generation two with amended AlwaysRun and step-7 evidence while retaining original deployment provenance' {
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-one-completion.json')
+            $script:correctionState.Remove('acceptedPlan')
+            $script:correctionState.source.lastWritten.bootstrapSourceFingerprint = $script:correctedSourceFingerprint
+            $script:currentSourceFingerprint = $script:amendedSourceFingerprint
+            $script:currentCorrectionRoot = $script:correctionRoots.amendedRoot
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-two-completion.json')
+            $script:correctionState.source.lastWritten.bootstrapSourceFingerprint = $script:amendedSourceFingerprint
+            foreach ($name in @('Prerequisites', 'Azure authentication')) {
+                $script:correctionState.steps[$name].sourceFingerprint = $script:amendedSourceFingerprint
+            }
+            $script:correctionState.steps['Inert identity deployment'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:amendedSourceFingerprint
+                evidence = [ordered]@{ apiPrincipalId = 'safe-principal-id' }
+            }
+
+            $completed = Complete-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-two-completed.json')
+
+            $completed.status | Should -BeExactly 'Completed'
+            $completed.generation | Should -Be 2
+            Get-BootstrapEffectiveDeploymentSourceFingerprint `
+                -State $script:correctionState `
+                -ExecutionSourceFingerprint $script:amendedSourceFingerprint |
+                Should -BeExactly $script:originalSourceFingerprint
+        }
+
+        It 'rejects completed correction state when immutable prefix evidence is changed later' {
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-one-prefix-evidence.json')
+            $script:correctionState.Remove('acceptedPlan')
+            $script:correctionState.source.lastWritten.bootstrapSourceFingerprint = $script:correctedSourceFingerprint
+            $script:currentSourceFingerprint = $script:amendedSourceFingerprint
+            $script:currentCorrectionRoot = $script:correctionRoots.amendedRoot
+            $null = Set-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-two-prefix-evidence.json')
+            $script:correctionState.source.lastWritten.bootstrapSourceFingerprint = $script:amendedSourceFingerprint
+            foreach ($name in @('Prerequisites', 'Azure authentication')) {
+                $script:correctionState.steps[$name].sourceFingerprint = $script:amendedSourceFingerprint
+            }
+            $script:correctionState.steps['Inert identity deployment'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:amendedSourceFingerprint
+                evidence = [ordered]@{ apiPrincipalId = 'safe-principal-id' }
+            }
+            $null = Complete-BootstrapPreInertSourceCorrectionPlan `
+                -State $script:correctionState `
+                -StatePath (Join-Path $TestDrive 'generation-two-prefix-completed.json')
+            $script:correctionState.steps['Azure provider registration'].evidence.index = 999
+
+            { Assert-BootstrapPreInertSourceCorrectionPlan -State $script:correctionState } |
+                Should -Throw '*completion prefix*'
+        }
+
         It 'does not create a correction plan for ordinary source refresh before any durable evidence' {
             $emptyState = [ordered]@{
                 deploymentOwnershipId = $script:ownershipId

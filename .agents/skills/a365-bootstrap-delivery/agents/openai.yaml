@@ -1,0 +1,6 @@
+interface:
+  display_name: "A365 Bootstrap Delivery"
+  short_description: "Run the evidence-bound bootstrap release gate"
+  default_prompt: "Use $a365-bootstrap-delivery to continue the Gateway bootstrap from its recorded checkpoint."
+policy:
+  allow_implicit_invocation: true

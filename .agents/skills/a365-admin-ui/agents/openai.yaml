@@ -1,0 +1,4 @@
+interface:
+  display_name: "A365 Admin UI"
+  short_description: "Build and verify the A365 Blazor portal"
+  default_prompt: "Use $a365-admin-ui to implement the next verified Admin UI slice."

@@ -1,0 +1,148 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore src/A365Gateway.slnx
+
+      - name: Check formatting
+        run: dotnet format src/A365Gateway.slnx --verify-no-changes
+
+      - name: Build solution
+        run: dotnet build src/A365Gateway.slnx -c Release --no-restore
+
+      - name: Run unit tests
+        run: >-
+          dotnet test tests/Gateway.UnitTests
+          -c Release
+          --logger "trx;LogFileName=unit-tests.trx"
+          --results-directory ./TestResults
+
+      - name: Run Admin UI tests
+        run: >-
+          dotnet test tests/Gateway.AdminUi.Tests
+          -c Release
+          --logger "trx;LogFileName=admin-ui-tests.trx"
+          --results-directory ./TestResults
+
+      - name: Run bootstrap setup UI tests
+        run: >-
+          dotnet test tests/Gateway.Setup.Tests
+          -c Release
+          --logger "trx;LogFileName=setup-ui-tests.trx"
+          --results-directory ./TestResults
+
+      - name: Run observability runtime tests
+        run: >-
+          dotnet test tests/Gateway.ObservabilityRuntime.Tests
+          -c Release
+          --logger "trx;LogFileName=observability-runtime-tests.trx"
+          --results-directory ./TestResults
+
+      - name: Run architecture tests
+        run: >-
+          dotnet test tests/Gateway.ArchitectureTests
+          -c Release
+          --logger "trx;LogFileName=arch-tests.trx"
+          --results-directory ./TestResults
+
+      - name: Run integration tests
+        run: >-
+          dotnet test tests/Gateway.IntegrationTests
+          -c Release
+          --logger "trx;LogFileName=integration-tests.trx"
+          --results-directory ./TestResults
+
+      - name: Run end-to-end tests
+        run: >-
+          dotnet test tests/Gateway.EndToEndTests
+          -c Release
+          --logger "trx;LogFileName=end-to-end-tests.trx"
+          --results-directory ./TestResults
+
+      - name: Run security tests
+        run: >-
+          dotnet test tests/Gateway.SecurityTests
+          -c Release
+          --logger "trx;LogFileName=security-tests.trx"
+          --results-directory ./TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ./TestResults/*.trx
+          retention-days: 14
+
+  validate-bicep:
+    name: Validate Bicep
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate every Bicep template
+        shell: pwsh
+        run: ./tools/Test-BootstrapSource.ps1 -CompileBicep
+
+  bootstrap-cross-platform:
+    name: Bootstrap (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -RequiredVersion 5.6.1 -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Validate delivery ledger
+        shell: pwsh
+        run: ./.agents/skills/a365-bootstrap-delivery/scripts/test-worklog.ps1
+
+      - name: Run bootstrap and runtime Purview source/behavior gate
+        shell: pwsh
+        run: ./tools/Test-BootstrapSource.ps1 -RunPester
+
+      - name: Validate POSIX launcher syntax
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash -n ./gateway

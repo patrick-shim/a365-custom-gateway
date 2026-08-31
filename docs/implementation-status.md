@@ -53,13 +53,13 @@ identifiers only. The tool has no destroy mode. If a completed resource group wa
 deleted, do not replay its preserved state; use a new isolated deployment identity
 or an independently reviewed recovery procedure.
 
-The bootstrap also contains one bounded source-continuation contract for the
-immediately preceding Prompt Shields template defect: it applies only when the
-original run completed the foundation and immutable images, then failed the inert
-deployment without evidence. It requires the exact reviewed source delta, retains
-the original deployment provenance, revalidates and reuses the completed prefix,
-and executes the corrected inert deployment from a separately fingerprinted source
-snapshot. It is not a general source-upgrade or resource-adoption mechanism.
+The bootstrap contains bounded compatibility continuations for exact,
+already-started deployments affected by reviewed bootstrap defects. Each route
+requires the expected prior step state and exact source delta, retains the original
+deployment provenance, revalidates the reusable prefix, and binds corrected
+execution to a separate fingerprint. Unexpected files, altered historical
+evidence, or another source generation are rejected. This is not a general
+source-upgrade or resource-adoption mechanism.
 
 Setup validates the typed bootstrap schema and field-specific Azure constraints; it
 does not infer whether a deployment name is credential-like from the name's text.
@@ -116,7 +116,7 @@ The consolidated source gate completed on 2026-08-31:
 | Gateway.SecurityTests | 126 | 0 | 0 |
 | **.NET total** | **1,510** | **0** | **0** |
 
-The PowerShell source gate discovered 575 tests in 23 files: 574 passed, none
+The PowerShell source gate discovered 607 tests in 23 files: 606 passed, none
 failed, and one Windows-only launcher case was intentionally skipped on macOS. It
 validated 17 PowerShell source files and two JSON contracts, then compiled 26 Bicep
 templates and three Bicep parameter files. Release build completed with zero
@@ -131,11 +131,11 @@ an explicit Plan retry action. Configuration readers normalize the previously
 emitted false-only field while continuing to reject enabled or unknown fields; new
 writes omit it.
 
-The current source-continuation change additionally passed all 553 bootstrap tests:
-552 passed, none failed, and one Windows-only launcher case was skipped on macOS.
-The five changed PowerShell files parse cleanly, the corrected main Bicep template
-compiles, and an archive comparison against the affected source generation contains
-exactly the six reviewed deployment-source files.
+Recovery coverage includes exact source-continuation provenance, rejection of
+unexpected changed paths and a third generation, tamper detection for preserved
+history and completed-prefix evidence, and the deterministic governance-NSG
+What-If extension on later Resume. These cases are included in the consolidated
+607-test source gate above.
 
 ## Known external limitations
 

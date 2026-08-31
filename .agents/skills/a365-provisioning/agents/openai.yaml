@@ -1,0 +1,4 @@
+interface:
+  display_name: "A365 Provisioning"
+  short_description: "Build and verify truthful Agent 365 provisioning"
+  default_prompt: "Use $a365-provisioning to resume from the documented provisioning checkpoint."

@@ -1,0 +1,23 @@
+{
+  "name": "A365 Custom Gateway",
+  "image": "mcr.microsoft.com/devcontainers/dotnet:1-10.0-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/azure-cli:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/powershell:1": {}
+  },
+  "remoteUser": "vscode",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-bicep",
+        "ms-dotnettools.csdevkit",
+        "ms-vscode.powershell"
+      ]
+    }
+  },
+  "postCreateCommand": "pwsh -NoLogo -NoProfile ./tools/Test-BootstrapSource.ps1",
+  "forwardPorts": [],
+  "portsAttributes": {}
+}
