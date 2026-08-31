@@ -14,7 +14,7 @@ internal sealed class SetupConfigurationForm : IValidatableObject
     public string Environment { get; set; } = "dev";
 
     [Required, RegularExpression("^[a-z0-9]+$"), StringLength(32, MinimumLength = 2)]
-    public string Location { get; set; } = "eastus2";
+    public string Location { get; set; } = string.Empty;
 
     [Required, RegularExpression("^[a-z][a-z0-9]{1,7}$")]
     public string ProjectName { get; set; } = "a365gw";
@@ -93,6 +93,14 @@ internal sealed class SetupConfigurationForm : IValidatableObject
         SubscriptionId = Guid.Empty;
         TenantId = Guid.Empty;
     }
+
+    public void SelectLocation(AzureLocation location)
+    {
+        ArgumentNullException.ThrowIfNull(location);
+        Location = location.Name;
+    }
+
+    public void ClearLocation() => Location = string.Empty;
 
     public void SetReviewedManagerApplicationIds(IEnumerable<Guid> applicationIds)
     {

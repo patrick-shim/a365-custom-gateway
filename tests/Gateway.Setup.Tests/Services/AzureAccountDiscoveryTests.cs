@@ -1,11 +1,169 @@
 using System.Text.Json;
 using FluentAssertions;
+using Gateway.Setup.Models;
 using Gateway.Setup.Services;
 
 namespace Gateway.Setup.Tests.Services;
 
 public sealed class AzureAccountDiscoveryTests
 {
+    [Fact]
+    public async Task DiscoverLocationsAsync_ReturnsCanonicalSubscriptionLocationsInDisplayOrder()
+    {
+        var subscriptionId = Guid.NewGuid();
+        var runner = new StubAzureCliRunner(Completed(LocationPageJson(
+        [
+            Location("koreacentral", "Korea Central", "Physical"),
+            Location("global", "Global", "Logical"),
+            Location("australiaeast", "Australia East", "Physical")
+        ])));
+
+        var result = await new AzureAccountDiscovery(runner)
+            .DiscoverLocationsAsync(subscriptionId);
+
+        result.Succeeded.Should().BeTrue();
+        result.SubscriptionId.Should().Be(subscriptionId);
+        result.Locations.Should().Equal(
+            new AzureLocation("australiaeast", "Australia East"),
+            new AzureLocation("koreacentral", "Korea Central"));
+        runner.Calls.Should().ContainSingle();
+        runner.Calls[0].Should().ContainInOrder(
+            "rest",
+            "--method",
+            "GET",
+            "--url",
+            $"https://management.azure.com/subscriptions/{subscriptionId:D}/locations?api-version=2022-12-01",
+            "--subscription",
+            subscriptionId.ToString("D"),
+            "--output",
+            "json");
+    }
+
+    [Fact]
+    public async Task DiscoverLocationsAsync_RejectsNonCanonicalOrAmbiguousInventory()
+    {
+        var subscriptionId = Guid.NewGuid();
+        var runner = new StubAzureCliRunner(Completed(LocationPageJson(
+        [
+            Location("koreacentral", "Korea Central", "Physical"),
+            Location("KoreaCentral", "Conflicting Korea Central", "Physical")
+        ])));
+
+        var result = await new AzureAccountDiscovery(runner)
+            .DiscoverLocationsAsync(subscriptionId);
+
+        result.Succeeded.Should().BeFalse();
+        result.Locations.Should().BeEmpty();
+        result.Guidance.Should().Contain("unexpected location inventory");
+    }
+
+    [Theory]
+    [InlineData(" koreacentral", "Korea Central")]
+    [InlineData("koreacentral ", "Korea Central")]
+    [InlineData("koreacentral", " Korea Central")]
+    [InlineData("koreacentral", "Korea Central ")]
+    public async Task DiscoverLocationsAsync_RejectsProviderValuesThatWouldChangeWhenTrimmed(
+        string name,
+        string displayName)
+    {
+        var subscriptionId = Guid.NewGuid();
+        var runner = new StubAzureCliRunner(Completed(LocationPageJson(
+            [Location(name, displayName, "Physical")])));
+
+        var result = await new AzureAccountDiscovery(runner)
+            .DiscoverLocationsAsync(subscriptionId);
+
+        result.Succeeded.Should().BeFalse();
+        result.Locations.Should().BeEmpty();
+        result.Guidance.Should().Contain("unexpected location inventory");
+    }
+
+    [Fact]
+    public async Task DiscoverLocationsAsync_FollowsBoundedSameSubscriptionArmContinuation()
+    {
+        var subscriptionId = Guid.NewGuid();
+        var nextLink =
+            $"https://management.azure.com/subscriptions/{subscriptionId:D}/locations?api-version=2022-12-01&$skiptoken=opaque";
+        var runner = new StubAzureCliRunner(
+            Completed(LocationPageJson(
+                [Location("koreacentral", "Korea Central", "Physical")],
+                nextLink)),
+            Completed(LocationPageJson(
+                [Location("australiaeast", "Australia East", "Physical")])));
+
+        var result = await new AzureAccountDiscovery(runner)
+            .DiscoverLocationsAsync(subscriptionId);
+
+        result.Succeeded.Should().BeTrue();
+        result.Locations.Select(location => location.Name)
+            .Should().Equal("australiaeast", "koreacentral");
+        runner.Calls.Should().HaveCount(2);
+        runner.Calls[1].Should().ContainInOrder(
+            "rest",
+            "--method",
+            "GET",
+            "--url",
+            nextLink,
+            "--subscription",
+            subscriptionId.ToString("D"));
+    }
+
+    [Theory]
+    [InlineData("https://example.invalid/subscriptions/{0}/locations?api-version=2022-12-01")]
+    [InlineData("https://management.azure.com/subscriptions/11111111-1111-4111-8111-111111111111/locations?api-version=2022-12-01")]
+    [InlineData("https://management.azure.com/subscriptions/{0}/resourceGroups/example?api-version=2022-12-01")]
+    [InlineData("https://management.azure.com/subscriptions/{0}/locations?api-version=2021-01-01")]
+    public async Task DiscoverLocationsAsync_RejectsContinuationOutsideExactArmSubscriptionScope(
+        string continuationTemplate)
+    {
+        var subscriptionId = Guid.NewGuid();
+        var nextLink = string.Format(continuationTemplate, subscriptionId.ToString("D"));
+        var runner = new StubAzureCliRunner(Completed(LocationPageJson(
+            [Location("koreacentral", "Korea Central", "Physical")],
+            nextLink)));
+
+        var result = await new AzureAccountDiscovery(runner)
+            .DiscoverLocationsAsync(subscriptionId);
+
+        result.Succeeded.Should().BeFalse();
+        result.Locations.Should().BeEmpty();
+        result.Guidance.Should().Contain("unexpected location inventory");
+        runner.Calls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task DiscoverLocationsAsync_RejectsRepeatedContinuationWithoutReissuingIt()
+    {
+        var subscriptionId = Guid.NewGuid();
+        var firstPageUrl =
+            $"https://management.azure.com/subscriptions/{subscriptionId:D}/locations?api-version=2022-12-01";
+        var runner = new StubAzureCliRunner(Completed(LocationPageJson(
+            [Location("koreacentral", "Korea Central", "Physical")],
+            firstPageUrl)));
+
+        var result = await new AzureAccountDiscovery(runner)
+            .DiscoverLocationsAsync(subscriptionId);
+
+        result.Succeeded.Should().BeFalse();
+        result.Locations.Should().BeEmpty();
+        result.Guidance.Should().Contain("unexpected location inventory");
+        runner.Calls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task DiscoverLocationsAsync_RejectsEmptySubscriptionWithoutInvokingCli()
+    {
+        var runner = new StubAzureCliRunner();
+
+        var result = await new AzureAccountDiscovery(runner)
+            .DiscoverLocationsAsync(Guid.Empty);
+
+        result.Succeeded.Should().BeFalse();
+        result.Locations.Should().BeEmpty();
+        result.Guidance.Should().Contain("enabled Azure subscription");
+        runner.Calls.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task DiscoverAsync_ReportsProcessLaunchFailureWithoutClaimingCliIsNotInstalled()
     {
@@ -225,6 +383,16 @@ public sealed class AzureAccountDiscoveryTests
         AzureCliInvocationStatus.Completed,
         0,
         output);
+
+    private static string LocationPageJson(object[] value, string? nextLink = null) =>
+        JsonSerializer.Serialize(new { value, nextLink });
+
+    private static object Location(string name, string displayName, string regionType) => new
+    {
+        name,
+        displayName,
+        metadata = new { regionType }
+    };
 
     private static string AccountJson(Guid subscriptionId, Guid tenantId, string state) =>
         JsonSerializer.Serialize(new { id = subscriptionId, tenantId, state });

@@ -12,6 +12,14 @@ internal sealed record AzureAccountDiscoveryResult(
     public bool Succeeded => Guidance is null;
 }
 
+internal sealed record AzureLocationDiscoveryResult(
+    Guid SubscriptionId,
+    IReadOnlyList<AzureLocation> Locations,
+    string? Guidance)
+{
+    public bool Succeeded => Guidance is null && Locations.Count > 0;
+}
+
 internal sealed record ManagerApplicationCandidate(
     Guid ApplicationId,
     Guid ServicePrincipalObjectId,
@@ -35,6 +43,10 @@ internal sealed record ManagerApplicationDiscoveryResult(
 internal interface IAzureAccountDiscovery
 {
     Task<AzureAccountDiscoveryResult> DiscoverAsync(CancellationToken cancellationToken = default);
+
+    Task<AzureLocationDiscoveryResult> DiscoverLocationsAsync(
+        Guid subscriptionId,
+        CancellationToken cancellationToken = default);
 
     Task<ManagerApplicationDiscoveryResult> DiscoverManagerApplicationsAsync(
         Guid subscriptionId,
@@ -276,6 +288,8 @@ internal sealed class AzureAccountDiscovery : IAzureAccountDiscovery
     internal const string ManagerApplicationProvenance =
         "Microsoft Graph v1.0 typed agentIdentityBlueprint managerApplications inventory plus exact tenant service-principal appId readback";
     private const int MaximumBlueprintPages = 20;
+    private const int MaximumLocationPages = 20;
+    private const int MaximumLocations = 256;
     private static readonly TimeSpan AccountDiscoveryTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan GraphDiscoveryTimeout = TimeSpan.FromSeconds(30);
     private readonly IAzureCliRunner runner;
@@ -340,6 +354,94 @@ internal sealed class AzureAccountDiscovery : IAzureAccountDiscovery
         {
             return UnexpectedAccountInventory();
         }
+    }
+
+    public async Task<AzureLocationDiscoveryResult> DiscoverLocationsAsync(
+        Guid subscriptionId,
+        CancellationToken cancellationToken = default)
+    {
+        if (subscriptionId == Guid.Empty)
+        {
+            return LocationFailure(
+                subscriptionId,
+                "Select an enabled Azure subscription before loading its available regions.");
+        }
+
+        var firstPageUrl =
+            $"https://management.azure.com/subscriptions/{subscriptionId:D}/locations?api-version=2022-12-01";
+        try
+        {
+            var locations = new Dictionary<string, AzureLocation>(StringComparer.Ordinal);
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            var nextPageUrl = firstPageUrl;
+            for (var pageNumber = 1; pageNumber <= MaximumLocationPages; pageNumber++)
+            {
+                if (!visited.Add(nextPageUrl))
+                {
+                    throw new DiscoveryContractException("Repeated Azure location continuation.");
+                }
+
+                var invocation = await runner.RunAsync(
+                    [
+                        "rest",
+                        "--method",
+                        "GET",
+                        "--url",
+                        nextPageUrl,
+                        "--subscription",
+                        subscriptionId.ToString("D"),
+                        "--output",
+                        "json",
+                        "--only-show-errors"
+                    ],
+                    AccountDiscoveryTimeout,
+                    cancellationToken);
+                var invocationIssue = GetInvocationIssue(
+                    invocation,
+                    "available Azure location inventory");
+                if (invocationIssue is not null)
+                {
+                    return LocationFailure(subscriptionId, invocationIssue);
+                }
+
+                var page = ParseLocationPage(invocation.StandardOutput);
+                foreach (var location in page.Locations)
+                {
+                    if (locations.Count >= MaximumLocations ||
+                        !locations.TryAdd(location.Name, location))
+                    {
+                        throw new DiscoveryContractException(
+                            "Azure location inventory exceeded its exact bounded contract.");
+                    }
+                }
+
+                if (page.NextLink is null)
+                {
+                    var ordered = locations.Values
+                        .OrderBy(location => location.DisplayName, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(location => location.Name, StringComparer.Ordinal)
+                        .ToArray();
+                    return ordered.Length == 0
+                        ? UnexpectedLocationInventory(subscriptionId)
+                        : new AzureLocationDiscoveryResult(subscriptionId, ordered, null);
+                }
+
+                if (pageNumber == MaximumLocationPages)
+                {
+                    throw new DiscoveryContractException(
+                        "Azure location inventory exceeded the bounded page count.");
+                }
+
+                nextPageUrl = ValidateLocationNextLink(page.NextLink, subscriptionId);
+            }
+        }
+        catch (Exception exception) when (
+            exception is JsonException or DiscoveryContractException)
+        {
+            return UnexpectedLocationInventory(subscriptionId);
+        }
+
+        return UnexpectedLocationInventory(subscriptionId);
     }
 
     public async Task<ManagerApplicationDiscoveryResult> DiscoverManagerApplicationsAsync(
@@ -562,6 +664,118 @@ internal sealed class AzureAccountDiscovery : IAzureAccountDiscovery
             .ToList();
     }
 
+    private static LocationPage ParseLocationPage(string json)
+    {
+        using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 8 });
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("value", out var value) ||
+            value.ValueKind != JsonValueKind.Array ||
+            value.GetArrayLength() > MaximumLocations)
+        {
+            throw new DiscoveryContractException(
+                "Expected a bounded Azure LocationListResult envelope.");
+        }
+
+        var locations = new List<AzureLocation>();
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                throw new DiscoveryContractException("Azure location item was not an object.");
+            }
+
+            if (!item.TryGetProperty("metadata", out var metadata) ||
+                metadata.ValueKind != JsonValueKind.Object ||
+                !string.Equals(
+                    ReadString(metadata, "regionType"),
+                    "Physical",
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var name = ReadString(item, "name");
+            var displayName = ReadString(item, "displayName");
+            if (!IsCanonicalLocationName(name) ||
+                string.IsNullOrWhiteSpace(displayName) ||
+                displayName.Length > 100 ||
+                !string.Equals(displayName, displayName.Trim(), StringComparison.Ordinal) ||
+                !SafePublicValuePolicy.IsAllowed(displayName))
+            {
+                throw new DiscoveryContractException(
+                    "Azure physical location item was invalid or ambiguous.");
+            }
+
+            if (locations.Any(location =>
+                    string.Equals(location.Name, name, StringComparison.Ordinal)))
+            {
+                throw new DiscoveryContractException(
+                    "Azure physical location item was duplicated.");
+            }
+
+            locations.Add(new AzureLocation(name!, displayName));
+        }
+
+        string? nextLink = null;
+        if (root.TryGetProperty("nextLink", out var continuation))
+        {
+            if (continuation.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(continuation.GetString()))
+            {
+                nextLink = continuation.GetString();
+            }
+            else if (continuation.ValueKind is not JsonValueKind.Null)
+            {
+                throw new DiscoveryContractException(
+                    "Azure location continuation shape was invalid.");
+            }
+        }
+
+        return new LocationPage(locations, nextLink);
+    }
+
+    private static bool IsCanonicalLocationName(string? value) =>
+        value is { Length: >= 2 and <= 32 } &&
+        value.All(character => character is >= 'a' and <= 'z' or >= '0' and <= '9');
+
+    private static string ValidateLocationNextLink(string value, Guid subscriptionId)
+    {
+        if (value.Length > 16 * 1024 ||
+            !Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal) ||
+            !string.Equals(
+                uri.DnsSafeHost,
+                "management.azure.com",
+                StringComparison.OrdinalIgnoreCase) ||
+            (!uri.IsDefaultPort && uri.Port != 443) ||
+            !string.IsNullOrEmpty(uri.UserInfo) ||
+            !string.IsNullOrEmpty(uri.Fragment) ||
+            !string.Equals(
+                uri.AbsolutePath,
+                $"/subscriptions/{subscriptionId:D}/locations",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DiscoveryContractException(
+                "Azure location continuation left the selected subscription scope.");
+        }
+
+        var queryParts = uri.Query
+            .TrimStart('?')
+            .Split('&', StringSplitOptions.RemoveEmptyEntries);
+        if (queryParts.Count(part =>
+                string.Equals(
+                    part,
+                    "api-version=2022-12-01",
+                    StringComparison.Ordinal)) != 1)
+        {
+            throw new DiscoveryContractException(
+                "Azure location continuation changed the reviewed API version.");
+        }
+
+        return uri.AbsoluteUri;
+    }
+
     internal static bool IsEnabled(string? state) =>
         string.Equals(state, "Enabled", StringComparison.OrdinalIgnoreCase);
 
@@ -776,6 +990,18 @@ internal sealed class AzureAccountDiscovery : IAzureAccountDiscovery
         [],
         "Azure CLI returned an unexpected account inventory. Update Azure CLI and try again.");
 
+    private static AzureLocationDiscoveryResult LocationFailure(
+        Guid subscriptionId,
+        string guidance) => new(
+            subscriptionId,
+            [],
+            guidance);
+
+    private static AzureLocationDiscoveryResult UnexpectedLocationInventory(Guid subscriptionId) =>
+        LocationFailure(
+            subscriptionId,
+            "Azure CLI returned an unexpected location inventory. Update Azure CLI and try again; Setup did not select a region.");
+
     private static ManagerApplicationDiscoveryResult ManagerFailure(
         Guid subscriptionId,
         Guid tenantId,
@@ -795,6 +1021,10 @@ internal sealed class AzureAccountDiscovery : IAzureAccountDiscovery
 
     private sealed record BlueprintPage(
         IReadOnlyList<BlueprintObservation> Blueprints,
+        string? NextLink);
+
+    private sealed record LocationPage(
+        IReadOnlyList<AzureLocation> Locations,
         string? NextLink);
 
     private sealed record ServicePrincipalObservation(

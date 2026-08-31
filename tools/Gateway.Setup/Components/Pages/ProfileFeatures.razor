@@ -1,5 +1,4 @@
 @page "/setup/profile"
-@rendermode InteractiveServer
 @implements IDisposable
 @inject SetupWizardState State
 @inject IAzureAccountDiscovery Discovery
@@ -47,9 +46,35 @@
             </div>
             <div class="field">
                 <label for="location">Azure region</label>
-                <InputText id="location" class="control" @bind-Value="State.Form.Location" @oninput="eventArgs => State.Form.Location = eventArgs.Value?.ToString() ?? string.Empty" autocomplete="off" disabled="@State.ExistingConfigurationLoaded" />
+                @if (locationDiscoveryRunning)
+                {
+                    <div class="loading-row" role="status"><FluentProgressRing /> <span>Reading available regions for the selected subscription…</span></div>
+                }
+                else if (State.LocationDiscoveryGuidance is not null)
+                {
+                    <div class="notice warning" role="alert"><strong>Regions could not be loaded</strong><span>@State.LocationDiscoveryGuidance</span></div>
+                    <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" OnClick="DiscoverLocationsAsync">Retry region discovery</FluentButton>
+                }
+                else if (State.Locations.Count > 0)
+                {
+                    <select id="location" class="control" value="@State.Form.Location" @onchange="SelectLocation" disabled="@State.ExistingConfigurationLoaded">
+                        <option value="" disabled>Choose an available Azure region…</option>
+                        @foreach (var location in State.Locations)
+                        {
+                            <option value="@location.Name">@location.DisplayName · @location.Name</option>
+                        }
+                    </select>
+                }
                 <ValidationMessage For="@(() => State.Form.Location)" />
-                <small>Use the Azure CLI region name, such as <code>eastus2</code>.</small>
+                @if (State.LocationSelectionIssue is not null)
+                {
+                    <div class="notice error" role="alert"><strong>Selected region unavailable</strong><span>@State.LocationSelectionIssue</span></div>
+                }
+                @if (locationSelectionRequired)
+                {
+                    <div class="notice error" role="alert"><strong>Region selection required</strong><span>Choose one of the regions returned for the exact selected subscription.</span></div>
+                }
+                <small>The label is for people; Setup stores the canonical Azure name shown after the separator, such as <code>koreacentral</code>.</small>
             </div>
             <div class="field">
                 <label for="resource-group">Resource group</label>
@@ -177,12 +202,14 @@
 
     <div class="form-footer">
         <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/account">Back</FluentAnchor>
-        <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent" Disabled="@(!State.ManagerApplicationsAccepted || managerDiscoveryRunning)">Review permissions</FluentButton>
+        <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent" Disabled="@(!State.HasValidSelectedLocation || !State.ManagerApplicationsAccepted || locationDiscoveryRunning || managerDiscoveryRunning)">Review permissions</FluentButton>
     </div>
 </EditForm>
 
 @code {
     private readonly CancellationTokenSource disposeCts = new();
+    private bool locationDiscoveryRunning;
+    private bool locationSelectionRequired;
     private bool managerDiscoveryRunning;
     private bool managerReviewRequired;
 
@@ -194,11 +221,48 @@
         _ => string.Empty
     };
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         if (!State.HasEnabledSelectedSubscription)
         {
             Navigation.NavigateTo("/setup/account");
+            return;
+        }
+
+        if (!State.HasCurrentLocationInventory)
+        {
+            await DiscoverLocationsAsync();
+        }
+    }
+
+    private async Task DiscoverLocationsAsync()
+    {
+        locationDiscoveryRunning = true;
+        locationSelectionRequired = false;
+        State.BeginLocationDiscovery();
+        Activity.Touch();
+        try
+        {
+            var result = await Discovery.DiscoverLocationsAsync(
+                State.Form.SubscriptionId,
+                disposeCts.Token);
+            State.ApplyLocationDiscovery(result);
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            locationDiscoveryRunning = false;
+        }
+    }
+
+    private void SelectLocation(ChangeEventArgs args)
+    {
+        locationSelectionRequired = !State.SelectLocation(args.Value?.ToString());
+        if (!locationSelectionRequired)
+        {
+            Activity.Touch();
         }
     }
 
@@ -255,6 +319,12 @@
 
     private void Continue()
     {
+        if (!State.HasValidSelectedLocation)
+        {
+            locationSelectionRequired = true;
+            return;
+        }
+
         if (!State.ManagerApplicationsAccepted)
         {
             managerReviewRequired = true;

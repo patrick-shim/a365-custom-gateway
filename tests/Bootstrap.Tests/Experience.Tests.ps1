@@ -223,6 +223,431 @@ Describe 'Experience Windows-safe Azure CLI command boundary' {
     }
 }
 
+Describe 'Experience CLI Azure region choice boundary' {
+    InModuleScope Experience {
+        BeforeEach {
+            $script:subscriptionId = '11111111-1111-4111-8111-111111111111'
+        }
+
+        It 'binds every paged location read to the selected nondefault subscription' {
+            $script:nextLink = "https://management.azure.com/subscriptions/$script:subscriptionId/locations?api-version=2022-12-01&`$skiptoken=page-2"
+            Mock Invoke-GatewayAzJson {
+                param([string[]]$Arguments)
+                $urlIndex = [Array]::IndexOf([object[]]$Arguments, '--url')
+                if ($Arguments[$urlIndex + 1] -ceq $script:nextLink) {
+                    return [pscustomobject]@{
+                        value = @([pscustomobject]@{
+                            name = 'koreacentral'
+                            displayName = 'Korea Central'
+                            metadata = [pscustomobject]@{ regionType = 'Physical' }
+                        })
+                        nextLink = $null
+                    }
+                }
+                return [pscustomobject]@{
+                    value = @(
+                        [pscustomobject]@{
+                            name = 'global'
+                            displayName = 'Global'
+                            metadata = [pscustomobject]@{ regionType = 'Logical' }
+                        }
+                        [pscustomobject]@{
+                            name = 'westus2'
+                            displayName = 'West US 2'
+                            metadata = [pscustomobject]@{ regionType = 'Physical' }
+                        }
+                    )
+                    nextLink = $script:nextLink
+                }
+            }
+
+            $locations = @(Get-GatewayAzureLocations -SubscriptionId $script:subscriptionId)
+
+            @($locations.name) | Should -Be @('koreacentral', 'westus2')
+            Should -Invoke Invoke-GatewayAzJson -Times 2 -Exactly -ParameterFilter {
+                $subscriptionIndex = [Array]::IndexOf([object[]]$Arguments, '--subscription')
+                $subscriptionIndex -ge 0 -and
+                    $subscriptionIndex + 1 -lt $Arguments.Count -and
+                    $Arguments[$subscriptionIndex + 1] -ceq $script:subscriptionId
+            }
+        }
+
+        It 'rejects hostile or wrong-subscription location pagination without following it' -TestCases @(
+            @{
+                NextLink = 'https://attacker.invalid/subscriptions/11111111-1111-4111-8111-111111111111/locations?api-version=2022-12-01&$skiptoken=page-2'
+            }
+            @{
+                NextLink = 'https://management.azure.com/subscriptions/99999999-9999-4999-8999-999999999999/locations?api-version=2022-12-01&$skiptoken=page-2'
+            }
+        ) {
+            param($NextLink)
+            Mock Invoke-GatewayAzJson {
+                return [pscustomobject]@{
+                    value = @([pscustomobject]@{
+                        name = 'koreacentral'
+                        displayName = 'Korea Central'
+                        metadata = [pscustomobject]@{ regionType = 'Physical' }
+                    })
+                    nextLink = $NextLink
+                }
+            }
+
+            { Get-GatewayAzureLocations -SubscriptionId $script:subscriptionId } |
+                Should -Throw '*region pagination*'
+            Should -Invoke Invoke-GatewayAzJson -Times 1 -Exactly
+        }
+
+        It 'rejects location pagination beyond the bounded page limit' {
+            $script:page = 0
+            Mock Invoke-GatewayAzJson {
+                $script:page++
+                return [pscustomobject]@{
+                    value = @([pscustomobject]@{
+                        name = "region$script:page"
+                        displayName = "Region $script:page"
+                        metadata = [pscustomobject]@{ regionType = 'Physical' }
+                    })
+                    nextLink = "https://management.azure.com/subscriptions/$script:subscriptionId/locations?api-version=2022-12-01&`$skiptoken=page-$($script:page + 1)"
+                }
+            }
+
+            { Get-GatewayAzureLocations -SubscriptionId $script:subscriptionId } |
+                Should -Throw '*region pagination*'
+            Should -Invoke Invoke-GatewayAzJson -Times 8 -Exactly
+        }
+
+        It 'discovers the exact subscription regions, displays friendly names, and returns canonical names' {
+            Mock Invoke-GatewayAzJson {
+                return [pscustomobject]@{
+                    value = @(
+                        [pscustomobject]@{
+                            name = 'westus2'
+                            displayName = 'West US 2'
+                            metadata = [pscustomobject]@{ regionType = 'Physical' }
+                        }
+                        [pscustomobject]@{
+                            name = 'koreacentral'
+                            displayName = 'Korea Central'
+                            metadata = [pscustomobject]@{ regionType = 'Physical' }
+                        }
+                    )
+                    nextLink = $null
+                }
+            }
+
+            $locations = @(Get-GatewayAzureLocations -SubscriptionId $script:subscriptionId)
+
+            $locations.Count | Should -Be 2
+            $locations[0].name | Should -BeExactly 'koreacentral'
+            $locations[0].displayName | Should -BeExactly 'Korea Central'
+            $locations[1].name | Should -BeExactly 'westus2'
+            Should -Invoke Invoke-GatewayAzJson -Times 1 -Exactly -ParameterFilter {
+                [string]::Join('|', $Arguments) -ceq
+                    "rest|--method|GET|--url|https://management.azure.com/subscriptions/$script:subscriptionId/locations?api-version=2022-12-01|--subscription|$script:subscriptionId"
+            }
+        }
+
+        It 'rejects a scalar LocationListResult value instead of array-wrapping it' {
+            Mock Invoke-GatewayAzJson {
+                return [pscustomobject]@{
+                    value = [pscustomobject]@{
+                        name = 'koreacentral'
+                        displayName = 'Korea Central'
+                        metadata = [pscustomobject]@{ regionType = 'Physical' }
+                    }
+                    nextLink = $null
+                }
+            }
+
+            { Get-GatewayAzureLocations -SubscriptionId $script:subscriptionId } |
+                Should -Throw '*region inventory*'
+        }
+
+        It 'rejects non-string raw location fields instead of coercing them' -TestCases @(
+            @{ Field = 'name'; Value = 123 }
+            @{ Field = 'displayName'; Value = 123 }
+            @{ Field = 'regionType'; Value = [object[]]@('Physical') }
+        ) {
+            param($Field, $Value)
+            $script:rawLocation = [ordered]@{
+                name = 'koreacentral'
+                displayName = 'Korea Central'
+                metadata = [ordered]@{ regionType = 'Physical' }
+            }
+            if ($Field -ceq 'regionType') {
+                $script:rawLocation.metadata.regionType = $Value
+            }
+            else {
+                $script:rawLocation[$Field] = $Value
+            }
+            Mock Invoke-GatewayAzJson {
+                return [pscustomobject]@{
+                    value = [object[]]@($script:rawLocation)
+                    nextLink = $null
+                }
+            }
+
+            { Get-GatewayAzureLocations -SubscriptionId $script:subscriptionId } |
+                Should -Throw '*region inventory*'
+        }
+
+        It 'requires an explicit region choice for a fresh configuration' {
+            Mock Get-GatewayAzureLocations {
+                return @(
+                    [pscustomobject]@{ name = 'koreacentral'; displayName = 'Korea Central' }
+                    [pscustomobject]@{ name = 'westus2'; displayName = 'West US 2' }
+                )
+            }
+            Mock Read-GatewayChoice {
+                param($Prompt, $Choices, $DefaultIndex)
+                $DefaultIndex | Should -Be -1
+                $Choices[0].label | Should -BeExactly 'Korea Central (koreacentral)'
+                $Choices[0].value | Should -BeExactly 'koreacentral'
+                return $Choices[1]
+            }
+
+            Read-GatewayAzureLocation -SubscriptionId $script:subscriptionId |
+                Should -BeExactly 'westus2'
+        }
+
+        It 'preserves a configured location only when it is an exact current-subscription choice' {
+            Mock Get-GatewayAzureLocations {
+                return @(
+                    [pscustomobject]@{ name = 'koreacentral'; displayName = 'Korea Central' }
+                    [pscustomobject]@{ name = 'westus2'; displayName = 'West US 2' }
+                )
+            }
+            Mock Read-GatewayChoice {
+                param($Prompt, $Choices, $DefaultIndex)
+                $DefaultIndex | Should -Be 0
+                return $Choices[$DefaultIndex]
+            }
+
+            Read-GatewayAzureLocation `
+                -SubscriptionId $script:subscriptionId `
+                -ConfiguredLocation 'koreacentral' |
+                Should -BeExactly 'koreacentral'
+        }
+
+        It 'does not preserve a configured location with different casing or no exact match' {
+            Mock Get-GatewayAzureLocations {
+                return @(
+                    [pscustomobject]@{ name = 'koreacentral'; displayName = 'Korea Central' }
+                    [pscustomobject]@{ name = 'westus2'; displayName = 'West US 2' }
+                )
+            }
+            Mock Read-GatewayChoice {
+                param($Prompt, $Choices, $DefaultIndex)
+                $DefaultIndex | Should -Be -1
+                return $Choices[0]
+            }
+
+            foreach ($configured in @('KoreaCentral', 'eastus2')) {
+                Read-GatewayAzureLocation `
+                    -SubscriptionId $script:subscriptionId `
+                    -ConfiguredLocation $configured |
+                    Should -BeExactly 'koreacentral'
+            }
+            Should -Invoke Read-GatewayChoice -Times 2 -Exactly
+        }
+
+        It 'fails closed when Azure returns no region inventory' {
+            Mock Invoke-GatewayAzJson { return @() }
+
+            { Get-GatewayAzureLocations -SubscriptionId $script:subscriptionId } |
+                Should -Throw '*region inventory*'
+        }
+
+        It 'fails closed when subscription region discovery fails' {
+            Mock Invoke-GatewayAzJson {
+                throw 'Azure CLI request failed. Run gateway doctor, refresh the Azure sign-in, and try again.'
+            }
+
+            { Get-GatewayAzureLocations -SubscriptionId $script:subscriptionId } |
+                Should -Throw '*Azure CLI request failed*'
+        }
+
+        It 'fails closed on malformed or duplicate region inventory' {
+            Mock Invoke-GatewayAzJson {
+                return [pscustomobject]@{
+                    value = @(
+                        [pscustomobject]@{
+                            name = 'koreacentral'
+                            displayName = 'Korea Central'
+                            metadata = [pscustomobject]@{ regionType = 'Physical' }
+                        }
+                        [pscustomobject]@{
+                            name = 'koreacentral'
+                            displayName = 'Duplicate'
+                            metadata = [pscustomobject]@{ regionType = 'Physical' }
+                        }
+                    )
+                    nextLink = $null
+                }
+            }
+            { Get-GatewayAzureLocations -SubscriptionId $script:subscriptionId } |
+                Should -Throw '*region inventory*'
+
+            Mock Invoke-GatewayAzJson {
+                return [pscustomobject]@{
+                    value = @([pscustomobject]@{
+                        name = 'KoreaCentral'
+                        displayName = 'Korea Central'
+                        metadata = [pscustomobject]@{ regionType = 'Physical' }
+                    })
+                    nextLink = $null
+                }
+            }
+            { Get-GatewayAzureLocations -SubscriptionId $script:subscriptionId } |
+                Should -Throw '*region inventory*'
+        }
+
+        It 'does not let an empty answer choose the first item when no default exists' {
+            $script:answers = [Collections.Generic.Queue[string]]::new()
+            $script:answers.Enqueue('')
+            $script:answers.Enqueue('2')
+            Mock Read-Host { return $script:answers.Dequeue() }
+            $choices = @(
+                [ordered]@{ label = 'Korea Central'; description = ''; value = 'koreacentral' }
+                [ordered]@{ label = 'West US 2'; description = ''; value = 'westus2' }
+            )
+
+            (Read-GatewayChoice -Prompt 'Choose a region' -Choices $choices -DefaultIndex -1).value |
+                Should -BeExactly 'westus2'
+            Should -Invoke Read-Host -Times 2 -Exactly
+        }
+
+        It 'routes the initializer through canonical selection with no free-text or eastus2 fallback' {
+            $tokens = $null
+            $parseErrors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile(
+                (Get-Module Experience).Path, [ref]$tokens, [ref]$parseErrors)
+            $parseErrors.Count | Should -Be 0
+            $function = $ast.Find({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ceq 'New-GatewayBootstrapConfiguration'
+            }, $true)
+            $source = $function.Extent.Text
+
+            $source | Should -Match 'Read-GatewayAzureLocation'
+            $source | Should -Not -Match "Read-GatewayText\s+-Prompt\s+'Azure region"
+            $source | Should -Not -Match 'eastus2'
+        }
+    }
+}
+
+Describe 'Experience Doctor Azure SQL regional availability boundary' {
+    InModuleScope Experience {
+        BeforeEach {
+            $script:doctorConfig = [pscustomobject]@{
+                subscriptionId = '11111111-1111-4111-8111-111111111111'
+                tenantId = '22222222-2222-4222-8222-222222222222'
+                location = 'koreacentral'
+                sql = [pscustomobject]@{ skuName = 'Basic'; skuTier = 'Basic' }
+                purview = [pscustomobject]@{ enabled = $false }
+            }
+            Mock Get-GatewayCommandVersion {
+                param($Name, $Arguments)
+                if ([string]$Name -ceq 'git') { return 'git version 2.55.0' }
+                if ([string]$Name -ceq 'az') { return 'Bicep CLI version 0.31.92' }
+                if ([string]$Name -ceq 'dotnet') { return '10.0.100' }
+                return $null
+            }
+            Mock Get-GatewayAzureCliVersion { return '2.76.0' }
+            Mock Test-Path { return $true }
+            Mock Read-BootstrapConfig { return $script:doctorConfig }
+            Mock Get-Module { return $null } -ParameterFilter { [bool]$ListAvailable }
+            Mock Invoke-GatewayAzJson {
+                param([string[]]$Arguments)
+                $command = [string]::Join('|', $Arguments)
+                if ($command -ceq 'account|show|--query|{id:id,tenantId:tenantId}') {
+                    return [pscustomobject]@{
+                        id = $script:doctorConfig.subscriptionId
+                        tenantId = $script:doctorConfig.tenantId
+                    }
+                }
+                if ($command -ceq 'ad|signed-in-user|show|--query|{id:id}') {
+                    return [pscustomobject]@{ id = '33333333-3333-4333-8333-333333333333' }
+                }
+                if ([string]$Arguments[0] -ceq 'role') {
+                    return @([pscustomobject]@{ role = 'Owner'; scope = "/subscriptions/$($script:doctorConfig.subscriptionId)" })
+                }
+                if ([string]$Arguments[0] -ceq 'provider') {
+                    return [pscustomobject]@{ state = 'Registered' }
+                }
+                if ($command -ceq "rest|--method|GET|--url|https://management.azure.com/subscriptions/$($script:doctorConfig.subscriptionId)/locations?api-version=2022-12-01|--subscription|$($script:doctorConfig.subscriptionId)") {
+                    return [pscustomobject]@{
+                        value = @([pscustomobject]@{
+                            name = 'koreacentral'
+                            displayName = 'Korea Central'
+                            metadata = [pscustomobject]@{ regionType = 'Physical' }
+                        })
+                        nextLink = $null
+                    }
+                }
+                throw 'Unexpected Doctor Azure command.'
+            }
+            Mock Assert-GatewaySqlRegionalAvailability { return $true }
+        }
+
+        It 'reports exact SQL availability as Pass and requires it for Plan readiness' {
+            $report = Get-GatewayDoctorReport -ConfigPath '/safe/bootstrap.json'
+            $check = @($report.checks | Where-Object name -eq 'Azure SQL regional availability')
+
+            $check.Count | Should -Be 1
+            $check[0].status | Should -BeExactly 'Pass'
+            $report.readyForPlan | Should -BeTrue
+            Should -Invoke Assert-GatewaySqlRegionalAvailability -Times 1 -Exactly -ParameterFilter {
+                $Config -eq $script:doctorConfig
+            }
+        }
+
+        It 'fails Plan readiness when exact SQL availability is not confirmed' {
+            Mock Assert-GatewaySqlRegionalAvailability { throw 'Safe SQL availability failure.' }
+
+            $report = Get-GatewayDoctorReport -ConfigPath '/safe/bootstrap.json'
+            $check = @($report.checks | Where-Object name -eq 'Azure SQL regional availability')
+
+            $check.Count | Should -Be 1
+            $check[0].status | Should -BeExactly 'Fail'
+            $check[0].value | Should -Not -Match 'Safe SQL availability failure'
+            $report.readyForPlan | Should -BeFalse
+        }
+
+        It 'fails Doctor and Plan readiness when Azure CLI predates Provider validation support' {
+            Mock Get-GatewayAzureCliVersion { return '2.75.0' }
+
+            $report = Get-GatewayDoctorReport -ConfigPath '/safe/bootstrap.json'
+            $check = @($report.checks | Where-Object name -eq 'Azure CLI')
+
+            $check.Count | Should -Be 1
+            $check[0].status | Should -BeExactly 'Fail'
+            $check[0].remediation | Should -Match '2\.76\.0'
+            $report.readyForPlan | Should -BeFalse
+        }
+    }
+}
+
+Describe 'Experience Plan Azure CLI minimum boundary' {
+    InModuleScope Experience {
+        BeforeEach {
+            Mock Get-Command { [pscustomobject]@{ Name = 'az'; Source = '/safe/az' } } -ParameterFilter {
+                [string]$Name -ceq 'az'
+            }
+            Mock Get-GatewayAzureCliVersion { return '2.75.0' }
+            Mock Get-GatewayCommandVersion { return 'Bicep CLI version 0.31.92' }
+        }
+
+        It 'rejects Azure CLI below 2.76 before compiling Plan source' {
+            { Test-GatewayPlanSource -RepositoryRoot '/safe/source' } |
+                Should -Throw '*Azure CLI 2.76.0 or later*'
+            Should -Invoke Get-GatewayAzureCliVersion -Times 1 -Exactly
+            Should -Invoke Get-GatewayCommandVersion -Times 0 -Exactly
+        }
+    }
+}
+
 Describe 'Experience diagnostic bundle without configuration' {
     It 'writes a safe deployment-unavailable bundle when configuration cannot load' {
         $path = Join-Path $TestDrive 'diagnose-invalid-config.json'
@@ -1051,7 +1476,16 @@ Describe 'Azure What-If result boundary' {
                     tenantId = '22222222-2222-4222-8222-222222222222'
                 }
             }
-            Mock Invoke-AzJson { return $script:whatIfResult }
+            Mock Get-GatewayAzureCliVersion { return '2.76.0' }
+            $script:whatIfCallOrder = [Collections.Generic.List[string]]::new()
+            Mock Assert-GatewaySqlRegionalAvailability {
+                $script:whatIfCallOrder.Add('sql')
+                return $true
+            }
+            Mock Invoke-AzJson {
+                $script:whatIfCallOrder.Add('whatIf')
+                return $script:whatIfResult
+            }
             $script:config = [pscustomobject]@{
                 subscriptionId = '11111111-1111-4111-8111-111111111111'
                 tenantId = '22222222-2222-4222-8222-222222222222'
@@ -1059,6 +1493,7 @@ Describe 'Azure What-If result boundary' {
                 environment = 'dev'
                 location = 'koreacentral'
                 resourceGroupName = 'rg-safe-dev'
+                sql = [pscustomobject]@{ skuName = 'Basic'; skuTier = 'Basic' }
             }
             $script:whatIfSourceFingerprint = "sha256:$('a' * 64)"
             $script:whatIfOwnershipId = '33333333-3333-4333-8333-333333333333'
@@ -1362,15 +1797,51 @@ Describe 'Azure What-If result boundary' {
             $result.executed | Should -BeTrue
             $result.applyReady | Should -BeTrue
             $result.changes.Count | Should -Be 0
+            @($script:whatIfCallOrder) | Should -Be @('sql', 'whatIf')
+            Should -Invoke Assert-GatewaySqlRegionalAvailability -Times 1 -Exactly -ParameterFilter {
+                $Config -eq $script:config
+            }
             Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
                 $formatIndex = [Array]::IndexOf([object[]]$Arguments, '--result-format')
+                $validationIndex = [Array]::IndexOf([object[]]$Arguments, '--validation-level')
                 $Arguments -contains '--no-pretty-print' -and
                     $Arguments -contains "bootstrapSourceFingerprint=$script:whatIfSourceFingerprint" -and
+                    $validationIndex -ge 0 -and
+                    $validationIndex + 1 -lt $Arguments.Count -and
+                    $Arguments[$validationIndex + 1] -ceq 'Provider' -and
                     $formatIndex -ge 0 -and
                     $formatIndex + 1 -lt $Arguments.Count -and
                     $Arguments[$formatIndex + 1] -ceq 'ResourceIdOnly'
             }
             Should -Invoke Invoke-GatewayAzJson -Times 0 -Exactly
+        }
+
+        It 'does not invoke ARM What-If when exact SQL regional availability fails' {
+            Mock Assert-GatewaySqlRegionalAvailability { throw 'Safe SQL availability failure.' }
+
+            { Invoke-GatewayFoundationWhatIf `
+                -Config $script:config `
+                -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint } |
+                Should -Throw '*SQL availability*'
+
+            Should -Invoke Assert-GatewaySqlRegionalAvailability -Times 1 -Exactly
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly
+        }
+
+        It 'does not run SQL availability or ARM What-If after Azure CLI is downgraded below 2.76' {
+            Mock Get-GatewayAzureCliVersion { return '2.75.0' }
+
+            { Invoke-GatewayFoundationWhatIf `
+                -Config $script:config `
+                -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint } |
+                Should -Throw '*Azure CLI 2.76.0 or later*'
+
+            Should -Invoke Assert-GatewaySqlRegionalAvailability -Times 0 -Exactly
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly
         }
 
         It 'plans the exact pending pre-inert correction with distinct deployment and execution fingerprints' {

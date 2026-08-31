@@ -51,12 +51,16 @@ param(
 
     [string]$ExpectedPlanFingerprint = '',
 
+    [string]$ExpectedConfigurationFileFingerprint = '',
+
     [switch]$EventStreamOnly
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$expectedConfigurationFileFingerprintSupplied =
+    $PSBoundParameters.ContainsKey('ExpectedConfigurationFileFingerprint')
 if ($OutputFormat -eq 'Json') {
     # Keep module Write-Host messages out of structured output. Experience events
     # use Console.Out deliberately; Common suppresses no-capture provider streams.
@@ -575,6 +579,16 @@ if ($EventStreamOnly -and $Mode -notin @('Plan', 'Up', 'Resume')) {
     Write-GatewayExperienceEvent -Type Warning -Message 'EventStreamOnly is valid only for Plan, Up, or Resume.' -Data ([ordered]@{ step = 'Bootstrap'; index = 1; total = (Get-GatewayBootstrapStepNames).Count }) -OutputFormat $OutputFormat
     throw 'Invalid event-stream command.'
 }
+if ($expectedConfigurationFileFingerprintSupplied) {
+    if ($Mode -cne 'Plan') {
+        Write-GatewayExperienceEvent -Type Warning -Message 'ExpectedConfigurationFileFingerprint is valid only for Plan.' -Data ([ordered]@{ step = 'Configuration'; index = 1; total = (Get-GatewayBootstrapStepNames).Count }) -OutputFormat $OutputFormat
+        throw 'Invalid expected-configuration-file mode.'
+    }
+    if ($ExpectedConfigurationFileFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        Write-GatewayExperienceEvent -Type Warning -Message 'ExpectedConfigurationFileFingerprint must use canonical lowercase sha256 format.' -Data ([ordered]@{ step = 'Configuration'; index = 1; total = (Get-GatewayBootstrapStepNames).Count }) -OutputFormat $OutputFormat
+        throw 'Invalid expected-configuration-file fingerprint.'
+    }
+}
 if (-not [string]::IsNullOrWhiteSpace($ExpectedPlanFingerprint)) {
     if ($Mode -notin @('Plan', 'Up', 'Resume', 'RecoverDatabase')) {
         Write-GatewayExperienceEvent -Type Warning -Message 'ExpectedPlanFingerprint is valid only for Plan, Up, Resume, or RecoverDatabase.' -Data ([ordered]@{ step = 'Plan review'; index = 1; total = (Get-GatewayBootstrapStepNames).Count }) -OutputFormat $OutputFormat
@@ -649,7 +663,14 @@ if (-not (Test-Path -LiteralPath $Config)) {
     throw "Bootstrap configuration '$Config' does not exist. Run gateway init, or supply -Config with a reviewed non-secret configuration."
 }
 
-$configuration = Read-BootstrapConfig -Path $Config
+$configuration = if ($expectedConfigurationFileFingerprintSupplied) {
+    Read-BootstrapConfig `
+        -Path $Config `
+        -ExpectedConfigurationFileFingerprint $ExpectedConfigurationFileFingerprint
+}
+else {
+    Read-BootstrapConfig -Path $Config
+}
 $script:GatewayFailureStage = 'Bootstrap state'
 $script:GatewayFailureCode = 'state'
 $statePath = Get-BootstrapStatePath -Config $configuration

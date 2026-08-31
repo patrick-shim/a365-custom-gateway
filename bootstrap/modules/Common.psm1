@@ -11,6 +11,7 @@ $script:BootstrapAzureTenantId = ''
 $script:BootstrapGraphAccessToken = ''
 $script:BootstrapGraphAccessTokenExpiresOn = 0L
 $script:BootstrapGraphHttpClient = $null
+$script:BootstrapConfigurationMaximumBytes = 1048576
 $script:BootstrapPreInertCorrectionStepNames = @(
     'Prerequisites',
     'Azure authentication',
@@ -126,6 +127,20 @@ function Get-BootstrapSha256 {
     }
     $hex = ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
     return "sha256:$hex"
+}
+
+function Get-BootstrapByteFingerprint {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][byte[]]$Bytes)
+
+    $hash = [Security.Cryptography.SHA256]::HashData($Bytes)
+    try {
+        $hex = ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+        return "sha256:$hex"
+    }
+    finally {
+        [Array]::Clear($hash, 0, $hash.Length)
+    }
 }
 
 function Get-BootstrapDeterministicGuid {
@@ -2173,14 +2188,82 @@ function Get-BootstrapExecutionSourceRoot {
     return $script:BootstrapExecutionSourceRoot
 }
 
+function Read-BootstrapConfigurationFileBytes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter()][int]$MaximumBytes = $script:BootstrapConfigurationMaximumBytes
+    )
+
+    if ($MaximumBytes -le 0) {
+        throw 'Bootstrap configuration byte limit must be greater than zero.'
+    }
+
+    $stream = $null
+    $content = $null
+    $buffer = $null
+    try {
+        $stream = [IO.File]::Open(
+            $Path,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read)
+        $content = [IO.MemoryStream]::new()
+        $buffer = [byte[]]::new(81920)
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            if ($content.Length + $read -gt $MaximumBytes) {
+                throw "Bootstrap configuration exceeds the $MaximumBytes-byte maximum."
+            }
+            $content.Write($buffer, 0, $read)
+        }
+        return ,$content.ToArray()
+    }
+    finally {
+        if ($null -ne $buffer) { [Array]::Clear($buffer, 0, $buffer.Length) }
+        if ($null -ne $content) { $content.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
 function Read-BootstrapConfig {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path)
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter()][string]$ExpectedConfigurationFileFingerprint = ''
+    )
+
+    $expectedFingerprintSupplied = $PSBoundParameters.ContainsKey('ExpectedConfigurationFileFingerprint')
+    if ($expectedFingerprintSupplied) {
+        if ($ExpectedConfigurationFileFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            throw 'Expected configuration file fingerprint must be a canonical SHA-256 fingerprint.'
+        }
+    }
 
     $resolved = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
-    $raw = Get-Content -LiteralPath $resolved -Raw
+    [byte[]]$bytes = Read-BootstrapConfigurationFileBytes -Path $resolved
+    $raw = ''
     try {
-        $config = $raw | ConvertFrom-Json -Depth 30 -ErrorAction Stop
+        if ($expectedFingerprintSupplied) {
+            $actualFingerprint = Get-BootstrapByteFingerprint -Bytes $bytes
+            if ($actualFingerprint -cne $ExpectedConfigurationFileFingerprint) {
+                throw 'Bootstrap configuration file fingerprint did not match the expected reviewed bytes.'
+            }
+        }
+        try {
+            $raw = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+            if ($raw.Length -gt 0 -and $raw[0] -eq [char]0xfeff) {
+                $raw = $raw.Substring(1)
+            }
+        }
+        catch {
+            throw "Bootstrap configuration '$resolved' is not valid UTF-8 JSON."
+        }
+    }
+    finally {
+        [Array]::Clear($bytes, 0, $bytes.Length)
+    }
+    try {
+        $config = ConvertFrom-Json -InputObject $raw -Depth 30 -ErrorAction Stop
     }
     catch {
         throw "Bootstrap configuration '$resolved' is not valid JSON."

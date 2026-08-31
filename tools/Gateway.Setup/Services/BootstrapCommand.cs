@@ -41,12 +41,18 @@ internal sealed record BootstrapCommandSpec(
 
 internal interface IBootstrapCommandFactory
 {
-    BootstrapCommandSpec Create(BootstrapCommand command, string? expectedPlanFingerprint = null);
+    BootstrapCommandSpec Create(
+        BootstrapCommand command,
+        string? expectedPlanFingerprint = null,
+        string? expectedConfigurationFileFingerprint = null);
 }
 
 internal sealed class BootstrapCommandFactory(RepositoryLayout repository) : IBootstrapCommandFactory
 {
-    public BootstrapCommandSpec Create(BootstrapCommand command, string? expectedPlanFingerprint = null)
+    public BootstrapCommandSpec Create(
+        BootstrapCommand command,
+        string? expectedPlanFingerprint = null,
+        string? expectedConfigurationFileFingerprint = null)
     {
         if (!Enum.IsDefined(command))
         {
@@ -60,12 +66,28 @@ internal sealed class BootstrapCommandFactory(RepositoryLayout repository) : IBo
                 nameof(expectedPlanFingerprint));
         }
 
+        if (command == BootstrapCommand.Plan &&
+            !PlanFingerprintPolicy.IsCanonical(expectedConfigurationFileFingerprint))
+        {
+            throw new ArgumentException(
+                "Plan requires the exact lowercase SHA-256 fingerprint of the published configuration file.",
+                nameof(expectedConfigurationFileFingerprint));
+        }
+
         if (command is BootstrapCommand.Apply or BootstrapCommand.Resume &&
             !PlanFingerprintPolicy.IsCanonical(expectedPlanFingerprint))
         {
             throw new ArgumentException(
                 "Apply and Resume require the exact canonical fingerprint emitted by the reviewed Plan.",
                 nameof(expectedPlanFingerprint));
+        }
+
+        if (command is BootstrapCommand.Apply or BootstrapCommand.Resume &&
+            expectedConfigurationFileFingerprint is not null)
+        {
+            throw new ArgumentException(
+                "The Setup configuration-file fingerprint is accepted only by its prepared Plan command.",
+                nameof(expectedConfigurationFileFingerprint));
         }
 
         var scriptPath = Path.GetFullPath(repository.BootstrapScriptPath);
@@ -96,6 +118,8 @@ internal sealed class BootstrapCommandFactory(RepositoryLayout repository) : IBo
 
         if (command == BootstrapCommand.Plan)
         {
+            arguments.Add("-ExpectedConfigurationFileFingerprint");
+            arguments.Add(expectedConfigurationFileFingerprint!);
             arguments.Add("-NonInteractive");
         }
         else

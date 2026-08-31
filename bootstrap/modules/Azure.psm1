@@ -58,6 +58,241 @@ function Assert-BootstrapAzureContext {
     return $true
 }
 
+function Get-GatewayAzureCapabilityProperty {
+    param(
+        [Parameter(Mandatory)]$InputObject,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    if ($InputObject -is [Collections.IDictionary]) {
+        if (-not $InputObject.Contains($Name)) { return $null }
+        $value = $InputObject[$Name]
+        if ($value -is [System.Array]) { return ,$value }
+        return $value
+    }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    if ($property.Value -is [System.Array]) { return ,$property.Value }
+    return $property.Value
+}
+
+function Get-GatewayAzureCapabilityArray {
+    param(
+        [Parameter(Mandatory)]$InputObject,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    $value = Get-GatewayAzureCapabilityProperty -InputObject $InputObject -Name $Name
+    if ($value -isnot [System.Array]) {
+        throw [IO.InvalidDataException]::new("The Azure capability property '$Name' was not an array.")
+    }
+    return $value
+}
+
+function Test-GatewayAzureCapabilityAvailable {
+    param([Parameter(Mandatory)]$Capability)
+
+    $status = Get-GatewayAzureCapabilityProperty -InputObject $Capability -Name 'status'
+    return $status -is [string] -and [string]$status -cin @('Available', 'Default')
+}
+
+function Get-GatewayAzureCapabilityInt32 {
+    param(
+        [Parameter(Mandatory)]$InputObject,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Label,
+        [switch]$NonNegative
+    )
+
+    $value = Get-GatewayAzureCapabilityProperty -InputObject $InputObject -Name $Name
+    # ConvertFrom-Json materializes JSON integer tokens as Int64. Requiring that
+    # exact runtime type rejects quoted numbers, floating-point values, booleans,
+    # and every other coercible-but-out-of-schema representation.
+    if ($value -isnot [long] -or
+        $value -lt [int]::MinValue -or
+        $value -gt [int]::MaxValue -or
+        ($NonNegative -and $value -lt 0)) {
+        throw [IO.InvalidDataException]::new("$Label was not a valid int32 JSON value.")
+    }
+    return [int]$value
+}
+
+function ConvertTo-GatewaySqlCapabilityBytes {
+    param([Parameter(Mandatory)]$SizeValue)
+
+    $unitValue = Get-GatewayAzureCapabilityProperty -InputObject $SizeValue -Name 'unit'
+    if ($unitValue -isnot [string]) {
+        throw [IO.InvalidDataException]::new('An Azure SQL size capability was incomplete.')
+    }
+
+    $limit = Get-GatewayAzureCapabilityInt32 `
+        -InputObject $SizeValue `
+        -Name 'limit' `
+        -Label 'An Azure SQL size capability limit' `
+        -NonNegative
+
+    $multiplier = switch -CaseSensitive ([string]$unitValue) {
+        'Megabytes' { [decimal]1048576 }
+        'Gigabytes' { [decimal]1073741824 }
+        'Terabytes' { [decimal]1099511627776 }
+        'Petabytes' { [decimal]1125899906842624 }
+        default { throw [IO.InvalidDataException]::new('An Azure SQL size capability used an unknown unit.') }
+    }
+    $bytes = $limit * $multiplier
+    if ($bytes -ne [decimal]::Truncate($bytes) -or $bytes -gt [long]::MaxValue) {
+        throw [IO.InvalidDataException]::new('An Azure SQL size capability could not be represented exactly in bytes.')
+    }
+    return [long]$bytes
+}
+
+function Assert-GatewaySqlRegionalAvailability {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Config)
+
+    $location = [string]$Config.location
+    $skuName = [string]$Config.sql.skuName
+    $skuTier = [string]$Config.sql.skuTier
+    $safeFailure = "Azure SQL $skuName/$skuTier (2 GiB, LRS) is not currently proven available in '$location'. Choose another region and run Plan again. Provider details were suppressed."
+    $safeCheck = 'configuration'
+
+    try {
+        Assert-GuidValue -Value ([string]$Config.subscriptionId) -Label 'Subscription ID'
+        $subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
+        if ([string]$Config.subscriptionId -cne $subscriptionId -or
+            $location -cnotmatch '^[a-z0-9]+$') {
+            throw [IO.InvalidDataException]::new('The SQL capability target was not canonical.')
+        }
+
+        $skuContracts = [ordered]@{
+            Basic = [ordered]@{ tier = 'Basic'; capabilitySkuName = 'Basic'; capacity = 5 }
+            S0 = [ordered]@{ tier = 'Standard'; capabilitySkuName = 'Standard'; capacity = 10 }
+            S1 = [ordered]@{ tier = 'Standard'; capabilitySkuName = 'Standard'; capacity = 20 }
+            S2 = [ordered]@{ tier = 'Standard'; capabilitySkuName = 'Standard'; capacity = 50 }
+            S3 = [ordered]@{ tier = 'Standard'; capabilitySkuName = 'Standard'; capacity = 100 }
+            P1 = [ordered]@{ tier = 'Premium'; capabilitySkuName = 'Premium'; capacity = 125 }
+            P2 = [ordered]@{ tier = 'Premium'; capabilitySkuName = 'Premium'; capacity = 250 }
+            GP_S_Gen5_1 = [ordered]@{ tier = 'GeneralPurpose'; capabilitySkuName = 'GP_S_Gen5'; family = 'Gen5'; capacity = 1 }
+            GP_S_Gen5_2 = [ordered]@{ tier = 'GeneralPurpose'; capabilitySkuName = 'GP_S_Gen5'; family = 'Gen5'; capacity = 2 }
+        }
+        if (-not $skuContracts.Contains($skuName)) {
+            throw [IO.InvalidDataException]::new('The SQL SKU was outside the deployed contract.')
+        }
+        $skuContract = $skuContracts[$skuName]
+        if ([string]$skuContract.tier -cne $skuTier) {
+            throw [IO.InvalidDataException]::new('The SQL tier did not match the selected SKU.')
+        }
+
+        $safeCheck = 'provider request'
+        $url = "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Sql/locations/$location/capabilities?api-version=2023-08-01"
+        try {
+            $raw = Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @(
+                'rest', '--method', 'GET', '--url', $url,
+                '--subscription', $subscriptionId,
+                '--output', 'json', '--only-show-errors'
+            ) -CaptureStdoutOnly
+        }
+        catch {
+            throw [IO.InvalidDataException]::new('The Azure SQL capability request failed.')
+        }
+        if ([string]::IsNullOrWhiteSpace($raw) -or
+            [Text.Encoding]::UTF8.GetByteCount($raw) -gt 16777216) {
+            throw [IO.InvalidDataException]::new('The Azure SQL capability response was empty or oversized.')
+        }
+        try {
+            $capabilities = ConvertFrom-Json -InputObject $raw -Depth 100 -ErrorAction Stop
+        }
+        catch {
+            throw [IO.InvalidDataException]::new('The Azure SQL capability response was malformed.')
+        }
+        $safeCheck = 'location'
+        if ($null -eq $capabilities -or $capabilities -is [System.Array] -or
+            -not (Test-GatewayAzureCapabilityAvailable -Capability $capabilities)) {
+            throw [IO.InvalidDataException]::new('The Azure SQL location capability was unavailable.')
+        }
+
+        $safeCheck = 'server version'
+        $serverMatches = @(Get-GatewayAzureCapabilityArray -InputObject $capabilities -Name 'supportedServerVersions' |
+            Where-Object { [string](Get-GatewayAzureCapabilityProperty -InputObject $_ -Name 'name') -ceq '12.0' })
+        if ($serverMatches.Count -ne 1 -or -not (Test-GatewayAzureCapabilityAvailable -Capability $serverMatches[0])) {
+            throw [IO.InvalidDataException]::new('The Azure SQL server capability was unavailable or ambiguous.')
+        }
+
+        $safeCheck = 'edition'
+        $editionMatches = @(Get-GatewayAzureCapabilityArray -InputObject $serverMatches[0] -Name 'supportedEditions' |
+            Where-Object { [string](Get-GatewayAzureCapabilityProperty -InputObject $_ -Name 'name') -ceq $skuTier })
+        if ($editionMatches.Count -ne 1 -or -not (Test-GatewayAzureCapabilityAvailable -Capability $editionMatches[0])) {
+            throw [IO.InvalidDataException]::new('The Azure SQL edition capability was unavailable or ambiguous.')
+        }
+
+        $safeCheck = 'service objective'
+        $objectiveMatches = @(Get-GatewayAzureCapabilityArray -InputObject $editionMatches[0] -Name 'supportedServiceLevelObjectives' |
+            Where-Object { [string](Get-GatewayAzureCapabilityProperty -InputObject $_ -Name 'name') -ceq $skuName })
+        if ($objectiveMatches.Count -ne 1 -or -not (Test-GatewayAzureCapabilityAvailable -Capability $objectiveMatches[0])) {
+            throw [IO.InvalidDataException]::new('The Azure SQL service objective was unavailable or ambiguous.')
+        }
+        $safeCheck = 'SKU'
+        $objective = $objectiveMatches[0]
+        $capabilitySku = Get-GatewayAzureCapabilityProperty -InputObject $objective -Name 'sku'
+        $capabilityCapacity = if ($null -ne $capabilitySku) {
+            Get-GatewayAzureCapabilityInt32 `
+                -InputObject $capabilitySku `
+                -Name 'capacity' `
+                -Label 'The Azure SQL SKU capacity' `
+                -NonNegative
+        }
+        else { $null }
+        if ($null -eq $capabilitySku -or
+            [string](Get-GatewayAzureCapabilityProperty -InputObject $capabilitySku -Name 'name') -cne [string]$skuContract.capabilitySkuName -or
+            [string](Get-GatewayAzureCapabilityProperty -InputObject $capabilitySku -Name 'tier') -cne $skuTier -or
+            $capabilityCapacity -ne [int]$skuContract.capacity) {
+            throw [IO.InvalidDataException]::new('The Azure SQL SKU capability did not match the selected contract.')
+        }
+        if ($skuContract.Contains('family') -and
+            [string](Get-GatewayAzureCapabilityProperty -InputObject $capabilitySku -Name 'family') -cne [string]$skuContract.family) {
+            throw [IO.InvalidDataException]::new('The Azure SQL SKU family did not match the selected contract.')
+        }
+
+        $safeCheck = 'maximum size'
+        $targetBytes = 2147483648L
+        $matchingSizes = [Collections.Generic.List[object]]::new()
+        foreach ($sizeCapability in @(Get-GatewayAzureCapabilityArray -InputObject $objective -Name 'supportedMaxSizes')) {
+            $minimum = ConvertTo-GatewaySqlCapabilityBytes -SizeValue (Get-GatewayAzureCapabilityProperty -InputObject $sizeCapability -Name 'minValue')
+            $maximum = ConvertTo-GatewaySqlCapabilityBytes -SizeValue (Get-GatewayAzureCapabilityProperty -InputObject $sizeCapability -Name 'maxValue')
+            $scale = ConvertTo-GatewaySqlCapabilityBytes -SizeValue (Get-GatewayAzureCapabilityProperty -InputObject $sizeCapability -Name 'scaleSize')
+            if ($minimum -gt $maximum) {
+                throw [IO.InvalidDataException]::new('An Azure SQL maximum-size range was invalid.')
+            }
+            $matchesTarget = $targetBytes -ge $minimum -and $targetBytes -le $maximum
+            if ($matchesTarget) {
+                $matchesTarget = if ($scale -eq 0) {
+                    $minimum -eq $maximum -and $targetBytes -eq $minimum
+                }
+                else {
+                    (($targetBytes - $minimum) % $scale) -eq 0
+                }
+            }
+            if ($matchesTarget) { $matchingSizes.Add($sizeCapability) }
+        }
+        if ($matchingSizes.Count -ne 1 -or
+            -not (Test-GatewayAzureCapabilityAvailable -Capability $matchingSizes[0])) {
+            throw [IO.InvalidDataException]::new('The exact Azure SQL maximum-size capability was unavailable or ambiguous.')
+        }
+
+        $safeCheck = 'backup storage redundancy'
+        $storageMatches = @(Get-GatewayAzureCapabilityArray -InputObject $editionMatches[0] -Name 'supportedStorageCapabilities' |
+            Where-Object { [string](Get-GatewayAzureCapabilityProperty -InputObject $_ -Name 'storageAccountType') -ceq 'LRS' })
+        if ($storageMatches.Count -ne 1 -or
+            -not (Test-GatewayAzureCapabilityAvailable -Capability $storageMatches[0])) {
+            throw [IO.InvalidDataException]::new('The Azure SQL LRS capability was unavailable or ambiguous.')
+        }
+    }
+    catch {
+        throw "$safeFailure Check: $safeCheck."
+    }
+
+    return $true
+}
+
 function Register-BootstrapResourceProviders {
     foreach ($provider in @(
         'Microsoft.AlertsManagement',

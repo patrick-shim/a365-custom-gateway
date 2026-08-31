@@ -4,7 +4,7 @@ This matrix records current official contracts relied on by the Gateway. Code,
 tests, deployed evidence, and current Microsoft documentation take precedence over
 older design notes or prototypes.
 
-Last reviewed: 2026-08-31.
+Last reviewed: 2026-09-01.
 
 ## Agent Identity and Agent 365
 
@@ -75,11 +75,21 @@ authorization, or schema ambiguity fails closed. Account keys are disabled.
 
 | Area | Required boundary |
 |---|---|
+| Deployment region discovery | Use the target subscription's ARM `Subscriptions - List Locations` 2022-12-01 response. Show `displayName`, persist canonical `name`, follow `nextLink`, and accept only `type=Region` with `metadata.regionType=Physical`. A listed region is not proof that every provider or SKU is available there. |
 | Azure SQL | Entra-only authentication, private endpoint, zero firewall rules |
 | Key Vault | RBAC, local/public access disabled after setup, exact secret scope |
 | Container Apps | Managed identities and immutable image digests |
 | Service Bus | Dedicated v3 queue and duplicate-safe consumers |
 | Container Registry | Dedicated pull identity avoids first-pull identity cycles |
+
+The locations API uses Azure-authenticated subscription access. Azure CLI's
+`az account list-locations` is a Core GA surface for the same subscription-specific
+inventory. Microsoft's public region table identifies **Korea Central** by the
+programmatic name `koreacentral`.
+
+- [ARM Subscriptions - List Locations](https://learn.microsoft.com/rest/api/resources/subscriptions/list-locations?view=rest-resources-2022-12-01)
+- [Azure CLI account commands](https://learn.microsoft.com/cli/azure/account?view=azure-cli-latest#az-account-list-locations)
+- [Azure regions and programmatic names](https://learn.microsoft.com/azure/reliability/regions-list)
 
 ## Unsupported assumptions
 

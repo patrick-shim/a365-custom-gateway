@@ -31,9 +31,11 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
         result.Form.PurviewDlpPolicyName.Should().Be(expected.PurviewDlpPolicyName);
         result.Form.PurviewDlpRuleName.Should().Be(expected.PurviewDlpRuleName);
 
-        var rewrite = () => new BootstrapConfigWriter(
-            new RepositoryLayout(root),
-            new AtomicFileWriter()).WriteAsync(result.Form);
+        var rewrite = () => StageAndPublishAsync(
+            new BootstrapConfigWriter(
+                new RepositoryLayout(root),
+                new AtomicFileWriter()),
+            ReadyState(result.Form!));
         await rewrite.Should().NotThrowAsync(
             "a safely imported configuration must be semantically preserved during explicit review");
     }
@@ -105,9 +107,11 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
 
         result.Status.Should().Be(ExistingConfigurationStatus.Loaded);
         result.Form.Should().NotBeNull();
-        await new BootstrapConfigWriter(
-            new RepositoryLayout(root),
-            new AtomicFileWriter()).WriteAsync(result.Form);
+        await StageAndPublishAsync(
+            new BootstrapConfigWriter(
+                new RepositoryLayout(root),
+                new AtomicFileWriter()),
+            ReadyState(result.Form!));
         (await File.ReadAllTextAsync(path))
             .Should().NotContain("activateGatewayAdapterAfterPolicyReadback");
     }
@@ -186,7 +190,38 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
         var writer = new BootstrapConfigWriter(
             new RepositoryLayout(root),
             new AtomicFileWriter());
-        await writer.WriteAsync(form);
+        await StageAndPublishAsync(writer, ReadyState(form));
+    }
+
+    private static async Task<ConfigurationWriteResult> StageAndPublishAsync(
+        BootstrapConfigWriter writer,
+        SetupWizardState state)
+    {
+        using var staged = await writer.StageAsync(state.CreatePlanReadyConfiguration());
+        return staged.TryPublish()
+            ?? throw new InvalidOperationException("The deterministic test stage changed unexpectedly.");
+    }
+
+    private static SetupWizardState ReadyState(SetupConfigurationForm form)
+    {
+        var state = new SetupWizardState(new FixedProjectNameGenerator());
+        state.ApplyExistingConfiguration(new ExistingConfigurationResult(
+            ExistingConfigurationStatus.Loaded,
+            form,
+            null));
+        state.SetSubscriptions([
+            new AzureSubscription(
+                form.SubscriptionId,
+                form.TenantId,
+                "Selected target",
+                true,
+                "Enabled")
+        ]);
+        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
+            form.SubscriptionId,
+            [new AzureLocation(form.Location, "Selected region")],
+            null));
+        return state;
     }
 
     private static SetupConfigurationForm ValidForm() => new()

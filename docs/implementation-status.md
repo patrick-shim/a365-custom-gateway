@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-08-31 (Asia/Seoul).
+Last updated: 2026-09-01 (Asia/Seoul).
 
 This is the concise source-of-truth checkpoint for contributors. Public setup starts
 at the repository [README](../README.md). Exact deployed development evidence is in
@@ -34,7 +34,8 @@ remain closed by default.
 
 Bootstrap:
 
-1. validates tools, tenant, subscription, permissions, providers, and configuration;
+1. validates tools, tenant, subscription, permissions, providers, configuration,
+   and the exact configured Azure SQL path in the selected region;
 2. creates one resource group and its Azure/Entra resources;
 3. builds immutable images from the accepted source tree;
 4. initializes only a database with zero user tables;
@@ -65,6 +66,14 @@ Setup validates the typed bootstrap schema and field-specific Azure constraints;
 does not infer whether a deployment name is credential-like from the name's text.
 Unknown properties and unsupported advanced configuration remain rejected. Azure
 CLI and child-process output are still sanitized before the UI renders them.
+
+Setup discovers the selected subscription's physical Azure locations through the
+Azure Resource Manager locations endpoint. Its native dropdown renders the friendly
+display name beside the canonical Azure name and persists only the canonical value;
+there is no implicit location or free-text region entry. Region visibility is not a
+service-availability claim. Doctor, Plan, and the pre-mutation Apply revalidation
+fail closed unless the exact configured Azure SQL tier, objective, 2 GiB size, and
+LRS storage path are currently reported Available or Default.
 
 ## Provisioning contract
 
@@ -102,22 +111,22 @@ adapter disabled until safe token-role and bounded data-plane verification pass.
 
 ## Source verification
 
-The consolidated source gate completed on 2026-08-31:
+The consolidated source gate completed on 2026-09-01:
 
 | Verification project | Passed | Failed | Skipped |
 |---|---:|---:|---:|
 | Gateway.UnitTests | 632 | 0 | 0 |
 | Gateway.AdminUi.Tests | 157 | 0 | 0 |
-| Gateway.Setup.Tests | 135 | 0 | 0 |
+| Gateway.Setup.Tests | 180 | 0 | 0 |
 | Gateway.ObservabilityRuntime.Tests | 158 | 0 | 0 |
 | Gateway.ArchitectureTests | 115 | 0 | 0 |
 | Gateway.IntegrationTests | 85 | 0 | 0 |
 | Gateway.EndToEndTests | 102 | 0 | 0 |
 | Gateway.SecurityTests | 126 | 0 | 0 |
-| **.NET total** | **1,510** | **0** | **0** |
+| **.NET total** | **1,555** | **0** | **0** |
 
-The PowerShell source gate discovered 607 tests in 23 files: 606 passed, none
-failed, and one Windows-only launcher case was intentionally skipped on macOS. It
+The PowerShell source gate discovered 675 tests: 674 passed, none failed, and one
+Windows-only launcher case was intentionally skipped on macOS. It
 validated 17 PowerShell source files and two JSON contracts, then compiled 26 Bicep
 templates and three Bicep parameter files. Release build completed with zero
 warnings and zero errors; `dotnet format --verify-no-changes`, whitespace, launcher
@@ -125,17 +134,20 @@ syntax, OpenAPI YAML parsing, local documentation links, and ignored secret/stat
 path checks also passed.
 
 Setup regression coverage now includes Windows-safe Azure CLI/Bicep invocation,
-in-memory migration of the one obsolete false-only Setup property, configuration-
-independent diagnostics, stage-specific Plan failures without fake progress, and
-an explicit Plan retry action. Configuration readers normalize the previously
-emitted false-only field while continuing to reject enabled or unknown fields; new
-writes omit it.
+one circuit-scoped wizard under a single interactive router, explicit subscription
+selection, and a subscription-backed native region dropdown that stores canonical
+Azure names. Plan verifies the exact selected regional SQL contract, and Setup
+binds the reviewed configuration bytes to the Plan process before PowerShell parses
+them. A failed Plan returns to reviewed preparation; it cannot invoke a direct retry
+with stale configuration. Configuration readers normalize the previously emitted
+false-only field while continuing to reject enabled or unknown fields; new writes
+omit it.
 
 Recovery coverage includes exact source-continuation provenance, rejection of
 unexpected changed paths and a third generation, tamper detection for preserved
 history and completed-prefix evidence, and the deterministic governance-NSG
 What-If extension on later Resume. These cases are included in the consolidated
-607-test source gate above.
+675-test source gate above.
 
 ## Known external limitations
 

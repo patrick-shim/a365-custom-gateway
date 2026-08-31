@@ -19,7 +19,7 @@ launcher. It configures, plans, deploys, resumes, and verifies the complete Gate
 You need an Agent-365-enabled Microsoft Entra tenant, an Azure subscription, and an
 administrator who can approve the Azure, Entra, Agent ID, and optional Purview
 changes shown by the installer. On the workstation, install Git, the .NET 10 SDK,
-PowerShell 7, and Azure CLI.
+PowerShell 7, and Azure CLI 2.76 or later.
 
 ```bash
 git clone https://github.com/patrick-shim/a365-custom-gateway.git
@@ -30,9 +30,13 @@ az login
 
 On Windows, use `.\gateway.cmd setup` instead. Setup opens a temporary browser UI on
 `127.0.0.1`, discovers the subscriptions visible to the current Azure CLI session,
-writes only the reviewed non-secret `bootstrap/config.json`, runs an authenticated
-Azure What-If plan, and waits for explicit confirmation before deployment. Complete
-any Microsoft sign-in or consent windows that open during deployment.
+and loads the selected subscription's physical Azure regions into a dropdown. The
+dropdown shows the friendly label and exact Azure name together—for example,
+`Korea Central · koreacentral`—and stores only the canonical name. Setup writes the
+reviewed non-secret `bootstrap/config.json`, proves the configured Azure SQL tier is
+available in that region, runs an authenticated Azure What-If plan, and waits for
+explicit confirmation before deployment. Complete any Microsoft sign-in or consent
+windows that open during deployment.
 
 ```mermaid
 flowchart LR
@@ -56,10 +60,12 @@ For a terminal-only installation, run:
 ./gateway apply --open
 ```
 
-`plan` records a time-bounded acceptance of the exact configuration, source, and
-What-If result. `apply` revalidates that acceptance before changing anything. If an
-interruption occurs, correct the reported cause and run `./gateway resume`; do not
-delete `.bootstrap/` or start a second deployment.
+`doctor` and `plan` fail before resource creation if the configured Azure SQL
+edition, service objective, 2 GiB size, or LRS storage path cannot be proven
+available in the selected region. `plan` records a time-bounded acceptance of the
+exact configuration, source, and What-If result. `apply` revalidates that acceptance
+before changing anything. If an interruption occurs, correct the reported cause and
+run `./gateway resume`; do not delete `.bootstrap/` or start a second deployment.
 
 See the [bootstrap guide](bootstrap/README.md) for prerequisites, configuration,
 automation, and recovery behavior.

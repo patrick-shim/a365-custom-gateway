@@ -1,6 +1,6 @@
 # Development deployment status
 
-Last updated: 2026-08-31 (Asia/Seoul).
+Last updated: 2026-09-01 (Asia/Seoul).
 
 This checkpoint separates deployed evidence from source claims. It intentionally
 contains no subscription, tenant, resource-group, application, principal,
@@ -38,19 +38,15 @@ state from a deleted resource group.
 
 ## Current user-operated clean-subscription checkpoint
 
-A current clean-subscription run completed prerequisites, authentication, provider
-registration, the Azure foundation, the Gateway API identity, and all immutable
-images. The inert identity deployment then stopped before creating its deployment
-record because the Prompt Shields role-assignment scope used a module output in a
-validation-time resource-name expression. Read-only checks found no inert deployment
-record and no Gateway API or workflow-v3 worker Container App.
+The interrupted clean-subscription target and its bootstrap-created tenant objects
+were removed with exact readback. No Azure resource group or Entra application from
+that run remains in scope, and no current-source deployment is claimed.
 
-The current source uses the deterministic Content Safety account name at that scope
-and includes an exact one-generation continuation boundary. Local verification is
-green, but this correction is not live deployment evidence. Preserve the existing
-resource group and ignored `.bootstrap` state, pull the corrected source, and use
-the supported Resume command. The completed foundation and images must be
-independently revalidated and reused; they must not be rebuilt.
+The next run starts from a new unused deployment identity and selects Korea Central
+through the subscription-backed Setup dropdown, which persists `koreacentral`.
+Doctor and Plan must prove the exact configured Azure SQL path in that region before
+any mutation. The resulting source/configuration/plan fingerprints and deployed
+readbacks become the new environment evidence only after verification completes.
 
 ## Optional protection evidence
 

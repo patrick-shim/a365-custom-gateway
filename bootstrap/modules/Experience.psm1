@@ -103,16 +103,25 @@ function Read-GatewayChoice {
     )
 
     if ($Choices.Count -eq 0) { throw 'At least one choice is required.' }
+    if ($DefaultIndex -lt -1 -or $DefaultIndex -ge $Choices.Count) {
+        throw 'The choice default index is outside the available choices.'
+    }
+    $hasDefault = $DefaultIndex -ge 0
     for ($index = 0; $index -lt $Choices.Count; $index++) {
-        $marker = if ($index -eq $DefaultIndex) { ' (recommended)' } else { '' }
+        $marker = if ($hasDefault -and $index -eq $DefaultIndex) { ' (recommended)' } else { '' }
         Write-Host "  $($index + 1). $(ConvertTo-GatewaySafeDisplayText $Choices[$index].label)$marker"
         if (-not [string]::IsNullOrWhiteSpace([string]$Choices[$index].description)) {
             Write-Host "     $(ConvertTo-GatewaySafeDisplayText $Choices[$index].description)" -ForegroundColor DarkGray
         }
     }
     while ($true) {
-        $answer = (Read-Host "$Prompt [$($DefaultIndex + 1)]").Trim()
-        if ([string]::IsNullOrWhiteSpace($answer)) { return $Choices[$DefaultIndex] }
+        $readPrompt = if ($hasDefault) { "$Prompt [$($DefaultIndex + 1)]" } else { $Prompt }
+        $answer = (Read-Host $readPrompt).Trim()
+        if ([string]::IsNullOrWhiteSpace($answer)) {
+            if ($hasDefault) { return $Choices[$DefaultIndex] }
+            Write-Host "Enter a number from 1 to $($Choices.Count)." -ForegroundColor Yellow
+            continue
+        }
         $selected = 0
         if ([int]::TryParse($answer, [ref]$selected) -and $selected -ge 1 -and $selected -le $Choices.Count) {
             return $Choices[$selected - 1]
@@ -199,6 +208,242 @@ function Get-GatewayAzureSubscriptions {
     return @($accounts | Sort-Object @{ Expression = { -not [bool]$_.isDefault } }, @{ Expression = { [string]$_.name } })
 }
 
+function Test-GatewayAzureCliProviderValidationVersion {
+    [CmdletBinding()]
+    param([AllowNull()][object]$VersionValue)
+
+    if ($VersionValue -isnot [string] -or
+        $VersionValue -cnotmatch '\A(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\z') {
+        return $false
+    }
+    $parsedVersion = $null
+    if (-not [version]::TryParse($VersionValue, [ref]$parsedVersion)) { return $false }
+    return $parsedVersion -ge [version]'2.76.0'
+}
+
+function Assert-GatewayAzureCliProviderValidationSupport {
+    [CmdletBinding()]
+    param()
+
+    $azureCliVersion = Get-GatewayAzureCliVersion
+    if (-not (Test-GatewayAzureCliProviderValidationVersion -VersionValue $azureCliVersion)) {
+        throw 'Plan requires Azure CLI 2.76.0 or later for Provider validation. Upgrade Azure CLI, then retry.'
+    }
+    return $azureCliVersion
+}
+
+function Test-GatewayRawObjectProperty {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Object,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][ref]$Value
+    )
+
+    $Value.Value = $null
+    if ($Object -is [System.Collections.IDictionary]) {
+        if (-not $Object.Contains($Name)) { return $false }
+        $Value.Value = $Object[$Name]
+    }
+    else {
+        $property = $Object.PSObject.Properties[$Name]
+        if ($null -eq $property) { return $false }
+        $Value.Value = $property.Value
+    }
+    return $true
+}
+
+function Get-GatewayAzureLocationsNextLink {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$NextLink,
+        [Parameter(Mandatory)][string]$CanonicalSubscriptionId
+    )
+
+    $paginationFailure = 'Azure CLI returned unsafe or excessive subscription region pagination. No region was selected.'
+    if ([string]::IsNullOrWhiteSpace($NextLink) -or
+        $NextLink.Length -gt 4096 -or
+        $NextLink -cne $NextLink.Trim()) {
+        throw $paginationFailure
+    }
+    $nextUri = $null
+    if (-not [uri]::TryCreate($NextLink, [UriKind]::Absolute, [ref]$nextUri) -or
+        $nextUri.GetLeftPart([UriPartial]::Authority) -cne 'https://management.azure.com' -or
+        -not [string]::IsNullOrEmpty($nextUri.UserInfo) -or
+        -not [string]::IsNullOrEmpty($nextUri.Fragment) -or
+        $nextUri.AbsolutePath -cne "/subscriptions/$CanonicalSubscriptionId/locations") {
+        throw $paginationFailure
+    }
+
+    $query = $nextUri.Query
+    if ([string]::IsNullOrWhiteSpace($query) -or $query[0] -cne '?') {
+        throw $paginationFailure
+    }
+    $queryParts = @($query.Substring(1).Split([char]'&', [StringSplitOptions]::RemoveEmptyEntries))
+    if ($queryParts.Count -lt 2 -or $queryParts.Count -gt 8) { throw $paginationFailure }
+    $apiVersionCount = 0
+    foreach ($queryPart in $queryParts) {
+        $separator = $queryPart.IndexOf('=', [StringComparison]::Ordinal)
+        if ($separator -le 0 -or $separator -eq ($queryPart.Length - 1)) { throw $paginationFailure }
+        $key = $queryPart.Substring(0, $separator)
+        $value = $queryPart.Substring($separator + 1)
+        if ($key -cnotmatch '\A[A-Za-z0-9$_.-]{1,64}\z' -or
+            $value.Length -gt 2048 -or
+            $value -match '[\x00-\x1f\x7f]') {
+            throw $paginationFailure
+        }
+        if ($key.Equals('api-version', [StringComparison]::OrdinalIgnoreCase)) {
+            if ($key -cne 'api-version' -or $value -cne '2022-12-01') { throw $paginationFailure }
+            $apiVersionCount++
+        }
+    }
+    if ($apiVersionCount -ne 1) { throw $paginationFailure }
+    return $nextUri.AbsoluteUri
+}
+
+function Get-GatewayAzureLocations {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$SubscriptionId)
+
+    Assert-GuidValue -Value $SubscriptionId -Label 'Azure subscription ID'
+    $canonicalSubscriptionId = ([guid]$SubscriptionId).ToString('D')
+    $locationsUrl = "https://management.azure.com/subscriptions/$canonicalSubscriptionId/locations?api-version=2022-12-01"
+    $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $locations = [Collections.Generic.List[object]]::new()
+    $seenPages = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $totalRawLocations = 0
+    $pageNumber = 0
+    $nextUrl = $locationsUrl
+    while (-not [string]::IsNullOrWhiteSpace($nextUrl)) {
+        $pageNumber++
+        if ($pageNumber -gt 8 -or -not $seenPages.Add($nextUrl)) {
+            throw 'Azure CLI returned unsafe or excessive subscription region pagination. No region was selected.'
+        }
+        $envelope = Invoke-GatewayAzJson -Arguments @(
+            'rest', '--method', 'GET', '--url', $nextUrl,
+            '--subscription', $canonicalSubscriptionId
+        )
+        $isEnvelope = $envelope -is [System.Collections.IDictionary] -or
+            ($null -ne $envelope -and $envelope.GetType() -eq [System.Management.Automation.PSCustomObject])
+        if (-not $isEnvelope) {
+            throw 'Azure CLI returned an empty or invalid subscription region inventory. No region was selected.'
+        }
+
+        $rawPageLocations = $null
+        if (-not (Test-GatewayRawObjectProperty `
+                -Object $envelope -Name 'value' -Value ([ref]$rawPageLocations)) -or
+            $rawPageLocations -isnot [System.Array]) {
+            throw 'Azure CLI returned an empty or invalid subscription region inventory. No region was selected.'
+        }
+        $pageLocations = @($rawPageLocations)
+        $totalRawLocations += $pageLocations.Count
+        if ($pageLocations.Count -eq 0 -or $totalRawLocations -gt 256) {
+            throw 'Azure CLI returned an empty or invalid subscription region inventory. No region was selected.'
+        }
+
+        foreach ($rawLocation in $pageLocations) {
+            $isObject = $rawLocation -is [System.Collections.IDictionary] -or
+                ($null -ne $rawLocation -and $rawLocation.GetType() -eq [System.Management.Automation.PSCustomObject])
+            if (-not $isObject) {
+                throw 'Azure CLI returned an empty or invalid subscription region inventory. No region was selected.'
+            }
+            $metadata = $null
+            $metadataExists = Test-GatewayRawObjectProperty `
+                -Object $rawLocation -Name 'metadata' -Value ([ref]$metadata)
+            $isMetadataObject = $metadata -is [System.Collections.IDictionary] -or
+                ($null -ne $metadata -and $metadata.GetType() -eq [System.Management.Automation.PSCustomObject])
+            if (-not $metadataExists -or -not $isMetadataObject) {
+                throw 'Azure CLI returned an empty or invalid subscription region inventory. No region was selected.'
+            }
+            $regionType = $null
+            $name = $null
+            $displayName = $null
+            $requiredFieldsExist =
+                (Test-GatewayRawObjectProperty -Object $metadata -Name 'regionType' -Value ([ref]$regionType)) -and
+                (Test-GatewayRawObjectProperty -Object $rawLocation -Name 'name' -Value ([ref]$name)) -and
+                (Test-GatewayRawObjectProperty -Object $rawLocation -Name 'displayName' -Value ([ref]$displayName))
+            if (-not $requiredFieldsExist -or
+                $regionType -isnot [string] -or
+                $name -isnot [string] -or
+                $displayName -isnot [string]) {
+                throw 'Azure CLI returned an empty or invalid subscription region inventory. No region was selected.'
+            }
+            if ($regionType -cnotin @('Physical', 'Logical')) {
+                throw 'Azure CLI returned an empty or invalid subscription region inventory. No region was selected.'
+            }
+            if ($name -cnotmatch '\A[a-z0-9]+\z' -or
+                [string]::IsNullOrWhiteSpace($displayName) -or
+                $displayName -cne $displayName.Trim() -or
+                $displayName.Length -gt 160 -or
+                $displayName -match '[\x00-\x1f\x7f]') {
+                throw 'Azure CLI returned an empty or invalid subscription region inventory. No region was selected.'
+            }
+            if ($regionType -ceq 'Logical') { continue }
+            if (-not $names.Add($name)) {
+                throw 'Azure CLI returned an empty or invalid subscription region inventory. No region was selected.'
+            }
+            $locations.Add([pscustomobject]@{
+                name = $name
+                displayName = $displayName
+            })
+        }
+
+        $rawNextLink = $null
+        $nextLinkExists = Test-GatewayRawObjectProperty `
+            -Object $envelope -Name 'nextLink' -Value ([ref]$rawNextLink)
+        if (-not $nextLinkExists -or $null -eq $rawNextLink) {
+            $nextUrl = ''
+        }
+        elseif ($rawNextLink -isnot [string]) {
+            throw 'Azure CLI returned unsafe or excessive subscription region pagination. No region was selected.'
+        }
+        else {
+            $nextUrl = Get-GatewayAzureLocationsNextLink `
+                -NextLink $rawNextLink `
+                -CanonicalSubscriptionId $canonicalSubscriptionId
+        }
+    }
+    if ($locations.Count -eq 0) {
+        throw 'Azure CLI returned an empty or invalid subscription region inventory. No region was selected.'
+    }
+    return @($locations | Sort-Object displayName, name)
+}
+
+function Read-GatewayAzureLocation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SubscriptionId,
+        [Parameter()][string]$ConfiguredLocation = ''
+    )
+
+    $locations = @(Get-GatewayAzureLocations -SubscriptionId $SubscriptionId)
+    $choices = @($locations | ForEach-Object {
+        [ordered]@{
+            label = "$($_.displayName) ($($_.name))"
+            description = "Azure canonical name: $($_.name)"
+            value = [string]$_.name
+        }
+    })
+    $defaultIndex = -1
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredLocation)) {
+        for ($index = 0; $index -lt $locations.Count; $index++) {
+            if ([string]$locations[$index].name -ceq $ConfiguredLocation) {
+                $defaultIndex = $index
+                break
+            }
+        }
+    }
+    $choice = Read-GatewayChoice `
+        -Prompt 'Choose an Azure region' `
+        -Choices $choices `
+        -DefaultIndex $defaultIndex
+    $selectedName = [string]$choice.value
+    if (@($locations | Where-Object { [string]$_.name -ceq $selectedName }).Count -ne 1) {
+        throw 'The selected Azure region did not match the current subscription inventory.'
+    }
+    return $selectedName
+}
+
 function New-GatewayBootstrapConfiguration {
     [CmdletBinding()]
     param(
@@ -218,7 +463,12 @@ function New-GatewayBootstrapConfiguration {
     }
 
     $resolvedPath = [IO.Path]::GetFullPath($Path)
-    if ((Test-Path -LiteralPath $resolvedPath) -and -not $Force) {
+    $existingConfiguration = $null
+    $configurationExists = Test-Path -LiteralPath $resolvedPath
+    if ($configurationExists) {
+        try { $existingConfiguration = Read-BootstrapConfig -Path $resolvedPath } catch { }
+    }
+    if ($configurationExists -and -not $Force) {
         if (-not (Read-GatewayYesNo -Prompt "Configuration already exists at '$resolvedPath'. Replace it" -Default $false)) {
             throw 'Configuration was not changed.'
         }
@@ -271,7 +521,15 @@ function New-GatewayBootstrapConfiguration {
     $environment = [string]$profile.environment
     $randomProject = 'gw' + [guid]::NewGuid().ToString('N').Substring(0, 5)
     $projectName = Read-GatewayText -Prompt 'Short project name (used for tenant/global resource isolation)' -Default $randomProject -Pattern '^[a-z][a-z0-9]{1,7}$' -ValidationMessage 'Use 2-8 lowercase letters/digits, starting with a letter.'
-    $location = Read-GatewayText -Prompt 'Azure region name' -Default 'eastus2' -Pattern '^[a-z0-9]+$' -ValidationMessage 'Use the Azure CLI region form, such as eastus2 or koreacentral.'
+    $configuredLocation = ''
+    if ($null -ne $existingConfiguration -and
+        [string]$existingConfiguration.subscriptionId -ceq [string]$subscription.id -and
+        [string]$existingConfiguration.tenantId -ceq [string]$subscription.tenantId) {
+        $configuredLocation = [string]$existingConfiguration.location
+    }
+    $location = Read-GatewayAzureLocation `
+        -SubscriptionId ([string]$subscription.id) `
+        -ConfiguredLocation $configuredLocation
     $resourceGroupName = Read-GatewayText -Prompt 'Resource group name' -Default "rg-$projectName-$environment" -Pattern '^[A-Za-z0-9._()\-]{1,90}$' -ValidationMessage 'Enter a valid Azure resource group name (1-90 characters).'
 
     $suggestedEmail = ''
@@ -439,7 +697,14 @@ function Get-GatewayDoctorReport {
     $checks.Add((New-GatewayDoctorCheck -Name 'Git' -Status $(if ($gitVersion) { 'Pass' } else { 'Fail' }) -Value $gitVersion -Remediation 'Install Git from https://git-scm.com/downloads.'))
 
     $azVersion = Get-GatewayAzureCliVersion
-    $checks.Add((New-GatewayDoctorCheck -Name 'Azure CLI' -Status $(if ($azVersion) { 'Pass' } else { 'Fail' }) -Value $azVersion -Remediation 'Install Azure CLI from https://aka.ms/azure-cli.'))
+    $azSupportsProviderValidation = Test-GatewayAzureCliProviderValidationVersion -VersionValue $azVersion
+    $azRemediation = if ($azVersion) {
+        'Upgrade Azure CLI to version 2.76.0 or later from https://aka.ms/azure-cli.'
+    }
+    else {
+        'Install Azure CLI version 2.76.0 or later from https://aka.ms/azure-cli.'
+    }
+    $checks.Add((New-GatewayDoctorCheck -Name 'Azure CLI' -Status $(if ($azSupportsProviderValidation) { 'Pass' } else { 'Fail' }) -Value $azVersion -Remediation $azRemediation))
 
     $bicepVersion = if ($azVersion) { Get-GatewayCommandVersion -Name 'az' -Arguments @('bicep', 'version') } else { $null }
     $checks.Add((New-GatewayDoctorCheck -Name 'Bicep' -Status $(if ($bicepVersion) { 'Pass' } else { 'Fail' }) -Value $bicepVersion -Remediation 'Run az bicep install after installing Azure CLI.'))
@@ -473,7 +738,7 @@ function Get-GatewayDoctorReport {
     $azureSessionValue = 'Not signed in or unavailable'
     $accountMatchesConfig = $false
     $account = $null
-    if ($azVersion) {
+    if ($azSupportsProviderValidation) {
         try {
             $account = Invoke-GatewayAzJson -Arguments @('account', 'show', '--query', '{id:id,tenantId:tenantId}')
             if ($account) {
@@ -546,21 +811,45 @@ function Get-GatewayDoctorReport {
     $regionValue = 'NotChecked'
     if ($config -and $accountMatchesConfig) {
         try {
-            $regionCount = Invoke-GatewayAzJson -Arguments @('account', 'list-locations', '--subscription', [string]$config.subscriptionId, '--query', "length([?name=='$($config.location)'])")
-            if ([int]$regionCount -eq 1) { $regionStatus = 'Pass'; $regionValue = "Azure region '$($config.location)' is listed for the subscription" }
+            $regionCount = @(
+                Get-GatewayAzureLocations -SubscriptionId ([string]$config.subscriptionId) |
+                    Where-Object { [string]$_.name -ceq [string]$config.location }
+            ).Count
+            if ($regionCount -eq 1) { $regionStatus = 'Pass'; $regionValue = "Azure region '$($config.location)' is listed for the subscription" }
             else { $regionStatus = 'Fail'; $regionValue = "Azure region '$($config.location)' was not listed for the subscription" }
         }
         catch { $regionValue = 'Region inventory read was denied or ambiguous' }
     }
-    $checks.Add((New-GatewayDoctorCheck -Name 'Azure region visibility' -Status $regionStatus -Value $regionValue -Remediation 'Choose an Azure region returned by az account list-locations, then generate a fresh plan.'))
-    $checks.Add((New-GatewayDoctorCheck -Name 'Regional SKU/quota availability' -Status 'NotChecked' -Value 'NotChecked' -Remediation 'ARM What-If cannot prove every quota or data-plane SKU. Review subscription quotas and resolve any Apply preflight denial.'))
+    $checks.Add((New-GatewayDoctorCheck -Name 'Azure region visibility' -Status $regionStatus -Value $regionValue -Remediation 'Reopen Setup and choose a physical Azure region returned for the configured subscription, then generate a fresh plan.'))
+
+    $sqlRegionStatus = 'NotChecked'
+    $sqlRegionValue = 'NotChecked'
+    if ($config -and $accountMatchesConfig -and $regionStatus -eq 'Pass') {
+        try {
+            Assert-GatewaySqlRegionalAvailability -Config $config | Out-Null
+            $sqlRegionStatus = 'Pass'
+            $sqlRegionValue = "The configured Azure SQL SKU is available in '$($config.location)' for this subscription"
+        }
+        catch {
+            $sqlRegionStatus = 'Fail'
+            $sqlRegionValue = 'Exact Azure SQL regional availability was not confirmed'
+        }
+    }
+    elseif ($regionStatus -eq 'Fail') {
+        $sqlRegionStatus = 'Fail'
+        $sqlRegionValue = 'Azure SQL availability cannot pass because the configured region is unavailable'
+    }
+    $checks.Add((New-GatewayDoctorCheck -Name 'Azure SQL regional availability' -Status $sqlRegionStatus -Value $sqlRegionValue -Remediation 'Choose a region where the configured Azure SQL SKU is available for this subscription, then generate a fresh plan.'))
     $checks.Add((New-GatewayDoctorCheck -Name 'Generated global-name availability' -Status 'NotChecked' -Value 'NotChecked' -Remediation 'Run an authenticated Plan/What-If. Apply still verifies every created/adopted resource by exact readback.'))
     $checks.Add((New-GatewayDoctorCheck -Name 'Agent 365 tenant eligibility/licensing' -Status 'NotChecked' -Value 'NotChecked' -Remediation 'An authorized tenant administrator must complete the Agent 365 requirements/blueprint checks; bootstrap fails closed if unavailable.'))
 
     $failures = @($checks | Where-Object status -eq 'Fail').Count
     $warnings = @($checks | Where-Object status -eq 'Warning').Count
     $notChecked = @($checks | Where-Object status -eq 'NotChecked').Count
-    $planRequirementNames = @('PowerShell', 'Azure CLI', 'Bicep', 'Configuration', 'Azure session')
+    $planRequirementNames = @(
+        'PowerShell', 'Azure CLI', 'Bicep', 'Configuration', 'Azure session',
+        'Azure region visibility', 'Azure SQL regional availability'
+    )
     $planBlockingChecks = @($checks | Where-Object {
         $_.name -in $planRequirementNames -and $_.status -notin @('Pass', 'NotRequired')
     })
@@ -884,6 +1173,7 @@ function Test-GatewayPlanSource {
     if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
         throw 'Plan requires Azure CLI and Bicep; Azure CLI is not available. Run gateway doctor.'
     }
+    Assert-GatewayAzureCliProviderValidationSupport | Out-Null
     $bicepVersion = Get-GatewayCommandVersion -Name 'az' -Arguments @('bicep', 'version')
     if ([string]::IsNullOrWhiteSpace($bicepVersion)) {
         throw 'Plan requires an installed Azure Bicep CLI. Run az bicep install, then retry.'
@@ -2382,6 +2672,7 @@ function Invoke-GatewayFoundationWhatIf {
         $ExecutionSourceFingerprint = $SourceFingerprint
     }
     Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Plan execution source fingerprint'
+    Assert-GatewayAzureCliProviderValidationSupport | Out-Null
 
     $sourceCorrectionPlan = $null
     $sourceCorrectionBoundary = $null
@@ -2425,6 +2716,7 @@ function Invoke-GatewayFoundationWhatIf {
         throw 'Distinct deployment and execution source fingerprints require an exact durable source-correction plan.'
     }
 
+    Assert-GatewaySqlRegionalAvailability -Config $Config | Out-Null
     $deploymentName = "a365gw-plan-$($Config.projectName)-$($Config.environment)"
     $result = Invoke-AzJson -Arguments @(
         'deployment', 'sub', 'what-if',
@@ -2439,6 +2731,7 @@ function Invoke-GatewayFoundationWhatIf {
         "projectName=$($Config.projectName)",
         "deploymentOwnershipId=$canonicalOwnershipId",
         "bootstrapSourceFingerprint=$SourceFingerprint",
+        '--validation-level', 'Provider',
         '--result-format', 'ResourceIdOnly',
         '--no-pretty-print'
     )

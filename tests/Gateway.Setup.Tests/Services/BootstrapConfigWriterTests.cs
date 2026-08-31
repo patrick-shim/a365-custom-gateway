@@ -21,11 +21,22 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         await File.WriteAllTextAsync(
             target,
             BootstrapConfigWriter.SerializeForTest(BootstrapConfiguration.From(form)));
+        var priorCanonical = await File.ReadAllTextAsync(target);
         var writer = NewWriter();
 
-        var result = await writer.WriteAsync(form);
+        using var staged = await writer.StageAsync(
+            ReadyState(form).CreatePlanReadyConfiguration());
 
-        result.Path.Should().Be(target);
+        (await File.ReadAllTextAsync(target)).Should().Be(priorCanonical);
+        File.Exists(staged.StagePath).Should().BeTrue();
+        var result = staged.TryPublish();
+        result.Should().NotBeNull();
+
+        result!.Path.Should().Be(target);
+        result.ConfigurationFileFingerprint.Should().Be(
+            BootstrapConfigurationDocument.Fingerprint(await File.ReadAllTextAsync(target)));
+        PlanFingerprintPolicy.IsCanonical(result.ConfigurationFileFingerprint).Should().BeTrue();
+        File.Exists(staged.StagePath).Should().BeFalse();
         Directory.GetFiles(root, "*", SearchOption.AllDirectories)
             .Should().Equal(target);
         var json = await File.ReadAllTextAsync(target);
@@ -67,7 +78,8 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         var form = ValidForm();
         form.ResourceGroupName = "rg-invalid.";
 
-        var action = () => NewWriter().WriteAsync(form);
+        var action = () => NewWriter().StageAsync(
+            ReadyState(form).CreatePlanReadyConfiguration());
 
         await action.Should().ThrowAsync<ValidationException>();
     }
@@ -85,7 +97,7 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         form.PurviewEnabled = true;
         form.PurviewSensitiveInformationType = "Credit Card Number";
 
-        var result = await NewWriter().WriteAsync(form);
+        var result = await StageAndPublishAsync(NewWriter(), ReadyState(form));
 
         result.Configuration.Agent365.ReviewedManagerApplicationIds.Should().Equal(
             Guid.Parse("33333333-3333-4333-8333-333333333333"),
@@ -101,7 +113,7 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         form.PurviewEnabled = true;
         form.PurviewSensitiveInformationType = "Bearer Classification Name";
 
-        var result = await NewWriter().WriteAsync(form);
+        var result = await StageAndPublishAsync(NewWriter(), ReadyState(form));
 
         result.Configuration.Purview.SensitiveInformationType.Should().Be(
             "Bearer Classification Name");
@@ -118,10 +130,64 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         var existingJson = BootstrapConfigWriter.SerializeForTest(BootstrapConfiguration.From(existing));
         await File.WriteAllTextAsync(target, existingJson);
 
-        var action = () => NewWriter().WriteAsync(ValidForm());
+        var action = () => NewWriter().StageAsync(
+            ReadyState(ValidForm()).CreatePlanReadyConfiguration());
 
         await action.Should().ThrowAsync<ExistingConfigurationChangedException>();
         (await File.ReadAllTextAsync(target)).Should().Be(existingJson);
+    }
+
+    [Fact]
+    public async Task WriteAsync_RejectsUnavailableSelectedSubscriptionBeforeCreatingAFile()
+    {
+        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
+        var state = ReadyState(ValidForm());
+        state.SetSubscriptions([]);
+
+        var action = () => NewWriter().StageAsync(state.CreatePlanReadyConfiguration());
+
+        await action.Should().ThrowAsync<ValidationException>();
+        File.Exists(Path.Combine(root, "bootstrap", "config.json")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task WriteAsync_RejectsDisabledSelectedSubscriptionBeforeCreatingAFile()
+    {
+        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
+        var state = ReadyState(ValidForm());
+        var selected = state.Subscriptions.Single();
+        state.SetSubscriptions([selected with { State = "Disabled" }]);
+
+        var action = () => NewWriter().StageAsync(state.CreatePlanReadyConfiguration());
+
+        await action.Should().ThrowAsync<ValidationException>();
+        File.Exists(Path.Combine(root, "bootstrap", "config.json")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task WriteAsync_RejectsLocationOutsideCurrentSubscriptionInventory()
+    {
+        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
+        var state = ReadyState(ValidForm());
+        state.Form.Location = "westus3";
+
+        var action = () => NewWriter().StageAsync(state.CreatePlanReadyConfiguration());
+
+        await action.Should().ThrowAsync<ValidationException>();
+        File.Exists(Path.Combine(root, "bootstrap", "config.json")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task WriteAsync_RejectsStaleManagerApplicationAcceptance()
+    {
+        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
+        var state = ReadyState(ValidForm());
+        state.Form.ReviewedManagerApplicationIds = Guid.NewGuid().ToString("D");
+
+        var action = () => NewWriter().StageAsync(state.CreatePlanReadyConfiguration());
+
+        await action.Should().ThrowAsync<ValidationException>();
+        File.Exists(Path.Combine(root, "bootstrap", "config.json")).Should().BeFalse();
     }
 
     [Fact]
@@ -144,6 +210,37 @@ public sealed class BootstrapConfigWriterTests : IDisposable
     private BootstrapConfigWriter NewWriter() => new(
         new RepositoryLayout(root),
         new AtomicFileWriter());
+
+    private static async Task<ConfigurationWriteResult> StageAndPublishAsync(
+        BootstrapConfigWriter writer,
+        SetupWizardState state)
+    {
+        using var staged = await writer.StageAsync(state.CreatePlanReadyConfiguration());
+        return staged.TryPublish()
+            ?? throw new InvalidOperationException("The deterministic test stage changed unexpectedly.");
+    }
+
+    private static SetupWizardState ReadyState(SetupConfigurationForm form)
+    {
+        var state = new SetupWizardState(new FixedProjectNameGenerator());
+        state.ApplyExistingConfiguration(new ExistingConfigurationResult(
+            ExistingConfigurationStatus.Loaded,
+            form,
+            null));
+        state.SetSubscriptions([
+            new AzureSubscription(
+                form.SubscriptionId,
+                form.TenantId,
+                "Selected target",
+                true,
+                "Enabled")
+        ]);
+        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
+            form.SubscriptionId,
+            [new AzureLocation(form.Location, "Selected region")],
+            null));
+        return state;
+    }
 
     private static void AssertOnlyDeclaredProperties(JsonElement value, JsonElement schema)
     {
@@ -194,6 +291,11 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         PurviewEnabled = false,
         PurviewSensitiveInformationType = string.Empty
     };
+
+    private sealed class FixedProjectNameGenerator : IProjectNameGenerator
+    {
+        public string Create() => "gwfixed";
+    }
 
     public void Dispose()
     {

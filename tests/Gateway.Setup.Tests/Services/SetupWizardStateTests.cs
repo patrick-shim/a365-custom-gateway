@@ -7,6 +7,200 @@ namespace Gateway.Setup.Tests.Services;
 public sealed class SetupWizardStateTests
 {
     [Fact]
+    public void NewConfiguration_HasNoImplicitAzureRegion()
+    {
+        var state = NewState();
+
+        state.Form.Location.Should().BeEmpty();
+        state.HasValidSelectedLocation.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ApplyLocationDiscovery_PreservesExactValidImportedSelection()
+    {
+        var state = NewState();
+        var form = ValidForm();
+        form.Location = "koreacentral";
+        state.ApplyExistingConfiguration(new ExistingConfigurationResult(
+            ExistingConfigurationStatus.Loaded,
+            form,
+            null));
+        state.SetSubscriptions([
+            new AzureSubscription(
+                form.SubscriptionId,
+                form.TenantId,
+                "Imported target",
+                true,
+                "Enabled")
+        ]);
+
+        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
+            form.SubscriptionId,
+            [
+                new AzureLocation("eastus2", "East US 2"),
+                new AzureLocation("koreacentral", "Korea Central")
+            ],
+            null));
+
+        state.Form.Location.Should().Be("koreacentral");
+        state.HasValidSelectedLocation.Should().BeTrue();
+        state.LocationSelectionIssue.Should().BeNull();
+    }
+
+    [Fact]
+    public void ApplyLocationDiscovery_BlocksUnavailableImportedSelection()
+    {
+        var state = NewState();
+        var form = ValidForm();
+        form.Location = "eastus2";
+        state.ApplyExistingConfiguration(new ExistingConfigurationResult(
+            ExistingConfigurationStatus.Loaded,
+            form,
+            null));
+        state.SetSubscriptions([
+            new AzureSubscription(
+                form.SubscriptionId,
+                form.TenantId,
+                "Imported target",
+                true,
+                "Enabled")
+        ]);
+
+        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
+            form.SubscriptionId,
+            [new AzureLocation("koreacentral", "Korea Central")],
+            null));
+
+        state.Form.Location.Should().Be("eastus2");
+        state.HasValidSelectedLocation.Should().BeFalse();
+        state.LocationSelectionIssue.Should().Contain("not available");
+    }
+
+    [Fact]
+    public void SelectLocation_AcceptsOnlyExactCurrentSubscriptionInventoryValue()
+    {
+        var state = NewState();
+        var subscription = Subscription("Target", isDefault: true, state: "Enabled");
+        state.SetSubscriptions([subscription]);
+        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
+            subscription.SubscriptionId,
+            [new AzureLocation("koreacentral", "Korea Central")],
+            null));
+
+        state.SelectLocation("KoreaCentral").Should().BeFalse();
+        state.Form.Location.Should().BeEmpty();
+        state.SelectLocation("koreacentral").Should().BeTrue();
+        state.Form.Location.Should().Be("koreacentral");
+        state.HasValidSelectedLocation.Should().BeTrue();
+    }
+
+    [Fact]
+    public void FailedLocationDiscovery_ClearsInventoryAndBlocksPreviousSelection()
+    {
+        var state = NewState();
+        var subscription = Subscription("Target", isDefault: true, state: "Enabled");
+        state.SetSubscriptions([subscription]);
+        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
+            subscription.SubscriptionId,
+            [new AzureLocation("koreacentral", "Korea Central")],
+            null));
+        state.SelectLocation("koreacentral").Should().BeTrue();
+
+        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
+            subscription.SubscriptionId,
+            [],
+            "Azure CLI could not read the available Azure location inventory."));
+
+        state.Locations.Should().BeEmpty();
+        state.LocationDiscoveryGuidance.Should().NotBeNull();
+        state.HasValidSelectedLocation.Should().BeFalse();
+        state.SelectLocation("koreacentral").Should().BeFalse();
+    }
+
+    [Fact]
+    public void ChangingSubscription_InvalidatesLocationInventoryAndSelection()
+    {
+        var state = NewState();
+        var first = Subscription("First", isDefault: true, state: "Enabled");
+        var second = Subscription("Second", isDefault: false, state: "Enabled");
+        state.SetSubscriptions([first]);
+        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
+            first.SubscriptionId,
+            [new AzureLocation("koreacentral", "Korea Central")],
+            null));
+        state.SelectLocation("koreacentral").Should().BeTrue();
+        state.SetSubscriptions([first, second]);
+
+        state.SelectSubscription(second.SubscriptionId).Should().BeTrue();
+
+        state.Form.Location.Should().BeEmpty();
+        state.Locations.Should().BeEmpty();
+        state.HasValidSelectedLocation.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SelectedSubscriptionDisappearing_InvalidatesEveryPlanReadinessProof()
+    {
+        var state = ReadyState();
+
+        state.SetSubscriptions([]);
+
+        state.HasEnabledSelectedSubscription.Should().BeFalse();
+        state.HasValidSelectedLocation.Should().BeFalse();
+        state.ManagerApplicationsAccepted.Should().BeFalse();
+        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
+    }
+
+    [Fact]
+    public void SelectedSubscriptionBecomingDisabled_InvalidatesEveryPlanReadinessProof()
+    {
+        var state = ReadyState();
+        var selected = state.Subscriptions.Single();
+
+        state.SetSubscriptions([
+            selected with { State = "Disabled" }
+        ]);
+
+        state.HasEnabledSelectedSubscription.Should().BeFalse();
+        state.HasValidSelectedLocation.Should().BeFalse();
+        state.ManagerApplicationsAccepted.Should().BeFalse();
+        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ImportedManagerAcceptanceRecoversOnlyForTheSameRestoredTarget()
+    {
+        var state = NewState();
+        var form = ValidForm();
+        form.Location = "koreacentral";
+        var selected = new AzureSubscription(
+            form.SubscriptionId,
+            form.TenantId,
+            "Imported target",
+            true,
+            "Enabled");
+        state.ApplyExistingConfiguration(new ExistingConfigurationResult(
+            ExistingConfigurationStatus.Loaded,
+            form,
+            null));
+        state.SetSubscriptions([selected]);
+        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
+            selected.SubscriptionId,
+            [new AzureLocation("koreacentral", "Korea Central")],
+            null));
+        state.ManagerApplicationsAccepted.Should().BeTrue();
+
+        state.SetSubscriptions([]);
+        state.ManagerApplicationsAccepted.Should().BeFalse();
+        state.SetSubscriptions([selected]);
+
+        state.ManagerApplicationsAccepted.Should().BeTrue();
+        state.HasValidSelectedLocation.Should().BeFalse(
+            "a restored subscription still requires fresh location inventory");
+        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
+    }
+
+    [Fact]
     public void SetSubscriptions_WithMultipleEnabledTargets_RequiresExplicitSelection()
     {
         var state = NewState();
@@ -125,6 +319,27 @@ public sealed class SetupWizardStateTests
     }
 
     [Fact]
+    public void ManagerApplicationAcceptance_BecomesStaleWhenReviewedValuesChange()
+    {
+        var state = ReadyState();
+
+        state.Form.ReviewedManagerApplicationIds = Guid.NewGuid().ToString("D");
+
+        state.ManagerApplicationsAccepted.Should().BeFalse();
+        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
+    }
+
+    [Fact]
+    public void PlanReadiness_RequiresExactCurrentLocationInventoryMembership()
+    {
+        var state = ReadyState();
+        state.Form.Location = "eastus2";
+
+        state.HasValidSelectedLocation.Should().BeFalse();
+        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
+    }
+
+    [Fact]
     public void DiscoveryForStaleTarget_IsRejectedWithoutCopyingIds()
     {
         var state = NewState();
@@ -177,6 +392,27 @@ public sealed class SetupWizardStateTests
     }
 
     private static SetupWizardState NewState() => new(new FixedProjectNameGenerator());
+
+    private static SetupWizardState ReadyState()
+    {
+        var state = NewState();
+        var subscription = Subscription("Target", isDefault: true, state: "Enabled");
+        state.SetSubscriptions([subscription]);
+        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
+            subscription.SubscriptionId,
+            [new AzureLocation("koreacentral", "Korea Central")],
+            null));
+        state.SelectLocation("koreacentral").Should().BeTrue();
+        state.ApplyManagerApplicationDiscovery(new ManagerApplicationDiscoveryResult(
+            subscription.SubscriptionId,
+            subscription.TenantId,
+            [Candidate(Guid.NewGuid())],
+            AzureAccountDiscovery.ManagerApplicationProvenance,
+            null));
+        state.AcceptDiscoveredManagerApplications().Should().BeTrue();
+        state.Form.AlertEmail = "operator@example.com";
+        return state;
+    }
 
     private static AzureSubscription Subscription(string name, bool isDefault, string state) =>
         new(Guid.NewGuid(), Guid.NewGuid(), name, isDefault, state);

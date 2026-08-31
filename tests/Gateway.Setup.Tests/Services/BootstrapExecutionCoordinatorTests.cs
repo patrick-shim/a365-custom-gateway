@@ -9,6 +9,23 @@ public sealed class BootstrapExecutionCoordinatorTests
 {
     private const string ReviewedFingerprint =
         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    private const string ConfigurationFingerprint =
+        "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+    [Fact]
+    public void DirectPlanStart_IsRejectedWithoutAPreparationLeaseAndPublishedFingerprint()
+    {
+        var factory = new RecordingCommandFactory();
+        var coordinator = CreateCoordinator(factory, new SequencedProcessRunner());
+
+        var started = coordinator.TryStart(
+            BootstrapCommand.Plan,
+            explicitlyConfirmed: true);
+
+        started.Should().BeFalse();
+        coordinator.Snapshot().Status.Should().Be(BootstrapExecutionStatus.NotStarted);
+        factory.Calls.Should().BeEmpty();
+    }
 
     [Fact]
     public async Task Apply_ReceivesOnlyTheApplyReadyFingerprintEmittedByTheReviewedPlan()
@@ -23,7 +40,7 @@ public sealed class BootstrapExecutionCoordinatorTests
                 new BootstrapProcessResult(0, false)));
         var coordinator = CreateCoordinator(factory, runner);
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
         coordinator.Snapshot().PlanSucceeded.Should().BeTrue();
 
@@ -37,8 +54,8 @@ public sealed class BootstrapExecutionCoordinatorTests
         deployment.VerifiedEndpoints.ApiBaseAddress.Should().Be("https://ca-gateway-api-dev.safe.azurecontainerapps.io/");
         deployment.VerifiedEndpoints.ApiHealthAddress.Should().Be("https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks");
         factory.Calls.Should().Equal(
-            new CommandCall(BootstrapCommand.Plan, null),
-            new CommandCall(BootstrapCommand.Apply, ReviewedFingerprint));
+            new CommandCall(BootstrapCommand.Plan, null, ConfigurationFingerprint),
+            new CommandCall(BootstrapCommand.Apply, ReviewedFingerprint, null));
     }
 
     [Fact]
@@ -55,7 +72,7 @@ public sealed class BootstrapExecutionCoordinatorTests
                     [DeploymentVerificationResult()],
                     new BootstrapProcessResult(0, false))));
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
         coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
@@ -65,8 +82,8 @@ public sealed class BootstrapExecutionCoordinatorTests
         snapshot.HasVerifiedDeployment.Should().BeTrue();
         snapshot.VerifiedEndpoints!.VerificationMode.Should().Be(BootstrapVerificationMode.Apply);
         factory.Calls.Should().Equal(
-            new CommandCall(BootstrapCommand.Plan, null),
-            new CommandCall(BootstrapCommand.Resume, ReviewedFingerprint));
+            new CommandCall(BootstrapCommand.Plan, null, ConfigurationFingerprint),
+            new CommandCall(BootstrapCommand.Resume, ReviewedFingerprint, null));
     }
 
     [Fact]
@@ -77,7 +94,7 @@ public sealed class BootstrapExecutionCoordinatorTests
             new RunResult([], new BootstrapProcessResult(0, false)));
         var coordinator = CreateCoordinator(factory, runner);
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
 
         var snapshot = coordinator.Snapshot();
@@ -86,7 +103,8 @@ public sealed class BootstrapExecutionCoordinatorTests
         snapshot.Events.Should().Contain(progress =>
             progress.Message == "Plan ended without one apply-ready canonical fingerprint. No mutation was authorized.");
         coordinator.TryStart(BootstrapCommand.Apply, explicitlyConfirmed: true).Should().BeFalse();
-        factory.Calls.Should().ContainSingle().Which.Should().Be(new CommandCall(BootstrapCommand.Plan, null));
+        factory.Calls.Should().ContainSingle().Which.Should().Be(
+            new CommandCall(BootstrapCommand.Plan, null, ConfigurationFingerprint));
     }
 
     [Fact]
@@ -104,7 +122,7 @@ public sealed class BootstrapExecutionCoordinatorTests
                 new BootstrapProcessResult(0, false)));
         var coordinator = CreateCoordinator(factory, runner);
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
 
         coordinator.Snapshot().PlanSucceeded.Should().BeFalse();
@@ -124,7 +142,7 @@ public sealed class BootstrapExecutionCoordinatorTests
                     ],
                     new BootstrapProcessResult(0, false))));
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
 
         coordinator.Snapshot().Status.Should().Be(BootstrapExecutionStatus.Failed);
@@ -149,7 +167,7 @@ public sealed class BootstrapExecutionCoordinatorTests
                     ],
                     new BootstrapProcessResult(0, false))));
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
 
         coordinator.Snapshot().Status.Should().Be(BootstrapExecutionStatus.Failed);
@@ -170,7 +188,7 @@ public sealed class BootstrapExecutionCoordinatorTests
             new SequencedProcessRunner(
                 new RunResult(claims, new BootstrapProcessResult(0, false))));
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
 
         coordinator.Snapshot().Status.Should().Be(BootstrapExecutionStatus.Failed);
@@ -194,7 +212,7 @@ public sealed class BootstrapExecutionCoordinatorTests
             activity,
             new TestHostApplicationLifetime());
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
         coordinator.TryStart(BootstrapCommand.Apply, explicitlyConfirmed: true).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
@@ -221,7 +239,7 @@ public sealed class BootstrapExecutionCoordinatorTests
                     [DeploymentVerificationResult(), DeploymentVerificationResult()],
                     new BootstrapProcessResult(0, false))));
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
         coordinator.TryStart(BootstrapCommand.Apply, explicitlyConfirmed: true).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
@@ -246,7 +264,7 @@ public sealed class BootstrapExecutionCoordinatorTests
                     ],
                     new BootstrapProcessResult(0, false))));
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
         coordinator.TryStart(BootstrapCommand.Apply, explicitlyConfirmed: true).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
@@ -271,7 +289,7 @@ public sealed class BootstrapExecutionCoordinatorTests
                     new BootstrapProcessResult(0, false)),
                 new RunResult(claims, new BootstrapProcessResult(0, false))));
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
         coordinator.TryStart(BootstrapCommand.Apply, explicitlyConfirmed: true).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
@@ -293,7 +311,7 @@ public sealed class BootstrapExecutionCoordinatorTests
                     [DeploymentVerificationResult(BootstrapVerificationMode.Verify)],
                     new BootstrapProcessResult(0, false))));
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
         coordinator.TryStart(BootstrapCommand.Apply, explicitlyConfirmed: true).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
@@ -315,7 +333,7 @@ public sealed class BootstrapExecutionCoordinatorTests
                     [DeploymentVerificationResult()],
                     new BootstrapProcessResult(1, false))));
 
-        coordinator.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true).Should().BeTrue();
+        StartPreparedPlan(coordinator).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
         coordinator.TryStart(BootstrapCommand.Apply, explicitlyConfirmed: true).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
@@ -328,6 +346,13 @@ public sealed class BootstrapExecutionCoordinatorTests
         IBootstrapCommandFactory factory,
         IBootstrapProcessRunner runner) =>
         new(factory, runner, new SetupActivityTracker(), new TestHostApplicationLifetime());
+
+    private static bool StartPreparedPlan(BootstrapExecutionCoordinator coordinator)
+    {
+        using var lease = coordinator.TryAcquirePlanPreparation(explicitlyConfirmed: true);
+        lease.Should().NotBeNull();
+        return lease!.TryStartPlan(ConfigurationFingerprint);
+    }
 
     private static BootstrapProgressEvent PlanResult(string fingerprint, bool applyReady) =>
         new(
@@ -384,7 +409,10 @@ public sealed class BootstrapExecutionCoordinatorTests
         coordinator.Snapshot().IsRunning.Should().BeFalse();
     }
 
-    private sealed record CommandCall(BootstrapCommand Command, string? ExpectedPlanFingerprint);
+    private sealed record CommandCall(
+        BootstrapCommand Command,
+        string? ExpectedPlanFingerprint,
+        string? ExpectedConfigurationFileFingerprint);
 
     private sealed class RecordingCommandFactory : IBootstrapCommandFactory
     {
@@ -392,9 +420,13 @@ public sealed class BootstrapExecutionCoordinatorTests
 
         public BootstrapCommandSpec Create(
             BootstrapCommand command,
-            string? expectedPlanFingerprint = null)
+            string? expectedPlanFingerprint = null,
+            string? expectedConfigurationFileFingerprint = null)
         {
-            Calls.Add(new CommandCall(command, expectedPlanFingerprint));
+            Calls.Add(new CommandCall(
+                command,
+                expectedPlanFingerprint,
+                expectedConfigurationFileFingerprint));
             return new BootstrapCommandSpec(command, "pwsh", Path.GetTempPath(), []);
         }
     }

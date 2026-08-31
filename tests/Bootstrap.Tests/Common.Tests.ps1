@@ -25,6 +25,18 @@ BeforeAll {
         $Config | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $Path -Encoding utf8NoBOM
     }
 
+    function Get-TestByteFingerprint {
+        param([Parameter(Mandatory)][AllowEmptyCollection()][byte[]]$Bytes)
+
+        $hash = [Security.Cryptography.SHA256]::HashData($Bytes)
+        try {
+            return "sha256:$(([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant())"
+        }
+        finally {
+            [Array]::Clear($hash, 0, $hash.Length)
+        }
+    }
+
     function New-TestPreInertCorrectionRoots {
         param([Parameter(Mandatory)][string]$BasePath)
 
@@ -202,6 +214,119 @@ Describe 'Bootstrap JSON Schema configuration validation' {
             $_.Exception.Message | Should -BeLike '*JSON Schema validation*rejected input values were suppressed*'
             $_.Exception.Message | Should -Not -BeLike '*credential-like-private-marker*'
         }
+    }
+}
+
+Describe 'Exact bootstrap configuration file fingerprint boundary' {
+    It 'accepts the exact raw-byte fingerprint and remains compatible when it is omitted' {
+        $config = New-TestBootstrapConfig
+        $path = Join-Path $TestDrive 'fingerprinted.json'
+        Write-TestBootstrapConfig -Config $config -Path $path
+        $bytes = [IO.File]::ReadAllBytes($path)
+        $expected = Get-TestByteFingerprint -Bytes $bytes
+
+        $verified = Read-BootstrapConfig `
+            -Path $path `
+            -ExpectedConfigurationFileFingerprint $expected
+        $ordinary = Read-BootstrapConfig -Path $path
+
+        $verified.projectName | Should -BeExactly $config.projectName
+        $ordinary.projectName | Should -BeExactly $config.projectName
+    }
+
+    It 'rejects a malformed expected fingerprint before reading the file' {
+        InModuleScope Common {
+            Mock Read-BootstrapConfigurationFileBytes { throw 'file-read-must-not-run' }
+
+            foreach ($invalid in @('', ' ', "SHA256:$('a' * 64)")) {
+                { Read-BootstrapConfig `
+                    -Path 'not-read.json' `
+                    -ExpectedConfigurationFileFingerprint $invalid } |
+                    Should -Throw '*canonical SHA-256 fingerprint*'
+            }
+
+            Should -Invoke Read-BootstrapConfigurationFileBytes -Times 0 -Exactly
+        }
+    }
+
+    It 'rejects mismatched bytes without rendering configuration content or either fingerprint' {
+        $config = New-TestBootstrapConfig
+        $config.projectName = 'privatex'
+        $path = Join-Path $TestDrive 'mismatch.json'
+        Write-TestBootstrapConfig -Config $config -Path $path
+        $unexpected = "sha256:$('0' * 64)"
+
+        try {
+            Read-BootstrapConfig `
+                -Path $path `
+                -ExpectedConfigurationFileFingerprint $unexpected
+            throw 'Expected configuration file fingerprint mismatch.'
+        }
+        catch {
+            $_.Exception.Message | Should -BeLike '*fingerprint did not match the expected reviewed bytes*'
+            $_.Exception.Message | Should -Not -Match 'privatex|sha256:|00000000'
+        }
+    }
+
+    It 'verifies the expected fingerprint before attempting JSON deserialization' {
+        $path = Join-Path $TestDrive 'mismatched-malformed.json'
+        '{ "marker": "private-json-marker" ' |
+            Set-Content -LiteralPath $path -Encoding utf8NoBOM -NoNewline
+
+        try {
+            Read-BootstrapConfig `
+                -Path $path `
+                -ExpectedConfigurationFileFingerprint "sha256:$('0' * 64)"
+            throw 'Expected configuration file fingerprint mismatch.'
+        }
+        catch {
+            $_.Exception.Message | Should -BeLike '*fingerprint did not match the expected reviewed bytes*'
+            $_.Exception.Message | Should -Not -Match 'valid JSON|private-json-marker'
+        }
+    }
+
+    It 'parses the same bounded byte buffer even if the path changes during fingerprint verification' {
+        $original = New-TestBootstrapConfig
+        $original.projectName = 'before'
+        $replacement = Copy-TestBootstrapConfig -Config $original
+        $replacement.projectName = 'after'
+        $path = Join-Path $TestDrive 'same-buffer.json'
+        Write-TestBootstrapConfig -Config $original -Path $path
+        $originalBytes = [IO.File]::ReadAllBytes($path)
+        $expected = Get-TestByteFingerprint -Bytes $originalBytes
+        $replacementBytes = [Text.UTF8Encoding]::new($false).GetBytes(
+            ($replacement | ConvertTo-Json -Depth 30))
+
+        InModuleScope Common -Parameters @{
+            Path = $path
+            OriginalBytes = $originalBytes
+            ReplacementBytes = $replacementBytes
+            Expected = $expected
+        } {
+            Mock Read-BootstrapConfigurationFileBytes { return ,$OriginalBytes }
+            Mock Get-BootstrapByteFingerprint {
+                [IO.File]::WriteAllBytes($Path, $ReplacementBytes)
+                return $Expected
+            }
+
+            $loaded = Read-BootstrapConfig `
+                -Path $Path `
+                -ExpectedConfigurationFileFingerprint $Expected
+
+            $loaded.projectName | Should -BeExactly 'before'
+            Should -Invoke Read-BootstrapConfigurationFileBytes -Times 1 -Exactly
+            Should -Invoke Get-BootstrapByteFingerprint -Times 1 -Exactly
+        }
+    }
+
+    It 'rejects a configuration larger than the bounded byte limit before parsing' {
+        $path = Join-Path $TestDrive 'oversized.json'
+        $bytes = [byte[]]::new(1048577)
+        [Array]::Fill[byte]($bytes, [byte][char]'x')
+        [IO.File]::WriteAllBytes($path, $bytes)
+
+        { Read-BootstrapConfig -Path $path } |
+            Should -Throw '*exceeds the 1048576-byte maximum*'
     }
 }
 

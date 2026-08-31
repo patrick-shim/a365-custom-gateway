@@ -44,7 +44,7 @@ flowchart TD
 - Git
 - .NET 10 SDK
 - PowerShell 7 (`pwsh`)
-- Azure CLI (`az`)
+- Azure CLI 2.76 or later (`az`)
 - an enabled Azure subscription in the target Microsoft Entra tenant
 - an Azure account with Subscription Owner, or Contributor plus permission to make
   the role assignments shown by Plan
@@ -74,9 +74,13 @@ az login
 ```
 
 Setup listens only on an ephemeral `127.0.0.1` port. It lets you select a
-subscription visible to Azure CLI, discover compatible Agent 365 manager
-applications, choose optional features, and write `bootstrap/config.json`. It then
-runs Plan, displays the exact deployment boundaries, and requires a second explicit
+subscription visible to Azure CLI, loads that subscription's physical Azure
+locations into a dropdown, discovers compatible Agent 365 manager applications,
+lets you choose optional features, and writes `bootstrap/config.json`. Region labels
+are paired with their canonical Azure values—for example,
+`Korea Central · koreacentral`—and the configuration stores `koreacentral`. Setup
+does not accept a free-text region or silently choose one. It then runs Plan,
+displays the exact deployment boundaries, and requires a second explicit
 confirmation before Apply or Resume.
 
 Keep the terminal open. Deployment may hand control to official Microsoft browser
@@ -138,7 +142,8 @@ Common options include `--config PATH`, `--json`, `--non-interactive`, `--yes`,
 Configuration selects:
 
 - the exact subscription and tenant;
-- environment, Azure location, project name, resource group, and alert email;
+- environment, canonical Azure location, project name, resource group, and alert
+  email;
 - SQL service tier;
 - seed blueprint name and reviewed manager-application allowlist;
 - development-only Registry preview enablement; and
@@ -158,7 +163,9 @@ loaded through its approved non-echoing runtime path.
 Bootstrap is a resumable state machine:
 
 1. `plan` validates configuration and source, compiles Bicep, runs authenticated
-   subscription-scope What-If, and shows imperative tenant operations.
+   subscription-scope What-If, and shows imperative tenant operations. Before
+   What-If, it proves the configured SQL edition, service objective, 2 GiB size, and
+   LRS storage path are available in the selected Azure region.
 2. Explicit acceptance binds the exact plan fingerprint, configuration, source,
    target, and What-If prediction for a limited time.
 3. `apply` revalidates that binding before mutation and writes safe checkpoint
@@ -183,6 +190,13 @@ fingerprint at the mutation gate:
 
 The second command stops before mutation if source, configuration, target, or
 What-If output changed.
+
+The region dropdown is the selected subscription's Azure Resource Manager inventory
+of physical locations. Visibility in that inventory is not proof that every service
+or SKU is available there. `doctor`, `plan`, and the pre-mutation Apply revalidation
+use the Azure SQL regional capabilities endpoint for the exact configured SQL path;
+an unavailable or unverified path stops safely and asks you to choose another
+dropdown region.
 
 ## Optional runtime protections
 
@@ -220,9 +234,11 @@ for roles, certificate handling, and bounded validation.
 ## Recovery
 
 If Plan stops, the setup UI identifies the safe boundary that stopped—configuration,
-local prerequisites/Bicep, Azure account selection, Azure What-If, Agent ID blueprint
-validation, or changing inputs. Correct that item and select **Run Plan again**. Apply
-and Resume remain unavailable until Plan produces one apply-ready fingerprint.
+local prerequisites/Bicep, Azure account or region selection, Azure SQL regional
+availability, Azure What-If, Agent ID blueprint validation, or changing inputs.
+Correct that item, select **Review and run Plan again**, review the current inputs,
+and confirm Plan again. Apply and Resume remain unavailable until Plan produces one
+apply-ready fingerprint.
 
 `doctor` checks the Windows Azure CLI/Bicep path through the same command boundary
 used by Plan and Apply. `diagnose` can still write a safe bundle when configuration is

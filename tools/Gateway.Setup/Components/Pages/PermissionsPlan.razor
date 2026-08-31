@@ -1,8 +1,6 @@
 @page "/setup/permissions"
-@rendermode InteractiveServer
 @inject SetupWizardState State
-@inject IBootstrapConfigWriter ConfigWriter
-@inject BootstrapExecutionCoordinator Execution
+@inject BootstrapPlanPreparationCoordinator PlanPreparation
 @inject SetupActivityTracker Activity
 @inject NavigationManager Navigation
 
@@ -16,7 +14,7 @@
 
 @if (error is not null)
 {
-    <div class="notice error" role="alert"><strong>Configuration was not written</strong><span>@error</span></div>
+    <div class="notice error" role="alert"><strong>Setup stopped safely</strong><span>@error</span></div>
 }
 
 <div class="review-grid">
@@ -87,7 +85,7 @@
 
 <div class="page-actions">
     <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/profile">Back</FluentAnchor>
-    <FluentButton Appearance="Appearance.Accent" Disabled="@(!confirmed || writing)" OnClick="RunPlanAsync">@(writing ? "Preparing…" : "Write config and run Plan")</FluentButton>
+    <FluentButton Appearance="Appearance.Accent" Disabled="@(!confirmed || writing || !State.CanWriteConfigurationAndRunPlan)" OnClick="RunPlanAsync">@(writing ? "Preparing…" : "Write config and run Plan")</FluentButton>
 </div>
 
 @code {
@@ -97,16 +95,25 @@
 
     protected override void OnInitialized()
     {
-        if (State.Form.SubscriptionId == Guid.Empty)
+        if (!State.HasEnabledSelectedSubscription)
         {
             Navigation.NavigateTo("/setup/account");
+            return;
+        }
+
+        if (!State.CanWriteConfigurationAndRunPlan)
+        {
+            Navigation.NavigateTo("/setup/profile");
         }
     }
 
     private async Task RunPlanAsync()
     {
-        if (!confirmed || writing)
+        if (!confirmed || writing || !State.CanWriteConfigurationAndRunPlan)
         {
+            error = State.CanWriteConfigurationAndRunPlan
+                ? error
+                : "The selected subscription, Azure region, or Agent 365 manager review is no longer current. Return to Profile and review the exact target again.";
             return;
         }
 
@@ -115,15 +122,31 @@
         Activity.Touch();
         try
         {
-            var result = await ConfigWriter.WriteAsync(State.Form);
-            State.MarkConfigurationWritten(result.Path);
-            if (!Execution.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true))
+            var result = await PlanPreparation.TryPrepareAndStartAsync(
+                State,
+                explicitlyConfirmed: true);
+            switch (result.Status)
             {
-                error = "Another bootstrap command is already running. Open Progress to follow it.";
-                return;
+                case BootstrapPlanPreparationStatus.Started:
+                    Navigation.NavigateTo("/setup/progress");
+                    break;
+                case BootstrapPlanPreparationStatus.StateChanged:
+                    error = "The public configuration or its selected subscription, Azure region, or Agent 365 manager review changed while a provisional file was prepared. The canonical configuration was not changed and Plan did not start; review the current target and try again.";
+                    break;
+                case BootstrapPlanPreparationStatus.ConfigurationChanged:
+                    error = "The provisional configuration changed before atomic publication. bootstrap/config.json was not replaced and Plan did not start; review the local filesystem and try again.";
+                    break;
+                case BootstrapPlanPreparationStatus.Busy:
+                    error = "Another configuration preparation or bootstrap command is already running. Open Progress to follow it.";
+                    break;
+                case BootstrapPlanPreparationStatus.NotConfirmed:
+                    error = "Review and confirm the public configuration before Plan.";
+                    break;
+                default:
+                    error = "Setup could not establish one exclusive Plan preparation. Plan did not start.";
+                    break;
             }
 
-            Navigation.NavigateTo("/setup/progress");
         }
         catch (ValidationException exception)
         {
@@ -135,11 +158,11 @@
         }
         catch (IOException)
         {
-            error = "Setup could not atomically write bootstrap/config.json. Check repository permissions and try again.";
+            error = "Setup could not prepare or atomically publish bootstrap/config.json. The prior canonical file was preserved; check repository permissions and try again.";
         }
         catch (UnauthorizedAccessException)
         {
-            error = "Setup cannot write bootstrap/config.json with the current filesystem permissions.";
+            error = "Setup cannot prepare or publish bootstrap/config.json with the current filesystem permissions.";
         }
         finally
         {

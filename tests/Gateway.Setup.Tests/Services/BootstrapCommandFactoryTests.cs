@@ -7,6 +7,8 @@ public sealed class BootstrapCommandFactoryTests
 {
     private const string ReviewedFingerprint =
         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    private const string ConfigurationFingerprint =
+        "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
     [Theory]
     [InlineData(0, "Plan", false)]
@@ -23,7 +25,8 @@ public sealed class BootstrapCommandFactoryTests
 
         var specification = factory.Create(
             command,
-            command == BootstrapCommand.Plan ? null : ReviewedFingerprint);
+            command == BootstrapCommand.Plan ? null : ReviewedFingerprint,
+            command == BootstrapCommand.Plan ? ConfigurationFingerprint : null);
 
         specification.FileName.Should().Be("pwsh");
         specification.WorkingDirectory.Should().Be(root);
@@ -43,6 +46,8 @@ public sealed class BootstrapCommandFactoryTests
         };
         if (command == BootstrapCommand.Plan)
         {
+            expectedArguments.Add("-ExpectedConfigurationFileFingerprint");
+            expectedArguments.Add(ConfigurationFingerprint);
             expectedArguments.Add("-NonInteractive");
         }
         else
@@ -99,7 +104,42 @@ public sealed class BootstrapCommandFactoryTests
     {
         var factory = new BootstrapCommandFactory(new RepositoryLayout(Path.GetTempPath()));
 
-        var action = () => factory.Create(BootstrapCommand.Plan, ReviewedFingerprint);
+        var action = () => factory.Create(
+            BootstrapCommand.Plan,
+            ReviewedFingerprint,
+            ConfigurationFingerprint);
+
+        action.Should().Throw<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("sha256:ABCDEF")]
+    [InlineData("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg")]
+    public void Create_RejectsPlanWithoutAnExactPublishedConfigurationFingerprint(
+        string? fingerprint)
+    {
+        var factory = new BootstrapCommandFactory(new RepositoryLayout(Path.GetTempPath()));
+
+        var action = () => factory.Create(
+            BootstrapCommand.Plan,
+            expectedConfigurationFileFingerprint: fingerprint);
+
+        action.Should().Throw<ArgumentException>();
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Create_RejectsConfigurationFingerprintForMutationCommands(int commandValue)
+    {
+        var factory = new BootstrapCommandFactory(new RepositoryLayout(Path.GetTempPath()));
+
+        var action = () => factory.Create(
+            (BootstrapCommand)commandValue,
+            ReviewedFingerprint,
+            ConfigurationFingerprint);
 
         action.Should().Throw<ArgumentException>();
     }

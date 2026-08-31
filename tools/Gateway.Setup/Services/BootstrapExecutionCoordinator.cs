@@ -47,6 +47,9 @@ internal sealed class BootstrapExecutionCoordinator(
     private int planResultClaimCount;
     private bool planApplyReady;
     private bool planFingerprintConflict;
+    private long nextPlanPreparationLeaseId;
+    private long? activePlanPreparationLeaseId;
+    private string? expectedConfigurationFileFingerprint;
 
     public event Action? Changed;
 
@@ -66,52 +69,130 @@ internal sealed class BootstrapExecutionCoordinator(
 
     public bool TryStart(BootstrapCommand requestedCommand, bool explicitlyConfirmed)
     {
-        if (!explicitlyConfirmed)
+        if (!explicitlyConfirmed || requestedCommand == BootstrapCommand.Plan)
         {
             return false;
         }
 
         lock (sync)
         {
-            if (status == BootstrapExecutionStatus.Running ||
-                requestedCommand is not BootstrapCommand.Plan && !planSucceeded)
+            if (activePlanPreparationLeaseId is not null ||
+                !CanStartUnsafe(requestedCommand))
             {
                 return false;
             }
 
-            command = requestedCommand;
-            status = BootstrapExecutionStatus.Running;
-            exitCode = null;
-            verifiedEndpoints = null;
-            deploymentVerificationClaimCount = 0;
-            deploymentVerificationConflict = false;
-            if (requestedCommand == BootstrapCommand.Plan)
+            BeginExecutionUnsafe(requestedCommand);
+        }
+
+        StartExecution(requestedCommand);
+        return true;
+    }
+
+    public BootstrapPlanPreparationLease? TryAcquirePlanPreparation(bool explicitlyConfirmed)
+    {
+        if (!explicitlyConfirmed)
+        {
+            return null;
+        }
+
+        lock (sync)
+        {
+            if (activePlanPreparationLeaseId is not null ||
+                !CanStartUnsafe(BootstrapCommand.Plan))
             {
-                planSucceeded = false;
-                reviewedPlanFingerprint = null;
-                planResultClaimCount = 0;
-                planApplyReady = false;
-                planFingerprintConflict = false;
+                return null;
             }
 
-            events.Clear();
+            var leaseId = checked(++nextPlanPreparationLeaseId);
+            activePlanPreparationLeaseId = leaseId;
+            return new BootstrapPlanPreparationLease(this, leaseId);
+        }
+    }
+
+    internal bool TryStartPreparedPlan(
+        long leaseId,
+        string configurationFileFingerprint)
+    {
+        if (!PlanFingerprintPolicy.IsCanonical(configurationFileFingerprint))
+        {
+            return false;
+        }
+
+        lock (sync)
+        {
+            if (activePlanPreparationLeaseId != leaseId ||
+                !CanStartUnsafe(BootstrapCommand.Plan))
+            {
+                return false;
+            }
+
+            activePlanPreparationLeaseId = null;
+            BeginExecutionUnsafe(
+                BootstrapCommand.Plan,
+                configurationFileFingerprint);
+        }
+
+        StartExecution(BootstrapCommand.Plan);
+        return true;
+    }
+
+    internal void ReleasePlanPreparation(long leaseId)
+    {
+        lock (sync)
+        {
+            if (activePlanPreparationLeaseId == leaseId)
+            {
+                activePlanPreparationLeaseId = null;
+            }
+        }
+    }
+
+    private bool CanStartUnsafe(BootstrapCommand requestedCommand) =>
+        status != BootstrapExecutionStatus.Running &&
+        (requestedCommand == BootstrapCommand.Plan || planSucceeded);
+
+    private void BeginExecutionUnsafe(
+        BootstrapCommand requestedCommand,
+        string? configurationFileFingerprint = null)
+    {
+        command = requestedCommand;
+        status = BootstrapExecutionStatus.Running;
+        exitCode = null;
+        verifiedEndpoints = null;
+        deploymentVerificationClaimCount = 0;
+        deploymentVerificationConflict = false;
+        expectedConfigurationFileFingerprint = requestedCommand == BootstrapCommand.Plan
+            ? configurationFileFingerprint
+            : null;
+        if (requestedCommand == BootstrapCommand.Plan)
+        {
+            planSucceeded = false;
+            reviewedPlanFingerprint = null;
+            planResultClaimCount = 0;
+            planApplyReady = false;
+            planFingerprintConflict = false;
+        }
+
+        events.Clear();
+        events.Add(new BootstrapProgressEvent(
+            DateTimeOffset.UtcNow,
+            BootstrapProgressKind.Information,
+            $"Starting the reviewed {requestedCommand} command."));
+        if (requestedCommand is BootstrapCommand.Apply or BootstrapCommand.Resume)
+        {
             events.Add(new BootstrapProgressEvent(
                 DateTimeOffset.UtcNow,
                 BootstrapProgressKind.Information,
-                $"Starting the reviewed {requestedCommand} command."));
-            if (requestedCommand is BootstrapCommand.Apply or BootstrapCommand.Resume)
-            {
-                events.Add(new BootstrapProgressEvent(
-                    DateTimeOffset.UtcNow,
-                    BootstrapProgressKind.Information,
-                    "Watch the launch terminal and official Microsoft browser windows for required sign-in or consent handoffs. Setup never captures that input."));
-            }
+                "Watch the launch terminal and official Microsoft browser windows for required sign-in or consent handoffs. Setup never captures that input."));
         }
+    }
 
+    private void StartExecution(BootstrapCommand requestedCommand)
+    {
         activity.SetOperationActive(true);
         Changed?.Invoke();
         _ = RunCoreAsync(requestedCommand);
-        return true;
     }
 
     private async Task RunCoreAsync(BootstrapCommand requestedCommand)
@@ -120,14 +201,21 @@ internal sealed class BootstrapExecutionCoordinator(
         try
         {
             string? expectedPlanFingerprint;
+            string? expectedConfigurationFingerprint;
             lock (sync)
             {
                 expectedPlanFingerprint = requestedCommand == BootstrapCommand.Plan
                     ? null
                     : reviewedPlanFingerprint;
+                expectedConfigurationFingerprint = requestedCommand == BootstrapCommand.Plan
+                    ? expectedConfigurationFileFingerprint
+                    : null;
             }
 
-            var specification = commandFactory.Create(requestedCommand, expectedPlanFingerprint);
+            var specification = commandFactory.Create(
+                requestedCommand,
+                expectedPlanFingerprint,
+                expectedConfigurationFingerprint);
             result = await processRunner.RunAsync(
                 specification,
                 progressEvent =>
@@ -281,4 +369,46 @@ internal sealed class BootstrapExecutionCoordinator(
         -1 => "not-started",
         _ => "nonzero"
     };
+}
+
+internal sealed class BootstrapPlanPreparationLease : IDisposable
+{
+    private readonly object sync = new();
+    private BootstrapExecutionCoordinator? coordinator;
+
+    internal BootstrapPlanPreparationLease(
+        BootstrapExecutionCoordinator coordinator,
+        long leaseId)
+    {
+        this.coordinator = coordinator;
+        LeaseId = leaseId;
+    }
+
+    private long LeaseId { get; }
+
+    public bool TryStartPlan(string configurationFileFingerprint)
+    {
+        lock (sync)
+        {
+            if (coordinator is null ||
+                !coordinator.TryStartPreparedPlan(
+                    LeaseId,
+                    configurationFileFingerprint))
+            {
+                return false;
+            }
+
+            coordinator = null;
+            return true;
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (sync)
+        {
+            coordinator?.ReleasePlanPreparation(LeaseId);
+            coordinator = null;
+        }
+    }
 }

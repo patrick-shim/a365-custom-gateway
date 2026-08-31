@@ -1,5 +1,4 @@
 @page "/setup/progress"
-@rendermode InteractiveServer
 @implements IDisposable
 @inject SetupWizardState State
 @inject BootstrapExecutionCoordinator Execution
@@ -62,10 +61,9 @@
 }
 else if (snapshot.Command == BootstrapCommand.Plan && snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled)
 {
-    <div class="notice error" role="alert"><strong>Plan did not pass</strong><span>Use the specific stopped boundary shown above. Apply and Resume remain unavailable until Plan succeeds.</span></div>
+    <div class="notice error" role="alert"><strong>Plan did not pass</strong><span>Use the specific stopped boundary shown above, then return to review so Setup can prepare and bind the current configuration again. Apply and Resume remain unavailable until Plan succeeds.</span></div>
     <div class="page-actions">
-        <FluentButton Appearance="Appearance.Accent" OnClick="RetryPlan">Run Plan again</FluentButton>
-        <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/permissions">Return to review</FluentAnchor>
+        <FluentAnchor Appearance="Appearance.Accent" Href="/setup/permissions">Review and run Plan again</FluentAnchor>
     </div>
 }
 else if (snapshot.Command is BootstrapCommand.Apply or BootstrapCommand.Resume && snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled)
@@ -148,17 +146,6 @@ else if (snapshot.HasVerifiedDeployment)
     }
 
     private void ContinueToFinish() => Navigation.NavigateTo("/setup/finish");
-
-    private void RetryPlan()
-    {
-        if (Execution.TryStart(BootstrapCommand.Plan, explicitlyConfirmed: true))
-        {
-            mutationConfirmed = false;
-            resumeConfirmed = false;
-            Activity.Touch();
-            snapshot = Execution.Snapshot();
-        }
-    }
 
     private static string FormatStatus(BootstrapExecutionStatus value) => value switch
     {

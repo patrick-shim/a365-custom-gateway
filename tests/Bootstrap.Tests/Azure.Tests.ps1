@@ -56,6 +56,274 @@ Describe 'Bootstrap Azure authentication boundary' {
     }
 }
 
+Describe 'Bootstrap Azure SQL regional capability boundary' {
+    InModuleScope Azure {
+        BeforeEach {
+            $script:sqlCapabilityConfig = [pscustomobject]@{
+                subscriptionId = '11111111-1111-4111-8111-111111111111'
+                location = 'koreacentral'
+                sql = [pscustomobject]@{
+                    skuName = 'Basic'
+                    skuTier = 'Basic'
+                }
+            }
+            $script:newSqlCapability = {
+                [pscustomobject]@{
+                    name = 'Korea Central'
+                    status = 'Available'
+                    supportedServerVersions = @(
+                        [pscustomobject]@{
+                            name = '12.0'
+                            status = 'Default'
+                            supportedEditions = @(
+                                [pscustomobject]@{
+                                    name = 'Basic'
+                                    status = 'Available'
+                                    supportedServiceLevelObjectives = @(
+                                        [pscustomobject]@{
+                                            name = 'Basic'
+                                            status = 'Default'
+                                            sku = [pscustomobject]@{
+                                                name = 'Basic'
+                                                tier = 'Basic'
+                                                capacity = 5
+                                            }
+                                            supportedMaxSizes = @(
+                                                [pscustomobject]@{
+                                                    minValue = [pscustomobject]@{ limit = 1; unit = 'Gigabytes' }
+                                                    maxValue = [pscustomobject]@{ limit = 1; unit = 'Gigabytes' }
+                                                    scaleSize = [pscustomobject]@{ limit = 0; unit = 'Gigabytes' }
+                                                    status = 'Available'
+                                                },
+                                                [pscustomobject]@{
+                                                    minValue = [pscustomobject]@{ limit = 2; unit = 'Gigabytes' }
+                                                    maxValue = [pscustomobject]@{ limit = 2; unit = 'Gigabytes' }
+                                                    scaleSize = [pscustomobject]@{ limit = 0; unit = 'Gigabytes' }
+                                                    status = 'Default'
+                                                }
+                                            )
+                                        }
+                                    )
+                                    supportedStorageCapabilities = @(
+                                        [pscustomobject]@{ storageAccountType = 'GRS'; status = 'Default' },
+                                        [pscustomobject]@{ storageAccountType = 'LRS'; status = 'Available' }
+                                    )
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+            Mock Invoke-BootstrapCommand {
+                (& $script:newSqlCapability) | ConvertTo-Json -Depth 30 -Compress
+            }
+        }
+
+        It 'accepts the exact subscription, region, server, SKU, 2 GiB, and LRS path' {
+            Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig | Should -BeTrue
+
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                $CaptureStdoutOnly -and
+                $ArgumentList.Count -eq 10 -and
+                [string]$ArgumentList[0] -ceq 'rest' -and
+                [string]$ArgumentList[1] -ceq '--method' -and
+                [string]$ArgumentList[2] -ceq 'GET' -and
+                [string]$ArgumentList[3] -ceq '--url' -and
+                [string]$ArgumentList[4] -ceq 'https://management.azure.com/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.Sql/locations/koreacentral/capabilities?api-version=2023-08-01' -and
+                [string]$ArgumentList[5] -ceq '--subscription' -and
+                [string]$ArgumentList[6] -ceq '11111111-1111-4111-8111-111111111111' -and
+                [string]$ArgumentList[7] -ceq '--output' -and
+                [string]$ArgumentList[8] -ceq 'json' -and
+                [string]$ArgumentList[9] -ceq '--only-show-errors'
+            }
+        }
+
+        It 'accepts an exact ranged size when the 2 GiB value is on the supported scale' {
+            Mock Invoke-BootstrapCommand {
+                $payload = & $script:newSqlCapability
+                $payload.supportedServerVersions[0].supportedEditions[0].supportedServiceLevelObjectives[0].supportedMaxSizes = @(
+                    [pscustomobject]@{
+                        minValue = [pscustomobject]@{ limit = 1; unit = 'Gigabytes' }
+                        maxValue = [pscustomobject]@{ limit = 4; unit = 'Gigabytes' }
+                        scaleSize = [pscustomobject]@{ limit = 1; unit = 'Gigabytes' }
+                        status = 'Available'
+                    }
+                )
+                $payload | ConvertTo-Json -Depth 30 -Compress
+            }
+
+            Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig | Should -BeTrue
+        }
+
+        It 'rejects unavailable status at each required capability level' -ForEach @(
+            @{ Level = 'location' },
+            @{ Level = 'server' },
+            @{ Level = 'edition' },
+            @{ Level = 'objective' },
+            @{ Level = 'size' },
+            @{ Level = 'storage' }
+        ) {
+            Mock Invoke-BootstrapCommand {
+                $payload = & $script:newSqlCapability
+                switch ($Level) {
+                    'location' { $payload.status = 'Visible' }
+                    'server' { $payload.supportedServerVersions[0].status = 'Visible' }
+                    'edition' { $payload.supportedServerVersions[0].supportedEditions[0].status = 'Visible' }
+                    'objective' { $payload.supportedServerVersions[0].supportedEditions[0].supportedServiceLevelObjectives[0].status = 'Visible' }
+                    'size' { $payload.supportedServerVersions[0].supportedEditions[0].supportedServiceLevelObjectives[0].supportedMaxSizes[1].status = 'Visible' }
+                    'storage' { $payload.supportedServerVersions[0].supportedEditions[0].supportedStorageCapabilities[1].status = 'Visible' }
+                }
+                $payload | ConvertTo-Json -Depth 30 -Compress
+            }
+
+            { Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig } |
+                Should -Throw '*not currently proven available*'
+        }
+
+        It 'rejects missing or duplicate required capability paths' -ForEach @(
+            @{ Shape = 'missing-server' },
+            @{ Shape = 'duplicate-server' },
+            @{ Shape = 'missing-edition' },
+            @{ Shape = 'duplicate-objective' },
+            @{ Shape = 'missing-size' },
+            @{ Shape = 'duplicate-size' },
+            @{ Shape = 'missing-storage' },
+            @{ Shape = 'duplicate-storage' }
+        ) {
+            Mock Invoke-BootstrapCommand {
+                $payload = & $script:newSqlCapability
+                $server = $payload.supportedServerVersions[0]
+                $edition = $server.supportedEditions[0]
+                $objective = $edition.supportedServiceLevelObjectives[0]
+                switch ($Shape) {
+                    'missing-server' { $payload.supportedServerVersions = @() }
+                    'duplicate-server' { $payload.supportedServerVersions = @($server, $server) }
+                    'missing-edition' { $server.supportedEditions = @() }
+                    'duplicate-objective' { $edition.supportedServiceLevelObjectives = @($objective, $objective) }
+                    'missing-size' { $objective.supportedMaxSizes = @($objective.supportedMaxSizes[0]) }
+                    'duplicate-size' { $objective.supportedMaxSizes = @($objective.supportedMaxSizes[1], $objective.supportedMaxSizes[1]) }
+                    'missing-storage' { $edition.supportedStorageCapabilities = @($edition.supportedStorageCapabilities[0]) }
+                    'duplicate-storage' { $edition.supportedStorageCapabilities = @($edition.supportedStorageCapabilities[1], $edition.supportedStorageCapabilities[1]) }
+                }
+                $payload | ConvertTo-Json -Depth 30 -Compress
+            }
+
+            { Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig } |
+                Should -Throw '*not currently proven available*'
+        }
+
+        It 'rejects a response whose required collection is not an array' {
+            Mock Invoke-BootstrapCommand {
+                $payload = & $script:newSqlCapability
+                $payload.supportedServerVersions = $payload.supportedServerVersions[0]
+                $payload | ConvertTo-Json -Depth 30 -Compress
+            }
+
+            { Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig } |
+                Should -Throw '*not currently proven available*'
+        }
+
+        It 'rejects an unknown size unit even when another size would match' {
+            Mock Invoke-BootstrapCommand {
+                $payload = & $script:newSqlCapability
+                $payload.supportedServerVersions[0].supportedEditions[0].supportedServiceLevelObjectives[0].supportedMaxSizes[0].minValue.unit = 'Blocks'
+                $payload | ConvertTo-Json -Depth 30 -Compress
+            }
+
+            { Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig } |
+                Should -Throw '*not currently proven available*'
+        }
+
+        It 'rejects a size unit outside the exact MaxSizeUnit enumeration' -ForEach @(
+            @{ Unit = 'Bytes' },
+            @{ Unit = 'Kilobytes' },
+            @{ Unit = 'gigabytes' },
+            @{ Unit = 'Gigabytes ' }
+        ) {
+            Mock Invoke-BootstrapCommand {
+                $payload = & $script:newSqlCapability
+                $payload.supportedServerVersions[0].supportedEditions[0].supportedServiceLevelObjectives[0].supportedMaxSizes[1].minValue.unit = $Unit
+                $payload | ConvertTo-Json -Depth 30 -Compress
+            }
+
+            { Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig } |
+                Should -Throw '*not currently proven available*'
+        }
+
+        It 'rejects a size limit that is not an exact nonnegative int32 JSON value' -ForEach @(
+            @{ Limit = '2' },
+            @{ Limit = 2.5 },
+            @{ Limit = 2147483648 },
+            @{ Limit = -1 },
+            @{ Limit = $true }
+        ) {
+            Mock Invoke-BootstrapCommand {
+                $payload = & $script:newSqlCapability
+                $payload.supportedServerVersions[0].supportedEditions[0].supportedServiceLevelObjectives[0].supportedMaxSizes[1].minValue.limit = $Limit
+                $payload | ConvertTo-Json -Depth 30 -Compress
+            }
+
+            { Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig } |
+                Should -Throw '*not currently proven available*'
+        }
+
+        It 'rejects a SKU capacity that is not the exact expected int32 JSON value' -ForEach @(
+            @{ Capacity = '5' },
+            @{ Capacity = 5.5 },
+            @{ Capacity = 2147483648 },
+            @{ Capacity = -1 },
+            @{ Capacity = $true }
+        ) {
+            Mock Invoke-BootstrapCommand {
+                $payload = & $script:newSqlCapability
+                $payload.supportedServerVersions[0].supportedEditions[0].supportedServiceLevelObjectives[0].sku.capacity = $Capacity
+                $payload | ConvertTo-Json -Depth 30 -Compress
+            }
+
+            { Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig } |
+                Should -Throw '*not currently proven available*'
+        }
+
+        It 'rejects a capability SKU that differs from the selected exact service objective' {
+            Mock Invoke-BootstrapCommand {
+                $payload = & $script:newSqlCapability
+                $payload.supportedServerVersions[0].supportedEditions[0].supportedServiceLevelObjectives[0].sku.capacity = 10
+                $payload | ConvertTo-Json -Depth 30 -Compress
+            }
+
+            { Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig } |
+                Should -Throw '*not currently proven available*'
+        }
+
+        It 'suppresses provider failure details' {
+            Mock Invoke-BootstrapCommand { throw 'Provisioning is restricted: provider-private-detail' }
+
+            $message = ''
+            try {
+                Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig
+            }
+            catch {
+                $message = $_.Exception.Message
+            }
+            $message | Should -Match 'not currently proven available'
+            $message | Should -Not -Match 'restricted|private-detail'
+        }
+
+        It 'rejects malformed JSON and unsupported configuration without provider detail' {
+            Mock Invoke-BootstrapCommand { return '{' }
+            { Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig } |
+                Should -Throw '*not currently proven available*'
+
+            $script:sqlCapabilityConfig.sql.skuName = 'Unreviewed'
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly
+            { Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig } |
+                Should -Throw '*not currently proven available*'
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly
+        }
+    }
+}
+
 Describe 'Bootstrap Azure resource-provider boundary' {
     InModuleScope Azure {
         BeforeEach {
