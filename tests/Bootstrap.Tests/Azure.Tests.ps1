@@ -300,14 +300,17 @@ Describe 'Bootstrap Azure SQL regional capability boundary' {
             Mock Invoke-BootstrapCommand { throw 'Provisioning is restricted: provider-private-detail' }
 
             $message = ''
+            $safeFailureCode = ''
             try {
                 Assert-GatewaySqlRegionalAvailability -Config $script:sqlCapabilityConfig
             }
             catch {
                 $message = $_.Exception.Message
+                $safeFailureCode = [string]$_.Exception.Data['GatewaySafeFailureCode']
             }
             $message | Should -Match 'not currently proven available'
             $message | Should -Not -Match 'restricted|private-detail'
+            $safeFailureCode | Should -BeExactly 'sql_regional_availability'
         }
 
         It 'rejects malformed JSON and unsupported configuration without provider detail' {
@@ -2900,15 +2903,49 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
             }
 
-            It 'rejects optional graph expansion before any provider read' {
+            It 'includes and exactly validates the enabled Prompt Shields Content Safety account' {
                 $script:coreConfig.promptShield.enabled = $true
+                $script:coreConfig.promptShield.skuName = 'F0'
+                $contentSafetyName = 'cs-safe-dev-abc123'
+                $contentSafetyId = "$($script:boundaryProviderPrefix)/Microsoft.CognitiveServices/accounts/$contentSafetyName"
+                $contentSafetyTags = [ordered]@{}
+                foreach ($entry in $script:boundaryBaseTags.GetEnumerator()) {
+                    $contentSafetyTags[$entry.Key] = $entry.Value
+                }
+                $contentSafetyTags['workload'] = 'prompt-protection'
+                & $script:addBoundaryResource $contentSafetyId 'Microsoft.CognitiveServices/accounts' `
+                    $contentSafetyName 'koreacentral' $contentSafetyTags ([ordered]@{
+                        provisioningState = 'Succeeded'
+                        customSubDomainName = $contentSafetyName
+                        disableLocalAuth = $true
+                        publicNetworkAccess = 'Enabled'
+                        networkAcls = [ordered]@{ defaultAction = 'Allow' }
+                    })
+                $script:boundaryResources[$contentSafetyId] | Add-Member -NotePropertyName kind `
+                    -NotePropertyValue 'ContentSafety'
+                $script:boundaryResources[$contentSafetyId] | Add-Member -NotePropertyName sku `
+                    -NotePropertyValue ([ordered]@{ name = 'F0' })
+                $script:boundaryEvidence['promptShieldAccountId'] = $contentSafetyId
+                $script:boundaryEvidence['promptShieldAccountName'] = $contentSafetyName
+                $script:boundaryEvidence['promptShieldEndpoint'] = "https://$contentSafetyName.cognitiveservices.azure.com/"
 
+                $boundary = New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
+                    -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
+                    -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint
+
+                $boundary.resourceIds.Count | Should -Be 26
+                $boundary.resourceIds | Should -Contain $contentSafetyId.ToLowerInvariant()
+                Should -Invoke Get-GatewayInertBoundaryResource -Times 1 -Exactly -ParameterFilter {
+                    $ResourceId -ceq $contentSafetyId -and $ApiVersion -ceq '2023-05-01'
+                }
+
+                $script:boundaryResources[$contentSafetyId].kind = 'OpenAI'
                 { New-GatewayInertWhatIfRecoveryBoundary -Config $script:coreConfig `
                         -Foundation $script:coreFoundation -Evidence $script:boundaryEvidence `
                         -ApiImage $script:coreApiImage -WorkerImage $script:coreWorkerImage `
                         -DeploymentOwnershipId $script:coreOwnershipId -SourceFingerprint $script:coreSourceFingerprint } |
-                    Should -Throw '*does not include optional Prompt Shields resources*'
-                Should -Invoke Get-GatewayInertBoundaryResource -Times 0 -Exactly
+                    Should -Throw
                 Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 0 -Exactly
             }
         }

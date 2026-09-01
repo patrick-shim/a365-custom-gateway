@@ -807,6 +807,18 @@ Describe 'Experience Doctor Azure SQL regional availability boundary' {
             }
         }
 
+        It 'queries inherited subscription RBAC without combining scope with all' {
+            $null = Get-GatewayDoctorReport -ConfigPath '/safe/bootstrap.json'
+
+            Should -Invoke Invoke-GatewayAzJson -Times 1 -Exactly -ParameterFilter {
+                [string]::Join('|', $Arguments) -ceq (
+                    'role|assignment|list|--assignee-object-id|33333333-3333-4333-8333-333333333333|' +
+                    '--include-inherited|--include-groups|' +
+                    '--scope|/subscriptions/11111111-1111-4111-8111-111111111111|' +
+                    '--fill-principal-name|false|--query|[].{role:roleDefinitionName,scope:scope}')
+            }
+        }
+
         It 'fails Plan readiness when exact SQL availability is not confirmed' {
             Mock Assert-GatewaySqlRegionalAvailability { throw 'Safe SQL availability failure.' }
 
@@ -920,6 +932,31 @@ Describe 'Bootstrap actionable failure and diagnostic routing' {
         $failure.data.resumable | Should -BeFalse
         $failure.data.Contains('index') | Should -BeFalse
         $failure.data.Contains('total') | Should -BeFalse
+    }
+
+    It 'maps only the typed SQL regional-availability failure to actionable safe Plan guidance' {
+        $typedException = [InvalidOperationException]::new('provider-private-detail')
+        $typedException.Data['GatewaySafeFailureCode'] = 'sql_regional_availability'
+
+        $failure = Get-GatewaySafeFailureEvent `
+            -FailureCode plan_what_if `
+            -FailureStage 'Plan review' `
+            -CommandMode Plan `
+            -Exception $typedException
+
+        $failure.message | Should -Match 'Azure SQL regional availability'
+        $failure.message | Should -Not -Match 'provider-private-detail'
+        $failure.data.failureCode | Should -BeExactly 'plan_sql_availability'
+
+        $untypedFailure = Get-GatewaySafeFailureEvent `
+            -FailureCode plan_what_if `
+            -FailureStage 'Plan review' `
+            -CommandMode Plan `
+            -Exception ([InvalidOperationException]::new('provider-private-detail'))
+
+        $untypedFailure.message | Should -Match 'Azure What-If'
+        $untypedFailure.message | Should -Not -Match 'provider-private-detail'
+        $untypedFailure.data.failureCode | Should -BeExactly 'plan_what_if'
     }
 
     It 'marks only a stopped deployment as resumable' {
@@ -2817,6 +2854,38 @@ Describe 'Azure What-If result boundary' {
             Should -Invoke Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension -Times 0 -Exactly
         }
 
+        It 'keeps a canonical completed database receipt and persistent Job in the Resume validation context' {
+            Set-TestLaterRecoveryState
+            $receiptPath = Join-Path (Get-RepositoryRoot) `
+                '.bootstrap/evidence/rg-safe-dev/database/private-database-bootstrap-receipt.json'
+            $databaseJobId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourcegroups/rg-safe-dev/providers/microsoft.app/jobs/job-safe-db-init-dev'
+            $databaseEvidence = [ordered]@{
+                databaseBootstrapJobId = $databaseJobId
+                databaseBootstrapJobName = 'job-safe-db-init-dev'
+                databaseBootstrapExecutionName = 'job-safe-db-init-dev-abcde'
+                databaseBootstrapCompletionReceipt = $receiptPath
+            }
+            $script:recoveryState.steps['Gateway database'] = [ordered]@{
+                status = 'Completed'
+                sourceFingerprint = $script:whatIfSourceFingerprint
+                evidence = $databaseEvidence
+            }
+            Mock Test-Path { return $true } -ParameterFilter {
+                [IO.Path]::GetFullPath([string]$LiteralPath) -ceq [IO.Path]::GetFullPath($receiptPath)
+            }
+
+            $context = Get-GatewayInertWhatIfRecoveryStateContext `
+                -State $script:recoveryState `
+                -Config $script:config `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint
+
+            $context | Should -Not -BeNullOrEmpty
+            $context.database | Should -Be $databaseEvidence
+            $context.database.databaseBootstrapJobId | Should -BeExactly $databaseJobId
+            $context.database.databaseBootstrapCompletionReceipt | Should -BeExactly $receiptPath
+        }
+
         It 'rejects a tampered SQL private-endpoint recovery extension' {
             $script:recoveryState.steps['Inert identity deployment'].status = 'Completed'
             $script:recoveryState.steps['Inert identity deployment'].evidence = [ordered]@{ sqlServerFqdn = 'sql-safe-dev.database.windows.net' }
@@ -2843,6 +2912,42 @@ Describe 'Azure What-If result boundary' {
             (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId $script:whatIfOwnershipId -SourceFingerprint $script:whatIfSourceFingerprint -State $script:recoveryState).applyReady |
                 Should -BeFalse
             Should -Invoke Get-GatewayInertWhatIfRecoveryBoundary -Times 0 -Exactly
+        }
+
+        It 'returns the fixed safe SQL recovery stage code when SQL evidence readback fails' {
+            Set-TestLaterRecoveryState
+            Set-TestRecoveryWhatIf -IgnoreIds @(
+                $script:recoveryBoundary.resourceIds + $script:sqlPrivateEndpointExtension.resourceIds)
+            Mock Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension {
+                throw 'provider-private-sql-detail'
+            }
+
+            $result = Invoke-GatewayFoundationWhatIf `
+                -Config $script:config -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint `
+                -State $script:recoveryState
+
+            $result.applyReady | Should -BeFalse
+            $result.recoveryFailureCode | Should -BeExactly 'RB03_SQL_PRIVATE_ENDPOINT_EVIDENCE'
+            $result.reason | Should -Not -Match 'provider-private-sql-detail'
+        }
+
+        It 'returns the fixed safe inert-provider stage code when provider recovery fails' {
+            Set-TestRecoveryWhatIf -IgnoreIds $script:recoveryBoundary.resourceIds
+            Mock Get-GatewayInertWhatIfRecoveryBoundary {
+                throw 'provider-private-inert-detail'
+            }
+
+            $result = Invoke-GatewayFoundationWhatIf `
+                -Config $script:config -RepositoryRoot '/safe/source' `
+                -DeploymentOwnershipId $script:whatIfOwnershipId `
+                -SourceFingerprint $script:whatIfSourceFingerprint `
+                -State $script:recoveryState
+
+            $result.applyReady | Should -BeFalse
+            $result.recoveryFailureCode | Should -BeExactly 'RB05_INERT_PROVIDER_BOUNDARY'
+            $result.reason | Should -Not -Match 'provider-private-inert-detail'
         }
 
         It 'rejects wrong-case or unknown inert persisted statuses' {
@@ -3061,6 +3166,65 @@ Describe 'Azure What-If result boundary' {
             })
             (Invoke-GatewayFoundationWhatIf -Config $script:config -RepositoryRoot '/safe/source' -DeploymentOwnershipId '33333333-3333-4333-8333-333333333333' -SourceFingerprint $script:whatIfSourceFingerprint).applyReady |
                 Should -BeFalse
+        }
+    }
+}
+
+Describe 'Checkpoint-aware Resume orchestration boundary' {
+    BeforeAll {
+        $script:resumeBootstrapPath = [IO.Path]::GetFullPath(
+            (Join-Path $PSScriptRoot '../../bootstrap/bootstrap.ps1'))
+        $script:resumeTokens = $null
+        $script:resumeParseErrors = $null
+        $script:resumeAst = [Management.Automation.Language.Parser]::ParseFile(
+            $script:resumeBootstrapPath, [ref]$script:resumeTokens, [ref]$script:resumeParseErrors)
+        $script:resumeParseErrors.Count | Should -Be 0
+    }
+
+    It 'routes Resume through a dedicated accepted-checkpoint preflight without clearing or recomputing fresh Plan' {
+        $resumeFunction = $script:resumeAst.Find({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Invoke-GatewayResumePreflight'
+        }, $true)
+        $resumeFunction | Should -Not -BeNullOrEmpty
+        $resumeSource = $resumeFunction.Extent.Text
+        $resumeSource | Should -Match 'Assert-BootstrapAcceptedPlan'
+        $resumeSource | Should -Match 'Test-GatewayDatabaseEvidence'
+        $resumeSource | Should -Not -Match 'Clear-BootstrapAcceptedPlan'
+        $resumeSource | Should -Not -Match 'Invoke-GatewayPlanWorkflow|Invoke-GatewayFoundationWhatIf'
+
+        $topLevelResumeCalls = @($script:resumeAst.FindAll({
+            param($node)
+            if ($node -isnot [Management.Automation.Language.CommandAst] -or
+                $node.GetCommandName() -cne 'Invoke-GatewayResumePreflight') { return $false }
+            $ancestor = $node.Parent
+            while ($null -ne $ancestor -and
+                $ancestor -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+                $ancestor = $ancestor.Parent
+            }
+            return $null -eq $ancestor
+        }, $true))
+        $topLevelResumeCalls.Count | Should -Be 1
+
+        $topLevelFreshPlanCalls = @($script:resumeAst.FindAll({
+            param($node)
+            if ($node -isnot [Management.Automation.Language.CommandAst] -or
+                $node.GetCommandName() -cne 'Invoke-GatewayPlanWorkflow') { return $false }
+            $ancestor = $node.Parent
+            while ($null -ne $ancestor -and
+                $ancestor -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+                $ancestor = $ancestor.Parent
+            }
+            return $null -eq $ancestor
+        }, $true))
+        foreach ($planCall in $topLevelFreshPlanCalls) {
+            $condition = $planCall.Parent
+            while ($null -ne $condition -and
+                $condition -isnot [Management.Automation.Language.IfStatementAst]) {
+                $condition = $condition.Parent
+            }
+            $condition.Extent.Text | Should -Not -Match '(?s)\$Mode\s+-in\s+@\([^)]*''Resume'''
         }
     }
 }
