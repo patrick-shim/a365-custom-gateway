@@ -5,14 +5,16 @@ identity, idempotency, recovery, and secret-handling boundaries.
 
 ## Before you change code
 
-Read these sources in order:
+Start with the binding [repository agent instructions](AGENTS.md), then follow its
+required reading order:
 
 1. [Implementation status](docs/implementation-status.md)
-2. [Repository architecture and safety rules](CLAUDE.md)
-3. The relevant workstream guide:
+2. [Agent continuation checkpoint](docs/agent-continuation.md)
+3. [Repository architecture and safety rules](CLAUDE.md)
+4. The relevant workstream guide:
    [Admin UI](docs/agent-guides/admin-ui.md) or
    [provisioning](docs/agent-guides/provisioning.md)
-4. Before Azure, SQL, Entra, Service Bus, Graph, deployment, or incident work,
+5. Before Azure, SQL, Entra, Service Bus, Graph, deployment, or incident work,
    [development deployment status](docs/operations/development-deployment-status.md)
    and the relevant runbook
 
@@ -87,6 +89,8 @@ deployment evidence.
 - [ ] Release build and formatting pass, or the exception is documented.
 - [ ] No secret, tenant content, or unsafe live identifier was added.
 - [ ] Configuration, API, recovery, and documentation changes agree.
+- [ ] The tracked continuation checkpoint names the exact unfinished action and
+      live-action boundary for the next contributor.
 - [ ] Any authorized live verification is recorded separately from local results.
 
 Security issues should follow [SECURITY.md](SECURITY.md), not the public issue

@@ -51,8 +51,14 @@ selected blueprint application ID as an `Individual` location.
 
 ## Engineering checkpoints
 
-[Implementation status](implementation-status.md) records current source and test
-truth. [Development deployment status](operations/development-deployment-status.md)
-records authorized live evidence and safe resume context. Contributors should read
-both before changing deployment or provisioning behavior; ordinary installers do
-not need either file to follow the quickstart.
+| Purpose | Read |
+|---|---|
+| Continue after a Git transfer | [Continuation checkpoint](agent-continuation.md) |
+| Read current source and test truth | [Implementation status](implementation-status.md) |
+| Read live evidence and operator boundaries | [Deployment status](operations/development-deployment-status.md) |
+| Understand durable historical corrections | [Project history](history/README.md) |
+
+Contributors should read the continuation and both current status files before
+changing deployment or provisioning behavior. Project history is context, not a
+current checkpoint. Ordinary installers do not need these engineering records to
+follow the quickstart.

@@ -15,9 +15,10 @@ Gateway-owned `/api/v1/*` routes are solution APIs, not Microsoft APIs. Validate
 their behavior from implemented controllers/contracts and deployed OpenAPI, not
 Microsoft Learn.
 
-Read `docs/implementation-status.md`, `CLAUDE.md`, `AGENTS.md`, and the relevant
-shared guide first. For provisioning, `docs/agent-guides/provisioning.md` defines the
-safety and ownership boundary.
+Follow the binding **Required reading** order in `AGENTS.md` completely before
+acting; do not replace or reorder it here. Read the guide that `AGENTS.md` selects
+for the workstream. For provisioning, `docs/agent-guides/provisioning.md` defines
+the safety and ownership boundary.
 
 ## Workflow
 
@@ -69,4 +70,5 @@ Use a compact table such as:
 
 Every Microsoft-specific production code path must be traceable to current official
 evidence. Quote sparingly, cite the exact source, and distinguish documented fact
-from project inference. Never access or copy `.secrets` while validating docs.
+from project inference. Never access or copy `.secret` or `.secrets` while
+validating docs.

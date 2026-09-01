@@ -6,10 +6,8 @@ tools:
   - Read
   - Glob
   - Grep
+  - WebSearch
   - WebFetch
-  - mcp__plugin_1190668868_microsoftdocs_mcp__microsoft_docs_search
-  - mcp__plugin_1190668868_microsoftdocs_mcp__microsoft_docs_fetch
-  - mcp__plugin_1190668868_microsoftdocs_mcp__microsoft_code_sample_search
 ---
 
 # Documentation Validator

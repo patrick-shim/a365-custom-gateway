@@ -4,7 +4,9 @@ Last updated: 2026-09-01 (Asia/Seoul).
 
 This is the concise source-of-truth checkpoint for contributors. Public setup starts
 at the repository [README](../README.md). Exact deployed development evidence is in
-[the deployment status](operations/development-deployment-status.md).
+[the deployment status](operations/development-deployment-status.md). A receiving
+machine or agent starts unfinished work from the tracked
+[agent continuation checkpoint](agent-continuation.md).
 
 ## Current product state
 
@@ -236,14 +238,16 @@ security rereview of the backend Resume and private-vault boundaries passed 356 
 ## Safe resume point
 
 Continue first with the Setup two-step Resume review and confirmation integration
-described above. Then rerun the affected Setup tests and an independent hash-scoped
-review for that new integration, require the hosted Windows launcher and Bicep lane
-to pass, and test the Setup flow at desktop and narrow widths. Do not start a live
-provider action while any of those checks is unresolved.
+described above and named in the
+[agent continuation checkpoint](agent-continuation.md). Then rerun the affected
+Setup tests and an independent hash-scoped review for that new integration, require
+the hosted Windows launcher and Bicep lane to pass, and test the Setup flow at
+desktop and narrow widths. Do not start a live provider action while any of those
+checks is unresolved.
 
 For any later authorized Azure, Entra, SQL, Graph, Purview, or deployment action,
 first read the deployment status and relevant runbook. Preserve ignored bootstrap
 state and never read or print `.secret`/`.secrets` values. The next clean deployment
 must use a new unused deployment identity and follow the public README only after
-the Resume-enabled Setup journey is complete. Codex must not resume live work until
-the user returns and explicitly requests it.
+the Resume-enabled Setup journey is complete. No agent, assistant, or contributor
+may resume live work until the user returns and explicitly requests it.

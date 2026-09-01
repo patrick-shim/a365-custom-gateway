@@ -7,7 +7,10 @@ ingress key. The agent then submits activity and interaction data through the
 Gateway API without receiving an Entra token or managed-identity identifier.
 
 The supported fresh-subscription installer is the repository-root `gateway`
-launcher. It configures, plans, deploys, resumes, and verifies the complete Gateway.
+launcher. It configures, plans, deploys, and verifies the complete Gateway. The
+terminal launcher also supports checkpoint-aware Resume. A restarted Setup browser
+process is not yet claimed as a complete Resume path; use the terminal recovery
+command described below.
 
 > The Agent 365 Registry dependency is currently a preview capability. The bootstrap
 > can open the end-to-end Registry path only for an explicitly configured
@@ -83,7 +86,11 @@ edition, service objective, 2 GiB size, or LRS storage path cannot be proven
 available in the selected region. `plan` records a time-bounded acceptance of the
 exact configuration, source, and What-If result. `apply` revalidates that acceptance
 before changing anything. If an interruption occurs, correct the reported cause and
-run `./gateway resume`; do not delete `.bootstrap/` or start a second deployment.
+run `./gateway resume` on macOS/Linux or `.\gateway.cmd resume` on Windows; do not
+delete `.bootstrap/` or start a second deployment.
+Terminal Resume is the supported recovery path after Setup has closed or restarted.
+The Setup browser's separate read-only Resume review and second confirmation are
+still being integrated and are not yet an end-to-end recovery claim.
 
 See the [bootstrap guide](bootstrap/README.md) for prerequisites, configuration,
 automation, and recovery behavior.
@@ -188,6 +195,9 @@ delivery.
 
 These commands are safe entry points from the repository root:
 
+The table uses the macOS/Linux launcher. On Windows, replace `./gateway` with
+`.\gateway.cmd`.
+
 | Command | Purpose |
 |---|---|
 | `./gateway status` | Show local checkpoint/readiness state without Azure calls. |
@@ -210,6 +220,7 @@ cleanup command.
 - [System architecture](docs/architecture/system-architecture.md)
 - [Backup and recovery](docs/operations/backup-recovery.md)
 - [Incident response](docs/operations/incident-response.md)
+- [Contributor continuation checkpoint](docs/agent-continuation.md)
 
 Current implementation and deployment evidence lives in
 [implementation status](docs/implementation-status.md) and

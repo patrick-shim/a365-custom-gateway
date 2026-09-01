@@ -8,6 +8,10 @@ registration, image-digest, correlation, credential, token, prompt, response, or
 provider-body value. Environment-specific evidence belongs in ignored
 `.bootstrap/` output or an access-controlled operator evidence store.
 
+For unfinished source work after a fetch, pull, or fresh clone, begin with the
+tracked [agent continuation checkpoint](../agent-continuation.md). Git alone does
+not transfer the ignored state required to Resume an existing deployment.
+
 ## What has been verified in a clean subscription
 
 An internal development deployment verified the audience bootstrap path through:

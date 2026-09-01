@@ -3,10 +3,24 @@
 ## Durable delivery ledger
 
 Bootstrap work uses the local-only `a365-bootstrap-delivery` skill and its ledger at
-`.agents/runtime/bootstrap-delivery/`. Before a bootstrap task action, read
-`.agents/skills/a365-bootstrap-delivery/SKILL.md`, resume `CURRENT.json`, and record
-an `Intent`. Record a matching `Result` after every material command, tool call,
-edit, test, decision, delegation, or external action.
+`.agent-runtime/bootstrap-delivery/`. Before a bootstrap task action, read
+`.agents/skills/a365-bootstrap-delivery/SKILL.md` completely. If
+`.agent-runtime/bootstrap-delivery/CURRENT.json` exists, resume it. If it is absent
+after a fresh clone or pull onto another computer, seed a new local session from the
+tracked [agent continuation checkpoint](docs/agent-continuation.md); do not recreate
+current state from chat transcripts, old journal shards, or troubleshooting history.
+Record an `Intent` before and a matching `Result` after every material command,
+tool call, edit, test, decision, delegation, or external action.
+
+The tracked continuation checkpoint is the cross-computer source-work handoff. The
+runtime ledger is the bounded coordination record for one computer and is never
+committed. Git also does not transfer `.agent-runtime/`, the legacy
+`.agents/runtime/` location, `.bootstrap/`, `bootstrap/config.json`, `.secret`, or
+`.secrets`. The legacy location remains ignored only to preserve older local state;
+it is not the default or current discovery path. A receiving checkout may continue
+source, documentation, and offline validation from the tracked checkpoint, but it
+may not claim or resume an existing deployment without that deployment's separately
+preserved ignored state and renewed live-action authority.
 
 The coordinator records document/source fingerprints after completing the required
 reading below. A delegate with a recorded assignment reads the short current
@@ -17,9 +31,12 @@ incident action, the acting agent must still read the current deployment checkpo
 and relevant runbook itself.
 
 Every delegated assignment records one owner, exact file or read-only boundaries,
-starting checkpoint fingerprint, validation, and stopping condition. The delegate
-writes a structured handoff before reporting completion; the coordinator records a
-receipt before using it. Never let two agents edit overlapping files concurrently.
+starting checkpoint fingerprint, validation, and stopping condition. `CURRENT.json`
+represents coordinator state; a delegate records progress in journal events and its
+assigned handoff rather than replacing the coordinator's current objective. The
+delegate writes a structured handoff before reporting completion; the coordinator
+records a receipt before using it. Never let two agents edit overlapping files
+concurrently.
 
 Journals are coordination evidence, not product truth. They rotate at 100 events,
 128 KiB, or four hours. Never write credentials, tokens, Gateway keys, prompts,
@@ -30,11 +47,12 @@ responses, authorization headers, or raw provider bodies to the ledger.
 The session coordinator reads these in order before changing the repository:
 
 1. `docs/implementation-status.md`
-2. `CLAUDE.md`
-3. the relevant guide:
+2. `docs/agent-continuation.md`
+3. `CLAUDE.md`
+4. the relevant guide:
    - Admin portal: `docs/agent-guides/admin-ui.md`
    - Agent Identity / Agent 365 provisioning: `docs/agent-guides/provisioning.md`
-4. before Azure, SQL, Entra, Service Bus, Graph, deployment, or incident action:
+5. before Azure, SQL, Entra, Service Bus, Graph, deployment, or incident action:
    `docs/operations/development-deployment-status.md` and the applicable runbook
 
 For a fresh subscription, also read `bootstrap/README.md`.
@@ -45,7 +63,7 @@ When sources disagree, use this order and record the discrepancy:
 
 1. implemented code/tests, deployed Gateway contract, and authorized live evidence;
 2. current official Microsoft documentation;
-3. current implementation/deployment checkpoints;
+3. current implementation, agent-continuation, and deployment checkpoints;
 4. architecture, API, decision, and runbook documents;
 5. `docs/spec/product-brief.md` for product intent;
 6. agent and skill playbooks.
@@ -172,3 +190,8 @@ After an authorized live change, keep exact environment identifiers and digests 
 ignored or access-controlled operator evidence. Update the tracked checkpoints with
 the non-sensitive result, test/readback status, recovery state, and next action.
 Never record secret or tenant-specific material in public documentation.
+
+Before a handoff commit or push, update `docs/agent-continuation.md` with the current
+objective, completed evidence, exact first unfinished action, invalidated gates, and
+live-action boundary. Keep it bounded and current; detailed chronology stays in Git
+history and the rotating local ledger.

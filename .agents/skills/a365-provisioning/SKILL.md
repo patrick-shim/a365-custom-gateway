@@ -5,9 +5,10 @@ description: Implement, test, or review truthful, idempotent Entra and Agent 365
 
 # A365 provisioning
 
-Read `AGENTS.md`, `CLAUDE.md`, `docs/implementation-status.md`, and
-`docs/agent-guides/provisioning.md` completely before acting. Before live work,
-also read the deployment status and applicable runbook.
+Follow the binding **Required reading** order in `AGENTS.md` completely before
+acting; do not replace or reorder it here. For this workstream,
+`docs/agent-guides/provisioning.md` is the relevant guide. Apply the additional
+deployment-checkpoint and runbook requirements in `AGENTS.md` before live work.
 
 Preserve the N:N binding: one registration maps its generated external ID and
 Gateway key lifecycle to one reusable blueprint and one distinct child Agent ID.
@@ -41,10 +42,10 @@ registration. Purview policy automation keeps the fixed tenant-wide enterprise-A
 apps Group for Know Your Data separate from blueprint Individual DLP locations; both
 use the Application plane.
 
-Use `bootstrap/bootstrap.ps1` through the root `gateway` launcher for a fresh
-subscription. Preserve ignored `.bootstrap/` state and never place credentials,
-tokens, keys, prompts, responses, or certificate material in configuration, logs,
-tests, or chat.
+Use `bootstrap/bootstrap.ps1` through the root `.\gateway.cmd` launcher on Windows
+or `./gateway` on macOS/Linux for a fresh subscription. Preserve ignored
+`.bootstrap/` state and never place credentials, tokens, keys, prompts, responses,
+or certificate material in configuration, logs, tests, or chat.
 
 Run focused tests first, then full relevant .NET, Pester, Release, source, Bicep,
 formatting, and documentation gates. Local success is not deployment evidence.

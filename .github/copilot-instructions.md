@@ -4,6 +4,29 @@ Follow the required reading order in `AGENTS.md` before acting. Preserve existin
 user changes, respect file ownership, and validate Microsoft contracts against
 current official documentation.
 
+## After a fetch, pull, or fresh clone
+
+Follow the exact required reading order in `AGENTS.md`. That sequence includes
+`docs/implementation-status.md`, then `docs/agent-continuation.md`, then
+`CLAUDE.md` and the relevant workstream guide. Before any live or deployment
+action, also read `docs/operations/development-deployment-status.md` and the
+applicable runbook. Do not reconstruct current work from chat transcripts or
+project chronology.
+
+Git transfers the tracked source, tests, instructions, and continuation checkpoint.
+It does not transfer `.agent-runtime/`, retained legacy `.agents/runtime/`,
+`.bootstrap/`, `bootstrap/config.json`, `.secret`, or `.secrets`. When the current
+local delivery ledger is absent, initialize a new one from the tracked continuation
+checkpoint and record the checked-out HEAD. A new clone can continue source work,
+but it cannot Resume an existing deployment without that deployment's original
+ignored state and renewed operator authority. Obey the live-action boundary in the
+current `docs/agent-continuation.md`; a tracked checkpoint never grants live
+authority by itself.
+
+For bootstrap implementation, recovery, validation, or handoff work, read
+`.agents/skills/a365-bootstrap-delivery/SKILL.md` and use its durable ledger
+protocol before taking a task action.
+
 ## Product invariants
 
 - The Gateway is N:N. One registration binds one generated external ID and Gateway

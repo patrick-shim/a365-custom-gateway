@@ -104,7 +104,9 @@ canonical Azure values—for example,
 does not accept a free-text region or silently choose one. Only after every required
 selection has current proof does Setup atomically write `bootstrap/config.json`.
 It then runs Plan, displays the exact deployment boundaries, and requires a second
-explicit confirmation before Apply or Resume.
+explicit confirmation before Apply. If an accepted deployment later stops, the
+terminal Resume path is supported. A restarted Setup browser process does not yet
+provide the complete separate review-and-confirm Resume contract.
 
 Keep the terminal open. Deployment may hand control to official Microsoft browser
 windows for refreshed Azure, Entra, Agent ID, or Purview authentication. Setup
@@ -144,7 +146,7 @@ file with `--config PATH`.
 | `doctor` | Check tools, configuration, Azure CLI account, and subscription readiness. |
 | `plan` | Validate inputs, compile Bicep, and run authenticated Azure What-If. |
 | `apply` | Apply an accepted current plan and run final verification. |
-| `resume` | Reconcile and continue an interrupted accepted plan. |
+| `resume` | Reconcile and continue an interrupted accepted plan from the terminal. |
 | `status` | Show local checkpoint/readiness state without Azure calls. |
 | `verify` | Rerun read-only deployment verification. |
 | `open` | Open the recorded verified Admin UI HTTPS endpoint. |
@@ -202,6 +204,12 @@ Bootstrap is a resumable state machine:
 4. `resume` reconciles completed checkpoints and continues only work that remains
    safe for the same accepted plan.
 5. `verify` reads back the deployed boundary without creating or updating it.
+
+Terminal Resume is supported. The engine can run a read-only checkpoint review and
+then require both the accepted-Plan fingerprint and the resulting Resume
+authorization fingerprint in a separately authorized process. The local Setup UI
+does not yet complete that two-process exchange after Setup restarts, so do not use
+a restarted browser session as recovery evidence.
 
 State and sanitized evidence live under ignored `.bootstrap/`. They may contain
 tenant, subscription, resource, application, principal, image-digest, and
@@ -288,9 +296,21 @@ If an accepted deployment stops:
 ./gateway resume
 ```
 
+On Windows PowerShell or Command Prompt, use:
+
+```powershell
+.\gateway.cmd status
+.\gateway.cmd diagnose
+.\gateway.cmd resume
+```
+
 Review the reported failure and correct its cause before Resume. Do not edit or
 delete `.bootstrap/`, manually replay completed tenant operations, access retained
 messages, or run a second bootstrap against the same deployment.
+
+If Setup itself was closed or restarted, use the terminal sequence above. The
+browser UI's distinct read-only Resume review, ephemeral authorization handoff, and
+separate confirmation are still pending integration and validation.
 
 Database recovery, one-shot manual database repair, and Admin UI upgrade are
 deliberately bounded commands. Use them only when the bootstrap identifies that

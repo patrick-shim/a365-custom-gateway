@@ -5,8 +5,9 @@ description: Build, extend, test, or review the A365 Gateway Blazor Admin UI aga
 
 # A365 Admin UI
 
-Read `docs/implementation-status.md`, `CLAUDE.md`, `AGENTS.md`, and
-`docs/agent-guides/admin-ui.md` completely before acting. The API contract,
+Follow the binding **Required reading** order in `AGENTS.md` completely before
+acting; do not replace or reorder it here. For this workstream,
+`docs/agent-guides/admin-ui.md` is the relevant guide. The API contract,
 server-advertised capabilities, roles, routes, and shared guide are authoritative.
 
 For foundation work, own authentication, options, services, and API transport. For
