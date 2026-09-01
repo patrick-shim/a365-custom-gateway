@@ -632,6 +632,7 @@ function Deploy-AdminUiUpgrade {
             throw 'The recovered Admin UI deployment intent has no ARM record. Its outcome is ambiguous; automatic replay is forbidden.'
         }
         $existing = Invoke-ArmDeploymentWithSecureParameters `
+            -SubscriptionId ([string]$Configuration.subscriptionId) `
             -ResourceGroup ([string]$Configuration.resourceGroupName) `
             -Name $name `
             -TemplateFile (Join-Path $repositoryRoot 'infrastructure/bicep/admin-ui.bicep') `

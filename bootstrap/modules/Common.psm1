@@ -424,8 +424,16 @@ function Get-BootstrapAzureCliArguments {
         if ($explicitSubscriptions.Count -ne 0) {
             throw 'Local Azure CLI Bicep commands must not carry a subscription selector.'
         }
-        if ($effectiveArguments.Count -lt 2 -or
-            @('build', 'install', 'version') -cnotcontains [string]$effectiveArguments[1]) {
+        $bicepSubcommand = if ($effectiveArguments.Count -ge 2) {
+            [string]$effectiveArguments[1]
+        }
+        else {
+            ''
+        }
+        $isExactUninstall =
+            $effectiveArguments.Count -eq 2 -and $bicepSubcommand -ceq 'uninstall'
+        if (@('build', 'install', 'version') -cnotcontains $bicepSubcommand -and
+            -not $isExactUninstall) {
             throw 'Only reviewed local Azure CLI Bicep commands are allowed after bootstrap authentication.'
         }
         return $effectiveArguments

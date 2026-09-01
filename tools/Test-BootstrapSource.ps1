@@ -23,6 +23,95 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $bootstrapRoot = Join-Path $repositoryRoot 'bootstrap'
 
+function Resolve-GatewayBicepCompilerCommand {
+    [CmdletBinding()]
+    param(
+        [string]$AzureCliPath = '',
+
+        [Nullable[bool]]$WindowsPlatform = $null
+    )
+
+    $effectiveWindowsPlatform = if ($null -eq $WindowsPlatform) {
+        [bool]$IsWindows
+    }
+    else {
+        [bool]$WindowsPlatform
+    }
+    $resolvedAzureCliPath = $AzureCliPath
+    if ([string]::IsNullOrWhiteSpace($resolvedAzureCliPath)) {
+        $azCommand = Get-Command az -CommandType Application -ErrorAction Stop
+        $resolvedAzureCliPath = [string]$azCommand.Source
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedAzureCliPath)) {
+        throw 'Azure CLI could not be resolved to an executable process boundary.'
+    }
+
+    if (-not $effectiveWindowsPlatform) {
+        return [pscustomobject]@{
+            FileName = $resolvedAzureCliPath
+            PrefixArguments = @()
+        }
+    }
+
+    $extension = [IO.Path]::GetExtension($resolvedAzureCliPath)
+    if ($extension.Equals('.exe', [StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject]@{
+            FileName = $resolvedAzureCliPath
+            PrefixArguments = @()
+        }
+    }
+    if (-not $extension.Equals('.cmd', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Azure CLI could not be resolved to a supported Windows executable process boundary.'
+    }
+
+    $pythonPath = [IO.Path]::GetFullPath((Join-Path (
+        Split-Path -Parent $resolvedAzureCliPath) '..\python.exe'))
+    if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
+        throw 'The Windows Azure CLI launcher could not be mapped to its bundled Python executable.'
+    }
+
+    return [pscustomobject]@{
+        FileName = $pythonPath
+        PrefixArguments = @('-IBm', 'azure.cli')
+    }
+}
+
+function New-GatewayBicepCompilerStartInfo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Command,
+
+        [Parameter(Mandatory)]
+        [string[]]$Arguments,
+
+        [hashtable]$EnvironmentOverrides = @{}
+    )
+
+    $fileName = [string]$Command.FileName
+    if ([string]::IsNullOrWhiteSpace($fileName)) {
+        throw 'The Azure CLI compiler command has no executable file name.'
+    }
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $fileName
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+    foreach ($prefixArgument in @($Command.PrefixArguments)) {
+        [void]$startInfo.ArgumentList.Add([string]$prefixArgument)
+    }
+    foreach ($argument in $Arguments) {
+        [void]$startInfo.ArgumentList.Add($argument)
+    }
+    foreach ($environmentName in $EnvironmentOverrides.Keys) {
+        $startInfo.Environment[[string]$environmentName] = [string]$EnvironmentOverrides[$environmentName]
+    }
+
+    return $startInfo
+}
+
 function Invoke-GatewayBicepCompiler {
     [CmdletBinding()]
     param(
@@ -35,18 +124,11 @@ function Invoke-GatewayBicepCompiler {
         [hashtable]$EnvironmentOverrides = @{}
     )
 
-    $azCommand = Get-Command az -ErrorAction Stop
-    $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $azCommand.Source
-    $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    foreach ($argument in $Arguments) {
-        [void]$startInfo.ArgumentList.Add($argument)
-    }
-    foreach ($environmentName in $EnvironmentOverrides.Keys) {
-        $startInfo.Environment[[string]$environmentName] = [string]$EnvironmentOverrides[$environmentName]
-    }
+    $command = Resolve-GatewayBicepCompilerCommand
+    $startInfo = New-GatewayBicepCompilerStartInfo `
+        -Command $command `
+        -Arguments $Arguments `
+        -EnvironmentOverrides $EnvironmentOverrides
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo

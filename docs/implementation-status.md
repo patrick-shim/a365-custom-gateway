@@ -62,6 +62,29 @@ execution to a separate fingerprint. Unexpected files, altered historical
 evidence, or another source generation are rejected. This is not a general
 source-upgrade or resource-adoption mechanism.
 
+Resume preserves the accepted Plan instead of creating or clearing another one.
+After obtaining the bootstrap lock, the engine rereads state, routes started `Up`
+and `Apply` requests through the dedicated Resume preflight, and independently
+revalidates every completed checkpoint. This includes the persistent database Job,
+its sole successful execution, the canonical database receipt, schema evidence,
+and restoration of the original SQL administrator. Resume authorization is bound
+to the accepted Plan, immutable source and configuration, deployment ownership,
+completed prefix, current non-completed record, and remaining step list.
+
+The engine also supports a non-mutating, non-interactive checkpoint review. It
+returns the preserved accepted-Plan fingerprint and the newly computed Resume
+authorization fingerprint, but starts no deployment step. A separately authorized
+non-interactive Resume must supply both exact fingerprints; a changed checkpoint is
+rejected before mutation. Interactive terminal Resume retains its current-process
+confirmation.
+
+The local Setup application does not yet expose this two-process contract. Its
+remaining correction is a distinct read-only Resume-review action, strict parsing
+of exactly one typed review claim, ephemeral single-use coordinator state, and a
+separate user confirmation that passes both fingerprints to Resume. Until that
+integration is complete and tested, a restarted Setup process is not claimed to
+provide end-to-end Resume for an already-started deployment.
+
 Setup validates the typed bootstrap schema and field-specific Azure constraints; it
 does not infer whether a deployment name is credential-like from the name's text.
 Unknown properties and unsupported advanced configuration remain rejected. Azure
@@ -125,6 +148,11 @@ adapter disabled until safe token-role and bounded data-plane verification pass.
 
 ## Source verification
 
+The consolidated results below describe the preceding release checkpoint. The
+current pause correction has since completed the full local solution and bootstrap
+gates recorded in the second table; hosted Windows and live deployment evidence
+remain outstanding.
+
 The consolidated source gate completed on 2026-09-01:
 
 | Verification project | Passed | Failed | Skipped |
@@ -166,6 +194,33 @@ history and completed-prefix evidence, and the deterministic governance-NSG
 What-If extension on later Resume. These cases are included in the consolidated
 708-test source gate above.
 
+The current pause checkpoint has the following narrower offline evidence:
+
+| Current correction gate | Passed | Failed | Skipped |
+|---|---:|---:|---:|
+| Complete .NET test set | 1,625 | 0 | 0 |
+| Complete bootstrap Pester set | 682 | 0 | 9 |
+| Resume and Azure security regressions | 323 | 0 | 0 |
+| Entra credential and orphan-cleanup regressions | 33 | 0 | 0 |
+| Windows Bicep prerequisite regressions | 9 | 0 | 0 |
+| Standalone source-compiler regressions | 7 | 0 | 0 |
+| Launcher regressions executed on macOS | 8 | 0 | 9 |
+
+The Release solution build completed with zero warnings and zero errors. The source
+compiler parsed 18 PowerShell files and two JSON contracts, then locally compiled
+27 Bicep templates and three parameter files. Hosted Windows now has an explicit
+Bicep compilation lane, but that lane has not run for this source generation. The
+secure credential path uses one ARM child-resource
+deployment against the exact configured subscription, emits no secret value, and
+requires only value-free management-plane metadata readback. The obsolete Key
+Vault data-plane credential helpers and their direct tests were removed.
+
+The source in this checkpoint has not been deployed or live-tested. The local
+results above are not a release claim and do not replace the required hosted
+Windows, browser, and authorized live-deployment gates. A final hash-scoped
+security rereview of the backend Resume and private-vault boundaries passed 356 of
+356 focused tests with no remaining blocker.
+
 ## Known external limitations
 
 - Preview Microsoft contracts can change or vary by tenant.
@@ -180,11 +235,15 @@ What-If extension on later Resume. These cases are included in the consolidated
 
 ## Safe resume point
 
-For source work, start with the current worktree and rerun the smallest affected
-tests before broader gates. For any authorized Azure, Entra, SQL, Graph, Purview, or
-deployment action, first read the deployment status and relevant runbook. Preserve
-ignored bootstrap state and never read or print `.secret`/`.secrets` values.
+Continue first with the Setup two-step Resume review and confirmation integration
+described above. Then rerun the affected Setup tests and an independent hash-scoped
+review for that new integration, require the hosted Windows launcher and Bicep lane
+to pass, and test the Setup flow at desktop and narrow widths. Do not start a live
+provider action while any of those checks is unresolved.
 
-The next user-operated deployment must follow the public README with a new unused
-deployment identity. Codex must not run that bootstrap on the user's behalf unless
-the user makes a new explicit request.
+For any later authorized Azure, Entra, SQL, Graph, Purview, or deployment action,
+first read the deployment status and relevant runbook. Preserve ignored bootstrap
+state and never read or print `.secret`/`.secrets` values. The next clean deployment
+must use a new unused deployment identity and follow the public README only after
+the Resume-enabled Setup journey is complete. Codex must not resume live work until
+the user returns and explicitly requests it.

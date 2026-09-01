@@ -148,6 +148,11 @@ jobs:
         shell: pwsh
         run: ./tools/Test-BootstrapSource.ps1 -RunPester
 
+      - name: Compile every Bicep template on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/Test-BootstrapSource.ps1 -CompileBicep
+
       - name: Run Setup UI tests on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -165,7 +170,7 @@ jobs:
             throw "gateway.cmd setup --help exited with code $LASTEXITCODE."
           }
 
-          if ($output -notcontains 'Usage: gateway.cmd setup [--no-open]') {
+          if ($output -notcontains 'Usage: gateway.cmd setup [--no-open] [--no-install]') {
             throw 'gateway.cmd setup --help did not return the expected public usage text.'
           }
 

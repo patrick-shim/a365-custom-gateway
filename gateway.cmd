@@ -193,12 +193,19 @@ if errorlevel 1 (
 exit /b 0
 
 :parse_setup
+set "GATEWAY_ROOT=%~dp0"
+set "GATEWAY_NO_INSTALL=0"
 set "SETUP_NO_OPEN="
 
 :parse_setup_next
 if "%~1"=="" goto run_setup
 if /I "%~1"=="--no-open" (
   set "SETUP_NO_OPEN=--no-open"
+  shift
+  goto parse_setup_next
+)
+if /I "%~1"=="--no-install" (
+  set "GATEWAY_NO_INSTALL=1"
   shift
   goto parse_setup_next
 )
@@ -218,53 +225,136 @@ exit /b %errorlevel%
 
 :check_setup_prerequisites
 set "SETUP_PREREQUISITES_READY=1"
+call :refresh_setup_tool_paths
+call :ensure_setup_pwsh
+if errorlevel 1 set "SETUP_PREREQUISITES_READY=0"
+call :ensure_setup_dotnet
+if errorlevel 1 set "SETUP_PREREQUISITES_READY=0"
+call :ensure_setup_azure_cli
+if errorlevel 1 set "SETUP_PREREQUISITES_READY=0"
+
+if "%SETUP_PREREQUISITES_READY%"=="0" (
+  if "%GATEWAY_NO_INSTALL%"=="1" (
+    echo No installation was attempted. Install or repair the listed tools, then rerun gateway.cmd setup. 1>&2
+  ) else (
+    echo Setup could not prepare every required host tool. Repair the listed tool, then rerun gateway.cmd setup. 1>&2
+  )
+  exit /b 1
+)
+exit /b 0
+
+:ensure_setup_pwsh
+call :test_setup_pwsh
+if not errorlevel 1 exit /b 0
+if "%GATEWAY_NO_INSTALL%"=="1" (
+  echo Setup requires PowerShell 7 and --no-install forbids installing it. Install: https://aka.ms/powershell-release?tag=stable 1>&2
+  exit /b 1
+)
+call :install_setup_package Microsoft.PowerShell "PowerShell 7" "https://aka.ms/powershell-release?tag=stable"
+if errorlevel 1 exit /b 1
+call :refresh_setup_tool_paths
+call :test_setup_pwsh
+if errorlevel 1 (
+  echo winget finished, but PowerShell 7 is still unavailable or incompatible. Repair: https://aka.ms/powershell-release?tag=stable 1>&2
+  exit /b 1
+)
+exit /b 0
+
+:test_setup_pwsh
 set "GATEWAY_SETUP_PWSH=pwsh.exe"
 where pwsh.exe >nul 2>nul
 if errorlevel 1 (
   if exist "%ProgramFiles%\PowerShell\7\pwsh.exe" (
     set "GATEWAY_SETUP_PWSH=%ProgramFiles%\PowerShell\7\pwsh.exe"
-    set "PATH=%ProgramFiles%\PowerShell\7;%PATH%"
   ) else (
-    echo Setup requires PowerShell 7 ^(pwsh^). Install: https://aka.ms/powershell-release?tag=stable 1>&2
-    set "SETUP_PREREQUISITES_READY=0"
+    exit /b 1
   )
 )
-if "%SETUP_PREREQUISITES_READY%"=="1" (
-  "%GATEWAY_SETUP_PWSH%" -NoLogo -NoProfile -NonInteractive -Command "if ($PSVersionTable.PSVersion.Major -ge 7) { exit 0 }; exit 1" >nul 2>nul
-  if errorlevel 1 (
-    echo Setup requires PowerShell 7 ^(pwsh^). Install: https://aka.ms/powershell-release?tag=stable 1>&2
-    set "SETUP_PREREQUISITES_READY=0"
-  )
-)
+"%GATEWAY_SETUP_PWSH%" -NoLogo -NoProfile -NonInteractive -Command "if ($PSVersionTable.PSVersion.Major -ge 7) { exit 0 }; exit 1" >nul 2>nul
+if errorlevel 1 exit /b 1
+exit /b 0
 
-where dotnet.exe >nul 2>nul
-if errorlevel 1 (
-  echo Setup requires the .NET 10 SDK. Install: https://dotnet.microsoft.com/download/dotnet/10.0 1>&2
-  set "SETUP_PREREQUISITES_READY=0"
-) else (
-  call :check_setup_dotnet_10
-  if errorlevel 1 (
-    echo Setup requires the .NET 10 SDK. Install: https://dotnet.microsoft.com/download/dotnet/10.0 1>&2
-    set "SETUP_PREREQUISITES_READY=0"
-  )
-)
-
-where az >nul 2>nul
-if errorlevel 1 (
-  echo Setup requires Azure CLI ^(az^). Install: https://learn.microsoft.com/cli/azure/install-azure-cli 1>&2
-  set "SETUP_PREREQUISITES_READY=0"
-) else (
-  call az version >nul 2>nul
-  if errorlevel 1 (
-    echo Setup requires Azure CLI ^(az^). Install: https://learn.microsoft.com/cli/azure/install-azure-cli 1>&2
-    set "SETUP_PREREQUISITES_READY=0"
-  )
-)
-
-if "%SETUP_PREREQUISITES_READY%"=="0" (
-  echo Install or repair the listed tools, open a new terminal, and rerun gateway.cmd setup. 1>&2
+:ensure_setup_dotnet
+call :check_setup_dotnet_10
+if not errorlevel 1 exit /b 0
+if "%GATEWAY_NO_INSTALL%"=="1" (
+  echo Setup requires the .NET SDK feature band 10.0.4xx from global.json and --no-install forbids installing it. Install: https://dotnet.microsoft.com/download/dotnet/10.0 1>&2
   exit /b 1
 )
+call :install_setup_package Microsoft.DotNet.SDK.10 ".NET SDK feature band 10.0.4xx" "https://dotnet.microsoft.com/download/dotnet/10.0"
+if errorlevel 1 exit /b 1
+call :refresh_setup_tool_paths
+call :check_setup_dotnet_10
+if errorlevel 1 (
+  echo winget finished, but the .NET SDK feature band 10.0.4xx required by global.json is still unavailable. Repair: https://dotnet.microsoft.com/download/dotnet/10.0 1>&2
+  exit /b 1
+)
+exit /b 0
+
+:check_setup_dotnet_10
+where dotnet.exe >nul 2>nul
+if errorlevel 1 exit /b 1
+set "GATEWAY_SETUP_DOTNET_VERSION="
+pushd "%GATEWAY_ROOT%." >nul 2>nul
+if errorlevel 1 exit /b 1
+for /f "delims=" %%V in ('dotnet --version 2^>nul') do set "GATEWAY_SETUP_DOTNET_VERSION=%%V"
+popd
+if not defined GATEWAY_SETUP_DOTNET_VERSION exit /b 1
+rem global.json pins 10.0.400 with latestPatch, so only the 10.0.4xx feature band is valid.
+if "%GATEWAY_SETUP_DOTNET_VERSION:~0,6%"=="10.0.4" exit /b 0
+exit /b 1
+
+:ensure_setup_azure_cli
+call :test_setup_azure_cli
+if not errorlevel 1 exit /b 0
+if "%GATEWAY_NO_INSTALL%"=="1" (
+  echo Setup requires Azure CLI and --no-install forbids installing it. Install: https://learn.microsoft.com/cli/azure/install-azure-cli-windows 1>&2
+  exit /b 1
+)
+call :install_setup_package Microsoft.AzureCLI "Azure CLI" "https://learn.microsoft.com/cli/azure/install-azure-cli-windows"
+if errorlevel 1 exit /b 1
+call :refresh_setup_tool_paths
+call :test_setup_azure_cli
+if errorlevel 1 (
+  echo winget finished, but Azure CLI is still unavailable or unusable. Repair: https://learn.microsoft.com/cli/azure/install-azure-cli-windows 1>&2
+  exit /b 1
+)
+exit /b 0
+
+:test_setup_azure_cli
+where az >nul 2>nul
+if errorlevel 1 exit /b 1
+call az version >nul 2>nul
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:install_setup_package
+call :find_setup_winget
+if errorlevel 1 (
+  echo Setup cannot install %~2 because Windows Package Manager ^(winget^) is unavailable. Install it manually: %~3 1>&2
+  exit /b 1
+)
+echo Installing %~2 with winget...
+"%GATEWAY_SETUP_WINGET%" install --id %~1 --exact --source winget --accept-package-agreements --accept-source-agreements
+if errorlevel 1 (
+  echo winget could not install %~2. Install or repair it manually: %~3 1>&2
+  exit /b 1
+)
+exit /b 0
+
+:find_setup_winget
+set "GATEWAY_SETUP_WINGET=winget.exe"
+where winget.exe >nul 2>nul
+if not errorlevel 1 exit /b 0
+if exist "%LocalAppData%\Microsoft\WindowsApps\winget.exe" (
+  set "GATEWAY_SETUP_WINGET=%LocalAppData%\Microsoft\WindowsApps\winget.exe"
+  exit /b 0
+)
+exit /b 1
+
+:refresh_setup_tool_paths
+set "GATEWAY_SETUP_PROGRAM_FILES_X86=%ProgramFiles(x86)%"
+set "PATH=%ProgramFiles%\PowerShell\7;%ProgramFiles%\dotnet;%ProgramFiles%\Microsoft SDKs\Azure\CLI2\wbin;%ProgramW6432%\Microsoft SDKs\Azure\CLI2\wbin;%GATEWAY_SETUP_PROGRAM_FILES_X86%\Microsoft SDKs\Azure\CLI2\wbin;%LocalAppData%\Microsoft\WindowsApps;%LocalAppData%\Microsoft\WinGet\Links;%PATH%"
 exit /b 0
 
 :parse_upgrade
@@ -324,15 +414,8 @@ exit /b %errorlevel%
 echo Usage: gateway.cmd upgrade-admin-ui --config PATH --yes [--non-interactive]
 exit /b 0
 
-:check_setup_dotnet_10
-set "GATEWAY_SETUP_DOTNET_VERSION="
-for /f "delims=" %%V in ('dotnet --version 2^>nul') do set "GATEWAY_SETUP_DOTNET_VERSION=%%V"
-if not defined GATEWAY_SETUP_DOTNET_VERSION exit /b 1
-if "%GATEWAY_SETUP_DOTNET_VERSION:~0,3%"=="10." exit /b 0
-exit /b 1
-
 :help_setup
-echo Usage: gateway.cmd setup [--no-open]
+echo Usage: gateway.cmd setup [--no-open] [--no-install]
 exit /b 0
 
 :help

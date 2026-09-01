@@ -32,21 +32,66 @@ Individual locations. A source revision is not deployed evidence until immutable
 image digests, exact resource readbacks, health checks, queue state, and a bounded
 first registration are recorded for that revision.
 
+The current source correction adds a dedicated checkpoint-aware Resume path,
+post-lock state reread and started-Apply routing, exact subscription binding for
+secure ARM mutations, and one management-plane-only Admin UI credential transfer
+for a private vault. It also adds Windows prerequisite repair and hosted Windows
+Bicep compilation coverage. None of those source changes has been deployed or
+live-verified at this checkpoint.
+
 The next clean deployment is user-operated and must use a new deployment identity.
 Do not point a fresh local bootstrap state at an existing resource group or reuse
 state from a deleted resource group.
 
 ## Current user-operated clean-subscription checkpoint
 
-The interrupted clean-subscription target and its bootstrap-created tenant objects
-were removed with exact readback. No Azure resource group or Entra application from
-that run remains in scope, and no current-source deployment is claimed.
+The interrupted clean-subscription target remains stopped and untouched during this
+pause. Its resource group was not deleted, no tenant object was removed, and no new
+Azure, Entra, SQL, Graph, Service Bus, Purview, or deployment call was made while
+preparing this checkpoint. That target is not current-source deployment evidence.
+
+Before a later clean run, an operator must re-establish the exact authorized tenant
+and subscription boundary, verify the stopped disposable target, delete only that
+reviewed target, and prove exact absence. The next bootstrap must then use a new
+unused deployment identity; preserved state from the stopped target must not be
+forced into another resource group.
 
 The next run starts from a new unused deployment identity and selects Korea Central
 through the subscription-backed Setup dropdown, which persists `koreacentral`.
 Doctor and Plan must prove the exact configured Azure SQL path in that region before
 any mutation. The resulting source/configuration/plan fingerprints and deployed
 readbacks become the new environment evidence only after verification completes.
+
+## Paused source checkpoint
+
+The backend Resume contract is implemented and has focused offline coverage:
+
+- a started `Up` or explicit `Apply` is routed from state reread under the lock;
+- every completed checkpoint is independently revalidated without another Plan;
+- a read-only non-interactive review emits the preserved accepted-Plan fingerprint
+  and one checkpoint-bound Resume authorization fingerprint without mutation;
+- confirmed non-interactive Resume requires both exact fingerprints and rejects a
+  changed current record before any remaining deployment step;
+- secure ARM deployments require the canonical configured subscription; and
+- private-vault Admin UI credential transfer uses one secure ARM child resource,
+  no Key Vault data-plane authority, no value output, and value-free exact readback.
+
+The combined Resume and Azure regression suite passed 323 of 323 tests. Entra
+credential and orphan-cleanup coverage passed 33 of 33; Windows Bicep prerequisite
+coverage passed 9 of 9; and the source compiler passed 7 of 7, parsed 18 PowerShell
+files and two JSON contracts, and compiled 27 Bicep templates plus three parameter
+files locally. The complete bootstrap Pester set passed 682 tests with zero failures
+and nine Windows-only skips. All eight .NET test projects passed 1,625 tests, and
+the Release solution build completed with zero warnings and zero errors. Launcher
+coverage executed eight tests on macOS and skipped nine Windows-only cases as
+designed.
+
+The backend source in this checkpoint passed a final hash-scoped security rereview:
+356 focused tests passed and all four prior Resume/private-vault findings were
+closed. It has not completed hosted Windows execution, browser testing, or live
+deployment. Setup still needs the ephemeral two-step Resume review and confirmation
+service/UI integration; that is the first source task when work resumes and it must
+receive its own affected tests and rereview.
 
 ## Optional protection evidence
 
@@ -70,6 +115,8 @@ configuration and validation boundary.
 
 ## Live-action boundary
 
+- Do not mutate or delete the stopped disposable target until the user returns and
+  reauthorizes continuation after reviewing this pause commit.
 - Do not run a new bootstrap against the preserved internal development resource
   group or adopt it from a new local state directory.
 - Do not access, replay, or dispose of retained dead-letter evidence without a

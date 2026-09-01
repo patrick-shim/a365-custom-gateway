@@ -1594,12 +1594,30 @@ function Get-GatewayInertWhatIfRecoveryStateContext {
     # It remains closed here until its exact typed recovery boundary is reviewed.
     if ($State.steps.Contains('Admin UI deployment')) { return $null }
     # The database step creates a persistent imperative Container Apps Job that
-    # is intentionally outside the foundation What-If graph. Once its durable
-    # receipt exists, a new Plan must not describe the state as apply-ready; only
-    # Resume may reconcile the exact accepted receipt, image, job, execution, and
-    # administrator. A failure before receipt creation remains ARM-only recovery.
+    # is intentionally outside the foundation What-If graph. Preserve its exact
+    # evidence in the recovery context so the dedicated Resume preflight can
+    # positively validate the receipt, Job, execution, image, and administrator.
+    # Fresh Plan still cannot authorize this post-mutation boundary.
+    $database = $null
     $databaseReceiptPath = Join-Path (Get-RepositoryRoot) ".bootstrap/evidence/$($Config.resourceGroupName)/database/private-database-bootstrap-receipt.json"
-    if ($State.steps.Contains('Gateway database') -and (Test-Path -LiteralPath $databaseReceiptPath)) { return $null }
+    $databaseReceiptExists = Test-Path -LiteralPath $databaseReceiptPath -PathType Leaf
+    if ($State.steps.Contains('Gateway database')) {
+        $databaseStep = $State.steps['Gateway database']
+        if ([string]$databaseStep.status -ceq 'Completed' -and $databaseReceiptExists) {
+            if ($databaseStep.evidence -isnot [System.Collections.IDictionary] -or
+                -not $databaseStep.evidence.Contains('databaseBootstrapCompletionReceipt') -or
+                [string]$databaseStep.evidence.databaseBootstrapCompletionReceipt -cne $databaseReceiptPath -or
+                -not $databaseReceiptExists) {
+                return $null
+            }
+            $database = $databaseStep.evidence
+        }
+        elseif ([string]$databaseStep.status -cne 'Completed' -and $databaseReceiptExists) {
+            # A receipt beside a non-completed step is ambiguous. Only the
+            # database-specific recovery contract may classify it.
+            return $null
+        }
+    }
 
     $images = $State.steps['Immutable workload images'].evidence
     if ([string]::IsNullOrWhiteSpace([string]$images.api) -or
@@ -1614,7 +1632,195 @@ function Get-GatewayInertWhatIfRecoveryStateContext {
         workerImage = [string]$images.worker
         databaseMigratorImage = [string]$images.databaseMigrator
         sqlPrivateEndpoint = $sqlPrivateEndpoint
+        database = $database
         sqlServerFqdn = if ($inertStep.Contains('evidence')) { [string]$inertStep.evidence.sqlServerFqdn } else { '' }
+    }
+}
+
+function Get-GatewayResumeCheckpointContext {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$ExecutionSourceFingerprint,
+        [Parameter(Mandatory)][string]$DeploymentSourceFingerprint
+    )
+
+    $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+    Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Resume execution source fingerprint'
+    Assert-BootstrapFingerprintValue -Value $DeploymentSourceFingerprint -Label 'Resume deployment source fingerprint'
+    if ($DeploymentOwnershipId -cne $canonicalOwnershipId -or
+        -not $State.Contains('deploymentOwnershipId') -or
+        [string]$State.deploymentOwnershipId -cne $canonicalOwnershipId -or
+        -not $State.Contains('configurationFingerprint') -or
+        [string]$State.configurationFingerprint -cne (Get-BootstrapConfigurationFingerprint -Config $Config) -or
+        -not $State.Contains('acceptedPlan') -or
+        $State.acceptedPlan -isnot [System.Collections.IDictionary] -or
+        -not $State.Contains('steps') -or
+        $State.steps -isnot [System.Collections.IDictionary]) {
+        throw 'Resume checkpoint ownership, configuration, accepted authorization, or step state is incomplete.'
+    }
+
+    $allowedSourceFingerprints = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($candidate in @(
+        $ExecutionSourceFingerprint,
+        $DeploymentSourceFingerprint,
+        [string]$State.acceptedPlan.sourceFingerprint,
+        $(if ($State.Contains('source') -and $State.source -is [System.Collections.IDictionary] -and
+            $State.source.Contains('created')) { [string]$State.source.created.bootstrapSourceFingerprint } else { '' }),
+        $(if ($State.Contains('source') -and $State.source -is [System.Collections.IDictionary] -and
+            $State.source.Contains('lastWritten')) { [string]$State.source.lastWritten.bootstrapSourceFingerprint } else { '' }),
+        $(if ($State.Contains('preInertSourceCorrectionPlan') -and
+            $State.preInertSourceCorrectionPlan -is [System.Collections.IDictionary]) {
+                [string]$State.preInertSourceCorrectionPlan.originalDeploymentSourceFingerprint
+            } else { '' }),
+        $(if ($State.Contains('preInertSourceCorrectionPlan') -and
+            $State.preInertSourceCorrectionPlan -is [System.Collections.IDictionary]) {
+                [string]$State.preInertSourceCorrectionPlan.correctedExecutionSourceFingerprint
+            } else { '' }),
+        $(if ($State.Contains('databaseRecoveryPlan') -and
+            $State.databaseRecoveryPlan -is [System.Collections.IDictionary]) {
+                [string]$State.databaseRecoveryPlan.correctedSourceFingerprint
+            } else { '' }),
+        $(if ($State.Contains('manualDatabaseRepairPlan') -and
+            $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary]) {
+                [string]$State.manualDatabaseRepairPlan.repairSourceFingerprint
+            } else { '' })
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$candidate)) {
+            Assert-BootstrapFingerprintValue -Value ([string]$candidate) -Label 'Resume checkpoint source fingerprint'
+            $null = $allowedSourceFingerprints.Add([string]$candidate)
+        }
+    }
+
+    $stepNames = @(Get-GatewayBootstrapStepNames)
+    [int[]]$observedIndexes = @()
+    foreach ($stepName in @($State.steps.Keys | ForEach-Object { [string]$_ })) {
+        $stepIndex = [Array]::IndexOf($stepNames, $stepName)
+        if ($stepIndex -lt 0) {
+            throw 'Resume checkpoint contains an unknown bootstrap step.'
+        }
+        $observedIndexes += $stepIndex
+    }
+    if ($observedIndexes.Count -eq 0) {
+        throw 'Resume is available only after a bootstrap checkpoint exists.'
+    }
+    $lastObservedIndex = [Linq.Enumerable]::Max([int[]]$observedIndexes)
+    if ($observedIndexes.Count -ne ($lastObservedIndex + 1) -or
+        @($observedIndexes | Sort-Object -Unique).Count -ne $observedIndexes.Count) {
+        throw 'Resume checkpoint is not one contiguous bootstrap prefix.'
+    }
+
+    $completed = [Collections.Generic.List[string]]::new()
+    $completedEvidence = [Collections.Generic.List[object]]::new()
+    for ($index = 0; $index -le $lastObservedIndex; $index++) {
+        $stepName = [string]$stepNames[$index]
+        if (-not $State.steps.Contains($stepName)) {
+            throw 'Resume checkpoint is not one contiguous bootstrap prefix.'
+        }
+        $record = $State.steps[$stepName]
+        if ($record -isnot [System.Collections.IDictionary] -or
+            [string]$record.status -cnotin @('Running', 'Failed', 'Completed') -or
+            -not $record.Contains('sourceFingerprint') -or
+            -not $allowedSourceFingerprints.Contains([string]$record.sourceFingerprint)) {
+            throw 'Resume checkpoint contains malformed status or source provenance.'
+        }
+        if ($index -lt $lastObservedIndex -and [string]$record.status -cne 'Completed') {
+            throw 'Resume checkpoint contains a non-completed step before a later step.'
+        }
+        if ([string]$record.status -ceq 'Completed') {
+            if (-not $record.Contains('evidence') -or $null -eq $record.evidence) {
+                throw 'Resume checkpoint contains a completed step without durable evidence.'
+            }
+            $completed.Add($stepName)
+            $completedEvidence.Add([ordered]@{
+                name = $stepName
+                sourceFingerprint = [string]$record.sourceFingerprint
+                evidenceFingerprint = Get-BootstrapObjectFingerprint -InputObject $record.evidence
+            })
+        }
+    }
+    if ($completed.Count -eq 0) {
+        throw 'Resume is available only after at least one completed bootstrap checkpoint.'
+    }
+
+    $currentRecord = $State.steps[[string]$stepNames[$lastObservedIndex]]
+    $remainingStartIndex = if ([string]$currentRecord.status -ceq 'Completed') {
+        $lastObservedIndex + 1
+    }
+    else {
+        $lastObservedIndex
+    }
+    [string[]]$remaining = if ($remainingStartIndex -lt $stepNames.Count) {
+        @($stepNames[$remainingStartIndex..($stepNames.Count - 1)])
+    }
+    else { @() }
+    if ($remaining.Count -eq 0) {
+        throw 'The bootstrap checkpoint has no remaining deployment step. Run gateway verify instead of Resume.'
+    }
+
+    $currentRecordEvidence = if ($currentRecord.Contains('evidence') -and $null -ne $currentRecord.evidence) {
+        Get-BootstrapObjectFingerprint -InputObject $currentRecord.evidence
+    }
+    else { '' }
+    $currentRecordProjection = [ordered]@{
+        name = [string]$stepNames[$lastObservedIndex]
+        status = [string]$currentRecord.status
+        sourceFingerprint = [string]$currentRecord.sourceFingerprint
+        startedAtUtc = if ($currentRecord.Contains('startedAtUtc')) { [string]$currentRecord.startedAtUtc } else { '' }
+        completedAtUtc = if ($currentRecord.Contains('completedAtUtc')) { [string]$currentRecord.completedAtUtc } else { '' }
+        failedAtUtc = if ($currentRecord.Contains('failedAtUtc')) { [string]$currentRecord.failedAtUtc } else { '' }
+        reconciledAtUtc = if ($currentRecord.Contains('reconciledAtUtc')) { [string]$currentRecord.reconciledAtUtc } else { '' }
+        message = if ($currentRecord.Contains('message')) { [string]$currentRecord.message } else { '' }
+        evidenceFingerprint = $currentRecordEvidence
+    }
+    $checkpointCore = [ordered]@{
+        schemaVersion = 2
+        deploymentOwnershipId = $canonicalOwnershipId
+        configurationFingerprint = [string]$State.configurationFingerprint
+        acceptedPlanFingerprint = [string]$State.acceptedPlan.planFingerprint
+        executionSourceFingerprint = $ExecutionSourceFingerprint
+        deploymentSourceFingerprint = $DeploymentSourceFingerprint
+        completed = @($completedEvidence)
+        currentRecord = $currentRecordProjection
+        currentStep = [string]$remaining[0]
+        remainingSteps = $remaining
+    }
+    return [ordered]@{
+        schemaVersion = 2
+        deploymentOwnershipId = $canonicalOwnershipId
+        completedSteps = @($completed)
+        currentRecord = $currentRecordProjection
+        currentStep = [string]$remaining[0]
+        remainingSteps = $remaining
+        checkpointFingerprint = Get-BootstrapObjectFingerprint -InputObject $checkpointCore
+    }
+}
+
+function Test-GatewayNetworkHardeningEvidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Evidence
+    )
+
+    try {
+        $expectedVaultName = "kv-$($Config.projectName)-$($Config.environment)"
+        if ($Evidence -isnot [System.Collections.IDictionary] -or
+            [string]$Evidence.sharedKeyVault -cne $expectedVaultName -or
+            [string]$Evidence.publicNetworkAccess -cne 'Disabled' -or
+            $Evidence.exactPostMutationReadback -ne $true) {
+            throw 'mismatch'
+        }
+        $actual = Invoke-AzTsv -Arguments @(
+            'keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName,
+            '--name', $expectedVaultName, '--query', 'properties.publicNetworkAccess')
+        if ($actual -cne 'Disabled') { throw 'mismatch' }
+        return $true
+    }
+    catch {
+        throw 'Network-hardening revalidation was unavailable or mismatched; no network mutation was attempted.'
     }
 }
 
@@ -3045,6 +3251,7 @@ function Invoke-GatewayFoundationWhatIf {
         $unreviewableChanges += [ordered]@{ changeType = 'MalformedDuplicateResource'; resourceId = '' }
     }
     $recoveryIgnoreBoundary = $sourceCorrectionBoundary
+    $recoveryFailureCode = ''
     $ignoreChanges = @($changes | Where-Object { [string]$_.changeType -ceq 'Ignore' })
     $pendingCorrectionWithoutInertEvidence = $null -ne $sourceCorrectionPlan -and
         [string]$sourceCorrectionPlan.status -ceq 'Accepted' -and
@@ -3052,11 +3259,13 @@ function Invoke-GatewayFoundationWhatIf {
         -not $State.steps['Inert identity deployment'].Contains('evidence')
     if ($pendingCorrectionWithoutInertEvidence -and $unreviewableChanges.Count -eq 0) {
         try {
+            $recoveryFailureCode = 'RB15_SOURCE_CORRECTION_WRAPPER'
             $recoveryIgnoreBoundary = New-GatewayPreInertFoundationWhatIfBoundary `
                 -Config $Config `
                 -Foundation $State.steps['Azure foundation'].evidence `
                 -SourceCorrectionBoundary $sourceCorrectionBoundary `
                 -Changes $changes
+            $recoveryFailureCode = ''
         }
         catch {
             $unreviewableChanges += [ordered]@{ changeType = 'UnauthorizedIgnore'; resourceId = '' }
@@ -3070,16 +3279,19 @@ function Invoke-GatewayFoundationWhatIf {
             -SourceFingerprint $SourceFingerprint `
             -ExecutionSourceFingerprint $ExecutionSourceFingerprint
         if ($null -eq $recoveryState) {
+            $recoveryFailureCode = 'RB00_STATE_PREFIX'
             $unreviewableChanges += [ordered]@{ changeType = 'UnauthorizedIgnore'; resourceId = '' }
         }
         else {
             try {
+                $recoveryFailureCode = 'RB01_IGNORE_ID_NORMALIZATION'
                 [string[]]$observedIgnoreIds = @($ignoreChanges | ForEach-Object {
                     ConvertTo-GatewayRecoveryWhatIfResourceId -ResourceId ([string]$_.resourceId) -Config $Config
                 })
                 if (@($observedIgnoreIds | Sort-Object -Unique -CaseSensitive).Count -ne $observedIgnoreIds.Count) {
                     throw 'What-If returned duplicate normalized Ignore resource IDs.'
                 }
+                $recoveryFailureCode = 'RB02_GOVERNANCE_AND_TOPIC_SHAPE'
                 [string[]]$expectedGovernanceNsgResourceIds = @(
                     Get-GatewayFoundationGovernanceNsgWhatIfResourceIds -Config $Config)
                 [string[]]$observedGovernanceNsgResourceIds = @($observedIgnoreIds | Where-Object {
@@ -3106,6 +3318,7 @@ function Invoke-GatewayFoundationWhatIf {
                 $sqlPrivateEndpointExtension = $null
                 $additionalTypeInventoryResourceIds = $null
                 if ($null -ne $recoveryState.sqlPrivateEndpoint) {
+                    $recoveryFailureCode = 'RB03_SQL_PRIVATE_ENDPOINT_EVIDENCE'
                     [object[]]$extensionResults = @(Get-GatewaySqlPrivateEndpointWhatIfRecoveryExtension `
                         -Config $Config `
                         -Foundation $recoveryState.foundation `
@@ -3117,6 +3330,7 @@ function Invoke-GatewayFoundationWhatIf {
                         throw 'SQL private-endpoint recovery provider readback returned an invalid result envelope.'
                     }
                     $sqlPrivateEndpointExtension = $extensionResults[0]
+                    $recoveryFailureCode = 'RB04_SQL_EXTENSION_CONTRACT'
                     $validatedExtension = Assert-GatewaySqlPrivateEndpointWhatIfRecoveryExtension `
                         -Extension $sqlPrivateEndpointExtension `
                         -Config $Config `
@@ -3124,6 +3338,7 @@ function Invoke-GatewayFoundationWhatIf {
                         -SourceFingerprint $SourceFingerprint
                     $additionalTypeInventoryResourceIds = $validatedExtension.typeInventoryResourceIds
                 }
+                $recoveryFailureCode = 'RB05_INERT_PROVIDER_BOUNDARY'
                 [object[]]$recoveryResults = @(Get-GatewayInertWhatIfRecoveryBoundary `
                     -Config $Config `
                     -Foundation $recoveryState.foundation `
@@ -3142,6 +3357,7 @@ function Invoke-GatewayFoundationWhatIf {
                 if ($null -eq $recovery.evidence -or $recovery.boundary -isnot [System.Collections.IDictionary]) {
                     throw 'Recovery provider readback is incomplete.'
                 }
+                $recoveryFailureCode = 'RB06_INERT_DEPLOYMENT_EVIDENCE'
                 [object[]]$deploymentValidation = @(Test-GatewayGroupDeploymentEvidence `
                     -Config $Config `
                     -Foundation $recoveryState.foundation `
@@ -3155,6 +3371,7 @@ function Invoke-GatewayFoundationWhatIf {
                     $deploymentValidation[0] -ne $true) {
                     throw 'Recovered inert deployment evidence failed exact independent validation.'
                 }
+                $recoveryFailureCode = 'RB07_INERT_TYPED_BOUNDARY'
                 [string[]]$expectedIgnoreIds = @(Assert-GatewayInertWhatIfRecoveryBoundary `
                     -Boundary $recovery.boundary `
                     -Config $Config `
@@ -3162,6 +3379,7 @@ function Invoke-GatewayFoundationWhatIf {
                     -SourceFingerprint $SourceFingerprint)
                 $resolvedRecoveryBoundary = $recovery.boundary
                 if ($null -ne $sqlPrivateEndpointExtension) {
+                    $recoveryFailureCode = 'RB08_SQL_STATE_AWARE_MERGE'
                     [string[]]$sqlPrivateEndpointResourceIds = @($validatedExtension.resourceIds)
                     $resolvedRecoveryBoundary = New-GatewayStateAwareWhatIfRecoveryBoundary `
                         -InertBoundary $recovery.boundary `
@@ -3173,6 +3391,7 @@ function Invoke-GatewayFoundationWhatIf {
                     $expectedIgnoreIds = @($resolvedRecoveryBoundary.resourceIds)
                 }
 
+                $recoveryFailureCode = 'RB09_DEFENDER_STORAGE_PROVIDER'
                 [object[]]$defenderStorageResults = @(Get-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
                     -Config $Config `
                     -StorageAccountId ([string]$recovery.evidence.storageAccountId) `
@@ -3183,6 +3402,7 @@ function Invoke-GatewayFoundationWhatIf {
                     throw 'Defender Storage recovery provider readback returned an invalid result envelope.'
                 }
                 $defenderStorageExtension = $defenderStorageResults[0]
+                $recoveryFailureCode = 'RB10_DEFENDER_STORAGE_EXTENSION_CONTRACT'
                 $validatedDefenderStorageExtension = Assert-GatewayDefenderStorageSystemTopicWhatIfRecoveryExtension `
                     -Extension $defenderStorageExtension `
                     -Config $Config `
@@ -3190,11 +3410,13 @@ function Invoke-GatewayFoundationWhatIf {
                     -DeploymentOwnershipId $canonicalOwnershipId `
                     -SourceFingerprint $SourceFingerprint
                 [string[]]$validatedDefenderStorageResourceIds = @($validatedDefenderStorageExtension.resourceIds)
+                $recoveryFailureCode = 'RB11_DEFENDER_OBSERVED_PROVIDER_MATCH'
                 if ($observedSystemTopicIgnoreIds.Count -ne $validatedDefenderStorageResourceIds.Count -or
                     ($observedSystemTopicIgnoreIds.Count -eq 1 -and
                     $observedSystemTopicIgnoreIds[0] -cne $validatedDefenderStorageResourceIds[0])) {
                     throw 'What-If and provider readback disagree about the exact Defender Storage system-topic presence.'
                 }
+                $recoveryFailureCode = 'RB12_DEFENDER_AWARE_MERGE'
                 $resolvedRecoveryBoundary = New-GatewayDefenderStorageAwareWhatIfRecoveryBoundary `
                     -BaseBoundary $resolvedRecoveryBoundary `
                     -DefenderStorageExtension $defenderStorageExtension `
@@ -3203,12 +3425,14 @@ function Invoke-GatewayFoundationWhatIf {
                     -DeploymentOwnershipId $canonicalOwnershipId `
                     -SourceFingerprint $SourceFingerprint
                 $expectedIgnoreIds = @($resolvedRecoveryBoundary.resourceIds)
+                $recoveryFailureCode = 'RB13_EXACT_OBSERVED_GRAPH_MATCH'
                 [Array]::Sort($observedRecoveryIgnoreIds, [StringComparer]::Ordinal)
                 if ($observedRecoveryIgnoreIds.Count -ne $expectedIgnoreIds.Count -or
                     ($observedRecoveryIgnoreIds -join "`n") -cne ($expectedIgnoreIds -join "`n")) {
                     throw 'What-If Ignore predictions did not exactly match the recovered state-aware resource graph.'
                 }
                 if ($observedGovernanceNsgResourceIds.Count -eq 2) {
+                    $recoveryFailureCode = 'RB14_GOVERNANCE_AWARE_MERGE'
                     $resolvedRecoveryBoundary = New-GatewayFoundationGovernanceNsgAwareWhatIfRecoveryBoundary `
                         -Config $Config `
                         -BaseBoundary $resolvedRecoveryBoundary `
@@ -3217,6 +3441,7 @@ function Invoke-GatewayFoundationWhatIf {
                         -DeploymentOwnershipId $canonicalOwnershipId `
                         -SourceFingerprint $SourceFingerprint
                 }
+                $recoveryFailureCode = 'RB15_SOURCE_CORRECTION_WRAPPER'
                 $recoveryIgnoreBoundary = if ($null -ne $sourceCorrectionPlan -and
                     [string]$sourceCorrectionPlan.status -ceq 'Accepted') {
                     New-GatewayPendingSourceCorrectionRecoveryWhatIfBoundary `
@@ -3235,8 +3460,12 @@ function Invoke-GatewayFoundationWhatIf {
                 else {
                     $resolvedRecoveryBoundary
                 }
+                $recoveryFailureCode = ''
             }
             catch {
+                if ([string]::IsNullOrWhiteSpace($recoveryFailureCode)) {
+                    $recoveryFailureCode = 'RB99_UNEXPECTED_TERMINATING_ERROR'
+                }
                 $unreviewableChanges += [ordered]@{ changeType = 'UnauthorizedIgnore'; resourceId = '' }
             }
         }
@@ -3253,6 +3482,7 @@ function Invoke-GatewayFoundationWhatIf {
         deploymentName = $deploymentName
         changeCounts = $counts
         recoveryIgnoreBoundary = $recoveryIgnoreBoundary
+        recoveryFailureCode = if ($unreviewableChanges.Count -gt 0) { $recoveryFailureCode } else { '' }
         changes = $changes
     }
 }
@@ -5051,13 +5281,36 @@ function Test-GatewayAdminCredentialEvidence {
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$AdminIdentity,
         [Parameter(Mandatory)]$Inert,
-        [Parameter(Mandatory)]$Evidence
+        [Parameter(Mandatory)]$Evidence,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
     )
 
     try {
-        if (-not $Evidence -or
-            [string]::IsNullOrWhiteSpace([string]$Evidence.credentialKeyId) -or
-            [string]::IsNullOrWhiteSpace([string]$Evidence.secretUri)) { throw 'mismatch' }
+        $ownershipId = [guid]::Empty
+        $credentialKeyId = [guid]::Empty
+        if (-not [guid]::TryParse($DeploymentOwnershipId, [ref]$ownershipId) -or
+            $ownershipId -eq [guid]::Empty -or
+            $DeploymentOwnershipId -cne $ownershipId.ToString('D') -or
+            [string]$AdminIdentity.deploymentOwnershipId -cne $ownershipId.ToString('D')) {
+            throw 'mismatch'
+        }
+        Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI credential evidence source fingerprint'
+        $evidenceNames = @(Get-GatewayArmObjectPropertyNames -Object $Evidence)
+        $expectedEvidenceNames = @(
+            'secretUri', 'credentialKeyId', 'credentialExpiresAtUtc',
+            'deploymentOwnershipId', 'sourceFingerprint', 'contentType'
+        )
+        if ($evidenceNames.Count -ne $expectedEvidenceNames.Count -or
+            @($expectedEvidenceNames | Where-Object { $evidenceNames -cnotcontains $_ }).Count -ne 0 -or
+            -not [guid]::TryParse([string]$Evidence.credentialKeyId, [ref]$credentialKeyId) -or
+            $credentialKeyId -eq [guid]::Empty -or
+            [string]$Evidence.credentialKeyId -cne $credentialKeyId.ToString('D') -or
+            [string]$Evidence.deploymentOwnershipId -cne $ownershipId.ToString('D') -or
+            [string]$Evidence.sourceFingerprint -cne $SourceFingerprint -or
+            [string]$Evidence.contentType -cne 'application/vnd.a365-gateway.admin-ui-entra-client-secret') {
+            throw 'mismatch'
+        }
         $expectedSecretUri = "$(([string]$Inert.keyVaultUri).TrimEnd('/'))/secrets/admin-ui-entra-client-secret"
         if ([string]$Evidence.secretUri -ne $expectedSecretUri) { throw 'mismatch' }
 
@@ -5079,22 +5332,17 @@ function Test-GatewayAdminCredentialEvidence {
         if ($expires -le [DateTimeOffset]::UtcNow -or
             $expires.ToUniversalTime() -ne $evidenceExpires.ToUniversalTime()) { throw 'mismatch' }
 
-        $vaultName = ([Uri][string]$Inert.keyVaultUri).Host.Split('.')[0]
-        $secretResourceId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.KeyVault/vaults/$vaultName/secrets/admin-ui-entra-client-secret"
-        # Management-plane projection intentionally selects metadata only. It does
-        # not request or deserialize the Key Vault secret value.
-        $secretMetadata = Invoke-AzJson -Arguments @(
-            'resource', 'show', '--ids', $secretResourceId, '--api-version', '2023-07-01',
-            '--query', '{id:id,name:name,enabled:properties.attributes.enabled,tags:tags}'
-        )
-        if ([string]$secretMetadata.id -ne $secretResourceId -or
-            [string]$secretMetadata.name -ne 'admin-ui-entra-client-secret' -or
-            $secretMetadata.enabled -ne $true -or
-            -not $secretMetadata.tags -or
-            $secretMetadata.tags.PSObject.Properties.Name -notcontains 'credentialKeyId' -or
-            $secretMetadata.tags.PSObject.Properties.Name -notcontains 'managedBy' -or
-            [string]$secretMetadata.tags.credentialKeyId -ne [string]$Evidence.credentialKeyId -or
-            [string]$secretMetadata.tags.managedBy -cne 'a365gw-bootstrap') { throw 'mismatch' }
+        # This helper uses an exact management-plane projection and rejects any
+        # value-bearing or extra metadata before returning the safe shape.
+        $secretMetadata = Get-GatewayAdminUiCredentialSecretArmMetadata `
+            -Config $Config `
+            -KeyVaultUri ([string]$Inert.keyVaultUri) `
+            -DeploymentOwnershipId $ownershipId.ToString('D') `
+            -SourceFingerprint $SourceFingerprint
+        if ([string]$secretMetadata.status -cne 'Present' -or
+            [string]$secretMetadata.tags.credentialKeyId -cne $credentialKeyId.ToString('D')) {
+            throw 'mismatch'
+        }
         return $true
     }
     catch {

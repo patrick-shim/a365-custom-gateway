@@ -51,6 +51,8 @@ param(
 
     [string]$ExpectedPlanFingerprint = '',
 
+    [string]$ExpectedResumeAuthorizationFingerprint = '',
+
     [string]$ExpectedConfigurationFileFingerprint = '',
 
     [switch]$EventStreamOnly
@@ -350,6 +352,13 @@ function Invoke-GatewayPlanWorkflow {
 
     $script:GatewayFailureStage = 'Plan review'
     $script:GatewayFailureCode = 'plan_state'
+    if ($State.Contains('steps') -and
+        $State.steps -is [System.Collections.IDictionary] -and
+        $State.steps.Count -gt 0) {
+        $script:GatewayFailureStage = 'Resume required'
+        $script:GatewayFailureCode = 'resume_required'
+        throw 'This deployment already has persisted checkpoints. The accepted plan was preserved; run gateway resume so every completed step is revalidated before any remaining mutation.'
+    }
     Set-BootstrapPreInertSourceCorrectionPlan -State $State -StatePath $StatePath | Out-Null
     Assert-BootstrapStateAllowsSourcePlan -State $State | Out-Null
     Clear-BootstrapAcceptedPlan -State $State -StatePath $StatePath | Out-Null
@@ -523,6 +532,383 @@ function Invoke-GatewayPlanWorkflow {
     }
 }
 
+function Invoke-GatewayResumePreflight {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Configuration,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][ValidateSet('Text', 'Json')][string]$Format,
+        [Parameter(Mandatory)][bool]$InstallLocalPrerequisites,
+        [switch]$NonInteractive,
+        [switch]$ExplicitlyAuthorized,
+        [Parameter()][string]$ExpectedAcceptedPlanFingerprint = '',
+        [Parameter()][string]$ExpectedResumeAuthorizationFingerprint = ''
+    )
+
+    $script:GatewayFailureStage = 'Resume preflight'
+    $script:GatewayFailureCode = 'resume_preflight'
+    $eventBase = [ordered]@{
+        step = 'Resume preflight'
+        index = 1
+        total = (Get-GatewayBootstrapStepNames).Count
+    }
+    $invokeStage = {
+        param(
+            [Parameter(Mandatory)][string]$Code,
+            [Parameter(Mandatory)][string]$Label,
+            [Parameter(Mandatory)][scriptblock]$Action
+        )
+
+        try {
+            $result = & $Action
+        }
+        catch {
+            Write-GatewayExperienceEvent -Type Warning -Message "Resume preflight stopped at $Code. $Label could not be independently verified; no deployment mutation was started." -Data ([ordered]@{
+                step = $eventBase.step; index = $eventBase.index; total = $eventBase.total
+                category = 'resumePreflight'; stageCode = $Code; passed = $false
+            }) -OutputFormat $Format
+            throw [InvalidOperationException]::new("Resume preflight stopped at $Code.")
+        }
+        Write-GatewayExperienceEvent -Type Info -Message "Resume preflight passed ${Code}: $Label." -Data ([ordered]@{
+            step = $eventBase.step; index = $eventBase.index; total = $eventBase.total
+            category = 'resumePreflight'; stageCode = $Code; passed = $true
+        }) -OutputFormat $Format
+        return $result
+    }
+    $invokeBooleanStage = {
+        param(
+            [Parameter(Mandatory)][string]$Code,
+            [Parameter(Mandatory)][string]$Label,
+            [Parameter(Mandatory)][scriptblock]$Action
+        )
+        & $invokeStage -Code $Code -Label $Label -Action {
+            [object[]]$values = @(& $Action)
+            if ($values.Count -ne 1 -or $values[0] -isnot [bool] -or $values[0] -ne $true) {
+                throw 'Exact read-only validator did not return one true Boolean result.'
+            }
+        } | Out-Null
+    }
+
+    [object[]]$bindingResults = @(& $invokeStage `
+        -Code 'RP00_ACCEPTED_AUTHORIZATION' `
+        -Label 'immutable accepted source, configuration, ownership, and original authorization' `
+        -Action {
+            if (-not $State.Contains('acceptedPlan') -or
+                $State.acceptedPlan -isnot [System.Collections.IDictionary]) {
+                throw 'No accepted plan exists.'
+            }
+            $recordedPlanFingerprint = [string]$State.acceptedPlan.planFingerprint
+            $acceptedSourceFingerprint = [string]$State.acceptedPlan.sourceFingerprint
+            $configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $Configuration
+            if (-not [string]::IsNullOrWhiteSpace($ExpectedAcceptedPlanFingerprint) -and
+                $ExpectedAcceptedPlanFingerprint -cne $recordedPlanFingerprint) {
+                throw 'Expected accepted plan mismatch.'
+            }
+            # The original Apply window guarded the first mutation. Resume is a
+            # new explicit authorization over the same immutable plan and source,
+            # so its current confirmation replaces plan age without replacing the
+            # preserved accepted-plan identity.
+            Assert-BootstrapAcceptedPlan `
+                -State $State `
+                -PlanFingerprint $recordedPlanFingerprint `
+                -ConfigurationFingerprint $configurationFingerprint `
+                -SourceFingerprint $acceptedSourceFingerprint `
+                -MaximumAge ([TimeSpan]::MaxValue) | Out-Null
+            Assert-BootstrapStateAllowsSourcePlan -State $State | Out-Null
+            if ((Get-BootstrapSourceFingerprint) -cne $acceptedSourceFingerprint) {
+                throw 'Current source differs from accepted source.'
+            }
+            $executionSourceRoot = Resolve-BootstrapAcceptedSourceRoot -State $State
+            Set-BootstrapExecutionSourceRoot -Path $executionSourceRoot
+            foreach ($module in @('Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'Verification')) {
+                Import-Module (Join-Path $executionSourceRoot "bootstrap/modules/$module.psm1") -Force -DisableNameChecking
+            }
+            Set-BootstrapExecutionSourceRoot -Path $executionSourceRoot
+            $canonicalOwnershipId = ([guid][string]$State.deploymentOwnershipId).ToString('D')
+            if ([string]$State.deploymentOwnershipId -cne $canonicalOwnershipId) {
+                throw 'Deployment ownership is not canonical.'
+            }
+            return [ordered]@{
+                acceptedPlanFingerprint = $recordedPlanFingerprint
+                acceptedSourceFingerprint = $acceptedSourceFingerprint
+                deploymentSourceFingerprint = Get-BootstrapEffectiveDeploymentSourceFingerprint `
+                    -State $State -ExecutionSourceFingerprint $acceptedSourceFingerprint
+                configurationFingerprint = $configurationFingerprint
+                deploymentOwnershipId = $canonicalOwnershipId
+                executionSourceRoot = $executionSourceRoot
+            }
+        })
+    if ($bindingResults.Count -ne 1 -or $bindingResults[0] -isnot [System.Collections.IDictionary]) {
+        throw 'Resume preflight stopped at RP00_ACCEPTED_AUTHORIZATION.'
+    }
+    $binding = $bindingResults[0]
+
+    [object[]]$checkpointResults = @(& $invokeStage `
+        -Code 'RP01_CHECKPOINT_CONTIGUITY' `
+        -Label 'contiguous completed prefix and remaining step boundary' `
+        -Action {
+            Get-GatewayResumeCheckpointContext `
+                -State $State `
+                -Config $Configuration `
+                -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                -ExecutionSourceFingerprint ([string]$binding.acceptedSourceFingerprint) `
+                -DeploymentSourceFingerprint ([string]$binding.deploymentSourceFingerprint)
+        })
+    if ($checkpointResults.Count -ne 1 -or $checkpointResults[0] -isnot [System.Collections.IDictionary]) {
+        throw 'Resume preflight stopped at RP01_CHECKPOINT_CONTIGUITY.'
+    }
+    $checkpoint = $checkpointResults[0]
+
+    & $invokeStage -Code 'RP02_LOCAL_PREREQUISITES' -Label 'current local prerequisite boundary' -Action {
+        Assert-BootstrapPrerequisites `
+            -Install:$InstallLocalPrerequisites `
+            -RequirePurview:($Configuration.purview.enabled -eq $true) | Out-Null
+    } | Out-Null
+
+    [object[]]$azureIdentityResults = @(& $invokeStage `
+        -Code 'RP03_AZURE_SESSION' `
+        -Label 'configured tenant, subscription, and signed-in administrator' `
+        -Action { Connect-BootstrapAzure -Config $Configuration -NonInteractive:$NonInteractive })
+    if ($azureIdentityResults.Count -ne 1 -or
+        $azureIdentityResults[0] -isnot [System.Collections.IDictionary]) {
+        throw 'Resume preflight stopped at RP03_AZURE_SESSION.'
+    }
+    $azureIdentity = $azureIdentityResults[0]
+
+    $completed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($stepName in @($checkpoint.completedSteps)) { $null = $completed.Add([string]$stepName) }
+    $foundation = if ($completed.Contains('Azure foundation')) { $State.steps['Azure foundation'].evidence } else { $null }
+    $identity = if ($completed.Contains('Gateway API identity')) { $State.steps['Gateway API identity'].evidence } else { $null }
+    $images = if ($completed.Contains('Immutable workload images')) { $State.steps['Immutable workload images'].evidence } else { $null }
+    $inert = if ($completed.Contains('Inert identity deployment')) { $State.steps['Inert identity deployment'].evidence } else { $null }
+    $blueprint = if ($completed.Contains('Agent 365 seed blueprint')) { $State.steps['Agent 365 seed blueprint'].evidence } else { $null }
+    $sqlPrivateEndpoint = if ($completed.Contains('SQL private endpoint')) { $State.steps['SQL private endpoint'].evidence } else { $null }
+    $database = if ($completed.Contains('Gateway database')) { $State.steps['Gateway database'].evidence } else { $null }
+    $adminIdentity = if ($completed.Contains('Admin UI identity')) { $State.steps['Admin UI identity'].evidence } else { $null }
+    $adminCredential = if ($completed.Contains('Admin UI Key Vault credential')) { $State.steps['Admin UI Key Vault credential'].evidence } else { $null }
+    $purview = if ($completed.Contains('Purview policies')) { $State.steps['Purview policies'].evidence } else { $null }
+    $runtime = if ($completed.Contains('Gateway runtime deployment')) { $State.steps['Gateway runtime deployment'].evidence } else { $null }
+    $adminUi = if ($completed.Contains('Admin UI deployment')) { $State.steps['Admin UI deployment'].evidence } else { $null }
+    $databaseValidationPlans = Get-BootstrapCompletedDatabaseValidationPlans -State $State
+
+    foreach ($stepName in @($checkpoint.completedSteps)) {
+        switch -CaseSensitive ($stepName) {
+            'Prerequisites' {
+                # RP02 already reran this exact local check.
+            }
+            'Azure authentication' {
+                & $invokeBooleanStage -Code 'RP04_AZURE_AUTHENTICATION' -Label 'persisted Azure authentication checkpoint' -Action {
+                    $evidence = $State.steps['Azure authentication'].evidence
+                    return $evidence -is [System.Collections.IDictionary] -and
+                        [string]$evidence.subscriptionId -ceq [string]$Configuration.subscriptionId -and
+                        [string]$evidence.tenantId -ceq [string]$Configuration.tenantId -and
+                        [string]$evidence.userObjectId -ceq [string]$azureIdentity.userObjectId
+                }
+            }
+            'Azure provider registration' {
+                & $invokeBooleanStage -Code 'RP05_AZURE_PROVIDER_REGISTRATION' -Label 'required Azure resource providers' -Action {
+                    Test-GatewayResourceProviderEvidence
+                }
+            }
+            'Azure foundation' {
+                & $invokeBooleanStage -Code 'RP06_AZURE_FOUNDATION' -Label 'subscription deployment and foundation resources' -Action {
+                    Test-GatewaySubscriptionDeploymentEvidence -Config $Configuration -Evidence $foundation `
+                        -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                        -SourceFingerprint ([string]$binding.deploymentSourceFingerprint)
+                }
+            }
+            'Gateway API identity' {
+                & $invokeBooleanStage -Code 'RP07_GATEWAY_API_IDENTITY' -Label 'Gateway API application' -Action {
+                    Test-GatewayApplicationEvidence -Config $Configuration -Evidence $identity `
+                        -ObjectIdProperty 'gatewayApiApplicationObjectId' -ClientIdProperty 'gatewayApiClientId' `
+                        -ApplicationKind GatewayApi
+                }
+            }
+            'Immutable workload images' {
+                & $invokeBooleanStage -Code 'RP08_IMMUTABLE_IMAGES' -Label 'immutable workload image digests' -Action {
+                    Test-GatewayImmutableImageEvidence -Evidence $images `
+                        -SourceFingerprint ([string]$binding.deploymentSourceFingerprint) `
+                        -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId)
+                }
+            }
+            'Inert identity deployment' {
+                & $invokeBooleanStage -Code 'RP09_INERT_IDENTITY_DEPLOYMENT' -Label 'inert API and worker deployment' -Action {
+                    Test-GatewayGroupDeploymentEvidence -Config $Configuration -Foundation $foundation -Identity $identity `
+                        -Evidence $inert -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                        -SourceFingerprint ([string]$binding.deploymentSourceFingerprint) `
+                        -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) `
+                        -AllowRuntimeSupersession:($completed.Contains('Gateway runtime deployment'))
+                }
+            }
+            'Agent 365 seed blueprint' {
+                & $invokeBooleanStage -Code 'RP10_AGENT365_BLUEPRINT' -Label 'seed Agent ID blueprint' -Action {
+                    Test-GatewayBlueprintEvidence -Config $Configuration -Evidence $blueprint `
+                        -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                        -SourceFingerprint ([string]$binding.deploymentSourceFingerprint) `
+                        -SponsorObjectId ([string]$azureIdentity.userObjectId) `
+                        -GatewayManagedIdentityPrincipalId ([string]$inert.workerPrincipalId)
+                }
+            }
+            'Workflow v3 Entra configuration' {
+                & $invokeBooleanStage -Code 'RP11_WORKFLOW_V3_ENTRA' -Label 'workflow-v3 Entra configuration' -Action {
+                    Test-GatewayWorkflowIdentityEvidence -Config $Configuration -Identity $identity -Inert $inert `
+                        -Evidence $State.steps['Workflow v3 Entra configuration'].evidence
+                }
+            }
+            'SQL private endpoint' {
+                & $invokeBooleanStage -Code 'RP12_SQL_PRIVATE_ENDPOINT' -Label 'SQL private endpoint and DNS tuple' -Action {
+                    Test-GatewaySqlPrivateEndpointEvidence -Config $Configuration -Foundation $foundation `
+                        -SqlServerFqdn ([string]$inert.sqlServerFqdn) -Evidence $sqlPrivateEndpoint `
+                        -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                        -SourceFingerprint ([string]$binding.deploymentSourceFingerprint)
+                }
+            }
+            'Gateway database' {
+                & $invokeBooleanStage -Code 'RP13_GATEWAY_DATABASE_JOB_RECEIPT' -Label 'database receipt, persistent Job, one execution, schema, and administrator restoration' -Action {
+                    Test-GatewayDatabaseEvidence -Config $Configuration -Foundation $foundation -Inert $inert `
+                        -Evidence $database -StepRecord $State.steps['Gateway database'] `
+                        -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                        -SourceFingerprint ([string]$binding.deploymentSourceFingerprint) `
+                        -DatabaseMigratorImage ([string]$images.databaseMigrator) `
+                        -DatabaseRecoveryPlan $databaseValidationPlans.databaseRecoveryPlan `
+                        -ManualDatabaseRepairPlan $databaseValidationPlans.manualDatabaseRepairPlan
+                }
+            }
+            'Admin UI identity' {
+                & $invokeBooleanStage -Code 'RP14_ADMIN_UI_IDENTITY' -Label 'Admin UI application' -Action {
+                    $expectedAdminUiUrl = if ($null -ne $adminUi) { [string]$adminUi.adminUiUrl } else { '' }
+                    Test-GatewayApplicationEvidence -Config $Configuration -Evidence $adminIdentity `
+                        -ObjectIdProperty 'adminUiApplicationObjectId' -ClientIdProperty 'adminUiClientId' `
+                        -ApplicationKind AdminUi -ExpectedAdminUiUrl $expectedAdminUiUrl
+                }
+            }
+            'Admin UI Key Vault credential' {
+                & $invokeBooleanStage -Code 'RP15_ADMIN_UI_CREDENTIAL' -Label 'Admin UI credential and management-plane vault metadata' -Action {
+                    Test-GatewayAdminCredentialEvidence -Config $Configuration -AdminIdentity $adminIdentity `
+                        -Inert $inert -Evidence $adminCredential `
+                        -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                        -SourceFingerprint ([string]$binding.deploymentSourceFingerprint)
+                }
+            }
+            'Purview policies' {
+                & $invokeBooleanStage -Code 'RP16_PURVIEW_POLICIES' -Label 'optional Purview policy evidence' -Action {
+                    Test-GatewayPurviewEvidence -Config $Configuration -Blueprint $blueprint -Evidence $purview `
+                        -UserPrincipalName ([string]$azureIdentity.userPrincipalName) -NonInteractive:$NonInteractive
+                }
+            }
+            'Gateway runtime deployment' {
+                & $invokeBooleanStage -Code 'RP17_GATEWAY_RUNTIME' -Label 'runtime API and worker deployment' -Action {
+                    Test-GatewayGroupDeploymentEvidence -Config $Configuration -Foundation $foundation -Identity $identity `
+                        -Evidence $runtime -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                        -SourceFingerprint ([string]$binding.deploymentSourceFingerprint) `
+                        -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database
+                }
+            }
+            'Admin UI deployment' {
+                & $invokeBooleanStage -Code 'RP18_ADMIN_UI_DEPLOYMENT' -Label 'Admin UI deployment' -Action {
+                    Test-GatewayNamedGroupDeployment -Config $Configuration -Foundation $foundation -Runtime $runtime `
+                        -Identity $identity -AdminIdentity $adminIdentity -AdminCredential $adminCredential `
+                        -DeploymentName "a365gw-$($Configuration.projectName)-bootstrap-admin-$($Configuration.environment)" `
+                        -Evidence $adminUi -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                        -SourceFingerprint ([string]$binding.deploymentSourceFingerprint) `
+                        -AdminUiImage ([string]$images.adminUi)
+                }
+            }
+            'Admin UI redirect URIs' {
+                & $invokeBooleanStage -Code 'RP19_ADMIN_UI_REDIRECTS' -Label 'Admin UI redirect URI surface' -Action {
+                    Test-GatewayAdminRedirectEvidence -AdminIdentity $adminIdentity -AdminUi $adminUi
+                }
+            }
+            'Network hardening' {
+                & $invokeBooleanStage -Code 'RP20_NETWORK_HARDENING' -Label 'post-deployment network hardening' -Action {
+                    Test-GatewayNetworkHardeningEvidence -Config $Configuration `
+                        -Evidence $State.steps['Network hardening'].evidence
+                }
+            }
+            'End-to-end deployment verification' {
+                & $invokeStage -Code 'RP21_END_TO_END_VERIFICATION' -Label 'current end-to-end deployment verification' -Action {
+                    Test-GatewayBootstrapDeployment -Config $Configuration -Foundation $foundation -Identity $identity `
+                        -Blueprint $blueprint -Runtime $runtime -Database $database `
+                        -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images `
+                        -AdminIdentity $adminIdentity -AdminCredential $adminCredential `
+                        -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                        -DatabaseRecoveryPlan $databaseValidationPlans.databaseRecoveryPlan `
+                        -ManualDatabaseRepairPlan $databaseValidationPlans.manualDatabaseRepairPlan `
+                        -State $State -NonInteractive:$NonInteractive | Out-Null
+                } | Out-Null
+            }
+        }
+    }
+
+    $resumeAuthorizationFingerprint = Get-BootstrapObjectFingerprint -InputObject ([ordered]@{
+        schemaVersion = 2
+        acceptedPlanFingerprint = [string]$binding.acceptedPlanFingerprint
+        configurationFingerprint = [string]$binding.configurationFingerprint
+        acceptedSourceFingerprint = [string]$binding.acceptedSourceFingerprint
+        deploymentSourceFingerprint = [string]$binding.deploymentSourceFingerprint
+        deploymentOwnershipId = [string]$binding.deploymentOwnershipId
+        checkpointFingerprint = [string]$checkpoint.checkpointFingerprint
+        remainingSteps = @($checkpoint.remainingSteps)
+    })
+    Write-GatewayExperienceEvent -Type Result -Message "Resume preflight validated $(@($checkpoint.completedSteps).Count) completed checkpoints. Remaining work starts at '$($checkpoint.currentStep)'." -Data ([ordered]@{
+        step = $eventBase.step; index = $eventBase.index; total = $eventBase.total
+        category = 'resumeReview'; completedCount = @($checkpoint.completedSteps).Count
+        remainingCount = @($checkpoint.remainingSteps).Count; currentStep = [string]$checkpoint.currentStep
+        acceptedPlanFingerprint = [string]$binding.acceptedPlanFingerprint
+        checkpointFingerprint = [string]$checkpoint.checkpointFingerprint
+        resumeAuthorizationFingerprint = $resumeAuthorizationFingerprint; authorized = $false
+    }) -OutputFormat $Format
+
+    if ($NonInteractive -and -not $ExplicitlyAuthorized) {
+        return [ordered]@{
+            acceptedPlanFingerprint = [string]$binding.acceptedPlanFingerprint
+            acceptedSourceFingerprint = [string]$binding.acceptedSourceFingerprint
+            deploymentSourceFingerprint = [string]$binding.deploymentSourceFingerprint
+            deploymentOwnershipId = [string]$binding.deploymentOwnershipId
+            executionSourceRoot = [string]$binding.executionSourceRoot
+            checkpoint = $checkpoint
+            resumeAuthorizationFingerprint = $resumeAuthorizationFingerprint
+            explicitlyAuthorized = $false
+            reviewOnly = $true
+        }
+    }
+
+    $authorized = [bool]$ExplicitlyAuthorized
+    if ($NonInteractive) {
+        if (-not $authorized -or
+            [string]::IsNullOrWhiteSpace($ExpectedAcceptedPlanFingerprint) -or
+            [string]::IsNullOrWhiteSpace($ExpectedResumeAuthorizationFingerprint) -or
+            $ExpectedResumeAuthorizationFingerprint -cne $resumeAuthorizationFingerprint) {
+            $authorized = $false
+        }
+    }
+    elseif (-not $NonInteractive -and -not $ExplicitlyAuthorized) {
+        $authorized = Read-GatewayYesNo -Prompt "Authorize Resume from '$($checkpoint.currentStep)' using the preserved accepted plan" -Default $false
+    }
+    if (-not $authorized) {
+        & $invokeStage -Code 'RP22_EXPLICIT_AUTHORIZATION' -Label 'current explicit Resume authorization' -Action {
+            throw 'Resume was not explicitly authorized.'
+        } | Out-Null
+    }
+    Write-GatewayExperienceEvent -Type Result -Message 'Checkpoint-aware Resume is explicitly authorized. Only the validated remaining step sequence may execute.' -Data ([ordered]@{
+        step = $eventBase.step; index = $eventBase.index; total = $eventBase.total
+        category = 'resumeAuthorization'; stageCode = 'RP22_EXPLICIT_AUTHORIZATION'; authorized = $true
+        resumeAuthorizationFingerprint = $resumeAuthorizationFingerprint
+    }) -OutputFormat $Format
+
+    return [ordered]@{
+        acceptedPlanFingerprint = [string]$binding.acceptedPlanFingerprint
+        acceptedSourceFingerprint = [string]$binding.acceptedSourceFingerprint
+        deploymentSourceFingerprint = [string]$binding.deploymentSourceFingerprint
+        deploymentOwnershipId = [string]$binding.deploymentOwnershipId
+        executionSourceRoot = [string]$binding.executionSourceRoot
+        checkpoint = $checkpoint
+        resumeAuthorizationFingerprint = $resumeAuthorizationFingerprint
+        explicitlyAuthorized = $true
+        reviewOnly = $false
+    }
+}
+
 function Get-GatewaySafeFailureEvent {
     param(
         [Parameter(Mandatory)][string]$FailureCode,
@@ -552,6 +938,8 @@ function Get-GatewaySafeFailureEvent {
         'plan_blueprint' { 'The Agent ID blueprint boundary check did not complete. Confirm tenant eligibility and Graph access, then run Plan again.' }
         'plan_stable_inputs' { 'Source or configuration changed while Plan was running. Stop edits and run Plan again.' }
         'plan_acceptance' { 'Plan could not be accepted because its reviewed fingerprint or apply-ready result did not match. Run Plan again.' }
+        'resume_required' { 'This deployment has already started. Its accepted plan was preserved; run gateway resume so completed checkpoints are revalidated before remaining work continues.' }
+        'resume_preflight' { 'Resume preflight could not verify the preserved authorization and completed checkpoint prefix. Keep .bootstrap intact, run gateway diagnose, then retry Resume.' }
         'status' { 'Bootstrap status could not be calculated from the preserved local checkpoints. Keep .bootstrap intact and run gateway diagnose.' }
         'open' { 'The verified Admin UI endpoint could not be opened. Run gateway verify, then run gateway open again.' }
         'verification' { 'Deployment verification stopped before it could prove the current live boundary. Keep .bootstrap intact and run gateway diagnose.' }
@@ -600,13 +988,23 @@ if ($expectedConfigurationFileFingerprintSupplied) {
     }
 }
 if (-not [string]::IsNullOrWhiteSpace($ExpectedPlanFingerprint)) {
-    if ($Mode -notin @('Plan', 'Up', 'Resume', 'RecoverDatabase')) {
-        Write-GatewayExperienceEvent -Type Warning -Message 'ExpectedPlanFingerprint is valid only for Plan, Up, Resume, or RecoverDatabase.' -Data ([ordered]@{ step = 'Plan review'; index = 1; total = (Get-GatewayBootstrapStepNames).Count }) -OutputFormat $OutputFormat
+    if ($Mode -notin @('Plan', 'Apply', 'Up', 'Resume', 'RecoverDatabase')) {
+        Write-GatewayExperienceEvent -Type Warning -Message 'ExpectedPlanFingerprint is valid only for Plan, Apply, Up, Resume, or RecoverDatabase.' -Data ([ordered]@{ step = 'Plan review'; index = 1; total = (Get-GatewayBootstrapStepNames).Count }) -OutputFormat $OutputFormat
         throw 'Invalid expected-plan mode.'
     }
     if ($ExpectedPlanFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$') {
         Write-GatewayExperienceEvent -Type Warning -Message 'ExpectedPlanFingerprint must use canonical lowercase sha256 format.' -Data ([ordered]@{ step = 'Plan review'; index = 1; total = (Get-GatewayBootstrapStepNames).Count }) -OutputFormat $OutputFormat
         throw 'Invalid expected-plan fingerprint.'
+    }
+}
+if (-not [string]::IsNullOrWhiteSpace($ExpectedResumeAuthorizationFingerprint)) {
+    if ($Mode -cne 'Resume') {
+        Write-GatewayExperienceEvent -Type Warning -Message 'ExpectedResumeAuthorizationFingerprint is valid only for Resume.' -Data ([ordered]@{ step = 'Resume preflight'; index = 1; total = (Get-GatewayBootstrapStepNames).Count }) -OutputFormat $OutputFormat
+        throw 'Invalid expected-Resume-authorization mode.'
+    }
+    if ($ExpectedResumeAuthorizationFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        Write-GatewayExperienceEvent -Type Warning -Message 'ExpectedResumeAuthorizationFingerprint must use canonical lowercase sha256 format.' -Data ([ordered]@{ step = 'Resume preflight'; index = 1; total = (Get-GatewayBootstrapStepNames).Count }) -OutputFormat $OutputFormat
+        throw 'Invalid expected-Resume-authorization fingerprint.'
     }
 }
 if ($Mode -eq 'Doctor') {
@@ -692,12 +1090,6 @@ $script:GatewayFailureCode = 'state'
 $statePath = Get-BootstrapStatePath -Config $configuration
 $state = Read-BootstrapState -Path $statePath -Config $configuration
 
-if ($Mode -eq 'Verify') {
-    $script:GatewayFailureStage = 'Verification'
-    $script:GatewayFailureCode = 'verification'
-    Assert-BootstrapStateAllowsSourcePlan -State $state | Out-Null
-}
-
 if ($Mode -eq 'Status') {
     $script:GatewayFailureStage = 'Status'
     $script:GatewayFailureCode = 'status'
@@ -720,6 +1112,7 @@ $lock = $null
 $stopwatch = [Diagnostics.Stopwatch]::StartNew()
 $stepNames = @(Get-GatewayBootstrapStepNames)
 $plan = $null
+$resumePreflight = $null
 $activeAcceptedPlanFingerprint = ''
 $activeAcceptedSourceFingerprint = ''
 $activeDeploymentSourceFingerprint = ''
@@ -752,11 +1145,20 @@ function Invoke-GatewayStateStep {
         if ([string]::IsNullOrWhiteSpace($activeAcceptedPlanFingerprint)) {
             throw 'No active accepted plan is bound to this mutation sequence.'
         }
+        $acceptedPlanMaximumAge = if ($Mode -eq 'Resume') {
+            # Dedicated Resume preflight obtained a new explicit confirmation over
+            # the immutable accepted authorization before any mutation step. At
+            # this point the accepted-plan assertion is provenance-only; the
+            # process-local Resume fingerprint is the current authorization.
+            [TimeSpan]::MaxValue
+        }
+        else { [TimeSpan]::FromMinutes(60) }
         Assert-BootstrapAcceptedPlan `
             -State $state `
             -PlanFingerprint $activeAcceptedPlanFingerprint `
             -ConfigurationFingerprint (Get-BootstrapConfigurationFingerprint -Config $configuration) `
-            -SourceFingerprint ([string]$state.acceptedPlan.sourceFingerprint) | Out-Null
+            -SourceFingerprint ([string]$state.acceptedPlan.sourceFingerprint) `
+            -MaximumAge $acceptedPlanMaximumAge | Out-Null
         if ($Name -notin @('Prerequisites', 'Azure authentication')) {
             Assert-BootstrapAzureContext -Config $configuration | Out-Null
         }
@@ -823,6 +1225,33 @@ function Invoke-GatewayExactReconciliation {
 
 try {
     $lock = Enter-BootstrapLock -StatePath $statePath
+    # Every command that can mutate state or depend on a stable checkpoint view
+    # refreshes the state only after holding the per-deployment lock. The earlier
+    # read exists solely for the lock-free Status/Open paths above.
+    $state = Read-BootstrapState -Path $statePath -Config $configuration
+    $hasStartedCheckpoint = (
+        $state.Contains('steps') -and
+        $state.steps -is [System.Collections.IDictionary] -and
+        $state.steps.Count -gt 0
+    )
+    if ($hasStartedCheckpoint -and $Mode -eq 'Plan') {
+        $script:GatewayFailureStage = 'Resume required'
+        $script:GatewayFailureCode = 'resume_required'
+        throw 'This deployment already has persisted checkpoints. The accepted plan was preserved; run gateway resume instead of creating a new plan.'
+    }
+    if ($hasStartedCheckpoint -and $Mode -in @('Apply', 'Up')) {
+        $routedFrom = $Mode
+        Write-GatewayExperienceEvent -Type Info -Message "A persisted deployment checkpoint exists. Gateway $routedFrom is continuing through the dedicated Resume preflight; it will not create or clear a fresh plan." -Data ([ordered]@{
+            step = 'Resume preflight'; index = 1; total = $stepNames.Count; routedFrom = $routedFrom
+        }) -OutputFormat $OutputFormat
+        $Mode = 'Resume'
+    }
+    if ($Mode -eq 'Verify') {
+        $script:GatewayFailureStage = 'Verification'
+        $script:GatewayFailureCode = 'verification'
+        Assert-BootstrapStateAllowsSourcePlan -State $state | Out-Null
+    }
+
     Set-BootstrapEventWriter -Writer {
         param($eventRecord)
         if ($OutputFormat -ne 'Json') { return }
@@ -1239,7 +1668,22 @@ try {
         return
     }
 
-    if ($Mode -in @('Plan', 'Up', 'Resume')) {
+    if ($Mode -eq 'Resume') {
+        $resumePreflight = Invoke-GatewayResumePreflight `
+            -Configuration $configuration `
+            -State $state `
+            -Format $OutputFormat `
+            -InstallLocalPrerequisites:$InstallPrerequisites `
+            -NonInteractive:$NonInteractive `
+            -ExplicitlyAuthorized:$Yes `
+            -ExpectedAcceptedPlanFingerprint $ExpectedPlanFingerprint `
+            -ExpectedResumeAuthorizationFingerprint $ExpectedResumeAuthorizationFingerprint
+        if ($resumePreflight.reviewOnly -eq $true) {
+            return
+        }
+    }
+
+    if ($Mode -in @('Plan', 'Up')) {
         $plan = Invoke-GatewayPlanWorkflow -Configuration $configuration -State $state -StatePath $statePath -Format $OutputFormat -InstallLocalPrerequisites:$InstallPrerequisites -StreamOnly:$EventStreamOnly
         $script:GatewayFailureStage = 'Plan review'
         $script:GatewayFailureCode = 'plan_acceptance'
@@ -1252,7 +1696,7 @@ try {
             throw 'Expected plan fingerprint mismatch.'
         }
         if (-not $plan.whatIf.applyReady) {
-            if ($Mode -in @('Up', 'Resume')) {
+            if ($Mode -eq 'Up') {
                 if ($plan.whatIf.executed) {
                     throw 'The authenticated Azure What-If contained a deletion, unsupported prediction, or malformed change. Bootstrap has no destroy mode and no mutation was authorized.'
                 }
@@ -1312,47 +1756,69 @@ try {
     if ($Mode -in @('Apply', 'Resume')) {
         $script:GatewayFailureStage = 'Deployment'
         $script:GatewayFailureCode = 'deployment'
-        $recordedPlanFingerprint = [string]$state.acceptedPlan.planFingerprint
-        $activeAcceptedSourceFingerprint = [string]$state.acceptedPlan.sourceFingerprint
-        $activeDeploymentSourceFingerprint = Get-BootstrapEffectiveDeploymentSourceFingerprint -State $state -ExecutionSourceFingerprint $activeAcceptedSourceFingerprint
-        if ((Get-BootstrapSourceFingerprint) -cne $activeAcceptedSourceFingerprint) {
-            throw 'The running bootstrap engine does not match the accepted source snapshot. Restore the reviewed checkout before Apply/Resume; no mutation was started.'
+        if ($Mode -eq 'Resume') {
+            if ($resumePreflight -isnot [System.Collections.IDictionary] -or
+                $resumePreflight.explicitlyAuthorized -ne $true) {
+                throw 'Checkpoint-aware Resume preflight did not return an explicit authorization.'
+            }
+            $recordedPlanFingerprint = [string]$resumePreflight.acceptedPlanFingerprint
+            $activeAcceptedPlanFingerprint = $recordedPlanFingerprint
+            $activeAcceptedSourceFingerprint = [string]$resumePreflight.acceptedSourceFingerprint
+            $activeDeploymentSourceFingerprint = [string]$resumePreflight.deploymentSourceFingerprint
+            $executionSourceRoot = [string]$resumePreflight.executionSourceRoot
+            if ((Get-BootstrapSourceFingerprint) -cne $activeAcceptedSourceFingerprint) {
+                throw 'The running bootstrap engine changed after Resume preflight; no mutation was started.'
+            }
+            Assert-BootstrapAcceptedPlan `
+                -State $state `
+                -PlanFingerprint $recordedPlanFingerprint `
+                -ConfigurationFingerprint (Get-BootstrapConfigurationFingerprint -Config $configuration) `
+                -SourceFingerprint $activeAcceptedSourceFingerprint `
+                -MaximumAge ([TimeSpan]::MaxValue) | Out-Null
         }
-        # Validate the time-bounded acceptance and immutable snapshot before
-        # reopening any plan or deployment input. The already-loaded orchestrator
-        # is required to match those same reviewed bytes.
-        Assert-BootstrapAcceptedPlan `
-            -State $state `
-            -PlanFingerprint $recordedPlanFingerprint `
-            -ConfigurationFingerprint (Get-BootstrapConfigurationFingerprint -Config $configuration) `
-            -SourceFingerprint $activeAcceptedSourceFingerprint | Out-Null
-        $executionSourceRoot = Resolve-BootstrapAcceptedSourceRoot -State $state
+        else {
+            $recordedPlanFingerprint = [string]$state.acceptedPlan.planFingerprint
+            $activeAcceptedSourceFingerprint = [string]$state.acceptedPlan.sourceFingerprint
+            $activeDeploymentSourceFingerprint = Get-BootstrapEffectiveDeploymentSourceFingerprint -State $state -ExecutionSourceFingerprint $activeAcceptedSourceFingerprint
+            if ((Get-BootstrapSourceFingerprint) -cne $activeAcceptedSourceFingerprint) {
+                throw 'The running bootstrap engine does not match the accepted source snapshot. Restore the reviewed checkout before Apply; no mutation was started.'
+            }
+            # Apply retains its original time-bounded accepted What-If contract.
+            Assert-BootstrapAcceptedPlan `
+                -State $state `
+                -PlanFingerprint $recordedPlanFingerprint `
+                -ConfigurationFingerprint (Get-BootstrapConfigurationFingerprint -Config $configuration) `
+                -SourceFingerprint $activeAcceptedSourceFingerprint | Out-Null
+            $executionSourceRoot = Resolve-BootstrapAcceptedSourceRoot -State $state
+        }
         Set-BootstrapExecutionSourceRoot -Path $executionSourceRoot
         foreach ($module in @('Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'Verification')) {
             Import-Module (Join-Path $executionSourceRoot "bootstrap/modules/$module.psm1") -Force -DisableNameChecking
         }
         Set-BootstrapExecutionSourceRoot -Path $executionSourceRoot
 
-        $descriptor = Get-GatewayPlanDescriptor `
-            -Config $configuration `
-            -State $state `
-            -BootstrapClientIpv4 ([string]$state.acceptedPlan.bootstrapClientIpv4) `
-            -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
-            -SourceFingerprint $activeDeploymentSourceFingerprint
-        $configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $configuration
-        if ($plan -and $plan.whatIf) {
-            $applyWhatIf = $plan.whatIf
+        if ($Mode -eq 'Apply') {
+            $descriptor = Get-GatewayPlanDescriptor `
+                -Config $configuration `
+                -State $state `
+                -BootstrapClientIpv4 ([string]$state.acceptedPlan.bootstrapClientIpv4) `
+                -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+                -SourceFingerprint $activeDeploymentSourceFingerprint
+            $configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $configuration
+            if ($plan -and $plan.whatIf) {
+                $applyWhatIf = $plan.whatIf
+            }
+            else {
+                Write-GatewayExperienceEvent -Type Info -Message 'Rechecking the accepted Azure What-If prediction before any mutation...' -Data ([ordered]@{
+                    step = 'Plan review'; index = 1; total = $stepNames.Count
+                }) -OutputFormat $OutputFormat
+                $applyWhatIf = Invoke-GatewayFoundationWhatIf -Config $configuration -RepositoryRoot $executionSourceRoot -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ExecutionSourceFingerprint $activeAcceptedSourceFingerprint -State $state
+            }
+            if (-not $applyWhatIf.applyReady) { throw 'Accepted plan revalidation could not run authenticated Azure What-If. No mutation was started.' }
+            $expectedPlanFingerprint = Get-GatewayPlanContractFingerprint -Descriptor $descriptor -WhatIf $applyWhatIf -ConfigurationFingerprint $configurationFingerprint -SourceFingerprint $activeAcceptedSourceFingerprint -DeploymentSourceFingerprint $activeDeploymentSourceFingerprint
+            Assert-BootstrapAcceptedPlan -State $state -PlanFingerprint $expectedPlanFingerprint -SourceFingerprint $activeAcceptedSourceFingerprint | Out-Null
+            $activeAcceptedPlanFingerprint = $expectedPlanFingerprint
         }
-        else {
-            Write-GatewayExperienceEvent -Type Info -Message 'Rechecking the accepted Azure What-If prediction before any mutation...' -Data ([ordered]@{
-                step = 'Plan review'; index = 1; total = $stepNames.Count
-            }) -OutputFormat $OutputFormat
-            $applyWhatIf = Invoke-GatewayFoundationWhatIf -Config $configuration -RepositoryRoot $executionSourceRoot -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ExecutionSourceFingerprint $activeAcceptedSourceFingerprint -State $state
-        }
-        if (-not $applyWhatIf.applyReady) { throw 'Accepted plan revalidation could not run authenticated Azure What-If. No mutation was started.' }
-        $expectedPlanFingerprint = Get-GatewayPlanContractFingerprint -Descriptor $descriptor -WhatIf $applyWhatIf -ConfigurationFingerprint $configurationFingerprint -SourceFingerprint $activeAcceptedSourceFingerprint -DeploymentSourceFingerprint $activeDeploymentSourceFingerprint
-        Assert-BootstrapAcceptedPlan -State $state -PlanFingerprint $expectedPlanFingerprint -SourceFingerprint $activeAcceptedSourceFingerprint | Out-Null
-        $activeAcceptedPlanFingerprint = $expectedPlanFingerprint
     }
 
     if ($Mode -eq 'Verify') {
@@ -1561,13 +2027,30 @@ try {
     }
 
     $adminCredential = Invoke-GatewayStateStep -Name 'Admin UI Key Vault credential' -Validate {
-        Test-GatewayAdminCredentialEvidence -Config $configuration -AdminIdentity $adminIdentity -Inert $inert -Evidence $state.steps['Admin UI Key Vault credential'].evidence
+        Test-GatewayAdminCredentialEvidence `
+            -Config $configuration `
+            -AdminIdentity $adminIdentity `
+            -Inert $inert `
+            -Evidence $state.steps['Admin UI Key Vault credential'].evidence `
+            -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+            -SourceFingerprint $activeDeploymentSourceFingerprint
     } -Reconcile {
         Invoke-GatewayExactReconciliation -Readback {
-            Resolve-AdminUiCredentialAfterStartedOutcome -Config $configuration -AdminIdentity $adminIdentity -KeyVaultUri ([string]$inert.keyVaultUri) -UserObjectId ([string]$azureIdentity.userObjectId)
+            Resolve-AdminUiCredentialAfterStartedOutcome `
+                -Config $configuration `
+                -AdminIdentity $adminIdentity `
+                -KeyVaultUri ([string]$inert.keyVaultUri) `
+                -UserObjectId ([string]$azureIdentity.userObjectId) `
+                -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+                -SourceFingerprint $activeDeploymentSourceFingerprint
         }
     } -NoAutomaticReplayAfterStart -Action {
-        New-AdminUiCredentialInKeyVault -Config $configuration -AdminIdentity $adminIdentity -KeyVaultUri ([string]$inert.keyVaultUri) -UserObjectId ([string]$azureIdentity.userObjectId)
+        New-AdminUiCredentialInKeyVault `
+            -Config $configuration `
+            -AdminIdentity $adminIdentity `
+            -KeyVaultUri ([string]$inert.keyVaultUri) `
+            -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+            -SourceFingerprint $activeDeploymentSourceFingerprint
     }
 
     if ($configuration.purview.enabled -eq $true -and -not $NonInteractive) {

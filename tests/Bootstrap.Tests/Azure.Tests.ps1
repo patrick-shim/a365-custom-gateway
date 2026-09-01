@@ -56,6 +56,105 @@ Describe 'Bootstrap Azure authentication boundary' {
     }
 }
 
+Describe 'Secure ARM deployment subscription boundary' {
+    InModuleScope Azure {
+        BeforeAll {
+            $script:secureArmModulePath = [IO.Path]::GetFullPath(
+                (Join-Path $PSScriptRoot '../../bootstrap/modules/Azure.psm1'))
+            $script:secureArmTokens = $null
+            $script:secureArmParseErrors = $null
+            $script:secureArmAst = [Management.Automation.Language.Parser]::ParseFile(
+                $script:secureArmModulePath,
+                [ref]$script:secureArmTokens,
+                [ref]$script:secureArmParseErrors)
+            $script:secureArmParseErrors.Count | Should -Be 0
+        }
+
+        BeforeEach {
+            Mock Invoke-AzJson {
+                return [pscustomobject]@{
+                    properties = [pscustomobject]@{ provisioningState = 'Succeeded' }
+                }
+            }
+        }
+
+        It 'requires one canonical subscription and pins the mocked ARM mutation to it exactly' {
+            $subscriptionId = '11111111-1111-4111-8111-111111111111'
+            $result = Invoke-ArmDeploymentWithSecureParameters `
+                -SubscriptionId $subscriptionId `
+                -ResourceGroup 'rg-safe-dev' `
+                -Name 'a365gw-safe-test' `
+                -TemplateFile (Join-Path $TestDrive 'safe.bicep') `
+                -Parameters ([ordered]@{ safeMarker = 'synthetic-non-secret' })
+
+            $result.properties.provisioningState | Should -BeExactly 'Succeeded'
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                $positions = @(for ($index = 0; $index -lt $Arguments.Count; $index++) {
+                        if ([string]$Arguments[$index] -ceq '--subscription') { $index }
+                    })
+                $positions.Count -eq 1 -and
+                    $positions[0] + 1 -lt $Arguments.Count -and
+                    [string]$Arguments[$positions[0] + 1] -ceq $subscriptionId
+            }
+
+            foreach ($invalidSubscriptionId in @(
+                'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+                '00000000-0000-0000-0000-000000000000',
+                'not-a-subscription'
+            )) {
+                { Invoke-ArmDeploymentWithSecureParameters `
+                        -SubscriptionId $invalidSubscriptionId `
+                        -ResourceGroup 'rg-safe-dev' `
+                        -Name 'a365gw-safe-test' `
+                        -TemplateFile (Join-Path $TestDrive 'safe.bicep') `
+                        -Parameters ([ordered]@{ safeMarker = 'synthetic-non-secret' }) } |
+                    Should -Throw '*canonical*subscription ID*'
+            }
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly
+        }
+
+        It 'passes the exact canonical subscription from credential core and Admin UI call sites' {
+            $expectations = @(
+                [ordered]@{
+                    functionName = 'Deploy-GatewayAdminUiCredentialSecret'
+                    parameterPattern = '-SubscriptionId\s+\(\[string\]\$context\.subscriptionId\)'
+                },
+                [ordered]@{
+                    functionName = 'Deploy-GatewayCore'
+                    parameterPattern = '-SubscriptionId\s+(\$subscriptionId|\(\[string\]\$Config\.subscriptionId\))'
+                },
+                [ordered]@{
+                    functionName = 'Deploy-GatewayAdminUi'
+                    parameterPattern = '-SubscriptionId\s+\(\[string\]\$Config\.subscriptionId\)'
+                }
+            )
+            $missingBindings = [Collections.Generic.List[string]]::new()
+            foreach ($expectation in $expectations) {
+                $function = $script:secureArmAst.Find({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                        $node.Name -ceq [string]$expectation.functionName
+                }, $true)
+                if ($null -eq $function) {
+                    $missingBindings.Add("$($expectation.functionName):function")
+                    continue
+                }
+                $calls = @($function.Body.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.CommandAst] -and
+                        $node.GetCommandName() -ceq 'Invoke-ArmDeploymentWithSecureParameters'
+                }, $true))
+                if ($calls.Count -ne 1 -or
+                    $calls[0].Extent.Text -cnotmatch [string]$expectation.parameterPattern) {
+                    $missingBindings.Add("$($expectation.functionName):subscription")
+                }
+            }
+
+            @($missingBindings) | Should -BeNullOrEmpty
+        }
+    }
+}
+
 Describe 'Bootstrap Azure SQL regional capability boundary' {
     InModuleScope Azure {
         BeforeEach {
@@ -2960,6 +3059,7 @@ Describe 'Gateway Admin UI deployment source binding' {
             $script:adminOwnershipId = '77777777-7777-4777-8777-777777777777'
             $script:adminImage = "acrsafe.azurecr.io/gateway-admin@sha256:$('3' * 64)"
             $script:adminConfig = [pscustomobject]@{
+                subscriptionId = '10101010-1010-4010-8010-101010101010'
                 environment = 'dev'
                 projectName = 'safe'
                 resourceGroupName = 'rg-safe-dev'

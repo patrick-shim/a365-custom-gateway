@@ -966,11 +966,23 @@ function Test-GatewayBootstrapDeployment {
     if ($Blueprint.managerApplicationsPreflightConfirmed -ne $true) {
         throw 'Agent 365 managerApplications were not independently confirmed against reviewed configuration.'
     }
-    $credentialReadback = Get-AdminUiCredentialEvidenceFromMetadata -Config $Config -AdminIdentity $AdminIdentity -KeyVaultUri ([string]$Runtime.keyVaultUri) -MaximumAttempts 1
+    $credentialReadback = Get-AdminUiCredentialEvidenceFromMetadata `
+        -Config $Config `
+        -AdminIdentity $AdminIdentity `
+        -KeyVaultUri ([string]$Runtime.keyVaultUri) `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -SourceFingerprint ([string]$Images.sourceFingerprint) `
+        -MaximumAttempts 1
     $recordedExpiry = [DateTimeOffset]::MinValue
     $readbackExpiry = [DateTimeOffset]::MinValue
     if (-not ([string]$credentialReadback.credentialKeyId).Equals([string]$AdminCredential.credentialKeyId, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$credentialReadback.secretUri -cne [string]$AdminCredential.secretUri -or
+        [string]$credentialReadback.deploymentOwnershipId -cne $DeploymentOwnershipId -or
+        [string]$AdminCredential.deploymentOwnershipId -cne $DeploymentOwnershipId -or
+        [string]$credentialReadback.sourceFingerprint -cne [string]$Images.sourceFingerprint -or
+        [string]$AdminCredential.sourceFingerprint -cne [string]$Images.sourceFingerprint -or
+        [string]$credentialReadback.contentType -cne 'application/vnd.a365-gateway.admin-ui-entra-client-secret' -or
+        [string]$AdminCredential.contentType -cne 'application/vnd.a365-gateway.admin-ui-entra-client-secret' -or
         -not [DateTimeOffset]::TryParse([string]$AdminCredential.credentialExpiresAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$recordedExpiry) -or
         -not [DateTimeOffset]::TryParse([string]$credentialReadback.credentialExpiresAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$readbackExpiry) -or
         $recordedExpiry.ToUniversalTime() -ne $readbackExpiry.ToUniversalTime()) {

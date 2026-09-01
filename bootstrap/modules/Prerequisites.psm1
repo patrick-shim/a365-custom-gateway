@@ -12,10 +12,60 @@ function Install-WithWinget {
     ) -NoCapture | Out-Null
 }
 
+function Merge-BootstrapProcessPath {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()][string]$MachinePath = '',
+        [AllowEmptyString()][string]$UserPath = '',
+        [AllowEmptyString()][string]$ProcessPath = '',
+        [char]$PathSeparator = [IO.Path]::PathSeparator
+    )
+
+    $comparer = if ($PathSeparator -eq ';') {
+        [StringComparer]::OrdinalIgnoreCase
+    }
+    else {
+        [StringComparer]::Ordinal
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new($comparer)
+    $merged = [Collections.Generic.List[string]]::new()
+    foreach ($pathValue in @($MachinePath, $UserPath, $ProcessPath)) {
+        foreach ($entry in ([string]$pathValue).Split(
+                $PathSeparator,
+                [StringSplitOptions]::RemoveEmptyEntries)) {
+            if (-not [string]::IsNullOrWhiteSpace($entry) -and $seen.Add($entry)) {
+                $merged.Add($entry)
+            }
+        }
+    }
+    return [string]::Join([string]$PathSeparator, $merged.ToArray())
+}
+
 function Update-BootstrapProcessPath {
     if (-not $IsWindows) { return }
-    $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') +
-        [IO.Path]::PathSeparator + [Environment]::GetEnvironmentVariable('PATH', 'User')
+    $currentProcessPath = [string]$env:PATH
+    $env:PATH = Merge-BootstrapProcessPath `
+        -MachinePath ([string][Environment]::GetEnvironmentVariable('PATH', 'Machine')) `
+        -UserPath ([string][Environment]::GetEnvironmentVariable('PATH', 'User')) `
+        -ProcessPath $currentProcessPath
+}
+
+function Get-BootstrapBicepRepairTargetPlatform {
+    [CmdletBinding()]
+    param(
+        [bool]$WindowsPlatform = $IsWindows,
+        [System.Runtime.InteropServices.Architecture]$OSArchitecture =
+            [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    )
+
+    if (-not $WindowsPlatform) { return '' }
+    switch ($OSArchitecture) {
+        ([System.Runtime.InteropServices.Architecture]::X64) { return 'win-x64' }
+        ([System.Runtime.InteropServices.Architecture]::Arm64) { return 'win-arm64' }
+        default {
+            throw "Automatic Windows Bicep repair does not support operating-system architecture '$OSArchitecture'."
+        }
+    }
 }
 
 function Assert-GatewayPlanPrerequisites {
@@ -49,7 +99,25 @@ function Assert-GatewayPlanPrerequisites {
     }
     catch {
         if (-not $Install) { throw 'Azure Bicep CLI is missing. Run az bicep install, then retry.' }
-        Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @('bicep', 'install', '--only-show-errors') -NoCapture | Out-Null
+        $targetPlatform = Get-BootstrapBicepRepairTargetPlatform
+        if ([string]::IsNullOrWhiteSpace($targetPlatform)) {
+            Invoke-BootstrapCommand `
+                -FilePath 'az' `
+                -ArgumentList @('bicep', 'install', '--only-show-errors') `
+                -NoCapture | Out-Null
+        }
+        else {
+            Invoke-BootstrapCommand `
+                -FilePath 'az' `
+                -ArgumentList @('bicep', 'uninstall') `
+                -NoCapture | Out-Null
+            Invoke-BootstrapCommand `
+                -FilePath 'az' `
+                -ArgumentList @(
+                    'bicep', 'install', '--target-platform', $targetPlatform,
+                    '--only-show-errors') `
+                -NoCapture | Out-Null
+        }
         $bicepVersion = (Invoke-BootstrapCommand `
             -FilePath 'az' `
             -ArgumentList @('bicep', 'version') `

@@ -61,3 +61,121 @@ Describe 'Public bootstrap helper source boundaries' {
             Should -BeExactly ''
     }
 }
+
+Describe 'Windows-safe standalone Bicep compiler boundary' {
+    BeforeAll {
+        $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+        $script:CompilerPath = Join-Path $script:RepositoryRoot 'tools/Test-BootstrapSource.ps1'
+        $script:CompilerSource = Get-Content -LiteralPath $script:CompilerPath -Raw
+
+        $tokens = $null
+        $errors = $null
+        $compilerAst = [Management.Automation.Language.Parser]::ParseFile(
+            $script:CompilerPath,
+            [ref]$tokens,
+            [ref]$errors)
+        $errors.Count | Should -Be 0
+
+        $requiredFunctions = @(
+            'Resolve-GatewayBicepCompilerCommand',
+            'New-GatewayBicepCompilerStartInfo'
+        )
+        $functionDefinitions = @(
+            $compilerAst.FindAll(
+                {
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                        $requiredFunctions -contains $node.Name
+                },
+                $true)
+        )
+        $script:CompilerFunctionCount = $functionDefinitions.Count
+        $script:CompilerModule = if ($functionDefinitions.Count -eq $requiredFunctions.Count) {
+            New-Module -ScriptBlock ([scriptblock]::Create(
+                ($functionDefinitions.Extent.Text -join "`n`n")))
+        }
+        else {
+            $null
+        }
+    }
+
+    It 'resolves a Windows az.cmd launcher through bundled Python and preserves ArgumentList values' {
+        $script:CompilerFunctionCount | Should -Be 2
+
+        $azureCliRoot = Join-Path $TestDrive 'Azure CLI root with spaces'
+        $commandDirectory = New-Item -ItemType Directory -Path (
+            Join-Path $azureCliRoot 'wbin') -Force
+        $commandPath = Join-Path $commandDirectory.FullName 'az.cmd'
+        $pythonPath = Join-Path $azureCliRoot 'python.exe'
+        Set-Content -LiteralPath $commandPath -Value '@exit /b 0'
+        Set-Content -LiteralPath $pythonPath -Value ''
+
+        $command = & $script:CompilerModule {
+            param($path)
+            Resolve-GatewayBicepCompilerCommand `
+                -AzureCliPath $path `
+                -WindowsPlatform $true
+        } $commandPath
+        $arguments = @(
+            'bicep',
+            'build',
+            '--file',
+            'C:\source path & marker\main.bicep',
+            '--stdout'
+        )
+        $startInfo = & $script:CompilerModule {
+            param($resolvedCommand, $compilerArguments)
+            New-GatewayBicepCompilerStartInfo `
+                -Command $resolvedCommand `
+                -Arguments $compilerArguments
+        } $command $arguments
+
+        $startInfo.FileName | Should -BeExactly ([IO.Path]::GetFullPath($pythonPath))
+        @($startInfo.ArgumentList) | Should -Be @(
+            '-IBm',
+            'azure.cli',
+            'bicep',
+            'build',
+            '--file',
+            'C:\source path & marker\main.bicep',
+            '--stdout'
+        )
+        $startInfo.UseShellExecute | Should -BeFalse
+        $startInfo.FileName | Should -Not -Match '(?i)(?:^|[\\/])(?:cmd|powershell|pwsh)\.exe$'
+        @($startInfo.ArgumentList) | Should -Not -Contain '/c'
+    }
+
+    It 'fails closed when a Windows az.cmd launcher has no bundled Python executable' {
+        $script:CompilerFunctionCount | Should -Be 2
+
+        $commandDirectory = New-Item -ItemType Directory -Path (
+            Join-Path $TestDrive 'Azure CLI without Python/wbin') -Force
+        $commandPath = Join-Path $commandDirectory.FullName 'az.cmd'
+        Set-Content -LiteralPath $commandPath -Value '@exit /b 0'
+
+        {
+            & $script:CompilerModule {
+                param($path)
+                Resolve-GatewayBicepCompilerCommand `
+                    -AzureCliPath $path `
+                    -WindowsPlatform $true
+            } $commandPath
+        } | Should -Throw '*bundled Python*'
+    }
+
+    It 'never assigns the az command source directly to a no-shell process' {
+        $script:CompilerSource |
+            Should -Not -Match '(?m)\.FileName\s*=\s*\$azCommand\.Source'
+    }
+
+    It 'compiles every Bicep template in the hosted Windows bootstrap lane' {
+        $workflow = Get-Content -LiteralPath (
+            Join-Path $script:RepositoryRoot '.github/workflows/build-and-test.yml') -Raw
+
+        $workflow | Should -Match (
+            "(?ms)- name: Compile every Bicep template on Windows\s+" +
+            "if: runner\.os == 'Windows'\s+" +
+            'shell: pwsh\s+' +
+            'run: \./tools/Test-BootstrapSource\.ps1 -CompileBicep')
+    }
+}

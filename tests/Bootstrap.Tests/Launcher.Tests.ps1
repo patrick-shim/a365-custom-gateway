@@ -261,7 +261,7 @@ Describe 'Cross-platform guided setup prerequisite contract' {
         $launcher | Should -Match 'where az'
         $launcher | Should -Match 'call az version'
         $launcher | Should -Match 'Setup requires PowerShell 7'
-        $launcher | Should -Match 'Setup requires the \.NET 10 SDK'
+        $launcher | Should -Match 'Setup requires the \.NET SDK feature band 10\.0\.4xx from global\.json'
         $launcher | Should -Match 'Setup requires Azure CLI'
         $launcher | Should -Match ([regex]::Escape('--repo-root "%~dp0."'))
         $launcher | Should -Not -Match ([regex]::Escape('--repo-root "%~dp0"'))
@@ -269,11 +269,154 @@ Describe 'Cross-platform guided setup prerequisite contract' {
         $launcher | Should -Match 'if /I "%COMMAND%"=="repair-database" set "GATEWAY_MODE=RepairDatabase"'
         $launcher | Should -Not -Match 'continue-bootstrap|repair-api-attestation'
     }
+
+    It 'gives Windows Setup an explicit guided prerequisite installation policy' {
+        $launcher = Get-Content -LiteralPath (Join-Path $repositoryRoot 'gateway.cmd') -Raw
+        $globalJson = Get-Content -LiteralPath (Join-Path $repositoryRoot 'global.json') -Raw | ConvertFrom-Json
+        $requiredSdk = [version]$globalJson.sdk.version
+        $requiredFeatureBand = '{0}.{1}.{2}' -f $requiredSdk.Major, $requiredSdk.Minor, ([math]::Floor($requiredSdk.Build / 100))
+
+        $launcher | Should -Match 'set "GATEWAY_NO_INSTALL=0"'
+        $launcher | Should -Match 'if /I "%~1"=="--no-install"'
+        $launcher | Should -Match 'set "GATEWAY_NO_INSTALL=1"'
+        $launcher | Should -Match ([regex]::Escape('Usage: gateway.cmd setup [--no-open] [--no-install]'))
+        $launcher | Should -Match ([regex]::Escape('Microsoft.PowerShell'))
+        $launcher | Should -Match ([regex]::Escape('Microsoft.DotNet.SDK.10'))
+        $launcher | Should -Match ([regex]::Escape('Microsoft.AzureCLI'))
+        $launcher | Should -Match ([regex]::Escape($requiredFeatureBand))
+        $launcher | Should -Match 'call :refresh_setup_tool_paths'
+        $launcher | Should -Match '--no-install forbids installing it'
+    }
 }
 
 Describe 'Windows gateway launcher mutation boundary' -Skip:(-not $IsWindows) {
     BeforeAll {
         $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+
+        $fakeToolProject = Join-Path $TestDrive 'GatewayLauncherFakeTool'
+        $fakeToolBin = Join-Path $TestDrive 'fake-tool-bin'
+        $null = New-Item -ItemType Directory -Path $fakeToolProject, $fakeToolBin -Force
+        @'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>GatewayLauncherFakeTool</AssemblyName>
+  </PropertyGroup>
+</Project>
+'@ | Set-Content -LiteralPath (Join-Path $fakeToolProject 'GatewayLauncherFakeTool.csproj') -Encoding utf8NoBOM
+        @'
+using System;
+using System.IO;
+using System.Linq;
+
+internal static class Program
+{
+    private static int Main(string[] args)
+    {
+        var tool = Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? string.Empty).ToLowerInvariant();
+        return tool switch
+        {
+            "where" => RunWhere(args),
+            "winget" => RunWinget(args),
+            "dotnet" => RunDotNet(args),
+            "pwsh" => 0,
+            "az" => 0,
+            _ => 91
+        };
+    }
+
+    private static int RunWhere(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            return 1;
+        }
+
+        var requested = Path.GetFileNameWithoutExtension(args[0]).ToLowerInvariant();
+        if (requested == "winget")
+        {
+            return 0;
+        }
+
+        var missing = (Environment.GetEnvironmentVariable("GATEWAY_TEST_MISSING_TOOL") ?? string.Empty).ToLowerInvariant();
+        if (requested == missing && !PackageWasInstalled(PackageFor(requested)))
+        {
+            return 1;
+        }
+
+        return File.Exists(Path.Combine(AppContext.BaseDirectory, requested + ".exe")) ? 0 : 1;
+    }
+
+    private static int RunWinget(string[] args)
+    {
+        var marker = Environment.GetEnvironmentVariable("GATEWAY_TEST_INSTALL_MARKER");
+        if (string.IsNullOrWhiteSpace(marker))
+        {
+            return 92;
+        }
+
+        File.AppendAllText(marker, string.Join(" ", args) + Environment.NewLine);
+        return 0;
+    }
+
+    private static int RunDotNet(string[] args)
+    {
+        if (args.Length > 0 && args[0] == "--version")
+        {
+            var version = Environment.GetEnvironmentVariable("GATEWAY_TEST_DOTNET_VERSION") ?? "10.0.400";
+            if (PackageWasInstalled("Microsoft.DotNet.SDK.10"))
+            {
+                version = "10.0.400";
+            }
+
+            Console.WriteLine(version);
+            return 0;
+        }
+
+        var marker = Environment.GetEnvironmentVariable("GATEWAY_TEST_DOTNET_ARGUMENTS");
+        if (!string.IsNullOrWhiteSpace(marker))
+        {
+            File.WriteAllLines(marker, args);
+        }
+
+        return 0;
+    }
+
+    private static bool PackageWasInstalled(string packageId)
+    {
+        if (string.IsNullOrWhiteSpace(packageId))
+        {
+            return false;
+        }
+
+        var marker = Environment.GetEnvironmentVariable("GATEWAY_TEST_INSTALL_MARKER");
+        return !string.IsNullOrWhiteSpace(marker)
+            && File.Exists(marker)
+            && File.ReadAllText(marker).Contains(packageId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string PackageFor(string tool) => tool switch
+    {
+        "pwsh" => "Microsoft.PowerShell",
+        "dotnet" => "Microsoft.DotNet.SDK.10",
+        "az" => "Microsoft.AzureCLI",
+        _ => string.Empty
+    };
+}
+'@ | Set-Content -LiteralPath (Join-Path $fakeToolProject 'Program.cs') -Encoding utf8NoBOM
+
+        & dotnet build (Join-Path $fakeToolProject 'GatewayLauncherFakeTool.csproj') --configuration Release --output $fakeToolBin --nologo
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Could not build the isolated Windows launcher fake executables.'
+        }
+
+        $fakeToolHost = Join-Path $fakeToolBin 'GatewayLauncherFakeTool.exe'
+        foreach ($toolName in @('where.exe', 'winget.exe', 'pwsh.exe', 'dotnet.exe', 'az.exe')) {
+            Copy-Item -LiteralPath $fakeToolHost -Destination (Join-Path $fakeToolBin $toolName) -Force
+        }
     }
 
     It 'never invokes winget when --no-install is present and PowerShell is unavailable' {
@@ -301,6 +444,155 @@ Describe 'Windows gateway launcher mutation boundary' -Skip:(-not $IsWindows) {
             $env:Path = $originalPath
             $env:ProgramFiles = $originalProgramFiles
             $env:GATEWAY_TEST_MARKER = $originalMarker
+        }
+    }
+
+    It 'installs missing <Tool> through the exact reviewed package and rechecks before starting Setup' -ForEach @(
+        @{ Tool = 'pwsh'; PackageId = 'Microsoft.PowerShell' }
+        @{ Tool = 'dotnet'; PackageId = 'Microsoft.DotNet.SDK.10' }
+        @{ Tool = 'az'; PackageId = 'Microsoft.AzureCLI' }
+    ) {
+        $installMarker = Join-Path $TestDrive "install-$Tool.txt"
+        $dotnetMarker = Join-Path $TestDrive "dotnet-$Tool.txt"
+        $launcher = Join-Path $repositoryRoot 'gateway.cmd'
+        $originalValues = @{
+            Path = $env:Path
+            ProgramFiles = $env:ProgramFiles
+            ProgramW6432 = $env:ProgramW6432
+            LocalAppData = $env:LocalAppData
+            MissingTool = $env:GATEWAY_TEST_MISSING_TOOL
+            InstallMarker = $env:GATEWAY_TEST_INSTALL_MARKER
+            DotnetMarker = $env:GATEWAY_TEST_DOTNET_ARGUMENTS
+            DotnetVersion = $env:GATEWAY_TEST_DOTNET_VERSION
+        }
+        $originalProgramFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+        try {
+            $env:Path = $fakeToolBin
+            $env:ProgramFiles = Join-Path $TestDrive 'program-files'
+            $env:ProgramW6432 = Join-Path $TestDrive 'program-w6432'
+            $env:LocalAppData = Join-Path $TestDrive 'local-app-data'
+            [Environment]::SetEnvironmentVariable('ProgramFiles(x86)', (Join-Path $TestDrive 'program-files-x86'))
+            $env:GATEWAY_TEST_MISSING_TOOL = $Tool
+            $env:GATEWAY_TEST_INSTALL_MARKER = $installMarker
+            $env:GATEWAY_TEST_DOTNET_ARGUMENTS = $dotnetMarker
+            $env:GATEWAY_TEST_DOTNET_VERSION = '10.0.400'
+
+            & $env:ComSpec /d /c "`"$launcher`" setup --no-open" 2>&1 | Out-Null
+
+            $LASTEXITCODE | Should -Be 0
+            $installArguments = Get-Content -LiteralPath $installMarker -Raw
+            $installArguments | Should -Match ([regex]::Escape("install --id $PackageId --exact --source winget --accept-package-agreements --accept-source-agreements"))
+            $dotnetArguments = @(Get-Content -LiteralPath $dotnetMarker)
+            $dotnetArguments | Should -Contain 'run'
+            $dotnetArguments | Should -Contain '--no-open'
+        }
+        finally {
+            $env:Path = $originalValues.Path
+            $env:ProgramFiles = $originalValues.ProgramFiles
+            $env:ProgramW6432 = $originalValues.ProgramW6432
+            $env:LocalAppData = $originalValues.LocalAppData
+            [Environment]::SetEnvironmentVariable('ProgramFiles(x86)', $originalProgramFilesX86)
+            $env:GATEWAY_TEST_MISSING_TOOL = $originalValues.MissingTool
+            $env:GATEWAY_TEST_INSTALL_MARKER = $originalValues.InstallMarker
+            $env:GATEWAY_TEST_DOTNET_ARGUMENTS = $originalValues.DotnetMarker
+            $env:GATEWAY_TEST_DOTNET_VERSION = $originalValues.DotnetVersion
+        }
+    }
+
+    It 'never invokes winget for missing or incompatible <Tool> when Setup receives --no-install' -ForEach @(
+        @{ Tool = 'pwsh'; MissingTool = 'pwsh'; DotnetVersion = '10.0.400'; Guidance = 'PowerShell 7' }
+        @{ Tool = 'dotnet'; MissingTool = 'dotnet'; DotnetVersion = '10.0.400'; Guidance = '.NET SDK feature band 10.0.4xx' }
+        @{ Tool = 'dotnet-feature-band'; MissingTool = ''; DotnetVersion = '10.0.100'; Guidance = '.NET SDK feature band 10.0.4xx' }
+        @{ Tool = 'az'; MissingTool = 'az'; DotnetVersion = '10.0.400'; Guidance = 'Azure CLI' }
+    ) {
+        $installMarker = Join-Path $TestDrive "forbidden-install-$Tool.txt"
+        $dotnetMarker = Join-Path $TestDrive "forbidden-dotnet-$Tool.txt"
+        $launcher = Join-Path $repositoryRoot 'gateway.cmd'
+        $originalValues = @{
+            Path = $env:Path
+            ProgramFiles = $env:ProgramFiles
+            ProgramW6432 = $env:ProgramW6432
+            LocalAppData = $env:LocalAppData
+            MissingTool = $env:GATEWAY_TEST_MISSING_TOOL
+            InstallMarker = $env:GATEWAY_TEST_INSTALL_MARKER
+            DotnetMarker = $env:GATEWAY_TEST_DOTNET_ARGUMENTS
+            DotnetVersion = $env:GATEWAY_TEST_DOTNET_VERSION
+        }
+        $originalProgramFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+        try {
+            $env:Path = $fakeToolBin
+            $env:ProgramFiles = Join-Path $TestDrive 'program-files'
+            $env:ProgramW6432 = Join-Path $TestDrive 'program-w6432'
+            $env:LocalAppData = Join-Path $TestDrive 'local-app-data'
+            [Environment]::SetEnvironmentVariable('ProgramFiles(x86)', (Join-Path $TestDrive 'program-files-x86'))
+            $env:GATEWAY_TEST_MISSING_TOOL = $MissingTool
+            $env:GATEWAY_TEST_INSTALL_MARKER = $installMarker
+            $env:GATEWAY_TEST_DOTNET_ARGUMENTS = $dotnetMarker
+            $env:GATEWAY_TEST_DOTNET_VERSION = $DotnetVersion
+
+            $output = (& $env:ComSpec /d /c "`"$launcher`" setup --no-open --no-install" 2>&1 | Out-String)
+
+            $LASTEXITCODE | Should -Be 1
+            $output | Should -Match ([regex]::Escape($Guidance))
+            $output | Should -Match ([regex]::Escape('--no-install forbids installing it'))
+            Test-Path -LiteralPath $installMarker | Should -BeFalse
+            Test-Path -LiteralPath $dotnetMarker | Should -BeFalse
+        }
+        finally {
+            $env:Path = $originalValues.Path
+            $env:ProgramFiles = $originalValues.ProgramFiles
+            $env:ProgramW6432 = $originalValues.ProgramW6432
+            $env:LocalAppData = $originalValues.LocalAppData
+            [Environment]::SetEnvironmentVariable('ProgramFiles(x86)', $originalProgramFilesX86)
+            $env:GATEWAY_TEST_MISSING_TOOL = $originalValues.MissingTool
+            $env:GATEWAY_TEST_INSTALL_MARKER = $originalValues.InstallMarker
+            $env:GATEWAY_TEST_DOTNET_ARGUMENTS = $originalValues.DotnetMarker
+            $env:GATEWAY_TEST_DOTNET_VERSION = $originalValues.DotnetVersion
+        }
+    }
+
+    It 'installs the required SDK when dotnet reports an older 10.0 feature band' {
+        $installMarker = Join-Path $TestDrive 'feature-band-install.txt'
+        $dotnetMarker = Join-Path $TestDrive 'feature-band-dotnet.txt'
+        $launcher = Join-Path $repositoryRoot 'gateway.cmd'
+        $originalValues = @{
+            Path = $env:Path
+            ProgramFiles = $env:ProgramFiles
+            ProgramW6432 = $env:ProgramW6432
+            LocalAppData = $env:LocalAppData
+            MissingTool = $env:GATEWAY_TEST_MISSING_TOOL
+            InstallMarker = $env:GATEWAY_TEST_INSTALL_MARKER
+            DotnetMarker = $env:GATEWAY_TEST_DOTNET_ARGUMENTS
+            DotnetVersion = $env:GATEWAY_TEST_DOTNET_VERSION
+        }
+        $originalProgramFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+        try {
+            $env:Path = $fakeToolBin
+            $env:ProgramFiles = Join-Path $TestDrive 'program-files'
+            $env:ProgramW6432 = Join-Path $TestDrive 'program-w6432'
+            $env:LocalAppData = Join-Path $TestDrive 'local-app-data'
+            [Environment]::SetEnvironmentVariable('ProgramFiles(x86)', (Join-Path $TestDrive 'program-files-x86'))
+            $env:GATEWAY_TEST_MISSING_TOOL = ''
+            $env:GATEWAY_TEST_INSTALL_MARKER = $installMarker
+            $env:GATEWAY_TEST_DOTNET_ARGUMENTS = $dotnetMarker
+            $env:GATEWAY_TEST_DOTNET_VERSION = '10.0.100'
+
+            & $env:ComSpec /d /c "`"$launcher`" setup --no-open" 2>&1 | Out-Null
+
+            $LASTEXITCODE | Should -Be 0
+            (Get-Content -LiteralPath $installMarker -Raw) | Should -Match ([regex]::Escape('install --id Microsoft.DotNet.SDK.10 --exact'))
+            Test-Path -LiteralPath $dotnetMarker | Should -BeTrue
+        }
+        finally {
+            $env:Path = $originalValues.Path
+            $env:ProgramFiles = $originalValues.ProgramFiles
+            $env:ProgramW6432 = $originalValues.ProgramW6432
+            $env:LocalAppData = $originalValues.LocalAppData
+            [Environment]::SetEnvironmentVariable('ProgramFiles(x86)', $originalProgramFilesX86)
+            $env:GATEWAY_TEST_MISSING_TOOL = $originalValues.MissingTool
+            $env:GATEWAY_TEST_INSTALL_MARKER = $originalValues.InstallMarker
+            $env:GATEWAY_TEST_DOTNET_ARGUMENTS = $originalValues.DotnetMarker
+            $env:GATEWAY_TEST_DOTNET_VERSION = $originalValues.DotnetVersion
         }
     }
 }

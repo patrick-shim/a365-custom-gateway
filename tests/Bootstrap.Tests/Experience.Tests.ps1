@@ -3174,6 +3174,7 @@ Describe 'Checkpoint-aware Resume orchestration boundary' {
     BeforeAll {
         $script:resumeBootstrapPath = [IO.Path]::GetFullPath(
             (Join-Path $PSScriptRoot '../../bootstrap/bootstrap.ps1'))
+        $script:resumeBootstrapSource = Get-Content -LiteralPath $script:resumeBootstrapPath -Raw
         $script:resumeTokens = $null
         $script:resumeParseErrors = $null
         $script:resumeAst = [Management.Automation.Language.Parser]::ParseFile(
@@ -3226,6 +3227,128 @@ Describe 'Checkpoint-aware Resume orchestration boundary' {
             }
             $condition.Extent.Text | Should -Not -Match '(?s)\$Mode\s+-in\s+@\([^)]*''Resume'''
         }
+    }
+
+    It 'routes an explicit Apply with persisted steps through Resume preflight or a fixed resume-required stop' {
+        $lockBoundary = $script:resumeBootstrapSource.IndexOf(
+            '$lock = Enter-BootstrapLock',
+            [StringComparison]::Ordinal)
+        $applyExecutionBoundary = $script:resumeBootstrapSource.LastIndexOf(
+            "if (`$Mode -in @('Apply', 'Resume'))",
+            [StringComparison]::Ordinal)
+        $lockBoundary | Should -BeGreaterThan -1
+        $applyExecutionBoundary | Should -BeGreaterThan -1
+        $preApplyExecution = $script:resumeBootstrapSource.Substring(
+            $lockBoundary,
+            $applyExecutionBoundary - $lockBoundary)
+        $startedApplyRoute = [regex]::Match(
+            $preApplyExecution,
+            '(?s)if\s*\(\s*\$hasStartedCheckpoint\s+-and\s+\$Mode\s+-in\s+@\([^)]*[''"]Apply[''"][^)]*\)\s*\)')
+        $startedApplyRoute.Success | Should -BeTrue
+        $routeTail = $preApplyExecution.Substring($startedApplyRoute.Index)
+        $routeTail | Should -Match '(?s)(\$Mode\s*=\s*[''"]Resume[''"]|Invoke-GatewayResumePreflight|\$script:GatewayFailureCode\s*=\s*[''"]resume_required[''"])'
+    }
+
+    It 'refreshes persisted state under the bootstrap lock before started Up or Apply routing and Resume preflight' {
+        $topLevelLockCalls = @($script:resumeAst.FindAll({
+            param($node)
+            if ($node -isnot [Management.Automation.Language.CommandAst] -or
+                $node.GetCommandName() -cne 'Enter-BootstrapLock') { return $false }
+            $ancestor = $node.Parent
+            while ($null -ne $ancestor -and
+                $ancestor -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+                $ancestor = $ancestor.Parent
+            }
+            return $null -eq $ancestor
+        }, $true))
+        $topLevelLockCalls.Count | Should -Be 1
+        $lockOffset = $topLevelLockCalls[0].Extent.StartOffset
+
+        $underLockStateReads = @($script:resumeAst.FindAll({
+            param($node)
+            if ($node -isnot [Management.Automation.Language.CommandAst] -or
+                $node.GetCommandName() -cne 'Read-BootstrapState' -or
+                $node.Extent.StartOffset -le $lockOffset) { return $false }
+            $ancestor = $node.Parent
+            while ($null -ne $ancestor -and
+                $ancestor -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+                $ancestor = $ancestor.Parent
+            }
+            return $null -eq $ancestor
+        }, $true))
+        $underLockStateReads.Count | Should -Be 1
+        $stateRefreshOffset = $underLockStateReads[0].Extent.StartOffset
+
+        $topLevelResumeCalls = @($script:resumeAst.FindAll({
+            param($node)
+            if ($node -isnot [Management.Automation.Language.CommandAst] -or
+                $node.GetCommandName() -cne 'Invoke-GatewayResumePreflight') { return $false }
+            $ancestor = $node.Parent
+            while ($null -ne $ancestor -and
+                $ancestor -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+                $ancestor = $ancestor.Parent
+            }
+            return $null -eq $ancestor
+        }, $true))
+        $topLevelResumeCalls.Count | Should -Be 1
+        $topLevelResumeCalls[0].Extent.StartOffset | Should -BeGreaterThan $stateRefreshOffset
+
+        $startedRoutes = @($script:resumeAst.FindAll({
+            param($node)
+            if ($node -isnot [Management.Automation.Language.IfStatementAst] -or
+                $node.Extent.StartOffset -le $stateRefreshOffset -or
+                $node.Extent.StartOffset -ge $topLevelResumeCalls[0].Extent.StartOffset) { return $false }
+            $ancestor = $node.Parent
+            while ($null -ne $ancestor -and
+                $ancestor -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+                $ancestor = $ancestor.Parent
+            }
+            return $null -eq $ancestor -and $node.Extent.Text -cmatch '\$hasStartedCheckpoint'
+        }, $true))
+        $routeSource = $startedRoutes.Extent.Text -join [Environment]::NewLine
+        $routeSource | Should -Match '(?s)[''"]Up[''"]'
+        $routeSource | Should -Match '(?s)[''"]Apply[''"]'
+        $routeSource | Should -Match '(?s)(\$Mode\s*=\s*[''"]Resume[''"]|Invoke-GatewayResumePreflight|resume_required)'
+    }
+
+    It 'requires the caller-bound checkpoint Resume fingerprint for noninteractive authorization' {
+        $scriptParameters = @($script:resumeAst.ParamBlock.Parameters | ForEach-Object {
+                $_.Name.VariablePath.UserPath
+            })
+        $scriptParameters | Should -Contain 'ExpectedResumeAuthorizationFingerprint'
+
+        $resumeFunction = $script:resumeAst.Find({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Invoke-GatewayResumePreflight'
+        }, $true)
+        $resumeParameters = @($resumeFunction.Body.ParamBlock.Parameters | ForEach-Object {
+                $_.Name.VariablePath.UserPath
+            })
+        $resumeParameters | Should -Contain 'ExpectedResumeAuthorizationFingerprint'
+
+        $resumeSource = $resumeFunction.Extent.Text
+        $computedOffset = $resumeSource.IndexOf('$resumeAuthorizationFingerprint =', [StringComparison]::Ordinal)
+        $comparisonOffset = $resumeSource.IndexOf('$ExpectedResumeAuthorizationFingerprint -cne $resumeAuthorizationFingerprint', [StringComparison]::Ordinal)
+        $returnOffset = $resumeSource.LastIndexOf('return [ordered]@{', [StringComparison]::Ordinal)
+        $computedOffset | Should -BeGreaterThan -1
+        $comparisonOffset | Should -BeGreaterThan $computedOffset
+        $comparisonOffset | Should -BeLessThan $returnOffset
+        $resumeSource | Should -Match '(?s)\$NonInteractive.*\$ExplicitlyAuthorized.*\$ExpectedAcceptedPlanFingerprint.*\$ExpectedResumeAuthorizationFingerprint'
+
+        $topLevelResumeCall = @($script:resumeAst.FindAll({
+            param($node)
+            if ($node -isnot [Management.Automation.Language.CommandAst] -or
+                $node.GetCommandName() -cne 'Invoke-GatewayResumePreflight') { return $false }
+            $ancestor = $node.Parent
+            while ($null -ne $ancestor -and
+                $ancestor -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
+                $ancestor = $ancestor.Parent
+            }
+            return $null -eq $ancestor
+        }, $true))
+        $topLevelResumeCall.Count | Should -Be 1
+        $topLevelResumeCall[0].Extent.Text | Should -Match '-ExpectedResumeAuthorizationFingerprint\s+\$ExpectedResumeAuthorizationFingerprint'
     }
 }
 

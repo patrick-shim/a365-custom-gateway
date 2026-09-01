@@ -63,3 +63,136 @@ Describe 'Bootstrap prerequisite native-command boundary' {
         }
     }
 }
+
+Describe 'Windows Bicep prerequisite repair' {
+    InModuleScope Prerequisites {
+        It 'maps the Windows operating-system architecture to <TargetPlatform>' -ForEach @(
+            @{
+                OSArchitecture = [System.Runtime.InteropServices.Architecture]::X64
+                TargetPlatform = 'win-x64'
+            },
+            @{
+                OSArchitecture = [System.Runtime.InteropServices.Architecture]::Arm64
+                TargetPlatform = 'win-arm64'
+            }
+        ) {
+            Get-BootstrapBicepRepairTargetPlatform `
+                -WindowsPlatform $true `
+                -OSArchitecture $OSArchitecture |
+                Should -BeExactly $TargetPlatform
+        }
+
+        It 'repairs an incompatible Bicep binary in the exact <TargetPlatform> order' -ForEach @(
+            @{ TargetPlatform = 'win-x64' },
+            @{ TargetPlatform = 'win-arm64' }
+        ) {
+            $script:bicepVersionAttempts = 0
+            $script:targetPlatform = $TargetPlatform
+            $script:nativeCalls = [Collections.Generic.List[string]]::new()
+
+            Mock Test-CommandAvailable { $true }
+            Mock Get-BootstrapBicepRepairTargetPlatform { $script:targetPlatform }
+            Mock Invoke-BootstrapCommand {
+                $arguments = [string]::Join('|', @($ArgumentList))
+                $script:nativeCalls.Add("$FilePath|$arguments")
+                if ($FilePath -ceq 'dotnet' -and $arguments -ceq '--version') {
+                    return '10.0.400'
+                }
+                if ($FilePath -ceq 'az' -and $arguments -ceq 'bicep|version') {
+                    $script:bicepVersionAttempts++
+                    if ($script:bicepVersionAttempts -eq 1) {
+                        throw 'Synthetic incompatible Bicep binary.'
+                    }
+                    return 'Bicep CLI version 0.38.33'
+                }
+                if ($FilePath -ceq 'az' -and $arguments -ceq 'bicep|uninstall') {
+                    return 0
+                }
+                if ($FilePath -ceq 'az' -and $arguments -ceq (
+                        "bicep|install|--target-platform|$($script:targetPlatform)|--only-show-errors")) {
+                    return 0
+                }
+                throw "Unexpected prerequisite command: $FilePath|$arguments"
+            }
+
+            $result = Assert-GatewayPlanPrerequisites -Install
+
+            $result.bicep | Should -BeExactly 'Bicep CLI version 0.38.33'
+            @($script:nativeCalls) | Should -Be @(
+                'dotnet|--version',
+                'az|bicep|version',
+                'az|bicep|uninstall',
+                "az|bicep|install|--target-platform|$TargetPlatform|--only-show-errors",
+                'az|bicep|version'
+            )
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                [bool]$NoCapture -and
+                [string]::Join('|', $ArgumentList) -ceq 'bicep|uninstall'
+            }
+            Should -Invoke Invoke-BootstrapCommand -Times 1 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                [bool]$NoCapture -and
+                [string]::Join('|', $ArgumentList) -ceq (
+                    "bicep|install|--target-platform|$TargetPlatform|--only-show-errors")
+            }
+        }
+
+        It 'does not mutate Bicep when local prerequisite installation is disabled' {
+            Mock Test-CommandAvailable { $true }
+            Mock Invoke-BootstrapCommand {
+                $arguments = [string]::Join('|', @($ArgumentList))
+                if ($FilePath -ceq 'dotnet' -and $arguments -ceq '--version') {
+                    return '10.0.400'
+                }
+                if ($FilePath -ceq 'az' -and $arguments -ceq 'bicep|version') {
+                    throw 'Synthetic incompatible Bicep binary.'
+                }
+                throw "Unexpected prerequisite command: $FilePath|$arguments"
+            }
+
+            { Assert-GatewayPlanPrerequisites } |
+                Should -Throw '*Bicep CLI is missing*'
+            Should -Invoke Invoke-BootstrapCommand -Times 0 -Exactly -ParameterFilter {
+                $FilePath -ceq 'az' -and
+                $ArgumentList.Count -ge 2 -and
+                [string]$ArgumentList[0] -ceq 'bicep' -and
+                [string]$ArgumentList[1] -in @('uninstall', 'install')
+            }
+        }
+    }
+}
+
+Describe 'Bootstrap PATH refresh' {
+    InModuleScope Prerequisites {
+        It 'preserves process-only entries while preferring refreshed machine and user PATH entries' {
+            Merge-BootstrapProcessPath `
+                -MachinePath 'C:\Windows;C:\Tools' `
+                -UserPath 'C:\Users\Public\bin' `
+                -ProcessPath 'C:\Portable;C:\WINDOWS;C:\CI' `
+                -PathSeparator ';' |
+                Should -BeExactly 'C:\Windows;C:\Tools;C:\Users\Public\bin;C:\Portable;C:\CI'
+        }
+    }
+}
+
+Describe 'Bootstrap local Bicep command allowlist' {
+    BeforeEach {
+        Clear-BootstrapAzureSubscriptionContext
+        Set-BootstrapAzureSubscriptionContext `
+            -SubscriptionId '11111111-1111-4111-8111-111111111111' `
+            -TenantId '22222222-2222-4222-8222-222222222222'
+    }
+
+    AfterEach {
+        Clear-BootstrapAzureSubscriptionContext
+    }
+
+    It 'allows only the exact local Bicep uninstall command' {
+        @(Get-BootstrapAzureCliArguments -Arguments @('bicep', 'uninstall')) |
+            Should -Be @('bicep', 'uninstall')
+        { Get-BootstrapAzureCliArguments -Arguments @(
+                'bicep', 'uninstall', '--only-show-errors') } |
+            Should -Throw '*reviewed local Azure CLI Bicep commands*'
+    }
+}

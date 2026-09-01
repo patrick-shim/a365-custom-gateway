@@ -148,6 +148,10 @@ function Get-OptionalObjectPropertyValue {
         [Parameter(Mandatory)][string]$PropertyName
     )
     if ($null -eq $InputObject) { return $null }
+    if ($InputObject -is [Collections.IDictionary]) {
+        if (-not $InputObject.Contains($PropertyName)) { return $null }
+        return $InputObject[$PropertyName]
+    }
     $property = $InputObject.PSObject.Properties[$PropertyName]
     if ($null -eq $property) { return $null }
     return $property.Value
@@ -1070,145 +1074,169 @@ function Get-AdminUiCredentialEvidenceFromMetadata {
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$AdminIdentity,
         [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint,
         [ValidateRange(1, 30)][int]$MaximumAttempts = 18
     )
-    $vaultName = ([uri]$KeyVaultUri).Host.Split('.')[0]
-    $secretResourceId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.KeyVault/vaults/$vaultName/secrets/admin-ui-entra-client-secret"
+
     for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
         try {
-            $application = Invoke-AzJson -Arguments @(
-                'rest', '--method', 'GET', '--url',
-                "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)?`$select=id,appId,passwordCredentials"
-            )
-            if (-not ([string]$application.appId).Equals([string]$AdminIdentity.adminUiClientId, [StringComparison]::OrdinalIgnoreCase)) {
-                throw 'mismatch'
-            }
-            $credentials = @($application.passwordCredentials)
-            if ($credentials.Count -ne 1 -or [string]$credentials[0].displayName -cne 'a365gw-bootstrap-admin-ui') {
-                throw 'mismatch'
-            }
-            $expires = [DateTimeOffset]::MinValue
-            if (-not [DateTimeOffset]::TryParse(
-                [string]$credentials[0].endDateTime,
-                [Globalization.CultureInfo]::InvariantCulture,
-                [Globalization.DateTimeStyles]::RoundtripKind,
-                [ref]$expires) -or $expires.ToUniversalTime() -le [DateTimeOffset]::UtcNow) {
-                throw 'mismatch'
-            }
-            $secret = Invoke-AzJson -Arguments @(
-                'resource', 'show', '--ids', $secretResourceId, '--api-version', '2023-07-01',
-                '--query', '{id:id,name:name,enabled:properties.attributes.enabled,tags:tags}'
-            )
-            if (-not ([string]$secret.id).Equals($secretResourceId, [StringComparison]::OrdinalIgnoreCase) -or
-                [string]$secret.name -cne 'admin-ui-entra-client-secret' -or $secret.enabled -ne $true -or
-                -not $secret.tags -or [string]$secret.tags.managedBy -cne 'a365gw-bootstrap' -or
-                -not ([string]$secret.tags.credentialKeyId).Equals([string]$credentials[0].keyId, [StringComparison]::OrdinalIgnoreCase)) {
-                throw 'mismatch'
-            }
-            return [ordered]@{
-                secretUri = "$($KeyVaultUri.TrimEnd('/'))/secrets/admin-ui-entra-client-secret"
-                credentialKeyId = [string]$credentials[0].keyId
-                credentialExpiresAtUtc = $expires.ToUniversalTime().ToString('O')
-            }
+            $state = Get-AdminUiCredentialReconciliationState `
+                -Config $Config `
+                -AdminIdentity $AdminIdentity `
+                -KeyVaultUri $KeyVaultUri `
+                -DeploymentOwnershipId $DeploymentOwnershipId `
+                -SourceFingerprint $SourceFingerprint
+            if ([string]$state.status -ceq 'ExactPair') { return $state.evidence }
         }
-        catch {
-            if ($attempt -lt $MaximumAttempts) { Start-Sleep -Seconds 5 }
-        }
+        catch { }
+        if ($attempt -lt $MaximumAttempts) { Start-Sleep -Seconds 5 }
     }
-    throw 'Admin UI credential metadata was not observed with the exact bootstrap-owned application and Key Vault boundary during the bounded readback window.'
+    throw 'Admin UI credential metadata was not observed with the exact bootstrap-owned Graph and ARM boundary during the bounded readback window.'
 }
 
-function Test-BootstrapKeyVaultSecretIdentifier {
+function Get-AdminUiCredentialReconciliationState {
     param(
-        [Parameter(Mandatory)][string]$Identifier,
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$AdminIdentity,
         [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][string]$SecretName
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
     )
-    $candidate = $null
-    $vault = $null
-    if (-not [Uri]::TryCreate($Identifier, [UriKind]::Absolute, [ref]$candidate) -or
-        -not [Uri]::TryCreate($KeyVaultUri, [UriKind]::Absolute, [ref]$vault) -or
-        $candidate.Scheme -cne 'https' -or
-        -not $candidate.Host.Equals($vault.Host, [StringComparison]::OrdinalIgnoreCase) -or
-        $candidate.Port -ne $vault.Port -or
-        -not [string]::IsNullOrEmpty($candidate.UserInfo) -or
-        -not [string]::IsNullOrEmpty($candidate.Fragment) -or
-        -not [string]::IsNullOrEmpty($candidate.Query)) {
-        return $false
-    }
-    $segments = @($candidate.AbsolutePath.Trim('/').Split('/', [StringSplitOptions]::RemoveEmptyEntries))
-    return $segments.Count -in @(2, 3) -and
-        [string]$segments[0] -ceq 'secrets' -and
-        [Uri]::UnescapeDataString([string]$segments[1]) -ceq $SecretName
-}
 
-function Get-BoundedKeyVaultSecretMetadata {
-    param(
-        [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$Headers,
-        [ValidateRange(1, 100)][int]$MaximumPages = 20,
-        [ValidateRange(1, 50000)][int]$MaximumItems = 10000,
-        [ValidateRange(1, 30)][int]$MaximumAttemptsPerPage = 18
-    )
+    $applicationObjectId = [guid]::Empty
+    $clientId = [guid]::Empty
+    $ownershipId = [guid]::Empty
+    $subscriptionId = [guid]::Empty
+    if (-not [guid]::TryParse([string]$AdminIdentity.adminUiApplicationObjectId, [ref]$applicationObjectId) -or
+        $applicationObjectId -eq [guid]::Empty -or
+        -not [guid]::TryParse([string]$AdminIdentity.adminUiClientId, [ref]$clientId) -or
+        $clientId -eq [guid]::Empty -or
+        -not [guid]::TryParse([string]$Config.subscriptionId, [ref]$subscriptionId) -or
+        $subscriptionId -eq [guid]::Empty -or
+        [string]$Config.subscriptionId -cne $subscriptionId.ToString('D') -or
+        [string]$Config.resourceGroupName -cnotmatch '^[A-Za-z0-9._()\-]{1,90}$' -or
+        [string]$Config.resourceGroupName -match '[.]$' -or
+        -not [guid]::TryParse($DeploymentOwnershipId, [ref]$ownershipId) -or
+        $ownershipId -eq [guid]::Empty -or
+        $DeploymentOwnershipId -cne $ownershipId.ToString('D') -or
+        [string]$AdminIdentity.deploymentOwnershipId -cne $ownershipId.ToString('D')) {
+        throw 'Admin UI credential reconciliation identity or ownership evidence is invalid.'
+    }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI credential reconciliation source fingerprint'
 
     $vault = $null
     if (-not [Uri]::TryCreate($KeyVaultUri, [UriKind]::Absolute, [ref]$vault) -or
         $vault.Scheme -cne 'https' -or -not $vault.IsDefaultPort -or
         -not [string]::IsNullOrEmpty($vault.UserInfo) -or
         -not [string]::IsNullOrEmpty($vault.Query) -or
-        -not [string]::IsNullOrEmpty($vault.Fragment)) {
-        throw 'Key Vault URI is not an exact HTTPS vault origin.'
+        -not [string]::IsNullOrEmpty($vault.Fragment) -or
+        $vault.AbsolutePath -cne '/' -or
+        $vault.DnsSafeHost -cnotmatch '^[a-z][a-z0-9-]{2,23}[.]vault[.]azure[.]net$') {
+        throw 'Admin UI credential reconciliation requires one exact HTTPS Key Vault origin.'
     }
-    $collectionPath = '/secrets'
-    $nextUrl = "$($KeyVaultUri.TrimEnd('/'))${collectionPath}?api-version=7.4"
-    $visited = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    $items = [Collections.Generic.List[object]]::new()
 
-    for ($page = 1; $page -le $MaximumPages; $page++) {
-        $pageUri = $null
-        if (-not [Uri]::TryCreate($nextUrl, [UriKind]::Absolute, [ref]$pageUri) -or
-            $pageUri.Scheme -cne 'https' -or
-            -not $pageUri.Host.Equals($vault.Host, [StringComparison]::OrdinalIgnoreCase) -or
-            $pageUri.Port -ne $vault.Port -or
-            -not [string]::IsNullOrEmpty($pageUri.UserInfo) -or
-            -not [string]::IsNullOrEmpty($pageUri.Fragment) -or
-            $pageUri.AbsolutePath -cne $collectionPath) {
-            throw 'Key Vault continuation left the exact HTTPS vault secret-list origin or path.'
+    $application = $null
+    $metadata = $null
+    try {
+        $application = Invoke-AzJson -Arguments @(
+            'rest', '--method', 'GET', '--url',
+            "https://graph.microsoft.com/v1.0/applications/$($applicationObjectId.ToString('D'))?`$select=appId,passwordCredentials"
+        )
+        if ($null -eq $application -or
+            -not ([string](Get-OptionalObjectPropertyValue -InputObject $application -PropertyName 'appId')).Equals($clientId.ToString('D'), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'graph-mismatch'
         }
-        if (-not $visited.Add($pageUri.AbsoluteUri)) {
-            throw 'Key Vault secret list returned a repeated continuation URL.'
+        if ($application -is [Collections.IDictionary]) {
+            if (-not $application.Contains('passwordCredentials')) { throw 'graph-shape' }
+            $credentials = @($application['passwordCredentials'])
         }
+        else {
+            $credentialProperty = $application.PSObject.Properties['passwordCredentials']
+            if ($null -eq $credentialProperty) { throw 'graph-shape' }
+            $credentials = @($credentialProperty.Value)
+        }
+        $metadata = Get-GatewayAdminUiCredentialSecretArmMetadata `
+            -Config $Config `
+            -KeyVaultUri $KeyVaultUri `
+            -DeploymentOwnershipId $ownershipId.ToString('D') `
+            -SourceFingerprint $SourceFingerprint
+    }
+    catch {
+        throw 'Admin UI credential reconciliation could not read the exact Graph and ARM metadata boundary.'
+    }
 
-        $response = $null
-        for ($attempt = 1; $attempt -le $MaximumAttemptsPerPage -and $null -eq $response; $attempt++) {
-            try { $response = Invoke-RestMethod -Method Get -Uri $nextUrl -Headers $Headers }
-            catch {
-                if ($attempt -eq $MaximumAttemptsPerPage) {
-                    throw 'Key Vault secret metadata was unavailable during the bounded readback window.'
+    $graphStatus = 'Mismatch'
+    $credential = $null
+    $expires = [DateTimeOffset]::MinValue
+    $credentialKeyId = [guid]::Empty
+    if ($credentials.Count -eq 0) {
+        $graphStatus = 'Absent'
+    }
+    elseif ($credentials.Count -eq 1 -and
+        [string](Get-OptionalObjectPropertyValue -InputObject $credentials[0] -PropertyName 'displayName') -ceq 'a365gw-bootstrap-admin-ui' -and
+        [guid]::TryParse([string](Get-OptionalObjectPropertyValue -InputObject $credentials[0] -PropertyName 'keyId'), [ref]$credentialKeyId) -and
+        $credentialKeyId -ne [guid]::Empty -and
+        [DateTimeOffset]::TryParse(
+            [string](Get-OptionalObjectPropertyValue -InputObject $credentials[0] -PropertyName 'endDateTime'),
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$expires) -and
+        $expires.ToUniversalTime() -gt [DateTimeOffset]::UtcNow) {
+        $graphStatus = 'Present'
+        $credential = $credentials[0]
+    }
+
+    $armStatus = [string](Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'status')
+    if ($armStatus -cnotin @('Present', 'Absent')) {
+        throw 'Admin UI credential reconciliation received an unsupported ARM metadata state.'
+    }
+    if ($graphStatus -ceq 'Absent' -and $armStatus -ceq 'Absent') {
+        return [pscustomobject][ordered]@{ status = 'DoubleAbsent' }
+    }
+
+    if ($graphStatus -ceq 'Present' -and $armStatus -ceq 'Present') {
+        $vaultName = $vault.DnsSafeHost.Substring(0, $vault.DnsSafeHost.IndexOf('.'))
+        $expectedSecretResourceId = "/subscriptions/$($subscriptionId.ToString('D'))/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.KeyVault/vaults/$vaultName/secrets/admin-ui-entra-client-secret"
+        $tags = Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'tags'
+        $tagNames = if ($tags -is [Collections.IDictionary]) {
+            @($tags.Keys | ForEach-Object { [string]$_ })
+        }
+        elseif ($null -ne $tags) {
+            @($tags.PSObject.Properties.Name | ForEach-Object { [string]$_ })
+        }
+        else { @() }
+        $metadataKeyId = [guid]::Empty
+        $exactPair =
+            $tagNames.Count -eq 4 -and
+            @(@('managedBy', 'credentialKeyId', 'bootstrapOwnershipId', 'bootstrapSourceFingerprint') |
+                Where-Object { $tagNames -cnotcontains $_ }).Count -eq 0 -and
+            ([string](Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'id')).Equals($expectedSecretResourceId, [StringComparison]::OrdinalIgnoreCase) -and
+            [string](Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'name') -ceq 'admin-ui-entra-client-secret' -and
+            (Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'enabled') -eq $true -and
+            [string](Get-OptionalObjectPropertyValue -InputObject $metadata -PropertyName 'contentType') -ceq 'application/vnd.a365-gateway.admin-ui-entra-client-secret' -and
+            [string](Get-OptionalObjectPropertyValue -InputObject $tags -PropertyName 'managedBy') -ceq 'a365gw-bootstrap' -and
+            [string](Get-OptionalObjectPropertyValue -InputObject $tags -PropertyName 'bootstrapOwnershipId') -ceq $ownershipId.ToString('D') -and
+            [string](Get-OptionalObjectPropertyValue -InputObject $tags -PropertyName 'bootstrapSourceFingerprint') -ceq $SourceFingerprint -and
+            [guid]::TryParse([string](Get-OptionalObjectPropertyValue -InputObject $tags -PropertyName 'credentialKeyId'), [ref]$metadataKeyId) -and
+            $metadataKeyId -ne [guid]::Empty -and
+            $metadataKeyId -eq $credentialKeyId
+        if ($exactPair) {
+            return [pscustomobject][ordered]@{
+                status = 'ExactPair'
+                evidence = [ordered]@{
+                    secretUri = "$($KeyVaultUri.TrimEnd('/'))/secrets/admin-ui-entra-client-secret"
+                    credentialKeyId = $credentialKeyId.ToString('D')
+                    credentialExpiresAtUtc = $expires.ToUniversalTime().ToString('O')
+                    deploymentOwnershipId = $ownershipId.ToString('D')
+                    sourceFingerprint = $SourceFingerprint
+                    contentType = 'application/vnd.a365-gateway.admin-ui-entra-client-secret'
                 }
-                Start-Sleep -Seconds 5
             }
         }
-        if ($null -eq $response -or $null -eq $response.PSObject.Properties['value'] -or
-            $response.value -isnot [System.Array]) {
-            throw 'Key Vault secret-list response did not contain the required value array.'
-        }
-        foreach ($item in @($response.value)) {
-            if ($null -eq $item) { throw 'Key Vault secret list returned a null metadata item.' }
-            if ($items.Count -ge $MaximumItems) {
-                throw "Key Vault secret list exceeded the bounded item limit of $MaximumItems."
-            }
-            $items.Add($item)
-        }
-
-        $nextProperty = $response.PSObject.Properties['nextLink']
-        if ($null -eq $nextProperty -or $null -eq $nextProperty.Value -or
-            [string]::IsNullOrWhiteSpace([string]$nextProperty.Value)) {
-            return @($items)
-        }
-        $nextUrl = [string]$nextProperty.Value
     }
-    throw "Key Vault secret list exceeded the bounded page limit of $MaximumPages."
+
+    return [pscustomobject][ordered]@{ status = 'PartialOrMismatch' }
 }
 
 function Resolve-AdminUiCredentialAfterStartedOutcome {
@@ -1216,11 +1244,31 @@ function Resolve-AdminUiCredentialAfterStartedOutcome {
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$AdminIdentity,
         [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][string]$UserObjectId
+        [Parameter(Mandatory)][string]$UserObjectId,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
     )
 
     Assert-GuidValue -Value $UserObjectId -Label 'Admin UI credential operator object ID'
-    $vaultName = ([uri]$KeyVaultUri).Host.Split('.')[0]
+    $ownershipId = [guid]::Empty
+    if (-not [guid]::TryParse($DeploymentOwnershipId, [ref]$ownershipId) -or
+        $ownershipId -eq [guid]::Empty -or
+        $DeploymentOwnershipId -cne $ownershipId.ToString('D') -or
+        [string]$AdminIdentity.deploymentOwnershipId -cne $ownershipId.ToString('D')) {
+        throw 'Admin UI credential recovery ownership evidence is invalid.'
+    }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI credential recovery source fingerprint'
+    $vault = $null
+    if (-not [Uri]::TryCreate($KeyVaultUri, [UriKind]::Absolute, [ref]$vault) -or
+        $vault.Scheme -cne 'https' -or -not $vault.IsDefaultPort -or
+        -not [string]::IsNullOrEmpty($vault.UserInfo) -or
+        -not [string]::IsNullOrEmpty($vault.Query) -or
+        -not [string]::IsNullOrEmpty($vault.Fragment) -or
+        $vault.AbsolutePath -cne '/' -or
+        $vault.DnsSafeHost -cnotmatch '^[a-z][a-z0-9-]{2,23}[.]vault[.]azure[.]net$') {
+        throw 'Admin UI credential recovery requires one exact HTTPS Key Vault origin.'
+    }
+    $vaultName = $vault.DnsSafeHost.Substring(0, $vault.DnsSafeHost.IndexOf('.'))
     $scope = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.KeyVault/vaults/$vaultName"
     $assignmentName = Get-BootstrapDeterministicRoleAssignmentName -Scope $scope -PrincipalId $UserObjectId
     $assignmentId = "$scope/providers/Microsoft.Authorization/roleAssignments/$assignmentName"
@@ -1251,7 +1299,34 @@ function Resolve-AdminUiCredentialAfterStartedOutcome {
         throw 'The bootstrap-owned temporary Key Vault role assignment could not be proven removed during recovery.'
     }
 
-    return Get-AdminUiCredentialEvidenceFromMetadata -Config $Config -AdminIdentity $AdminIdentity -KeyVaultUri $KeyVaultUri
+    $consecutiveDoubleAbsenceReads = 0
+    for ($attempt = 1; $attempt -le 18; $attempt++) {
+        $state = Get-AdminUiCredentialReconciliationState `
+            -Config $Config `
+            -AdminIdentity $AdminIdentity `
+            -KeyVaultUri $KeyVaultUri `
+            -DeploymentOwnershipId $ownershipId.ToString('D') `
+            -SourceFingerprint $SourceFingerprint
+        if ([string]$state.status -ceq 'ExactPair') { return $state.evidence }
+        if ([string]$state.status -ceq 'PartialOrMismatch') {
+            throw 'Admin UI credential recovery found partial or mismatched provider state. Use the reviewed credential-rotation procedure; no mutation was attempted.'
+        }
+        if ([string]$state.status -cne 'DoubleAbsent') {
+            throw 'Admin UI credential recovery received an unsupported reconciliation state.'
+        }
+        $consecutiveDoubleAbsenceReads++
+        if ($consecutiveDoubleAbsenceReads -ge 3) { break }
+        if ($attempt -lt 18) { Start-Sleep -Seconds 5 }
+    }
+    if ($consecutiveDoubleAbsenceReads -lt 3) {
+        throw 'Admin UI credential recovery could not prove consecutive exact absence in both providers.'
+    }
+    return New-AdminUiCredentialInKeyVault `
+        -Config $Config `
+        -AdminIdentity $AdminIdentity `
+        -KeyVaultUri $KeyVaultUri `
+        -DeploymentOwnershipId $ownershipId.ToString('D') `
+        -SourceFingerprint $SourceFingerprint
 }
 
 function New-AdminUiCredentialInKeyVault {
@@ -1259,162 +1334,108 @@ function New-AdminUiCredentialInKeyVault {
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$AdminIdentity,
         [Parameter(Mandatory)][string]$KeyVaultUri,
-        [Parameter(Mandatory)][string]$UserObjectId
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
     )
-    $vaultName = ([uri]$KeyVaultUri).Host.Split('.')[0]
-    $scope = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.KeyVault/vaults/$vaultName"
-    $roleDefinitionId = "/subscriptions/$(([guid]$Config.subscriptionId).ToString('D'))/providers/Microsoft.Authorization/roleDefinitions/$script:KeyVaultSecretsOfficerRoleId"
-    Assert-GuidValue -Value $UserObjectId -Label 'Admin UI credential operator object ID'
-    $temporaryRoleAssignmentName = Get-BootstrapDeterministicRoleAssignmentName -Scope $scope -PrincipalId $UserObjectId
-    $temporaryRoleAssignmentId = "$scope/providers/Microsoft.Authorization/roleAssignments/$temporaryRoleAssignmentName"
-    $removeTemporaryRole = $false
+
+    $ownershipId = [guid]::Empty
+    if (-not [guid]::TryParse($DeploymentOwnershipId, [ref]$ownershipId) -or
+        $ownershipId -eq [guid]::Empty -or
+        $DeploymentOwnershipId -cne $ownershipId.ToString('D') -or
+        [string]$AdminIdentity.deploymentOwnershipId -cne $ownershipId.ToString('D')) {
+        throw 'Admin UI credential creation ownership evidence is invalid.'
+    }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI credential creation source fingerprint'
+
+    $credential = $null
     $secretText = $null
+    $passwordRequest = $null
+    $secretMetadata = $null
     try {
-        $exactTemporaryAssignments = @(Get-ExactBootstrapRoleAssignment -Scope $scope -AssignmentId $temporaryRoleAssignmentId)
-        if ($exactTemporaryAssignments.Count -gt 1) {
-            throw 'The bootstrap-owned temporary Key Vault role assignment is ambiguous; refusing credential handling.'
-        }
-        if ($exactTemporaryAssignments.Count -eq 1) {
-            $temporaryAssignment = $exactTemporaryAssignments[0]
-            if (-not ([string]$temporaryAssignment.principalId).Equals($UserObjectId, [StringComparison]::OrdinalIgnoreCase) -or
-                -not ([string]$temporaryAssignment.scope).Equals($scope, [StringComparison]::OrdinalIgnoreCase) -or
-                -not ([string]$temporaryAssignment.roleDefinitionId).Equals($roleDefinitionId, [StringComparison]::OrdinalIgnoreCase)) {
-                throw 'The deterministic bootstrap role-assignment ID is already bound to different authority; refusing credential handling.'
-            }
-            $removeTemporaryRole = $true
+        $state = Get-AdminUiCredentialReconciliationState `
+            -Config $Config `
+            -AdminIdentity $AdminIdentity `
+            -KeyVaultUri $KeyVaultUri `
+            -DeploymentOwnershipId $ownershipId.ToString('D') `
+            -SourceFingerprint $SourceFingerprint
+        if ([string]$state.status -ceq 'ExactPair') { return $state.evidence }
+        if ([string]$state.status -cne 'DoubleAbsent') {
+            throw 'Admin UI credential creation found partial or mismatched provider state. Use the reviewed credential-rotation procedure; no mutation was attempted.'
         }
 
-        $existingAssignments = @(Invoke-AzJsonArray -OperationLabel 'Existing Key Vault role-assignment discovery' -Arguments @(
-            'role', 'assignment', 'list', '--assignee-object-id', $UserObjectId,
-            '--scope', $scope, '--include-inherited',
-            '--query', '[].{id:id,roleDefinitionId:roleDefinitionId}'
-        ))
-        $hasIndependentAssignment = @($existingAssignments | Where-Object {
-            ([string]$_.roleDefinitionId).Equals($roleDefinitionId, [StringComparison]::OrdinalIgnoreCase) -and
-            -not ([string]$_.id).Equals($temporaryRoleAssignmentId, [StringComparison]::OrdinalIgnoreCase)
-        }).Count -gt 0
-        if (-not $removeTemporaryRole -and -not $hasIndependentAssignment) {
-            # Set ownership before the create call. If Azure reports an unknown
-            # outcome, finally performs exact-ID discovery/cleanup and Resume can
-            # repeat that cleanup without creating a second assignment.
-            $removeTemporaryRole = $true
-            $createdAssignment = Invoke-AzJson -Arguments @(
-                'role', 'assignment', 'create', '--name', $temporaryRoleAssignmentName,
-                '--assignee-object-id', $UserObjectId, '--assignee-principal-type', 'User',
-                '--role', $roleDefinitionId, '--scope', $scope
-            )
-            if (-not ([string]$createdAssignment.id).Equals($temporaryRoleAssignmentId, [StringComparison]::OrdinalIgnoreCase) -or
-                -not ([string]$createdAssignment.principalId).Equals($UserObjectId, [StringComparison]::OrdinalIgnoreCase) -or
-                -not ([string]$createdAssignment.scope).Equals($scope, [StringComparison]::OrdinalIgnoreCase) -or
-                -not ([string]$createdAssignment.roleDefinitionId).Equals($roleDefinitionId, [StringComparison]::OrdinalIgnoreCase)) {
-                throw 'Azure did not return the exact bootstrap-owned temporary Key Vault role assignment.'
+        $passwordRequest = [ordered]@{
+            passwordCredential = [ordered]@{
+                displayName = 'a365gw-bootstrap-admin-ui'
+                endDateTime = [DateTimeOffset]::UtcNow.AddYears(1).ToString('O')
             }
         }
-
-        $tokenResult = Invoke-AzJson -Arguments @('account', 'get-access-token', '--resource', 'https://vault.azure.net')
-        $headers = @{ Authorization = "Bearer $($tokenResult.accessToken)"; 'Content-Type' = 'application/json' }
-        $application = Invoke-AzJson -Arguments @('rest', '--method', 'GET', '--url', "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)?`$select=passwordCredentials")
-        $bootstrapCredentials = @($application.passwordCredentials | Where-Object { [string]$_.displayName -eq 'a365gw-bootstrap-admin-ui' })
-        $secretList = @(Get-BoundedKeyVaultSecretMetadata -KeyVaultUri $KeyVaultUri -Headers $headers)
-        $vaultMetadata = @($secretList | Where-Object {
-            Test-BootstrapKeyVaultSecretIdentifier -Identifier ([string]$_.id) -KeyVaultUri $KeyVaultUri -SecretName 'admin-ui-entra-client-secret'
-        })
-        if ($vaultMetadata.Count -gt 1) { throw 'Key Vault returned ambiguous current Admin UI secret metadata.' }
-        if ($vaultMetadata.Count -eq 1) {
-            $recordedKeyId = [string]$vaultMetadata[0].tags.credentialKeyId
-            $matchingCredential = @($bootstrapCredentials | Where-Object { [string]$_.keyId -eq $recordedKeyId })
-            if ([string]::IsNullOrWhiteSpace($recordedKeyId) -or $matchingCredential.Count -ne 1) {
-                throw 'An Admin UI Key Vault secret already exists but cannot be safely matched to the bootstrap app credential. Rotate it through the credential runbook.'
-            }
-            return Get-AdminUiCredentialEvidenceFromMetadata -Config $Config -AdminIdentity $AdminIdentity -KeyVaultUri $KeyVaultUri
+        try {
+            $credential = Invoke-GraphJsonBody `
+                -Method 'POST' `
+                -Url "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)/addPassword" `
+                -Body $passwordRequest
         }
-        if ($bootstrapCredentials.Count -gt 0) {
-            throw 'A bootstrap-labeled Admin UI app credential exists without matching Key Vault metadata. Refusing an unreviewed replacement.'
+        catch {
+            throw 'Microsoft Graph returned an unknown Admin UI credential-creation outcome. Resume must reconcile exact provider metadata before any further mutation.'
         }
 
-        $credential = Invoke-GraphJsonBody -Method 'POST' -Url "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)/addPassword" -Body @{
-            passwordCredential = @{ displayName = 'a365gw-bootstrap-admin-ui'; endDateTime = [DateTimeOffset]::UtcNow.AddYears(1).ToString('O') }
+        $credentialKeyId = [guid]::Empty
+        if (-not [guid]::TryParse([string](Get-OptionalObjectPropertyValue -InputObject $credential -PropertyName 'keyId'), [ref]$credentialKeyId) -or
+            $credentialKeyId -eq [guid]::Empty) {
+            throw 'Microsoft Graph did not return one valid Admin UI credential key ID.'
         }
         $secretText = [string]$credential.secretText
-        if ([string]::IsNullOrWhiteSpace($secretText)) { throw 'Microsoft Graph did not return the one-time Admin UI credential.' }
-        $body = @{ value = $secretText; attributes = @{ enabled = $true }; tags = @{ credentialKeyId = [string]$credential.keyId; managedBy = 'a365gw-bootstrap' } } | ConvertTo-Json -Compress
-        $secretUrl = "$($KeyVaultUri.TrimEnd('/'))/secrets/admin-ui-entra-client-secret?api-version=7.4"
-        $stored = $null
-        for ($attempt = 1; $attempt -le 18 -and -not $stored; $attempt++) {
+        if ([string]::IsNullOrEmpty($secretText)) { throw 'Microsoft Graph did not return the one-time Admin UI credential.' }
+
+        try {
+            $secretMetadata = Deploy-GatewayAdminUiCredentialSecret `
+                -Config $Config `
+                -KeyVaultUri $KeyVaultUri `
+                -CredentialKeyId $credentialKeyId.ToString('D') `
+                -SecretText $secretText `
+                -DeploymentOwnershipId $ownershipId.ToString('D') `
+                -SourceFingerprint $SourceFingerprint
+        }
+        catch {
             try {
-                $stored = Invoke-RestMethod -Method Put -Uri $secretUrl -Headers $headers -Body $body
-                if ($null -eq $stored -or
-                    -not (Test-BootstrapKeyVaultSecretIdentifier -Identifier ([string]$stored.id) -KeyVaultUri $KeyVaultUri -SecretName 'admin-ui-entra-client-secret') -or
-                    $stored.attributes.enabled -ne $true -or
-                    [string]$stored.tags.managedBy -cne 'a365gw-bootstrap' -or
-                    -not ([string]$stored.tags.credentialKeyId).Equals([string]$credential.keyId, [StringComparison]::OrdinalIgnoreCase)) {
-                    $stored = $null
-                    throw 'Key Vault returned a mismatched secret-set response.'
-                }
+                $secretMetadata = Get-GatewayAdminUiCredentialSecretArmMetadata `
+                    -Config $Config `
+                    -KeyVaultUri $KeyVaultUri `
+                    -DeploymentOwnershipId $ownershipId.ToString('D') `
+                    -SourceFingerprint $SourceFingerprint
             }
             catch {
-                # A versionless secret PUT creates a new version. After any
-                # ambiguous response, reconcile the paged metadata collection
-                # before deciding whether another mutation is safe.
-                $reconciliationList = @(Get-BoundedKeyVaultSecretMetadata -KeyVaultUri $KeyVaultUri -Headers $headers)
-                $reconciliationMatches = @($reconciliationList | Where-Object {
-                    Test-BootstrapKeyVaultSecretIdentifier -Identifier ([string]$_.id) -KeyVaultUri $KeyVaultUri -SecretName 'admin-ui-entra-client-secret'
-                })
-                if ($reconciliationMatches.Count -gt 1) {
-                    throw 'Key Vault returned ambiguous Admin UI secret metadata after an unknown secret-set outcome; refusing another version.'
-                }
-                if ($reconciliationMatches.Count -eq 1) {
-                    $reconciled = $reconciliationMatches[0]
-                    if ($reconciled.attributes.enabled -ne $true -or
-                        [string]$reconciled.tags.managedBy -cne 'a365gw-bootstrap' -or
-                        -not ([string]$reconciled.tags.credentialKeyId).Equals([string]$credential.keyId, [StringComparison]::OrdinalIgnoreCase)) {
-                        throw 'Key Vault secret metadata mismatched after an unknown secret-set outcome; refusing another version.'
-                    }
-                    $stored = $reconciled
-                    break
-                }
-                # A complete, bounded metadata traversal proved the exact secret
-                # absent. Only that outcome permits another set attempt.
-                if ($attempt -eq 18) {
-                    throw 'Key Vault did not accept the Admin UI secret within the bounded exact-absence retry window.'
-                }
-                Start-Sleep -Seconds 5
+                throw 'The one ARM secret deployment returned an unknown outcome and exact metadata reconciliation did not prove success. No deployment was repeated.'
             }
         }
-        return Get-AdminUiCredentialEvidenceFromMetadata -Config $Config -AdminIdentity $AdminIdentity -KeyVaultUri $KeyVaultUri
+        # The full Graph-plus-ARM classifier below is the single authoritative
+        # proof. It independently re-reads the child resource and rejects an
+        # absent, mismatched, disabled, wrong-owner, or wrong-source result.
+        return Get-AdminUiCredentialEvidenceFromMetadata `
+            -Config $Config `
+            -AdminIdentity $AdminIdentity `
+            -KeyVaultUri $KeyVaultUri `
+            -DeploymentOwnershipId $ownershipId.ToString('D') `
+            -SourceFingerprint $SourceFingerprint
     }
     finally {
-        $secretText = $null
-        $body = $null
-        $stored = $null
-        $secretList = $null
-        $headers = $null
-        $tokenResult = $null
-        if ($removeTemporaryRole) {
-            $cleanupAssignments = @(Get-ExactBootstrapRoleAssignment -Scope $scope -AssignmentId $temporaryRoleAssignmentId)
-            if ($cleanupAssignments.Count -gt 1) {
-                throw 'The bootstrap-owned temporary Key Vault role assignment is ambiguous during cleanup. Stop and review the exact assignment ID.'
+        if ($credential) {
+            if ($credential -is [Collections.IDictionary]) {
+                if ($credential.Contains('secretText')) { $credential['secretText'] = $null }
             }
-            if ($cleanupAssignments.Count -eq 1) {
-                $cleanupAssignment = $cleanupAssignments[0]
-                if (-not ([string]$cleanupAssignment.principalId).Equals($UserObjectId, [StringComparison]::OrdinalIgnoreCase) -or
-                    -not ([string]$cleanupAssignment.scope).Equals($scope, [StringComparison]::OrdinalIgnoreCase) -or
-                    -not ([string]$cleanupAssignment.roleDefinitionId).Equals($roleDefinitionId, [StringComparison]::OrdinalIgnoreCase)) {
-                    throw 'The deterministic bootstrap role-assignment ID changed authority before cleanup; refusing deletion.'
-                }
-                Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @(
-                    'role', 'assignment', 'delete', '--ids', $temporaryRoleAssignmentId, '--only-show-errors'
-                ) | Out-Null
-            }
-            $removed = Wait-ExactBootstrapRoleAssignmentAbsent `
-                -Scope $scope `
-                -AssignmentId $temporaryRoleAssignmentId `
-                -PrincipalId $UserObjectId `
-                -RoleDefinitionId $roleDefinitionId
-            if (-not $removed) {
-                throw 'The bootstrap-owned temporary Key Vault role assignment could not be proven removed. Credential handling is incomplete; Resume must retry exact cleanup.'
+            else {
+                $secretProperty = $credential.PSObject.Properties['secretText']
+                if ($null -ne $secretProperty) { $secretProperty.Value = $null }
             }
         }
+        $secretText = $null
+        $secretMetadata = $null
+        if ($passwordRequest) {
+            if ($passwordRequest.passwordCredential) { $passwordRequest.passwordCredential.Clear() }
+            $passwordRequest.Clear()
+        }
+        $passwordRequest = $null
+        $credential = $null
     }
 }
 

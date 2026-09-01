@@ -632,6 +632,7 @@ Describe 'Admin UI one-time credential role boundary' {
             $script:armParameters = $null
             $script:armDeploymentFailsAfterCommit = $false
             $script:armMetadataReadCount = 0
+            $script:armMetadataPresentFromRead = 0
 
             if (-not (Get-Command Get-GatewayAdminUiCredentialSecretArmMetadata -ErrorAction SilentlyContinue)) {
                 function Get-GatewayAdminUiCredentialSecretArmMetadata {
@@ -687,7 +688,10 @@ Describe 'Admin UI one-time credential role boundary' {
                     [string]$SourceFingerprint
                 )
                 $script:armMetadataReadCount++
-                if (-not $script:vaultMetadataExists) {
+                $metadataPresent = $script:vaultMetadataExists -or
+                    ($script:armMetadataPresentFromRead -gt 0 -and
+                        $script:armMetadataReadCount -ge $script:armMetadataPresentFromRead)
+                if (-not $metadataPresent) {
                     return [pscustomobject]@{ status = 'Absent' }
                 }
                 return [pscustomobject]@{
@@ -871,54 +875,6 @@ Describe 'Admin UI one-time credential role boundary' {
             $script:roleListCount | Should -Be 3
         }
 
-        It 'accepts only versioned or versionless secret identifiers from the exact vault origin' {
-            Test-BootstrapKeyVaultSecretIdentifier `
-                -Identifier 'https://kv-gwtest-dev.vault.azure.net/secrets/admin-ui-entra-client-secret' `
-                -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
-                -SecretName 'admin-ui-entra-client-secret' | Should -BeTrue
-            Test-BootstrapKeyVaultSecretIdentifier `
-                -Identifier 'https://kv-gwtest-dev.vault.azure.net/secrets/admin-ui-entra-client-secret/version-one' `
-                -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
-                -SecretName 'admin-ui-entra-client-secret' | Should -BeTrue
-            Test-BootstrapKeyVaultSecretIdentifier `
-                -Identifier 'https://example.invalid/secrets/admin-ui-entra-client-secret' `
-                -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
-                -SecretName 'admin-ui-entra-client-secret' | Should -BeFalse
-        }
-
-        It 'reads every Key Vault secret-metadata page and rejects a cross-origin continuation' {
-            $script:keyVaultListUrls = [Collections.Generic.List[string]]::new()
-            Mock Invoke-RestMethod {
-                param($Method, [string]$Uri, $Headers)
-                $script:keyVaultListUrls.Add($Uri)
-                if ($Uri -match 'safe-page-two') {
-                    return [pscustomobject]@{ value = @([pscustomobject]@{ id = 'https://kv-gwtest-dev.vault.azure.net/secrets/second' }) }
-                }
-                return [pscustomobject]@{
-                    value = @([pscustomobject]@{ id = 'https://kv-gwtest-dev.vault.azure.net/secrets/first' })
-                    nextLink = 'https://kv-gwtest-dev.vault.azure.net/secrets?api-version=7.4&$skiptoken=safe-page-two'
-                }
-            }
-
-            $metadata = @(Get-BoundedKeyVaultSecretMetadata `
-                -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
-                -Headers @{ 'x-test-header' = 'safe' })
-
-            $metadata.Count | Should -Be 2
-            $script:keyVaultListUrls.Count | Should -Be 2
-
-            Mock Invoke-RestMethod {
-                return [pscustomobject]@{
-                    value = @()
-                    nextLink = 'https://example.invalid/secrets?api-version=7.4&$skiptoken=unsafe'
-                }
-            }
-            { Get-BoundedKeyVaultSecretMetadata `
-                -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
-                -Headers @{ 'x-test-header' = 'safe' } } |
-                Should -Throw '*continuation left*'
-        }
-
         It 'removes only the exact legacy temporary assignment during Resume and proves absence' {
             $config = [pscustomobject]@{
                 subscriptionId = $script:testSubscriptionId
@@ -960,6 +916,7 @@ Describe 'Admin UI one-time credential role boundary' {
             $script:graphMutationCount = 0
             $script:syntheticSecretValue = 'private-one-time-test-value'
             $script:armDeploymentFailsAfterCommit = $true
+            $script:armMetadataPresentFromRead = 2
             Mock Invoke-GraphJsonBody {
                 $script:graphMutationCount++
                 $script:bootstrapCredentialExists = $true
@@ -988,17 +945,20 @@ Describe 'Admin UI one-time credential role boundary' {
             $script:roleListCount | Should -Be 0
             $script:deleteArguments.Count | Should -Be 0
 
-            [IO.Path]::GetFullPath($script:armTemplateFile) | Should -Be (
-                [IO.Path]::GetFullPath((Join-Path $script:RepositoryRoot 'bootstrap/infra/admin-ui-credential.bicep')))
-            $script:armParameters.secretValue | Should -Be $script:syntheticSecretValue
-            $script:armParameters.credentialKeyId | Should -Be $script:testCredentialKeyId
-            $script:armParameters.bootstrapOwnershipId | Should -Be $script:testDeploymentOwnershipId
-            $script:armParameters.bootstrapSourceFingerprint | Should -Be $script:testSourceFingerprint
-
-            $templateSource = Get-Content -LiteralPath $script:armTemplateFile -Raw
-            $templateSource | Should -Match "(?s)@secure\(\)\s*param\s+secretValue\s+string"
+            Should -Invoke Deploy-GatewayAdminUiCredentialSecret -Times 1 -Exactly -ParameterFilter {
+                $CredentialKeyId -ceq $script:testCredentialKeyId -and
+                $SecretText -ceq $script:syntheticSecretValue -and
+                $DeploymentOwnershipId -ceq $script:testDeploymentOwnershipId -and
+                $SourceFingerprint -ceq $script:testSourceFingerprint
+            }
+            $moduleDirectory = Split-Path -Parent (Get-Module Entra).Path
+            $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $moduleDirectory '../..'))
+            $templateFile = Join-Path $repositoryRoot 'bootstrap/infra/admin-ui-credential.bicep'
+            $templateSource = Get-Content -LiteralPath $templateFile -Raw
+            $templateSource | Should -Match "(?s)@secure\(\)\s*(?:@minLength\(\d+\)\s*)*param\s+secretValue\s+string"
             $templateSource | Should -Match "'(?:Microsoft\.KeyVault/vaults/)?secrets@2023-07-01'"
-            $templateSource | Should -Match "contentType:\s*'application/vnd\.a365-gateway\.admin-ui-entra-client-secret'"
+            $templateSource | Should -Match "var\s+secretContentType\s*=\s*'application/vnd\.a365-gateway\.admin-ui-entra-client-secret'"
+            $templateSource | Should -Match 'contentType:\s*secretContentType'
             foreach ($requiredTag in @('managedBy', 'credentialKeyId', 'bootstrapOwnershipId', 'bootstrapSourceFingerprint')) {
                 $templateSource | Should -Match "(?m)^\s*$requiredTag\s*:"
             }
@@ -1040,6 +1000,7 @@ Describe 'Admin UI one-time credential role boundary' {
             $script:bootstrapCredentialExists = $false
             $script:vaultMetadataExists = $false
             $script:graphMutationCount = 0
+            $script:armMetadataPresentFromRead = 5
             Mock Invoke-GraphJsonBody {
                 $script:graphMutationCount++
                 $script:bootstrapCredentialExists = $true

@@ -749,6 +749,7 @@ public class InfrastructureAsCodeSecurityTests
         var workflowV3Entra = ReadRepositoryFile("tools", "configure-workflow-v3-entra.ps1");
         var agent365 = ReadRepositoryFile("bootstrap", "modules", "Agent365.psm1");
         var purview = ReadRepositoryFile("bootstrap", "modules", "Purview.psm1");
+        var adminUiCredential = ReadRepositoryFile("bootstrap", "infra", "admin-ui-credential.bicep");
         var subscription = ReadRepositoryFile("bootstrap", "infra", "subscription.bicep");
         var foundation = ReadRepositoryFile("bootstrap", "infra", "foundation.bicep");
         var sqlPrivate = ReadRepositoryFile("bootstrap", "infra", "sql-private-endpoint.bicep");
@@ -771,6 +772,8 @@ public class InfrastructureAsCodeSecurityTests
         common.Should().NotContain("message = $_.Exception.Message");
         common.Should().Contain("Review the local terminal output, correct the cause, and run Resume.");
         azure.Should().Contain("Invoke-ArmDeploymentWithSecureParameters");
+        azure.Should().Contain("'deployment', 'group', 'create', '--subscription', $canonicalSubscriptionIdText");
+        azure.Should().Contain("Deploy-GatewayAdminUiCredentialSecret");
         azure.Should().Contain("Remove-Item -LiteralPath $temporary -Force");
         azure.Should().Contain("preserveExistingApiSecrets = -not $Initial");
         azure.Should().Contain("public-network-access', 'Disabled'");
@@ -780,11 +783,16 @@ public class InfrastructureAsCodeSecurityTests
         entra.Should().Contain("ProtectionScopes.Compute.User");
         entra.Should().NotContain("Write-Host $secretText");
         entra.Should().Contain("Get-BootstrapDeterministicRoleAssignmentName");
-        entra.Should().Contain("'role', 'assignment', 'create', '--name', $temporaryRoleAssignmentName");
-        entra.Should().Contain("'role', 'assignment', 'delete', '--ids', $temporaryRoleAssignmentId");
+        entra.Should().NotContain("$temporaryRoleAssignmentName");
+        entra.Should().NotContain("'role', 'assignment', 'create'");
+        entra.Should().Contain("Deploy-GatewayAdminUiCredentialSecret");
+        entra.Should().Contain("'role', 'assignment', 'delete', '--ids', $assignmentId");
         entra.Should().Contain("could not be proven removed");
         entra.Should().NotContain(
             "'role', 'assignment', 'delete', '--assignee-object-id', $UserObjectId");
+        adminUiCredential.Should().Contain("@secure()");
+        adminUiCredential.Should().Contain("Microsoft.KeyVault/vaults/secrets@2023-07-01");
+        adminUiCredential.Should().NotContain("output secretValue");
         agent365.Should().Contain("applications/microsoft.graph.agentIdentityBlueprint");
         agent365.Should().Contain("managerApplications");
         agent365.Should().NotContain("--show-secret");

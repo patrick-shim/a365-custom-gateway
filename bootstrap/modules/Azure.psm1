@@ -427,36 +427,99 @@ function Get-BootstrapFoundationEvidence {
 
 function Invoke-ArmDeploymentWithSecureParameters {
     param(
+        [Parameter(Mandatory)][string]$SubscriptionId,
         [Parameter(Mandatory)][string]$ResourceGroup,
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$TemplateFile,
         [Parameter(Mandatory)][System.Collections.IDictionary]$Parameters,
         [Parameter()][ValidateSet('Incremental')][string]$Mode = 'Incremental'
     )
+    $canonicalSubscriptionId = [guid]::Empty
+    if (-not [guid]::TryParse($SubscriptionId, [ref]$canonicalSubscriptionId) -or
+        $canonicalSubscriptionId -eq [guid]::Empty -or
+        $SubscriptionId -cne $canonicalSubscriptionId.ToString('D')) {
+        throw 'Secure ARM deployment requires the canonical configured subscription ID.'
+    }
+    $canonicalSubscriptionIdText = $canonicalSubscriptionId.ToString('D')
     $parameterObject = [ordered]@{ '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'; contentVersion = '1.0.0.0'; parameters = [ordered]@{} }
     foreach ($entry in $Parameters.GetEnumerator()) { $parameterObject.parameters[$entry.Key] = @{ value = $entry.Value } }
     $temporary = Join-Path ([IO.Path]::GetTempPath()) "a365gw-bootstrap-$([guid]::NewGuid().ToString('N')).json"
+    $parameterJson = $null
     try {
-        $parameterObject | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $temporary -Encoding utf8NoBOM
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $stream.Dispose()
         if ($IsWindows) {
+            $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+            $currentSid = $currentIdentity.User
+            $currentIdentity.Dispose()
+            if ($null -eq $currentSid) {
+                throw 'Could not resolve the current Windows identity for the temporary ARM parameter file.'
+            }
             $acl = Get-Acl -LiteralPath $temporary
             $acl.SetAccessRuleProtection($true, $false)
-            $rule = [Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.WindowsIdentity]::GetCurrent().Name, 'FullControl', 'Allow')
+            foreach ($existingRule in @($acl.Access)) {
+                [void]$acl.RemoveAccessRuleSpecific($existingRule)
+            }
+            $acl.SetOwner($currentSid)
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+                $currentSid,
+                [Security.AccessControl.FileSystemRights]::FullControl,
+                [Security.AccessControl.AccessControlType]::Allow)
             $acl.SetAccessRule($rule)
             Set-Acl -LiteralPath $temporary -AclObject $acl
+            $restrictedAcl = Get-Acl -LiteralPath $temporary
+            $restrictedRules = @($restrictedAcl.Access)
+            $unexpectedRules = @($restrictedRules | Where-Object {
+                    $ruleSid = try {
+                        $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier])
+                    }
+                    catch { $null }
+                    $_.IsInherited -or
+                    $null -eq $ruleSid -or
+                    -not $ruleSid.Equals($currentSid) -or
+                    $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                    ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+                        [Security.AccessControl.FileSystemRights]::FullControl
+                })
+            $ownerSid = try {
+                $restrictedAcl.GetOwner([Security.Principal.SecurityIdentifier])
+            }
+            catch { $null }
+            if ($restrictedRules.Count -ne 1 -or $unexpectedRules.Count -ne 0 -or
+                $null -eq $ownerSid -or -not $ownerSid.Equals($currentSid)) {
+                throw 'Could not restrict the temporary ARM parameter file to the current Windows identity.'
+            }
         }
-        elseif (Get-Command chmod -ErrorAction SilentlyContinue) {
-            & chmod 600 $temporary
+        else {
+            $chmod = Get-Command chmod -CommandType Application -ErrorAction SilentlyContinue
+            if ($null -eq $chmod) {
+                throw 'Could not locate chmod before writing the temporary ARM parameter file.'
+            }
+            & $chmod.Source 600 $temporary
             if ($LASTEXITCODE -ne 0) { throw 'Could not restrict the temporary ARM parameter file to the current user.' }
+            $unixFileMode = [IO.File]::GetUnixFileMode($temporary)
+            $expectedMode = [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite
+            if ($unixFileMode -ne $expectedMode) {
+                throw 'The temporary ARM parameter file did not retain mode 600.'
+            }
         }
+        $parameterJson = ConvertTo-Json -InputObject $parameterObject -Depth 30
+        [IO.File]::WriteAllText($temporary, $parameterJson, [Text.UTF8Encoding]::new($false))
         return Invoke-AzJson -Arguments @(
-            'deployment', 'group', 'create', '--resource-group', $ResourceGroup,
+            'deployment', 'group', 'create', '--subscription', $canonicalSubscriptionIdText,
+            '--resource-group', $ResourceGroup,
             '--name', $Name, '--mode', $Mode, '--template-file', $TemplateFile,
             '--parameters', "@$temporary"
         )
     }
     finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+        $parameterJson = $null
+        if ($parameterObject -and $parameterObject.parameters) { $parameterObject.parameters.Clear() }
+        if ($parameterObject) { $parameterObject.Clear() }
+        $entry = $null
+        $parameterObject = $null
+        $Parameters = $null
     }
 }
 
@@ -485,6 +548,308 @@ function Get-GatewayArmArrayItems {
     param([AllowNull()]$Value)
     if ($null -eq $Value) { return }
     return $Value
+}
+
+function Get-GatewayAdminUiCredentialVaultContext {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    $subscriptionId = [guid]::Empty
+    if (-not [guid]::TryParse([string]$Config.subscriptionId, [ref]$subscriptionId) -or
+        $subscriptionId -eq [guid]::Empty -or
+        [string]$Config.subscriptionId -cne $subscriptionId.ToString('D')) {
+        throw 'Admin UI credential transfer requires the canonical configured subscription ID.'
+    }
+    if ([string]$Config.resourceGroupName -cnotmatch '^[A-Za-z0-9._()\-]{1,90}$' -or
+        [string]$Config.resourceGroupName -match '[.]$') {
+        throw 'Admin UI credential transfer requires the exact configured resource group.'
+    }
+    if ([string]$Config.projectName -cnotmatch '^[a-z][a-z0-9]{1,7}$' -or
+        [string]$Config.environment -cnotin @('dev', 'staging', 'prod')) {
+        throw 'Admin UI credential transfer requires canonical project and environment names.'
+    }
+
+    $canonicalOwnershipId = [guid]::Empty
+    if (-not [guid]::TryParse($DeploymentOwnershipId, [ref]$canonicalOwnershipId) -or
+        $canonicalOwnershipId -eq [guid]::Empty -or
+        $DeploymentOwnershipId -cne $canonicalOwnershipId.ToString('D')) {
+        throw 'Admin UI credential transfer ownership ID must be one canonical lowercase GUID.'
+    }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI credential transfer source fingerprint'
+
+    $vaultUri = $null
+    if (-not [Uri]::TryCreate($KeyVaultUri, [UriKind]::Absolute, [ref]$vaultUri) -or
+        $vaultUri.Scheme -cne 'https' -or
+        -not $vaultUri.IsDefaultPort -or
+        -not [string]::IsNullOrEmpty($vaultUri.UserInfo) -or
+        -not [string]::IsNullOrEmpty($vaultUri.Query) -or
+        -not [string]::IsNullOrEmpty($vaultUri.Fragment) -or
+        $vaultUri.AbsolutePath -cne '/') {
+        throw 'Admin UI credential transfer requires one exact HTTPS Key Vault origin.'
+    }
+    $vaultName = "kv-$($Config.projectName)-$($Config.environment)"
+    if ($vaultName.Length -gt 24 -or $vaultName -cnotmatch '^[a-z][a-z0-9-]{2,23}$' -or
+        $vaultUri.DnsSafeHost -cne "$vaultName.vault.azure.net") {
+        throw 'Admin UI credential transfer Key Vault URI does not match the configured Gateway vault.'
+    }
+
+    $secretName = 'admin-ui-entra-client-secret'
+    $secretResourceId = "/subscriptions/$($subscriptionId.ToString('D'))/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.KeyVault/vaults/$vaultName/secrets/$secretName"
+    return [ordered]@{
+        subscriptionId = $subscriptionId.ToString('D')
+        resourceGroupName = [string]$Config.resourceGroupName
+        projectName = [string]$Config.projectName
+        environment = [string]$Config.environment
+        deploymentOwnershipId = $canonicalOwnershipId.ToString('D')
+        sourceFingerprint = $SourceFingerprint
+        keyVaultName = $vaultName
+        keyVaultUri = $vaultUri.AbsoluteUri
+        secretName = $secretName
+        secretResourceId = $secretResourceId
+        versionlessSecretUri = "$($KeyVaultUri.TrimEnd('/'))/secrets/$secretName"
+    }
+}
+
+function ConvertFrom-GatewayAdminUiCredentialSecretArmMetadata {
+    param(
+        [Parameter(Mandatory)][string]$RawJson,
+        [Parameter(Mandatory)]$Context
+    )
+
+    $document = $null
+    try {
+        $document = [Text.Json.JsonDocument]::Parse($RawJson)
+        $root = $document.RootElement
+        if ($root.ValueKind -ne [Text.Json.JsonValueKind]::Object) { throw 'invalid-root' }
+
+        $properties = @($root.EnumerateObject())
+        $propertyNames = @($properties | ForEach-Object { $_.Name })
+        if ($properties.Count -ne 5 -or
+            @(@('id', 'name', 'enabled', 'contentType', 'tags') |
+                Where-Object { $propertyNames -cnotcontains $_ }).Count -ne 0) {
+            throw 'invalid-properties'
+        }
+
+        $id = $root.GetProperty('id')
+        $name = $root.GetProperty('name')
+        $enabled = $root.GetProperty('enabled')
+        $contentType = $root.GetProperty('contentType')
+        $tags = $root.GetProperty('tags')
+        if ($id.ValueKind -ne [Text.Json.JsonValueKind]::String -or
+            $name.ValueKind -ne [Text.Json.JsonValueKind]::String -or
+            $enabled.ValueKind -notin @([Text.Json.JsonValueKind]::True, [Text.Json.JsonValueKind]::False) -or
+            $contentType.ValueKind -ne [Text.Json.JsonValueKind]::String -or
+            $tags.ValueKind -ne [Text.Json.JsonValueKind]::Object) {
+            throw 'invalid-types'
+        }
+
+        $tagProperties = @($tags.EnumerateObject())
+        $tagNames = @($tagProperties | ForEach-Object { $_.Name })
+        if ($tagProperties.Count -ne 4 -or
+            @('managedBy', 'credentialKeyId', 'bootstrapOwnershipId', 'bootstrapSourceFingerprint' |
+                Where-Object { $tagNames -cnotcontains $_ }).Count -ne 0 -or
+            @($tagProperties | Where-Object { $_.Value.ValueKind -ne [Text.Json.JsonValueKind]::String }).Count -ne 0) {
+            throw 'invalid-tags'
+        }
+
+        $credentialKeyIdText = $tags.GetProperty('credentialKeyId').GetString()
+        $credentialKeyId = [guid]::Empty
+        if (-not [guid]::TryParse($credentialKeyIdText, [ref]$credentialKeyId) -or
+            $credentialKeyId -eq [guid]::Empty -or
+            $credentialKeyIdText -cne $credentialKeyId.ToString('D') -or
+            -not $id.GetString().Equals([string]$Context.secretResourceId, [StringComparison]::OrdinalIgnoreCase) -or
+            $name.GetString() -cne [string]$Context.secretName -or
+            -not $enabled.GetBoolean() -or
+            $contentType.GetString() -cne 'application/vnd.a365-gateway.admin-ui-entra-client-secret' -or
+            $tags.GetProperty('managedBy').GetString() -cne 'a365gw-bootstrap' -or
+            $tags.GetProperty('bootstrapOwnershipId').GetString() -cne [string]$Context.deploymentOwnershipId -or
+            $tags.GetProperty('bootstrapSourceFingerprint').GetString() -cne [string]$Context.sourceFingerprint) {
+            throw 'metadata-mismatch'
+        }
+
+        return [pscustomobject][ordered]@{
+            status = 'Present'
+            id = [string]$Context.secretResourceId
+            name = [string]$Context.secretName
+            enabled = $true
+            contentType = 'application/vnd.a365-gateway.admin-ui-entra-client-secret'
+            tags = [pscustomobject][ordered]@{
+                managedBy = 'a365gw-bootstrap'
+                credentialKeyId = $credentialKeyId.ToString('D')
+                bootstrapOwnershipId = [string]$Context.deploymentOwnershipId
+                bootstrapSourceFingerprint = [string]$Context.sourceFingerprint
+            }
+        }
+    }
+    catch {
+        throw 'Admin UI credential secret ARM metadata was malformed, mismatched, or outside the exact bootstrap boundary.'
+    }
+    finally {
+        if ($document) { $document.Dispose() }
+    }
+}
+
+function Get-GatewayAdminUiCredentialSecretArmMetadata {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    $context = Get-GatewayAdminUiCredentialVaultContext `
+        -Config $Config `
+        -KeyVaultUri $KeyVaultUri `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -SourceFingerprint $SourceFingerprint
+    $raw = Invoke-BootstrapCommand `
+        -FilePath 'az' `
+        -ArgumentList @(
+            'resource', 'show', '--ids', [string]$context.secretResourceId,
+            '--api-version', '2023-07-01',
+            '--query', '{id:id,name:name,enabled:properties.attributes.enabled,contentType:properties.contentType,tags:tags}',
+            '--output', 'json', '--only-show-errors'
+        ) `
+        -AllowFailure `
+        -CaptureStdoutOnly
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 3 -and [string]::IsNullOrWhiteSpace($raw)) {
+        return [pscustomobject][ordered]@{ status = 'Absent' }
+    }
+    if ($exitCode -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
+        throw 'Admin UI credential secret ARM metadata could not be read through the exact management-plane boundary.'
+    }
+    return ConvertFrom-GatewayAdminUiCredentialSecretArmMetadata -RawJson $raw -Context $context
+}
+
+function Wait-GatewayAdminUiCredentialSecretArmMetadata {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$CredentialKeyId,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [ValidateRange(1, 30)][int]$MaximumAttempts = 18
+    )
+
+    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
+        $metadata = $null
+        try {
+            $metadata = Get-GatewayAdminUiCredentialSecretArmMetadata `
+                -Config $Config `
+                -KeyVaultUri $KeyVaultUri `
+                -DeploymentOwnershipId $DeploymentOwnershipId `
+                -SourceFingerprint $SourceFingerprint
+        }
+        catch { }
+        if ($metadata -and [string]$metadata.status -ceq 'Present' -and
+            ([string]$metadata.tags.credentialKeyId).Equals($CredentialKeyId, [StringComparison]::OrdinalIgnoreCase)) {
+            return $metadata
+        }
+        if ($metadata -and [string]$metadata.status -notin @('Absent', 'Present')) {
+            throw 'Admin UI credential secret ARM metadata returned an unsupported reconciliation state.'
+        }
+        if ($attempt -lt $MaximumAttempts) { Start-Sleep -Seconds 5 }
+    }
+    throw 'Admin UI credential secret deployment did not produce one exact metadata readback; no deployment was repeated.'
+}
+
+function Deploy-GatewayAdminUiCredentialSecret {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$CredentialKeyId,
+        [Parameter(Mandatory)][string]$SecretText,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    $credentialGuid = [guid]::Empty
+    if (-not [guid]::TryParse($CredentialKeyId, [ref]$credentialGuid) -or
+        $credentialGuid -eq [guid]::Empty -or
+        $CredentialKeyId -cne $credentialGuid.ToString('D')) {
+        throw 'Admin UI credential key ID must be one canonical lowercase GUID.'
+    }
+    if ([string]::IsNullOrEmpty($SecretText)) {
+        throw 'Microsoft Graph did not return the one-time Admin UI credential.'
+    }
+
+    $context = Get-GatewayAdminUiCredentialVaultContext `
+        -Config $Config `
+        -KeyVaultUri $KeyVaultUri `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -SourceFingerprint $SourceFingerprint
+    $root = Get-BootstrapExecutionSourceRoot
+    Assert-BootstrapSourcePathIsRegular -Root $root -RelativePath 'bootstrap/infra/admin-ui-credential.bicep' | Out-Null
+    if ((Get-BootstrapSourceFingerprint -Root $root) -cne $SourceFingerprint) {
+        throw 'The Admin UI credential deployment source no longer matches the accepted content-addressed snapshot.'
+    }
+    $templateFile = Join-Path $root 'bootstrap/infra/admin-ui-credential.bicep'
+    $deploymentName = "a365gw-$($context.projectName)-bootstrap-admin-credential-$($context.environment)"
+    if ($deploymentName.Length -gt 64 -or $deploymentName -cnotmatch '^[a-z0-9-]+$') {
+        throw 'The deterministic Admin UI credential deployment name is invalid.'
+    }
+
+    $parameters = [ordered]@{
+        keyVaultName = [string]$context.keyVaultName
+        credentialKeyId = $credentialGuid.ToString('D')
+        deploymentOwnershipId = [string]$context.deploymentOwnershipId
+        bootstrapSourceFingerprint = [string]$context.sourceFingerprint
+        secretValue = $SecretText
+    }
+    $deployment = $null
+    $deploymentReturned = $false
+    try {
+        try {
+            $deployment = Invoke-ArmDeploymentWithSecureParameters `
+                -SubscriptionId ([string]$context.subscriptionId) `
+                -ResourceGroup ([string]$context.resourceGroupName) `
+                -Name $deploymentName `
+                -TemplateFile $templateFile `
+                -Parameters $parameters
+            $deploymentReturned = $true
+        }
+        catch {
+            $deploymentReturned = $false
+        }
+
+        if ($deploymentReturned) {
+            try {
+                $properties = Get-GatewayArmObjectProperty -Object $deployment -Name 'properties'
+                $outputs = Get-GatewayArmObjectProperty -Object $properties -Name 'outputs'
+                if ([string](Get-GatewayArmObjectProperty -Object $properties -Name 'provisioningState') -cne 'Succeeded' -or
+                    -not ([string](Get-GatewayCoreOutputValue -Outputs $outputs -Name 'secretResourceId')).Equals([string]$context.secretResourceId, [StringComparison]::OrdinalIgnoreCase) -or
+                    [string](Get-GatewayCoreOutputValue -Outputs $outputs -Name 'versionlessSecretUri') -cne [string]$context.versionlessSecretUri -or
+                    [string](Get-GatewayCoreOutputValue -Outputs $outputs -Name 'credentialKeyId') -cne $credentialGuid.ToString('D') -or
+                    [string](Get-GatewayCoreOutputValue -Outputs $outputs -Name 'deploymentOwnershipId') -cne [string]$context.deploymentOwnershipId -or
+                    [string](Get-GatewayCoreOutputValue -Outputs $outputs -Name 'bootstrapSourceFingerprint') -cne [string]$context.sourceFingerprint -or
+                    [string](Get-GatewayCoreOutputValue -Outputs $outputs -Name 'contentType') -cne 'application/vnd.a365-gateway.admin-ui-entra-client-secret' -or
+                    (Get-GatewayCoreOutputValue -Outputs $outputs -Name 'enabled') -ne $true) {
+                    throw 'mismatch'
+                }
+            }
+            catch {
+                $deploymentReturned = $false
+            }
+        }
+
+        return Wait-GatewayAdminUiCredentialSecretArmMetadata `
+            -Config $Config `
+            -KeyVaultUri $KeyVaultUri `
+            -CredentialKeyId $credentialGuid.ToString('D') `
+            -DeploymentOwnershipId $DeploymentOwnershipId `
+            -SourceFingerprint $SourceFingerprint
+    }
+    finally {
+        $deployment = $null
+        if ($parameters) { $parameters.secretValue = $null }
+        $parameters = $null
+        $SecretText = $null
+    }
 }
 
 function Assert-GatewayRuntimeImagePullFoundationEvidence {
@@ -1569,7 +1934,7 @@ function Deploy-GatewayCore {
     if ($SucceededRecoveryOnly) {
         throw 'The exact Succeeded inert deployment required for read-only recovery was not recovered; no mutation was attempted.'
     }
-    $deployment = Invoke-ArmDeploymentWithSecureParameters -ResourceGroup ([string]$Config.resourceGroupName) -Name $name `
+    $deployment = Invoke-ArmDeploymentWithSecureParameters -SubscriptionId ([string]$Config.subscriptionId) -ResourceGroup ([string]$Config.resourceGroupName) -Name $name `
         -TemplateFile (Join-Path $root 'infrastructure/bicep/main.bicep') -Parameters $parameters -Mode Incremental
     if (-not $deployment -or [string]$deployment.properties.provisioningState -cne 'Succeeded') {
         throw 'The workload ARM deployment did not return a completed Succeeded result.'
@@ -1692,9 +2057,6 @@ function New-GatewayInertWhatIfRecoveryBoundary {
         [Parameter(Mandatory)][string]$SourceFingerprint,
         [AllowNull()][System.Collections.IDictionary]$AdditionalTypeInventoryResourceIds
     )
-    if ($Config.promptShield.enabled -eq $true) {
-        throw 'The exact 25-resource inert What-If recovery boundary does not include optional Prompt Shields resources.'
-    }
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Inert What-If recovery source fingerprint'
     $deploymentName = "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)"
@@ -1747,6 +2109,9 @@ function New-GatewayInertWhatIfRecoveryBoundary {
     $privateEndpointTags = [ordered]@{}
     foreach ($entry in $baseTags.GetEnumerator()) { $privateEndpointTags[$entry.Key] = $entry.Value }
     $privateEndpointTags.workload = 'interaction-content'
+    $promptShieldTags = [ordered]@{}
+    foreach ($entry in $baseTags.GetEnumerator()) { $promptShieldTags[$entry.Key] = $entry.Value }
+    $promptShieldTags.workload = 'prompt-protection'
 
     $acrPrefix = "acr$($Config.projectName)$($Config.environment)"
     if ([string]$Foundation.acrName -cnotmatch "^$([regex]::Escape($acrPrefix))[a-z0-9]{6}$") {
@@ -1754,6 +2119,7 @@ function New-GatewayInertWhatIfRecoveryBoundary {
     }
     $uniqueSuffix = ([string]$Foundation.acrName).Substring($acrPrefix.Length)
     $storageName = "st$($Config.projectName)$($Config.environment)$uniqueSuffix"
+    $contentSafetyName = "cs-$($Config.projectName)-$($Config.environment)-$uniqueSuffix"
     $apiName = "ca-gateway-api-$($Config.environment)"
     $workerName = "ca-gateway-worker-$($Config.environment)-v3"
     $actionGroupId = "$providerPrefix/Microsoft.Insights/actionGroups/ag-gateway-alerts"
@@ -1775,6 +2141,7 @@ function New-GatewayInertWhatIfRecoveryBoundary {
     $workerId = "$providerPrefix/Microsoft.App/containerApps/$workerName"
     $expectedAcrId = "$providerPrefix/Microsoft.ContainerRegistry/registries/$($Foundation.acrName)"
     $expectedQueueId = "$serviceBusId/queues/gateway-provisioning-v3"
+    $contentSafetyId = "$providerPrefix/Microsoft.CognitiveServices/accounts/$contentSafetyName"
 
     foreach ($binding in @(
         @([string]$Evidence.containerRegistryId, $expectedAcrId),
@@ -1791,6 +2158,21 @@ function New-GatewayInertWhatIfRecoveryBoundary {
     if ([string]$Evidence.sqlServerFqdn -cne "sql-$($Config.projectName)-$($Config.environment).database.windows.net" -or
         [string]$Evidence.serviceBusQueueName -cne 'gateway-provisioning-v3') {
         throw 'Succeeded inert deployment outputs drifted from the exact SQL and Service Bus contract.'
+    }
+    $evidencePromptShieldAccountId = [string](Get-GatewayArmObjectProperty -Object $Evidence -Name 'promptShieldAccountId')
+    $evidencePromptShieldAccountName = [string](Get-GatewayArmObjectProperty -Object $Evidence -Name 'promptShieldAccountName')
+    $evidencePromptShieldEndpoint = [string](Get-GatewayArmObjectProperty -Object $Evidence -Name 'promptShieldEndpoint')
+    if ($Config.promptShield.enabled -eq $true) {
+        if (-not $evidencePromptShieldAccountId.Equals($contentSafetyId, [StringComparison]::OrdinalIgnoreCase) -or
+            $evidencePromptShieldAccountName -cne $contentSafetyName -or
+            $evidencePromptShieldEndpoint -cne "https://$contentSafetyName.cognitiveservices.azure.com/") {
+            throw 'Succeeded inert deployment outputs drifted from the exact Prompt Shields Content Safety account.'
+        }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($evidencePromptShieldAccountId) -or
+        -not [string]::IsNullOrWhiteSpace($evidencePromptShieldAccountName) -or
+        -not [string]::IsNullOrWhiteSpace($evidencePromptShieldEndpoint)) {
+        throw 'Prompt Shields outputs are present while the optional feature is disabled.'
     }
 
     $descriptors = [Collections.Generic.List[object]]::new()
@@ -1810,6 +2192,16 @@ function New-GatewayInertWhatIfRecoveryBoundary {
         [ordered]@{ id = $masterDatabaseId; type = 'Microsoft.Sql/servers/databases'; name = 'master'; apiVersion = '2023-08-01-preview'; location = [string]$Config.location; tags = ([ordered]@{}); providerTags = $true },
         [ordered]@{ id = $storageId; type = 'Microsoft.Storage/storageAccounts'; name = $storageName; apiVersion = '2023-05-01'; location = [string]$Config.location; tags = $baseTags }
     )) { $descriptors.Add($descriptor) }
+    if ($Config.promptShield.enabled -eq $true) {
+        $descriptors.Add([ordered]@{
+            id = $contentSafetyId
+            type = 'Microsoft.CognitiveServices/accounts'
+            name = $contentSafetyName
+            apiVersion = '2023-05-01'
+            location = [string]$Config.location
+            tags = $promptShieldTags
+        })
+    }
 
     $metricScopes = [ordered]@{
         "alert-sql-connection-failed-$($Config.environment)" = $gatewayDatabaseId
@@ -1858,6 +2250,19 @@ function New-GatewayInertWhatIfRecoveryBoundary {
     $expectedWorkspaceId = "$providerPrefix/Microsoft.OperationalInsights/workspaces/$($Foundation.logAnalyticsWorkspaceName)"
     if (-not ([string]$appInsights.properties.WorkspaceResourceId).Equals($expectedWorkspaceId, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Application Insights is not bound to the exact source-owned Log Analytics workspace.'
+    }
+    if ($Config.promptShield.enabled -eq $true) {
+        $contentSafety = $resourcesById[(ConvertTo-GatewayCanonicalArmResourceId `
+            -ResourceId $contentSafetyId -Config $Config -Label 'Prompt Shields Content Safety account')].resource
+        if ([string](Get-GatewayArmObjectProperty -Object $contentSafety -Name 'kind') -cne 'ContentSafety' -or
+            [string](Get-GatewayArmObjectProperty -Object (Get-GatewayArmObjectProperty -Object $contentSafety -Name 'sku') -Name 'name') -cne [string]$Config.promptShield.skuName -or
+            [string]$contentSafety.properties.provisioningState -cne 'Succeeded' -or
+            [string]$contentSafety.properties.customSubDomainName -cne $contentSafetyName -or
+            $contentSafety.properties.disableLocalAuth -ne $true -or
+            [string]$contentSafety.properties.publicNetworkAccess -cne 'Enabled' -or
+            [string]$contentSafety.properties.networkAcls.defaultAction -cne 'Allow') {
+            throw 'The Prompt Shields Content Safety account does not match the exact reviewed runtime contract.'
+        }
     }
     foreach ($descriptor in @($descriptors | Where-Object {
         [string](Get-GatewayArmObjectProperty -Object $_ -Name 'relationship') -in @('MetricAlert', 'ScheduledQuery')
@@ -1960,8 +2365,9 @@ function New-GatewayInertWhatIfRecoveryBoundary {
         throw 'The Storage private endpoint DNS group is not exactly bound to the Blob private DNS zone.'
     }
 
-    if ($descriptors.Count -ne 25 -or $resourcesById.Count -ne 25) {
-        throw 'The inert recovery graph is not the exact reviewed 25-resource What-If Ignore boundary.'
+    $expectedResourceCount = if ($Config.promptShield.enabled -eq $true) { 26 } else { 25 }
+    if ($descriptors.Count -ne $expectedResourceCount -or $resourcesById.Count -ne $expectedResourceCount) {
+        throw "The inert recovery graph is not the exact reviewed $expectedResourceCount-resource What-If Ignore boundary."
     }
     foreach ($typeGroup in @($descriptors | Group-Object -Property {
         [string](Get-GatewayArmObjectProperty -Object $_ -Name 'type')
@@ -3087,7 +3493,7 @@ function Deploy-GatewayAdminUi {
         keyVaultPrivateEndpointSubnetId = [string]$Foundation.privateEndpointSubnetId
         keyVaultPrivateDnsVirtualNetworkId = [string]$Foundation.virtualNetworkId
     }
-    $deployment = Invoke-ArmDeploymentWithSecureParameters -ResourceGroup ([string]$Config.resourceGroupName) -Name $deploymentName -TemplateFile (Join-Path $root 'infrastructure/bicep/admin-ui.bicep') -Parameters $parameters
+    $deployment = Invoke-ArmDeploymentWithSecureParameters -SubscriptionId ([string]$Config.subscriptionId) -ResourceGroup ([string]$Config.resourceGroupName) -Name $deploymentName -TemplateFile (Join-Path $root 'infrastructure/bicep/admin-ui.bicep') -Parameters $parameters
     $outputs = $deployment.properties.outputs
     if ([string]$outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
         [string]$outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or

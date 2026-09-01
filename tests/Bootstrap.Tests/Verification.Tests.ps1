@@ -70,7 +70,7 @@ Describe 'Final verification strict-mode delegated-scope cardinality' {
             'if ($configuration.purview.enabled -eq $true -and',
             [StringComparison]::Ordinal)
         $planWorkflow = $script:bootstrapSource.IndexOf(
-            "if (`$Mode -in @('Plan', 'Up', 'Resume'))",
+            "if (`$Mode -in @('Plan', 'Up'))",
             [StringComparison]::Ordinal)
         $verifyWorkflow = $script:bootstrapSource.IndexOf(
             "if (`$Mode -eq 'Verify')",
