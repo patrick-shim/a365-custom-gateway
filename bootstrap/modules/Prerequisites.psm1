@@ -63,6 +63,10 @@ function Assert-BootstrapPrerequisites {
     [CmdletBinding()]
     param([switch]$Install, [switch]$RequirePurview)
 
+    if ($RequirePurview -and -not $IsWindows) {
+        throw 'Microsoft does not support Security & Compliance PowerShell in PowerShell 7 on macOS or Linux. Run Purview-enabled setup from Windows, or keep Purview policy authoring off on this computer.'
+    }
+
     Assert-GatewayPlanPrerequisites -Install:$Install | Out-Null
     if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 or later is required. On Windows, run .\\gateway.cmd from the repository root.' }
     if (-not (Test-CommandAvailable 'git')) {

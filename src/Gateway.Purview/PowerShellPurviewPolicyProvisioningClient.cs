@@ -63,6 +63,25 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
             throw Failure("PURVIEW_POLICY_PROVISIONING_DISABLED", "Purview policy provisioning is not configured.");
         }
         ValidateExpectedScope(request);
+        if (!Guid.TryParse(_options.DefaultSensitiveInformationTypeId, out var classifierId) ||
+            classifierId == Guid.Empty ||
+            !string.Equals(
+                _options.DefaultSensitiveInformationTypeId,
+                classifierId.ToString("D"),
+                StringComparison.Ordinal))
+        {
+            throw Failure(
+                "PURVIEW_POLICY_CONFIGURATION_INVALID",
+                "Purview policy provisioning requires a canonical sensitive information type identifier.");
+        }
+        var sensitiveInformationTypeId = classifierId.ToString("D");
+        if (!PurviewSensitiveInformationTypeContract.IsValidName(
+                _options.DefaultSensitiveInformationType))
+        {
+            throw Failure(
+                "PURVIEW_POLICY_CONFIGURATION_INVALID",
+                "Purview policy provisioning requires a valid sensitive information type Name.");
+        }
 
         var workingDirectory = Path.Combine(Path.GetTempPath(), $"a365gw-purview-{Guid.NewGuid():N}");
         var inputPath = Path.Combine(workingDirectory, "request.json");
@@ -120,6 +139,7 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                     request.ExpectedDlpRuleId,
                     request.ExpectedPriorDlpBlueprintApplicationIds,
                     request.ExpectedDlpBlueprintApplicationIds,
+                    sensitiveInformationTypeId,
                     sensitiveInformationType = _options.DefaultSensitiveInformationType
                 }),
                 Encoding.UTF8,
@@ -196,7 +216,8 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
             return ParseResult(
                 standardOutput.Text,
                 request,
-                _options.DefaultSensitiveInformationType);
+                _options.DefaultSensitiveInformationType,
+                sensitiveInformationTypeId);
         }
         catch (PurviewPolicyException)
         {
@@ -282,7 +303,8 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
     internal static PurviewPolicyProvisioningResult ParseResult(
         string output,
         PurviewPolicyProvisioningRequest request,
-        string sensitiveInformationType)
+        string sensitiveInformationType,
+        string sensitiveInformationTypeId)
     {
         var encoded = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(line => line.Trim())
@@ -292,6 +314,10 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
 
         try
         {
+            if (!PurviewSensitiveInformationTypeContract.IsValidName(
+                    sensitiveInformationType))
+                throw new JsonException("The configured classifier Name is invalid.");
+
             var json = Encoding.UTF8.GetString(Convert.FromBase64String(encoded[ResultPrefix.Length..]));
             var result = JsonSerializer.Deserialize<AutomationResult>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));
             var expectedDlpMode = request.Mode switch
@@ -313,6 +339,7 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                 result.DlpEnforcementPlanes is null ||
                 result.DlpLocation is null ||
                 result.DlpLocation.LocationIds is null ||
+                result.ClassifierIds is null ||
                 result.ClassifierNames is null ||
                 result.RuleActions is null ||
                 result.VerifiedAtUtc == default ||
@@ -347,6 +374,15 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
                     PurviewPolicyLocationContract.DlpLocationType,
                     result.DlpBlueprintApplicationIds))
                 throw new JsonException("Purview collection and DLP location evidence is invalid.");
+
+            if (!Guid.TryParse(sensitiveInformationTypeId, out var expectedClassifierId) ||
+                expectedClassifierId == Guid.Empty ||
+                !string.Equals(
+                    sensitiveInformationTypeId,
+                    expectedClassifierId.ToString("D"),
+                    StringComparison.Ordinal) ||
+                !ExactSet(result.ClassifierIds, [sensitiveInformationTypeId]))
+                throw new JsonException("DLP classifier identifier evidence is invalid.");
 
             if (!string.Equals(result.CollectionMode, "Enable", StringComparison.Ordinal) ||
                 !ExactSet(result.CollectionActivities, ["UploadText", "DownloadText"]) ||
@@ -676,6 +712,7 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         string DlpMode,
         string[] DlpEnforcementPlanes,
         AutomationLocation DlpLocation,
+        string[] ClassifierIds,
         string[] ClassifierNames,
         AutomationRuleAction[] RuleActions,
         bool HasExclusions,

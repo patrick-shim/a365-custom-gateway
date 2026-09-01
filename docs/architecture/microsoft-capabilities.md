@@ -37,6 +37,7 @@ through OBO. They are not worker roles.
 |---|---|---|
 | Runtime content processing | Graph v1.0 `processContent` | GA; honor per-activity inline/offline mode |
 | Content activity submission | Graph v1.0 `contentActivities` | GA |
+| Tenant sensitive-information-type inventory | Security & Compliance PowerShell `Get-DlpSensitiveInformationType` after `Connect-IPPSSession` | Windows only; current module documentation says Security & Compliance PowerShell is unavailable in PowerShell 7 on macOS and Linux; tenant RBAC controls availability |
 | Know Your Data setup | `New/Get/Set-FeatureConfiguration` | Public Preview; tenant availability varies |
 | Custom-app DLP authoring | Security & Compliance PowerShell | Exact readback required |
 
@@ -54,12 +55,32 @@ contains the roles. Microsoft documents managed-identity token caching by resour
 URI; runtime enablement must wait for safe token-role or data-plane verification.
 Never inspect or emit raw tokens.
 
+SIT selection is tenant-backed, not a bundled catalog. The no-argument inventory
+cmdlet returns the types defined for the organization. The Gateway keys a selection
+by the returned GUID, retains its exact Unicode `Name` because the documented
+`New-DlpComplianceRule -ContentContainsSensitiveInformation` shape uses `Name`, and
+re-resolves the GUID before use. Exact GUID filtering is mandatory: Microsoft warns
+that a null or nonexistent `-Identity` can return the full inventory. Microsoft does
+not document a Graph endpoint for enumerating this catalog or a cmdlet-specific
+least-privilege role mapping, so Setup probes authorization and fails closed instead
+of guessing either contract.
+
+The core bootstrap remains supported on Windows, macOS, and Linux. The optional SIT
+inventory and policy-authoring path is Windows-only because Microsoft's current
+Exchange Online module documentation says `Connect-IPPSSession`, and therefore
+Security & Compliance PowerShell, is unavailable in PowerShell 7 on macOS and
+Linux. The Gateway does not substitute a static catalog or an unvalidated REST
+endpoint on those platforms.
+
 - [Configure Purview for custom AI applications](https://learn.microsoft.com/purview/developer/configurepurview)
 - [Use the Purview data-security APIs](https://learn.microsoft.com/purview/developer/use-the-api)
 - [Process content](https://learn.microsoft.com/graph/api/userdatasecurityandgovernance-processcontent?view=graph-rest-1.0)
 - [Create content activity](https://learn.microsoft.com/graph/api/activitiescontainer-post-contentactivities?view=graph-rest-1.0)
 - [New-DlpCompliancePolicy](https://learn.microsoft.com/powershell/module/exchangepowershell/new-dlpcompliancepolicy?view=exchange-ps)
 - [New-DlpComplianceRule](https://learn.microsoft.com/powershell/module/exchangepowershell/new-dlpcompliancerule?view=exchange-ps)
+- [Get-DlpSensitiveInformationType](https://learn.microsoft.com/powershell/module/exchangepowershell/get-dlpsensitiveinformationtype?view=exchange-ps)
+- [Connect to Security & Compliance PowerShell](https://learn.microsoft.com/powershell/exchange/connect-to-scc-powershell?view=exchange-ps)
+- [Exchange Online PowerShell module operating-system support](https://learn.microsoft.com/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps#supported-operating-systems-for-the-exchange-online-powershell-module)
 - [Managed identity token caching](https://learn.microsoft.com/entra/identity/managed-identities-azure-resources/managed-identity-best-practice-recommendations#limitation-of-using-managed-identities-for-authorization)
 
 ## Azure AI Content Safety
@@ -95,6 +116,7 @@ programmatic name `koreacentral`.
 
 Do not implement or claim conversion of an ordinary application into a typed
 blueprint, worker/app-only Registry creation, a client-secret OBO fallback, Purview
-policy authoring through an unvalidated REST endpoint, Purview analytics retrieval
-through write-only APIs, response-side blocking for offline processing, or
-Microsoft-side completion from Gateway persistence alone.
+SIT inventory or policy authoring through an unvalidated REST endpoint, substituting
+Graph sensitivity labels for Purview sensitive information types, Purview analytics
+retrieval through write-only APIs, response-side blocking for offline processing,
+or Microsoft-side completion from Gateway persistence alone.

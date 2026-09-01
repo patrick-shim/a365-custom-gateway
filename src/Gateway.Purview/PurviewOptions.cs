@@ -17,5 +17,25 @@ public sealed class PurviewOptions
     public string? PolicyProvisioningCertificateSecretUri { get; set; }
     public string PolicyProvisioningPowerShellPath { get; set; } = "pwsh";
     public int PolicyProvisioningTimeoutSeconds { get; set; } = 180;
-    public string DefaultSensitiveInformationType { get; set; } = "Credit Card Number";
+    public string DefaultSensitiveInformationTypeId { get; set; } = string.Empty;
+    public string DefaultSensitiveInformationType { get; set; } = string.Empty;
+}
+
+internal static class PurviewSensitiveInformationTypeContract
+{
+    public const int MaximumNameLength = 255;
+
+    public static bool IsValidName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > MaximumNameLength)
+            return false;
+
+        foreach (var character in value)
+        {
+            if (character <= '\u001f' || character == '\u007f')
+                return false;
+        }
+
+        return true;
+    }
 }

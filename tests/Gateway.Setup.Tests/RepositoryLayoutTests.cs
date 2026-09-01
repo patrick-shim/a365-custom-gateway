@@ -59,6 +59,28 @@ public sealed class RepositoryLayoutTests : IDisposable
     }
 
     [Fact]
+    public void PurviewUx_RemainsANativeNoDefaultTenantInventorySelect()
+    {
+        var source = File.ReadAllText(FindRepositoryFile(
+            "tools",
+            "Gateway.Setup",
+            "Components",
+            "Pages",
+            "ProfileFeatures.razor"));
+
+        source.Should().Contain("<select id=\"purview-classifier\"");
+        source.Should().Contain("value=\"@type.Id.ToString(\"D\")\"");
+        source.Should().Contain("@type.Name · @type.Id");
+        source.Should().Contain("Load tenant types");
+        source.Should().Contain("Retry tenant type discovery");
+        source.Should().Contain("!PurviewDiscovery.IsSupported");
+        source.Should().Contain("PurviewDiscovery.UnsupportedGuidance");
+        source.Should().Contain("Purview setup requires Windows");
+        source.Should().NotContain("<InputText id=\"purview-classifier\"");
+        source.Should().NotContain("@bind-Value=\"State.Form.PurviewSensitiveInformationType\"");
+    }
+
+    [Fact]
     public void SetupWizardState_RemainsCircuitScoped()
     {
         var source = File.ReadAllText(FindRepositoryFile(
@@ -69,6 +91,9 @@ public sealed class RepositoryLayoutTests : IDisposable
 
         source.Should().Contain("AddScoped<SetupWizardState>()");
         source.Should().NotContain("AddSingleton<SetupWizardState>()");
+        source.Should().Contain("AddSingleton<IPurviewSensitiveInformationTypeDiscovery,");
+        source.Should().Contain("AddSingleton<IPurviewSensitiveInformationTypeRunner,");
+        source.Should().Contain("AddSingleton<IPurviewSensitiveInformationTypePlatformSupport,");
     }
 
     [Fact]

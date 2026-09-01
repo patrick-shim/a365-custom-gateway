@@ -14,6 +14,9 @@ Describe 'Runtime Purview policy profile exact readback' {
         }
         $script:EnterpriseAiAppsCollectionLocationId =
             'ee1680d0-702f-4090-b26c-c49091e86531'
+        $script:SensitiveInformationTypeId =
+            '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
+        $script:SensitiveInformationTypeInventoryLimit = 2048
         foreach ($definition in @($automationAst.FindAll({
             param($node)
             $node -is [Management.Automation.Language.FunctionDefinitionAst]
@@ -24,6 +27,7 @@ Describe 'Runtime Purview policy profile exact readback' {
         function Get-FeatureConfiguration { }
         function Get-DlpCompliancePolicy { }
         function Get-DlpComplianceRule { }
+        function Get-DlpSensitiveInformationType { }
         function New-FeatureConfiguration { }
         function New-DlpCompliancePolicy { }
         function New-DlpComplianceRule { }
@@ -78,7 +82,10 @@ Describe 'Runtime Purview policy profile exact readback' {
                     Identity = 'rule-id'
                     ParentPolicyName = 'policy'
                     ContentContainsSensitiveInformation = @(
-                        [pscustomobject]@{ Name = 'Credit Card Number' })
+                        [pscustomobject]@{
+                            Id = $script:SensitiveInformationTypeId
+                            Name = 'Credit Card Number'
+                        })
                     RestrictAccess = @(
                         [pscustomobject]@{ setting = 'UploadText'; value = 'Block' })
                 }
@@ -95,6 +102,7 @@ Describe 'Runtime Purview policy profile exact readback' {
             dlpRuleName = 'rule'
             blueprintApplicationId = $script:BlueprintId
             blueprintDisplayName = 'Reviewed blueprint'
+            sensitiveInformationTypeId = $script:SensitiveInformationTypeId
             sensitiveInformationType = 'Credit Card Number'
             expectedCollectionPolicyId = 'collection-id'
             expectedDlpPolicyId = 'policy-id'
@@ -102,6 +110,145 @@ Describe 'Runtime Purview policy profile exact readback' {
             expectedPriorDlpBlueprintApplicationIds = @()
             expectedDlpBlueprintApplicationIds = @($script:BlueprintId)
         }
+        Mock Get-DlpSensitiveInformationType {
+            [pscustomobject]@{
+                Id = $script:SensitiveInformationTypeId
+                Name = 'Credit Card Number'
+            }
+        }
+    }
+
+    It 'resolves one exact classifier GUID and preserves its Unicode Name' {
+        $script:InputObject.sensitiveInformationType = '신용 카드 번호'
+        Mock Get-DlpSensitiveInformationType {
+            @(
+                [pscustomobject]@{
+                    Id = '11111111-1111-4111-8111-111111111111'
+                    Name = 'Unrelated classifier'
+                },
+                [pscustomobject]@{
+                    Id = $script:SensitiveInformationTypeId
+                    Name = '신용 카드 번호'
+                }
+            )
+        }
+
+        $result = Get-ExactSensitiveInformationType `
+            -Id $script:InputObject.sensitiveInformationTypeId `
+            -ExpectedName $script:InputObject.sensitiveInformationType
+
+        $result.Id | Should -BeExactly $script:SensitiveInformationTypeId
+        $result.Name | Should -BeExactly '신용 카드 번호'
+        Should -Invoke Get-DlpSensitiveInformationType -Times 1 -Exactly
+    }
+
+    It 'requires the sensitive information type catalog cmdlet in the certificate session' {
+        $requiredCommandLiterals = @($automationAst.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.StringConstantExpressionAst] -and
+                $node.StringConstantType -eq
+                    [Management.Automation.Language.StringConstantType]::SingleQuoted -and
+                $node.Value -ceq 'Get-DlpSensitiveInformationType'
+        }, $true))
+
+        $requiredCommandLiterals | Should -HaveCount 1
+    }
+
+    It 'accepts and preserves an exact Unicode classifier Name at 255 characters' {
+        $boundaryName = [string]::new([char]0x754c, 255)
+        Mock Get-DlpSensitiveInformationType {
+            [pscustomobject]@{
+                Id = $script:SensitiveInformationTypeId
+                Name = $boundaryName
+            }
+        }
+
+        $result = Get-ExactSensitiveInformationType `
+            -Id $script:InputObject.sensitiveInformationTypeId `
+            -ExpectedName $boundaryName
+
+        $result.Name | Should -BeExactly $boundaryName
+        $result.Name.Length | Should -Be 255
+    }
+
+    It 'rejects configured or catalog classifier Names at 256 characters or with ASCII controls' {
+        $tooLongName = [string]::new([char]0x754c, 256)
+        $controlName = "Exact$([char]0x0007)Name"
+        foreach ($invalidConfiguredName in @($tooLongName, $controlName, "Exact$([char]0x007f)Name")) {
+            { Get-ExactSensitiveInformationType `
+                -Id $script:InputObject.sensitiveInformationTypeId `
+                -ExpectedName $invalidConfiguredName } |
+                Should -Throw '*configured*invalid*'
+        }
+
+        foreach ($invalidCatalogName in @($tooLongName, $controlName, "Exact$([char]0x007f)Name")) {
+            Mock Get-DlpSensitiveInformationType {
+                [pscustomobject]@{
+                    Id = $script:SensitiveInformationTypeId
+                    Name = $invalidCatalogName
+                }
+            }
+            { Get-ExactSensitiveInformationType `
+                -Id $script:InputObject.sensitiveInformationTypeId `
+                -ExpectedName 'Credit Card Number' } |
+                Should -Throw '*catalog*invalid*typed*'
+        }
+    }
+
+    It 'rejects duplicate exact classifier Names even when their Ids differ' {
+        Mock Get-DlpSensitiveInformationType {
+            @(
+                [pscustomobject]@{
+                    Id = $script:SensitiveInformationTypeId
+                    Name = 'Credit Card Number'
+                },
+                [pscustomobject]@{
+                    Id = '11111111-1111-4111-8111-111111111111'
+                    Name = 'Credit Card Number'
+                }
+            )
+        }
+
+        { Get-ExactSensitiveInformationType `
+            -Id $script:InputObject.sensitiveInformationTypeId `
+            -ExpectedName $script:InputObject.sensitiveInformationType } |
+            Should -Throw '*duplicate*Names*'
+    }
+
+    It 'fails closed on missing, duplicate, or renamed selected classifiers' {
+        Mock Get-DlpSensitiveInformationType { @() }
+        { Get-ExactSensitiveInformationType `
+            -Id $script:InputObject.sensitiveInformationTypeId `
+            -ExpectedName $script:InputObject.sensitiveInformationType } |
+            Should -Throw '*catalog*'
+
+        Mock Get-DlpSensitiveInformationType {
+            @(
+                [pscustomobject]@{
+                    Id = $script:SensitiveInformationTypeId
+                    Name = 'Credit Card Number'
+                },
+                [pscustomobject]@{
+                    Id = $script:SensitiveInformationTypeId
+                    Name = 'Credit Card Number'
+                }
+            )
+        }
+        { Get-ExactSensitiveInformationType `
+            -Id $script:InputObject.sensitiveInformationTypeId `
+            -ExpectedName $script:InputObject.sensitiveInformationType } |
+            Should -Throw '*catalog*'
+
+        Mock Get-DlpSensitiveInformationType {
+            [pscustomobject]@{
+                Id = $script:SensitiveInformationTypeId
+                Name = 'Renamed classifier'
+            }
+        }
+        { Get-ExactSensitiveInformationType `
+            -Id $script:InputObject.sensitiveInformationTypeId `
+            -ExpectedName $script:InputObject.sensitiveInformationType } |
+            Should -Throw '*Name*'
     }
 
     It 'propagates a collection lookup failure instead of translating it to absence' {
@@ -227,8 +374,20 @@ Describe 'Runtime Purview policy profile exact readback' {
         $result.collectionLocation.locationType | Should -BeExactly 'Group'
         $result.dlpBlueprintApplicationIds | Should -Contain $script:BlueprintId
         $result.dlpLocation.locationType | Should -BeExactly 'Individual'
+        $result.classifierIds | Should -Contain $script:SensitiveInformationTypeId
         $result.hasExtraConditions | Should -BeFalse
         $result.hasExtraActions | Should -BeFalse
+    }
+
+    It 'rejects a classifier readback with the right Name but wrong Id' {
+        $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
+        $objects.Rule.ContentContainsSensitiveInformation[0].Id =
+            '11111111-1111-4111-8111-111111111111'
+
+        { Assert-ExactReadback -Collection $objects.Collection -Policy $objects.Policy `
+            -Rule $objects.Rule -InputObject $script:InputObject -ExpectedDlpMode 'Enable' `
+            -ExpectedDlpApplicationIds @($script:BlueprintId) } |
+            Should -Throw '*classifier*'
     }
 
     It 'rejects an untrusted extra DLP application before mutation' {
@@ -364,10 +523,19 @@ Describe 'Runtime Purview policy profile exact readback' {
 
     It 'creates distinct fixed collection and blueprint DLP locations' {
         $objects = & $script:NewExactObjects -DlpApplicationId $script:BlueprintId
+        $script:InputObject.sensitiveInformationType = '신용 카드 번호'
+        $objects.Rule.ContentContainsSensitiveInformation[0].Name = '신용 카드 번호'
         $script:createdCollectionLocations = $null
         $script:createdCollectionScenario = $null
         $script:createdDlpLocations = $null
         $script:createdDlpEnforcementPlanes = $null
+        $script:createdClassifierName = $null
+        Mock Get-DlpSensitiveInformationType {
+            [pscustomobject]@{
+                Id = $script:SensitiveInformationTypeId
+                Name = '신용 카드 번호'
+            }
+        }
         Mock Get-FeatureConfiguration {
             if ($null -eq $script:createdCollectionLocations) { return @() }
             return $objects.Collection
@@ -392,7 +560,10 @@ Describe 'Runtime Purview policy profile exact readback' {
             $script:createdDlpEnforcementPlanes = @($EnforcementPlanes)
             $objects.Policy.Locations = $script:createdDlpLocations
         }
-        Mock New-DlpComplianceRule { }
+        Mock New-DlpComplianceRule {
+            param($Name, $Policy, $ContentContainsSensitiveInformation, $RestrictAccess)
+            $script:createdClassifierName = $ContentContainsSensitiveInformation.Name
+        }
 
         $script:InputObject.expectedCollectionPolicyId = $null
         $script:InputObject.expectedDlpPolicyId = $null
@@ -411,6 +582,7 @@ Describe 'Runtime Purview policy profile exact readback' {
         $script:createdDlpLocations.LocationType | Should -BeExactly 'Individual'
         $script:createdDlpEnforcementPlanes | Should -HaveCount 1
         $script:createdDlpEnforcementPlanes | Should -Contain 'Application'
+        $script:createdClassifierName | Should -BeExactly '신용 카드 번호'
         $result.collectionLocation.locationIds | Should -Not -Contain $script:BlueprintId
         $result.dlpBlueprintApplicationIds | Should -Contain $script:BlueprintId
     }

@@ -3,6 +3,11 @@ $ErrorActionPreference = 'Stop'
 # Purview's KYD enterprise-AI-apps collection uses this tenant-wide group
 # location. It is not the selected blueprint application ID.
 $script:BootstrapPurviewEnterpriseAiAppsCollectionLocationId = 'ee1680d0-702f-4090-b26c-c49091e86531'
+$script:BootstrapPurviewSensitiveInformationTypeMaximum = 2048
+
+function Test-BootstrapSecurityCompliancePlatformSupported {
+    return [bool]$IsWindows
+}
 
 function Connect-BootstrapPurview {
     param(
@@ -11,6 +16,9 @@ function Connect-BootstrapPurview {
         [AllowEmptyString()][string]$AccessToken = '',
         [switch]$Device
     )
+    if (-not (Test-BootstrapSecurityCompliancePlatformSupported)) {
+        throw 'Microsoft supports Security & Compliance PowerShell for this workflow only on Windows. Run Purview-enabled setup from Windows, or keep Purview policy authoring off on this computer.'
+    }
     Assert-GuidValue -Value $TenantId -Label 'Purview tenant ID'
     $canonicalTenantId = ([guid]$TenantId).ToString('D')
     if ($TenantId -cne $canonicalTenantId -or
@@ -76,7 +84,7 @@ function Connect-BootstrapPurview {
             -not [string]::IsNullOrEmpty($actualEndpoint.Fragment)) {
             throw 'connection-endpoint-mismatch'
         }
-        foreach ($command in @('Get-FeatureConfiguration', 'New-FeatureConfiguration', 'Get-DlpCompliancePolicy', 'New-DlpCompliancePolicy', 'Get-DlpComplianceRule', 'New-DlpComplianceRule')) {
+        foreach ($command in @('Get-DlpSensitiveInformationType', 'Get-FeatureConfiguration', 'New-FeatureConfiguration', 'Get-DlpCompliancePolicy', 'New-DlpCompliancePolicy', 'Get-DlpComplianceRule', 'New-DlpComplianceRule')) {
             if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { throw 'required-command-unavailable' }
         }
         return [string]$activeEopConnections[0].ConnectionId
@@ -93,7 +101,7 @@ function Connect-BootstrapPurview {
         foreach ($connectionId in $newConnectionIds) {
             try { Disconnect-ExchangeOnline -ConnectionId $connectionId -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch { }
         }
-        throw 'Security & Compliance tenant/session authority could not be proven exactly. No Purview policy cmdlet was authorized; direct-member bootstrap does not support guest/delegated organizations.'
+        throw 'Security & Compliance tenant/session authority could not be proven exactly. No Purview policy cmdlet was authorized; the session must match the selected tenant and Graph-proven Member account.'
     }
 }
 
@@ -101,6 +109,119 @@ function Disconnect-BootstrapPurview {
     param([Parameter(Mandatory)][string]$ConnectionId)
     Assert-GuidValue -Value $ConnectionId -Label 'Owned Security & Compliance connection ID'
     Disconnect-ExchangeOnline -ConnectionId $ConnectionId -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+}
+
+function Assert-BootstrapPurviewSensitiveInformationTypeName {
+    param([Parameter(Mandatory)]$Value)
+
+    if ($Value -isnot [string] -or
+        [string]::IsNullOrWhiteSpace([string]$Value) -or
+        ([string]$Value).Length -gt 255 -or
+        [string]$Value -match '[\x00-\x1f\x7f]') {
+        throw 'Purview sensitive-information-type inventory returned an invalid Name.'
+    }
+    return [string]$Value
+}
+
+function ConvertTo-BootstrapPurviewSensitiveInformationTypeProjection {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$InputObject)
+
+    $items = @($InputObject)
+    if ($items.Count -eq 0) {
+        throw 'Purview sensitive-information-type inventory was empty.'
+    }
+    if ($items.Count -gt $script:BootstrapPurviewSensitiveInformationTypeMaximum) {
+        throw 'Purview sensitive-information-type inventory exceeded the safe 2048-item limit.'
+    }
+
+    $ids = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $projected = [Collections.Generic.List[object]]::new()
+    foreach ($item in $items) {
+        if ($null -eq $item) {
+            throw 'Purview sensitive-information-type inventory returned a malformed item.'
+        }
+        $idValue = Get-BootstrapPurviewProperty -InputObject $item -Names @('Id')
+        $parsedId = [guid]::Empty
+        if ($idValue -isnot [guid] -and $idValue -isnot [string]) {
+            throw 'Purview sensitive-information-type inventory returned an invalid Id.'
+        }
+        if (-not [guid]::TryParse([string]$idValue, [ref]$parsedId) -or $parsedId -eq [guid]::Empty) {
+            throw 'Purview sensitive-information-type inventory returned an invalid Id.'
+        }
+        $canonicalId = $parsedId.ToString('D')
+        $name = Assert-BootstrapPurviewSensitiveInformationTypeName `
+            -Value (Get-BootstrapPurviewProperty -InputObject $item -Names @('Name'))
+        $publisherValue = Get-BootstrapPurviewProperty -InputObject $item -Names @('Publisher') -Optional
+        if ($null -eq $publisherValue) { $publisher = '' }
+        elseif ($publisherValue -isnot [string] -or
+            ([string]$publisherValue).Length -gt 200 -or
+            [string]$publisherValue -match '[\x00-\x1f\x7f]') {
+            throw 'Purview sensitive-information-type inventory returned an invalid Publisher.'
+        }
+        else { $publisher = [string]$publisherValue }
+
+        if (-not $ids.Add($canonicalId)) {
+            throw 'Purview sensitive-information-type inventory returned a duplicate Id.'
+        }
+        if (-not $names.Add($name)) {
+            throw 'Purview sensitive-information-type inventory returned a duplicate exact Name.'
+        }
+        $projected.Add([pscustomobject][ordered]@{
+            id = $canonicalId
+            name = $name
+            publisher = $publisher
+        })
+    }
+
+    $projected.Sort([Comparison[object]]{
+        param($left, $right)
+        $nameComparison = [StringComparer]::Ordinal.Compare([string]$left.name, [string]$right.name)
+        if ($nameComparison -ne 0) { return $nameComparison }
+        return [StringComparer]::Ordinal.Compare([string]$left.id, [string]$right.id)
+    })
+    return @($projected)
+}
+
+function Get-BootstrapPurviewSensitiveInformationTypes {
+    [CmdletBinding()]
+    param()
+
+    try {
+        $providerItems = @(Get-DlpSensitiveInformationType -ErrorAction Stop)
+    }
+    catch {
+        throw 'Purview sensitive-information-type inventory could not be read through the authorized Security & Compliance session.'
+    }
+    return @(ConvertTo-BootstrapPurviewSensitiveInformationTypeProjection -InputObject $providerItems)
+}
+
+function Resolve-BootstrapPurviewSensitiveInformationType {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    Assert-GuidValue -Value $Id -Label 'Purview sensitive information type ID'
+    $canonicalId = ([guid]$Id).ToString('D')
+    $exactName = Assert-BootstrapPurviewSensitiveInformationTypeName -Value $Name
+    try {
+        # Enumerate the bounded tenant catalog so a new duplicate exact Name is
+        # detected before Name-based DLP rule authoring. Identity lookup is not
+        # trusted because Microsoft documents non-exact fallback behavior.
+        $providerItems = @(Get-DlpSensitiveInformationType -ErrorAction Stop)
+    }
+    catch {
+        throw 'The selected Purview sensitive-information type could not be re-read through the authorized Security & Compliance session.'
+    }
+    $projected = @(ConvertTo-BootstrapPurviewSensitiveInformationTypeProjection -InputObject $providerItems)
+    $matches = @($projected | Where-Object { [string]$_.id -ceq $canonicalId })
+    if ($matches.Count -ne 1 -or [string]$matches[0].name -cne $exactName) {
+        throw 'The selected Purview sensitive-information type ID and exact Name no longer match the tenant inventory.'
+    }
+    return $matches[0]
 }
 
 function ConvertTo-BootstrapPurviewCollectionLocationsJson {
@@ -476,7 +597,15 @@ function Get-BootstrapPurviewNamedLeafValues {
 }
 
 function Assert-BootstrapPurviewRuleObject {
-    param([Parameter(Mandatory)]$Rule, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$PolicyName, [Parameter(Mandatory)][string]$SensitiveInformationType)
+    param(
+        [Parameter(Mandatory)]$Rule,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$PolicyName,
+        [Parameter(Mandatory)][string]$SensitiveInformationTypeId,
+        [Parameter(Mandatory)][string]$SensitiveInformationType
+    )
+    Assert-GuidValue -Value $SensitiveInformationTypeId -Label 'Purview sensitive information type ID'
+    $expectedClassifierId = ([guid]$SensitiveInformationTypeId).ToString('D')
     if ([string](Get-BootstrapPurviewProperty -InputObject $Rule -Names @('Name', 'Identity')) -cne $Name -or
         [string](Get-BootstrapPurviewProperty -InputObject $Rule -Names @('ParentPolicyName', 'PolicyName', 'Policy')) -cne $PolicyName) {
         throw 'Purview DLP rule name or parent policy does not exactly match the reviewed configuration.'
@@ -498,7 +627,8 @@ function Assert-BootstrapPurviewRuleObject {
         [string](Get-BootstrapPurviewProperty -InputObject $condition[0] -Names @('maxconfidence')) -cne '100' -or
         [string](Get-BootstrapPurviewProperty -InputObject $condition[0] -Names @('maxcount')) -cne '-1' -or
         -not [guid]::TryParse([string](Get-BootstrapPurviewProperty -InputObject $condition[0] -Names @('id')), [ref]$classifierId) -or
-        $classifierId -eq [guid]::Empty) {
+        $classifierId -eq [guid]::Empty -or
+        $classifierId.ToString('D') -cne $expectedClassifierId) {
         throw 'Purview DLP rule classifier thresholds or provider identity do not match the exact generated contract.'
     }
     Assert-BootstrapPurviewNoUnknownMeaningfulProperties -Resource $condition[0] -AllowedNames @(
@@ -631,6 +761,9 @@ function Get-BootstrapPurviewPolicyEvidence {
     $lastFailure = $null
     for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
         try {
+            $selectedType = Resolve-BootstrapPurviewSensitiveInformationType `
+                -Id ([string]$Config.purview.sensitiveInformationTypeId) `
+                -Name ([string]$Config.purview.sensitiveInformationType)
             $collection = @(Get-FeatureConfiguration -FeatureScenario KnowYourData | Where-Object { $_.Name -eq [string]$Config.purview.collectionPolicyName -or $_.Identity -eq [string]$Config.purview.collectionPolicyName })
             $policy = @(Get-DlpCompliancePolicy -Identity ([string]$Config.purview.dlpPolicyName) -ErrorAction Stop)
             $rule = @(Get-DlpComplianceRule -Identity ([string]$Config.purview.dlpRuleName) -ErrorAction Stop)
@@ -638,7 +771,7 @@ function Get-BootstrapPurviewPolicyEvidence {
             $blueprintId = [string]$Blueprint.applicationId
             Assert-BootstrapPurviewCollectionObject -Collection $collection[0] -Name ([string]$Config.purview.collectionPolicyName) | Out-Null
             Assert-BootstrapPurviewPolicyObject -Policy $policy[0] -Name ([string]$Config.purview.dlpPolicyName) -BlueprintApplicationId $blueprintId | Out-Null
-            Assert-BootstrapPurviewRuleObject -Rule $rule[0] -Name ([string]$Config.purview.dlpRuleName) -PolicyName ([string]$Config.purview.dlpPolicyName) -SensitiveInformationType ([string]$Config.purview.sensitiveInformationType) | Out-Null
+            Assert-BootstrapPurviewRuleObject -Rule $rule[0] -Name ([string]$Config.purview.dlpRuleName) -PolicyName ([string]$Config.purview.dlpPolicyName) -SensitiveInformationTypeId ([string]$selectedType.id) -SensitiveInformationType ([string]$selectedType.name) | Out-Null
             return [ordered]@{
                 configured = $true
                 enabled = $false
@@ -674,6 +807,9 @@ function Ensure-BootstrapPurviewPolicies {
     $connectionId = ''
     try {
         $connectionId = Connect-BootstrapPurview -UserPrincipalName $UserPrincipalName -TenantId ([string]$Config.tenantId)
+        $selectedType = Resolve-BootstrapPurviewSensitiveInformationType `
+            -Id ([string]$Config.purview.sensitiveInformationTypeId) `
+            -Name ([string]$Config.purview.sensitiveInformationType)
         $blueprintApplicationId = [string]$Blueprint.applicationId
         Assert-GuidValue -Value $blueprintApplicationId -Label 'Purview blueprint application ID'
         $collectionLocations = ConvertTo-BootstrapPurviewCollectionLocationsJson
@@ -706,6 +842,12 @@ function Ensure-BootstrapPurviewPolicies {
         Assert-BootstrapPurviewPolicyObject -Policy $policy[0] -Name $policyName -BlueprintApplicationId $blueprintApplicationId | Out-Null
     }
 
+    # Re-resolve immediately before the only classifier-dependent mutation or
+    # readback. The earlier preflight prevents unrelated policy creation when
+    # the selected tenant catalog binding has already drifted.
+    $selectedType = Resolve-BootstrapPurviewSensitiveInformationType `
+        -Id ([string]$Config.purview.sensitiveInformationTypeId) `
+        -Name ([string]$Config.purview.sensitiveInformationType)
     $ruleName = [string]$Config.purview.dlpRuleName
     $rule = @(Get-DlpComplianceRule -ErrorAction Stop | Where-Object {
         [string]$_.Name -ceq $ruleName -or [string]$_.Identity -ceq $ruleName
@@ -713,11 +855,11 @@ function Ensure-BootstrapPurviewPolicies {
     if ($rule.Count -gt 1) { throw "Multiple DLP rules match '$ruleName'." }
     if ($rule.Count -eq 0) {
         New-DlpComplianceRule -Name $ruleName -Policy $policyName `
-            -ContentContainsSensitiveInformation @{ Name = [string]$Config.purview.sensitiveInformationType } `
+            -ContentContainsSensitiveInformation @{ Name = [string]$selectedType.name } `
             -RestrictAccess @(@{ setting = 'UploadText'; value = 'Block' }) -Confirm:$false | Out-Null
     }
     else {
-        Assert-BootstrapPurviewRuleObject -Rule $rule[0] -Name $ruleName -PolicyName $policyName -SensitiveInformationType ([string]$Config.purview.sensitiveInformationType) | Out-Null
+        Assert-BootstrapPurviewRuleObject -Rule $rule[0] -Name $ruleName -PolicyName $policyName -SensitiveInformationTypeId ([string]$selectedType.id) -SensitiveInformationType ([string]$selectedType.name) | Out-Null
     }
         return Get-BootstrapPurviewPolicyEvidence -Config $Config -Blueprint $Blueprint
     }

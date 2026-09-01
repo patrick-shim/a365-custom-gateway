@@ -51,7 +51,10 @@ internal sealed record BootstrapConfiguration
             form.PurviewCollectionPolicyName,
             form.PurviewDlpPolicyName,
             form.PurviewDlpRuleName,
-            form.PurviewSensitiveInformationType.Trim(),
+            form.PurviewSensitiveInformationTypeId == Guid.Empty
+                ? string.Empty
+                : form.PurviewSensitiveInformationTypeId.ToString("D"),
+            form.PurviewSensitiveInformationType,
             false,
             false,
             string.Empty,
@@ -74,6 +77,7 @@ internal sealed record BootstrapPurviewConfiguration(
     string CollectionPolicyName,
     string DlpPolicyName,
     string DlpRuleName,
+    string SensitiveInformationTypeId,
     string SensitiveInformationType,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     bool ActivateGatewayAdapterAfterPolicyReadback,

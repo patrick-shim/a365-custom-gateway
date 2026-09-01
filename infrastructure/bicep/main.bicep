@@ -148,7 +148,10 @@ param purviewPolicyProvisioningApplicationId string = ''
 param purviewPolicyProvisioningCertificateSecretUri string = ''
 
 @description('Sensitive information type used by the reviewed default protection-profile rule.')
-param purviewDefaultSensitiveInformationType string = 'Credit Card Number'
+param purviewDefaultSensitiveInformationType string = ''
+
+@description('Stable GUID of the sensitive information type paired with the exact current Name used by the reviewed default protection-profile rule.')
+param purviewDefaultSensitiveInformationTypeId string = ''
 
 @description('Deploy the Admin UI Container App. Disabled by default so existing API/worker deployments are unchanged.')
 param deployAdminUi bool = false
@@ -559,6 +562,7 @@ module workerApp './modules/container-app-worker.bicep' = {
     purviewPolicyProvisioningOrganization: purviewPolicyProvisioningOrganization
     purviewPolicyProvisioningApplicationId: purviewPolicyProvisioningApplicationId
     purviewPolicyProvisioningCertificateSecretUri: purviewPolicyProvisioningCertificateSecretUri
+    purviewDefaultSensitiveInformationTypeId: purviewDefaultSensitiveInformationTypeId
     purviewDefaultSensitiveInformationType: purviewDefaultSensitiveInformationType
     tags: tags
   }

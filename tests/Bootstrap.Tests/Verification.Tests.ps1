@@ -23,6 +23,10 @@ Describe 'Final verification strict-mode delegated-scope cardinality' {
             $node -is [Management.Automation.Language.IfStatementAst] -and
                 $node.Extent.Text.Contains('$adminGrantScopes.Count', [StringComparison]::Ordinal)
         }, $true).Extent.Text
+        $repositoryRoot = [IO.Path]::GetFullPath((Join-Path (
+            Split-Path -Parent (Get-Module Verification).Path) '../..'))
+        $script:bootstrapSource = Get-Content -LiteralPath (
+            Join-Path $repositoryRoot 'bootstrap/bootstrap.ps1') -Raw
     }
 
     It 'preserves exact final scope cardinality and rejects missing or extra scopes' {
@@ -59,6 +63,38 @@ Describe 'Final verification strict-mode delegated-scope cardinality' {
         $script:finalVerificationSource | Should -Match ([regex]::Escape($repositoryRootAssignment))
         $script:finalVerificationSource | Should -Match ([regex]::Escape($currentPreflightInvocation))
         $script:finalVerificationSource | Should -Not -Match 'Get-BootstrapExecutionSourceRoot'
+    }
+
+    It 'rejects unsupported Purview deployment and verification before provider access' {
+        $orchestratorGuard = $script:bootstrapSource.IndexOf(
+            'if ($configuration.purview.enabled -eq $true -and',
+            [StringComparison]::Ordinal)
+        $planWorkflow = $script:bootstrapSource.IndexOf(
+            "if (`$Mode -in @('Plan', 'Up', 'Resume'))",
+            [StringComparison]::Ordinal)
+        $verifyWorkflow = $script:bootstrapSource.IndexOf(
+            "if (`$Mode -eq 'Verify')",
+            [StringComparison]::Ordinal)
+        $orchestratorGuard | Should -BeGreaterOrEqual 0
+        $script:bootstrapSource.Substring($orchestratorGuard, $planWorkflow - $orchestratorGuard) |
+            Should -Match '\$Mode -in @\(''Apply'', ''Resume'', ''Up'', ''Verify''\)'
+        $script:bootstrapSource.Substring($orchestratorGuard, $planWorkflow - $orchestratorGuard) |
+            Should -Match 'Test-BootstrapSecurityCompliancePlatformSupported'
+        $orchestratorGuard | Should -BeLessThan $planWorkflow
+        $orchestratorGuard | Should -BeLessThan $verifyWorkflow
+
+        $verificationGuard = $script:finalVerificationSource.IndexOf(
+            'Test-BootstrapSecurityCompliancePlatformSupported',
+            [StringComparison]::Ordinal)
+        $firstAzureReadback = $script:finalVerificationSource.IndexOf(
+            'Assert-GatewayRuntimeDeploymentOwnership',
+            [StringComparison]::Ordinal)
+        $firstGraphReadback = $script:finalVerificationSource.IndexOf(
+            'Get-BoundedGraphCollection',
+            [StringComparison]::Ordinal)
+        $verificationGuard | Should -BeGreaterOrEqual 0
+        $verificationGuard | Should -BeLessThan $firstAzureReadback
+        $verificationGuard | Should -BeLessThan $firstGraphReadback
     }
 }
 

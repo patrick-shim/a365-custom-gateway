@@ -764,6 +764,11 @@ function Test-GatewayBootstrapDeployment {
         [Parameter(Mandatory)][System.Collections.IDictionary]$State,
         [switch]$NonInteractive
     )
+    if ($Config.purview.enabled -eq $true -and
+        -not (Test-BootstrapSecurityCompliancePlatformSupported)) {
+        throw 'Purview-enabled verification requires Windows because Microsoft does not support Security & Compliance PowerShell for this workflow on macOS or Linux. Run Verify from Windows, or keep Purview policy authoring off on this computer.'
+    }
+
     $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
     $isRecovery = $null -ne $DatabaseRecoveryPlan
     $isManualRepair = $null -ne $ManualDatabaseRepairPlan

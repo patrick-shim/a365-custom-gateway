@@ -64,10 +64,19 @@ internal sealed class PurviewOptionsValidator : IValidateOptions<PurviewOptions>
                 return ValidateOptionsResult.Fail(
                     "Purview:PolicyProvisioningPowerShellPath is required when policy provisioning is enabled.");
 
-            if (string.IsNullOrWhiteSpace(options.DefaultSensitiveInformationType) ||
-                options.DefaultSensitiveInformationType.Length > 200)
+            if (!Guid.TryParse(options.DefaultSensitiveInformationTypeId, out var classifierId) ||
+                classifierId == Guid.Empty ||
+                !string.Equals(
+                    options.DefaultSensitiveInformationTypeId,
+                    classifierId.ToString("D"),
+                    StringComparison.Ordinal))
                 return ValidateOptionsResult.Fail(
-                    "Purview:DefaultSensitiveInformationType must be between 1 and 200 characters.");
+                    "Purview:DefaultSensitiveInformationTypeId must be a canonical non-empty GUID when policy provisioning is enabled.");
+
+            if (!PurviewSensitiveInformationTypeContract.IsValidName(
+                    options.DefaultSensitiveInformationType))
+                return ValidateOptionsResult.Fail(
+                    "Purview:DefaultSensitiveInformationType must be between 1 and 255 characters and contain no ASCII control characters.");
         }
 
         return ValidateOptionsResult.Success;

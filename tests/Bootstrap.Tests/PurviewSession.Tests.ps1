@@ -51,6 +51,7 @@ Describe 'Purview Security and Compliance tenant boundary' {
                 IsEopSession = $true
             }
             Mock Import-Module {}
+            Mock Test-BootstrapSecurityCompliancePlatformSupported { $true }
             Mock Connect-IPPSSession {}
             Mock Connect-ExchangeOnline {}
             Mock Disconnect-ExchangeOnline {}
@@ -65,7 +66,21 @@ Describe 'Purview Security and Compliance tenant boundary' {
             }
         }
 
-        It 'creates exactly one direct-member EOP session at the reviewed tenant endpoint' {
+        It 'rejects a non-Windows client before module import or provider calls' {
+            Mock Test-BootstrapSecurityCompliancePlatformSupported { $false }
+
+            { Connect-BootstrapPurview `
+                -UserPrincipalName $script:userPrincipalName `
+                -TenantId $script:tenantId } |
+                Should -Throw '*only on Windows*'
+
+            Should -Invoke Import-Module -Times 0 -Exactly
+            Should -Invoke Get-ConnectionInformation -Times 0 -Exactly
+            Should -Invoke Connect-IPPSSession -Times 0 -Exactly
+            Should -Invoke Connect-ExchangeOnline -Times 0 -Exactly
+        }
+
+        It 'creates exactly one matching EOP session at the reviewed tenant endpoint' {
             $connectionId = Connect-BootstrapPurview `
                 -UserPrincipalName $script:userPrincipalName `
                 -TenantId $script:tenantId
@@ -134,6 +149,26 @@ Describe 'Purview Security and Compliance tenant boundary' {
                 Should -Throw '*existing Security & Compliance session*'
 
             Should -Invoke Connect-IPPSSession -Times 0 -Exactly
+        }
+
+        It 'fails closed and disconnects when tenant SIT inventory is unavailable' {
+            Mock Get-Command {
+                param($Name)
+                if ($Name -ceq 'Get-DlpSensitiveInformationType') { return $null }
+                return [pscustomobject]@{ Name = $Name }
+            }
+
+            { Connect-BootstrapPurview `
+                -UserPrincipalName $script:userPrincipalName `
+                -TenantId $script:tenantId } |
+                Should -Throw '*tenant/session authority could not be proven exactly*'
+
+            Should -Invoke Disconnect-ExchangeOnline -Times 1 -Exactly -ParameterFilter {
+                $ConnectionId -eq '22222222-2222-4222-8222-222222222222'
+            }
+            Should -Invoke Get-Command -Times 1 -Exactly -ParameterFilter {
+                $Name -ceq 'Get-DlpSensitiveInformationType'
+            }
         }
 
         It 'passes the canonical configured tenant into the policy-authoring connection exactly once' {

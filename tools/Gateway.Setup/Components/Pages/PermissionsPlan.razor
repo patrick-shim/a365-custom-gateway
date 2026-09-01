@@ -44,7 +44,9 @@
                 <div><dt>Purview</dt><dd>@(State.Form.PurviewEnabled ? "Policy authoring requested" : "Off")</dd></div>
                 @if (State.Form.PurviewEnabled)
                 {
-                    <div><dt>Purview classifier</dt><dd>@State.Form.PurviewSensitiveInformationType</dd></div>
+                    <div><dt>Purview classifier Name</dt><dd>@State.Form.PurviewSensitiveInformationType</dd></div>
+                    <div><dt>Purview classifier GUID</dt><dd><code>@State.Form.PurviewSensitiveInformationTypeId</code></dd></div>
+                    <div><dt>Purview inventory proof</dt><dd>@State.PurviewSensitiveInformationTypeProvenance</dd></div>
                     <div><dt>Purview collection</dt><dd>@State.Form.PurviewCollectionPolicyName</dd></div>
                     <div><dt>Purview DLP policy</dt><dd>@State.Form.PurviewDlpPolicyName</dd></div>
                     <div><dt>Purview DLP rule</dt><dd>@State.Form.PurviewDlpRuleName</dd></div>
@@ -113,7 +115,7 @@
         {
             error = State.CanWriteConfigurationAndRunPlan
                 ? error
-                : "The selected subscription, Azure region, or Agent 365 manager review is no longer current. Return to Profile and review the exact target again.";
+                : "The selected subscription, Azure region, Agent 365 manager review, or enabled Purview tenant type proof is no longer current. Return to Profile and review the exact target again.";
             return;
         }
 
@@ -131,7 +133,7 @@
                     Navigation.NavigateTo("/setup/progress");
                     break;
                 case BootstrapPlanPreparationStatus.StateChanged:
-                    error = "The public configuration or its selected subscription, Azure region, or Agent 365 manager review changed while a provisional file was prepared. The canonical configuration was not changed and Plan did not start; review the current target and try again.";
+                    error = "The public configuration or its selected subscription, Azure region, Agent 365 manager review, or enabled Purview tenant type proof changed while a provisional file was prepared. The canonical configuration was not changed and Plan did not start; review the current target and try again.";
                     break;
                 case BootstrapPlanPreparationStatus.ConfigurationChanged:
                     error = "The provisional configuration changed before atomic publication. bootstrap/config.json was not replaced and Plan did not start; review the local filesystem and try again.";

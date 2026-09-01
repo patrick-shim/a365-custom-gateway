@@ -17,6 +17,9 @@ namespace Gateway.UnitTests.Purview;
 
 public sealed class PurviewPolicyClientTests
 {
+    private const string SensitiveInformationTypeId =
+        "50842eb7-edc8-4019-85dd-5a5c1f2bb085";
+
     [Fact]
     public void DependencyInjection_ShouldResolveDisabledAdapter()
     {
@@ -36,6 +39,15 @@ public sealed class PurviewPolicyClientTests
             .IsEnabled.Should().BeFalse();
         provider.GetRequiredService<Gateway.Domain.Interfaces.IPurviewPolicyProvisioningClient>()
             .IsEnabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Options_ShouldNotProvideStaticSensitiveInformationTypeDefaults()
+    {
+        var options = new PurviewOptions();
+
+        options.DefaultSensitiveInformationTypeId.Should().BeEmpty();
+        options.DefaultSensitiveInformationType.Should().BeEmpty();
     }
 
     [Fact]
@@ -77,6 +89,60 @@ public sealed class PurviewPolicyClientTests
 
             result.Failed.Should().BeTrue();
             result.FailureMessage.Should().Contain("versionless HTTPS Azure Key Vault");
+        }
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("not-a-guid")]
+    [InlineData("00000000-0000-0000-0000-000000000000")]
+    public void Options_ShouldRequireCanonicalNonEmptySensitiveInformationTypeId(string invalidId)
+    {
+        var validator = new PurviewOptionsValidator();
+        var result = validator.Validate(null, new PurviewOptions
+        {
+            Enabled = true,
+            PolicyProvisioningEnabled = true,
+            PolicyProvisioningOrganization = "tenant.onmicrosoft.com",
+            PolicyProvisioningApplicationId = Guid.NewGuid().ToString("D"),
+            PolicyProvisioningCertificateSecretUri =
+                "https://gateway.vault.azure.net/secrets/certificate",
+            DefaultSensitiveInformationTypeId = invalidId
+        });
+
+        result.Failed.Should().BeTrue();
+        result.FailureMessage.Should().Contain("DefaultSensitiveInformationTypeId");
+    }
+
+    [Fact]
+    public void Options_ShouldAcceptExactUnicodeSensitiveInformationTypeNameAt255Characters()
+    {
+        var validator = new PurviewOptionsValidator();
+        var options = CreateValidPolicyProvisioningOptions(new string('\u754c', 255));
+
+        var result = validator.Validate(null, options);
+
+        result.Succeeded.Should().BeTrue();
+        options.DefaultSensitiveInformationType.Should().HaveLength(255);
+    }
+
+    [Fact]
+    public void Options_ShouldRejectSensitiveInformationTypeNameAt256OrWithAsciiControls()
+    {
+        var validator = new PurviewOptionsValidator();
+        foreach (var invalidName in new[]
+                 {
+                     new string('\u754c', 256),
+                     "Exact\u0007Name",
+                     "Exact\u007fName"
+                 })
+        {
+            var result = validator.Validate(
+                null,
+                CreateValidPolicyProvisioningOptions(invalidName));
+
+            result.Failed.Should().BeTrue();
+            result.FailureMessage.Should().Contain("DefaultSensitiveInformationType");
         }
     }
 
@@ -361,6 +427,19 @@ public sealed class PurviewPolicyClientTests
             new MemoryCache(new MemoryCacheOptions()),
             graph);
 
+    private static PurviewOptions CreateValidPolicyProvisioningOptions(string classifierName) =>
+        new()
+        {
+            Enabled = true,
+            PolicyProvisioningEnabled = true,
+            PolicyProvisioningOrganization = "tenant.onmicrosoft.com",
+            PolicyProvisioningApplicationId = Guid.NewGuid().ToString("D"),
+            PolicyProvisioningCertificateSecretUri =
+                "https://gateway.vault.azure.net/secrets/certificate",
+            DefaultSensitiveInformationTypeId = SensitiveInformationTypeId,
+            DefaultSensitiveInformationType = classifierName
+        };
+
     private static PurviewInteraction CreateInteraction() =>
         new(
             Guid.NewGuid(),
@@ -438,6 +517,8 @@ public sealed class PurviewPolicyProvisioningReadbackTests
 {
     private const string BlueprintApplicationId =
         "11111111-1111-4111-8111-111111111111";
+    private const string SensitiveInformationTypeId =
+        "50842eb7-edc8-4019-85dd-5a5c1f2bb085";
 
     [Fact]
     public void ParseResult_ExactTypedEvidence_IsAccepted()
@@ -445,7 +526,8 @@ public sealed class PurviewPolicyProvisioningReadbackTests
         var result = PowerShellPurviewPolicyProvisioningClient.ParseResult(
             CreateOutput(),
             CreateRequest(),
-            "Credit Card Number");
+            "Credit Card Number",
+            SensitiveInformationTypeId);
 
         result.CollectionPolicyId.Should().Be("collection-id");
         result.DlpBlueprintApplicationIds.Should().ContainSingle(BlueprintApplicationId);
@@ -465,7 +547,8 @@ public sealed class PurviewPolicyProvisioningReadbackTests
         var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
             CreateOutput(collectionPolicyId: "different-collection-id"),
             CreateRequest(),
-            "Credit Card Number");
+            "Credit Card Number",
+            SensitiveInformationTypeId);
 
         var exception = action.Should().Throw<PurviewPolicyException>();
         exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
@@ -478,7 +561,8 @@ public sealed class PurviewPolicyProvisioningReadbackTests
             CreateOutput(dlpBlueprintApplicationIds:
                 ["22222222-2222-4222-8222-222222222222"]),
             CreateRequest(),
-            "Credit Card Number");
+            "Credit Card Number",
+            SensitiveInformationTypeId);
 
         var exception = action.Should().Throw<PurviewPolicyException>();
         exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
@@ -491,7 +575,8 @@ public sealed class PurviewPolicyProvisioningReadbackTests
             CreateOutput(dlpBlueprintApplicationIds:
                 [BlueprintApplicationId, "22222222-2222-4222-8222-222222222222"]),
             CreateRequest(),
-            "Credit Card Number");
+            "Credit Card Number",
+            SensitiveInformationTypeId);
 
         var exception = action.Should().Throw<PurviewPolicyException>();
         exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
@@ -505,7 +590,8 @@ public sealed class PurviewPolicyProvisioningReadbackTests
                 collectionLocationId: BlueprintApplicationId,
                 collectionLocationType: PurviewPolicyLocationContract.DlpLocationType),
             CreateRequest(),
-            "Credit Card Number");
+            "Credit Card Number",
+            SensitiveInformationTypeId);
 
         var exception = action.Should().Throw<PurviewPolicyException>();
         exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
@@ -517,7 +603,8 @@ public sealed class PurviewPolicyProvisioningReadbackTests
         var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
             CreateOutput(dlpLocationType: PurviewPolicyLocationContract.CollectionLocationType),
             CreateRequest(),
-            "Credit Card Number");
+            "Credit Card Number",
+            SensitiveInformationTypeId);
 
         var exception = action.Should().Throw<PurviewPolicyException>();
         exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
@@ -529,10 +616,36 @@ public sealed class PurviewPolicyProvisioningReadbackTests
         var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
             CreateOutput(dlpLocationIds: ["22222222-2222-4222-8222-222222222222"]),
             CreateRequest(),
-            "Credit Card Number");
+            "Credit Card Number",
+            SensitiveInformationTypeId);
 
         var exception = action.Should().Throw<PurviewPolicyException>();
         exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
+    }
+
+    [Fact]
+    public void ParseResult_WrongClassifierIdWithExactName_IsRejected()
+    {
+        var action = () => PowerShellPurviewPolicyProvisioningClient.ParseResult(
+            CreateOutput(classifierIds: ["11111111-1111-4111-8111-111111111111"]),
+            CreateRequest(),
+            "Credit Card Number",
+            SensitiveInformationTypeId);
+
+        var exception = action.Should().Throw<PurviewPolicyException>();
+        exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
+    }
+
+    [Fact]
+    public void ParseResult_ExactUnicodeClassifierName_IsAccepted()
+    {
+        var result = PowerShellPurviewPolicyProvisioningClient.ParseResult(
+            CreateOutput(classifierName: "신용 카드 번호"),
+            CreateRequest(),
+            "신용 카드 번호",
+            SensitiveInformationTypeId);
+
+        result.Evidence.ClassifierNames.Should().ContainSingle("신용 카드 번호");
     }
 
     [Fact]
@@ -615,7 +728,8 @@ public sealed class PurviewPolicyProvisioningReadbackTests
                 hasExtraConditions: hasExtraConditions,
                 hasExtraActions: hasExtraActions),
             CreateRequest(),
-            "Credit Card Number");
+            "Credit Card Number",
+            SensitiveInformationTypeId);
 
         var exception = action.Should().Throw<PurviewPolicyException>();
         exception.Which.FailureCode.Should().Be("PURVIEW_POLICY_READBACK_INVALID");
@@ -644,6 +758,8 @@ public sealed class PurviewPolicyProvisioningReadbackTests
         string collectionLocationType = PurviewPolicyLocationContract.CollectionLocationType,
         string dlpLocationType = PurviewPolicyLocationContract.DlpLocationType,
         string[]? dlpLocationIds = null,
+        string[]? classifierIds = null,
+        string classifierName = "Credit Card Number",
         bool hasExtraConditions = false,
         bool hasExtraActions = false)
     {
@@ -675,7 +791,8 @@ public sealed class PurviewPolicyProvisioningReadbackTests
                 locationType = dlpLocationType,
                 locationIds = dlpLocationIds ?? expectedDlpApplicationIds
             },
-            classifierNames = new[] { "Credit Card Number" },
+            classifierIds = classifierIds ?? [SensitiveInformationTypeId],
+            classifierNames = new[] { classifierName },
             ruleActions = new[] { new { setting = "UploadText", value = "Block" } },
             hasExclusions = false,
             hasBypass = false,

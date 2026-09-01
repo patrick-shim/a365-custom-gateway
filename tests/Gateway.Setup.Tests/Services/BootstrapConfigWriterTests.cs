@@ -58,6 +58,10 @@ public sealed class BootstrapConfigWriterTests : IDisposable
             .GetProperty("collectionPolicyName")
             .GetString()
             .Should().Be("A365 Gateway a365gw AI collection");
+        document.RootElement.GetProperty("purview")
+            .GetProperty("sensitiveInformationTypeId")
+            .GetString()
+            .Should().BeEmpty();
     }
 
     [Fact]
@@ -95,6 +99,8 @@ public sealed class BootstrapConfigWriterTests : IDisposable
             Guid.Parse("44444444-4444-4444-8444-444444444444")
         ]);
         form.PurviewEnabled = true;
+        form.PurviewSensitiveInformationTypeId =
+            Guid.Parse("50842eb7-edc8-4019-85dd-5a5c1f2bb085");
         form.PurviewSensitiveInformationType = "Credit Card Number";
 
         var result = await StageAndPublishAsync(NewWriter(), ReadyState(form));
@@ -103,6 +109,8 @@ public sealed class BootstrapConfigWriterTests : IDisposable
             Guid.Parse("33333333-3333-4333-8333-333333333333"),
             Guid.Parse("44444444-4444-4444-8444-444444444444"));
         result.Configuration.Purview.SensitiveInformationType.Should().Be("Credit Card Number");
+        result.Configuration.Purview.SensitiveInformationTypeId.Should().Be(
+            "50842eb7-edc8-4019-85dd-5a5c1f2bb085");
     }
 
     [Fact]
@@ -111,12 +119,53 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
         var form = ValidForm();
         form.PurviewEnabled = true;
+        form.PurviewSensitiveInformationTypeId = Guid.NewGuid();
         form.PurviewSensitiveInformationType = "Bearer Classification Name";
 
         var result = await StageAndPublishAsync(NewWriter(), ReadyState(form));
 
         result.Configuration.Purview.SensitiveInformationType.Should().Be(
             "Bearer Classification Name");
+    }
+
+    [Fact]
+    public async Task WriteAsync_PreservesExactUnicodeSensitiveInformationTypeWithoutTrimming()
+    {
+        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
+        var form = ValidForm();
+        form.PurviewEnabled = true;
+        form.PurviewSensitiveInformationTypeId = Guid.NewGuid();
+        form.PurviewSensitiveInformationType = "주민등록번호";
+
+        var result = await StageAndPublishAsync(NewWriter(), ReadyState(form));
+
+        result.Configuration.Purview.SensitiveInformationTypeId.Should().Be(
+            form.PurviewSensitiveInformationTypeId.ToString("D"));
+        result.Configuration.Purview.SensitiveInformationType.Should().Be("주민등록번호");
+        var json = await File.ReadAllTextAsync(result.Path);
+        using var document = JsonDocument.Parse(json);
+        document.RootElement.GetProperty("purview")
+            .GetProperty("sensitiveInformationType")
+            .GetString()
+            .Should().Be("주민등록번호");
+    }
+
+    [Theory]
+    [InlineData(" Credit Card Number")]
+    [InlineData("Credit Card Number ")]
+    public async Task WriteAsync_RejectsPurviewNameThatWouldChangeWhenTrimmed(string name)
+    {
+        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
+        var form = ValidForm();
+        form.PurviewEnabled = true;
+        form.PurviewSensitiveInformationTypeId = Guid.NewGuid();
+        form.PurviewSensitiveInformationType = name;
+        var state = ReadyState(form, applyPurviewProof: false);
+
+        var action = () => NewWriter().StageAsync(state.CreatePlanReadyConfiguration());
+
+        await action.Should().ThrowAsync<ValidationException>();
+        File.Exists(Path.Combine(root, "bootstrap", "config.json")).Should().BeFalse();
     }
 
     [Fact]
@@ -220,7 +269,9 @@ public sealed class BootstrapConfigWriterTests : IDisposable
             ?? throw new InvalidOperationException("The deterministic test stage changed unexpectedly.");
     }
 
-    private static SetupWizardState ReadyState(SetupConfigurationForm form)
+    private static SetupWizardState ReadyState(
+        SetupConfigurationForm form,
+        bool applyPurviewProof = true)
     {
         var state = new SetupWizardState(new FixedProjectNameGenerator());
         state.ApplyExistingConfiguration(new ExistingConfigurationResult(
@@ -239,6 +290,19 @@ public sealed class BootstrapConfigWriterTests : IDisposable
             form.SubscriptionId,
             [new AzureLocation(form.Location, "Selected region")],
             null));
+        if (form.PurviewEnabled && applyPurviewProof)
+        {
+            state.ApplyPurviewSensitiveInformationTypeDiscovery(new(
+                form.SubscriptionId,
+                form.TenantId,
+                [new PurviewSensitiveInformationType(
+                    form.PurviewSensitiveInformationTypeId,
+                    form.PurviewSensitiveInformationType,
+                    "Test publisher")],
+                PurviewSensitiveInformationTypeDiscovery.Provenance,
+                null));
+        }
+
         return state;
     }
 
@@ -289,6 +353,7 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         PromptShieldEnabled = false,
         PromptShieldSkuName = "F0",
         PurviewEnabled = false,
+        PurviewSensitiveInformationTypeId = Guid.Empty,
         PurviewSensitiveInformationType = string.Empty
     };
 

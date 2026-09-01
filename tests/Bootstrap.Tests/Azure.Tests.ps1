@@ -1316,6 +1316,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
                     policyProvisioningOrganization = ''
                     policyProvisioningApplicationId = ''
                     policyProvisioningCertificateSecretUri = ''
+                    sensitiveInformationTypeId = ''
                     sensitiveInformationType = ''
                 }
                 sql = [pscustomobject]@{ skuName = 'Basic'; skuTier = 'Basic' }
@@ -1655,7 +1656,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
             $compiledNames = @($compiled.parameters.PSObject.Properties.Name | Sort-Object -CaseSensitive)
             $capturedNames = @($script:capturedCompiledParityParameters.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
 
-            $capturedNames.Count | Should -Be 68
+            $capturedNames.Count | Should -Be 69
             ($capturedNames -join '|') | Should -BeExactly ($compiledNames -join '|')
             $script:capturedCompiledParityParameters.allowLegacySystemAssignedImagePull | Should -BeFalse
 
@@ -1841,6 +1842,30 @@ Describe 'Gateway core initial and runtime identity bindings' {
             Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
                 [string]$Parameters.agent365ProvisioningManagedIdentityPrincipalId -ceq $script:coreWorkerPrincipalId -and
                 [string]$Parameters.databaseAttestationWorkerPrincipalClientId -ceq [string]$script:coreDatabase.workerPrincipalClientId
+            }
+        }
+
+        It 'passes the selected SIT GUID and exact Name as distinct runtime parameters' {
+            $script:coreConfig.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
+            $script:coreConfig.purview.sensitiveInformationType = '신용 카드 번호'
+
+            { Deploy-GatewayCore `
+                    -Config $script:coreConfig `
+                    -Foundation $script:coreFoundation `
+                    -Identity $script:coreIdentity `
+                    -ApiImage $script:coreApiImage `
+                    -WorkerImage $script:coreWorkerImage `
+                    -WorkerPrincipalId $script:coreWorkerPrincipalId `
+                    -ManagerApplicationIds @($script:coreManagerApplicationId) `
+                    -DeploymentOwnershipId $script:coreOwnershipId `
+                    -SourceFingerprint $script:coreSourceFingerprint `
+                    -Database $script:coreDatabase `
+                    -EnablePurview } |
+                Should -Throw '*core-deployment-reached*'
+
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
+                [string]$Parameters.purviewDefaultSensitiveInformationTypeId -ceq '50842eb7-edc8-4019-85dd-5a5c1f2bb085' -and
+                [string]$Parameters.purviewDefaultSensitiveInformationType -ceq '신용 카드 번호'
             }
         }
 
@@ -2055,6 +2080,8 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 }
             }
             [string]$contracts.Worker['OutboxRelay__Enabled'] | Should -BeExactly 'false'
+            [string]$contracts.Worker['Purview__DefaultSensitiveInformationTypeId'] | Should -BeExactly ''
+            [string]$contracts.Worker['Purview__DefaultSensitiveInformationType'] | Should -BeExactly ''
         }
 
         It 'rejects partial Container App mismatch <Mutation>' -ForEach @(

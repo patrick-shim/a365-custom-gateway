@@ -106,6 +106,36 @@ public sealed class BootstrapPlanPreparationCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task PurviewProofInvalidatedAfterSnapshot_PreservesCanonicalAndDoesNotLaunchPlan()
+    {
+        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
+        var atomicWriter = new BlockingAtomicFileWriter();
+        var factory = new SnapshotReadingCommandFactory(
+            Path.Combine(root, "bootstrap", "config.json"));
+        var execution = CreateExecution(factory);
+        var preparation = CreatePreparation(atomicWriter, execution);
+        var form = ValidForm("gwpurv", "koreacentral");
+        form.PurviewEnabled = true;
+        form.PurviewSensitiveInformationTypeId = Guid.NewGuid();
+        form.PurviewSensitiveInformationType = "주민등록번호";
+        var state = ReadyState(form);
+
+        var preparationTask = preparation.TryPrepareAndStartAsync(
+            state,
+            explicitlyConfirmed: true);
+        await atomicWriter.WaitUntilEnteredAsync();
+        state.BeginPurviewSensitiveInformationTypeDiscovery();
+        atomicWriter.Release();
+
+        var result = await preparationTask;
+
+        result.Status.Should().Be(BootstrapPlanPreparationStatus.StateChanged);
+        File.Exists(Path.Combine(root, "bootstrap", "config.json")).Should().BeFalse();
+        factory.PlanSnapshots.Should().BeEmpty();
+        execution.Snapshot().Status.Should().Be(BootstrapExecutionStatus.NotStarted);
+    }
+
+    [Fact]
     public async Task ProvisionalFileDrift_DoesNotPublishOrLaunchPlan()
     {
         Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
@@ -249,6 +279,19 @@ public sealed class BootstrapPlanPreparationCoordinatorTests : IDisposable
             form.SubscriptionId,
             [new AzureLocation(form.Location, "Selected region")],
             null));
+        if (form.PurviewEnabled)
+        {
+            state.ApplyPurviewSensitiveInformationTypeDiscovery(new(
+                form.SubscriptionId,
+                form.TenantId,
+                [new PurviewSensitiveInformationType(
+                    form.PurviewSensitiveInformationTypeId,
+                    form.PurviewSensitiveInformationType,
+                    "Test publisher")],
+                PurviewSensitiveInformationTypeDiscovery.Provenance,
+                null));
+        }
+
         return state;
     }
 
@@ -267,6 +310,7 @@ public sealed class BootstrapPlanPreparationCoordinatorTests : IDisposable
         PromptShieldEnabled = false,
         PromptShieldSkuName = "F0",
         PurviewEnabled = false,
+        PurviewSensitiveInformationTypeId = Guid.Empty,
         PurviewSensitiveInformationType = string.Empty
     };
 

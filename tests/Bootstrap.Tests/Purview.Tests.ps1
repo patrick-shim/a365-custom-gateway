@@ -6,6 +6,7 @@ Describe 'Purview exact typed readback' {
     InModuleScope Purview {
         BeforeEach {
             $script:blueprintId = '11111111-1111-4111-8111-111111111111'
+            $script:sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
             $script:enterpriseAiAppsCollectionLocationId = 'ee1680d0-702f-4090-b26c-c49091e86531'
             $script:collectionLocations = ConvertTo-Json -InputObject @(@{
                 Workload = 'Applications'
@@ -91,6 +92,13 @@ Describe 'Purview exact typed readback' {
             Mock New-FeatureConfiguration { $script:observedCollectionLocations = $Locations }
             Mock New-DlpCompliancePolicy { $script:observedDlpLocations = $Locations }
             Mock New-DlpComplianceRule {}
+            Mock Resolve-BootstrapPurviewSensitiveInformationType {
+                [pscustomobject]@{
+                    id = $script:sensitiveInformationTypeId
+                    name = 'Credit Card Number'
+                    publisher = 'Microsoft Corporation'
+                }
+            }
             Mock Get-BootstrapPurviewPolicyEvidence { [ordered]@{ configured = $true } }
             $config = [pscustomobject]@{
                 tenantId = '22222222-2222-4222-8222-222222222222'
@@ -99,6 +107,7 @@ Describe 'Purview exact typed readback' {
                     collectionPolicyName = 'Collection'
                     dlpPolicyName = 'Policy'
                     dlpRuleName = 'Rule'
+                    sensitiveInformationTypeId = $script:sensitiveInformationTypeId
                     sensitiveInformationType = 'Credit Card Number'
                 }
             }
@@ -116,6 +125,12 @@ Describe 'Purview exact typed readback' {
                 Should -BeExactly 'Group'
             (@($script:observedDlpLocations | ConvertFrom-Json))[0].LocationType |
                 Should -BeExactly 'Individual'
+            Should -Invoke Resolve-BootstrapPurviewSensitiveInformationType -Times 2 -Exactly -ParameterFilter {
+                $Id -ceq $script:sensitiveInformationTypeId -and $Name -ceq 'Credit Card Number'
+            }
+            Should -Invoke New-DlpComplianceRule -Times 1 -Exactly -ParameterFilter {
+                $ContentContainsSensitiveInformation.Name -ceq 'Credit Card Number'
+            }
         }
 
         It 'accepts only the exact reviewed collection, policy, and rule fields' {
@@ -183,7 +198,7 @@ Describe 'Purview exact typed readback' {
 
             { Assert-BootstrapPurviewCollectionObject -Collection $collection -Name 'Collection' } | Should -Not -Throw
             { Assert-BootstrapPurviewPolicyObject -Policy $policy -Name 'Policy' -BlueprintApplicationId $script:blueprintId } | Should -Not -Throw
-            { Assert-BootstrapPurviewRuleObject -Rule $rule -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationType 'Credit Card Number' } | Should -Not -Throw
+            { Assert-BootstrapPurviewRuleObject -Rule $rule -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationTypeId $script:sensitiveInformationTypeId -SensitiveInformationType 'Credit Card Number' } | Should -Not -Throw
         }
 
         It 'rejects collection and DLP location types when their contracts are conflated' {
@@ -242,7 +257,7 @@ Describe 'Purview exact typed readback' {
                 RestrictAccess = @(@{ setting = 'DownloadText'; value = 'Audit' })
             }
 
-            { Assert-BootstrapPurviewRuleObject -Rule $rule -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationType 'Credit Card Number' } |
+            { Assert-BootstrapPurviewRuleObject -Rule $rule -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationTypeId $script:sensitiveInformationTypeId -SensitiveInformationType 'Credit Card Number' } |
                 Should -Throw '*classifier does not exactly match*'
         }
 
@@ -312,7 +327,7 @@ Describe 'Purview exact typed readback' {
                 foreach ($entry in $baseline.GetEnumerator()) { $rule[$entry.Key] = $entry.Value }
                 foreach ($entry in $unreviewed.GetEnumerator()) { $rule[$entry.Key] = $entry.Value }
 
-                { Assert-BootstrapPurviewRuleObject -Rule $rule -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationType 'Credit Card Number' } |
+                { Assert-BootstrapPurviewRuleObject -Rule $rule -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationTypeId $script:sensitiveInformationTypeId -SensitiveInformationType 'Credit Card Number' } |
                     Should -Throw
             }
         }
@@ -339,9 +354,9 @@ Describe 'Purview exact typed readback' {
                 RestrictAccess = @(@{ setting = 'UploadText'; value = 'Block' })
             }
 
-            { Assert-BootstrapPurviewRuleObject -Rule $duplicate -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationType 'Credit Card Number' } |
+            { Assert-BootstrapPurviewRuleObject -Rule $duplicate -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationTypeId $script:sensitiveInformationTypeId -SensitiveInformationType 'Credit Card Number' } |
                 Should -Throw '*classifier does not exactly match*'
-            { Assert-BootstrapPurviewRuleObject -Rule $unknownClassifierField -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationType 'Credit Card Number' } |
+            { Assert-BootstrapPurviewRuleObject -Rule $unknownClassifierField -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationTypeId $script:sensitiveInformationTypeId -SensitiveInformationType 'Credit Card Number' } |
                 Should -Throw '*unrecognized meaningful property*'
         }
 
@@ -360,8 +375,129 @@ Describe 'Purview exact typed readback' {
                 RestrictAccess = @(@{ setting = 'UploadText'; value = 'Block' })
             }
 
-            { Assert-BootstrapPurviewRuleObject -Rule $rule -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationType 'Credit Card Number' } |
+            { Assert-BootstrapPurviewRuleObject -Rule $rule -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationTypeId $script:sensitiveInformationTypeId -SensitiveInformationType 'Credit Card Number' } |
                 Should -Throw '*thresholds or provider identity*'
+        }
+
+        It 'rejects a classifier GUID that differs from the configured tenant SIT GUID' {
+            $rule = [pscustomobject]@{
+                Name = 'Rule'
+                ParentPolicyName = 'Policy'
+                ContentContainsSensitiveInformation = @{
+                    Name = 'Credit Card Number'; classifiertype = 'Content'; mincount = '1'
+                    confidencelevel = 'High'; minconfidence = '85'; maxconfidence = '100'
+                    maxcount = '-1'; id = '99999999-9999-4999-8999-999999999999'
+                }
+                RestrictAccess = @(@{ setting = 'UploadText'; value = 'Block' })
+            }
+
+            { Assert-BootstrapPurviewRuleObject -Rule $rule -Name 'Rule' -PolicyName 'Policy' -SensitiveInformationTypeId $script:sensitiveInformationTypeId -SensitiveInformationType 'Credit Card Number' } |
+                Should -Throw '*thresholds or provider identity*'
+        }
+
+        It 'projects the tenant inventory deterministically without leaking provider fields' {
+            $types = @(ConvertTo-BootstrapPurviewSensitiveInformationTypeProjection -InputObject @(
+                [pscustomobject]@{
+                    Id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+                    Name = '中文類別'
+                    Publisher = 'Contoso'
+                    UnreviewedProviderBody = 'must-not-escape'
+                },
+                [pscustomobject]@{
+                    Id = $script:sensitiveInformationTypeId.ToUpperInvariant()
+                    Name = 'Credit Card Number'
+                    Publisher = 'Microsoft Corporation'
+                }
+            ))
+
+            $types.Count | Should -Be 2
+            $types[0].id | Should -BeExactly $script:sensitiveInformationTypeId
+            $types[0].name | Should -BeExactly 'Credit Card Number'
+            $types[1].name | Should -BeExactly '中文類別'
+            @($types[0].PSObject.Properties.Name) | Should -Be @('id', 'name', 'publisher')
+            @($types[1].PSObject.Properties.Name) | Should -Be @('id', 'name', 'publisher')
+        }
+
+        It 'enumerates tenant SITs with the documented no-argument command and masks provider failures' {
+            function Get-DlpSensitiveInformationType { param($Identity, $ErrorAction) }
+            Mock Get-DlpSensitiveInformationType {
+                [pscustomobject]@{
+                    Id = $script:sensitiveInformationTypeId
+                    Name = 'Credit Card Number'
+                    Publisher = 'Microsoft Corporation'
+                }
+            }
+
+            @(Get-BootstrapPurviewSensitiveInformationTypes).Count | Should -Be 1
+            Should -Invoke Get-DlpSensitiveInformationType -Times 1 -Exactly
+
+            Mock Get-DlpSensitiveInformationType { throw 'private-provider-marker' }
+            try {
+                Get-BootstrapPurviewSensitiveInformationTypes
+                throw 'Expected provider failure.'
+            }
+            catch {
+                $_.Exception.Message | Should -BeLike '*inventory could not be read*'
+                $_.Exception.Message | Should -Not -BeLike '*private-provider-marker*'
+            }
+        }
+
+        It 'fails closed for ambiguous, malformed, or oversized tenant inventory' {
+            { ConvertTo-BootstrapPurviewSensitiveInformationTypeProjection -InputObject @(
+                [pscustomobject]@{ Id = $script:sensitiveInformationTypeId; Name = 'Duplicate'; Publisher = 'One' },
+                [pscustomobject]@{ Id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'; Name = 'Duplicate'; Publisher = 'Two' }
+            ) } | Should -Throw '*duplicate exact Name*'
+            { ConvertTo-BootstrapPurviewSensitiveInformationTypeProjection -InputObject @(
+                [pscustomobject]@{ Id = 'not-a-guid'; Name = 'Invalid'; Publisher = 'One' }
+            ) } | Should -Throw '*invalid Id*'
+            $tooMany = @(1..2049 | ForEach-Object {
+                [pscustomobject]@{ Id = [guid]::NewGuid(); Name = "Type $_"; Publisher = 'Publisher' }
+            })
+            { ConvertTo-BootstrapPurviewSensitiveInformationTypeProjection -InputObject $tooMany } |
+                Should -Throw '*2048-item limit*'
+        }
+
+        It 'preserves an exact 255-character Unicode Name and rejects 256 characters' {
+            $acceptedName = '類' * 255
+            $accepted = @(ConvertTo-BootstrapPurviewSensitiveInformationTypeProjection -InputObject @(
+                [pscustomobject]@{
+                    Id = $script:sensitiveInformationTypeId
+                    Name = $acceptedName
+                    Publisher = 'Publisher'
+                }
+            ))
+            $accepted[0].name | Should -BeExactly $acceptedName
+            $accepted[0].name.Length | Should -Be 255
+
+            { ConvertTo-BootstrapPurviewSensitiveInformationTypeProjection -InputObject @(
+                [pscustomobject]@{
+                    Id = $script:sensitiveInformationTypeId
+                    Name = ('類' * 256)
+                    Publisher = 'Publisher'
+                }
+            ) } | Should -Throw '*invalid Name*'
+        }
+
+        It 're-resolves by canonical GUID and requires the exact Unicode Name' {
+            function Get-DlpSensitiveInformationType { param($Identity, $ErrorAction) }
+            Mock Get-DlpSensitiveInformationType {
+                @(
+                    [pscustomobject]@{ Id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'; Name = 'Other'; Publisher = 'Contoso' },
+                    [pscustomobject]@{ Id = $script:sensitiveInformationTypeId; Name = 'クレジット カード番号'; Publisher = 'Microsoft Corporation' }
+                )
+            }
+
+            $resolved = Resolve-BootstrapPurviewSensitiveInformationType `
+                -Id $script:sensitiveInformationTypeId.ToUpperInvariant() `
+                -Name 'クレジット カード番号'
+            $resolved.id | Should -BeExactly $script:sensitiveInformationTypeId
+            $resolved.name | Should -BeExactly 'クレジット カード番号'
+            Should -Invoke Get-DlpSensitiveInformationType -Times 1 -Exactly
+
+            { Resolve-BootstrapPurviewSensitiveInformationType `
+                -Id $script:sensitiveInformationTypeId `
+                -Name 'クレジットカード番号' } |
+                Should -Throw '*ID and exact Name no longer match*'
         }
     }
 }

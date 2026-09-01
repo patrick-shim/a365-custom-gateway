@@ -3,7 +3,7 @@ using Gateway.Setup.Models;
 
 namespace Gateway.Setup.Services;
 
-internal sealed class SetupWizardState
+internal sealed partial class SetupWizardState
 {
     private readonly object sync = new();
     private IReadOnlyList<AzureSubscription> subscriptions = [];
@@ -202,6 +202,7 @@ internal sealed class SetupWizardState
             lock (sync)
             {
                 ResetLocationDiscoveryUnsafe(clearForm: false);
+                ResetPurviewSensitiveInformationTypeDiscoveryUnsafe(clearForm: false);
                 managerApplicationsAccepted = true;
                 acceptedManagerApplicationSubscriptionId = Form.SubscriptionId;
                 acceptedManagerApplicationTenantId = Form.TenantId;
@@ -232,6 +233,8 @@ internal sealed class SetupWizardState
                     ResetManagerApplicationReview(clearForm: true);
                 }
                 ResetLocationDiscovery(clearForm: !ExistingConfigurationLoaded);
+                ResetPurviewSensitiveInformationTypeDiscovery(
+                    clearForm: !ExistingConfigurationLoaded);
                 AccountSelectionIssue =
                     "The subscription recorded in bootstrap/config.json is not available in the current Azure CLI session. " +
                     "Sign in to that exact tenant/subscription; Setup will not silently switch the deployment target.";
@@ -245,6 +248,8 @@ internal sealed class SetupWizardState
                     ResetManagerApplicationReview(clearForm: true);
                 }
                 ResetLocationDiscovery(clearForm: !ExistingConfigurationLoaded);
+                ResetPurviewSensitiveInformationTypeDiscovery(
+                    clearForm: !ExistingConfigurationLoaded);
                 AccountSelectionIssue =
                     "The exact subscription is present in Azure CLI but is not Enabled. " +
                     "Setup will not deploy to a disabled or unavailable subscription.";
@@ -262,6 +267,7 @@ internal sealed class SetupWizardState
                 Form.ClearSubscription();
                 ResetManagerApplicationReview(clearForm: true);
                 ResetLocationDiscovery(clearForm: true);
+                ResetPurviewSensitiveInformationTypeDiscovery(clearForm: true);
                 AccountSelectionIssue =
                     "No enabled Azure subscription is available in the current CLI session.";
                 return;
@@ -272,6 +278,7 @@ internal sealed class SetupWizardState
                 Form.ClearSubscription();
                 ResetManagerApplicationReview(clearForm: true);
                 ResetLocationDiscovery(clearForm: true);
+                ResetPurviewSensitiveInformationTypeDiscovery(clearForm: true);
                 AccountSelectionIssue = null;
                 return;
             }
@@ -287,6 +294,8 @@ internal sealed class SetupWizardState
             if (targetChanged)
             {
                 ResetLocationDiscovery(clearForm: !ExistingConfigurationLoaded);
+                ResetPurviewSensitiveInformationTypeDiscovery(
+                    clearForm: !ExistingConfigurationLoaded);
             }
         }
     }
@@ -313,6 +322,7 @@ internal sealed class SetupWizardState
         {
             ResetManagerApplicationReview(clearForm: true);
             ResetLocationDiscovery(clearForm: true);
+            ResetPurviewSensitiveInformationTypeDiscovery(clearForm: true);
         }
 
         return true;
@@ -485,7 +495,7 @@ internal sealed class SetupWizardState
             if (!CanWriteConfigurationAndRunPlanUnsafe())
             {
                 throw new ValidationException(
-                    "The selected subscription, Azure region, or Agent 365 manager review is no longer current. Return to Profile, refresh the exact target inventory, and review it again before Plan.");
+                    "The selected subscription, Azure region, Agent 365 manager review, or enabled Purview sensitive information type proof is no longer current. Return to Profile, refresh the exact target inventory, and review it again before Plan.");
             }
 
             var validationResults = new List<ValidationResult>();
@@ -617,7 +627,8 @@ internal sealed class SetupWizardState
     private bool CanWriteConfigurationAndRunPlanUnsafe() =>
         HasEnabledSelectedSubscriptionUnsafe() &&
         HasValidSelectedLocationUnsafe() &&
-        ManagerApplicationsAcceptedUnsafe();
+        ManagerApplicationsAcceptedUnsafe() &&
+        (!Form.PurviewEnabled || HasValidPurviewSensitiveInformationTypeSelectionUnsafe());
 }
 
 internal sealed record PlanReadyConfiguration(

@@ -75,6 +75,20 @@ service-availability claim. Doctor, Plan, and the pre-mutation Apply revalidatio
 fail closed unless the exact configured Azure SQL tier, objective, 2 GiB size, and
 LRS storage path are currently reported Available or Default.
 
+On Windows, enabling Purview policy authoring makes Setup load the signed-in
+tenant's real sensitive-information-type inventory through Security & Compliance
+PowerShell. The user must explicitly load and select one item from a native
+dropdown; there is no typed value, static fallback, or default selection in Setup,
+Bicep, or runtime options. The configuration stores the type's canonical GUID and
+exact current Unicode Name as a pair. Setup verifies the selected Azure tenant and
+the signed-in Microsoft Graph user before discovery. Plan validates the persisted
+pair without claiming a live tenant-inventory read. Policy authoring and readback
+re-enumerate the tenant inventory and reject a missing, duplicate, or renamed
+selection. Core bootstrap remains available on macOS and Linux with Purview off;
+Microsoft currently documents Security & Compliance PowerShell as unavailable in
+PowerShell 7 on those clients. Purview-enabled Up, Apply, Resume, and Verify stop
+on a non-Windows workstation before Azure, Graph, or compliance-provider access.
+
 ## Provisioning contract
 
 The v3 worker performs blueprint resolution, principal creation, Gateway federation,
@@ -115,19 +129,19 @@ The consolidated source gate completed on 2026-09-01:
 
 | Verification project | Passed | Failed | Skipped |
 |---|---:|---:|---:|
-| Gateway.UnitTests | 632 | 0 | 0 |
+| Gateway.UnitTests | 640 | 0 | 0 |
 | Gateway.AdminUi.Tests | 157 | 0 | 0 |
-| Gateway.Setup.Tests | 180 | 0 | 0 |
+| Gateway.Setup.Tests | 242 | 0 | 0 |
 | Gateway.ObservabilityRuntime.Tests | 158 | 0 | 0 |
 | Gateway.ArchitectureTests | 115 | 0 | 0 |
 | Gateway.IntegrationTests | 85 | 0 | 0 |
 | Gateway.EndToEndTests | 102 | 0 | 0 |
 | Gateway.SecurityTests | 126 | 0 | 0 |
-| **.NET total** | **1,555** | **0** | **0** |
+| **.NET total** | **1,625** | **0** | **0** |
 
-The PowerShell source gate discovered 675 tests: 674 passed, none failed, and one
+The PowerShell source gate discovered 708 tests: 707 passed, none failed, and one
 Windows-only launcher case was intentionally skipped on macOS. It
-validated 17 PowerShell source files and two JSON contracts, then compiled 26 Bicep
+validated 18 PowerShell source files and two JSON contracts, then compiled 26 Bicep
 templates and three Bicep parameter files. Release build completed with zero
 warnings and zero errors; `dotnet format --verify-no-changes`, whitespace, launcher
 syntax, OpenAPI YAML parsing, local documentation links, and ignored secret/state
@@ -136,7 +150,10 @@ path checks also passed.
 Setup regression coverage now includes Windows-safe Azure CLI/Bicep invocation,
 one circuit-scoped wizard under a single interactive router, explicit subscription
 selection, and a subscription-backed native region dropdown that stores canonical
-Azure names. Plan verifies the exact selected regional SQL contract, and Setup
+Azure names. It also covers the tenant-backed Purview sensitive-information-type
+dropdown, exact GUID-plus-Name persistence, selected-account binding, and rejection
+of malformed identity or inventory data before policy commands. Plan verifies the
+exact selected regional SQL contract, and Setup
 binds the reviewed configuration bytes to the Plan process before PowerShell parses
 them. A failed Plan returns to reviewed preparation; it cannot invoke a direct retry
 with stale configuration. Configuration readers normalize the previously emitted
@@ -147,7 +164,7 @@ Recovery coverage includes exact source-continuation provenance, rejection of
 unexpected changed paths and a third generation, tamper detection for preserved
 history and completed-prefix evidence, and the deterministic governance-NSG
 What-If extension on later Resume. These cases are included in the consolidated
-675-test source gate above.
+708-test source gate above.
 
 ## Known external limitations
 
@@ -156,6 +173,8 @@ What-If extension on later Resume. These cases are included in the consolidated
 - Managed-identity role changes can take time to appear in tokens.
 - Purview FeatureConfiguration cmdlets are Public Preview and are not available in
   every organization.
+- Security & Compliance PowerShell is unavailable in PowerShell 7 on macOS and
+  Linux, so optional bootstrap SIT inventory and policy authoring require Windows.
 - `downloadText` may be offline; do not claim response-side inline enforcement.
 - Local tests and policy readback are not live deployment or provider-verdict proof.
 

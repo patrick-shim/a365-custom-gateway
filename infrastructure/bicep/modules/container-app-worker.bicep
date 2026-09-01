@@ -95,7 +95,10 @@ param purviewPolicyProvisioningApplicationId string = ''
 param purviewPolicyProvisioningCertificateSecretUri string = ''
 
 @description('Sensitive information type used by the reviewed default DLP rule template.')
-param purviewDefaultSensitiveInformationType string = 'Credit Card Number'
+param purviewDefaultSensitiveInformationType string = ''
+
+@description('Stable GUID of the sensitive information type paired with the exact current Name used by the reviewed default DLP rule template.')
+param purviewDefaultSensitiveInformationTypeId string = ''
 
 @description('Tags to apply to the resource.')
 param tags object = {}
@@ -218,6 +221,10 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
             {
               name: 'Purview__PolicyProvisioningCertificateSecretUri'
               value: purviewPolicyProvisioningCertificateSecretUri
+            }
+            {
+              name: 'Purview__DefaultSensitiveInformationTypeId'
+              value: purviewDefaultSensitiveInformationTypeId
             }
             {
               name: 'Purview__DefaultSensitiveInformationType'

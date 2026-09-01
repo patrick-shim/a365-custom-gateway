@@ -50,8 +50,13 @@ flowchart TD
   the role assignments shown by Plan
 - an administrator able to approve the Entra and Agent ID changes
 - Agent 365 tenant eligibility and licensing
-- for optional Purview provisioning, an approved Security & Compliance PowerShell
-  application, certificate in Key Vault, and the required Purview roles
+- for optional Purview policy authoring, the same work account that Azure CLI and
+  Microsoft Graph resolve for the selected tenant, with Graph `userType=Member` and
+  the required Security & Compliance PowerShell roles; a `Guest` result or
+  mismatched Security & Compliance session is rejected. Gateway-managed profile
+  automation additionally requires its approved application and Key Vault
+  certificate path; run this optional flow from Windows because Microsoft currently
+  documents `Connect-IPPSSession` as unavailable in PowerShell 7 on macOS and Linux
 
 The installer uses official Microsoft sign-in surfaces. It never asks you to paste
 an Azure password, access token, client secret, certificate, or Gateway key into its
@@ -76,12 +81,30 @@ az login
 Setup listens only on an ephemeral `127.0.0.1` port. It lets you select a
 subscription visible to Azure CLI, loads that subscription's physical Azure
 locations into a dropdown, discovers compatible Agent 365 manager applications,
-lets you choose optional features, and writes `bootstrap/config.json`. Region labels
-are paired with their canonical Azure values—for example,
+and lets you choose optional features. The core installer remains supported on
+Windows, macOS, and Linux. The optional Purview inventory and policy-authoring path
+is Windows-only: Microsoft currently documents `Connect-IPPSSession` and Security &
+Compliance PowerShell as unavailable in PowerShell 7 on
+[macOS and Linux](https://learn.microsoft.com/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps#supported-operating-systems-for-the-exchange-online-powershell-module).
+On macOS or Linux, leave Purview disabled or run Purview selection and bootstrap
+from Windows; an attempted terminal selection stops before Microsoft Graph,
+Security & Compliance, or sensitive-information-type inventory calls. On Windows,
+if Purview is selected, click **Load tenant types**. That explicit action opens
+Microsoft's Security & Compliance PowerShell sign-in for the same work account that
+Azure CLI and Microsoft Graph resolved in the selected tenant. Graph must report
+`userType=Member`; a `Guest`
+result or mismatched Security & Compliance session is rejected. Use **Retry tenant
+type discovery** if sign-in or inventory loading fails.
+The native dropdown has no implicit selection and shows every returned exact
+Unicode name with its GUID and publisher. Choose the type your organization
+approves. Setup stores both its GUID and exact current name; there is no static
+catalog or free-text classifier fallback. Region labels are paired with their
+canonical Azure values—for example,
 `Korea Central · koreacentral`—and the configuration stores `koreacentral`. Setup
-does not accept a free-text region or silently choose one. It then runs Plan,
-displays the exact deployment boundaries, and requires a second explicit
-confirmation before Apply or Resume.
+does not accept a free-text region or silently choose one. Only after every required
+selection has current proof does Setup atomically write `bootstrap/config.json`.
+It then runs Plan, displays the exact deployment boundaries, and requires a second
+explicit confirmation before Apply or Resume.
 
 Keep the terminal open. Deployment may hand control to official Microsoft browser
 windows for refreshed Azure, Entra, Agent ID, or Purview authentication. Setup
@@ -149,6 +172,12 @@ Configuration selects:
 - development-only Registry preview enablement; and
 - optional Prompt Shields and Purview settings.
 
+When Purview is enabled, configuration binds `sensitiveInformationTypeId` to the
+exact `sensitiveInformationType` name returned for that GUID. Setup and terminal
+`init` obtain this pair from the live tenant inventory. They store the GUID in
+canonical lowercase `D` form and preserve the Name exactly without trimming,
+case-folding, translation, or Unicode normalization.
+
 The deployment profile matters. A development configuration may explicitly enable
 the preview Registry path so a registration can reach Gateway-reported `Active`.
 Staging and production configurations keep Registry creation closed.
@@ -211,13 +240,19 @@ in individually in the Admin UI.
 
 ### Microsoft Purview
 
-Set `purview.enabled` to `true` and provide a reviewed sensitive-information type
-only when you want bootstrap to prepare the optional policy-authoring path. If
-`policyProvisioningEnabled` is true, deployment pauses for the authorized Security
-& Compliance PowerShell sign-in and provisions then reads back the policy contract.
-Bootstrap always deploys the Gateway with `Purview__Enabled=false`; enabling runtime
-enforcement requires the separate token-role and bounded data-plane checks in the
-Purview runbook.
+Set `purview.enabled` to `true` only when you want bootstrap to prepare the optional
+policy-authoring path. This optional path runs only on Windows; core bootstrap is
+still supported on macOS and Linux when Purview is disabled. Guided Setup and
+terminal `init` connect through
+`Connect-IPPSSession`, enumerate the selected tenant with
+`Get-DlpSensitiveInformationType`, and require an explicit no-default selection.
+The selected GUID is re-resolved and must still map to the exact stored name before
+configuration publication, policy mutation, and typed readback; a removed, renamed,
+duplicated, unauthorized, malformed, or oversized inventory stops safely. If
+`policyProvisioningEnabled` is true, the Gateway-managed profile path additionally
+uses its approved certificate authority. Bootstrap always deploys the Gateway with
+`Purview__Enabled=false`; enabling runtime enforcement requires the separate
+token-role and bounded data-plane checks in the Purview runbook.
 
 Purview uses two distinct Application-plane locations:
 

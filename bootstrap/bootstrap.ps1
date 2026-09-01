@@ -671,6 +671,12 @@ $configuration = if ($expectedConfigurationFileFingerprintSupplied) {
 else {
     Read-BootstrapConfig -Path $Config
 }
+if ($configuration.purview.enabled -eq $true -and
+    $Mode -in @('Apply', 'Resume', 'Up', 'Verify') -and
+    -not (Test-BootstrapSecurityCompliancePlatformSupported)) {
+    throw 'Purview-enabled deployment and verification require Windows because Microsoft does not support Security & Compliance PowerShell for this workflow on macOS or Linux. Run this command from Windows, or keep Purview policy authoring off on this computer.'
+}
+
 $script:GatewayFailureStage = 'Bootstrap state'
 $script:GatewayFailureCode = 'state'
 $statePath = Get-BootstrapStatePath -Config $configuration

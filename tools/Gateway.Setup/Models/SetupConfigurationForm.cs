@@ -40,7 +40,9 @@ internal sealed class SetupConfigurationForm : IValidatableObject
 
     public bool PurviewEnabled { get; set; }
 
-    [Required(AllowEmptyStrings = true), StringLength(128)]
+    public Guid PurviewSensitiveInformationTypeId { get; set; }
+
+    [Required(AllowEmptyStrings = true), StringLength(255)]
     public string PurviewSensitiveInformationType { get; set; } = string.Empty;
 
     [Required, StringLength(200, MinimumLength = 1)]
@@ -123,6 +125,12 @@ internal sealed class SetupConfigurationForm : IValidatableObject
 
     public void ClearReviewedManagerApplicationIds() => ReviewedManagerApplicationIds = string.Empty;
 
+    public void ClearPurviewSensitiveInformationType()
+    {
+        PurviewSensitiveInformationTypeId = Guid.Empty;
+        PurviewSensitiveInformationType = string.Empty;
+    }
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (SubscriptionId == Guid.Empty)
@@ -153,10 +161,37 @@ internal sealed class SetupConfigurationForm : IValidatableObject
                 [nameof(ReviewedManagerApplicationIds)]);
         }
 
-        if (PurviewEnabled && string.IsNullOrWhiteSpace(PurviewSensitiveInformationType))
+        var purviewNameIsEmpty = string.IsNullOrEmpty(PurviewSensitiveInformationType);
+        if ((PurviewSensitiveInformationTypeId == Guid.Empty) != purviewNameIsEmpty)
         {
             yield return new ValidationResult(
-                "Enter the exact tenant-approved Purview sensitive information type.",
+                "The Purview sensitive information type GUID and exact Name must be selected together.",
+                [nameof(PurviewSensitiveInformationTypeId), nameof(PurviewSensitiveInformationType)]);
+        }
+
+        if (!purviewNameIsEmpty &&
+            (!string.Equals(
+                PurviewSensitiveInformationType,
+                PurviewSensitiveInformationType.Trim(),
+                StringComparison.Ordinal) ||
+             PurviewSensitiveInformationType.Any(char.IsControl)))
+        {
+            yield return new ValidationResult(
+                "The Purview sensitive information type Name must match the tenant inventory exactly without trimming or control characters.",
+                [nameof(PurviewSensitiveInformationType)]);
+        }
+
+        if (PurviewEnabled && PurviewSensitiveInformationTypeId == Guid.Empty)
+        {
+            yield return new ValidationResult(
+                "Select a Purview sensitive information type GUID from the current tenant inventory.",
+                [nameof(PurviewSensitiveInformationTypeId)]);
+        }
+
+        if (PurviewEnabled && purviewNameIsEmpty)
+        {
+            yield return new ValidationResult(
+                "Select the exact Purview sensitive information type Name from the current tenant inventory.",
                 [nameof(PurviewSensitiveInformationType)]);
         }
 

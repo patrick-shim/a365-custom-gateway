@@ -117,7 +117,11 @@
         "collectionPolicyName": { "type": "string", "minLength": 1 },
         "dlpPolicyName": { "type": "string", "minLength": 1 },
         "dlpRuleName": { "type": "string", "minLength": 1 },
-        "sensitiveInformationType": { "type": "string" },
+        "sensitiveInformationTypeId": {
+          "type": "string",
+          "pattern": "^(?:|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})$"
+        },
+        "sensitiveInformationType": { "type": "string", "maxLength": 255 },
         "policyProvisioningEnabled": { "type": "boolean" },
         "policyProvisioningOrganization": { "type": "string" },
         "policyProvisioningApplicationId": { "type": "string" },
@@ -160,8 +164,13 @@
         "properties": {
           "purview": {
             "properties": {
+              "sensitiveInformationTypeId": {
+                "format": "uuid",
+                "not": { "const": "00000000-0000-0000-0000-000000000000" }
+              },
               "sensitiveInformationType": { "minLength": 1 }
-            }
+            },
+            "required": ["sensitiveInformationTypeId", "sensitiveInformationType"]
           }
         }
       }

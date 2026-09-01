@@ -253,6 +253,179 @@ function Test-GatewayRawObjectProperty {
     return $true
 }
 
+function Test-GatewayExactObjectShape {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][object]$Object,
+        [Parameter(Mandatory)][string[]]$PropertyNames
+    )
+
+    if ($null -eq $Object) { return $false }
+    $actualNames = [Collections.Generic.List[string]]::new()
+    if ($Object -is [System.Collections.IDictionary]) {
+        foreach ($key in $Object.Keys) {
+            if ($key -isnot [string]) { return $false }
+            $actualNames.Add($key)
+        }
+    }
+    elseif ($Object.GetType() -eq [System.Management.Automation.PSCustomObject]) {
+        foreach ($property in $Object.PSObject.Properties) {
+            $actualNames.Add([string]$property.Name)
+        }
+    }
+    else {
+        return $false
+    }
+
+    if ($actualNames.Count -ne $PropertyNames.Count) { return $false }
+    $actualSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($actualName in $actualNames) {
+        if (-not $actualSet.Add($actualName)) { return $false }
+    }
+    foreach ($propertyName in $PropertyNames) {
+        if (-not $actualSet.Contains($propertyName)) { return $false }
+    }
+    return $true
+}
+
+function Test-GatewayCanonicalNonEmptyGuidString {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory)][ref]$CanonicalValue
+    )
+
+    $CanonicalValue.Value = ''
+    if ($Value -isnot [string]) { return $false }
+    $parsed = [guid]::Empty
+    if (-not [guid]::TryParseExact($Value, 'D', [ref]$parsed) -or $parsed -eq [guid]::Empty) {
+        return $false
+    }
+    $canonical = $parsed.ToString('D')
+    if ($Value -cne $canonical) { return $false }
+    $CanonicalValue.Value = $canonical
+    return $true
+}
+
+function Get-GatewaySelectedTenantGraphMember {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SubscriptionId,
+        [Parameter(Mandatory)][string]$TenantId
+    )
+
+    $selectionFailure = 'Azure CLI did not prove the exact selected subscription and tenant. Purview was not opened.'
+    $selectedSubscription = [guid]::Empty
+    $selectedTenant = [guid]::Empty
+    if (-not [guid]::TryParse($SubscriptionId, [ref]$selectedSubscription) -or
+        $selectedSubscription -eq [guid]::Empty -or
+        -not [guid]::TryParse($TenantId, [ref]$selectedTenant) -or
+        $selectedTenant -eq [guid]::Empty) {
+        throw $selectionFailure
+    }
+    $canonicalSubscriptionId = $selectedSubscription.ToString('D')
+    $canonicalTenantId = $selectedTenant.ToString('D')
+
+    $account = Invoke-GatewayAzJson -Arguments @(
+        'account', 'show',
+        '--subscription', $canonicalSubscriptionId,
+        '--query', '{id:id,tenantId:tenantId,state:state}'
+    )
+    if (-not (Test-GatewayExactObjectShape -Object $account -PropertyNames @('id', 'tenantId', 'state'))) {
+        throw $selectionFailure
+    }
+    $accountSubscriptionValue = $null
+    $accountTenantValue = $null
+    $accountStateValue = $null
+    if (-not (Test-GatewayRawObjectProperty -Object $account -Name 'id' -Value ([ref]$accountSubscriptionValue)) -or
+        -not (Test-GatewayRawObjectProperty -Object $account -Name 'tenantId' -Value ([ref]$accountTenantValue)) -or
+        -not (Test-GatewayRawObjectProperty -Object $account -Name 'state' -Value ([ref]$accountStateValue))) {
+        throw $selectionFailure
+    }
+    $accountSubscriptionId = ''
+    $accountTenantId = ''
+    if (-not (Test-GatewayCanonicalNonEmptyGuidString -Value $accountSubscriptionValue -CanonicalValue ([ref]$accountSubscriptionId)) -or
+        -not (Test-GatewayCanonicalNonEmptyGuidString -Value $accountTenantValue -CanonicalValue ([ref]$accountTenantId)) -or
+        $accountSubscriptionId -cne $canonicalSubscriptionId -or
+        $accountTenantId -cne $canonicalTenantId -or
+        $accountStateValue -isnot [string] -or
+        $accountStateValue -cne 'Enabled') {
+        throw $selectionFailure
+    }
+
+    $graphFailure = 'Microsoft Graph returned an unexpected /me identity response for the selected tenant. Purview was not opened.'
+    $graphUser = Invoke-GatewayAzJson -Arguments @(
+        'rest', '--method', 'GET',
+        '--url', 'https://graph.microsoft.com/v1.0/me?$select=id,userPrincipalName,userType',
+        '--resource', 'https://graph.microsoft.com/',
+        '--subscription', $canonicalSubscriptionId,
+        '--query', '{id:id,userPrincipalName:userPrincipalName,userType:userType}'
+    )
+    if (-not (Test-GatewayExactObjectShape -Object $graphUser -PropertyNames @('id', 'userPrincipalName', 'userType'))) {
+        throw $graphFailure
+    }
+    $graphUserIdValue = $null
+    $userPrincipalNameValue = $null
+    $userTypeValue = $null
+    if (-not (Test-GatewayRawObjectProperty -Object $graphUser -Name 'id' -Value ([ref]$graphUserIdValue)) -or
+        -not (Test-GatewayRawObjectProperty -Object $graphUser -Name 'userPrincipalName' -Value ([ref]$userPrincipalNameValue)) -or
+        -not (Test-GatewayRawObjectProperty -Object $graphUser -Name 'userType' -Value ([ref]$userTypeValue))) {
+        throw $graphFailure
+    }
+    $canonicalGraphUserId = ''
+    if (-not (Test-GatewayCanonicalNonEmptyGuidString -Value $graphUserIdValue -CanonicalValue ([ref]$canonicalGraphUserId)) -or
+        $userPrincipalNameValue -isnot [string] -or
+        $userPrincipalNameValue.Length -lt 1 -or
+        $userPrincipalNameValue.Length -gt 254 -or
+        $userPrincipalNameValue -cne $userPrincipalNameValue.Trim() -or
+        $userPrincipalNameValue -match '[\p{Cc}\p{Cf}]' -or
+        $userPrincipalNameValue -cnotmatch '\A[^@\s]+@[^@\s]+\.[^@\s]+\z') {
+        throw $graphFailure
+    }
+    if ($userTypeValue -isnot [string] -or $userTypeValue -cne 'Member') {
+        throw 'Microsoft Graph did not report the signed-in user as userType Member in the selected tenant. Sign in with an authorized Member account and retry; Purview was not opened.'
+    }
+
+    return [pscustomobject][ordered]@{
+        tenantId = $canonicalTenantId
+        id = $canonicalGraphUserId
+        userPrincipalName = $userPrincipalNameValue
+        userType = $userTypeValue
+    }
+}
+
+function Test-GatewayPurviewPolicyAuthoringPlatform {
+    [CmdletBinding()]
+    param()
+
+    return [bool]$IsWindows
+}
+
+function Connect-GatewayPurviewSelectedTenantMember {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SubscriptionId,
+        [Parameter(Mandatory)][string]$TenantId
+    )
+
+    if (-not (Test-GatewayPurviewPolicyAuthoringPlatform)) {
+        throw 'Purview sensitive-information-type inventory and policy authoring require a Windows workstation because Microsoft currently does not make Connect-IPPSSession available in PowerShell 7 on macOS or Linux. Run Purview selection and bootstrap from Windows, or leave Purview disabled; core Gateway bootstrap remains available on macOS and Linux.'
+    }
+
+    $graphUser = Get-GatewaySelectedTenantGraphMember `
+        -SubscriptionId $SubscriptionId `
+        -TenantId $TenantId
+    $connectionId = Connect-BootstrapPurview `
+        -TenantId ([string]$graphUser.tenantId) `
+        -UserPrincipalName ([string]$graphUser.userPrincipalName)
+    return [pscustomobject][ordered]@{
+        connectionId = [string]$connectionId
+        userId = [string]$graphUser.id
+        userPrincipalName = [string]$graphUser.userPrincipalName
+        userType = [string]$graphUser.userType
+    }
+}
+
 function Get-GatewayAzureLocationsNextLink {
     [CmdletBinding()]
     param(
@@ -571,10 +744,41 @@ function New-GatewayBootstrapConfiguration {
     }
 
     $purviewEnabled = Read-GatewayYesNo -Prompt 'Author Purview Know Your Data and DLP policies during bootstrap (runtime remains disabled)' -Default $false
+    $sensitiveInformationTypeId = ''
     $sensitiveInformationType = ''
     if ($purviewEnabled) {
-        Write-Host 'Purview requires tenant licensing, authoring roles, interactive authentication, and an exact tenant-approved classifier.' -ForegroundColor Yellow
-        $sensitiveInformationType = Read-GatewayText -Prompt 'Exact Purview sensitive information type name' -Pattern '^.{1,200}$'
+        Write-Host 'Purview requires tenant licensing and authoring roles. Microsoft Graph /me must report the signed-in user as userType Member in the selected tenant.' -ForegroundColor Yellow
+        $purviewConnectionId = ''
+        try {
+            $purviewSession = Connect-GatewayPurviewSelectedTenantMember `
+                -SubscriptionId ([string]$subscription.id) `
+                -TenantId ([string]$subscription.tenantId)
+            $purviewConnectionId = [string]$purviewSession.connectionId
+            $tenantTypes = @(Get-BootstrapPurviewSensitiveInformationTypes)
+            $typeChoices = @($tenantTypes | ForEach-Object {
+                $publisher = ConvertTo-GatewaySafeDisplayText -Value $_.publisher -MaximumLength 120
+                if ([string]::IsNullOrWhiteSpace($publisher)) { $publisher = '(not reported)' }
+                [ordered]@{
+                    label = "$(ConvertTo-GatewaySafeDisplayText -Value $_.name -MaximumLength 255) — $([string]$_.id)"
+                    description = "Publisher: $publisher"
+                    value = $_
+                }
+            })
+            $selectedType = (Read-GatewayChoice `
+                -Prompt 'Choose a sensitive information type from this tenant' `
+                -Choices $typeChoices `
+                -DefaultIndex -1).value
+            $resolvedType = Resolve-BootstrapPurviewSensitiveInformationType `
+                -Id ([string]$selectedType.id) `
+                -Name ([string]$selectedType.name)
+            $sensitiveInformationTypeId = [string]$resolvedType.id
+            $sensitiveInformationType = [string]$resolvedType.name
+        }
+        finally {
+            if (-not [string]::IsNullOrWhiteSpace($purviewConnectionId)) {
+                Disconnect-BootstrapPurview -ConnectionId $purviewConnectionId
+            }
+        }
     }
 
     $root = Get-RepositoryRoot
@@ -603,6 +807,7 @@ function New-GatewayBootstrapConfiguration {
             collectionPolicyName = "A365 Gateway $projectName AI collection"
             dlpPolicyName = "A365 Gateway $projectName inline DLP"
             dlpRuleName = "A365 Gateway $projectName inline DLP rule"
+            sensitiveInformationTypeId = $sensitiveInformationTypeId
             sensitiveInformationType = $sensitiveInformationType
             policyProvisioningEnabled = $false
             policyProvisioningOrganization = ''
@@ -4089,6 +4294,7 @@ function Test-GatewayGroupDeploymentEvidence {
                 'Purview__PolicyProvisioningOrganization' = [string]$Config.purview.policyProvisioningOrganization
                 'Purview__PolicyProvisioningApplicationId' = [string]$Config.purview.policyProvisioningApplicationId
                 'Purview__PolicyProvisioningCertificateSecretUri' = [string]$Config.purview.policyProvisioningCertificateSecretUri
+                'Purview__DefaultSensitiveInformationTypeId' = [string]$Config.purview.sensitiveInformationTypeId
                 'Purview__DefaultSensitiveInformationType' = [string]$Config.purview.sensitiveInformationType
                 'DOTNET_ENVIRONMENT' = 'Production'
             }

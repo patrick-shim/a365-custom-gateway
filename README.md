@@ -21,6 +21,14 @@ administrator who can approve the Azure, Entra, Agent ID, and optional Purview
 changes shown by the installer. On the workstation, install Git, the .NET 10 SDK,
 PowerShell 7, and Azure CLI 2.76 or later.
 
+Core Gateway setup and deployment run on Windows, macOS, and Linux. The optional
+Purview sensitive-information-type inventory and policy-authoring flow currently
+requires Windows: Microsoft documents `Connect-IPPSSession` and Security &
+Compliance PowerShell as unavailable in PowerShell 7 on
+[macOS and Linux](https://learn.microsoft.com/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps#supported-operating-systems-for-the-exchange-online-powershell-module).
+On macOS or Linux, leave Purview disabled or run Purview selection and bootstrap
+from a Windows workstation.
+
 ```bash
 git clone https://github.com/patrick-shim/a365-custom-gateway.git
 cd a365-custom-gateway
@@ -32,11 +40,21 @@ On Windows, use `.\gateway.cmd setup` instead. Setup opens a temporary browser U
 `127.0.0.1`, discovers the subscriptions visible to the current Azure CLI session,
 and loads the selected subscription's physical Azure regions into a dropdown. The
 dropdown shows the friendly label and exact Azure name together—for example,
-`Korea Central · koreacentral`—and stores only the canonical name. Setup writes the
-reviewed non-secret `bootstrap/config.json`, proves the configured Azure SQL tier is
-available in that region, runs an authenticated Azure What-If plan, and waits for
-explicit confirmation before deployment. Complete any Microsoft sign-in or consent
-windows that open during deployment.
+`Korea Central · koreacentral`—and stores only the canonical name. On Windows, if
+you enable Purview, explicitly select **Load tenant types**. Setup opens the official
+Security & Compliance PowerShell sign-in for the same work account that Azure CLI and
+Microsoft Graph resolved in the selected tenant. Graph must report `userType` as
+`Member`; a `Guest` result or mismatched Security & Compliance session is rejected.
+**Retry tenant type discovery** is available if the sign-in or inventory fails. The
+no-default dropdown shows the tenant's real sensitive-information-type names,
+GUIDs, and publishers. Choose the type your organization approves; Setup stores its
+GUID with its exact current name and never asks you to type a classifier. Only after
+every required selection is current can Setup atomically write the reviewed
+non-secret `bootstrap/config.json`. It then
+proves the configured Azure SQL tier is available in the selected region, runs an
+authenticated Azure What-If plan, and waits for explicit confirmation before
+deployment. Complete any Microsoft sign-in or consent windows that open during
+setup or deployment.
 
 ```mermaid
 flowchart LR

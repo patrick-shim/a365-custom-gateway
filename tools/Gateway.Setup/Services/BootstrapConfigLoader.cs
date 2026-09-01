@@ -159,6 +159,8 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
             PromptShieldEnabled = configuration.PromptShield.Enabled,
             PromptShieldSkuName = configuration.PromptShield.SkuName,
             PurviewEnabled = configuration.Purview.Enabled,
+            PurviewSensitiveInformationTypeId = ParseSensitiveInformationTypeId(
+                configuration.Purview.SensitiveInformationTypeId),
             PurviewSensitiveInformationType = configuration.Purview.SensitiveInformationType,
             PurviewCollectionPolicyName = configuration.Purview.CollectionPolicyName,
             PurviewDlpPolicyName = configuration.Purview.DlpPolicyName,
@@ -170,6 +172,25 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
         ExistingConfigurationStatus.Rejected,
         null,
         guidance);
+
+    private static Guid ParseSensitiveInformationTypeId(string? value)
+    {
+        if (value == string.Empty)
+        {
+            return Guid.Empty;
+        }
+
+        if (value is null ||
+            !Guid.TryParseExact(value, "D", out var id) ||
+            id == Guid.Empty ||
+            !string.Equals(value, id.ToString("D"), StringComparison.Ordinal))
+        {
+            throw new ValidationException(
+                "The Purview sensitive information type ID is not an empty or canonical GUID value.");
+        }
+
+        return id;
+    }
 
     private static StringComparison PathComparison =>
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;

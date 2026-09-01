@@ -152,7 +152,7 @@ internal sealed class AzureCliRunner : IAzureCliRunner
     {
     }
 
-    internal AzureCliRunner(IAzureCliExecutableResolver executableResolver)
+    public AzureCliRunner(IAzureCliExecutableResolver executableResolver)
     {
         this.executableResolver = executableResolver ??
             throw new ArgumentNullException(nameof(executableResolver));

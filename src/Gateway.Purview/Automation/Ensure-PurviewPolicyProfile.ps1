@@ -11,6 +11,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $script:EnterpriseAiAppsCollectionLocationId = 'ee1680d0-702f-4090-b26c-c49091e86531'
+$script:SensitiveInformationTypeInventoryLimit = 2048
 
 function Get-ExactProperty {
     param(
@@ -112,6 +113,80 @@ function Convert-ToExactGuidSet {
         $normalized.Add($canonical)
     }
     return @($normalized | Sort-Object)
+}
+
+function Test-ValidSensitiveInformationTypeName {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value.Length -gt 255) {
+        return $false
+    }
+    foreach ($character in $Value.ToCharArray()) {
+        $codePoint = [int][char]$character
+        if ($codePoint -le 0x1f -or $codePoint -eq 0x7f) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-ExactSensitiveInformationType {
+    param(
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][string]$ExpectedName
+    )
+
+    $selectedId = [Guid]::Empty
+    if (-not [Guid]::TryParse($Id, [ref]$selectedId) -or
+        $selectedId -eq [Guid]::Empty -or
+        $Id -cne $selectedId.ToString('D') -or
+        -not (Test-ValidSensitiveInformationTypeName -Value $ExpectedName)) {
+        throw 'The configured Purview sensitive information type is invalid.'
+    }
+
+    # Identity lookup is intentionally not used: the documented cmdlet can
+    # return the full catalog for a missing identity. Enumerate once and filter
+    # locally by the stable GUID.
+    $inventory = @(Get-DlpSensitiveInformationType -ErrorAction Stop |
+        Where-Object { $null -ne $_ })
+    if ($inventory.Count -eq 0 -or
+        $inventory.Count -gt $script:SensitiveInformationTypeInventoryLimit) {
+        throw 'The Purview sensitive information type catalog was empty or exceeded its safe limit.'
+    }
+
+    $seenIds = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+    $seenNames = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal)
+    $matches = [System.Collections.Generic.List[object]]::new()
+    foreach ($entry in $inventory) {
+        $entryIdValue = [string](Get-ExactProperty -InputObject $entry -Names @('Id'))
+        $entryName = [string](Get-ExactProperty -InputObject $entry -Names @('Name'))
+        $entryId = [Guid]::Empty
+        if (-not [Guid]::TryParse($entryIdValue, [ref]$entryId) -or
+            $entryId -eq [Guid]::Empty -or
+            -not (Test-ValidSensitiveInformationTypeName -Value $entryName)) {
+            throw 'The Purview sensitive information type catalog returned an invalid typed entry.'
+        }
+        $entryIdText = $entryId.ToString('D')
+        if (-not $seenIds.Add($entryIdText)) {
+            throw 'The Purview sensitive information type catalog returned duplicate identifiers.'
+        }
+        if (-not $seenNames.Add($entryName)) {
+            throw 'The Purview sensitive information type catalog returned duplicate exact Names.'
+        }
+        if ($entryIdText -ceq $selectedId.ToString('D')) {
+            $matches.Add([pscustomobject]@{ Id = $entryIdText; Name = $entryName })
+        }
+    }
+
+    if ($matches.Count -ne 1) {
+        throw 'The configured sensitive information type did not resolve exactly once in the Purview catalog.'
+    }
+    if ($matches[0].Name -cne $ExpectedName) {
+        throw 'The configured sensitive information type Name does not match the current Purview catalog Name.'
+    }
+    return $matches[0]
 }
 
 function Test-MeaningfulValue {
@@ -451,6 +526,7 @@ function Assert-ExactReadback {
     $collectionName = [string]$InputObject.collectionPolicyName
     $policyName = [string]$InputObject.dlpPolicyName
     $ruleName = [string]$InputObject.dlpRuleName
+    $sensitiveInformationTypeId = [string]$InputObject.sensitiveInformationTypeId
     $sensitiveInformationType = [string]$InputObject.sensitiveInformationType
 
     if ((Get-ResourceName -Resource $Collection) -cne $collectionName -or
@@ -569,12 +645,20 @@ function Assert-ExactReadback {
     if ($conditions.Count -ne 1) {
         throw 'The DLP rule classifier did not read back exactly.'
     }
+    $classifierIdValue = [string](Get-ExactProperty -InputObject $conditions[0] -Names @('Id'))
+    $classifierId = [Guid]::Empty
+    if (-not [Guid]::TryParse($classifierIdValue, [ref]$classifierId) -or
+        $classifierId -eq [Guid]::Empty) {
+        throw 'The DLP rule classifier did not read back exactly.'
+    }
+    $classifierIds = @($classifierId.ToString('D'))
     $classifierNames = @([string](Get-ExactProperty -InputObject $conditions[0] -Names @('Name')))
-    if (-not (Test-ExactSet -Actual $classifierNames -Expected @($sensitiveInformationType))) {
+    if (-not (Test-ExactSet -Actual $classifierIds -Expected @($sensitiveInformationTypeId)) -or
+        -not (Test-ExactSet -Actual $classifierNames -Expected @($sensitiveInformationType))) {
         throw 'The DLP rule classifier did not read back exactly.'
     }
     Assert-NoUnknownMeaningfulProperties -Resource $conditions[0] `
-        -AllowedNames @('Name') -Label 'DLP rule classifier condition'
+        -AllowedNames @('Id', 'Name') -Label 'DLP rule classifier condition'
     $restrictAccess = @(Convert-ToStructuredArray -Value (
         Get-ExactProperty -InputObject $Rule -Names @('RestrictAccess')) -Label 'RestrictAccess')
     if ($restrictAccess.Count -ne 1 -or
@@ -622,6 +706,7 @@ function Assert-ExactReadback {
             locationType = 'Individual'
             locationIds = @($policyApplicationIds)
         }
+        classifierIds = @($classifierIds)
         classifierNames = @($classifierNames)
         ruleActions = @(@{ setting = 'UploadText'; value = 'Block' })
         hasExclusions = $false
@@ -656,6 +741,9 @@ function Invoke-ExactPurviewProfile {
     if (-not (Test-ExactSet -Actual $expectedDlpApplicationIds -Expected $computedDlpUnion)) {
         throw 'The expected Purview DLP Application scope is not the exact prior-authority union.'
     }
+    $resolvedSensitiveInformationType = Get-ExactSensitiveInformationType `
+        -Id ([string]$InputObject.sensitiveInformationTypeId) `
+        -ExpectedName ([string]$InputObject.sensitiveInformationType)
 
     $scenarioConfig = @{
         Activities = @('UploadText', 'DownloadText')
@@ -736,7 +824,7 @@ function Invoke-ExactPurviewProfile {
             -EnforcementPlanes @('Application') -Confirm:$false | Out-Null
         New-DlpComplianceRule -Name ([string]$InputObject.dlpRuleName) `
             -Policy ([string]$InputObject.dlpPolicyName) `
-            -ContentContainsSensitiveInformation @{ Name = [string]$InputObject.sensitiveInformationType } `
+            -ContentContainsSensitiveInformation @{ Name = $resolvedSensitiveInformationType.Name } `
             -RestrictAccess @(@{ setting = 'UploadText'; value = 'Block' }) `
             -Confirm:$false | Out-Null
     }
@@ -779,7 +867,8 @@ try {
     foreach ($command in @(
         'Get-FeatureConfiguration', 'New-FeatureConfiguration',
         'Get-DlpCompliancePolicy', 'New-DlpCompliancePolicy', 'Set-DlpCompliancePolicy',
-        'Get-DlpComplianceRule', 'New-DlpComplianceRule')) {
+        'Get-DlpComplianceRule', 'New-DlpComplianceRule',
+        'Get-DlpSensitiveInformationType')) {
         try { Get-Command $command -ErrorAction Stop | Out-Null }
         catch { throw "Required Security & Compliance cmdlet '$command' is unavailable." }
     }

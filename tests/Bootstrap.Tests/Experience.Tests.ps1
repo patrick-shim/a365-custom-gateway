@@ -3,6 +3,7 @@ Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Common.psm1')
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Entra.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Agent365.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Azure.psm1') -Force
+Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Purview.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Experience.psm1') -Force
 & (Get-Module Experience) {
     function Get-GatewayInertWhatIfRecoveryBoundary {
@@ -12,6 +13,7 @@ Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Experience.ps
             [System.Collections.IDictionary]$AdditionalTypeInventoryResourceIds)
         throw 'Test placeholder must be mocked.'
     }
+
 }
 
 Describe 'Experience database Job execution-intent propagation' {
@@ -533,7 +535,209 @@ Describe 'Experience CLI Azure region choice boundary' {
             $source | Should -Match 'Read-GatewayAzureLocation'
             $source | Should -Not -Match "Read-GatewayText\s+-Prompt\s+'Azure region"
             $source | Should -Not -Match 'eastus2'
+            $source | Should -Match 'Get-BootstrapPurviewSensitiveInformationTypes'
+            $source | Should -Match 'Resolve-BootstrapPurviewSensitiveInformationType'
+            $source | Should -Match 'Connect-GatewayPurviewSelectedTenantMember'
+            $source.IndexOf('Connect-GatewayPurviewSelectedTenantMember', [StringComparison]::Ordinal) |
+                Should -BeLessThan $source.IndexOf('Get-BootstrapPurviewSensitiveInformationTypes', [StringComparison]::Ordinal)
+            $source | Should -Match "Read-GatewayChoice(?s:.){0,500}-DefaultIndex\s+-1"
+            $source | Should -Not -Match "Read-GatewayText\s+-Prompt\s+'Exact Purview sensitive information type name'"
+            $source | Should -Not -Match "Read-GatewayText(?s:.){0,200}Purview Security & Compliance user principal name"
+            $source | Should -Match 'sensitiveInformationTypeId\s*=\s*\$sensitiveInformationTypeId'
+            $source | Should -Match 'sensitiveInformationType\s*=\s*\$sensitiveInformationType'
         }
+    }
+}
+
+Describe 'Experience Purview workstation support boundary' {
+    InModuleScope Experience {
+        It 'supports terminal Purview inventory and policy authoring only on Windows' {
+            Test-GatewayPurviewPolicyAuthoringPlatform | Should -Be ([bool]$IsWindows)
+        }
+    }
+}
+
+Describe 'Experience selected-tenant Microsoft Graph Member boundary' {
+    InModuleScope Experience {
+        BeforeEach {
+            $script:selectedSubscriptionId = '11111111-1111-4111-8111-111111111111'
+            $script:selectedTenantId = '22222222-2222-4222-8222-222222222222'
+            $script:graphUserId = '33333333-3333-4333-8333-333333333333'
+            $script:graphUserPrincipalName = 'München.User@contoso.example'
+            $script:graphUserType = 'Member'
+            $script:selectedAccountTenantId = $script:selectedTenantId
+            $script:selectedAccountSubscriptionId = $script:selectedSubscriptionId
+            $script:selectedAccountState = 'Enabled'
+
+            Mock Test-GatewayPurviewPolicyAuthoringPlatform { return $true }
+            Mock Invoke-GatewayAzJson {
+                param([string[]]$Arguments)
+                $command = [string]::Join('|', $Arguments)
+                if ($command -ceq "account|show|--subscription|$script:selectedSubscriptionId|--query|{id:id,tenantId:tenantId,state:state}") {
+                    return [pscustomobject]@{
+                        id = $script:selectedAccountSubscriptionId
+                        tenantId = $script:selectedAccountTenantId
+                        state = $script:selectedAccountState
+                    }
+                }
+                if ($command -ceq "rest|--method|GET|--url|https://graph.microsoft.com/v1.0/me?`$select=id,userPrincipalName,userType|--resource|https://graph.microsoft.com/|--subscription|$script:selectedSubscriptionId|--query|{id:id,userPrincipalName:userPrincipalName,userType:userType}") {
+                    return [pscustomobject]@{
+                        id = $script:graphUserId
+                        userPrincipalName = $script:graphUserPrincipalName
+                        userType = $script:graphUserType
+                    }
+                }
+                throw 'Unexpected Azure CLI test invocation.'
+            }
+            Mock Connect-BootstrapPurview { return 'purview-test-connection' }
+        }
+
+        It 'fails an unsupported workstation before Azure CLI, Graph, or Security and Compliance PowerShell' {
+            Mock Test-GatewayPurviewPolicyAuthoringPlatform { return $false }
+
+            {
+                Connect-GatewayPurviewSelectedTenantMember `
+                    -SubscriptionId $script:selectedSubscriptionId `
+                    -TenantId $script:selectedTenantId
+            } | Should -Throw '*Windows workstation*Connect-IPPSSession*macOS or Linux*Purview disabled*'
+
+            Should -Invoke Invoke-GatewayAzJson -Times 0 -Exactly
+            Should -Invoke Connect-BootstrapPurview -Times 0 -Exactly
+        }
+
+        It 'binds exact account and Graph projections to the selected subscription and passes the exact Graph UPN to Purview' {
+            $session = Connect-GatewayPurviewSelectedTenantMember `
+                -SubscriptionId $script:selectedSubscriptionId `
+                -TenantId $script:selectedTenantId
+
+            $session.connectionId | Should -BeExactly 'purview-test-connection'
+            $session.userId | Should -BeExactly $script:graphUserId
+            $session.userPrincipalName | Should -BeExactly $script:graphUserPrincipalName
+            $session.userType | Should -BeExactly 'Member'
+            Should -Invoke Invoke-GatewayAzJson -Times 1 -Exactly -ParameterFilter {
+                [string]::Join('|', $Arguments) -ceq "account|show|--subscription|$script:selectedSubscriptionId|--query|{id:id,tenantId:tenantId,state:state}"
+            }
+            Should -Invoke Invoke-GatewayAzJson -Times 1 -Exactly -ParameterFilter {
+                [string]::Join('|', $Arguments) -ceq "rest|--method|GET|--url|https://graph.microsoft.com/v1.0/me?`$select=id,userPrincipalName,userType|--resource|https://graph.microsoft.com/|--subscription|$script:selectedSubscriptionId|--query|{id:id,userPrincipalName:userPrincipalName,userType:userType}"
+            }
+            Should -Invoke Connect-BootstrapPurview -Times 1 -Exactly -ParameterFilter {
+                $TenantId -ceq $script:selectedTenantId -and
+                    $UserPrincipalName -ceq $script:graphUserPrincipalName
+            }
+        }
+
+        It 'rejects a selected-account tenant mismatch before Graph or Purview' {
+            $script:selectedAccountTenantId = '44444444-4444-4444-8444-444444444444'
+
+            {
+                Connect-GatewayPurviewSelectedTenantMember `
+                    -SubscriptionId $script:selectedSubscriptionId `
+                    -TenantId $script:selectedTenantId
+            } | Should -Throw '*exact selected subscription and tenant*'
+
+            Should -Invoke Invoke-GatewayAzJson -Times 1 -Exactly
+            Should -Invoke Connect-BootstrapPurview -Times 0 -Exactly
+        }
+
+        It 'requires Graph userType to be exactly Member before Purview' {
+            foreach ($invalidUserType in @('Guest', 'member', '', $null)) {
+                $script:graphUserType = $invalidUserType
+                {
+                    Connect-GatewayPurviewSelectedTenantMember `
+                        -SubscriptionId $script:selectedSubscriptionId `
+                        -TenantId $script:selectedTenantId
+                } | Should -Throw '*userType Member in the selected tenant*'
+            }
+
+            Should -Invoke Connect-BootstrapPurview -Times 0 -Exactly
+        }
+
+        It 'rejects missing, empty, noncanonical, and zero Graph object IDs before Purview' {
+            foreach ($invalidId in @(
+                $null,
+                '',
+                'not-a-guid',
+                '00000000-0000-0000-0000-000000000000',
+                '33333333-3333-4333-8333-33333333333A',
+                '{33333333-3333-4333-8333-333333333333}'
+            )) {
+                $script:graphUserId = $invalidId
+                {
+                    Connect-GatewayPurviewSelectedTenantMember `
+                        -SubscriptionId $script:selectedSubscriptionId `
+                        -TenantId $script:selectedTenantId
+                } | Should -Throw '*unexpected /me identity response*'
+            }
+
+            Should -Invoke Connect-BootstrapPurview -Times 0 -Exactly
+        }
+
+        It 'preserves a valid exact Unicode UPN and rejects malformed or normalized alternatives before Purview' {
+            foreach ($invalidUpn in @(
+                $null,
+                '',
+                'member',
+                'member@contoso',
+                ' member@contoso.example',
+                'member@contoso.example ',
+                "member`u{0000}@contoso.example"
+            )) {
+                $script:graphUserPrincipalName = $invalidUpn
+                {
+                    Connect-GatewayPurviewSelectedTenantMember `
+                        -SubscriptionId $script:selectedSubscriptionId `
+                        -TenantId $script:selectedTenantId
+                } | Should -Throw '*unexpected /me identity response*'
+            }
+
+            Should -Invoke Connect-BootstrapPurview -Times 0 -Exactly
+        }
+
+        It 'rejects extra or missing Graph projection properties before Purview' {
+            Mock Invoke-GatewayAzJson {
+                param([string[]]$Arguments)
+                if ([string]$Arguments[0] -ceq 'account') {
+                    return [pscustomobject]@{
+                        id = $script:selectedSubscriptionId
+                        tenantId = $script:selectedTenantId
+                        state = 'Enabled'
+                    }
+                }
+                return [pscustomobject]@{
+                    id = $script:graphUserId
+                    userPrincipalName = $script:graphUserPrincipalName
+                    userType = 'Member'
+                    displayName = 'not accepted'
+                }
+            }
+
+            {
+                Connect-GatewayPurviewSelectedTenantMember `
+                    -SubscriptionId $script:selectedSubscriptionId `
+                    -TenantId $script:selectedTenantId
+            } | Should -Throw '*unexpected /me identity response*'
+
+            Should -Invoke Connect-BootstrapPurview -Times 0 -Exactly
+        }
+    }
+}
+
+Describe 'Experience Purview runtime environment binding' {
+    It 'requires the selected SIT GUID and exact Name as distinct worker settings' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            (Get-Module Experience).Path, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $function = $ast.Find({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Test-GatewayGroupDeploymentEvidence'
+        }, $true)
+        $source = $function.Extent.Text
+
+        $source | Should -Match "'Purview__DefaultSensitiveInformationTypeId'\s*=\s*\[string\]\`$Config\.purview\.sensitiveInformationTypeId"
+        $source | Should -Match "'Purview__DefaultSensitiveInformationType'\s*=\s*\[string\]\`$Config\.purview\.sensitiveInformationType"
     }
 }
 

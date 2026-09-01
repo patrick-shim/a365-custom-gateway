@@ -277,6 +277,7 @@ function Get-NormalizedBootstrapConfiguration {
 
     if ($normalized.Contains('purview') -and $normalized['purview'] -is [System.Collections.IDictionary]) {
         foreach ($entry in ([ordered]@{
+            sensitiveInformationTypeId = ''
             policyProvisioningEnabled = $false
             policyProvisioningOrganization = ''
             policyProvisioningApplicationId = ''
@@ -292,6 +293,14 @@ function Get-NormalizedBootstrapConfiguration {
             $parsed = [guid]::Empty
             if ([guid]::TryParse($applicationId, [ref]$parsed)) {
                 $normalized['purview']['policyProvisioningApplicationId'] = $parsed.ToString('D')
+            }
+        }
+
+        $sensitiveInformationTypeId = [string]$normalized['purview']['sensitiveInformationTypeId']
+        if (-not [string]::IsNullOrWhiteSpace($sensitiveInformationTypeId)) {
+            $parsedSensitiveInformationTypeId = [guid]::Empty
+            if ([guid]::TryParse($sensitiveInformationTypeId, [ref]$parsedSensitiveInformationTypeId)) {
+                $normalized['purview']['sensitiveInformationTypeId'] = $parsedSensitiveInformationTypeId.ToString('D')
             }
         }
 
@@ -2301,6 +2310,7 @@ function Read-BootstrapConfig {
     }
 
     foreach ($entry in ([ordered]@{
+        sensitiveInformationTypeId = ''
         policyProvisioningEnabled = $false
         policyProvisioningOrganization = ''
         policyProvisioningApplicationId = ''
@@ -2361,8 +2371,22 @@ function Read-BootstrapConfig {
     if ($config.environment -ne 'dev' -and $config.agent365.allowDevelopmentRegistryPreview -eq $true) {
         throw 'Agent Registration preview can be enabled only for the dev environment.'
     }
-    if ($config.purview.enabled -eq $true -and [string]::IsNullOrWhiteSpace([string]$config.purview.sensitiveInformationType)) {
-        throw 'purview.sensitiveInformationType is required when Purview is enabled; the bootstrap never invents a tenant DLP classifier.'
+    $sensitiveInformationTypeId = [string]$config.purview.sensitiveInformationTypeId
+    $sensitiveInformationTypeName = [string]$config.purview.sensitiveInformationType
+    $hasSensitiveInformationTypeId = -not [string]::IsNullOrWhiteSpace($sensitiveInformationTypeId)
+    $hasSensitiveInformationTypeName = -not [string]::IsNullOrWhiteSpace($sensitiveInformationTypeName)
+    if ($hasSensitiveInformationTypeId -ne $hasSensitiveInformationTypeName) {
+        throw 'purview.sensitiveInformationTypeId and purview.sensitiveInformationType must be supplied together from the same tenant inventory selection.'
+    }
+    if ($hasSensitiveInformationTypeId) {
+        Assert-GuidValue -Value $sensitiveInformationTypeId -Label 'purview.sensitiveInformationTypeId'
+        $config.purview.sensitiveInformationTypeId = ([guid]$sensitiveInformationTypeId).ToString('D')
+        if ($sensitiveInformationTypeName.Length -gt 255 -or $sensitiveInformationTypeName -match '[\x00-\x1f\x7f]') {
+            throw 'purview.sensitiveInformationType must be the exact bounded Unicode Name returned by the tenant inventory.'
+        }
+    }
+    if ($config.purview.enabled -eq $true -and -not $hasSensitiveInformationTypeId) {
+        throw 'Purview requires a tenant-selected sensitive-information-type GUID plus exact Name; the bootstrap never invents a tenant DLP classifier.'
     }
     if ($config.purview.enabled -eq $true) {
         foreach ($name in @('collectionPolicyName', 'dlpPolicyName', 'dlpRuleName')) {

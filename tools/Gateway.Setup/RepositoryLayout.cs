@@ -6,6 +6,11 @@ internal sealed record RepositoryLayout(string RootPath)
 
     public string BootstrapConfigPath => Path.Combine(RootPath, "bootstrap", "config.json");
 
+    public string PurviewSensitiveInformationTypeScriptPath => Path.Combine(
+        RootPath,
+        "bootstrap",
+        "get-purview-sensitive-information-types.ps1");
+
     public static RepositoryLayout Resolve(string? requestedRoot)
     {
         var start = string.IsNullOrWhiteSpace(requestedRoot)

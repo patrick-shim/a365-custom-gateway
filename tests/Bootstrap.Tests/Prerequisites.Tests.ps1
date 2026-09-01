@@ -34,5 +34,32 @@ Describe 'Bootstrap prerequisite native-command boundary' {
                 [string]::Join('|', $ArgumentList) -ceq 'version|--output|json|--only-show-errors'
             }
         }
+
+        It 'places the Purview Windows-only gate before every tool or module probe' {
+            $modulePath = (Get-Module -Name Prerequisites -ErrorAction Stop).Path
+            $source = Get-Content -LiteralPath $modulePath -Raw
+            $functionStart = $source.IndexOf(
+                'function Assert-BootstrapPrerequisites',
+                [StringComparison]::Ordinal)
+            $guard = $source.IndexOf(
+                'if ($RequirePurview -and -not $IsWindows)',
+                $functionStart,
+                [StringComparison]::Ordinal)
+            $planProbe = $source.IndexOf(
+                'Assert-GatewayPlanPrerequisites -Install:$Install',
+                $functionStart,
+                [StringComparison]::Ordinal)
+
+            $functionStart | Should -BeGreaterOrEqual 0
+            $guard | Should -BeGreaterThan $functionStart
+            $planProbe | Should -BeGreaterThan $guard
+
+            if (-not $IsWindows) {
+                { Assert-BootstrapPrerequisites -RequirePurview } |
+                    Should -Throw '*does not support Security & Compliance PowerShell*'
+                Should -Invoke Assert-GatewayPlanPrerequisites -Times 0 -Exactly
+                Should -Invoke Invoke-BootstrapCommand -Times 0 -Exactly
+            }
+        }
     }
 }

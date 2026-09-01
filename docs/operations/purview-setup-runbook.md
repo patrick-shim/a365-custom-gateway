@@ -31,6 +31,7 @@ are carried as `aiAgentInfo` attribution; the child is not the DLP policy locati
 
 - tenant licensing and availability for the selected Purview capabilities;
 - Security & Compliance PowerShell access;
+- a Windows workstation for optional SIT inventory and policy authoring;
 - an approved certificate-authenticated automation application when Gateway-managed
   profiles are enabled;
 - certificate PFX stored in the reviewed Key Vault secret path;
@@ -40,6 +41,45 @@ are carried as `aiAgentInfo` attribution; the child is not the DLP policy locati
 
 The FeatureConfiguration cmdlets are Public Preview and may be unavailable in some
 organizations.
+
+The core Gateway bootstrap runs on Windows, macOS, and Linux. This optional Purview
+path is Windows-only: Microsoft currently documents `Connect-IPPSSession`, and
+therefore Security & Compliance PowerShell, as unavailable in PowerShell 7 on
+[macOS and Linux](https://learn.microsoft.com/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps#supported-operating-systems-for-the-exchange-online-powershell-module).
+On macOS or Linux, leave Purview disabled or run Purview selection and bootstrap
+from Windows. Setup and the terminal initializer reject Purview selection before
+Microsoft Graph, Security & Compliance, or sensitive-information-type inventory
+calls. Purview-enabled Up, Apply, Resume, and Verify also stop before Azure, Graph,
+or compliance-provider access; the installer never substitutes a static list.
+
+Microsoft does not publish a cmdlet-specific least-privilege role mapping for
+`Get-DlpSensitiveInformationType`. Security & Compliance PowerShell imports only
+the commands permitted by the signed-in account's RBAC. Setup therefore tests the
+real command and inventory and stops if authorization cannot be proven; do not grant
+a broader role merely to bypass that check.
+
+## Select a sensitive information type
+
+On Windows, Guided Setup and terminal `init` use the same tenant-backed contract:
+
+1. verify the exact Azure subscription and tenant selected for deployment;
+2. resolve the signed-in work account through Azure CLI and Microsoft Graph `/me`,
+   require Graph `userType=Member`, then open the official `Connect-IPPSSession`
+   browser sign-in for that same account in the selected tenant; a `Guest` result
+   or mismatched Security & Compliance session is rejected;
+3. call no-argument `Get-DlpSensitiveInformationType` and project only the exact
+   `Id`, Unicode `Name`, and `Publisher` fields within a bounded inventory;
+4. require the administrator to choose an organizationally approved type through
+   an explicit no-default selection keyed by `Id`; and
+5. store the GUID together with its exact current name.
+
+There is no bundled list and no free-text fallback. Before configuration publication
+or policy mutation, the selected GUID is queried again, filtered to exactly one
+matching `Id`, and required to retain the exact stored name. This extra filtering is
+required because Microsoft's cmdlet documents that null or nonexistent `-Identity`
+values can return every object. A rename, removal, duplicate, malformed response,
+authorization failure, timeout, or target change invalidates the selection and
+requires a fresh load.
 
 ## Author policies
 
@@ -74,8 +114,10 @@ New-DlpCompliancePolicy `
   -EnforcementPlanes @('Application')
 ```
 
-Create the DLP rule with the tenant-approved sensitive-information types, activities,
-and actions. Do not copy an example identifier into a real policy without review.
+Create the DLP rule with the selected tenant-returned sensitive-information-type
+GUID/name pair, activities, and actions. The documented rule syntax uses the exact
+current name, while typed readback must also match the selected classifier GUID. Do
+not copy an example identifier into a real policy without tenant inventory review.
 
 ## Exact readback
 
@@ -85,8 +127,8 @@ Before runtime enablement, verify:
 2. exactly one intended DLP policy/rule set, with the blueprint Individual location
    and Application plane;
 3. no unintended location replacement or broadening;
-4. exact sensitive-information types, activities, actions, mode, and distribution
-   status;
+4. exact sensitive-information-type GUID and name pairs, activities, actions, mode,
+   and distribution status;
 5. exact automation application, certificate metadata, Key Vault scope, and
    compliance RBAC;
 6. exact API managed-identity principal and required Graph app-role assignments.
@@ -103,7 +145,7 @@ If roles are absent, leave the adapter disabled and wait for propagation.
 
 ## Runtime verification
 
-Use a nonproduction registration and tenant-approved synthetic content:
+Use a nonproduction registration and organization-approved synthetic content:
 
 1. verify the core Gateway with `./gateway verify`;
 2. confirm the API token-role attestation contains the required Purview roles;

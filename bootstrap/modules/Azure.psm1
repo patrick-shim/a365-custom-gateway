@@ -977,6 +977,7 @@ function Get-GatewayInertPartialEnvironmentContract {
             'Purview__PolicyProvisioningOrganization' = [string]$Config.purview.policyProvisioningOrganization
             'Purview__PolicyProvisioningApplicationId' = [string]$Config.purview.policyProvisioningApplicationId
             'Purview__PolicyProvisioningCertificateSecretUri' = [string]$Config.purview.policyProvisioningCertificateSecretUri
+            'Purview__DefaultSensitiveInformationTypeId' = [string]$Config.purview.sensitiveInformationTypeId
             'Purview__DefaultSensitiveInformationType' = [string]$Config.purview.sensitiveInformationType
             'DOTNET_ENVIRONMENT' = 'Production'
         }
@@ -1399,6 +1400,7 @@ function Deploy-GatewayCore {
         purviewPolicyProvisioningOrganization = [string]$Config.purview.policyProvisioningOrganization
         purviewPolicyProvisioningApplicationId = [string]$Config.purview.policyProvisioningApplicationId
         purviewPolicyProvisioningCertificateSecretUri = [string]$Config.purview.policyProvisioningCertificateSecretUri
+        purviewDefaultSensitiveInformationTypeId = [string]$Config.purview.sensitiveInformationTypeId
         purviewDefaultSensitiveInformationType = [string]$Config.purview.sensitiveInformationType
         deployAdminUi = -not [string]::IsNullOrWhiteSpace($AdminUiImage)
         adminUiContainerImage = $AdminUiImage

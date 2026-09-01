@@ -30,6 +30,8 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
         result.Form.PurviewCollectionPolicyName.Should().Be(expected.PurviewCollectionPolicyName);
         result.Form.PurviewDlpPolicyName.Should().Be(expected.PurviewDlpPolicyName);
         result.Form.PurviewDlpRuleName.Should().Be(expected.PurviewDlpRuleName);
+        result.Form.PurviewSensitiveInformationTypeId.Should().Be(
+            expected.PurviewSensitiveInformationTypeId);
 
         var rewrite = () => StageAndPublishAsync(
             new BootstrapConfigWriter(
@@ -38,6 +40,24 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
             ReadyState(result.Form!));
         await rewrite.Should().NotThrowAsync(
             "a safely imported configuration must be semantically preserved during explicit review");
+    }
+
+    [Fact]
+    public async Task LoadAsync_PreservesEnabledPurviewGuidAndExactUnicodeName()
+    {
+        var expected = ValidForm();
+        expected.PurviewEnabled = true;
+        expected.PurviewSensitiveInformationTypeId = Guid.NewGuid();
+        expected.PurviewSensitiveInformationType = "주민등록번호";
+        await WriteValidAsync(expected);
+
+        var result = await NewLoader().LoadAsync();
+
+        result.Status.Should().Be(ExistingConfigurationStatus.Loaded);
+        result.Form.Should().NotBeNull();
+        result.Form!.PurviewSensitiveInformationTypeId.Should().Be(
+            expected.PurviewSensitiveInformationTypeId);
+        result.Form.PurviewSensitiveInformationType.Should().Be("주민등록번호");
     }
 
     [Fact]
@@ -221,6 +241,19 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
             form.SubscriptionId,
             [new AzureLocation(form.Location, "Selected region")],
             null));
+        if (form.PurviewEnabled)
+        {
+            state.ApplyPurviewSensitiveInformationTypeDiscovery(new(
+                form.SubscriptionId,
+                form.TenantId,
+                [new PurviewSensitiveInformationType(
+                    form.PurviewSensitiveInformationTypeId,
+                    form.PurviewSensitiveInformationType,
+                    "Test publisher")],
+                PurviewSensitiveInformationTypeDiscovery.Provenance,
+                null));
+        }
+
         return state;
     }
 
@@ -240,6 +273,7 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
         PromptShieldEnabled = false,
         PromptShieldSkuName = "F0",
         PurviewEnabled = false,
+        PurviewSensitiveInformationTypeId = Guid.Empty,
         PurviewSensitiveInformationType = string.Empty,
         PurviewCollectionPolicyName = "Existing collection name",
         PurviewDlpPolicyName = "Existing DLP policy name",

@@ -2,6 +2,7 @@
 @implements IDisposable
 @inject SetupWizardState State
 @inject IAzureAccountDiscovery Discovery
+@inject IPurviewSensitiveInformationTypeDiscovery PurviewDiscovery
 @inject SetupActivityTracker Activity
 @inject NavigationManager Navigation
 
@@ -163,10 +164,18 @@
                 <span><strong>Prompt Shields</strong><small>Creates Azure AI Content Safety with local keys disabled and managed-identity access.</small></span>
             </label>
             <label class="feature-card @(State.Form.PurviewEnabled ? "selected" : string.Empty)">
-                <InputCheckbox @bind-Value="State.Form.PurviewEnabled" disabled="@State.ExistingConfigurationLoaded" />
+                <input type="checkbox" checked="@State.Form.PurviewEnabled" @onchange="ChangePurviewEnabled" disabled="@(State.ExistingConfigurationLoaded || !PurviewDiscovery.IsSupported)" aria-describedby="purview-platform-guidance" />
                 <span><strong>Microsoft Purview policy authoring</strong><small>Authors the fixed tenant-wide Know Your Data scope and blueprint-specific DLP scope. Bootstrap keeps runtime enforcement off until the separate token-role and verdict checks pass.</small></span>
             </label>
         </div>
+
+        @if (!PurviewDiscovery.IsSupported)
+        {
+            <div id="purview-platform-guidance" class="notice warning" role="note">
+                <strong>Purview setup requires Windows</strong>
+                <span>@PurviewDiscovery.UnsupportedGuidance</span>
+            </div>
+        }
 
         @if (State.Form.Profile == DeploymentProfile.QuickDevelopment)
         {
@@ -189,20 +198,52 @@
             </div>
         }
 
-        @if (State.Form.PurviewEnabled)
+        @if (State.Form.PurviewEnabled && PurviewDiscovery.IsSupported)
         {
             <div class="field compact-field">
-                <label for="purview-classifier">Tenant-approved sensitive information type</label>
-                <InputText id="purview-classifier" class="control" @bind-Value="State.Form.PurviewSensitiveInformationType" @oninput="eventArgs => State.Form.PurviewSensitiveInformationType = eventArgs.Value?.ToString() ?? string.Empty" autocomplete="off" disabled="@State.ExistingConfigurationLoaded" />
+                <label for="purview-classifier">Sensitive information type from this tenant</label>
+                @if (purviewDiscoveryRunning)
+                {
+                    <div class="loading-row" role="status"><FluentProgressRing /> <span>Opening the official Security &amp; Compliance sign-in for the selected tenant and reading its bounded inventory…</span></div>
+                }
+                else if (State.PurviewSensitiveInformationTypeDiscoveryGuidance is not null)
+                {
+                    <div class="notice warning" role="alert"><strong>Tenant types could not be loaded</strong><span>@State.PurviewSensitiveInformationTypeDiscoveryGuidance</span></div>
+                    <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" OnClick="DiscoverPurviewSensitiveInformationTypesAsync">Retry tenant type discovery</FluentButton>
+                }
+                else if (State.PurviewSensitiveInformationTypes.Count > 0)
+                {
+                    <select id="purview-classifier" class="control" value="@State.Form.PurviewSensitiveInformationTypeId.ToString("D")" @onchange="SelectPurviewSensitiveInformationType" disabled="@State.ExistingConfigurationLoaded">
+                        <option value="" disabled>Choose a tenant sensitive information type…</option>
+                        @foreach (var type in State.PurviewSensitiveInformationTypes)
+                        {
+                            <option value="@type.Id.ToString("D")">@type.Name · @type.Id · @PublisherLabel(type)</option>
+                        }
+                    </select>
+                    <small>Source: @State.PurviewSensitiveInformationTypeProvenance. Choose the type your organization approves; Setup stores the GUID and exact Unicode Name shown here.</small>
+                    <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" OnClick="DiscoverPurviewSensitiveInformationTypesAsync">Reload tenant types</FluentButton>
+                }
+                else
+                {
+                    <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" OnClick="DiscoverPurviewSensitiveInformationTypesAsync">@(State.ExistingConfigurationLoaded ? "Verify tenant types" : "Load tenant types")</FluentButton>
+                }
                 <ValidationMessage For="@(() => State.Form.PurviewSensitiveInformationType)" />
-                <small>Enter the exact reviewed tenant name. Setup never guesses a classifier or treats policy readback as runtime readiness.</small>
+                @if (State.PurviewSensitiveInformationTypeSelectionIssue is not null)
+                {
+                    <div class="notice error" role="alert"><strong>Selected tenant type is stale</strong><span>@State.PurviewSensitiveInformationTypeSelectionIssue</span></div>
+                }
+                @if (purviewSelectionRequired)
+                {
+                    <div class="notice error" role="alert"><strong>Tenant type selection required</strong><span>Load the exact tenant inventory and select one GUID and Name pair. Setup never guesses or accepts free text.</span></div>
+                }
+                <small>Sign in with the same work account that Azure CLI and Microsoft Graph resolved for the selected tenant. Graph must report userType Member; a Guest result or mismatched Security &amp; Compliance session is rejected. Setup never stores that user identity, credentials, tokens, or provider response bodies.</small>
             </div>
         }
     </section>
 
     <div class="form-footer">
         <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/account">Back</FluentAnchor>
-        <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent" Disabled="@(!State.HasValidSelectedLocation || !State.ManagerApplicationsAccepted || locationDiscoveryRunning || managerDiscoveryRunning)">Review permissions</FluentButton>
+        <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent" Disabled="@(!State.HasValidSelectedLocation || !State.ManagerApplicationsAccepted || (State.Form.PurviewEnabled && !State.HasValidPurviewSensitiveInformationTypeSelection) || locationDiscoveryRunning || managerDiscoveryRunning || purviewDiscoveryRunning)">Review permissions</FluentButton>
     </div>
 </EditForm>
 
@@ -212,6 +253,8 @@
     private bool locationSelectionRequired;
     private bool managerDiscoveryRunning;
     private bool managerReviewRequired;
+    private bool purviewDiscoveryRunning;
+    private bool purviewSelectionRequired;
 
     private string ProfileDescription => State.Form.Profile switch
     {
@@ -280,6 +323,61 @@
         State.Form.ApplyProjectName(args.Value?.ToString() ?? string.Empty);
     }
 
+    private void ChangePurviewEnabled(ChangeEventArgs args)
+    {
+        if (!PurviewDiscovery.IsSupported)
+        {
+            purviewSelectionRequired = false;
+            return;
+        }
+
+        var enabled = args.Value is bool value && value;
+        State.SetPurviewEnabled(enabled);
+        purviewSelectionRequired = false;
+        Activity.Touch();
+    }
+
+    private async Task DiscoverPurviewSensitiveInformationTypesAsync()
+    {
+        if (!PurviewDiscovery.IsSupported ||
+            !State.Form.PurviewEnabled ||
+            purviewDiscoveryRunning)
+        {
+            return;
+        }
+
+        purviewDiscoveryRunning = true;
+        purviewSelectionRequired = false;
+        State.BeginPurviewSensitiveInformationTypeDiscovery();
+        Activity.Touch();
+        try
+        {
+            var result = await PurviewDiscovery.DiscoverAsync(
+                State.Form.SubscriptionId,
+                State.Form.TenantId,
+                disposeCts.Token);
+            State.ApplyPurviewSensitiveInformationTypeDiscovery(result);
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            purviewDiscoveryRunning = false;
+        }
+    }
+
+    private void SelectPurviewSensitiveInformationType(ChangeEventArgs args)
+    {
+        purviewSelectionRequired =
+            !Guid.TryParseExact(args.Value?.ToString(), "D", out var typeId) ||
+            !State.SelectPurviewSensitiveInformationType(typeId);
+        if (!purviewSelectionRequired)
+        {
+            Activity.Touch();
+        }
+    }
+
     private async Task DiscoverManagerApplicationsAsync()
     {
         managerDiscoveryRunning = true;
@@ -317,6 +415,11 @@
             ? string.Empty
             : $" ({string.Join(", ", candidate.ReferencingBlueprintNames)})";
 
+    private static string PublisherLabel(PurviewSensitiveInformationType type) =>
+        string.IsNullOrEmpty(type.Publisher)
+            ? "publisher not reported"
+            : type.Publisher;
+
     private void Continue()
     {
         if (!State.HasValidSelectedLocation)
@@ -328,6 +431,13 @@
         if (!State.ManagerApplicationsAccepted)
         {
             managerReviewRequired = true;
+            return;
+        }
+
+        if (State.Form.PurviewEnabled &&
+            !State.HasValidPurviewSensitiveInformationTypeSelection)
+        {
+            purviewSelectionRequired = true;
             return;
         }
 

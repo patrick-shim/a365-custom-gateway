@@ -84,6 +84,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
     It 'loads a valid configuration and materializes backward-compatible defaults' {
         $config = New-TestBootstrapConfig
         foreach ($name in @(
+            'sensitiveInformationTypeId',
             'policyProvisioningEnabled',
             'policyProvisioningOrganization',
             'policyProvisioningApplicationId',
@@ -98,6 +99,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
 
         $loaded.purview.policyProvisioningEnabled | Should -BeFalse
         $loaded.purview.policyProvisioningOrganization | Should -Be ''
+        $loaded.purview.sensitiveInformationTypeId | Should -Be ''
     }
 
     It 'rejects properties that are not declared by the schema' {
@@ -132,6 +134,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
     It 'requires complete policy-provisioning fields when that feature is enabled' {
         $config = New-TestBootstrapConfig
         $config.purview.enabled = $true
+        $config.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
         $config.purview.sensitiveInformationType = 'Credit Card Number'
         $config.purview.policyProvisioningEnabled = $true
         $path = Join-Path $TestDrive 'invalid-policy-provisioning.json'
@@ -143,6 +146,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
     It 'accepts a complete versionless Key Vault policy-provisioning contract' {
         $config = New-TestBootstrapConfig
         $config.purview.enabled = $true
+        $config.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
         $config.purview.sensitiveInformationType = 'Credit Card Number'
         $config.purview.policyProvisioningEnabled = $true
         $config.purview.policyProvisioningOrganization = 'contoso.onmicrosoft.com'
@@ -161,6 +165,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
         $config = New-TestBootstrapConfig
         $config.purview.enabled = $true
         $config.purview | Add-Member -NotePropertyName activateGatewayAdapterAfterPolicyReadback -NotePropertyValue $true
+        $config.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
         $config.purview.sensitiveInformationType = 'Credit Card Number'
         $config.purview.policyProvisioningEnabled = $true
         $config.purview.policyProvisioningOrganization = 'contoso.onmicrosoft.com'
@@ -214,6 +219,57 @@ Describe 'Bootstrap JSON Schema configuration validation' {
             $_.Exception.Message | Should -BeLike '*JSON Schema validation*rejected input values were suppressed*'
             $_.Exception.Message | Should -Not -BeLike '*credential-like-private-marker*'
         }
+    }
+
+    It 'requires the tenant-selected SIT GUID and exact Name as one pair' {
+        $missingId = New-TestBootstrapConfig
+        $missingId.purview.enabled = $true
+        $missingId.purview.PSObject.Properties.Remove('sensitiveInformationTypeId')
+        $missingId.purview.sensitiveInformationType = 'Credit Card Number'
+        $missingIdPath = Join-Path $TestDrive 'missing-sit-id.json'
+        Write-TestBootstrapConfig -Config $missingId -Path $missingIdPath
+
+        { Read-BootstrapConfig -Path $missingIdPath } | Should -Throw '*JSON Schema validation*'
+
+        $missingName = New-TestBootstrapConfig
+        $missingName.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
+        $missingNamePath = Join-Path $TestDrive 'missing-sit-name.json'
+        Write-TestBootstrapConfig -Config $missingName -Path $missingNamePath
+
+        { Read-BootstrapConfig -Path $missingNamePath } | Should -Throw '*must be supplied together*'
+    }
+
+    It 'canonicalizes the selected SIT GUID without changing its exact Unicode Name' {
+        $config = New-TestBootstrapConfig
+        $config.purview.enabled = $true
+        $config.purview.sensitiveInformationTypeId = '50842EB7-EDC8-4019-85DD-5A5C1F2BB085'
+        $config.purview.sensitiveInformationType = '신용 카드 번호'
+        $path = Join-Path $TestDrive 'unicode-sit.json'
+        Write-TestBootstrapConfig -Config $config -Path $path
+
+        $loaded = Read-BootstrapConfig -Path $path
+
+        $loaded.purview.sensitiveInformationTypeId | Should -BeExactly '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
+        $loaded.purview.sensitiveInformationType | Should -BeExactly '신용 카드 번호'
+    }
+
+    It 'accepts an exact 255-character SIT Name and rejects 256 characters' {
+        $accepted = New-TestBootstrapConfig
+        $accepted.purview.enabled = $true
+        $accepted.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
+        $accepted.purview.sensitiveInformationType = '類' * 255
+        $acceptedPath = Join-Path $TestDrive 'sit-name-255.json'
+        Write-TestBootstrapConfig -Config $accepted -Path $acceptedPath
+
+        (Read-BootstrapConfig -Path $acceptedPath).purview.sensitiveInformationType |
+            Should -BeExactly ('類' * 255)
+
+        $rejected = Copy-TestBootstrapConfig -Config $accepted
+        $rejected.purview.sensitiveInformationType = '類' * 256
+        $rejectedPath = Join-Path $TestDrive 'sit-name-256.json'
+        Write-TestBootstrapConfig -Config $rejected -Path $rejectedPath
+
+        { Read-BootstrapConfig -Path $rejectedPath } | Should -Throw '*JSON Schema validation*'
     }
 }
 
@@ -382,6 +438,7 @@ Describe 'Canonical bootstrap fingerprints' {
         $equivalent.subscriptionId = $equivalent.subscriptionId.ToUpperInvariant()
         $equivalent.tenantId = $equivalent.tenantId.ToUpperInvariant()
         foreach ($name in @(
+            'sensitiveInformationTypeId',
             'policyProvisioningEnabled',
             'policyProvisioningOrganization',
             'policyProvisioningApplicationId',
