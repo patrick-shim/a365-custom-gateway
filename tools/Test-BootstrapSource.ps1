@@ -39,7 +39,12 @@ function Resolve-GatewayBicepCompilerCommand {
     }
     $resolvedAzureCliPath = $AzureCliPath
     if ([string]::IsNullOrWhiteSpace($resolvedAzureCliPath)) {
-        $azCommand = Get-Command az -CommandType Application -ErrorAction Stop
+        # PATH can expose more than one az application, because the Azure CLI MSI
+        # installs az.cmd and an extensionless bash shim in the same wbin
+        # directory. Bind exactly one command source so the resolved path is never
+        # a space-joined concatenation of several candidates.
+        $azCommand = @(Get-Command az -CommandType Application -ErrorAction Stop) |
+            Select-Object -First 1
         $resolvedAzureCliPath = [string]$azCommand.Source
     }
     if ([string]::IsNullOrWhiteSpace($resolvedAzureCliPath)) {
@@ -54,14 +59,29 @@ function Resolve-GatewayBicepCompilerCommand {
     }
 
     $extension = [IO.Path]::GetExtension($resolvedAzureCliPath)
+    if (-not ($extension.Equals('.exe', [StringComparison]::OrdinalIgnoreCase) -or
+            $extension.Equals('.cmd', [StringComparison]::OrdinalIgnoreCase))) {
+        # The Azure CLI MSI installs an extensionless bash shim beside az.cmd, and
+        # PowerShell can resolve that shim. It is not a Windows executable process
+        # boundary, so promote it to a supported sibling launcher in the same
+        # directory instead of running it. Anything else still fails closed.
+        $commandDirectory = Split-Path -Parent $resolvedAzureCliPath
+        $baseName = [IO.Path]::GetFileNameWithoutExtension($resolvedAzureCliPath)
+        $promoted = @('.exe', '.cmd') |
+            ForEach-Object { Join-Path $commandDirectory ($baseName + $_) } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+        if ([string]::IsNullOrWhiteSpace($promoted)) {
+            throw 'Azure CLI could not be resolved to a supported Windows executable process boundary.'
+        }
+        $resolvedAzureCliPath = [string]$promoted
+        $extension = [IO.Path]::GetExtension($resolvedAzureCliPath)
+    }
     if ($extension.Equals('.exe', [StringComparison]::OrdinalIgnoreCase)) {
         return [pscustomobject]@{
             FileName = $resolvedAzureCliPath
             PrefixArguments = @()
         }
-    }
-    if (-not $extension.Equals('.cmd', [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Azure CLI could not be resolved to a supported Windows executable process boundary.'
     }
 
     $pythonPath = [IO.Path]::GetFullPath((Join-Path (

@@ -8,6 +8,10 @@ public sealed class BootstrapOutputSanitizerTests
 {
     private const string ReviewedFingerprint =
         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    private const string CheckpointFingerprint =
+        "sha256:1111111122222222111111112222222211111111222222221111111122222222";
+    private const string ResumeAuthorizationFingerprint =
+        "sha256:9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba";
 
     [Fact]
     public void TypedPlanFailure_ShowsTheAuthoredBoundaryWithIndeterminateProgress()
@@ -442,4 +446,211 @@ public sealed class BootstrapOutputSanitizerTests
         result.Message.Should().Be(message);
         result.Message.Should().NotContain("arbitrary-data-sentinel");
     }
+
+    [Fact]
+    public void ExactResumeReview_ExposesOnlyTheCanonicalReviewAuthorizationContract()
+    {
+        var line = ResumeReviewLine();
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.Kind.Should().Be(BootstrapProgressKind.Success);
+        result.Step.Should().Be("Resume preflight");
+        result.ResumeReviewClaimObserved.Should().BeTrue();
+        result.ResumeAuthorization.Should().NotBeNull();
+        result.ResumeAuthorization!.AcceptedPlanFingerprint.Should().Be(ReviewedFingerprint);
+        result.ResumeAuthorization.CheckpointFingerprint.Should().Be(CheckpointFingerprint);
+        result.ResumeAuthorization.ResumeAuthorizationFingerprint.Should().Be(ResumeAuthorizationFingerprint);
+        result.Message.Should().Be(
+            "Resume preflight validated 4 completed checkpoints. Remaining work starts at 'Azure foundation'.");
+        result.Message.Should().NotContain("must not render");
+        result.PlanFingerprint.Should().BeNull("a Resume review never supplies a Plan acceptance fingerprint");
+        result.PlanResultClaimObserved.Should().BeFalse();
+        result.DeploymentVerificationClaimObserved.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("Resume preflight validated 5 completed checkpoints. Remaining work starts at 'Azure foundation'.")]
+    [InlineData("Resume preflight validated 4 completed checkpoints. Remaining work starts at 'Container images'.")]
+    [InlineData("Resume is authorized.")]
+    [InlineData("authorization token must never render")]
+    public void ResumeReviewMessageThatDoesNotBindToItsData_IsObservedButAuthorizesNothing(string message)
+    {
+        var line = ResumeReviewLine(message: message);
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.ResumeReviewClaimObserved.Should().BeTrue();
+        result.ResumeAuthorization.Should().BeNull();
+        result.Kind.Should().Be(BootstrapProgressKind.Error);
+        result.Message.Should().Be(BootstrapOutputSanitizer.InvalidResumeReviewMessage);
+        result.Message.Should().NotContain("token must never render");
+    }
+
+    [Fact]
+    public void ResumeReviewThatClaimsItIsAlreadyAuthorized_IsObservedButAuthorizesNothing()
+    {
+        var line = ResumeReviewLine(authorized: true);
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.ResumeReviewClaimObserved.Should().BeTrue();
+        result.ResumeAuthorization.Should().BeNull();
+        result.Kind.Should().Be(BootstrapProgressKind.Error);
+        result.Message.Should().Be(BootstrapOutputSanitizer.InvalidResumeReviewMessage);
+    }
+
+    [Theory]
+    [InlineData("sha256:ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789", null, null)]
+    [InlineData("sha256:0123456789abcdef", null, null)]
+    [InlineData(null, "sha256:1111111122222222", null)]
+    [InlineData(null, "", null)]
+    [InlineData(null, null, "sha256:9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcbz")]
+    [InlineData(null, null, "not-a-fingerprint")]
+    public void NonCanonicalResumeFingerprint_IsNeverAvailableForResume(
+        string? acceptedPlanFingerprint,
+        string? checkpointFingerprint,
+        string? resumeAuthorizationFingerprint)
+    {
+        var line = ResumeReviewLine(
+            acceptedPlanFingerprint: acceptedPlanFingerprint ?? ReviewedFingerprint,
+            checkpointFingerprint: checkpointFingerprint ?? CheckpointFingerprint,
+            resumeAuthorizationFingerprint: resumeAuthorizationFingerprint ?? ResumeAuthorizationFingerprint);
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.ResumeReviewClaimObserved.Should().BeTrue();
+        result.ResumeAuthorization.Should().BeNull();
+        result.Kind.Should().Be(BootstrapProgressKind.Error);
+        result.Message.Should().Be(BootstrapOutputSanitizer.InvalidResumeReviewMessage);
+    }
+
+    [Fact]
+    public void ConflictingDuplicateResumeAuthorizationField_IsObservedButAuthorizesNothing()
+    {
+        const string line = """
+            {"schemaVersion":1,"type":"Result","message":"Resume preflight validated 4 completed checkpoints. Remaining work starts at 'Azure foundation'.","data":{"step":"Resume preflight","category":"resumeReview","index":1,"total":19,"completedCount":4,"remainingCount":15,"currentStep":"Azure foundation","acceptedPlanFingerprint":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","checkpointFingerprint":"sha256:1111111122222222111111112222222211111111222222221111111122222222","resumeAuthorizationFingerprint":"sha256:0000000000000000000000000000000000000000000000000000000000000000","resumeAuthorizationFingerprint":"sha256:9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba","authorized":false}}
+            """;
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.ResumeReviewClaimObserved.Should().BeTrue();
+        result.ResumeAuthorization.Should().BeNull();
+        result.Kind.Should().Be(BootstrapProgressKind.Error);
+        result.Message.Should().Be(BootstrapOutputSanitizer.InvalidResumeReviewMessage);
+    }
+
+    [Fact]
+    public void ResumeReviewMissingItsCheckpointBinding_IsObservedButAuthorizesNothing()
+    {
+        var line = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            type = "Result",
+            message =
+                "Resume preflight validated 4 completed checkpoints. Remaining work starts at 'Azure foundation'.",
+            data = new
+            {
+                step = "Resume preflight",
+                category = "resumeReview",
+                index = 1,
+                total = 19,
+                completedCount = 4,
+                remainingCount = 15,
+                currentStep = "Azure foundation",
+                acceptedPlanFingerprint = ReviewedFingerprint,
+                resumeAuthorizationFingerprint = ResumeAuthorizationFingerprint,
+                authorized = false
+            }
+        });
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.ResumeReviewClaimObserved.Should().BeTrue();
+        result.ResumeAuthorization.Should().BeNull();
+        result.Kind.Should().Be(BootstrapProgressKind.Error);
+        result.Message.Should().Be(BootstrapOutputSanitizer.InvalidResumeReviewMessage);
+    }
+
+    [Theory]
+    [InlineData(0, 19)]
+    [InlineData(2, 19)]
+    [InlineData(1, 0)]
+    [InlineData(1, 10_001)]
+    public void ResumeReviewOutsideItsSinglePreflightPosition_IsObservedButAuthorizesNothing(int index, int total)
+    {
+        var line = ResumeReviewLine(index: index, total: total);
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.ResumeReviewClaimObserved.Should().BeTrue();
+        result.ResumeAuthorization.Should().BeNull();
+        result.Kind.Should().Be(BootstrapProgressKind.Error);
+        result.Message.Should().Be(BootstrapOutputSanitizer.InvalidResumeReviewMessage);
+    }
+
+    [Fact]
+    public void StructuredLookingStandardErrorResumeReview_CannotAuthorizeResume()
+    {
+        var line = ResumeReviewLine();
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: true);
+
+        result.Kind.Should().Be(BootstrapProgressKind.Error);
+        result.ResumeReviewClaimObserved.Should().BeFalse();
+        result.ResumeAuthorization.Should().BeNull();
+        result.Message.Should().Be("Bootstrap reported an error. Sensitive or unstructured details were withheld.");
+    }
+
+    [Theory]
+    [InlineData("Resume preflight", "resumeAuthorization")]
+    [InlineData("Plan review", "resumeReview")]
+    [InlineData("Resume preflight", "planResult")]
+    public void ResumeAuthorizationOutsideTheTypedReviewContract_IsNotAReviewClaim(string step, string category)
+    {
+        var line = ResumeReviewLine(step: step, category: category);
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.ResumeReviewClaimObserved.Should().BeFalse();
+        result.ResumeAuthorization.Should().BeNull();
+    }
+
+    private static string ResumeReviewLine(
+        string? message = null,
+        string step = "Resume preflight",
+        string category = "resumeReview",
+        int index = 1,
+        int total = 19,
+        int completedCount = 4,
+        int remainingCount = 15,
+        string currentStep = "Azure foundation",
+        string acceptedPlanFingerprint = ReviewedFingerprint,
+        string checkpointFingerprint = CheckpointFingerprint,
+        string resumeAuthorizationFingerprint = ResumeAuthorizationFingerprint,
+        bool authorized = false) =>
+        JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            timestampUtc = "2026-08-29T00:00:00Z",
+            type = "Result",
+            message = message ??
+                $"Resume preflight validated {completedCount} completed checkpoints. " +
+                $"Remaining work starts at '{currentStep}'.",
+            data = new
+            {
+                step,
+                category,
+                index,
+                total,
+                completedCount,
+                remainingCount,
+                currentStep,
+                acceptedPlanFingerprint,
+                checkpointFingerprint,
+                resumeAuthorizationFingerprint,
+                authorized,
+                unexpected = "must not render"
+            }
+        });
 }

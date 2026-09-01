@@ -17,7 +17,8 @@ internal sealed record BootstrapExecutionSnapshot(
     IReadOnlyList<BootstrapProgressEvent> Events,
     int? ExitCode,
     bool PlanSucceeded,
-    BootstrapVerifiedEndpoints? VerifiedEndpoints)
+    BootstrapVerifiedEndpoints? VerifiedEndpoints,
+    bool ResumeAuthorizationReady = false)
 {
     public bool IsRunning => Status == BootstrapExecutionStatus.Running;
 
@@ -47,6 +48,11 @@ internal sealed class BootstrapExecutionCoordinator(
     private int planResultClaimCount;
     private bool planApplyReady;
     private bool planFingerprintConflict;
+    private int resumeReviewClaimCount;
+    private bool resumeReviewConflict;
+    private BootstrapResumeAuthorization? observedResumeAuthorization;
+    private BootstrapResumeAuthorization? pendingResumeAuthorization;
+    private BootstrapResumeAuthorization? activeResumeAuthorization;
     private long nextPlanPreparationLeaseId;
     private long? activePlanPreparationLeaseId;
     private string? expectedConfigurationFileFingerprint;
@@ -63,13 +69,15 @@ internal sealed class BootstrapExecutionCoordinator(
                 events.ToArray(),
                 exitCode,
                 planSucceeded,
-                verifiedEndpoints);
+                verifiedEndpoints,
+                pendingResumeAuthorization is not null);
         }
     }
 
     public bool TryStart(BootstrapCommand requestedCommand, bool explicitlyConfirmed)
     {
-        if (!explicitlyConfirmed || requestedCommand == BootstrapCommand.Plan)
+        if (!explicitlyConfirmed ||
+            requestedCommand is BootstrapCommand.Plan or BootstrapCommand.ResumeReview)
         {
             return false;
         }
@@ -86,6 +94,23 @@ internal sealed class BootstrapExecutionCoordinator(
         }
 
         StartExecution(requestedCommand);
+        return true;
+    }
+
+    public bool TryStartResumeReview()
+    {
+        lock (sync)
+        {
+            if (activePlanPreparationLeaseId is not null ||
+                !CanStartUnsafe(BootstrapCommand.ResumeReview))
+            {
+                return false;
+            }
+
+            BeginExecutionUnsafe(BootstrapCommand.ResumeReview);
+        }
+
+        StartExecution(BootstrapCommand.ResumeReview);
         return true;
     }
 
@@ -148,9 +173,21 @@ internal sealed class BootstrapExecutionCoordinator(
         }
     }
 
-    private bool CanStartUnsafe(BootstrapCommand requestedCommand) =>
-        status != BootstrapExecutionStatus.Running &&
-        (requestedCommand == BootstrapCommand.Plan || planSucceeded);
+    private bool CanStartUnsafe(BootstrapCommand requestedCommand)
+    {
+        if (status == BootstrapExecutionStatus.Running)
+        {
+            return false;
+        }
+
+        return requestedCommand switch
+        {
+            BootstrapCommand.Plan or BootstrapCommand.ResumeReview => true,
+            BootstrapCommand.Apply => planSucceeded,
+            BootstrapCommand.Resume => pendingResumeAuthorization is not null,
+            _ => false
+        };
+    }
 
     private void BeginExecutionUnsafe(
         BootstrapCommand requestedCommand,
@@ -165,6 +202,13 @@ internal sealed class BootstrapExecutionCoordinator(
         expectedConfigurationFileFingerprint = requestedCommand == BootstrapCommand.Plan
             ? configurationFileFingerprint
             : null;
+        activeResumeAuthorization = requestedCommand == BootstrapCommand.Resume
+            ? pendingResumeAuthorization
+            : null;
+        pendingResumeAuthorization = null;
+        observedResumeAuthorization = null;
+        resumeReviewClaimCount = 0;
+        resumeReviewConflict = false;
         if (requestedCommand == BootstrapCommand.Plan)
         {
             planSucceeded = false;
@@ -178,7 +222,7 @@ internal sealed class BootstrapExecutionCoordinator(
         events.Add(new BootstrapProgressEvent(
             DateTimeOffset.UtcNow,
             BootstrapProgressKind.Information,
-            $"Starting the reviewed {requestedCommand} command."));
+            $"Starting the reviewed {DescribeCommand(requestedCommand)} command."));
         if (requestedCommand is BootstrapCommand.Apply or BootstrapCommand.Resume)
         {
             events.Add(new BootstrapProgressEvent(
@@ -202,20 +246,28 @@ internal sealed class BootstrapExecutionCoordinator(
         {
             string? expectedPlanFingerprint;
             string? expectedConfigurationFingerprint;
+            string? expectedResumeAuthorizationFingerprint;
             lock (sync)
             {
-                expectedPlanFingerprint = requestedCommand == BootstrapCommand.Plan
-                    ? null
-                    : reviewedPlanFingerprint;
+                expectedPlanFingerprint = requestedCommand switch
+                {
+                    BootstrapCommand.Apply => reviewedPlanFingerprint,
+                    BootstrapCommand.Resume => activeResumeAuthorization?.AcceptedPlanFingerprint,
+                    _ => null
+                };
                 expectedConfigurationFingerprint = requestedCommand == BootstrapCommand.Plan
                     ? expectedConfigurationFileFingerprint
+                    : null;
+                expectedResumeAuthorizationFingerprint = requestedCommand == BootstrapCommand.Resume
+                    ? activeResumeAuthorization?.ResumeAuthorizationFingerprint
                     : null;
             }
 
             var specification = commandFactory.Create(
                 requestedCommand,
                 expectedPlanFingerprint,
-                expectedConfigurationFingerprint);
+                expectedConfigurationFingerprint,
+                expectedResumeAuthorizationFingerprint);
             result = await processRunner.RunAsync(
                 specification,
                 progressEvent =>
@@ -248,6 +300,17 @@ internal sealed class BootstrapExecutionCoordinator(
                     PlanFingerprintPolicy.IsCanonical(reviewedPlanFingerprint);
                 completedSuccessfully = planSucceeded;
             }
+            else if (requestedCommand == BootstrapCommand.ResumeReview)
+            {
+                completedSuccessfully = result.Succeeded &&
+                    resumeReviewClaimCount == 1 &&
+                    !resumeReviewConflict &&
+                    observedResumeAuthorization is not null;
+                pendingResumeAuthorization = completedSuccessfully
+                    ? observedResumeAuthorization
+                    : null;
+                observedResumeAuthorization = null;
+            }
             else if (requestedCommand is BootstrapCommand.Apply or BootstrapCommand.Resume)
             {
                 completedSuccessfully = result.Succeeded &&
@@ -258,6 +321,8 @@ internal sealed class BootstrapExecutionCoordinator(
                 {
                     verifiedEndpoints = null;
                 }
+
+                activeResumeAuthorization = null;
             }
 
             operationCompletedSuccessfully = completedSuccessfully;
@@ -272,14 +337,16 @@ internal sealed class BootstrapExecutionCoordinator(
                 DateTimeOffset.UtcNow,
                 completedSuccessfully ? BootstrapProgressKind.Success : BootstrapProgressKind.Error,
                 completedSuccessfully
-                    ? $"{requestedCommand} completed successfully."
+                    ? $"{DescribeCommand(requestedCommand)} completed successfully."
                     : result.WasCancelled
-                        ? $"{requestedCommand} was interrupted. The canonical bootstrap state remains the recovery authority."
+                        ? $"{DescribeCommand(requestedCommand)} was interrupted. The canonical bootstrap state remains the recovery authority."
                         : requestedCommand == BootstrapCommand.Plan && result.Succeeded
                             ? "Plan ended without one apply-ready canonical fingerprint. No mutation was authorized."
+                        : requestedCommand == BootstrapCommand.ResumeReview && result.Succeeded
+                            ? "Resume review exited without exactly one nonconflicting typed review result. No resume was authorized."
                         : requestedCommand is BootstrapCommand.Apply or BootstrapCommand.Resume && result.Succeeded
-                            ? $"{requestedCommand} exited without exactly one nonconflicting typed deployment verification result. Setup did not mark the Gateway ready."
-                        : $"{requestedCommand} stopped with exit category {NormalizeExitCategory(result.ExitCode)}."));
+                            ? $"{DescribeCommand(requestedCommand)} exited without exactly one nonconflicting typed deployment verification result. Setup did not mark the Gateway ready."
+                        : $"{DescribeCommand(requestedCommand)} stopped with exit category {NormalizeExitCategory(result.ExitCode)}."));
             TrimEvents();
         }
 
@@ -339,6 +406,23 @@ internal sealed class BootstrapExecutionCoordinator(
                 }
             }
 
+            if (command == BootstrapCommand.ResumeReview &&
+                status == BootstrapExecutionStatus.Running &&
+                progressEvent.ResumeReviewClaimObserved)
+            {
+                resumeReviewClaimCount++;
+                if (resumeReviewClaimCount != 1 ||
+                    progressEvent.ResumeAuthorization is not { } authorization)
+                {
+                    observedResumeAuthorization = null;
+                    resumeReviewConflict = true;
+                }
+                else
+                {
+                    observedResumeAuthorization = authorization;
+                }
+            }
+
             if (events.Count > 0 &&
                 progressEvent.Kind == BootstrapProgressKind.Withheld &&
                 events[^1].Kind == progressEvent.Kind &&
@@ -362,6 +446,12 @@ internal sealed class BootstrapExecutionCoordinator(
             events.RemoveRange(0, events.Count - MaximumRetainedEvents);
         }
     }
+
+    private static string DescribeCommand(BootstrapCommand command) => command switch
+    {
+        BootstrapCommand.ResumeReview => "Resume review",
+        _ => command.ToString()
+    };
 
     private static string NormalizeExitCategory(int exitCode) => exitCode switch
     {

@@ -146,6 +146,78 @@ public sealed class RepositoryLayoutTests : IDisposable
         source.Should().NotContain("OnClick=\"RetryPlan\"");
     }
 
+    [Fact]
+    public void StoppedDeploymentResume_RequiresAReadOnlyReviewBeforeASeparateConfirmation()
+    {
+        var source = File.ReadAllText(FindRepositoryFile(
+            "tools",
+            "Gateway.Setup",
+            "Components",
+            "Pages",
+            "Progress.razor"));
+
+        source.Should().Contain("TryStartResumeReview()");
+        source.Should().Contain("Review the stopped deployment");
+        source.Should().Contain("snapshot.ResumeAuthorizationReady");
+        source.Should().Contain("resumeConfirmed");
+        source.Should().Contain(".bootstrap");
+
+        var reviewIndex = source.IndexOf("Review the stopped deployment", StringComparison.Ordinal);
+        var authorizationGateIndex = source.IndexOf("snapshot.ResumeAuthorizationReady", StringComparison.Ordinal);
+        var confirmedMutationIndex = source.IndexOf(
+            "StartMutation(BootstrapCommand.Resume)",
+            StringComparison.Ordinal);
+
+        confirmedMutationIndex.Should().BePositive("a confirmed Resume must still be reachable");
+        reviewIndex.Should().BeLessThan(
+            authorizationGateIndex,
+            "the read-only review is offered before any authorization exists");
+        authorizationGateIndex.Should().BeLessThan(
+            confirmedMutationIndex,
+            "the confirmation is gated on the review-produced authorization");
+        source[..authorizationGateIndex].Should().NotContain(
+            "StartMutation(BootstrapCommand.Resume)",
+            "a stopped deployment never offers direct Resume mutation");
+    }
+
+    [Fact]
+    public void ResumeConsent_DescribesTheSameMutationBoundaryAsApplyAndClaimsNoAbsoluteSafety()
+    {
+        var source = File.ReadAllText(FindRepositoryFile(
+            "tools",
+            "Gateway.Setup",
+            "Components",
+            "Pages",
+            "Progress.razor"));
+
+        var authorizationGateIndex = source.IndexOf("snapshot.ResumeAuthorizationReady", StringComparison.Ordinal);
+        var resumeConsent = source[authorizationGateIndex..];
+
+        resumeConsent.Should().Contain(
+            "I authorize Azure, Entra, Agent 365, SQL, and optional policy changes",
+            "Resume continues the same deployment boundary Apply started");
+        source.Should().NotContain(
+            "mutates nothing",
+            "the review still authenticates and reads Azure, so only the mutation boundary may be claimed");
+        source.Should().Contain(
+            "changes no Azure, Entra, Agent 365, SQL, or policy resource",
+            "the read-only review states the exact boundary it preserves");
+    }
+
+    [Fact]
+    public void RestartedSetupProcess_CanReachProgressFromTheLoadedConfiguration()
+    {
+        var source = File.ReadAllText(FindRepositoryFile(
+            "tools",
+            "Gateway.Setup",
+            "Components",
+            "Pages",
+            "Welcome.razor"));
+
+        source.Should().Contain("State.ExistingConfigurationLoaded");
+        source.Should().Contain("/setup/progress");
+    }
+
     private void WritePublicCheckoutMarkers()
     {
         Directory.CreateDirectory(Path.Combine(root, "bootstrap"));

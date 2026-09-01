@@ -422,9 +422,12 @@ public sealed class BootstrapPlanPreparationCoordinatorTests : IDisposable
         public BootstrapCommandSpec Create(
             BootstrapCommand command,
             string? expectedPlanFingerprint = null,
-            string? expectedConfigurationFileFingerprint = null)
+            string? expectedConfigurationFileFingerprint = null,
+            string? expectedResumeAuthorizationFingerprint = null)
         {
             command.Should().Be(BootstrapCommand.Plan);
+            expectedResumeAuthorizationFingerprint.Should().BeNull(
+                "the prepared Plan command never carries a resume authorization");
             if (replacementBeforeRead is not null)
             {
                 File.WriteAllText(configPath, replacementBeforeRead);

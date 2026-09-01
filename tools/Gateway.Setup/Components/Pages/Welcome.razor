@@ -63,6 +63,10 @@ else if (State.ExistingConfigurationGuidance is not null)
 
 <div class="page-actions">
     <span>@(State.ExistingConfigurationLoaded ? "The existing file remains unchanged until your explicit review." : "Nothing has been written or deployed yet.")</span>
+    @if (State.ExistingConfigurationLoaded)
+    {
+        <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/progress">Review preserved deployment state</FluentAnchor>
+    }
     <FluentButton Appearance="Appearance.Accent" Disabled="@(State.ExistingConfigurationGuidance is not null)" OnClick="Continue">@(State.ExistingConfigurationLoaded ? "Review existing configuration" : "Start safely")</FluentButton>
 </div>
 

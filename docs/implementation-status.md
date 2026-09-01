@@ -80,12 +80,20 @@ non-interactive Resume must supply both exact fingerprints; a changed checkpoint
 rejected before mutation. Interactive terminal Resume retains its current-process
 confirmation.
 
-The local Setup application does not yet expose this two-process contract. Its
-remaining correction is a distinct read-only Resume-review action, strict parsing
-of exactly one typed review claim, ephemeral single-use coordinator state, and a
-separate user confirmation that passes both fingerprints to Resume. Until that
-integration is complete and tested, a restarted Setup process is not claimed to
-provide end-to-end Resume for an already-started deployment.
+The local Setup application now exposes this two-process contract. A stopped or
+preserved accepted deployment offers a read-only Resume review that starts one
+non-interactive child process without `-Yes`, without any fingerprint, and with
+local prerequisite installation explicitly disabled. The sanitizer accepts exactly
+one canonical typed review claim bound to its own message; missing, duplicate,
+conflicting, malformed, standard-error, or noncanonical claims authorize nothing.
+The coordinator holds the accepted-Plan and Resume-authorization fingerprints only
+in bounded in-memory state, and a separate user confirmation spends them once in a
+new `-Yes` Resume process. Restart, a changed checkpoint, another command, a failed
+review, cancellation, or first use invalidates that state. Successful Resume still
+requires exactly one nonconflicting Apply-mode endpoint verification result before
+Setup reports the Gateway ready. This is source and test evidence; the browser
+journey over preserved stopped state has not run, so a restarted Setup process is
+not yet claimed as verified end-to-end Resume for an already-started deployment.
 
 Setup validates the typed bootstrap schema and field-specific Azure constraints; it
 does not infer whether a deployment name is credential-like from the name's text.
@@ -150,32 +158,32 @@ adapter disabled until safe token-role and bounded data-plane verification pass.
 
 ## Source verification
 
-The consolidated results below describe the preceding release checkpoint. The
-current pause correction has since completed the full local solution and bootstrap
-gates recorded in the second table; hosted Windows and live deployment evidence
-remain outstanding.
-
-The consolidated source gate completed on 2026-09-01:
+The consolidated source gate completed on 2026-09-01. Every result below was
+measured on Windows unless it states otherwise. Hosted Windows launcher, browser,
+and live deployment evidence remain outstanding.
 
 | Verification project | Passed | Failed | Skipped |
 |---|---:|---:|---:|
 | Gateway.UnitTests | 640 | 0 | 0 |
 | Gateway.AdminUi.Tests | 157 | 0 | 0 |
-| Gateway.Setup.Tests | 242 | 0 | 0 |
+| Gateway.Setup.Tests | 298 | 0 | 0 |
 | Gateway.ObservabilityRuntime.Tests | 158 | 0 | 0 |
 | Gateway.ArchitectureTests | 115 | 0 | 0 |
 | Gateway.IntegrationTests | 85 | 0 | 0 |
 | Gateway.EndToEndTests | 102 | 0 | 0 |
 | Gateway.SecurityTests | 126 | 0 | 0 |
-| **.NET total** | **1,625** | **0** | **0** |
+| **.NET total** | **1,681** | **0** | **0** |
 
-The PowerShell source gate discovered 708 tests: 707 passed, none failed, and one
-Windows-only launcher case was intentionally skipped on macOS. It
-validated 18 PowerShell source files and two JSON contracts, then compiled 26 Bicep
-templates and three Bicep parameter files. Release build completed with zero
-warnings and zero errors; `dotnet format --verify-no-changes`, whitespace, launcher
-syntax, OpenAPI YAML parsing, local documentation links, and ignored secret/state
-path checks also passed.
+Run these eight projects directly. `src/A365Gateway.slnx` contains no test project,
+so `dotnet test` against that solution reports success without executing a test.
+
+The PowerShell source gate discovered 748 tests on Windows: 741 passed, none failed,
+and seven non-Windows cases were intentionally skipped. It validated 18 PowerShell
+source files and two JSON contracts, then compiled 27 Bicep templates and three
+Bicep parameter files. Release build completed with zero warnings and zero errors;
+`dotnet format --verify-no-changes`, whitespace, launcher syntax, OpenAPI YAML
+parsing, local documentation links, and ignored secret/state path checks also
+passed.
 
 Setup regression coverage now includes Windows-safe Azure CLI/Bicep invocation,
 one circuit-scoped wizard under a single interactive router, explicit subscription
@@ -194,25 +202,37 @@ Recovery coverage includes exact source-continuation provenance, rejection of
 unexpected changed paths and a third generation, tamper detection for preserved
 history and completed-prefix evidence, and the deterministic governance-NSG
 What-If extension on later Resume. These cases are included in the consolidated
-708-test source gate above.
+PowerShell source gate above.
 
-The current pause checkpoint has the following narrower offline evidence:
+The current pause checkpoint has the following narrower offline evidence, measured
+on Windows unless a row states otherwise:
 
 | Current correction gate | Passed | Failed | Skipped |
 |---|---:|---:|---:|
-| Complete .NET test set | 1,625 | 0 | 0 |
-| Complete bootstrap Pester set | 682 | 0 | 9 |
-| Resume and Azure security regressions | 323 | 0 | 0 |
-| Entra credential and orphan-cleanup regressions | 33 | 0 | 0 |
+| Complete .NET test set | 1,681 | 0 | 0 |
+| Complete bootstrap Pester set on Windows | 741 | 0 | 7 |
+| Launcher regressions executed on Windows | 11 | 0 | 6 |
+| Standalone source-compiler regressions | 10 | 0 | 0 |
+| Windows Azure CLI boundary regressions | 8 | 0 | 0 |
 | Windows Bicep prerequisite regressions | 9 | 0 | 0 |
-| Standalone source-compiler regressions | 7 | 0 | 0 |
-| Launcher regressions executed on macOS | 8 | 0 | 9 |
+| Entra credential and orphan-cleanup regressions | 33 | 0 | 0 |
 
 The Release solution build completed with zero warnings and zero errors. The source
 compiler parsed 18 PowerShell files and two JSON contracts, then locally compiled
-27 Bicep templates and three parameter files. Hosted Windows now has an explicit
-Bicep compilation lane, but that lane has not run for this source generation. The
-secure credential path uses one ARM child-resource
+27 Bicep templates and three parameter files. The explicit Windows Bicep compilation
+lane has now run for this source generation and passed.
+
+Closing that lane required one contributor-tool correction. `tools/Test-BootstrapSource.ps1`
+resolved the Azure CLI with an unbounded `Get-Command az -CommandType Application`.
+The Azure CLI MSI installs both `az.cmd` and an extensionless shim in the same
+directory, so that call returned two matches whose `Source` cast to a single
+space-joined path, and the lane then failed closed on an unusable boundary. The
+resolver now binds exactly one command source and deterministically promotes an
+extensionless shim to its sibling Windows launcher before the existing bundled-Python
+mapping. Anything else still fails closed. The shipped bootstrap engine resolves the
+Azure CLI through a different, single-match call and was not affected.
+
+The secure credential path uses one ARM child-resource
 deployment against the exact configured subscription, emits no secret value, and
 requires only value-free management-plane metadata readback. The obsolete Key
 Vault data-plane credential helpers and their direct tests were removed.
@@ -237,13 +257,15 @@ security rereview of the backend Resume and private-vault boundaries passed 356 
 
 ## Safe resume point
 
-Continue first with the Setup two-step Resume review and confirmation integration
-described above and named in the
-[agent continuation checkpoint](agent-continuation.md). Then rerun the affected
-Setup tests and an independent hash-scoped review for that new integration, require
-the hosted Windows launcher and Bicep lane to pass, and test the Setup flow at
-desktop and narrow widths. Do not start a live provider action while any of those
-checks is unresolved.
+The Setup two-step Resume review and confirmation integration described above is
+implemented, tested, and independently rereviewed, and the Windows Bicep compilation
+lane has passed. Continue with the platform and browser checks named in the
+[agent continuation checkpoint](agent-continuation.md): a hosted Windows run of the
+root `gateway.cmd` launcher with real prerequisite detection and repair, the macOS
+root `gateway` launcher and core Setup path with Purview disabled, and fixture-backed
+local browser inspection of the Setup Resume journey at desktop and narrow widths
+over representative preserved stopped state. Do not start a live provider action
+while any of those checks is unresolved.
 
 For any later authorized Azure, Entra, SQL, Graph, Purview, or deployment action,
 first read the deployment status and relevant runbook. Preserve ignored bootstrap

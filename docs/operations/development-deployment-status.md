@@ -82,20 +82,22 @@ The backend Resume contract is implemented and has focused offline coverage:
 
 The combined Resume and Azure regression suite passed 323 of 323 tests. Entra
 credential and orphan-cleanup coverage passed 33 of 33; Windows Bicep prerequisite
-coverage passed 9 of 9; and the source compiler passed 7 of 7, parsed 18 PowerShell
-files and two JSON contracts, and compiled 27 Bicep templates plus three parameter
-files locally. The complete bootstrap Pester set passed 682 tests with zero failures
-and nine Windows-only skips. All eight .NET test projects passed 1,625 tests, and
-the Release solution build completed with zero warnings and zero errors. Launcher
-coverage executed eight tests on macOS and skipped nine Windows-only cases as
-designed.
+coverage passed 9 of 9; the Windows Azure CLI boundary passed 8 of 8; and the source
+compiler passed 10 of 10, parsed 18 PowerShell files and two JSON contracts, and
+compiled 27 Bicep templates plus three parameter files locally through the explicit
+Windows Bicep compilation lane. The complete bootstrap Pester set passed 741 tests
+on Windows with zero failures and seven skips. All eight .NET test projects passed
+1,681 tests, and the Release solution build completed with zero warnings and zero
+errors. Launcher coverage executed 11 tests on Windows and skipped six non-Windows
+cases as designed.
 
 The backend source in this checkpoint passed a final hash-scoped security rereview:
 356 focused tests passed and all four prior Resume/private-vault findings were
-closed. It has not completed hosted Windows execution, browser testing, or live
-deployment. Setup still needs the ephemeral two-step Resume review and confirmation
-service/UI integration; that is the first source task when work resumes and it must
-receive its own affected tests and rereview.
+closed. It has not completed hosted Windows launcher execution, browser testing, or
+live deployment. Setup's ephemeral two-step Resume review and confirmation
+service/UI integration is now implemented, tested, and rereviewed; what remains for
+that area is fixture-backed browser inspection over preserved stopped state, so a
+restarted Setup process is still not claimed as end-to-end Resume recovery.
 
 ## Optional protection evidence
 

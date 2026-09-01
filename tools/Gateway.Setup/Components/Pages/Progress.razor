@@ -17,7 +17,7 @@
     <div class="progress-header">
         <div>
             <span class="run-status @snapshot.Status.ToString().ToLowerInvariant()">@FormatStatus(snapshot.Status)</span>
-            <h2>@(snapshot.Command?.ToString() ?? "Waiting for Plan")</h2>
+            <h2>@FormatCommand(snapshot.Command)</h2>
         </div>
         @if (snapshot.Events.LastOrDefault(item => item.ProgressPercent is not null)?.ProgressPercent is { } progress)
         {
@@ -66,17 +66,36 @@ else if (snapshot.Command == BootstrapCommand.Plan && snapshot.Status is Bootstr
         <FluentAnchor Appearance="Appearance.Accent" Href="/setup/permissions">Review and run Plan again</FluentAnchor>
     </div>
 }
-else if (snapshot.Command is BootstrapCommand.Apply or BootstrapCommand.Resume && snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled)
+else if (StoppedDeploymentAwaitsReview)
 {
     <section class="setup-card confirmation-card">
-        <h2>The deployment stopped</h2>
-        <p>Do not delete <code>.bootstrap</code> state. Resume asks the canonical bootstrap to reconcile this stopped run against the same reviewed fingerprint and decide whether a checkpoint can safely continue. Setup never retries automatically.</p>
+        <h2>@(StoppedRunObserved ? "Review the stopped deployment" : "Review the preserved deployment state")</h2>
+        <p>Do not delete <code>.bootstrap</code> state. Setup first runs a read-only resume review in its own process. That review reads the canonical checkpoints, installs nothing, changes no Azure, Entra, Agent 365, SQL, or policy resource, and returns the accepted plan fingerprint plus a single-use authorization. Resume stays unavailable until it does, and the review reports honestly when there is no remaining step to continue.</p>
+        <div class="inline-actions">
+            <FluentButton Appearance="Appearance.Accent" OnClick="StartResumeReview">Run the read-only review</FluentButton>
+            <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/permissions">Review a fresh Plan</FluentAnchor>
+        </div>
+    </section>
+}
+else if (snapshot.Command == BootstrapCommand.ResumeReview && snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled)
+{
+    <div class="notice error" role="alert"><strong>The resume review authorized nothing</strong><span>Keep <code>.bootstrap</code> state intact. The read-only review stopped at the specific boundary shown above, so Setup holds no resume authorization and no mutation was attempted.</span></div>
+    <div class="page-actions">
+        <FluentButton Appearance="Appearance.Accent" OnClick="StartResumeReview">Review the stopped deployment again</FluentButton>
+        <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/permissions">Review a fresh Plan</FluentAnchor>
+    </div>
+}
+else if (snapshot.ResumeAuthorizationReady)
+{
+    <section class="setup-card confirmation-card">
+        <h2>The reviewed resume is ready to continue</h2>
+        <p>The read-only review returned one accepted plan fingerprint and one authorization for the checkpoint it validated. Setup supplies both to the canonical bootstrap, which stops before mutation if source, configuration, or checkpoint state no longer matches. The authorization is spent by this single confirmation and is never replayed.</p>
         <label class="confirm-check">
             <InputCheckbox @bind-Value="resumeConfirmed" />
-            <span><strong>I reviewed the safe status and authorize Resume.</strong><small>The bootstrap remains responsible for deciding which checkpoint can safely continue.</small></span>
+            <span><strong>I authorize Azure, Entra, Agent 365, SQL, and optional policy changes for the remaining steps bound to this reviewed authorization.</strong><small>I understand interactive administrator handoffs may appear, and the bootstrap remains responsible for deciding which checkpoint can safely continue.</small></span>
         </label>
         <div class="inline-actions">
-            <FluentButton Appearance="Appearance.Accent" Disabled="@(!resumeConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Resume)">Resume with reviewed fingerprint</FluentButton>
+            <FluentButton Appearance="Appearance.Accent" Disabled="@(!resumeConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Resume)">Resume with the reviewed authorization</FluentButton>
             <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/permissions">Review a fresh Plan</FluentAnchor>
         </div>
     </section>
@@ -91,7 +110,7 @@ else if (snapshot.HasVerifiedDeployment)
     <strong>Terminal fallback</strong>
     <span>If this local UI closes, rerun it or use the same ignored configuration with the canonical commands:</span>
     <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Plan -Config ./bootstrap/config.json</code>
-    @if (snapshot.Command is BootstrapCommand.Apply or BootstrapCommand.Resume && snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled)
+    @if (StoppedDeploymentAwaitsReview || snapshot.Command == BootstrapCommand.ResumeReview || snapshot.ResumeAuthorizationReady)
     {
         <code>pwsh ./bootstrap/bootstrap.ps1 -Mode Resume -Config ./bootstrap/config.json</code>
     }
@@ -103,14 +122,22 @@ else if (snapshot.HasVerifiedDeployment)
     private bool resumeConfirmed;
 
     private string Heading => snapshot.IsRunning
-        ? $"Running {snapshot.Command}"
+        ? $"Running {FormatCommand(snapshot.Command)}"
         : snapshot.Status == BootstrapExecutionStatus.NotStarted
             ? "No command is running"
-            : $"{snapshot.Command} {FormatStatus(snapshot.Status).ToLowerInvariant()}";
+            : $"{FormatCommand(snapshot.Command)} {FormatStatus(snapshot.Status).ToLowerInvariant()}";
 
     private string Description => snapshot.IsRunning
         ? "Structured bootstrap events are streamed through a strict redaction boundary. Keep this page and the launch terminal open."
         : "No command is retried automatically. Every mutation requires a fresh explicit action.";
+
+    private bool StoppedRunObserved =>
+        snapshot.Command is BootstrapCommand.Apply or BootstrapCommand.Resume &&
+        snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled;
+
+    private bool StoppedDeploymentAwaitsReview =>
+        StoppedRunObserved ||
+        (snapshot.Status == BootstrapExecutionStatus.NotStarted && State.ExistingConfigurationLoaded);
 
     protected override void OnInitialized()
     {
@@ -133,7 +160,7 @@ else if (snapshot.HasVerifiedDeployment)
 
     private void StartMutation(BootstrapCommand command)
     {
-        var confirmed = command == BootstrapCommand.Resume && snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled
+        var confirmed = command == BootstrapCommand.Resume
             ? resumeConfirmed
             : mutationConfirmed;
         if (Execution.TryStart(command, confirmed))
@@ -145,7 +172,27 @@ else if (snapshot.HasVerifiedDeployment)
         }
     }
 
+    private void StartResumeReview()
+    {
+        if (Execution.TryStartResumeReview())
+        {
+            mutationConfirmed = false;
+            resumeConfirmed = false;
+            Activity.Touch();
+            snapshot = Execution.Snapshot();
+        }
+    }
+
     private void ContinueToFinish() => Navigation.NavigateTo("/setup/finish");
+
+    private static string FormatCommand(BootstrapCommand? value) => value switch
+    {
+        BootstrapCommand.Plan => "Plan",
+        BootstrapCommand.Apply => "Apply",
+        BootstrapCommand.Resume => "Resume",
+        BootstrapCommand.ResumeReview => "Resume review",
+        _ => "Waiting for Plan"
+    };
 
     private static string FormatStatus(BootstrapExecutionStatus value) => value switch
     {

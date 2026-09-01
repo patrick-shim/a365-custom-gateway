@@ -100,23 +100,25 @@ Gateway. Windows is the primary audience. Optional Purview selection and policy
 authoring remain Windows-only; the core path remains cross-platform with Purview
 disabled.
 
-The current source has passed these local offline gates:
+The current source has passed these local offline gates. Every row was measured on
+Windows unless it states otherwise:
 
 | Evidence | Result |
 |---|---:|
-| Complete .NET test set | 1,625 passed |
-| Complete bootstrap Pester set | 682 passed, 9 Windows-only skipped on macOS |
-| Resume and Azure security regressions | 323 passed |
-| Entra credential and orphan-cleanup regressions | 33 passed |
+| Complete .NET test set | 1,681 passed |
+| Complete bootstrap Pester set on Windows | 741 passed, 7 skipped |
+| Launcher regressions executed on Windows | 11 passed, 6 skipped |
+| Standalone source-compiler regressions | 10 passed |
+| Windows Azure CLI boundary regressions | 8 passed |
 | Windows Bicep prerequisite regressions | 9 passed |
-| Standalone source-compiler regressions | 7 passed |
-| Launcher regressions executed on macOS | 8 passed, 9 Windows-only skipped |
+| Entra credential and orphan-cleanup regressions | 33 passed |
 | Final backend Resume/private-vault security rereview | 356 passed |
 
 The Release solution build completed with zero warnings and zero errors. Source
 validation parsed 18 PowerShell files and two JSON contracts and locally compiled
-27 Bicep templates and three parameter files. These results are source evidence,
-not a hosted-Windows, browser, deployment, or live-Gateway claim.
+27 Bicep templates and three parameter files through the explicit Windows Bicep
+compilation lane. These results are source evidence, not a hosted-Windows launcher,
+browser, deployment, or live-Gateway claim.
 
 The cross-tool handoff itself was also revalidated at this checkpoint: all 17 Codex
 role definitions parsed, all 20 Claude agent/skill frontmatters parsed, and local
@@ -132,37 +134,57 @@ outside tracked source.
 
 ## First unfinished source task
 
-Complete the local Setup application's restarted-process, two-step Resume
-integration. The PowerShell backend already supports the required boundary:
+The local Setup application's restarted-process, two-step Resume integration is
+implemented, tested, and independently rereviewed. The remaining first task is
+platform and browser validation of that journey, not new service code.
 
-1. read-only `Resume -NonInteractive` revalidates the accepted Plan and completed
-   checkpoint prefix, emits one typed `resumeReview` result, and performs no
-   deployment mutation; and
-2. a separately authorized non-interactive Resume requires the exact accepted-Plan
-   and Resume-authorization fingerprints before any remaining step can execute.
+Implemented and covered at this checkpoint:
 
-Setup currently retains only the Plan fingerprint and offers a direct Resume
-confirmation after a failed Apply/Resume. It does not strictly consume the typed
-review claim, hold the resulting authorization ephemerally, or pass both
-fingerprints through a separate confirmation. Therefore terminal Resume is
-supported, while a restarted Setup browser process is not yet claimed as complete
-recovery.
+- `tools/Gateway.Setup/Services/BootstrapCommand.cs` expresses distinct read-only
+  review and confirmed Resume argument contracts. The review adds
+  `-InstallPrerequisites:$false` so a read-only review never inherits the engine's
+  default local-prerequisite installation.
+- `BootstrapProgressEvent.cs` and `BootstrapOutputSanitizer.cs` represent and
+  strictly parse exactly one safe typed `resumeReview` claim bound to its own
+  message. Missing, duplicate, conflicting, malformed, standard-error, and
+  noncanonical claims authorize nothing.
+- `BootstrapExecutionCoordinator.cs` holds the accepted-Plan and
+  Resume-authorization fingerprints only in bounded in-memory state and consumes
+  them once. Restart, a changed checkpoint, another command, a failed review,
+  cancellation, or first use invalidates that state.
+- `Components/Pages/Progress.razor` renders the read-only review action first and
+  gates a separate explicit confirmation on the review-produced authorization. No
+  path offers direct Resume mutation. The confirmation states the same Azure,
+  Entra, Agent 365, SQL, and optional policy boundary Apply states, and the review
+  claims only that it changes no such resource rather than claiming absolute safety.
+- `bootstrap/bootstrap.ps1` was left unchanged; the backend contract remained
+  authoritative and no regression proved a backend defect.
 
-The implementation owner should work first in these source surfaces:
+The remaining validation work, in order:
 
-- `tools/Gateway.Setup/Services/BootstrapCommand.cs`: express distinct read-only
-  review and confirmed Resume argument contracts;
-- `tools/Gateway.Setup/Services/BootstrapProgressEvent.cs` and
-  `BootstrapOutputSanitizer.cs`: represent and strictly parse exactly one safe typed
-  Resume-review claim;
-- `tools/Gateway.Setup/Services/BootstrapExecutionCoordinator.cs`: hold a
-  checkpoint-bound authorization ephemerally and consume it once;
-- `tools/Gateway.Setup/Components/Pages/Progress.razor`: render a read-only review
-  action followed by a separate explicit confirmation, with no direct Resume; and
-- `bootstrap/bootstrap.ps1`: treat the existing backend contract as authoritative;
-  change it only if a regression proves a backend defect.
+1. Fixture-backed local browser inspection of the Setup Resume journey at desktop
+   and narrow widths, including a newly started Setup process over representative
+   preserved stopped state. This is the gate that would let a restarted Setup
+   process be claimed as end-to-end Resume recovery; until it passes, terminal
+   Resume remains the only documented recovery path.
+2. A hosted Windows run of the root `gateway.cmd` launcher with real prerequisite
+   detection and repair. The launcher regression suite now executes on Windows, but
+   an actual hosted launcher run has not happened.
+3. The macOS root `gateway` launcher and core Setup path with Purview disabled.
 
-The focused test surfaces are:
+One contributor-tool defect was found and corrected while closing the Windows Bicep
+compilation lane. `tools/Test-BootstrapSource.ps1` resolved the Azure CLI with an
+unbounded `Get-Command az -CommandType Application`. Because the Azure CLI MSI
+installs `az.cmd` and an extensionless shim in the same directory, that call
+returned two matches whose `Source` cast to one space-joined path, and the lane
+failed closed on an unusable boundary. The resolver now binds exactly one command
+source and deterministically promotes an extensionless shim to its sibling Windows
+launcher before the existing bundled-Python mapping; anything else still fails
+closed. `tests/Bootstrap.Tests/Source.Tests.ps1` covers both behaviors. The shipped
+bootstrap engine resolves the Azure CLI through a different, single-match call in
+`bootstrap/modules/Common.psm1` and was not affected.
+
+The focused test surfaces for this area are:
 
 - `tests/Gateway.Setup.Tests/Services/BootstrapCommandFactoryTests.cs`;
 - `tests/Gateway.Setup.Tests/Services/BootstrapOutputSanitizerTests.cs`;
@@ -171,7 +193,9 @@ The focused test surfaces are:
 
 ## Acceptance criteria
 
-The Setup integration is acceptable only when all of the following are proved:
+The Setup integration is acceptable only when all of the following are proved.
+Items 1 through 7 are proved by the tests above; the browser journey in the
+remaining validation list is what extends them to a recovery claim.
 
 1. A stopped accepted deployment offers read-only Resume review, not direct
    mutation and not a new Plan.
@@ -188,22 +212,28 @@ The Setup integration is acceptable only when all of the following are proved:
    verification result before Setup reports the Gateway ready.
 7. Error text remains sanitized and tells the user to preserve `.bootstrap/` state.
 
-Add focused failing tests first, implement the smallest coherent correction, rerun
-the complete Setup test project, and obtain an independent hash-scoped security
-rereview before broader gates.
+For any further change in this area, add focused failing tests first, implement the
+smallest coherent correction, rerun the complete Setup test project, and obtain an
+independent hash-scoped security rereview before broader gates.
 
 ## Gates still required
 
 Before any live action, complete and record:
 
-- the full .NET and bootstrap suites, Release build, format, whitespace, source,
-  Bicep, documentation-link, and secret/state-path checks;
-- a hosted Windows run of the root `gateway.cmd` launcher, prerequisite detection
-  and repair, and the explicit Windows Bicep compilation lane;
+- a hosted Windows run of the root `gateway.cmd` launcher and prerequisite
+  detection and repair;
 - the macOS root `gateway` launcher and core Setup path with Purview disabled; and
 - fixture-backed local browser inspection of the Setup Resume journey at desktop
   and narrow widths, including a newly started Setup process over representative
   preserved stopped state.
+
+The full .NET and bootstrap suites, Release build, format, whitespace, source,
+Bicep, documentation-link, and secret/state-path checks have passed for this source
+generation and are recorded above. Rerun them after any further source change.
+
+Note that `src/A365Gateway.slnx` contains no test projects, so `dotnet test` against
+that solution reports success without running a single test. Always run the eight
+projects under `tests/` to obtain a real .NET result.
 
 Still missing after those source/platform checks are an authorized fresh-clone
 browser and live deployment: signed-in Plan, explicit Apply, exact resource and

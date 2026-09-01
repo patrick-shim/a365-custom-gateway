@@ -6,7 +6,8 @@ internal enum BootstrapCommand
 {
     Plan,
     Apply,
-    Resume
+    Resume,
+    ResumeReview
 }
 
 internal sealed record BootstrapCommandSpec(
@@ -44,7 +45,8 @@ internal interface IBootstrapCommandFactory
     BootstrapCommandSpec Create(
         BootstrapCommand command,
         string? expectedPlanFingerprint = null,
-        string? expectedConfigurationFileFingerprint = null);
+        string? expectedConfigurationFileFingerprint = null,
+        string? expectedResumeAuthorizationFingerprint = null);
 }
 
 internal sealed class BootstrapCommandFactory(RepositoryLayout repository) : IBootstrapCommandFactory
@@ -52,7 +54,8 @@ internal sealed class BootstrapCommandFactory(RepositoryLayout repository) : IBo
     public BootstrapCommandSpec Create(
         BootstrapCommand command,
         string? expectedPlanFingerprint = null,
-        string? expectedConfigurationFileFingerprint = null)
+        string? expectedConfigurationFileFingerprint = null,
+        string? expectedResumeAuthorizationFingerprint = null)
     {
         if (!Enum.IsDefined(command))
         {
@@ -74,6 +77,20 @@ internal sealed class BootstrapCommandFactory(RepositoryLayout repository) : IBo
                 nameof(expectedConfigurationFileFingerprint));
         }
 
+        if (command == BootstrapCommand.ResumeReview && expectedPlanFingerprint is not null)
+        {
+            throw new ArgumentException(
+                "The wizard never supplies an expected fingerprint to its read-only Resume review command.",
+                nameof(expectedPlanFingerprint));
+        }
+
+        if (command == BootstrapCommand.ResumeReview && expectedConfigurationFileFingerprint is not null)
+        {
+            throw new ArgumentException(
+                "The Setup configuration-file fingerprint is accepted only by its prepared Plan command.",
+                nameof(expectedConfigurationFileFingerprint));
+        }
+
         if (command is BootstrapCommand.Apply or BootstrapCommand.Resume &&
             !PlanFingerprintPolicy.IsCanonical(expectedPlanFingerprint))
         {
@@ -88,6 +105,21 @@ internal sealed class BootstrapCommandFactory(RepositoryLayout repository) : IBo
             throw new ArgumentException(
                 "The Setup configuration-file fingerprint is accepted only by its prepared Plan command.",
                 nameof(expectedConfigurationFileFingerprint));
+        }
+
+        if (command == BootstrapCommand.Resume &&
+            !PlanFingerprintPolicy.IsCanonical(expectedResumeAuthorizationFingerprint))
+        {
+            throw new ArgumentException(
+                "Resume requires the exact canonical authorization fingerprint emitted by its read-only review.",
+                nameof(expectedResumeAuthorizationFingerprint));
+        }
+
+        if (command != BootstrapCommand.Resume && expectedResumeAuthorizationFingerprint is not null)
+        {
+            throw new ArgumentException(
+                "The Resume authorization fingerprint is accepted only by its confirmed Resume command.",
+                nameof(expectedResumeAuthorizationFingerprint));
         }
 
         var scriptPath = Path.GetFullPath(repository.BootstrapScriptPath);
@@ -108,7 +140,7 @@ internal sealed class BootstrapCommandFactory(RepositoryLayout repository) : IBo
             "-File",
             scriptPath,
             "-Mode",
-            command == BootstrapCommand.Apply ? "Up" : command.ToString(),
+            MapMode(command),
             "-Config",
             configPath,
             "-OutputFormat",
@@ -122,10 +154,24 @@ internal sealed class BootstrapCommandFactory(RepositoryLayout repository) : IBo
             arguments.Add(expectedConfigurationFileFingerprint!);
             arguments.Add("-NonInteractive");
         }
+        else if (command == BootstrapCommand.ResumeReview)
+        {
+            // The review only reads canonical checkpoints, so it must not inherit the
+            // engine's default local-prerequisite installation. Only the colon form binds
+            // a [bool] parameter when pwsh is invoked with -File.
+            arguments.Add("-InstallPrerequisites:$false");
+            arguments.Add("-NonInteractive");
+        }
         else
         {
             arguments.Add("-ExpectedPlanFingerprint");
             arguments.Add(expectedPlanFingerprint!);
+            if (command == BootstrapCommand.Resume)
+            {
+                arguments.Add("-ExpectedResumeAuthorizationFingerprint");
+                arguments.Add(expectedResumeAuthorizationFingerprint!);
+            }
+
             arguments.Add("-Yes");
         }
 
@@ -135,6 +181,14 @@ internal sealed class BootstrapCommandFactory(RepositoryLayout repository) : IBo
             Path.GetFullPath(repository.RootPath),
             arguments);
     }
+
+    private static string MapMode(BootstrapCommand command) => command switch
+    {
+        BootstrapCommand.Plan => "Plan",
+        BootstrapCommand.Apply => "Up",
+        BootstrapCommand.Resume or BootstrapCommand.ResumeReview => "Resume",
+        _ => throw new ArgumentOutOfRangeException(nameof(command), command, "Unsupported bootstrap command.")
+    };
 
     private static void EnsureExactRepositoryPath(string actual, string expected, string label)
     {

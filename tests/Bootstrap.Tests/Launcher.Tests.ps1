@@ -293,6 +293,15 @@ Describe 'Windows gateway launcher mutation boundary' -Skip:(-not $IsWindows) {
     BeforeAll {
         $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 
+        # gateway.cmd must be started through the command processor, and these tests
+        # replace PATH with stub directories. Some shells (for example Git Bash) do not
+        # export ComSpec, so resolve the absolute system cmd.exe deterministically.
+        $commandProcessor = if (-not [string]::IsNullOrWhiteSpace($env:ComSpec)) { $env:ComSpec }
+        else { Join-Path ([Environment]::GetFolderPath('System')) 'cmd.exe' }
+        if (-not (Test-Path -LiteralPath $commandProcessor -PathType Leaf)) {
+            throw "Could not resolve the Windows command processor at '$commandProcessor'."
+        }
+
         $fakeToolProject = Join-Path $TestDrive 'GatewayLauncherFakeTool'
         $fakeToolBin = Join-Path $TestDrive 'fake-tool-bin'
         $null = New-Item -ItemType Directory -Path $fakeToolProject, $fakeToolBin -Force
@@ -435,7 +444,7 @@ internal static class Program
             $env:GATEWAY_TEST_MARKER = $marker
             $launcher = Join-Path $repositoryRoot 'gateway.cmd'
 
-            & $env:ComSpec /d /c "`"$launcher`" status --no-install" 2>$null | Out-Null
+            & $commandProcessor /d /c "`"$launcher`" status --no-install" 2>$null | Out-Null
 
             $LASTEXITCODE | Should -Be 1
             Test-Path -LiteralPath $marker | Should -BeFalse
@@ -477,7 +486,7 @@ internal static class Program
             $env:GATEWAY_TEST_DOTNET_ARGUMENTS = $dotnetMarker
             $env:GATEWAY_TEST_DOTNET_VERSION = '10.0.400'
 
-            & $env:ComSpec /d /c "`"$launcher`" setup --no-open" 2>&1 | Out-Null
+            & $commandProcessor /d /c "`"$launcher`" setup --no-open" 2>&1 | Out-Null
 
             $LASTEXITCODE | Should -Be 0
             $installArguments = Get-Content -LiteralPath $installMarker -Raw
@@ -530,7 +539,7 @@ internal static class Program
             $env:GATEWAY_TEST_DOTNET_ARGUMENTS = $dotnetMarker
             $env:GATEWAY_TEST_DOTNET_VERSION = $DotnetVersion
 
-            $output = (& $env:ComSpec /d /c "`"$launcher`" setup --no-open --no-install" 2>&1 | Out-String)
+            $output = (& $commandProcessor /d /c "`"$launcher`" setup --no-open --no-install" 2>&1 | Out-String)
 
             $LASTEXITCODE | Should -Be 1
             $output | Should -Match ([regex]::Escape($Guidance))
@@ -577,7 +586,7 @@ internal static class Program
             $env:GATEWAY_TEST_DOTNET_ARGUMENTS = $dotnetMarker
             $env:GATEWAY_TEST_DOTNET_VERSION = '10.0.100'
 
-            & $env:ComSpec /d /c "`"$launcher`" setup --no-open" 2>&1 | Out-Null
+            & $commandProcessor /d /c "`"$launcher`" setup --no-open" 2>&1 | Out-Null
 
             $LASTEXITCODE | Should -Be 0
             (Get-Content -LiteralPath $installMarker -Raw) | Should -Match ([regex]::Escape('install --id Microsoft.DotNet.SDK.10 --exact'))

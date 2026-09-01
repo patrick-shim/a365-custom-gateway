@@ -125,7 +125,8 @@ public class DatabaseRecoveryJobBicepTests
             RepositoryRoot,
             "bootstrap",
             "infra",
-            "database-migrator-recovery-job.bicep"));
+            "database-migrator-recovery-job.bicep"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
 
     private static string FindRepositoryRoot()
     {

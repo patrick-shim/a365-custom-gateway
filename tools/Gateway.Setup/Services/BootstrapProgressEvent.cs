@@ -25,6 +25,11 @@ internal sealed record BootstrapVerifiedEndpoints(
     public Uri AdminSetupAddress => new(AdminUiBaseAddress, "setup");
 }
 
+internal sealed record BootstrapResumeAuthorization(
+    string AcceptedPlanFingerprint,
+    string CheckpointFingerprint,
+    string ResumeAuthorizationFingerprint);
+
 internal sealed record BootstrapProgressEvent(
     DateTimeOffset TimestampUtc,
     BootstrapProgressKind Kind,
@@ -36,7 +41,9 @@ internal sealed record BootstrapProgressEvent(
     string? DisplayLabel = null,
     BootstrapVerifiedEndpoints? VerifiedEndpoints = null,
     bool DeploymentVerificationClaimObserved = false,
-    bool PlanResultClaimObserved = false);
+    bool PlanResultClaimObserved = false,
+    BootstrapResumeAuthorization? ResumeAuthorization = null,
+    bool ResumeReviewClaimObserved = false);
 
 internal sealed record BootstrapProcessResult(int ExitCode, bool WasCancelled)
 {

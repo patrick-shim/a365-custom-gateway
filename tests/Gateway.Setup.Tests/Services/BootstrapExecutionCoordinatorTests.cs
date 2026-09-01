@@ -11,6 +11,10 @@ public sealed class BootstrapExecutionCoordinatorTests
         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     private const string ConfigurationFingerprint =
         "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+    private const string CheckpointFingerprint =
+        "sha256:1111111122222222111111112222222211111111222222221111111122222222";
+    private const string ResumeAuthorizationFingerprint =
+        "sha256:9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba";
 
     [Fact]
     public void DirectPlanStart_IsRejectedWithoutAPreparationLeaseAndPublishedFingerprint()
@@ -54,8 +58,8 @@ public sealed class BootstrapExecutionCoordinatorTests
         deployment.VerifiedEndpoints.ApiBaseAddress.Should().Be("https://ca-gateway-api-dev.safe.azurecontainerapps.io/");
         deployment.VerifiedEndpoints.ApiHealthAddress.Should().Be("https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks");
         factory.Calls.Should().Equal(
-            new CommandCall(BootstrapCommand.Plan, null, ConfigurationFingerprint),
-            new CommandCall(BootstrapCommand.Apply, ReviewedFingerprint, null));
+            new CommandCall(BootstrapCommand.Plan, null, ConfigurationFingerprint, null),
+            new CommandCall(BootstrapCommand.Apply, ReviewedFingerprint, null, null));
     }
 
     [Fact]
@@ -66,13 +70,13 @@ public sealed class BootstrapExecutionCoordinatorTests
             factory,
             new SequencedProcessRunner(
                 new RunResult(
-                    [PlanResult(ReviewedFingerprint, applyReady: true)],
+                    [ResumeReviewResult()],
                     new BootstrapProcessResult(0, false)),
                 new RunResult(
                     [DeploymentVerificationResult()],
                     new BootstrapProcessResult(0, false))));
 
-        StartPreparedPlan(coordinator).Should().BeTrue();
+        coordinator.TryStartResumeReview().Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
         coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeTrue();
         await WaitForCompletionAsync(coordinator);
@@ -82,8 +86,301 @@ public sealed class BootstrapExecutionCoordinatorTests
         snapshot.HasVerifiedDeployment.Should().BeTrue();
         snapshot.VerifiedEndpoints!.VerificationMode.Should().Be(BootstrapVerificationMode.Apply);
         factory.Calls.Should().Equal(
-            new CommandCall(BootstrapCommand.Plan, null, ConfigurationFingerprint),
-            new CommandCall(BootstrapCommand.Resume, ReviewedFingerprint, null));
+            new CommandCall(BootstrapCommand.ResumeReview, null, null, null),
+            new CommandCall(
+                BootstrapCommand.Resume,
+                ReviewedFingerprint,
+                null,
+                ResumeAuthorizationFingerprint));
+    }
+
+    [Fact]
+    public async Task RestartedProcessReviewsAStoppedDeploymentWithoutAPlanAndWithoutMutating()
+    {
+        var factory = new RecordingCommandFactory();
+        var coordinator = CreateCoordinator(
+            factory,
+            new SequencedProcessRunner(
+                new RunResult(
+                    [ResumeReviewResult()],
+                    new BootstrapProcessResult(0, false))));
+
+        coordinator.Snapshot().ResumeAuthorizationReady.Should().BeFalse();
+        coordinator.TryStartResumeReview().Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        var snapshot = coordinator.Snapshot();
+        snapshot.Command.Should().Be(BootstrapCommand.ResumeReview);
+        snapshot.Status.Should().Be(BootstrapExecutionStatus.Succeeded);
+        snapshot.PlanSucceeded.Should().BeFalse("a Resume review never authorizes an Apply");
+        snapshot.HasVerifiedDeployment.Should().BeFalse();
+        snapshot.ResumeAuthorizationReady.Should().BeTrue();
+        factory.Calls.Should().ContainSingle().Which.Should().Be(
+            new CommandCall(BootstrapCommand.ResumeReview, null, null, null));
+        coordinator.TryStart(BootstrapCommand.Apply, explicitlyConfirmed: true).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ResumeAuthorizationIsConsumedExactlyOnceAndCannotBeReplayed()
+    {
+        var factory = new RecordingCommandFactory();
+        var coordinator = CreateCoordinator(
+            factory,
+            new SequencedProcessRunner(
+                new RunResult([ResumeReviewResult()], new BootstrapProcessResult(0, false)),
+                new RunResult([DeploymentVerificationResult()], new BootstrapProcessResult(0, false))));
+
+        coordinator.TryStartResumeReview().Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        coordinator.Snapshot().ResumeAuthorizationReady.Should().BeFalse();
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeFalse();
+        factory.Calls.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void ResumeWithoutAReadOnlyReview_IsRejected()
+    {
+        var factory = new RecordingCommandFactory();
+        var coordinator = CreateCoordinator(factory, new SequencedProcessRunner());
+
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeFalse();
+
+        coordinator.Snapshot().Status.Should().Be(BootstrapExecutionStatus.NotStarted);
+        factory.Calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AnAcceptedPlanAloneNeverAuthorizesResume()
+    {
+        var factory = new RecordingCommandFactory();
+        var coordinator = CreateCoordinator(
+            factory,
+            new SequencedProcessRunner(
+                new RunResult(
+                    [PlanResult(ReviewedFingerprint, applyReady: true)],
+                    new BootstrapProcessResult(0, false))));
+
+        StartPreparedPlan(coordinator).Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        coordinator.Snapshot().PlanSucceeded.Should().BeTrue();
+        coordinator.Snapshot().ResumeAuthorizationReady.Should().BeFalse();
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeFalse();
+        factory.Calls.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task UnconfirmedResume_IsRejectedAndLeavesTheAuthorizationUnspent()
+    {
+        var factory = new RecordingCommandFactory();
+        var coordinator = CreateCoordinator(
+            factory,
+            new SequencedProcessRunner(
+                new RunResult([ResumeReviewResult()], new BootstrapProcessResult(0, false)),
+                new RunResult([DeploymentVerificationResult()], new BootstrapProcessResult(0, false))));
+
+        coordinator.TryStartResumeReview().Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: false).Should().BeFalse();
+        coordinator.Snapshot().ResumeAuthorizationReady.Should().BeTrue();
+        factory.Calls.Should().ContainSingle();
+
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(0, true)]
+    public async Task ResumeReviewThatDoesNotCompleteCleanly_AuthorizesNothing(int exitCode, bool cancelled)
+    {
+        var coordinator = CreateCoordinator(
+            new RecordingCommandFactory(),
+            new SequencedProcessRunner(
+                new RunResult([ResumeReviewResult()], new BootstrapProcessResult(exitCode, cancelled))));
+
+        coordinator.TryStartResumeReview().Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        var snapshot = coordinator.Snapshot();
+        snapshot.Status.Should().Be(cancelled
+            ? BootstrapExecutionStatus.Cancelled
+            : BootstrapExecutionStatus.Failed);
+        snapshot.ResumeAuthorizationReady.Should().BeFalse();
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SuccessfulResumeReviewWithoutATypedClaim_AuthorizesNothing()
+    {
+        var coordinator = CreateCoordinator(
+            new RecordingCommandFactory(),
+            new SequencedProcessRunner(
+                new RunResult([], new BootstrapProcessResult(0, false))));
+
+        coordinator.TryStartResumeReview().Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        var snapshot = coordinator.Snapshot();
+        snapshot.Status.Should().Be(BootstrapExecutionStatus.Failed);
+        snapshot.ResumeAuthorizationReady.Should().BeFalse();
+        snapshot.Events.Should().Contain(progress =>
+            progress.Message == "Resume review exited without exactly one nonconflicting typed review result. No resume was authorized.");
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DuplicateIdenticalResumeReviewClaims_FailClosed()
+    {
+        var coordinator = CreateCoordinator(
+            new RecordingCommandFactory(),
+            new SequencedProcessRunner(
+                new RunResult(
+                    [ResumeReviewResult(), ResumeReviewResult()],
+                    new BootstrapProcessResult(0, false))));
+
+        coordinator.TryStartResumeReview().Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        coordinator.Snapshot().Status.Should().Be(BootstrapExecutionStatus.Failed);
+        coordinator.Snapshot().ResumeAuthorizationReady.Should().BeFalse();
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ConflictingResumeReviewClaims_FailClosed()
+    {
+        const string otherAuthorization =
+            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        var coordinator = CreateCoordinator(
+            new RecordingCommandFactory(),
+            new SequencedProcessRunner(
+                new RunResult(
+                    [
+                        ResumeReviewResult(),
+                        ResumeReviewResult(resumeAuthorizationFingerprint: otherAuthorization)
+                    ],
+                    new BootstrapProcessResult(0, false))));
+
+        coordinator.TryStartResumeReview().Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        coordinator.Snapshot().Status.Should().Be(BootstrapExecutionStatus.Failed);
+        coordinator.Snapshot().ResumeAuthorizationReady.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task InvalidAndValidResumeReviewClaims_FailClosedRegardlessOfOrder(bool invalidFirst)
+    {
+        var claims = invalidFirst
+            ? new[] { InvalidResumeReviewResult(), ResumeReviewResult() }
+            : new[] { ResumeReviewResult(), InvalidResumeReviewResult() };
+        var coordinator = CreateCoordinator(
+            new RecordingCommandFactory(),
+            new SequencedProcessRunner(
+                new RunResult(claims, new BootstrapProcessResult(0, false))));
+
+        coordinator.TryStartResumeReview().Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        coordinator.Snapshot().Status.Should().Be(BootstrapExecutionStatus.Failed);
+        coordinator.Snapshot().ResumeAuthorizationReady.Should().BeFalse();
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task StartingAnotherCommandInvalidatesAPendingResumeAuthorization()
+    {
+        var factory = new RecordingCommandFactory();
+        var coordinator = CreateCoordinator(
+            factory,
+            new SequencedProcessRunner(
+                new RunResult([ResumeReviewResult()], new BootstrapProcessResult(0, false)),
+                new RunResult(
+                    [PlanResult(ReviewedFingerprint, applyReady: true)],
+                    new BootstrapProcessResult(0, false))));
+
+        coordinator.TryStartResumeReview().Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+        coordinator.Snapshot().ResumeAuthorizationReady.Should().BeTrue();
+
+        StartPreparedPlan(coordinator).Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        coordinator.Snapshot().ResumeAuthorizationReady.Should().BeFalse();
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeFalse();
+        factory.Calls.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task AuthorizedResumeStillRequiresExactlyOneApplyModeVerificationResult()
+    {
+        var activity = new SetupActivityTracker();
+        var coordinator = new BootstrapExecutionCoordinator(
+            new RecordingCommandFactory(),
+            new SequencedProcessRunner(
+                new RunResult([ResumeReviewResult()], new BootstrapProcessResult(0, false)),
+                new RunResult([], new BootstrapProcessResult(0, false))),
+            activity,
+            new TestHostApplicationLifetime());
+
+        coordinator.TryStartResumeReview().Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        var snapshot = coordinator.Snapshot();
+        snapshot.Status.Should().Be(BootstrapExecutionStatus.Failed);
+        snapshot.HasVerifiedDeployment.Should().BeFalse();
+        snapshot.VerifiedEndpoints.Should().BeNull();
+        snapshot.Events.Should().Contain(progress =>
+            progress.Message == "Resume exited without exactly one nonconflicting typed deployment verification result. Setup did not mark the Gateway ready.");
+        activity.Snapshot().CompletedUtc.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ResumeReviewResultDuringAnotherCommand_NeverAuthorizesResume()
+    {
+        var coordinator = CreateCoordinator(
+            new RecordingCommandFactory(),
+            new SequencedProcessRunner(
+                new RunResult(
+                    [PlanResult(ReviewedFingerprint, applyReady: true), ResumeReviewResult()],
+                    new BootstrapProcessResult(0, false))));
+
+        StartPreparedPlan(coordinator).Should().BeTrue();
+        await WaitForCompletionAsync(coordinator);
+
+        coordinator.Snapshot().ResumeAuthorizationReady.Should().BeFalse();
+        coordinator.TryStart(BootstrapCommand.Resume, explicitlyConfirmed: true).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ResumeReviewIsRejectedWhileAnotherCommandIsRunning()
+    {
+        var gate = new TaskCompletionSource();
+        var coordinator = CreateCoordinator(
+            new RecordingCommandFactory(),
+            new SequencedProcessRunner(
+                new RunResult(
+                    [PlanResult(ReviewedFingerprint, applyReady: true)],
+                    new BootstrapProcessResult(0, false))
+                {
+                    Gate = gate.Task
+                }));
+
+        StartPreparedPlan(coordinator).Should().BeTrue();
+        coordinator.Snapshot().IsRunning.Should().BeTrue();
+
+        coordinator.TryStartResumeReview().Should().BeFalse();
+
+        gate.SetResult();
+        await WaitForCompletionAsync(coordinator);
     }
 
     [Fact]
@@ -104,7 +401,7 @@ public sealed class BootstrapExecutionCoordinatorTests
             progress.Message == "Plan ended without one apply-ready canonical fingerprint. No mutation was authorized.");
         coordinator.TryStart(BootstrapCommand.Apply, explicitlyConfirmed: true).Should().BeFalse();
         factory.Calls.Should().ContainSingle().Which.Should().Be(
-            new CommandCall(BootstrapCommand.Plan, null, ConfigurationFingerprint));
+            new CommandCall(BootstrapCommand.Plan, null, ConfigurationFingerprint, null));
     }
 
     [Fact]
@@ -399,6 +696,31 @@ public sealed class BootstrapExecutionCoordinatorTests
             ProgressPercent: 100,
             DeploymentVerificationClaimObserved: true);
 
+    private static BootstrapProgressEvent ResumeReviewResult(
+        string acceptedPlanFingerprint = ReviewedFingerprint,
+        string checkpointFingerprint = CheckpointFingerprint,
+        string resumeAuthorizationFingerprint = ResumeAuthorizationFingerprint) =>
+        new(
+            TimestampUtc: DateTimeOffset.UtcNow,
+            Kind: BootstrapProgressKind.Success,
+            Message: "Resume preflight validated 4 completed checkpoints. Remaining work starts at 'Azure foundation'.",
+            Step: "Resume preflight",
+            ProgressPercent: 5,
+            ResumeAuthorization: new BootstrapResumeAuthorization(
+                acceptedPlanFingerprint,
+                checkpointFingerprint,
+                resumeAuthorizationFingerprint),
+            ResumeReviewClaimObserved: true);
+
+    private static BootstrapProgressEvent InvalidResumeReviewResult() =>
+        new(
+            TimestampUtc: DateTimeOffset.UtcNow,
+            Kind: BootstrapProgressKind.Error,
+            Message: BootstrapOutputSanitizer.InvalidResumeReviewMessage,
+            Step: "Resume preflight",
+            ProgressPercent: 5,
+            ResumeReviewClaimObserved: true);
+
     private static async Task WaitForCompletionAsync(BootstrapExecutionCoordinator coordinator)
     {
         for (var attempt = 0; attempt < 100 && coordinator.Snapshot().IsRunning; attempt++)
@@ -412,7 +734,8 @@ public sealed class BootstrapExecutionCoordinatorTests
     private sealed record CommandCall(
         BootstrapCommand Command,
         string? ExpectedPlanFingerprint,
-        string? ExpectedConfigurationFileFingerprint);
+        string? ExpectedConfigurationFileFingerprint,
+        string? ExpectedResumeAuthorizationFingerprint);
 
     private sealed class RecordingCommandFactory : IBootstrapCommandFactory
     {
@@ -421,19 +744,24 @@ public sealed class BootstrapExecutionCoordinatorTests
         public BootstrapCommandSpec Create(
             BootstrapCommand command,
             string? expectedPlanFingerprint = null,
-            string? expectedConfigurationFileFingerprint = null)
+            string? expectedConfigurationFileFingerprint = null,
+            string? expectedResumeAuthorizationFingerprint = null)
         {
             Calls.Add(new CommandCall(
                 command,
                 expectedPlanFingerprint,
-                expectedConfigurationFileFingerprint));
+                expectedConfigurationFileFingerprint,
+                expectedResumeAuthorizationFingerprint));
             return new BootstrapCommandSpec(command, "pwsh", Path.GetTempPath(), []);
         }
     }
 
     private sealed record RunResult(
         IReadOnlyList<BootstrapProgressEvent> Events,
-        BootstrapProcessResult Result);
+        BootstrapProcessResult Result)
+    {
+        public Task? Gate { get; init; }
+    }
 
     private sealed class SequencedProcessRunner(params RunResult[] results) : IBootstrapProcessRunner
     {
@@ -445,6 +773,11 @@ public sealed class BootstrapExecutionCoordinatorTests
             CancellationToken cancellationToken)
         {
             var next = results.Dequeue();
+            if (next.Gate is not null)
+            {
+                await next.Gate;
+            }
+
             foreach (var progressEvent in next.Events)
             {
                 await onProgress(progressEvent);

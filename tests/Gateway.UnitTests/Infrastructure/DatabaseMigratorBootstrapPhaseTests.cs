@@ -343,7 +343,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             FindRepositoryRoot(),
             "tools",
             "Gateway.DatabaseMigrator",
-            "Program.cs"));
+            "Program.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
         var bootstrapBody = Regex.Match(
             source,
             @"static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync\([\s\S]*?(?=\nstatic async Task ApplyMigrationScriptsAsync)",
@@ -396,7 +397,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             FindRepositoryRoot(),
             "tools",
             "Gateway.DatabaseMigrator",
-            "Program.cs"));
+            "Program.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
         var prepareScriptBody = Regex.Match(
             source,
             @"static string\[\] GetPrepareScriptNames\(\) =>\s*\[(?<scripts>[\s\S]*?)\];",
@@ -465,7 +467,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             FindRepositoryRoot(),
             "tools",
             "Gateway.DatabaseMigrator",
-            "Program.cs"));
+            "Program.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
         var runtimeAuthorityBody = Regex.Match(
             source,
             @"static async Task<IReadOnlyList<string>> ReadAndAssertRuntimePrincipalAuthorityAsync\([\s\S]*?(?=\nstatic async Task<SchemaVerification> VerifyAsync)",
@@ -519,7 +522,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             FindRepositoryRoot(),
             "tools",
             "Gateway.DatabaseMigrator",
-            "Program.cs"));
+            "Program.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
         var initializationBody = Regex.Match(
             source,
             @"static async Task<InitializationIntentEvidence> EnsureEmptyDatabaseInitializedUnderLockAsync\([\s\S]*?(?=\nstatic void AssertRequiredDatabaseInitializationRecoveryMode)",
@@ -566,7 +570,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             FindRepositoryRoot(),
             "tools",
             "Gateway.DatabaseMigrator",
-            "Program.cs"));
+            "Program.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
         source.Should().Contain(
             "options.TryGetValue(\"pristine-diagnostic-only\", out var pristineDiagnosticOnlyValue)");
         source.Should().Contain(
@@ -641,7 +646,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             FindRepositoryRoot(),
             "tools",
             "Gateway.DatabaseMigrator",
-            "Program.cs"));
+            "Program.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
         var methodBody = Regex.Match(
             source,
             @"static ExactDatabaseSchemaSnapshot GetExpectedSchemaContract\([\s\S]*?(?=\nstatic async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync)",
@@ -772,7 +778,8 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             FindRepositoryRoot(),
             "tools",
             "Gateway.DatabaseMigrator",
-            "Program.cs"));
+            "Program.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
         var methodBody = Regex.Match(
             source,
             @"static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync\([\s\S]*?(?=\nstatic IReadOnlyCollection<string> GetExpectedIncludedIndexColumns)",

@@ -21,6 +21,9 @@ internal static partial class BootstrapOutputSanitizer
     public const string InvalidPlanResultMessage =
         "Bootstrap emitted an invalid Plan decision result. Mutation authorization was rejected.";
 
+    public const string InvalidResumeReviewMessage =
+        "Bootstrap emitted an invalid Resume review result. Resume authorization was rejected.";
+
     public static BootstrapProgressEvent Parse(string? line, bool standardError)
     {
         var timestamp = DateTimeOffset.UtcNow;
@@ -98,6 +101,7 @@ internal static partial class BootstrapOutputSanitizer
                 step,
                 category);
             var planResultClaimObserved = IsPlanResultClaim(discriminator, step, category);
+            var resumeReviewClaimObserved = IsResumeReviewClaim(discriminator, step, category);
             if (!TryMapKind(discriminator, out var kind))
             {
                 return true;
@@ -107,17 +111,22 @@ internal static partial class BootstrapOutputSanitizer
             if (string.IsNullOrWhiteSpace(message) ||
                 !TrySanitizeRecognizedMessage(message, out var safeMessage))
             {
-                if (deploymentVerificationClaimObserved || planResultClaimObserved)
+                if (deploymentVerificationClaimObserved ||
+                    planResultClaimObserved ||
+                    resumeReviewClaimObserved)
                 {
                     progressEvent = new BootstrapProgressEvent(
                         TimestampUtc: fallbackTimestamp,
                         Kind: BootstrapProgressKind.Error,
                         Message: deploymentVerificationClaimObserved
                             ? InvalidVerificationMessage
-                            : InvalidPlanResultMessage,
+                            : planResultClaimObserved
+                                ? InvalidPlanResultMessage
+                                : InvalidResumeReviewMessage,
                         Step: step,
                         DeploymentVerificationClaimObserved: deploymentVerificationClaimObserved,
-                        PlanResultClaimObserved: planResultClaimObserved);
+                        PlanResultClaimObserved: planResultClaimObserved,
+                        ResumeReviewClaimObserved: resumeReviewClaimObserved);
                 }
 
                 return true;
@@ -165,6 +174,18 @@ internal static partial class BootstrapOutputSanitizer
                 safeMessage = InvalidPlanResultMessage;
             }
 
+            BootstrapResumeAuthorization? resumeAuthorization = null;
+            if (resumeReviewClaimObserved &&
+                TryReadResumeReview(root, data, safeMessage, out var parsedAuthorization))
+            {
+                resumeAuthorization = parsedAuthorization;
+            }
+            else if (resumeReviewClaimObserved)
+            {
+                kind = BootstrapProgressKind.Error;
+                safeMessage = InvalidResumeReviewMessage;
+            }
+
             progressEvent = new BootstrapProgressEvent(
                 TimestampUtc: timestamp,
                 Kind: kind,
@@ -178,7 +199,9 @@ internal static partial class BootstrapOutputSanitizer
                     : null,
                 VerifiedEndpoints: verifiedEndpoints,
                 DeploymentVerificationClaimObserved: deploymentVerificationClaimObserved,
-                PlanResultClaimObserved: planResultClaimObserved);
+                PlanResultClaimObserved: planResultClaimObserved,
+                ResumeAuthorization: resumeAuthorization,
+                ResumeReviewClaimObserved: resumeReviewClaimObserved);
             return true;
         }
         catch (JsonException)
@@ -275,6 +298,81 @@ internal static partial class BootstrapOutputSanitizer
         string.Equals(type, "Result", StringComparison.Ordinal) &&
         string.Equals(step, "Plan review", StringComparison.Ordinal) &&
         string.Equals(category, "planResult", StringComparison.Ordinal);
+
+    private static bool IsResumeReviewClaim(
+        string? type,
+        string? step,
+        string? category) =>
+        string.Equals(type, "Result", StringComparison.Ordinal) &&
+        string.Equals(step, "Resume preflight", StringComparison.Ordinal) &&
+        string.Equals(category, "resumeReview", StringComparison.Ordinal);
+
+    private static bool TryReadResumeReview(
+        JsonElement root,
+        JsonElement data,
+        string safeMessage,
+        out BootstrapResumeAuthorization authorization)
+    {
+        authorization = null!;
+        if (!HasExactlyOneProperty(root, "schemaVersion") ||
+            !HasExactlyOneProperty(root, "type") ||
+            !HasExactlyOneProperty(root, "message") ||
+            !HasExactlyOneProperty(root, "data") ||
+            data.ValueKind != JsonValueKind.Object ||
+            !HasExactlyOneProperty(data, "step") ||
+            !HasExactlyOneProperty(data, "category") ||
+            !HasExactlyOneProperty(data, "index") ||
+            !HasExactlyOneProperty(data, "total") ||
+            !HasExactlyOneProperty(data, "completedCount") ||
+            !HasExactlyOneProperty(data, "remainingCount") ||
+            !HasExactlyOneProperty(data, "currentStep") ||
+            !HasExactlyOneProperty(data, "acceptedPlanFingerprint") ||
+            !HasExactlyOneProperty(data, "checkpointFingerprint") ||
+            !HasExactlyOneProperty(data, "resumeAuthorizationFingerprint") ||
+            !HasExactlyOneProperty(data, "authorized") ||
+            !data.TryGetProperty("index", out var indexElement) ||
+            !indexElement.TryGetInt32(out var index) ||
+            index != 1 ||
+            !data.TryGetProperty("total", out var totalElement) ||
+            !totalElement.TryGetInt32(out var total) ||
+            total is < 1 or > 10_000 ||
+            !data.TryGetProperty("completedCount", out var completedElement) ||
+            !completedElement.TryGetInt32(out var completedCount) ||
+            completedCount is < 0 or > 10_000 ||
+            !data.TryGetProperty("remainingCount", out var remainingElement) ||
+            !remainingElement.TryGetInt32(out var remainingCount) ||
+            remainingCount is < 1 or > 10_000 ||
+            !data.TryGetProperty("authorized", out var authorizedElement) ||
+            authorizedElement.ValueKind != JsonValueKind.False)
+        {
+            return false;
+        }
+
+        var currentStep = ReadBoundedString(data, "currentStep");
+        var acceptedPlanFingerprint = ReadBoundedString(data, "acceptedPlanFingerprint");
+        var checkpointFingerprint = ReadBoundedString(data, "checkpointFingerprint");
+        var resumeAuthorizationFingerprint = ReadBoundedString(data, "resumeAuthorizationFingerprint");
+        if (currentStep is null ||
+            !TrySanitizeRecognizedMessage(currentStep, out var safeCurrentStep) ||
+            !string.Equals(currentStep, safeCurrentStep, StringComparison.Ordinal) ||
+            !PlanFingerprintPolicy.IsCanonical(acceptedPlanFingerprint) ||
+            !PlanFingerprintPolicy.IsCanonical(checkpointFingerprint) ||
+            !PlanFingerprintPolicy.IsCanonical(resumeAuthorizationFingerprint) ||
+            !string.Equals(
+                safeMessage,
+                $"Resume preflight validated {completedCount} completed checkpoints. " +
+                    $"Remaining work starts at '{safeCurrentStep}'.",
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        authorization = new BootstrapResumeAuthorization(
+            acceptedPlanFingerprint!,
+            checkpointFingerprint!,
+            resumeAuthorizationFingerprint!);
+        return true;
+    }
 
     private static bool TryReadPlanResult(
         JsonElement root,

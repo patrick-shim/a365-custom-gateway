@@ -104,9 +104,13 @@ canonical Azure values—for example,
 does not accept a free-text region or silently choose one. Only after every required
 selection has current proof does Setup atomically write `bootstrap/config.json`.
 It then runs Plan, displays the exact deployment boundaries, and requires a second
-explicit confirmation before Apply. If an accepted deployment later stops, the
-terminal Resume path is supported. A restarted Setup browser process does not yet
-provide the complete separate review-and-confirm Resume contract.
+explicit confirmation before Apply. If an accepted deployment later stops, Setup
+offers a read-only resume review first. That review runs its own process, installs
+nothing, changes no Azure, Entra, Agent 365, SQL, or policy resource, and returns
+one accepted plan fingerprint plus a single-use authorization. Only then does Setup
+offer a separate Resume confirmation. This source path is implemented and covered by
+tests; it has not yet been exercised in a hosted browser against preserved stopped
+state, so use the terminal Resume path for recovery evidence.
 
 Keep the terminal open. Deployment may hand control to official Microsoft browser
 windows for refreshed Azure, Entra, Agent ID, or Purview authentication. Setup
@@ -205,11 +209,15 @@ Bootstrap is a resumable state machine:
    safe for the same accepted plan.
 5. `verify` reads back the deployed boundary without creating or updating it.
 
-Terminal Resume is supported. The engine can run a read-only checkpoint review and
-then require both the accepted-Plan fingerprint and the resulting Resume
-authorization fingerprint in a separately authorized process. The local Setup UI
-does not yet complete that two-process exchange after Setup restarts, so do not use
-a restarted browser session as recovery evidence.
+Terminal Resume is supported. The engine runs a read-only checkpoint review and then
+requires both the accepted-Plan fingerprint and the resulting Resume authorization
+fingerprint in a separately authorized process. The local Setup UI now performs that
+same two-process exchange after Setup restarts: it starts one read-only review
+without `-Yes`, holds the returned authorization only in memory for a single
+confirmation, and discards it on restart, a changed checkpoint, another command, a
+failed review, or cancellation. That browser path has not yet been validated against
+preserved stopped state, so do not use a restarted browser session as recovery
+evidence until it has.
 
 State and sanitized evidence live under ignored `.bootstrap/`. They may contain
 tenant, subscription, resource, application, principal, image-digest, and
@@ -308,9 +316,11 @@ Review the reported failure and correct its cause before Resume. Do not edit or
 delete `.bootstrap/`, manually replay completed tenant operations, access retained
 messages, or run a second bootstrap against the same deployment.
 
-If Setup itself was closed or restarted, use the terminal sequence above. The
-browser UI's distinct read-only Resume review, ephemeral authorization handoff, and
-separate confirmation are still pending integration and validation.
+If Setup itself was closed or restarted, the terminal sequence above is the verified
+path. Setup also implements the equivalent browser exchange—a read-only Resume
+review, an in-memory single-use authorization handoff, and a separate
+confirmation—but that path is still pending validation against preserved stopped
+state.
 
 Database recovery, one-shot manual database repair, and Admin UI upgrade are
 deliberately bounded commands. Use them only when the bootstrap identifies that

@@ -155,7 +155,8 @@ public class DatabaseMigratorJobBicepTests
             RepositoryRoot,
             "bootstrap",
             "infra",
-            "database-migrator-job.bicep"));
+            "database-migrator-job.bicep"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
 
     private static int ParseRequiredInteger(string source, string pattern)
     {

@@ -9,8 +9,9 @@ Gateway API without receiving an Entra token or managed-identity identifier.
 The supported fresh-subscription installer is the repository-root `gateway`
 launcher. It configures, plans, deploys, and verifies the complete Gateway. The
 terminal launcher also supports checkpoint-aware Resume. A restarted Setup browser
-process is not yet claimed as a complete Resume path; use the terminal recovery
-command described below.
+process now offers the same read-only review and separate confirmation, but that
+browser path has not yet been validated against preserved stopped state; use the
+terminal recovery command described below.
 
 > The Agent 365 Registry dependency is currently a preview capability. The bootstrap
 > can open the end-to-end Registry path only for an explicitly configured
