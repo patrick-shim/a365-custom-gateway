@@ -1,6 +1,6 @@
 # Agent continuation checkpoint
 
-Last updated: 2026-09-01 (Asia/Seoul).
+Last updated: 2026-09-02 (Asia/Seoul).
 
 This tracked file is the bounded continuation seed for Claude, Codex, GitHub
 Copilot, other automation, and human contributors after a fetch, pull, fresh clone,
@@ -105,8 +105,8 @@ Windows unless it states otherwise:
 
 | Evidence | Result |
 |---|---:|
-| Complete .NET test set | 1,681 passed |
-| Complete bootstrap Pester set on Windows | 741 passed, 7 skipped |
+| Complete .NET test set | 1,683 passed |
+| Complete bootstrap Pester set on Windows | 759 passed, 7 skipped |
 | Launcher regressions executed on Windows | 11 passed, 6 skipped |
 | Standalone source-compiler regressions | 10 passed |
 | Windows Azure CLI boundary regressions | 8 passed |
@@ -159,6 +159,41 @@ Implemented and covered at this checkpoint:
   claims only that it changes no such resource rather than claiming absolute safety.
 - `bootstrap/bootstrap.ps1` was left unchanged; the backend contract remained
   authoritative and no regression proved a backend defect.
+
+Corrected after this checkpoint, in response to a stopped `Inert identity deployment`
+step that reported no diagnosable cause:
+
+- `Invoke-BootstrapCommand` no longer discards failed provider output. It extracts a
+  bounded signature — at most eight `code`/`errorCode` values and four correlation
+  GUIDs — attaches it to the thrown exception, and writes the unfiltered text to an
+  ignored `.bootstrap/diagnostics/` file restricted to the current account. The safe
+  failure event, the Setup timeline, and the persisted checkpoint carry only the
+  bounded identifiers and a local file path. Curated messages are unchanged when a
+  failure carries no provider signature.
+- `Get-BootstrapExceptionProviderErrorCodes` returns an empty result that unrolls to
+  `$null`, so every caller wraps it in `@(...)`. The first attempt did not, and the
+  complete Pester set caught four ordinary-failure regressions before commit;
+  `tests/Bootstrap.Tests/Common.Tests.ps1` now pins the empty case directly.
+- `Assert-GatewayPromptShieldFreeTierCapacity` discovers, read-only, whether the
+  subscription already holds a free Content Safety account outside the target
+  resource group. Azure permits one free account per Cognitive Services account type
+  per subscription and ARM rejects a duplicate during template preflight without
+  creating a deployment record, so the step previously stopped with nothing to read
+  back. The preflight names the conflicting account and three remediations, runs no
+  discovery when Prompt Shields is disabled or on a paid SKU, and attempts no
+  workload mutation.
+- A trusted progress sink renders long provider calls. It receives only a command
+  label built from leading lowercase verb tokens, a phase word, and an elapsed
+  duration, all produced inside the bootstrap; child-process output never reaches it.
+  Completed steps also report their duration in text mode. The sink is registered
+  inside the run path rather than at module init so `Status` and `Open` JSON output
+  remain single documents.
+- `Components/Pages/Progress.razor` and `wwwroot/app.css` mark the newest stage as
+  working while a run is live and as stopped once a run ends without succeeding, and
+  keep a static ring under `prefers-reduced-motion`.
+- `bootstrap/README.md` documents reading the bounded provider cause, the Prompt
+  Shields free-tier constraint, and how to start over as a genuinely new isolated
+  deployment without deleting `.bootstrap/`.
 
 The remaining validation work, in order:
 
@@ -231,6 +266,14 @@ The full .NET and bootstrap suites, Release build, format, whitespace, source,
 Bicep, documentation-link, and secret/state-path checks have passed for this source
 generation and are recorded above. Rerun them after any further source change.
 
+A separate operator prerequisite applies to the next live Apply or Resume. The
+current development subscription already holds a free Content Safety account outside
+the target resource group, so a free-SKU Prompt Shields deployment fails ARM
+preflight. The new read-only capacity check now names that account and stops before
+mutation, but resolving it is the user's decision and requires the user's own
+authorized action: choose a paid SKU, disable Prompt Shields for base verification,
+or delete the unused account. No agent may delete it.
+
 Note that `src/A365Gateway.slnx` contains no test projects, so `dotnet test` against
 that solution reports success without running a single test. Always run the eight
 projects under `tests/` to obtain a real .NET result.
@@ -253,3 +296,10 @@ before the first live action and record the exact remaining evidence. After any
 verified change, update this checkpoint and both status files, validate all links,
 commit every intended tracked file, and push the reviewed branch so the next
 receiver starts from Git rather than from chat history.
+
+A stopped deployment is diagnosed, not cleared. Read the bounded provider codes in
+the terminal, the Setup timeline, or the persisted checkpoint, and read the local
+ignored `.bootstrap/diagnostics/` file when a code is not enough. That file holds
+unfiltered provider text and must never be pasted into an issue, a chat, or a shared
+log. Never delete `.bootstrap/` to force a stopped deployment forward; it is the only
+record of what already exists in the tenant.

@@ -56,6 +56,25 @@ identifiers only. The tool has no destroy mode. If a completed resource group wa
 deleted, do not replay its preserved state; use a new isolated deployment identity
 or an independently reviewed recovery procedure.
 
+A stopped step now names its own cause. `Invoke-BootstrapCommand` extracts a bounded
+signature from failed provider output — at most eight `code`/`errorCode` values and
+four correlation GUIDs — and attaches it to the thrown exception, so the safe failure
+event, the Setup timeline, and the persisted checkpoint all carry those identifiers.
+The unfiltered provider text never crosses that boundary; it is written to an ignored
+`.bootstrap/diagnostics/` file restricted to the current account and referenced only
+by path. A failure with no provider signature keeps its curated message unchanged.
+
+Long provider calls report movement. A registered progress sink receives only values
+the bootstrap produced — a command label built from leading lowercase verb tokens, a
+phase word, and an elapsed duration — so flags, resource IDs, image references, and
+credentials cannot reach it. Completed steps report their duration in text mode.
+
+Prompt Shields free-SKU capacity is checked read-only before the workload deployment.
+Azure permits one free Cognitive Services account per account type per subscription,
+and ARM rejects a duplicate during template preflight without creating a deployment
+record, leaving nothing to read back. The preflight names the conflicting account and
+three remediations, and no workload mutation is attempted.
+
 The bootstrap contains bounded compatibility continuations for exact,
 already-started deployments affected by reviewed bootstrap defects. Each route
 requires the expected prior step state and exact source delta, retains the original
@@ -158,7 +177,7 @@ adapter disabled until safe token-role and bounded data-plane verification pass.
 
 ## Source verification
 
-The consolidated source gate completed on 2026-09-01. Every result below was
+The consolidated source gate completed on 2026-09-02. Every result below was
 measured on Windows unless it states otherwise. Hosted Windows launcher, browser,
 and live deployment evidence remain outstanding.
 
@@ -166,18 +185,18 @@ and live deployment evidence remain outstanding.
 |---|---:|---:|---:|
 | Gateway.UnitTests | 640 | 0 | 0 |
 | Gateway.AdminUi.Tests | 157 | 0 | 0 |
-| Gateway.Setup.Tests | 298 | 0 | 0 |
+| Gateway.Setup.Tests | 300 | 0 | 0 |
 | Gateway.ObservabilityRuntime.Tests | 158 | 0 | 0 |
 | Gateway.ArchitectureTests | 115 | 0 | 0 |
 | Gateway.IntegrationTests | 85 | 0 | 0 |
 | Gateway.EndToEndTests | 102 | 0 | 0 |
 | Gateway.SecurityTests | 126 | 0 | 0 |
-| **.NET total** | **1,681** | **0** | **0** |
+| **.NET total** | **1,683** | **0** | **0** |
 
 Run these eight projects directly. `src/A365Gateway.slnx` contains no test project,
 so `dotnet test` against that solution reports success without executing a test.
 
-The PowerShell source gate discovered 748 tests on Windows: 741 passed, none failed,
+The PowerShell source gate discovered 766 tests on Windows: 759 passed, none failed,
 and seven non-Windows cases were intentionally skipped. It validated 18 PowerShell
 source files and two JSON contracts, then compiled 27 Bicep templates and three
 Bicep parameter files. Release build completed with zero warnings and zero errors;
@@ -196,7 +215,9 @@ binds the reviewed configuration bytes to the Plan process before PowerShell par
 them. A failed Plan returns to reviewed preparation; it cannot invoke a direct retry
 with stale configuration. Configuration readers normalize the previously emitted
 false-only field while continuing to reject enabled or unknown fields; new writes
-omit it.
+omit it. The progress timeline marks its newest stage as working while a run is
+live and as stopped once a run ends without succeeding, and it keeps a static ring
+under `prefers-reduced-motion` so the cue survives the animation reset.
 
 Recovery coverage includes exact source-continuation provenance, rejection of
 unexpected changed paths and a third generation, tamper detection for preserved
@@ -209,8 +230,8 @@ on Windows unless a row states otherwise:
 
 | Current correction gate | Passed | Failed | Skipped |
 |---|---:|---:|---:|
-| Complete .NET test set | 1,681 | 0 | 0 |
-| Complete bootstrap Pester set on Windows | 741 | 0 | 7 |
+| Complete .NET test set | 1,683 | 0 | 0 |
+| Complete bootstrap Pester set on Windows | 759 | 0 | 7 |
 | Launcher regressions executed on Windows | 11 | 0 | 6 |
 | Standalone source-compiler regressions | 10 | 0 | 0 |
 | Windows Azure CLI boundary regressions | 8 | 0 | 0 |

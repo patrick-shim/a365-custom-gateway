@@ -156,6 +156,13 @@ code { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; font
 .event-item.warning .event-dot { background: var(--amber); }
 .event-item.error .event-dot { background: var(--red); }
 .event-item.withheld .event-dot { background: #8b93a4; }
+.event-item.active .event-dot { border-color: transparent; border-top-color: var(--brand-strong); border-right-color: var(--brand-strong); background: #fff; box-shadow: 0 0 0 1px var(--brand); animation: event-spin .9s linear infinite; }
+.event-item.stopped .event-dot { background: var(--red); box-shadow: 0 0 0 1px var(--red); animation: event-pulse 1.6s ease-in-out infinite; }
+.event-item.active strong::after { content: "in progress"; margin-left: .4rem; padding: .05rem .34rem; display: inline-block; border-radius: 999px; background: var(--amber-soft); color: var(--amber); font-size: .58rem; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; }
+.event-item.stopped strong::after { content: "stopped here"; margin-left: .4rem; padding: .05rem .34rem; display: inline-block; border-radius: 999px; background: var(--red-soft); color: var(--red); font-size: .58rem; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; }
+.run-spinner { width: .78rem; height: .78rem; margin-left: .4rem; display: inline-block; border: .16rem solid transparent; border-top-color: currentColor; border-right-color: currentColor; border-radius: 50%; vertical-align: -.1rem; animation: event-spin .9s linear infinite; }
+@keyframes event-spin { to { transform: rotate(360deg); } }
+@keyframes event-pulse { 0%, 100% { box-shadow: 0 0 0 1px var(--red); } 50% { box-shadow: 0 0 0 .28rem var(--red-soft); } }
 .event-item strong { color: var(--text); font-size: .73rem; }
 .event-item p { margin: .2rem 0; color: var(--muted); font-size: .7rem; line-height: 1.45; overflow-wrap: anywhere; }
 .event-item time { color: #949bad; font-size: .61rem; }
@@ -191,4 +198,8 @@ code { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; font
 
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    /* The spinner is the only cue that a stage is still working, so replace the
+       motion with a static ring instead of letting the reset erase the signal. */
+    .event-item.active .event-dot, .run-spinner { animation: none !important; border-color: var(--brand-strong) !important; border-top-color: transparent !important; }
+    .event-item.stopped .event-dot { animation: none !important; box-shadow: 0 0 0 .2rem var(--red-soft) !important; }
 }

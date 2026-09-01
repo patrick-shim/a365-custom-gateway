@@ -334,6 +334,60 @@ isolated deployment.
 Bootstrap has no destroy mode and does not authorize cleanup, historical replay,
 retained-message access, or SQL finalization.
 
+### Reading the exact provider cause
+
+A stopped step names the provider error codes and the correlation ID it received,
+for example `Provider error codes: InvalidTemplateDeployment >
+CanNotCreateMultipleFreeAccounts.` Those bounded identifiers appear in the terminal,
+in the Setup timeline, and in the persisted checkpoint.
+
+The unfiltered provider text stays local. Bootstrap writes it to
+`.bootstrap/diagnostics/`, which is ignored by Git and readable only by the account
+that ran the command. Read it yourself when a code is not enough; never paste it into
+an issue, a chat, or a shared log, because provider bodies can contain identities,
+headers, and other tenant data.
+
+### Prompt Shields free-tier capacity
+
+Azure allows one free Cognitive Services account per account type per subscription.
+If `promptShield.enabled` is `true` with a free `skuName` such as `F0` and another
+free Content Safety account already exists anywhere in the subscription, ARM rejects
+the whole workload template during preflight and records no deployment, so there is
+nothing to read back.
+
+Bootstrap detects that conflict read-only before the workload deployment and names
+the conflicting account. Resolve it in exactly one way, then run Resume:
+
+- set `promptShield.skuName` to a paid SKU such as `S0`,
+- set `promptShield.enabled` to `false` and configure Prompt Shields after base
+  verification, or
+- delete the named unused account from its own resource group.
+
+### Starting over from a clean initial state
+
+Resume continues the deployment you already own. When you instead want the very
+first state again, create a *new* deployment identity rather than repointing
+preserved state at existing resources:
+
+1. Confirm the current deployment is one you are willing to abandon. Bootstrap never
+   deletes Azure resources, so anything already created stays until you remove it.
+2. Remove the abandoned resource groups yourself, in the portal or with your own
+   authorized `az group delete`. A Container Apps environment also creates an
+   infrastructure group named `ME_<environment>_<resourceGroup>_<region>`; delete that
+   too. Leaving a group behind keeps its free-tier Content Safety account, which will
+   block the next deployment exactly as described above.
+3. Move the existing configuration aside rather than editing it in place:
+   `mv bootstrap/config.json bootstrap/config.json.previous`.
+4. Run `.\gateway.cmd setup` (Windows) or `./gateway setup` (macOS, Linux). Setup
+   generates a new project name, a new deployment ownership ID, and a new resource
+   group, then writes a fresh `bootstrap/config.json` and a fresh ignored `.bootstrap/`
+   ledger beside it.
+5. Run Plan, review it, and confirm Apply.
+
+Do not delete `.bootstrap/` to force a stopped deployment forward. That state is the
+only record of what was already created in your tenant, and removing it makes the
+next run unable to tell an owned resource from someone else's.
+
 ## After verification
 
 Open the hosted Admin UI with `./gateway open`, sign in as a

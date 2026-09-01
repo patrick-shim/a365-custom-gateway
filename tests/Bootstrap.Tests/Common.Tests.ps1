@@ -1145,6 +1145,195 @@ Describe 'External command redaction' {
     }
 }
 
+Describe 'Bounded provider failure diagnosis' {
+    It 'extracts only provider error codes and correlation GUIDs from an ARM error body' {
+        $body = @'
+{"status":"Failed","error":{"code":"InvalidTemplateDeployment","message":"The template deployment 'main' is not valid. private-provider-prose. Tracking id is '22222222-2222-4222-8222-222222222222'.","details":[{"code":"CanNotCreateMultipleFreeAccounts","message":"Operation failed. private-inner-prose"}]},"secret":"private-token-marker"}
+'@
+
+        $signature = Get-BootstrapProviderFailureSignature -Output $body
+
+        $signature.codes | Should -Be @('InvalidTemplateDeployment', 'CanNotCreateMultipleFreeAccounts')
+        $signature.correlationIds | Should -Be @('22222222-2222-4222-8222-222222222222')
+        ($signature | ConvertTo-Json -Depth 5) | Should -Not -Match 'private-(provider|inner)-prose'
+        ($signature | ConvertTo-Json -Depth 5) | Should -Not -Match 'private-token-marker'
+    }
+
+    It 'returns an empty signature for provider prose that carries no structured code' {
+        $signature = Get-BootstrapProviderFailureSignature -Output 'ERROR: private-provider-prose only.'
+
+        $signature.codes.Count | Should -Be 0
+        $signature.correlationIds.Count | Should -Be 0
+    }
+
+    It 'names provider error codes in a failure without repeating any provider body' {
+        $childScript = Join-Path $TestDrive 'provider-failure.ps1'
+        @'
+[Console]::Error.Write('{"error":{"code":"InvalidTemplateDeployment","message":"private-provider-prose. Tracking id is ''22222222-2222-4222-8222-222222222222''.","details":[{"code":"CanNotCreateMultipleFreeAccounts","message":"private-inner-prose"}]}}')
+exit 3
+'@ | Set-Content -LiteralPath $childScript -Encoding utf8NoBOM
+        $pwsh = (Get-Process -Id $PID).Path
+
+        try {
+            Invoke-BootstrapCommand -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-File', $childScript)
+            throw 'Expected the command to fail.'
+        }
+        catch {
+            $_.Exception.Message | Should -BeLike '*failed with exit code 3*'
+            $_.Exception.Message | Should -BeLike '*InvalidTemplateDeployment > CanNotCreateMultipleFreeAccounts*'
+            $_.Exception.Message | Should -BeLike '*22222222-2222-4222-8222-222222222222*'
+            $_.Exception.Message | Should -Not -Match 'private-(provider|inner)-prose'
+            Get-BootstrapExceptionProviderErrorCodes -Exception $_.Exception |
+                Should -Be @('InvalidTemplateDeployment', 'CanNotCreateMultipleFreeAccounts')
+        }
+    }
+
+    It 'writes unfiltered provider output only to a restricted local operator file' {
+        $diagnostics = Join-Path $TestDrive 'diagnostics'
+        $childScript = Join-Path $TestDrive 'diagnostic-failure.ps1'
+        @'
+[Console]::Error.Write('{"error":{"code":"ResourceNotFound","message":"private-provider-prose"}}')
+exit 5
+'@ | Set-Content -LiteralPath $childScript -Encoding utf8NoBOM
+        $pwsh = (Get-Process -Id $PID).Path
+
+        Set-BootstrapDiagnosticsDirectory -Path $diagnostics
+        try {
+            try {
+                Invoke-BootstrapCommand -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-File', $childScript)
+                throw 'Expected the command to fail.'
+            }
+            catch {
+                $_.Exception.Message | Should -Not -Match 'private-provider-prose'
+                $diagnosticPath = [string]$_.Exception.Data['GatewayProviderDiagnosticPath']
+                $diagnosticPath | Should -Not -BeNullOrEmpty
+                $_.Exception.Message | Should -BeLike "*$diagnosticPath*"
+                Get-Content -LiteralPath $diagnosticPath -Raw | Should -Match 'private-provider-prose'
+
+                if ($IsWindows) {
+                    $acl = Get-Acl -LiteralPath $diagnosticPath
+                    $acl.AreAccessRulesProtected | Should -BeTrue
+                    @($acl.Access).Count | Should -Be 1
+                }
+            }
+        }
+        finally {
+            Set-BootstrapDiagnosticsDirectory -Path ''
+        }
+    }
+
+    It 'keeps provider output out of the failure when no diagnostics directory is configured' {
+        $childScript = Join-Path $TestDrive 'undiagnosed-failure.ps1'
+        @'
+[Console]::Error.Write('private-provider-prose')
+exit 4
+'@ | Set-Content -LiteralPath $childScript -Encoding utf8NoBOM
+        $pwsh = (Get-Process -Id $PID).Path
+
+        try {
+            Invoke-BootstrapCommand -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-File', $childScript)
+            throw 'Expected the command to fail.'
+        }
+        catch {
+            $_.Exception.Message | Should -Not -Match 'private-provider-prose'
+            $_.Exception.Message | Should -BeLike '*suppressed at this trust boundary*'
+        }
+    }
+
+    It 'returns a countable empty result when a failure carries no provider signature' {
+        # An ordinary failure has no provider data at all. The accessor must still
+        # return something the caller can count, because an unrolled empty array
+        # would become $null and break every non-provider failure path.
+        $codes = @(Get-BootstrapExceptionProviderErrorCodes -Exception ([InvalidOperationException]::new('ordinary')))
+
+        $codes.Count | Should -Be 0
+        @(Get-BootstrapExceptionProviderErrorCodes -Exception $null).Count | Should -Be 0
+    }
+}
+
+Describe 'Bounded provider-call progress' {
+    It 'labels a command with only its leading lowercase verb tokens' {
+        Get-BootstrapCommandProgressLabel -FilePath 'az' -ArgumentList @(
+            'deployment', 'group', 'create', '--name', 'a365gw-gwsample-bootstrap-inert-dev',
+            '--template-file', '/repo/infrastructure/bicep/main.bicep'
+        ) | Should -BeExactly 'az deployment group create'
+    }
+
+    It 'stops the label at the first argument that is not a bounded verb token' {
+        Get-BootstrapCommandProgressLabel -FilePath 'docker' -ArgumentList @(
+            'build', 'acrgwsampledevs4mple.azurecr.io/gateway-api:abc123', '--file', 'Dockerfile'
+        ) | Should -BeExactly 'docker build'
+    }
+
+    It 'never leaks flag values, resource IDs, or credentials into the label' {
+        Get-BootstrapCommandProgressLabel -FilePath 'sqlcmd' -ArgumentList @(
+            '-S', 'sql-gwsample-dev.database.windows.net', '-P', 'private-credential-marker'
+        ) | Should -BeExactly 'sqlcmd'
+    }
+
+    It 'reports a started and completed phase with a duration for every child command' {
+        $observed = [Collections.Generic.List[object]]::new()
+        $pwsh = (Get-Process -Id $PID).Path
+
+        Set-BootstrapProgressSink -Sink {
+            param([string]$Label, [string]$Phase, [int]$DurationMilliseconds)
+            $observed.Add([ordered]@{ label = $Label; phase = $Phase; duration = $DurationMilliseconds })
+        }
+        try {
+            Invoke-BootstrapCommand -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'exit 0') | Out-Null
+        }
+        finally {
+            Set-BootstrapProgressSink -Sink $null
+        }
+
+        @($observed).Count | Should -Be 2
+        [string]$observed[0].phase | Should -BeExactly 'Started'
+        [string]$observed[1].phase | Should -BeExactly 'Completed'
+        [int]$observed[1].duration | Should -BeGreaterOrEqual 0
+        foreach ($entry in $observed) {
+            [string]$entry.label | Should -Not -Match '(?i)(-NoProfile|-Command|exit 0)'
+        }
+    }
+
+    It 'reports the completed phase before surfacing a provider failure' {
+        $observed = [Collections.Generic.List[string]]::new()
+        $pwsh = (Get-Process -Id $PID).Path
+
+        Set-BootstrapProgressSink -Sink {
+            param([string]$Label, [string]$Phase, [int]$DurationMilliseconds)
+            $observed.Add($Phase)
+        }
+        try {
+            try {
+                Invoke-BootstrapCommand -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'exit 6')
+                throw 'Expected the command to fail.'
+            }
+            catch {
+                $_.Exception.Message | Should -BeLike '*failed with exit code 6*'
+            }
+        }
+        finally {
+            Set-BootstrapProgressSink -Sink $null
+        }
+
+        @($observed) | Should -Be @('Started', 'Completed')
+    }
+
+    It 'never lets a failing progress sink replace the provider result' {
+        $pwsh = (Get-Process -Id $PID).Path
+
+        Set-BootstrapProgressSink -Sink { throw 'private-sink-failure' }
+        try {
+            Invoke-BootstrapCommand -FilePath $pwsh -ArgumentList @(
+                '-NoLogo', '-NoProfile', '-Command', '[Console]::Out.Write("ok")'
+            ) | Should -BeExactly 'ok'
+        }
+        finally {
+            Set-BootstrapProgressSink -Sink $null
+        }
+    }
+}
+
 Describe 'Stdout-only Azure JSON capture' {
     InModuleScope Common {
         It 'forwards the opt-in only to the native command and parses its stdout JSON' {

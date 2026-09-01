@@ -226,6 +226,59 @@ public sealed class RepositoryLayoutTests : IDisposable
         File.WriteAllText(Path.Combine(root, "src", "A365Gateway.slnx"), string.Empty);
     }
 
+    [Fact]
+    public void StageIndicator_AnimatesTheNewestStageWhileRunningAndMarksItStoppedOtherwise()
+    {
+        var source = File.ReadAllText(FindRepositoryFile(
+            "tools",
+            "Gateway.Setup",
+            "Components",
+            "Pages",
+            "Progress.razor"));
+
+        source.Should().Contain("StageStateClass(isLast)");
+        source.Should().Contain("snapshot.IsRunning");
+        source.Should().Contain("\"active\"");
+        source.Should().Contain("\"stopped\"");
+        source.Should().Contain("class=\"run-spinner\"");
+        source.Should().Contain("aria-label=\"Working\"");
+
+        var activeIndex = source.IndexOf("return \"active\";", StringComparison.Ordinal);
+        var stoppedIndex = source.IndexOf("? \"stopped\"", StringComparison.Ordinal);
+        activeIndex.Should().BePositive("a live run marks its newest stage as working");
+        stoppedIndex.Should().BePositive("a run that ended without succeeding marks where it stopped");
+        activeIndex.Should().BeLessThan(
+            stoppedIndex,
+            "a running snapshot is never rendered as stopped");
+    }
+
+    [Fact]
+    public void StageIndicator_KeepsAStaticCueWhenMotionIsReduced()
+    {
+        var css = File.ReadAllText(FindRepositoryFile(
+            "tools",
+            "Gateway.Setup",
+            "wwwroot",
+            "app.css"));
+
+        css.Should().Contain("@keyframes event-spin");
+        css.Should().Contain("@keyframes event-pulse");
+        css.Should().Contain(".event-item.active .event-dot");
+        css.Should().Contain(".event-item.stopped .event-dot");
+
+        var reducedMotionIndex = css.IndexOf(
+            "@media (prefers-reduced-motion: reduce)",
+            StringComparison.Ordinal);
+        reducedMotionIndex.Should().BePositive();
+        var reducedMotion = css[reducedMotionIndex..];
+        reducedMotion.Should().Contain(
+            ".event-item.active .event-dot",
+            "the working cue survives the reduced-motion animation reset");
+        reducedMotion.Should().Contain(
+            ".event-item.stopped .event-dot",
+            "the stopped cue survives the reduced-motion animation reset");
+    }
+
     private static string FindRepositoryFile(params string[] segments)
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory);

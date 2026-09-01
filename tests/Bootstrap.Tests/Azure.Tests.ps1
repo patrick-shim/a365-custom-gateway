@@ -3151,3 +3151,107 @@ Describe 'Gateway Admin UI deployment source binding' {
         }
     }
 }
+
+Describe 'Prompt Shields free-tier capacity preflight' {
+    InModuleScope Azure {
+        BeforeEach {
+            $script:freeTierConfig = [pscustomobject]@{
+                resourceGroupName = 'rg-gwsample-dev'
+                promptShield = [pscustomobject]@{ enabled = $true; skuName = 'F0' }
+            }
+        }
+
+        It 'names a conflicting free Content Safety account that lives outside the target resource group' {
+            Mock Invoke-AzJson {
+                return @([pscustomobject]@{
+                    id = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-gwlegacy-dev/providers/Microsoft.CognitiveServices/accounts/cs-gwlegacy-dev-zzzz01'
+                    resourceGroup = 'rg-gwlegacy-dev'
+                    sku = 'F0'
+                })
+            }
+
+            { Assert-GatewayPromptShieldFreeTierCapacity `
+                    -Config $script:freeTierConfig `
+                    -ResourceGroupName 'rg-gwsample-dev' } |
+                Should -Throw '*cs-gwlegacy-dev-zzzz01*'
+        }
+
+        It 'explains every remediation and states that no workload mutation was attempted' {
+            Mock Invoke-AzJson {
+                return @([pscustomobject]@{
+                    id = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-other-dev/providers/Microsoft.CognitiveServices/accounts/cs-other'
+                    resourceGroup = 'rg-other-dev'
+                    sku = 'F0'
+                })
+            }
+
+            $message = ''
+            try { Assert-GatewayPromptShieldFreeTierCapacity -Config $script:freeTierConfig -ResourceGroupName 'rg-gwsample-dev' }
+            catch { $message = [string]$_.Exception.Message }
+
+            $message | Should -BeLike "*promptShield.skuName to a paid SKU such as 'S0'*"
+            $message | Should -BeLike '*promptShield.enabled to false*'
+            $message | Should -BeLike '*delete the unused account*'
+            $message | Should -BeLike '*No workload mutation was attempted*'
+        }
+
+        It 'accepts a free account that already belongs to the target resource group' {
+            Mock Invoke-AzJson {
+                return @([pscustomobject]@{
+                    id = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-gwsample-dev/providers/Microsoft.CognitiveServices/accounts/cs-gwsample-dev-abc123'
+                    resourceGroup = 'rg-gwsample-dev'
+                    sku = 'F0'
+                })
+            }
+
+            Assert-GatewayPromptShieldFreeTierCapacity `
+                -Config $script:freeTierConfig -ResourceGroupName 'rg-gwsample-dev' | Should -BeTrue
+        }
+
+        It 'accepts a paid account elsewhere because only free accounts are capacity limited' {
+            Mock Invoke-AzJson {
+                return @([pscustomobject]@{
+                    id = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-other-dev/providers/Microsoft.CognitiveServices/accounts/cs-other'
+                    resourceGroup = 'rg-other-dev'
+                    sku = 'S0'
+                })
+            }
+
+            Assert-GatewayPromptShieldFreeTierCapacity `
+                -Config $script:freeTierConfig -ResourceGroupName 'rg-gwsample-dev' | Should -BeTrue
+        }
+
+        It 'performs no discovery at all when Prompt Shields is disabled or requests a paid SKU' {
+            Mock Invoke-AzJson { throw 'A non-free Prompt Shields profile must not query Cognitive Services capacity.' }
+
+            Assert-GatewayPromptShieldFreeTierCapacity `
+                -Config ([pscustomobject]@{
+                    resourceGroupName = 'rg-gwsample-dev'
+                    promptShield = [pscustomobject]@{ enabled = $false; skuName = 'F0' }
+                }) -ResourceGroupName 'rg-gwsample-dev' | Should -BeTrue
+
+            Assert-GatewayPromptShieldFreeTierCapacity `
+                -Config ([pscustomobject]@{
+                    resourceGroupName = 'rg-gwsample-dev'
+                    promptShield = [pscustomobject]@{ enabled = $true; skuName = 'S0' }
+                }) -ResourceGroupName 'rg-gwsample-dev' | Should -BeTrue
+
+            Should -Invoke Invoke-AzJson -Times 0 -Exactly
+        }
+
+        It 'discovers Content Safety accounts across the subscription rather than one resource group' {
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                $Arguments | Should -Not -Contain '--resource-group'
+                $Arguments | Should -Contain 'Microsoft.CognitiveServices/accounts'
+                ($Arguments -join ' ') | Should -BeLike "*kind=='ContentSafety'*"
+                return @()
+            }
+
+            Assert-GatewayPromptShieldFreeTierCapacity `
+                -Config $script:freeTierConfig -ResourceGroupName 'rg-gwsample-dev' | Should -BeTrue
+
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly
+        }
+    }
+}

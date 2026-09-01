@@ -16,7 +16,8 @@
 <section class="setup-card progress-card" aria-live="polite">
     <div class="progress-header">
         <div>
-            <span class="run-status @snapshot.Status.ToString().ToLowerInvariant()">@FormatStatus(snapshot.Status)</span>
+            <span class="run-status @snapshot.Status.ToString().ToLowerInvariant()">@FormatStatus(snapshot.Status)@if (snapshot.IsRunning)
+                {<span class="run-spinner" role="img" aria-label="Working"></span>}</span>
             <h2>@FormatCommand(snapshot.Command)</h2>
         </div>
         @if (snapshot.Events.LastOrDefault(item => item.ProgressPercent is not null)?.ProgressPercent is { } progress)
@@ -31,9 +32,11 @@
     }
 
     <ol class="event-list" aria-label="Sanitized bootstrap events">
-        @foreach (var item in snapshot.Events)
+        @for (var index = 0; index < snapshot.Events.Count; index++)
         {
-            <li class="event-item @item.Kind.ToString().ToLowerInvariant()">
+            var item = snapshot.Events[index];
+            var isLast = index == snapshot.Events.Count - 1;
+            <li class="event-item @item.Kind.ToString().ToLowerInvariant() @StageStateClass(isLast)">
                 <span class="event-dot" aria-hidden="true"></span>
                 <div>
                     <strong>@(item.DisplayLabel ?? item.Step ?? FormatKind(item.Kind))</strong>
@@ -138,6 +141,27 @@ else if (snapshot.HasVerifiedDeployment)
     private bool StoppedDeploymentAwaitsReview =>
         StoppedRunObserved ||
         (snapshot.Status == BootstrapExecutionStatus.NotStarted && State.ExistingConfigurationLoaded);
+
+    // A static dot cannot distinguish "this stage is still working" from "this
+    // stage stopped here". The newest event is the only stage that can be either,
+    // so it carries the animated ring while the run is live and the stopped
+    // marker once the run ended without succeeding.
+    private string StageStateClass(bool isNewestEvent)
+    {
+        if (!isNewestEvent)
+        {
+            return string.Empty;
+        }
+
+        if (snapshot.IsRunning)
+        {
+            return "active";
+        }
+
+        return snapshot.Status is BootstrapExecutionStatus.Failed or BootstrapExecutionStatus.Cancelled
+            ? "stopped"
+            : string.Empty;
+    }
 
     protected override void OnInitialized()
     {

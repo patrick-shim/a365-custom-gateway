@@ -954,14 +954,47 @@ function Get-GatewaySafeFailureEvent {
         }
     }
     $isPlanFailure = $effectiveFailureCode.StartsWith('plan_', [StringComparison]::Ordinal)
+    # The curated message above is safe by construction. Bounded provider error
+    # codes and correlation GUIDs are appended so a stopped step names its own
+    # cause instead of forcing the operator to guess. Provider prose, bodies,
+    # headers, and credentials never reach this event.
+    $providerCodes = @(Get-BootstrapExceptionProviderErrorCodes -Exception $Exception)
+    $providerCorrelationIds = @()
+    $providerDiagnosticPath = ''
+    $current = $Exception
+    for ($depth = 0; $depth -lt 8 -and $null -ne $current; $depth++) {
+        if ($providerCorrelationIds.Count -eq 0) {
+            $candidateIds = $current.Data['GatewayProviderCorrelationIds']
+            if ($candidateIds -is [string[]]) { $providerCorrelationIds = @($candidateIds) }
+        }
+        if ([string]::IsNullOrWhiteSpace($providerDiagnosticPath)) {
+            $candidatePath = $current.Data['GatewayProviderDiagnosticPath']
+            if ($candidatePath -is [string]) { $providerDiagnosticPath = [string]$candidatePath }
+        }
+        $current = $current.InnerException
+    }
+    if ($providerCodes.Count -gt 0) {
+        $message += " Provider error codes: $($providerCodes -join ' > ')."
+    }
+    if ($providerCorrelationIds.Count -gt 0) {
+        # Only the first correlation GUID is inlined so the curated guidance is
+        # never truncated by the safe display limit. Every ID stays in data.
+        $message += " Correlation: $($providerCorrelationIds[0])."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($providerDiagnosticPath)) {
+        $message += ' Details: .bootstrap/diagnostics.'
+    }
+    $data = [ordered]@{
+        step = $FailureStage
+        category = if ($isPlanFailure) { 'planFailure' } else { 'bootstrapFailure' }
+        failureCode = $effectiveFailureCode
+        resumable = [bool]($effectiveFailureCode -eq 'deployment')
+    }
+    if ($providerCodes.Count -gt 0) { $data.providerErrorCodes = @($providerCodes) }
+    if ($providerCorrelationIds.Count -gt 0) { $data.providerCorrelationIds = @($providerCorrelationIds) }
     return [ordered]@{
         message = $message
-        data = [ordered]@{
-            step = $FailureStage
-            category = if ($isPlanFailure) { 'planFailure' } else { 'bootstrapFailure' }
-            failureCode = $effectiveFailureCode
-            resumable = [bool]($effectiveFailureCode -eq 'deployment')
-        }
+        data = $data
     }
 }
 
@@ -1088,6 +1121,7 @@ if ($configuration.purview.enabled -eq $true -and
 $script:GatewayFailureStage = 'Bootstrap state'
 $script:GatewayFailureCode = 'state'
 $statePath = Get-BootstrapStatePath -Config $configuration
+Set-BootstrapDiagnosticsDirectory -Path (Join-Path (Get-RepositoryRoot) '.bootstrap/diagnostics')
 $state = Read-BootstrapState -Path $statePath -Config $configuration
 
 if ($Mode -eq 'Status') {
@@ -1189,16 +1223,20 @@ function Invoke-GatewayStateStep {
         )
     if ($preservePreInertPrefix) { $parameters.ValidateAndReuseOnly = $true }
     if ($AlwaysRun) { $parameters.AlwaysRun = $true }
+    $stepTimer = [Diagnostics.Stopwatch]::StartNew()
     try {
         $result = Invoke-BootstrapStateStep @parameters
+        $stepTimer.Stop()
         if ($OutputFormat -eq 'Text') {
-            Write-GatewayExperienceEvent -Type PhaseCompleted -Message "Completed: $Name" -Data ([ordered]@{ step = $Name; index = $index; total = $stepNames.Count }) -OutputFormat Text
+            $stepDuration = $stepTimer.Elapsed.ToString('hh\:mm\:ss')
+            Write-GatewayExperienceEvent -Type PhaseCompleted -Message "Completed: $Name (took $stepDuration)" -Data ([ordered]@{ step = $Name; index = $index; total = $stepNames.Count; durationMilliseconds = [int]$stepTimer.ElapsedMilliseconds }) -OutputFormat Text
         }
         return $result
     }
     catch {
+        $stepTimer.Stop()
         if ($OutputFormat -eq 'Text') {
-            Write-GatewayExperienceEvent -Type Warning -Message "Step needs attention: $Name. Correct the reported cause and run gateway up again; resumable evidence has been preserved." -Data ([ordered]@{ step = $Name; resumable = $true }) -OutputFormat Text
+            Write-GatewayExperienceEvent -Type Warning -Message "Step needs attention: $Name. Correct the reported cause and run gateway up again; resumable evidence has been preserved." -Data ([ordered]@{ step = $Name; resumable = $true; durationMilliseconds = [int]$stepTimer.ElapsedMilliseconds }) -OutputFormat Text
         }
         throw
     }
@@ -1250,6 +1288,25 @@ try {
         $script:GatewayFailureStage = 'Verification'
         $script:GatewayFailureCode = 'verification'
         Assert-BootstrapStateAllowsSourcePlan -State $state | Out-Null
+    }
+
+    # Long provider calls previously produced no output at all, so a running step
+    # and a hung step looked identical. This sink receives only the bounded command
+    # label, a phase word, and a duration that Invoke-BootstrapCommand produced. No
+    # child-process output ever reaches it, so the trust boundary is unchanged.
+    Set-BootstrapProgressSink -Sink {
+        param([string]$Label, [string]$Phase, [int]$DurationMilliseconds)
+
+        if ($Phase -ceq 'Completed' -and $DurationMilliseconds -lt 2000) { return }
+        $duration = [TimeSpan]::FromMilliseconds($DurationMilliseconds)
+        $durationText = if ($duration.TotalMinutes -ge 1) {
+            '{0}m {1:d2}s' -f [int]$duration.TotalMinutes, $duration.Seconds
+        }
+        else { '{0:0.0}s' -f $duration.TotalSeconds }
+        $message = if ($Phase -ceq 'Started') { "  - $Label" } else { "  - $Label completed in $durationText" }
+        $data = [ordered]@{ command = $Label; phase = $Phase }
+        if ($Phase -ceq 'Completed') { $data.durationMilliseconds = $DurationMilliseconds }
+        Write-GatewayExperienceEvent -Type Info -Message $message -Data $data -OutputFormat $OutputFormat
     }
 
     Set-BootstrapEventWriter -Writer {

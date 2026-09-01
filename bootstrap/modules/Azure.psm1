@@ -1591,6 +1591,67 @@ function Assert-GatewaySucceededContainerAppBoundary {
     return $true
 }
 
+function Get-GatewayConflictingFreeContentSafetyAccountId {
+    <#
+        .SYNOPSIS
+        Names an existing subscription free-tier Content Safety account that would
+        make the workload deployment fail ARM preflight.
+
+        .DESCRIPTION
+        Azure allows exactly one free account per Cognitive Services account type
+        per subscription. When Prompt Shields is enabled on a free SKU and another
+        free ContentSafety account already exists outside the target resource
+        group, ARM rejects the whole template at preflight before any deployment
+        record is created, so the operator sees a stopped step with no deployment
+        to inspect. This read-only discovery names the conflict up front instead.
+
+        Returns the conflicting resource ID, or an empty string when the requested
+        SKU is not free, Prompt Shields is disabled, or no conflict exists.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$ResourceGroupName
+    )
+
+    if ($Config.promptShield.enabled -ne $true) { return '' }
+    $skuName = [string]$Config.promptShield.skuName
+    if ($skuName -cnotmatch '^F[0-9]$') { return '' }
+
+    $accounts = @(Invoke-AzJson -Arguments @(
+        'resource', 'list', '--resource-type', 'Microsoft.CognitiveServices/accounts',
+        '--query', "[?kind=='ContentSafety'].{id:id,resourceGroup:resourceGroup,sku:sku.name}"
+    ))
+    foreach ($account in $accounts) {
+        $accountSku = [string](Get-GatewayArmObjectProperty -Object $account -Name 'sku')
+        if ($accountSku -cnotmatch '^F[0-9]$') { continue }
+        $accountResourceGroup = [string](Get-GatewayArmObjectProperty -Object $account -Name 'resourceGroup')
+        if ($accountResourceGroup.Equals($ResourceGroupName, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        return [string](Get-GatewayArmObjectProperty -Object $account -Name 'id')
+    }
+    return ''
+}
+
+function Assert-GatewayPromptShieldFreeTierCapacity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$ResourceGroupName
+    )
+
+    $conflictId = Get-GatewayConflictingFreeContentSafetyAccountId -Config $Config -ResourceGroupName $ResourceGroupName
+    if ([string]::IsNullOrWhiteSpace($conflictId)) { return $true }
+    throw (
+        "Prompt Shields requests the free '$([string]$Config.promptShield.skuName)' Content Safety SKU, but this " +
+        "subscription already has a free ContentSafety account at '$conflictId'. Azure allows one free account per " +
+        'account type per subscription, so ARM would reject the whole workload template at preflight and create no ' +
+        'deployment record. Resolve it in exactly one of three ways, then run Resume: set ' +
+        "promptShield.skuName to a paid SKU such as 'S0' in bootstrap/config.json, set promptShield.enabled to false " +
+        'and configure Prompt Shields after base verification, or delete the unused account named above from its own ' +
+        'resource group. No workload mutation was attempted.'
+    )
+}
+
 function Deploy-GatewayCore {
     [CmdletBinding()]
     param(
@@ -1934,6 +1995,10 @@ function Deploy-GatewayCore {
     if ($SucceededRecoveryOnly) {
         throw 'The exact Succeeded inert deployment required for read-only recovery was not recovered; no mutation was attempted.'
     }
+    # ARM rejects a free Content Safety duplicate during template preflight, which
+    # produces no deployment record and therefore nothing for the operator to read
+    # back. Discover that conflict read-only first so the step names its own cause.
+    Assert-GatewayPromptShieldFreeTierCapacity -Config $Config -ResourceGroupName ([string]$Config.resourceGroupName) | Out-Null
     $deployment = Invoke-ArmDeploymentWithSecureParameters -SubscriptionId ([string]$Config.subscriptionId) -ResourceGroup ([string]$Config.resourceGroupName) -Name $name `
         -TemplateFile (Join-Path $root 'infrastructure/bicep/main.bicep') -Parameters $parameters -Mode Incremental
     if (-not $deployment -or [string]$deployment.properties.provisioningState -cne 'Succeeded') {

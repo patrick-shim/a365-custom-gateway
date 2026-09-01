@@ -6,6 +6,9 @@ $script:BootstrapVersion = '2.0.0'
 $script:BootstrapEventWriter = $null
 $script:BootstrapStructuredOutput = $false
 $script:BootstrapExecutionSourceRoot = ''
+$script:BootstrapDiagnosticsDirectory = ''
+$script:BootstrapDiagnosticsMaximumBytes = 262144
+$script:BootstrapProgressSink = $null
 $script:BootstrapAzureSubscriptionId = ''
 $script:BootstrapAzureTenantId = ''
 $script:BootstrapGraphAccessToken = ''
@@ -475,6 +478,240 @@ function Get-BootstrapAzureCliArguments {
     throw "Azure CLI command group '$commandGroup' is not in the reviewed post-authentication allowlist."
 }
 
+function Set-BootstrapDiagnosticsDirectory {
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][AllowEmptyString()][string]$Path)
+
+    $script:BootstrapDiagnosticsDirectory = if ([string]::IsNullOrWhiteSpace($Path)) {
+        ''
+    }
+    else {
+        [IO.Path]::GetFullPath($Path)
+    }
+}
+
+function Get-BootstrapProviderFailureSignature {
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][AllowEmptyString()][string]$Output)
+
+    # Only two tightly bounded token shapes are allowed to cross this trust
+    # boundary: a provider error code whose entire value is a short identifier,
+    # and a correlation GUID. Provider prose, request/response bodies, headers,
+    # identities, and credentials can never match either shape, so a signature
+    # is safe to place in an error message, a checkpoint, or the Setup UI.
+    $signature = [ordered]@{ codes = @(); correlationIds = @() }
+    if ([string]::IsNullOrWhiteSpace($Output)) { return $signature }
+
+    $codes = [ordered]@{}
+    foreach ($match in [regex]::Matches($Output, '"(?:code|errorCode)"\s*:\s*"([A-Za-z][A-Za-z0-9._-]{0,63})"')) {
+        $codes[[string]$match.Groups[1].Value] = $true
+        if ($codes.Count -ge 8) { break }
+    }
+    $correlationIds = [ordered]@{}
+    $correlationPattern =
+        '(?i)(?:tracking\s+id\s+is|correlation[-_ ]?(?:request[-_ ]?)?id)\D{0,4}' +
+        '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})'
+    foreach ($match in [regex]::Matches($Output, $correlationPattern)) {
+        $correlationIds[([string]$match.Groups[1].Value).ToLowerInvariant()] = $true
+        if ($correlationIds.Count -ge 4) { break }
+    }
+    $signature.codes = @($codes.Keys | ForEach-Object { [string]$_ })
+    $signature.correlationIds = @($correlationIds.Keys | ForEach-Object { [string]$_ })
+    return $signature
+}
+
+function Write-BootstrapProviderDiagnostic {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$CommandName,
+        [Parameter(Mandatory)][int]$ExitCode,
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$Output
+    )
+
+    if ([string]::IsNullOrWhiteSpace($script:BootstrapDiagnosticsDirectory)) { return '' }
+    if ([string]::IsNullOrWhiteSpace($Output)) { return '' }
+    try {
+        if (-not (Test-Path -LiteralPath $script:BootstrapDiagnosticsDirectory)) {
+            New-Item -ItemType Directory -Path $script:BootstrapDiagnosticsDirectory -Force | Out-Null
+        }
+        $safeCommand = [regex]::Replace([IO.Path]::GetFileNameWithoutExtension($CommandName), '[^A-Za-z0-9._-]', '-')
+        if ([string]::IsNullOrWhiteSpace($safeCommand)) { $safeCommand = 'command' }
+        if ($safeCommand.Length -gt 24) { $safeCommand = $safeCommand.Substring(0, 24) }
+        $fileName = '{0}-{1}-{2}.log' -f `
+            [DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssZ'), $safeCommand, [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $path = Join-Path $script:BootstrapDiagnosticsDirectory $fileName
+        $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $stream.Dispose()
+        Set-BootstrapRestrictedFilePermission -Path $path
+        $body = [string]$Output
+        if ($body.Length -gt $script:BootstrapDiagnosticsMaximumBytes) {
+            $body = '[truncated to the last ' + $script:BootstrapDiagnosticsMaximumBytes + ' characters]' + [Environment]::NewLine +
+                $body.Substring($body.Length - $script:BootstrapDiagnosticsMaximumBytes)
+        }
+        $header = @(
+            "# A365 Gateway bootstrap provider diagnostic"
+            "# command: $CommandName"
+            "# exitCode: $ExitCode"
+            "# capturedAtUtc: $([DateTimeOffset]::UtcNow.ToString('O'))"
+            "# This local operator file holds unfiltered provider output. It is ignored by Git,"
+            "# is readable only by the current user, and must not be pasted into issues or chat."
+            ''
+        ) -join [Environment]::NewLine
+        [IO.File]::WriteAllText($path, $header + $body, [Text.UTF8Encoding]::new($false))
+        return $path
+    }
+    catch {
+        # Diagnostics are best effort. A failure to persist them must never
+        # replace or mask the provider failure that is already being reported.
+        return ''
+    }
+}
+
+function Set-BootstrapRestrictedFilePermission {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    if ($IsWindows) {
+        $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $currentSid = $currentIdentity.User
+        $currentIdentity.Dispose()
+        if ($null -eq $currentSid) {
+            throw 'Could not resolve the current Windows identity for a restricted bootstrap file.'
+        }
+        $acl = Get-Acl -LiteralPath $Path
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($existingRule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($existingRule) }
+        $acl.SetOwner($currentSid)
+        $acl.SetAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                $currentSid,
+                [Security.AccessControl.FileSystemRights]::FullControl,
+                [Security.AccessControl.AccessControlType]::Allow))
+        Set-Acl -LiteralPath $Path -AclObject $acl
+        return
+    }
+    $chmod = Get-Command chmod -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -eq $chmod) { throw 'Could not locate chmod before writing a restricted bootstrap file.' }
+    & $chmod.Source 600 $Path
+    if ($LASTEXITCODE -ne 0) { throw 'Could not restrict a bootstrap file to the current user.' }
+}
+
+function New-BootstrapProviderFailureException {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$CommandName,
+        [Parameter(Mandatory)][int]$ExitCode,
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$Output,
+        [switch]$OutputWasNotCaptured
+    )
+
+    $signature = Get-BootstrapProviderFailureSignature -Output $Output
+    $parts = @("Command '$CommandName' failed with exit code $ExitCode.")
+    if ($signature.codes.Count -gt 0) {
+        $parts += "Provider error codes: $($signature.codes -join ' > ')."
+    }
+    elseif ($OutputWasNotCaptured) {
+        $parts += 'Provider output was not captured at this trust boundary.'
+    }
+    else {
+        $parts += 'The provider returned no structured error code.'
+    }
+    if ($signature.correlationIds.Count -gt 0) {
+        $parts += "Provider correlation IDs: $($signature.correlationIds -join ', ')."
+    }
+    $diagnosticPath = if ($OutputWasNotCaptured) {
+        ''
+    }
+    else {
+        Write-BootstrapProviderDiagnostic -CommandName $CommandName -ExitCode $ExitCode -Output $Output
+    }
+    if (-not [string]::IsNullOrWhiteSpace($diagnosticPath)) {
+        $parts += "Unfiltered provider output was written to the local operator file '$diagnosticPath'."
+    }
+    else {
+        $parts += 'Provider output was suppressed at this trust boundary.'
+    }
+    $exception = [InvalidOperationException]::new(($parts -join ' '))
+    $exception.Data['GatewayProviderErrorCodes'] = [string[]]@($signature.codes)
+    $exception.Data['GatewayProviderCorrelationIds'] = [string[]]@($signature.correlationIds)
+    $exception.Data['GatewayProviderDiagnosticPath'] = [string]$diagnosticPath
+    return $exception
+}
+
+function Get-BootstrapExceptionProviderErrorCodes {
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][Exception]$Exception)
+
+    $current = $Exception
+    for ($depth = 0; $depth -lt 8 -and $null -ne $current; $depth++) {
+        $codes = $current.Data['GatewayProviderErrorCodes']
+        if ($codes -is [string[]] -and $codes.Count -gt 0) { return @($codes) }
+        $current = $current.InnerException
+    }
+    return @()
+}
+
+function Set-BootstrapProgressSink {
+    <#
+        .SYNOPSIS
+        Registers the trusted callback that renders bounded provider-call progress.
+
+        .DESCRIPTION
+        The sink receives only values this module produced: a safe command label,
+        a bounded phase word, and an integer duration. Child-process output never
+        reaches it, so the trust boundary in Invoke-BootstrapCommand is preserved.
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][scriptblock]$Sink)
+
+    $script:BootstrapProgressSink = $Sink
+}
+
+function Get-BootstrapCommandProgressLabel {
+    <#
+        .SYNOPSIS
+        Builds a safe display label for a child command from its leading verbs.
+
+        .DESCRIPTION
+        Only leading arguments whose entire value is a short lowercase verb token
+        are kept, and at most three of them. Flags, flag values, URLs, file paths,
+        resource IDs, GUIDs, image references, and credentials cannot match that
+        shape, so the label carries the command vocabulary and nothing else.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter()][AllowEmptyCollection()][string[]]$ArgumentList = @()
+    )
+
+    $name = [IO.Path]::GetFileNameWithoutExtension($FilePath)
+    if ([string]::IsNullOrWhiteSpace($name)) { $name = 'command' }
+    $verbs = @()
+    foreach ($argument in $ArgumentList) {
+        if ($verbs.Count -ge 3) { break }
+        if ([string]$argument -cnotmatch '^[a-z][a-z0-9-]{0,20}$') { break }
+        $verbs += [string]$argument
+    }
+    return (@($name) + $verbs) -join ' '
+}
+
+function Write-BootstrapCommandProgress {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][ValidateSet('Started', 'Completed')][string]$Phase,
+        [Parameter()][int]$DurationMilliseconds = 0
+    )
+
+    if ($null -eq $script:BootstrapProgressSink) { return }
+    try {
+        & $script:BootstrapProgressSink $Label $Phase $DurationMilliseconds
+    }
+    catch {
+        # Progress rendering is decorative. A sink failure must never mask or
+        # replace the provider result the caller is waiting for.
+    }
+}
+
 function Invoke-BootstrapCommand {
     [CmdletBinding()]
     param(
@@ -488,6 +725,10 @@ function Invoke-BootstrapCommand {
     if ($NoCapture -and $CaptureStdoutOnly) {
         throw 'NoCapture and CaptureStdoutOnly cannot be combined.'
     }
+
+    $progressLabel = Get-BootstrapCommandProgressLabel -FilePath $FilePath -ArgumentList $ArgumentList
+    $progressTimer = [Diagnostics.Stopwatch]::StartNew()
+    Write-BootstrapCommandProgress -Label $progressLabel -Phase Started
 
     $resolvedFile = $FilePath
     $effectiveArguments = @($ArgumentList)
@@ -516,8 +757,10 @@ function Invoke-BootstrapCommand {
         # structured UI output.
         & $resolvedFile @effectiveArguments *> $null
         $exitCode = $LASTEXITCODE
+        $progressTimer.Stop()
+        Write-BootstrapCommandProgress -Label $progressLabel -Phase Completed -DurationMilliseconds ([int]$progressTimer.ElapsedMilliseconds)
         if ($exitCode -ne 0 -and -not $AllowFailure) {
-            throw "Command '$FilePath' failed with exit code $exitCode. Provider output was not included at this trust boundary."
+            throw (New-BootstrapProviderFailureException -CommandName $FilePath -ExitCode $exitCode -Output '' -OutputWasNotCaptured)
         }
         return $exitCode
     }
@@ -532,8 +775,13 @@ function Invoke-BootstrapCommand {
         $output = & $resolvedFile @effectiveArguments 2>&1
     }
     $exitCode = $LASTEXITCODE
+    $progressTimer.Stop()
+    Write-BootstrapCommandProgress -Label $progressLabel -Phase Completed -DurationMilliseconds ([int]$progressTimer.ElapsedMilliseconds)
     if ($exitCode -ne 0 -and -not $AllowFailure) {
-        throw "Command '$FilePath' failed with exit code $exitCode. Provider output was suppressed at this trust boundary."
+        # The captured text stays inside this boundary. Only the bounded provider
+        # error codes, correlation GUIDs, and a local operator file path are
+        # reported onward, so the failure is diagnosable without leaking bodies.
+        throw (New-BootstrapProviderFailureException -CommandName $FilePath -ExitCode $exitCode -Output ($output | Out-String))
     }
     return ($output | Out-String).Trim()
 }
@@ -3772,13 +4020,21 @@ function Invoke-BootstrapStateStep {
     }
     catch {
         $partialEvidence = if ($State.steps[$Name].Contains('evidence')) { $State.steps[$Name].evidence } else { $null }
+        $providerCodes = @(Get-BootstrapExceptionProviderErrorCodes -Exception $_.Exception)
+        $failureMessage = if ($providerCodes.Count -gt 0) {
+            "Bootstrap step '$Name' failed with provider error codes $($providerCodes -join ' > '). Review the local terminal output, correct the cause, and run Resume."
+        }
+        else {
+            "Bootstrap step '$Name' failed. Review the local terminal output, correct the cause, and run Resume."
+        }
         $State.steps[$Name] = [ordered]@{
             status = 'Failed'
             startedAtUtc = $State.steps[$Name].startedAtUtc
             failedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
             sourceFingerprint = $stepSourceFingerprint
-            message = "Bootstrap step '$Name' failed. Review the local terminal output, correct the cause, and run Resume."
+            message = $failureMessage
         }
+        if ($providerCodes.Count -gt 0) { $State.steps[$Name].providerErrorCodes = @($providerCodes) }
         if ($null -ne $partialEvidence) { $State.steps[$Name].evidence = $partialEvidence }
         Save-BootstrapState -State $State -Path $StatePath
         Write-BootstrapEvent -Status Failed -StepName $Name
