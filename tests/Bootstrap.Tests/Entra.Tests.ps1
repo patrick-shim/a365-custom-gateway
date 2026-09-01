@@ -1,5 +1,6 @@
 $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Common.psm1') -Force
+Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Azure.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Entra.psm1') -Force
 
 Describe 'Exact Entra discovery cardinality' {
@@ -570,6 +571,44 @@ Describe 'Admin UI one-time credential role boundary' {
             $script:testApplicationObjectId = '33333333-3333-4333-8333-333333333333'
             $script:testCredentialKeyId = '44444444-4444-4444-8444-444444444444'
             $script:testAdminClientId = '55555555-5555-4555-8555-555555555555'
+            $script:testDeploymentOwnershipId = '77777777-7777-4777-8777-777777777777'
+            $script:testSourceFingerprint = "sha256:$('a' * 64)"
+            $script:invokeTestAdminUiCredentialCreate = {
+                param($Config, $AdminIdentity, [string]$KeyVaultUri, [string]$UserObjectId)
+                $arguments = @{
+                    Config = $Config
+                    AdminIdentity = $AdminIdentity
+                    KeyVaultUri = $KeyVaultUri
+                }
+                $command = Get-Command New-AdminUiCredentialInKeyVault -CommandType Function
+                if ($command.Parameters.ContainsKey('UserObjectId')) {
+                    $arguments.UserObjectId = $UserObjectId
+                }
+                if ($command.Parameters.ContainsKey('DeploymentOwnershipId')) {
+                    $arguments.DeploymentOwnershipId = $script:testDeploymentOwnershipId
+                }
+                if ($command.Parameters.ContainsKey('SourceFingerprint')) {
+                    $arguments.SourceFingerprint = $script:testSourceFingerprint
+                }
+                return New-AdminUiCredentialInKeyVault @arguments
+            }
+            $script:invokeTestAdminUiCredentialResolve = {
+                param($Config, $AdminIdentity, [string]$KeyVaultUri, [string]$UserObjectId)
+                $arguments = @{
+                    Config = $Config
+                    AdminIdentity = $AdminIdentity
+                    KeyVaultUri = $KeyVaultUri
+                    UserObjectId = $UserObjectId
+                }
+                $command = Get-Command Resolve-AdminUiCredentialAfterStartedOutcome -CommandType Function
+                if ($command.Parameters.ContainsKey('DeploymentOwnershipId')) {
+                    $arguments.DeploymentOwnershipId = $script:testDeploymentOwnershipId
+                }
+                if ($command.Parameters.ContainsKey('SourceFingerprint')) {
+                    $arguments.SourceFingerprint = $script:testSourceFingerprint
+                }
+                return Resolve-AdminUiCredentialAfterStartedOutcome @arguments
+            }
             $script:testScope = "/subscriptions/$script:testSubscriptionId/resourceGroups/$script:testResourceGroup/providers/Microsoft.KeyVault/vaults/kv-gwtest-dev"
             $script:testRoleDefinitionId = "/subscriptions/$script:testSubscriptionId/providers/Microsoft.Authorization/roleDefinitions/b86a8fe4-44ce-4948-aee5-eccb2c155cd7"
             $script:assignmentRoleDefinitionId = $script:testRoleDefinitionId
@@ -582,13 +621,42 @@ Describe 'Admin UI one-time credential role boundary' {
             $script:deleteArguments = @()
             $script:bootstrapCredentialExists = $true
             $script:vaultMetadataExists = $true
+            $script:vaultCredentialKeyId = $script:testCredentialKeyId
             $script:putFailsAfterCommit = $false
             $script:putCount = 0
             $script:roleListCount = 0
+            $script:accessTokenCount = 0
+            $script:dataPlaneCallCount = 0
+            $script:armDeploymentCount = 0
+            $script:armTemplateFile = ''
+            $script:armParameters = $null
+            $script:armDeploymentFailsAfterCommit = $false
+            $script:armMetadataReadCount = 0
+
+            if (-not (Get-Command Get-GatewayAdminUiCredentialSecretArmMetadata -ErrorAction SilentlyContinue)) {
+                function Get-GatewayAdminUiCredentialSecretArmMetadata {
+                    param($Config, [string]$KeyVaultUri, [string]$DeploymentOwnershipId, [string]$SourceFingerprint)
+                    throw 'Synthetic ARM metadata helper must be mocked.'
+                }
+            }
+            if (-not (Get-Command Deploy-GatewayAdminUiCredentialSecret -ErrorAction SilentlyContinue)) {
+                function Deploy-GatewayAdminUiCredentialSecret {
+                    param(
+                        $Config,
+                        [string]$KeyVaultUri,
+                        [string]$CredentialKeyId,
+                        [string]$SecretText,
+                        [string]$DeploymentOwnershipId,
+                        [string]$SourceFingerprint
+                    )
+                    throw 'Synthetic ARM deployment helper must be mocked.'
+                }
+            }
 
             Mock Start-Sleep { }
             Mock Invoke-RestMethod {
                 param($Method, [string]$Uri, $Headers, $Body)
+                $script:dataPlaneCallCount++
                 if ([string]$Method -eq 'Put') {
                     $script:putCount++
                     $script:vaultMetadataExists = $true
@@ -598,7 +666,7 @@ Describe 'Admin UI one-time credential role boundary' {
                     return [pscustomobject]@{
                         id = 'https://kv-gwtest-dev.vault.azure.net/secrets/admin-ui-entra-client-secret/version-one'
                         attributes = [pscustomobject]@{ enabled = $true }
-                        tags = [pscustomobject]@{ credentialKeyId = $script:testCredentialKeyId; managedBy = 'a365gw-bootstrap' }
+                        tags = [pscustomobject]@{ credentialKeyId = $script:vaultCredentialKeyId; managedBy = 'a365gw-bootstrap' }
                     }
                 }
                 $metadataValues = @()
@@ -606,10 +674,71 @@ Describe 'Admin UI one-time credential role boundary' {
                     $metadataValues = @([pscustomobject]@{
                         id = 'https://kv-gwtest-dev.vault.azure.net/secrets/admin-ui-entra-client-secret/version-one'
                         attributes = [pscustomobject]@{ enabled = $true }
-                        tags = [pscustomobject]@{ credentialKeyId = $script:testCredentialKeyId; managedBy = 'a365gw-bootstrap' }
+                        tags = [pscustomobject]@{ credentialKeyId = $script:vaultCredentialKeyId; managedBy = 'a365gw-bootstrap' }
                     })
                 }
                 return [pscustomobject]@{ value = $metadataValues }
+            }
+            Mock Get-GatewayAdminUiCredentialSecretArmMetadata {
+                param(
+                    $Config,
+                    [string]$KeyVaultUri,
+                    [string]$DeploymentOwnershipId,
+                    [string]$SourceFingerprint
+                )
+                $script:armMetadataReadCount++
+                if (-not $script:vaultMetadataExists) {
+                    return [pscustomobject]@{ status = 'Absent' }
+                }
+                return [pscustomobject]@{
+                    status = 'Present'
+                    id = "$script:testScope/secrets/admin-ui-entra-client-secret"
+                    name = 'admin-ui-entra-client-secret'
+                    enabled = $true
+                    contentType = 'application/vnd.a365-gateway.admin-ui-entra-client-secret'
+                    tags = [pscustomobject]@{
+                        managedBy = 'a365gw-bootstrap'
+                        credentialKeyId = $script:vaultCredentialKeyId
+                        bootstrapOwnershipId = $script:testDeploymentOwnershipId
+                        bootstrapSourceFingerprint = $script:testSourceFingerprint
+                    }
+                }
+            }
+            Mock Deploy-GatewayAdminUiCredentialSecret {
+                param(
+                    $Config,
+                    [string]$KeyVaultUri,
+                    [string]$CredentialKeyId,
+                    [string]$SecretText,
+                    [string]$DeploymentOwnershipId,
+                    [string]$SourceFingerprint
+                )
+                $script:armDeploymentCount++
+                $script:armTemplateFile = Join-Path $script:RepositoryRoot 'bootstrap/infra/admin-ui-credential.bicep'
+                $script:armParameters = [ordered]@{
+                    secretValue = $SecretText
+                    credentialKeyId = $CredentialKeyId
+                    bootstrapOwnershipId = $DeploymentOwnershipId
+                    bootstrapSourceFingerprint = $SourceFingerprint
+                }
+                $script:vaultMetadataExists = $true
+                $script:vaultCredentialKeyId = $CredentialKeyId
+                if ($script:armDeploymentFailsAfterCommit) {
+                    throw 'Synthetic lost ARM deployment response.'
+                }
+                return [pscustomobject]@{
+                    status = 'Present'
+                    id = "$script:testScope/secrets/admin-ui-entra-client-secret"
+                    name = 'admin-ui-entra-client-secret'
+                    enabled = $true
+                    contentType = 'application/vnd.a365-gateway.admin-ui-entra-client-secret'
+                    tags = [pscustomobject]@{
+                        managedBy = 'a365gw-bootstrap'
+                        credentialKeyId = $CredentialKeyId
+                        bootstrapOwnershipId = $DeploymentOwnershipId
+                        bootstrapSourceFingerprint = $SourceFingerprint
+                    }
+                }
             }
             Mock Invoke-AzJson {
                 param([string[]]$Arguments)
@@ -644,7 +773,8 @@ Describe 'Admin UI one-time credential role boundary' {
                     }
                 }
                 if ($command -match '^account get-access-token ') {
-                    return [pscustomobject]@{ accessToken = 'private-test-access-token' }
+                    $script:accessTokenCount++
+                    return [pscustomobject]@{ accessToken = "private-test-access-token-$($script:accessTokenCount)" }
                 }
                 if ($command -match 'graph\.microsoft\.com/v1\.0/applications/') {
                     return [pscustomobject]@{
@@ -657,12 +787,15 @@ Describe 'Admin UI one-time credential role boundary' {
                     }
                 }
                 if ($command -match '^resource show ') {
+                    if (-not $script:vaultMetadataExists) {
+                        throw 'Synthetic Key Vault ARM secret metadata not found.'
+                    }
                     return [pscustomobject]@{
                         id = "$script:testScope/secrets/admin-ui-entra-client-secret"
                         name = 'admin-ui-entra-client-secret'
                         enabled = $true
                         tags = [pscustomobject]@{
-                            credentialKeyId = $script:testCredentialKeyId
+                            credentialKeyId = $script:vaultCredentialKeyId
                             managedBy = 'a365gw-bootstrap'
                         }
                     }
@@ -786,7 +919,7 @@ Describe 'Admin UI one-time credential role boundary' {
                 Should -Throw '*continuation left*'
         }
 
-        It 'deletes only its exact temporary assignment and proves absence' {
+        It 'removes only the exact legacy temporary assignment during Resume and proves absence' {
             $config = [pscustomobject]@{
                 subscriptionId = $script:testSubscriptionId
                 resourceGroupName = $script:testResourceGroup
@@ -794,26 +927,25 @@ Describe 'Admin UI one-time credential role boundary' {
             $adminIdentity = [pscustomobject]@{
                 adminUiApplicationObjectId = $script:testApplicationObjectId
                 adminUiClientId = $script:testAdminClientId
+                deploymentOwnershipId = $script:testDeploymentOwnershipId
             }
+            $script:assignmentExists = $true
 
-            $result = New-AdminUiCredentialInKeyVault `
+            $result = & $script:invokeTestAdminUiCredentialResolve `
                 -Config $config `
                 -AdminIdentity $adminIdentity `
                 -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
                 -UserObjectId $script:testPrincipalId
 
             $result.credentialKeyId | Should -Be $script:testCredentialKeyId
-            $script:createCount | Should -Be 1
-            $roleIndex = [Array]::IndexOf($script:createArguments, '--role')
-            $roleIndex | Should -BeGreaterOrEqual 0
-            $script:createArguments[$roleIndex + 1] | Should -Be $script:testRoleDefinitionId
+            $script:createCount | Should -Be 0
             $script:assignmentExists | Should -BeFalse
             $script:deleteArguments | Should -Be @(
                 'role', 'assignment', 'delete', '--ids', $script:testAssignmentId, '--only-show-errors'
             )
         }
 
-        It 'rejects a deterministic temporary assignment bound to any other role definition ID' {
+        It 'uses one secure ARM child-secret deployment for a private vault without local vault authority or secret output' {
             $config = [pscustomobject]@{
                 subscriptionId = $script:testSubscriptionId
                 resourceGroupName = $script:testResourceGroup
@@ -821,11 +953,72 @@ Describe 'Admin UI one-time credential role boundary' {
             $adminIdentity = [pscustomobject]@{
                 adminUiApplicationObjectId = $script:testApplicationObjectId
                 adminUiClientId = $script:testAdminClientId
+                deploymentOwnershipId = $script:testDeploymentOwnershipId
+            }
+            $script:bootstrapCredentialExists = $false
+            $script:vaultMetadataExists = $false
+            $script:graphMutationCount = 0
+            $script:syntheticSecretValue = 'private-one-time-test-value'
+            $script:armDeploymentFailsAfterCommit = $true
+            Mock Invoke-GraphJsonBody {
+                $script:graphMutationCount++
+                $script:bootstrapCredentialExists = $true
+                return [pscustomobject]@{
+                    keyId = $script:testCredentialKeyId
+                    secretText = $script:syntheticSecretValue
+                }
+            }
+
+            $output = @(& $script:invokeTestAdminUiCredentialCreate `
+                -Config $config `
+                -AdminIdentity $adminIdentity `
+                -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
+                -UserObjectId $script:testPrincipalId)
+
+            $output.Count | Should -Be 1
+            $output[0].credentialKeyId | Should -Be $script:testCredentialKeyId
+            ($output | ConvertTo-Json -Depth 20 -Compress) |
+                Should -Not -Match ([regex]::Escape($script:syntheticSecretValue))
+            $script:armDeploymentCount | Should -Be 1
+            $script:graphMutationCount | Should -Be 1
+            $script:dataPlaneCallCount | Should -Be 0
+            $script:putCount | Should -Be 0
+            $script:accessTokenCount | Should -Be 0
+            $script:createCount | Should -Be 0
+            $script:roleListCount | Should -Be 0
+            $script:deleteArguments.Count | Should -Be 0
+
+            [IO.Path]::GetFullPath($script:armTemplateFile) | Should -Be (
+                [IO.Path]::GetFullPath((Join-Path $script:RepositoryRoot 'bootstrap/infra/admin-ui-credential.bicep')))
+            $script:armParameters.secretValue | Should -Be $script:syntheticSecretValue
+            $script:armParameters.credentialKeyId | Should -Be $script:testCredentialKeyId
+            $script:armParameters.bootstrapOwnershipId | Should -Be $script:testDeploymentOwnershipId
+            $script:armParameters.bootstrapSourceFingerprint | Should -Be $script:testSourceFingerprint
+
+            $templateSource = Get-Content -LiteralPath $script:armTemplateFile -Raw
+            $templateSource | Should -Match "(?s)@secure\(\)\s*param\s+secretValue\s+string"
+            $templateSource | Should -Match "'(?:Microsoft\.KeyVault/vaults/)?secrets@2023-07-01'"
+            $templateSource | Should -Match "contentType:\s*'application/vnd\.a365-gateway\.admin-ui-entra-client-secret'"
+            foreach ($requiredTag in @('managedBy', 'credentialKeyId', 'bootstrapOwnershipId', 'bootstrapSourceFingerprint')) {
+                $templateSource | Should -Match "(?m)^\s*$requiredTag\s*:"
+            }
+            $templateSource | Should -Not -Match '(?im)^\s*output\s+\w+\s+\w+\s*=\s*secretValue\s*$'
+        }
+
+        It 'rejects a legacy deterministic temporary assignment bound to any other role definition ID during Resume' {
+            $config = [pscustomobject]@{
+                subscriptionId = $script:testSubscriptionId
+                resourceGroupName = $script:testResourceGroup
+            }
+            $adminIdentity = [pscustomobject]@{
+                adminUiApplicationObjectId = $script:testApplicationObjectId
+                adminUiClientId = $script:testAdminClientId
+                deploymentOwnershipId = $script:testDeploymentOwnershipId
             }
             $script:assignmentExists = $true
             $script:assignmentRoleDefinitionId = "/subscriptions/$script:testSubscriptionId/providers/Microsoft.Authorization/roleDefinitions/99999999-9999-4999-8999-999999999999"
 
-            { New-AdminUiCredentialInKeyVault `
+            { & $script:invokeTestAdminUiCredentialResolve `
                 -Config $config `
                 -AdminIdentity $adminIdentity `
                 -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
@@ -833,7 +1026,7 @@ Describe 'Admin UI one-time credential role boundary' {
                 Should -Throw '*different authority*'
         }
 
-        It 'reconciles exact metadata after a lost Key Vault PUT response without creating another secret version' {
+        It 'retries one fresh credential transfer on Resume after cleanup and exact provider absence' {
             $config = [pscustomobject]@{
                 subscriptionId = $script:testSubscriptionId
                 resourceGroupName = $script:testResourceGroup
@@ -841,11 +1034,14 @@ Describe 'Admin UI one-time credential role boundary' {
             $adminIdentity = [pscustomobject]@{
                 adminUiApplicationObjectId = $script:testApplicationObjectId
                 adminUiClientId = $script:testAdminClientId
+                deploymentOwnershipId = $script:testDeploymentOwnershipId
             }
+            $script:assignmentExists = $true
             $script:bootstrapCredentialExists = $false
             $script:vaultMetadataExists = $false
-            $script:putFailsAfterCommit = $true
+            $script:graphMutationCount = 0
             Mock Invoke-GraphJsonBody {
+                $script:graphMutationCount++
                 $script:bootstrapCredentialExists = $true
                 return [pscustomobject]@{
                     keyId = $script:testCredentialKeyId
@@ -853,14 +1049,62 @@ Describe 'Admin UI one-time credential role boundary' {
                 }
             }
 
-            $result = New-AdminUiCredentialInKeyVault `
+            $result = & $script:invokeTestAdminUiCredentialResolve `
                 -Config $config `
                 -AdminIdentity $adminIdentity `
                 -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
                 -UserObjectId $script:testPrincipalId
 
             $result.credentialKeyId | Should -Be $script:testCredentialKeyId
-            $script:putCount | Should -Be 1
+            $script:graphMutationCount | Should -Be 1
+            $script:armDeploymentCount | Should -Be 1
+            $script:putCount | Should -Be 0
+            $script:createCount | Should -Be 0
+            $script:assignmentExists | Should -BeFalse
+        }
+
+        It 'fails closed on partial or mismatched Resume evidence without Graph or secret mutation' {
+            $config = [pscustomobject]@{
+                subscriptionId = $script:testSubscriptionId
+                resourceGroupName = $script:testResourceGroup
+            }
+            $adminIdentity = [pscustomobject]@{
+                adminUiApplicationObjectId = $script:testApplicationObjectId
+                adminUiClientId = $script:testAdminClientId
+                deploymentOwnershipId = $script:testDeploymentOwnershipId
+            }
+
+            foreach ($scenario in @(
+                @{ credentialExists = $true; vaultExists = $false; vaultKeyId = $script:testCredentialKeyId },
+                @{ credentialExists = $false; vaultExists = $true; vaultKeyId = $script:testCredentialKeyId },
+                @{ credentialExists = $true; vaultExists = $true; vaultKeyId = '66666666-6666-4666-8666-666666666666' }
+            )) {
+                $script:assignmentExists = $true
+                $script:bootstrapCredentialExists = $scenario.credentialExists
+                $script:vaultMetadataExists = $scenario.vaultExists
+                $script:vaultCredentialKeyId = $scenario.vaultKeyId
+                $script:graphMutationCount = 0
+                $script:putCount = 0
+                $script:armDeploymentCount = 0
+                Mock Invoke-GraphJsonBody {
+                    $script:graphMutationCount++
+                    return [pscustomobject]@{
+                        keyId = $script:testCredentialKeyId
+                        secretText = 'private-one-time-test-value'
+                    }
+                }
+
+                { & $script:invokeTestAdminUiCredentialResolve `
+                    -Config $config `
+                    -AdminIdentity $adminIdentity `
+                    -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
+                    -UserObjectId $script:testPrincipalId } |
+                    Should -Throw
+
+                $script:graphMutationCount | Should -Be 0
+                $script:putCount | Should -Be 0
+                $script:armDeploymentCount | Should -Be 0
+            }
         }
 
         It 'fails closed on unproven cleanup and Resume adopts then removes the exact assignment' {
@@ -871,11 +1115,13 @@ Describe 'Admin UI one-time credential role boundary' {
             $adminIdentity = [pscustomobject]@{
                 adminUiApplicationObjectId = $script:testApplicationObjectId
                 adminUiClientId = $script:testAdminClientId
+                deploymentOwnershipId = $script:testDeploymentOwnershipId
             }
+            $script:assignmentExists = $true
             $script:deleteRemovesAssignment = $false
 
             try {
-                New-AdminUiCredentialInKeyVault `
+                & $script:invokeTestAdminUiCredentialResolve `
                     -Config $config `
                     -AdminIdentity $adminIdentity `
                     -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
@@ -888,17 +1134,17 @@ Describe 'Admin UI one-time credential role boundary' {
             }
 
             $script:assignmentExists | Should -BeTrue
-            $script:createCount | Should -Be 1
+            $script:createCount | Should -Be 0
 
             $script:deleteRemovesAssignment = $true
-            $result = Resolve-AdminUiCredentialAfterStartedOutcome `
+            $result = & $script:invokeTestAdminUiCredentialResolve `
                 -Config $config `
                 -AdminIdentity $adminIdentity `
                 -KeyVaultUri 'https://kv-gwtest-dev.vault.azure.net/' `
                 -UserObjectId $script:testPrincipalId
 
             $result.credentialKeyId | Should -Be $script:testCredentialKeyId
-            $script:createCount | Should -Be 1
+            $script:createCount | Should -Be 0
             $script:assignmentExists | Should -BeFalse
         }
     }

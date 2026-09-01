@@ -130,6 +130,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup .NET 10 SDK for Windows Setup tests
+        if: runner.os == 'Windows'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
       - name: Install Pester
         shell: pwsh
         run: Install-Module Pester -RequiredVersion 5.6.1 -Scope CurrentUser -Force -SkipPublisherCheck
@@ -141,6 +147,27 @@ jobs:
       - name: Run bootstrap and runtime Purview source/behavior gate
         shell: pwsh
         run: ./tools/Test-BootstrapSource.ps1 -RunPester
+
+      - name: Run Setup UI tests on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          dotnet test ./tests/Gateway.Setup.Tests/Gateway.Setup.Tests.csproj
+          -c Release
+
+      - name: Smoke-test Windows Setup launcher help
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 1
+        run: |
+          $output = & .\gateway.cmd setup --help
+          if ($LASTEXITCODE -ne 0) {
+            throw "gateway.cmd setup --help exited with code $LASTEXITCODE."
+          }
+
+          if ($output -notcontains 'Usage: gateway.cmd setup [--no-open]') {
+            throw 'gateway.cmd setup --help did not return the expected public usage text.'
+          }
 
       - name: Validate POSIX launcher syntax
         if: runner.os != 'Windows'

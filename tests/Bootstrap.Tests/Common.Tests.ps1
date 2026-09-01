@@ -1239,6 +1239,42 @@ Describe 'Bootstrap Azure CLI subscription boundary' {
             Should -Be @('version')
     }
 
+    It 'allows only the exact subscription-scoped Azure SQL regional-capabilities GET' {
+        $arguments = @(
+            'rest', '--method', 'GET', '--url',
+            'https://management.azure.com/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.Sql/locations/koreacentral/capabilities?api-version=2023-08-01',
+            '--subscription', '11111111-1111-4111-8111-111111111111',
+            '--output', 'json', '--only-show-errors'
+        )
+
+        @(Get-BootstrapAzureCliArguments -Arguments $arguments) | Should -Be $arguments
+    }
+
+    It 'rejects variations of the bounded Azure SQL regional-capabilities request' -ForEach @(
+        @{
+            Name = 'Graph host'
+            Arguments = @('rest', '--method', 'GET', '--url', 'https://graph.microsoft.com/v1.0/me', '--subscription', '11111111-1111-4111-8111-111111111111', '--output', 'json', '--only-show-errors')
+        },
+        @{
+            Name = 'write method'
+            Arguments = @('rest', '--method', 'POST', '--url', 'https://management.azure.com/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.Sql/locations/koreacentral/capabilities?api-version=2023-08-01', '--subscription', '11111111-1111-4111-8111-111111111111', '--output', 'json', '--only-show-errors')
+        },
+        @{
+            Name = 'different API version'
+            Arguments = @('rest', '--method', 'GET', '--url', 'https://management.azure.com/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.Sql/locations/koreacentral/capabilities?api-version=2021-11-01', '--subscription', '11111111-1111-4111-8111-111111111111', '--output', 'json', '--only-show-errors')
+        },
+        @{
+            Name = 'noncanonical location'
+            Arguments = @('rest', '--method', 'GET', '--url', 'https://management.azure.com/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.Sql/locations/KoreaCentral/capabilities?api-version=2023-08-01', '--subscription', '11111111-1111-4111-8111-111111111111', '--output', 'json', '--only-show-errors')
+        },
+        @{
+            Name = 'extra request argument'
+            Arguments = @('rest', '--method', 'GET', '--url', 'https://management.azure.com/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.Sql/locations/koreacentral/capabilities?api-version=2023-08-01', '--subscription', '11111111-1111-4111-8111-111111111111', '--output', 'json', '--only-show-errors', '--body', '{}')
+        }
+    ) {
+        { Get-BootstrapAzureCliArguments -Arguments $Arguments } | Should -Throw
+    }
+
     It 'rejects native Graph, context-changing, and unknown commands after authentication' {
         foreach ($arguments in @(
             @('ad', 'signed-in-user', 'show'),

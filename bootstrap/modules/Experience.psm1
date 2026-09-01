@@ -965,8 +965,9 @@ function Get-GatewayDoctorReport {
             $signedInUser = Invoke-GatewayAzJson -Arguments @('ad', 'signed-in-user', 'show', '--query', '{id:id}')
             $scope = "/subscriptions/$($config.subscriptionId)"
             $roles = @(Invoke-GatewayAzJson -Arguments @(
-                'role', 'assignment', 'list', '--assignee', [string]$signedInUser.id,
-                '--all', '--include-inherited', '--scope', $scope,
+                'role', 'assignment', 'list', '--assignee-object-id', [string]$signedInUser.id,
+                '--include-inherited', '--include-groups', '--scope', $scope,
+                '--fill-principal-name', 'false',
                 '--query', '[].{role:roleDefinitionName,scope:scope}'
             ))
             $roleNames = @($roles | ForEach-Object { [string]$_.role } | Sort-Object -Unique)

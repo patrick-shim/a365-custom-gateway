@@ -10,7 +10,7 @@ public sealed class BootstrapOutputSanitizerTests
         "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     [Fact]
-    public void TypedPlanFailure_ShowsTheAuthoredBoundaryWithoutFakeFivePercentProgress()
+    public void TypedPlanFailure_ShowsTheAuthoredBoundaryWithIndeterminateProgress()
     {
         const string line = """
             {"schemaVersion":1,"type":"Warning","message":"Repository or Bicep validation failed. Run gateway doctor, correct the reported tool or source issue, then run Plan again.","data":{"step":"Plan review","category":"planFailure","failureCode":"plan_source","resumable":false}}
@@ -21,7 +21,7 @@ public sealed class BootstrapOutputSanitizerTests
         result.Kind.Should().Be(BootstrapProgressKind.Warning);
         result.DisplayLabel.Should().Be("Plan stopped here");
         result.Message.Should().Contain("Bicep validation failed");
-        result.ProgressPercent.Should().Be(0);
+        result.ProgressPercent.Should().BeNull();
         result.PlanResultClaimObserved.Should().BeFalse();
         result.PlanFingerprint.Should().BeNull();
     }
@@ -273,6 +273,7 @@ public sealed class BootstrapOutputSanitizerTests
         result.Kind.Should().NotBe(BootstrapProgressKind.Withheld);
         result.Message.Should().Be(message);
         result.Step.Should().Be("Plan review");
+        result.ProgressPercent.Should().BeNull();
         result.Message.Should().NotContain("must not render");
     }
 
@@ -305,6 +306,7 @@ public sealed class BootstrapOutputSanitizerTests
         result.PlanFingerprint.Should().Be(ReviewedFingerprint);
         result.PlanApplyReady.Should().Be(applyReady);
         result.PlanResultClaimObserved.Should().BeTrue();
+        result.ProgressPercent.Should().Be(100);
         result.Message.Should().Be(message);
         result.Message.Should().NotContain("must not render");
     }

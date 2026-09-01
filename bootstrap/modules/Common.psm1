@@ -439,6 +439,23 @@ function Get-BootstrapAzureCliArguments {
     }
 
     if ($commandGroup -ceq 'rest') {
+        $subscriptionPattern = [regex]::Escape($script:BootstrapAzureSubscriptionId)
+        $sqlCapabilitiesUrlPattern =
+            "^https://management\.azure\.com/subscriptions/$subscriptionPattern/providers/Microsoft\.Sql/locations/[a-z0-9]+/capabilities\?api-version=2023-08-01$"
+        $isExactSqlCapabilitiesGet =
+            $effectiveArguments.Count -eq 10 -and
+            [string]$effectiveArguments[1] -ceq '--method' -and
+            [string]$effectiveArguments[2] -ceq 'GET' -and
+            [string]$effectiveArguments[3] -ceq '--url' -and
+            [string]$effectiveArguments[4] -cmatch $sqlCapabilitiesUrlPattern -and
+            [string]$effectiveArguments[5] -ceq '--subscription' -and
+            [string]$effectiveArguments[6] -ceq $script:BootstrapAzureSubscriptionId -and
+            [string]$effectiveArguments[7] -ceq '--output' -and
+            [string]$effectiveArguments[8] -ceq 'json' -and
+            [string]$effectiveArguments[9] -ceq '--only-show-errors'
+        if ($isExactSqlCapabilitiesGet) {
+            return $effectiveArguments
+        }
         throw 'Native Azure CLI rest is not allowed after bootstrap authentication. Microsoft Graph must use the exact-account in-process Graph boundary.'
     }
     if ($commandGroup -ceq 'ad') {

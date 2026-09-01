@@ -287,7 +287,9 @@ function Assert-GatewaySqlRegionalAvailability {
         }
     }
     catch {
-        throw "$safeFailure Check: $safeCheck."
+        $safeException = [InvalidOperationException]::new("$safeFailure Check: $safeCheck.")
+        $safeException.Data['GatewaySafeFailureCode'] = 'sql_regional_availability'
+        throw $safeException
     }
 
     return $true

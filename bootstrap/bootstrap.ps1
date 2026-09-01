@@ -527,10 +527,19 @@ function Get-GatewaySafeFailureEvent {
     param(
         [Parameter(Mandatory)][string]$FailureCode,
         [Parameter(Mandatory)][string]$FailureStage,
-        [Parameter(Mandatory)][string]$CommandMode
+        [Parameter(Mandatory)][string]$CommandMode,
+        [Parameter()][AllowNull()][Exception]$Exception
     )
 
-    $message = switch ($FailureCode) {
+    $effectiveFailureCode = $FailureCode
+    if ($FailureCode -ceq 'plan_what_if' -and $null -ne $Exception) {
+        $typedFailureCode = $Exception.Data['GatewaySafeFailureCode']
+        if ($typedFailureCode -is [string] -and $typedFailureCode -ceq 'sql_regional_availability') {
+            $effectiveFailureCode = 'plan_sql_availability'
+        }
+    }
+
+    $message = switch ($effectiveFailureCode) {
         'configuration' { 'Bootstrap configuration could not be loaded. Run gateway doctor, then reopen Setup or run Plan again.' }
         'state' { 'Bootstrap state could not be loaded safely. Keep .bootstrap intact, run gateway diagnose, then retry the same command.' }
         'diagnose' { 'Diagnose could not write its safe bundle. Run gateway doctor and review local file access.' }
@@ -538,6 +547,7 @@ function Get-GatewaySafeFailureEvent {
         'plan_prerequisites' { 'Local prerequisite validation failed. Run gateway doctor, correct its failed item, then run Plan again.' }
         'plan_source' { 'Repository or Bicep validation failed. Run gateway doctor, correct the reported tool or source issue, then run Plan again.' }
         'plan_account' { 'The configured Azure tenant and subscription could not be selected. Run az login, verify the active subscription, then run Plan again.' }
+        'plan_sql_availability' { 'Azure SQL regional availability could not be verified for the selected region and SKU. Confirm the Azure session and subscription access, or choose another listed region, then run Plan again.' }
         'plan_what_if' { 'Azure What-If could not produce a reviewable result. Check the Azure session, subscription access, required providers, policy, region, and quota, then run Plan again.' }
         'plan_blueprint' { 'The Agent ID blueprint boundary check did not complete. Confirm tenant eligibility and Graph access, then run Plan again.' }
         'plan_stable_inputs' { 'Source or configuration changed while Plan was running. Stop edits and run Plan again.' }
@@ -555,14 +565,14 @@ function Get-GatewaySafeFailureEvent {
             }
         }
     }
-    $isPlanFailure = $FailureCode.StartsWith('plan_', [StringComparison]::Ordinal)
+    $isPlanFailure = $effectiveFailureCode.StartsWith('plan_', [StringComparison]::Ordinal)
     return [ordered]@{
         message = $message
         data = [ordered]@{
             step = $FailureStage
             category = if ($isPlanFailure) { 'planFailure' } else { 'bootstrapFailure' }
-            failureCode = $FailureCode
-            resumable = [bool]($FailureCode -eq 'deployment')
+            failureCode = $effectiveFailureCode
+            resumable = [bool]($effectiveFailureCode -eq 'deployment')
         }
     }
 }
@@ -1680,7 +1690,7 @@ finally {
 }
 }
 catch {
-    $failure = Get-GatewaySafeFailureEvent -FailureCode $script:GatewayFailureCode -FailureStage $script:GatewayFailureStage -CommandMode $Mode
+    $failure = Get-GatewaySafeFailureEvent -FailureCode $script:GatewayFailureCode -FailureStage $script:GatewayFailureStage -CommandMode $Mode -Exception $_.Exception
     Write-GatewayExperienceEvent -Type Warning -Message $failure.message -Data $failure.data -OutputFormat $OutputFormat
     exit 1
 }

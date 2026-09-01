@@ -217,10 +217,11 @@ internal static partial class BootstrapOutputSanitizer
         string? step,
         string? category)
     {
-        if (string.Equals(step, "Plan review", StringComparison.Ordinal) &&
-            !string.Equals(category, "planResult", StringComparison.Ordinal))
+        if (string.Equals(step, "Plan review", StringComparison.Ordinal))
         {
-            return 0;
+            return string.Equals(category, "planResult", StringComparison.Ordinal)
+                ? 100
+                : null;
         }
 
         if (!data.TryGetProperty("index", out var indexElement) ||
