@@ -69,6 +69,7 @@ appsettings.Local.json
 ## Machine-local bootstrap and delivery runtime
 .bootstrap/
 bootstrap/config.json
+bootstrap/config.json.*
 .agent-runtime/
 .agents/runtime/
 
