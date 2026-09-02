@@ -182,6 +182,24 @@ step that reported no diagnosable cause:
   back. The preflight names the conflicting account and three remediations, runs no
   discovery when Prompt Shields is disabled or on a paid SKU, and attempts no
   workload mutation.
+- That preflight first read only `az resource list`, which returns live accounts. A
+  soft-deleted Cognitive Services account keeps its free-tier slot for the rest of its
+  retention window and is absent from every resource listing, so deleting the resource
+  group never released the quota and a subscription with no live free account still
+  failed every retry with the identical `CanNotCreateMultipleFreeAccounts` rejection.
+  The preflight now also reads `az cognitiveservices account list-deleted`, and parses
+  the originating group and account name out of the deleted-account resource ID
+  because that listing reports a null `resourceGroup`. It never exempts a soft-deleted
+  account by resource group: the workload always creates a freshly suffixed account
+  rather than recovering a deleted name, so a same-named group does not help. A
+  soft-deleted conflict is remediated only by purging, and the message names the exact
+  `az cognitiveservices account purge` command for that account.
+- The capacity preflight also runs in `Invoke-GatewayPlanWorkflow` under the
+  `plan_prompt_shield_capacity` failure code, so the conflict is named during Plan
+  instead of only at the inert deployment, after Apply has already mutated Azure.
+- `cognitiveservices` joins the reviewed Azure CLI resource command groups in
+  `Get-BootstrapAzureCliArguments`, so the deleted-account listing is pinned to the
+  exact bootstrap subscription like every other resource family.
 - A trusted progress sink renders long provider calls. It receives only a command
   label built from leading lowercase verb tokens, a phase word, and an elapsed
   duration, all produced inside the bootstrap; child-process output never reaches it.

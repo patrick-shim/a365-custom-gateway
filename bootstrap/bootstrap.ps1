@@ -399,6 +399,11 @@ function Invoke-GatewayPlanWorkflow {
     $whatIf = Invoke-GatewayFoundationWhatIf -Config $Configuration -RepositoryRoot $root -DeploymentOwnershipId ([string]$State.deploymentOwnershipId) -SourceFingerprint $deploymentSourceFingerprint -ExecutionSourceFingerprint $sourceFingerprintBefore -State $State
     $script:GatewayFailureCode = 'plan_blueprint'
     Assert-GatewaySeedBlueprintPlanBoundary -Descriptor $descriptor -Config $Configuration -State $State | Out-Null
+    # ARM rejects a duplicate free Content Safety account during template preflight,
+    # which produces no deployment record. Discovering it here, rather than only at
+    # the inert deployment, means the operator learns before Apply mutates anything.
+    $script:GatewayFailureCode = 'plan_prompt_shield_capacity'
+    Assert-GatewayPromptShieldFreeTierCapacity -Config $Configuration -ResourceGroupName ([string]$Configuration.resourceGroupName) | Out-Null
     $script:GatewayFailureCode = 'plan_stable_inputs'
     $sourceFingerprintAfter = Get-BootstrapSourceFingerprint
     $configurationFingerprintAfter = Get-BootstrapConfigurationFingerprint -Config $Configuration

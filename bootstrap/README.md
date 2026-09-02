@@ -355,13 +355,23 @@ free Content Safety account already exists anywhere in the subscription, ARM rej
 the whole workload template during preflight and records no deployment, so there is
 nothing to read back.
 
-Bootstrap detects that conflict read-only before the workload deployment and names
-the conflicting account. Resolve it in exactly one way, then run Resume:
+Bootstrap detects that conflict read-only during Plan and again before the workload
+deployment, and names the conflicting account.
 
-- set `promptShield.skuName` to a paid SKU such as `S0`,
+A deleted account still counts. Deleting a Content Safety account, or the resource
+group that holds it, leaves it *soft-deleted*: it keeps its free-tier slot for the
+rest of its retention window and never appears in a resource listing. A subscription
+that looks completely clean can therefore fail every retry with the identical
+`CanNotCreateMultipleFreeAccounts` rejection. List whatever still holds a slot with
+`az cognitiveservices account list-deleted -o table`.
+
+Resolve the conflict in exactly one way, then run Resume:
+
+- purge the named account to release its slot, with `az cognitiveservices account
+  purge --location <region> --resource-group <group> --name <account>`,
+- set `promptShield.skuName` to a paid SKU such as `S0`, or
 - set `promptShield.enabled` to `false` and configure Prompt Shields after base
-  verification, or
-- delete the named unused account from its own resource group.
+  verification.
 
 ### Starting over from a clean initial state
 
@@ -374,8 +384,11 @@ preserved state at existing resources:
 2. Remove the abandoned resource groups yourself, in the portal or with your own
    authorized `az group delete`. A Container Apps environment also creates an
    infrastructure group named `ME_<environment>_<resourceGroup>_<region>`; delete that
-   too. Leaving a group behind keeps its free-tier Content Safety account, which will
-   block the next deployment exactly as described above.
+   too. Deleting the group is not sufficient for Content Safety: the account inside it
+   becomes soft-deleted and keeps its free-tier slot, so purge it as well with
+   `az cognitiveservices account purge --location <region> --resource-group <group>
+   --name <account>`. Leaving either behind blocks the next deployment exactly as
+   described above.
 3. Move the existing configuration aside rather than editing it in place:
    `mv bootstrap/config.json bootstrap/config.json.previous`.
 4. Run `.\gateway.cmd setup` (Windows) or `./gateway setup` (macOS, Linux). Setup

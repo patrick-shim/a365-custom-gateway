@@ -3239,11 +3239,10 @@ Describe 'Prompt Shields free-tier capacity preflight' {
             Should -Invoke Invoke-AzJson -Times 0 -Exactly
         }
 
-        It 'discovers Content Safety accounts across the subscription rather than one resource group' {
+        It 'discovers live and soft-deleted Content Safety accounts across the whole subscription' {
             Mock Invoke-AzJson {
                 param([string[]]$Arguments)
                 $Arguments | Should -Not -Contain '--resource-group'
-                $Arguments | Should -Contain 'Microsoft.CognitiveServices/accounts'
                 ($Arguments -join ' ') | Should -BeLike "*kind=='ContentSafety'*"
                 return @()
             }
@@ -3251,7 +3250,114 @@ Describe 'Prompt Shields free-tier capacity preflight' {
             Assert-GatewayPromptShieldFreeTierCapacity `
                 -Config $script:freeTierConfig -ResourceGroupName 'rg-gwsample-dev' | Should -BeTrue
 
-            Should -Invoke Invoke-AzJson -Times 1 -Exactly
+            Should -Invoke Invoke-AzJson -Times 2 -Exactly
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                $Arguments -contains 'Microsoft.CognitiveServices/accounts'
+            }
+            Should -Invoke Invoke-AzJson -Times 1 -Exactly -ParameterFilter {
+                $Arguments -contains 'list-deleted'
+            }
+        }
+
+        It 'names a soft-deleted free account that no resource listing can show' {
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ($Arguments -contains 'list-deleted') {
+                    return @([pscustomobject]@{
+                        id = '/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.CognitiveServices/locations/koreacentral/resourceGroups/rg-gwlegacy-dev/deletedAccounts/cs-gwlegacy-dev-zzzz01'
+                        name = 'cs-gwlegacy-dev-zzzz01'
+                        location = 'koreacentral'
+                        sku = 'F0'
+                    })
+                }
+                return @()
+            }
+
+            { Assert-GatewayPromptShieldFreeTierCapacity `
+                    -Config $script:freeTierConfig -ResourceGroupName 'rg-gwsample-dev' } |
+                Should -Throw '*cs-gwlegacy-dev-zzzz01*'
+        }
+
+        It 'explains that deleting the resource group never released the quota and names the purge command' {
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ($Arguments -contains 'list-deleted') {
+                    return @([pscustomobject]@{
+                        id = '/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.CognitiveServices/locations/koreacentral/resourceGroups/rg-gwlegacy-dev/deletedAccounts/cs-gwlegacy-dev-zzzz01'
+                        name = 'cs-gwlegacy-dev-zzzz01'
+                        location = 'koreacentral'
+                        sku = 'F0'
+                    })
+                }
+                return @()
+            }
+
+            $message = ''
+            try { Assert-GatewayPromptShieldFreeTierCapacity -Config $script:freeTierConfig -ResourceGroupName 'rg-gwsample-dev' }
+            catch { $message = [string]$_.Exception.Message }
+
+            $message | Should -BeLike '*soft-deleted*'
+            $message | Should -BeLike '*deleting its resource group did not release the quota*'
+            $message | Should -BeLike '*az cognitiveservices account purge --location koreacentral --resource-group rg-gwlegacy-dev --name cs-gwlegacy-dev-zzzz01*'
+            $message | Should -BeLike '*No workload mutation was attempted*'
+        }
+
+        It 'refuses a soft-deleted free account even when it names the target resource group' {
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ($Arguments -contains 'list-deleted') {
+                    return @([pscustomobject]@{
+                        id = '/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.CognitiveServices/locations/koreacentral/resourceGroups/rg-gwsample-dev/deletedAccounts/cs-gwsample-dev-abc123'
+                        name = 'cs-gwsample-dev-abc123'
+                        location = 'koreacentral'
+                        sku = 'F0'
+                    })
+                }
+                return @()
+            }
+
+            { Assert-GatewayPromptShieldFreeTierCapacity `
+                    -Config $script:freeTierConfig -ResourceGroupName 'rg-gwsample-dev' } |
+                Should -Throw '*cs-gwsample-dev-abc123*'
+        }
+
+        It 'accepts a soft-deleted paid account because only free accounts are capacity limited' {
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ($Arguments -contains 'list-deleted') {
+                    return @([pscustomobject]@{
+                        id = '/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.CognitiveServices/locations/koreacentral/resourceGroups/rg-other-dev/deletedAccounts/cs-other'
+                        name = 'cs-other'
+                        location = 'koreacentral'
+                        sku = 'S0'
+                    })
+                }
+                return @()
+            }
+
+            Assert-GatewayPromptShieldFreeTierCapacity `
+                -Config $script:freeTierConfig -ResourceGroupName 'rg-gwsample-dev' | Should -BeTrue
+        }
+
+        It 'tells a live conflict to purge as well, because deleting alone leaves the slot held' {
+            Mock Invoke-AzJson {
+                param([string[]]$Arguments)
+                if ($Arguments -contains 'list-deleted') { return @() }
+                return @([pscustomobject]@{
+                    id = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-other-dev/providers/Microsoft.CognitiveServices/accounts/cs-other'
+                    name = 'cs-other'
+                    location = 'koreacentral'
+                    resourceGroup = 'rg-other-dev'
+                    sku = 'F0'
+                })
+            }
+
+            $message = ''
+            try { Assert-GatewayPromptShieldFreeTierCapacity -Config $script:freeTierConfig -ResourceGroupName 'rg-gwsample-dev' }
+            catch { $message = [string]$_.Exception.Message }
+
+            $message | Should -BeLike '*az cognitiveservices account purge --location koreacentral --resource-group rg-other-dev --name cs-other*'
+            $message | Should -BeLike '*deleting alone leaves the account soft-deleted and still holding the quota*'
         }
     }
 }

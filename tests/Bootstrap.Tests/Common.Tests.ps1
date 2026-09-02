@@ -1391,6 +1391,12 @@ Describe 'Bootstrap Azure CLI subscription boundary' {
                 '--subscription', '11111111-1111-4111-8111-111111111111')
 
         @(Get-BootstrapAzureCliArguments -Arguments @(
+                'cognitiveservices', 'account', 'list-deleted')) |
+            Should -Be @(
+                'cognitiveservices', 'account', 'list-deleted',
+                '--subscription', '11111111-1111-4111-8111-111111111111')
+
+        @(Get-BootstrapAzureCliArguments -Arguments @(
                 'account', 'get-access-token', '--resource', 'https://graph.microsoft.com/')) |
             Should -Be @(
                 'account', 'get-access-token', '--resource', 'https://graph.microsoft.com/',
