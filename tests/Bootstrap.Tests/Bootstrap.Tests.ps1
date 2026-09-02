@@ -84,3 +84,92 @@ Describe 'Bootstrap expected configuration file fingerprint command boundary' {
         $result.Output | Should -Not -Match 'ExpectedConfigurationFileFingerprint'
     }
 }
+
+Describe 'Resume preflight Boolean revalidation gate' {
+    BeforeAll {
+        $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+        $script:BootstrapPath = Join-Path $script:RepositoryRoot 'bootstrap/bootstrap.ps1'
+        $tokens = $null
+        $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            $script:BootstrapPath,
+            [ref]$tokens,
+            [ref]$errors)
+        $errors.Count | Should -Be 0
+
+        $resume = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Invoke-GatewayResumePreflight'
+        }, $true))
+        $resume.Count | Should -Be 1
+
+        # Exercise the exact shipped stage helpers rather than a copy, so a future
+        # scoping regression in bootstrap.ps1 fails this test instead of silently
+        # disabling every RP04-RP20 revalidation gate at runtime.
+        $script:StageHelperSource = @($resume[0].FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+                $node.Left.VariablePath.UserPath -cin @('invokeStage', 'invokeBooleanStage')
+        }, $true) | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+        $script:StageHelperSource | Should -Match 'invokeBooleanStage'
+
+        # A scoping regression re-enters the wrapper until the call depth overflows,
+        # which is slow enough to look like a hung suite. Bound it in a job so the
+        # regression reports as a failure instead of stalling the run.
+        $script:GateResult = $null
+        $job = Start-Job -ArgumentList $script:StageHelperSource -ScriptBlock {
+            param([string]$HelperSource)
+
+            function Write-GatewayExperienceEvent {
+                param($Type, $Message, $Data, $OutputFormat)
+            }
+            $eventBase = [ordered]@{ step = 'Resume preflight'; index = 1; total = 20 }
+            $Format = 'Text'
+            . ([scriptblock]::Create($HelperSource))
+
+            $script:validatorRuns = 0
+            $results = @{}
+            try {
+                & $invokeBooleanStage -Code 'RP_TEST' -Label 'test gate' -Action {
+                    $script:validatorRuns++
+                    return $true
+                }
+                $results['truePassed'] = $true
+            }
+            catch { $results['truePassed'] = $false }
+            $results['validatorRuns'] = $script:validatorRuns
+
+            foreach ($case in @(
+                @{ name = 'false'; block = { return $false } },
+                @{ name = 'nonBoolean'; block = { return 'true' } },
+                @{ name = 'multiValue'; block = { Write-Output $true; Write-Output $true } }
+            )) {
+                try {
+                    & $invokeBooleanStage -Code 'RP_TEST' -Label 'test gate' -Action $case.block
+                    $results[$case.name] = 'passed'
+                }
+                catch { $results[$case.name] = 'stopped' }
+            }
+            return $results
+        }
+        if (Wait-Job -Job $job -Timeout 90) {
+            $script:GateResult = Receive-Job -Job $job
+        }
+        Remove-Job -Job $job -Force
+    }
+
+    It 'evaluates the caller validator instead of re-entering its own wrapper' {
+        $script:GateResult | Should -Not -BeNullOrEmpty
+        $script:GateResult['validatorRuns'] | Should -Be 1
+        $script:GateResult['truePassed'] | Should -BeTrue
+    }
+
+    It 'still fails closed on any result that is not exactly one true Boolean' {
+        $script:GateResult | Should -Not -BeNullOrEmpty
+        $script:GateResult['false'] | Should -BeExactly 'stopped'
+        $script:GateResult['nonBoolean'] | Should -BeExactly 'stopped'
+        $script:GateResult['multiValue'] | Should -BeExactly 'stopped'
+    }
+}

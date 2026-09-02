@@ -586,12 +586,19 @@ function Invoke-GatewayResumePreflight {
             [Parameter(Mandatory)][string]$Label,
             [Parameter(Mandatory)][scriptblock]$Action
         )
-        & $invokeStage -Code $Code -Label $Label -Action {
-            [object[]]$values = @(& $Action)
+        # The wrapper below is handed to $invokeStage, which binds it to its own
+        # -Action parameter. A bare $Action inside the wrapper resolves up the call
+        # stack to that parameter, so it re-enters the wrapper instead of running the
+        # caller's validator and every gate fails on call-depth overflow. Capture the
+        # validator under a distinct name and bind it by closure so the wrapper cannot
+        # reach $invokeStage's parameter at all.
+        $validator = $Action
+        & $invokeStage -Code $Code -Label $Label -Action ({
+            [object[]]$values = @(& $validator)
             if ($values.Count -ne 1 -or $values[0] -isnot [bool] -or $values[0] -ne $true) {
                 throw 'Exact read-only validator did not return one true Boolean result.'
             }
-        } | Out-Null
+        }.GetNewClosure()) | Out-Null
     }
 
     [object[]]$bindingResults = @(& $invokeStage `
