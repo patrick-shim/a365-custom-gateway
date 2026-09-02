@@ -84,6 +84,7 @@ coverage/
 TestResults/
 testResults.xml
 
-## Python caches
+## Python caches and machine-local runtime
 __pycache__/
 *.py[cod]
+/Python/
