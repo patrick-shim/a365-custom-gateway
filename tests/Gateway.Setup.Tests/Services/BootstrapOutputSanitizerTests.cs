@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Gateway.Setup.Services;
+using System.Globalization;
 using System.Text.Json;
 
 namespace Gateway.Setup.Tests.Services;
@@ -107,9 +108,174 @@ public sealed class BootstrapOutputSanitizerTests
     }
 
     [Fact]
-    public void DeploymentVerificationMessageWithoutTypedAuthority_DoesNotExposeAnAddress()
+    public void CanonicalCompletionSummary_IsExposedAlongsideTheVerifiedEndpoints()
     {
-        const string line = """
+        var line = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            type = "Result",
+            message = "Bootstrap completed and verified in 00:55:12 with development provisioning admission open. Admin UI: https://ca-gateway-admin-dev.safe.azurecontainerapps.io/",
+            data = CompletionData()
+        });
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.DeploymentVerificationClaimObserved.Should().BeTrue();
+        result.VerifiedEndpoints.Should().NotBeNull();
+        result.VerifiedEndpoints!.CompletionSummary.Should().NotBeNull();
+
+        var summary = result.VerifiedEndpoints.CompletionSummary!;
+        summary.CompletedAtUtc.Should().Be(DateTimeOffset.Parse("2026-09-02T03:41:07.0000000Z", CultureInfo.InvariantCulture));
+        summary.CompletedAtUtc.Offset.Should().Be(TimeSpan.Zero);
+        summary.Elapsed.Should().Be("00:55:12");
+        summary.StepsCompleted.Should().Be(19);
+        summary.StepsTotal.Should().Be(19);
+        summary.DeploymentId.Should().Be("gwdc153-dev");
+        summary.Environment.Should().Be("dev");
+        summary.ResourceGroup.Should().Be("rg-gwdc153-dev");
+        summary.Region.Should().Be("koreacentral");
+        summary.SubscriptionId.Should().Be("6f6ae863-dcb7-456f-a7f0-d6f9887cfb76");
+        summary.Readiness.Should().Be("InfrastructureReady, ControlPlaneReady, ProvisioningReady");
+        summary.ProvisioningAdmission.Should().Be("OpenDevelopmentPreview");
+    }
+
+    // The summary is presentational. A run that genuinely deployed and verified must
+    // never be downgraded to an error because a display field arrived malformed, so
+    // every one of these drops only the summary and keeps the endpoint authority.
+    [Theory]
+    [InlineData("completedAtUtc", "not-a-timestamp")]
+    [InlineData("elapsed", "55 minutes")]
+    [InlineData("elapsed", "00:75:12")]
+    [InlineData("deploymentId", "gwdc153-sandbox")]
+    [InlineData("deploymentId", "9wdc153-dev")]
+    [InlineData("environment", "development")]
+    [InlineData("resourceGroup", "-rg-gwdc153-dev")]
+    [InlineData("region", "Korea Central")]
+    [InlineData("subscriptionId", "00000000-0000-0000-0000-000000000000")]
+    [InlineData("subscriptionId", "6f6ae863dcb7456fa7f0d6f9887cfb76")]
+    [InlineData("provisioningAdmission", "Open Development Preview")]
+    public void MalformedCompletionSummaryField_DropsTheSummaryWithoutFailingVerification(
+        string propertyName,
+        string malformedValue)
+    {
+        var data = CompletionData();
+        data[propertyName] = malformedValue;
+        var line = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            type = "Result",
+            message = "Bootstrap completed and verified in 00:55:12 with development provisioning admission open. Admin UI: https://ca-gateway-admin-dev.safe.azurecontainerapps.io/",
+            data
+        });
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.Kind.Should().NotBe(BootstrapProgressKind.Error);
+        result.DeploymentVerificationClaimObserved.Should().BeTrue();
+        result.VerifiedEndpoints.Should().NotBeNull();
+        result.VerifiedEndpoints!.VerificationMode.Should().Be(BootstrapVerificationMode.Apply);
+        result.VerifiedEndpoints.CompletionSummary.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData("Ready")]
+    [InlineData("InfrastructureReady, InfrastructureReady")]
+    [InlineData("")]
+    public void UnrecognizedReadinessTiers_DropTheSummaryWithoutFailingVerification(string tiers)
+    {
+        var data = CompletionData();
+        data["readiness"] = tiers.Length == 0
+            ? Array.Empty<string>()
+            : tiers.Split(", ");
+        var line = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            type = "Result",
+            message = "Bootstrap completed and verified in 00:55:12 with development provisioning admission open. Admin UI: https://ca-gateway-admin-dev.safe.azurecontainerapps.io/",
+            data
+        });
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.VerifiedEndpoints.Should().NotBeNull();
+        result.VerifiedEndpoints!.CompletionSummary.Should().BeNull();
+    }
+
+    // Two identical completion events must compare equal, otherwise the coordinator's
+    // duplicate check would read them as a second, conflicting verification claim.
+    [Fact]
+    public void IdenticalCompletionEvents_ProduceEqualVerifiedEndpoints()
+    {
+        var line = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            type = "Result",
+            message = "Bootstrap completed and verified in 00:55:12 with development provisioning admission open. Admin UI: https://ca-gateway-admin-dev.safe.azurecontainerapps.io/",
+            data = CompletionData()
+        });
+
+        var first = BootstrapOutputSanitizer.Parse(line, standardError: false).VerifiedEndpoints;
+        var second = BootstrapOutputSanitizer.Parse(line, standardError: false).VerifiedEndpoints;
+
+        first.Should().NotBeNull();
+        second.Should().NotBeNull();
+        first.Should().Be(second);
+    }
+
+    [Fact]
+    public void VerificationEventWithoutSummaryFields_StillSuppliesEndpointsWithNoSummary()
+    {
+        var line = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            type = "Result",
+            message = "Gateway deployment completed and verified in 00:14:02; provisioning admission remains closed. Admin UI: https://ca-gateway-admin-dev.safe.azurecontainerapps.io/",
+            data = new
+            {
+                step = "End-to-end deployment verification",
+                category = "deploymentVerified",
+                verified = true,
+                verificationMode = "Apply",
+                index = 19,
+                total = 19,
+                adminUiUrl = "https://ca-gateway-admin-dev.safe.azurecontainerapps.io/",
+                apiUrl = "https://ca-gateway-api-dev.safe.azurecontainerapps.io/",
+                apiHealthUrl = "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks"
+            }
+        });
+
+        var result = BootstrapOutputSanitizer.Parse(line, standardError: false);
+
+        result.VerifiedEndpoints.Should().NotBeNull();
+        result.VerifiedEndpoints!.CompletionSummary.Should().BeNull();
+    }
+
+    private static Dictionary<string, object> CompletionData() => new(StringComparer.Ordinal)
+    {
+        ["step"] = "End-to-end deployment verification",
+        ["index"] = 19,
+        ["total"] = 19,
+        ["deploymentId"] = "gwdc153-dev",
+        ["category"] = "deploymentVerified",
+        ["verified"] = true,
+        ["verificationMode"] = "Apply",
+        ["adminUiUrl"] = "https://ca-gateway-admin-dev.safe.azurecontainerapps.io/",
+        ["apiUrl"] = "https://ca-gateway-api-dev.safe.azurecontainerapps.io/",
+        ["apiHealthUrl"] = "https://ca-gateway-api-dev.safe.azurecontainerapps.io/health/checks",
+        ["completedAtUtc"] = "2026-09-02T03:41:07.0000000Z",
+        ["readiness"] = new[] { "InfrastructureReady", "ControlPlaneReady", "ProvisioningReady" },
+        ["provisioningAdmission"] = "OpenDevelopmentPreview",
+        ["elapsed"] = "00:55:12",
+        ["stepsCompleted"] = 19,
+        ["environment"] = "dev",
+        ["resourceGroup"] = "rg-gwdc153-dev",
+        ["region"] = "koreacentral",
+        ["subscriptionId"] = "6f6ae863-dcb7-456f-a7f0-d6f9887cfb76"
+    };
+
+    [Fact]
+    public void DeploymentVerificationMessageWithoutTypedAuthority_DoesNotExposeAnAddress()
+    {        const string line = """
             {"schemaVersion":1,"type":"Result","message":"Gateway deployment completed and verified.","data":{"step":"End-to-end deployment verification","index":19,"total":19,"adminUiUrl":"https://admin.example.test/"}}
             """;
 

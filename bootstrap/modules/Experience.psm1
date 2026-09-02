@@ -78,6 +78,92 @@ function Write-GatewayResult {
     }
 }
 
+function Format-GatewayCompletionMoment {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][DateTimeOffset]$Moment)
+
+    # "When did this finish" is answered in the operator's own wall clock with the
+    # offset spelled out, because a bare local time in a log is ambiguous and a
+    # bare UTC time makes the operator do arithmetic before they can trust it.
+    $local = $Moment.ToLocalTime()
+    $offset = $local.Offset
+    $sign = if ($offset.Ticks -lt 0) { '-' } else { '+' }
+    return '{0} (UTC{1}{2})' -f $local.ToString('yyyy-MM-dd HH:mm:ss'), $sign, $offset.Duration().ToString('hh\:mm')
+}
+
+function Write-GatewayCompletionSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Headline,
+        [Parameter(Mandatory)][string]$Banner,
+        [Parameter(Mandatory)][DateTimeOffset]$CompletedAt,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Data,
+        [Parameter()][System.Collections.IDictionary]$Facts = [ordered]@{},
+        [Parameter()][System.Collections.IDictionary]$Endpoints = [ordered]@{},
+        [Parameter()][string[]]$NextSteps = @(),
+        [Parameter()][ValidateSet('Text', 'Json')][string]$OutputFormat = 'Text'
+    )
+
+    # The completion moment is stamped into the event payload here so the console
+    # block and the Setup wizard can never disagree about when the run finished.
+    if (-not $Data.Contains('completedAtUtc')) {
+        $Data['completedAtUtc'] = $CompletedAt.ToUniversalTime().ToString('o')
+    }
+
+    if ($OutputFormat -eq 'Json') {
+        Write-GatewayExperienceEvent -Type Result -Message $Headline -Data $Data -OutputFormat Json
+        return
+    }
+
+    # Write-GatewayExperienceEvent collapses every message into one bounded line,
+    # which is correct for streamed progress and wrong for a closing summary. The
+    # block is rendered directly instead, with each line still sanitized.
+    $emit = {
+        param([string]$Line, [string]$LineColor = 'Gray')
+        Write-Host (ConvertTo-GatewaySafeDisplayText -Value $Line -MaximumLength 200) -ForegroundColor $LineColor
+    }
+    $rule = '=' * 74
+
+    $allFacts = [ordered]@{ 'Finished' = Format-GatewayCompletionMoment -Moment $CompletedAt }
+    foreach ($key in $Facts.Keys) { $allFacts[$key] = $Facts[$key] }
+    $labelWidth = 2
+    foreach ($key in @($allFacts.Keys) + @($Endpoints.Keys)) {
+        if ([string]$key -and ([string]$key).Length -gt $labelWidth) { $labelWidth = ([string]$key).Length }
+    }
+
+    Write-Host ''
+    & $emit $rule 'Green'
+    & $emit "  $Banner" 'Green'
+    & $emit $rule 'Green'
+    Write-Host ''
+    & $emit "  $Headline" 'Green'
+    Write-Host ''
+    foreach ($key in $allFacts.Keys) {
+        $value = [string]$allFacts[$key]
+        if ([string]::IsNullOrWhiteSpace($value)) { continue }
+        & $emit ("  {0}  {1}" -f ([string]$key).PadRight($labelWidth), $value)
+    }
+    if ($Endpoints.Count -gt 0) {
+        Write-Host ''
+        & $emit '  Endpoints' 'Cyan'
+        foreach ($key in $Endpoints.Keys) {
+            $value = [string]$Endpoints[$key]
+            if ([string]::IsNullOrWhiteSpace($value)) { continue }
+            & $emit ("    {0}  {1}" -f ([string]$key).PadRight($labelWidth), $value)
+        }
+    }
+    if ($NextSteps.Count -gt 0) {
+        Write-Host ''
+        & $emit '  Next steps' 'Cyan'
+        for ($index = 0; $index -lt $NextSteps.Count; $index++) {
+            & $emit ("    {0}. {1}" -f ($index + 1), $NextSteps[$index])
+        }
+    }
+    Write-Host ''
+    & $emit $rule 'Green'
+    Write-Host ''
+}
+
 function Get-GatewayBootstrapStepNames {
     return @($script:GatewayBootstrapSteps)
 }

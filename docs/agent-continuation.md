@@ -212,6 +212,38 @@ step that reported no diagnosable cause:
 - `bootstrap/README.md` documents reading the bounded provider cause, the Prompt
   Shields free-tier constraint, and how to start over as a genuinely new isolated
   deployment without deleting `.bootstrap/`.
+- A successful run now closes with an explicit completion summary instead of a single
+  streamed line, because the previous ending did not tell an operator when or how the
+  run finished. `Write-GatewayCompletionSummary` in `bootstrap/modules/Experience.psm1`
+  is the one emitter for both surfaces and both completion sites (Apply/Up and Verify).
+  In `Text` it renders a framed block — completion moment, duration, steps completed,
+  deployment, resource group, region, subscription, readiness tiers, agent admission,
+  state ledger path, endpoints, and numbered next steps — sanitizing every line
+  individually, because `Write-GatewayExperienceEvent` collapses a message into one
+  bounded line, which is right for streamed progress and wrong for a closing summary.
+  In `Json` it emits exactly one `Result` event, preserving the single-verification-claim
+  contract the Setup coordinator depends on. The completion moment is stamped into
+  `data.completedAtUtc` inside that emitter from the same value the console prints, so
+  the terminal and the wizard can never disagree about when the run ended. The frame
+  uses ASCII rules rather than Unicode box characters, because the supported console
+  is not guaranteed to be UTF-8.
+- `BootstrapProgressEvent.cs` carries the same facts as a `BootstrapCompletionSummary`
+  record hanging off `BootstrapVerifiedEndpoints`. Every member is a primitive, and
+  deliberately so: `BootstrapExecutionCoordinator` detects a conflicting second
+  verification claim by comparing two `BootstrapVerifiedEndpoints` values, and a nested
+  collection would compare by reference and report a false conflict.
+- Endpoint parsing stays strictly fail-closed, but the completion summary is fail-soft.
+  `BootstrapOutputSanitizer` bounds every summary field by regex or GUID parse and drops
+  the whole summary when any field is malformed, while still honoring the endpoint
+  claim. A presentational field must never downgrade a genuinely successful, verified
+  deployment to an error. `statePath` is a local filesystem path and is therefore
+  console-only; it is never parsed into the wizard.
+- `Components/Pages/Progress.razor` states the finish time, elapsed duration, and step
+  count in its success notice, and `Components/Pages/Finish.razor` renders a
+  "Deployment summary" card plus a machine-readable `<time datetime>` stamp. Both
+  render the moment in the operator's local clock with the UTC offset spelled out,
+  because a bare local time in a log is ambiguous and a bare UTC time makes the reader
+  do arithmetic before they can trust it.
 
 The remaining validation work, in order:
 

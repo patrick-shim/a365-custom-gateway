@@ -16,11 +16,27 @@ internal enum BootstrapVerificationMode
     Verify
 }
 
+// Presentational completion facts. Every member is a primitive so two identical
+// completion events compare equal and never look like a conflicting second claim.
+internal sealed record BootstrapCompletionSummary(
+    DateTimeOffset CompletedAtUtc,
+    string Elapsed,
+    int StepsCompleted,
+    int StepsTotal,
+    string DeploymentId,
+    string Environment,
+    string ResourceGroup,
+    string Region,
+    string SubscriptionId,
+    string Readiness,
+    string ProvisioningAdmission);
+
 internal sealed record BootstrapVerifiedEndpoints(
     BootstrapVerificationMode VerificationMode,
     Uri AdminUiBaseAddress,
     Uri ApiBaseAddress,
-    Uri ApiHealthAddress)
+    Uri ApiHealthAddress,
+    BootstrapCompletionSummary? CompletionSummary = null)
 {
     public Uri AdminSetupAddress => new(AdminUiBaseAddress, "setup");
 }

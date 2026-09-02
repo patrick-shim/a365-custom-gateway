@@ -170,7 +170,9 @@ code { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; font
 .terminal-fallback strong { color: var(--text); font-size: .74rem; }
 
 .finish-hero { margin-bottom: 2rem; text-align: center; }
-.finish-hero > p:last-child { max-width: 45rem; margin: 0 auto; color: var(--muted); font-size: .84rem; }
+.finish-hero > p:not(.eyebrow):not(.finish-stamp) { max-width: 45rem; margin: 0 auto; color: var(--muted); font-size: .84rem; }
+.finish-stamp { max-width: 45rem; margin: 1rem auto 0; padding: .55rem .9rem; display: inline-block; border-radius: .55rem; background: var(--green-soft); color: var(--green); font-size: .84rem; }
+.finish-stamp strong, .finish-stamp time { font-variant-numeric: tabular-nums; }
 .finish-mark { width: 3.4rem; height: 3.4rem; margin: 0 auto 1rem; display: grid; place-items: center; border-radius: 1rem; background: var(--green-soft); color: var(--green); font-size: 1.5rem; font-weight: 800; }
 .finish-grid .card-section { height: 100%; }
 

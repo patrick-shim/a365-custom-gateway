@@ -1063,6 +1063,136 @@ Describe 'Plan exact-account context boundary' {
     }
 }
 
+Describe 'Bootstrap completion summary contract' {
+    BeforeAll {
+        $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+
+        # Json events are written straight to the process stdout handle, not to a
+        # PowerShell stream, so the console writer is swapped to capture them.
+        function Invoke-CompletionSummaryJson {
+            param([hashtable]$Arguments)
+
+            $original = [Console]::Out
+            $writer = [IO.StringWriter]::new()
+            try {
+                [Console]::SetOut($writer)
+                Write-GatewayCompletionSummary -OutputFormat Json @Arguments | Out-Null
+            }
+            finally {
+                [Console]::SetOut($original)
+            }
+
+            # Comma-wrapped so a single captured line stays an array instead of
+            # unrolling into a bare string that indexes by character.
+            return ,@($writer.ToString() -split "`r?`n" | Where-Object { $_.Trim() })
+        }
+
+        function Invoke-CompletionSummaryText {
+            param([hashtable]$Arguments)
+
+            $records = Write-GatewayCompletionSummary -OutputFormat Text @Arguments 6>&1
+            return (@($records | ForEach-Object { [string]$_ }) -join "`n")
+        }
+    }
+
+    It 'emits exactly one stamped Result event in Json so the Setup UI sees a single verification claim' {
+        $lines = Invoke-CompletionSummaryJson -Arguments @{
+            Headline = 'Bootstrap completed and verified in 00:55:12.'
+            Banner = 'BOOTSTRAP COMPLETE'
+            CompletedAt = [DateTimeOffset]::new(2026, 9, 2, 3, 41, 7, [TimeSpan]::Zero)
+            Facts = [ordered]@{ 'Duration' = '00:55:12' }
+            Endpoints = [ordered]@{ 'Admin UI' = 'https://admin.example.test/' }
+            NextSteps = @('Sign in to the Admin UI.')
+            Data = [ordered]@{
+                step = 'End-to-end deployment verification'
+                category = 'deploymentVerified'
+                verified = $true
+            }
+        }
+
+        $lines.Count | Should -Be 1
+        $emitted = $lines[0] | ConvertFrom-Json
+        $emitted.type | Should -Be 'Result'
+        $emitted.data.category | Should -Be 'deploymentVerified'
+        # Asserted against the raw line because ConvertFrom-Json rehydrates ISO
+        # strings into local DateTime. The C# sanitizer parses the wire text with
+        # RoundtripKind, so the wire text is the contract that matters here.
+        $lines[0] | Should -Match '"completedAtUtc":"2026-09-02T03:41:07\.0000000\+00:00"'
+    }
+
+    It 'stamps the completion moment as true UTC even when the operator clock is offset' {
+        $lines = Invoke-CompletionSummaryJson -Arguments @{
+            Headline = 'Verification passed.'
+            Banner = 'VERIFICATION PASSED'
+            CompletedAt = [DateTimeOffset]::new(2026, 9, 2, 12, 41, 7, [TimeSpan]::FromHours(9))
+            Data = [ordered]@{ step = 'End-to-end deployment verification' }
+        }
+
+        $lines[0] | Should -Match '"completedAtUtc":"2026-09-02T03:41:07\.0000000\+00:00"'
+    }
+
+    It 'never lets a caller-supplied completion moment be overwritten' {
+        $lines = Invoke-CompletionSummaryJson -Arguments @{
+            Headline = 'Verification passed.'
+            Banner = 'VERIFICATION PASSED'
+            CompletedAt = [DateTimeOffset]::new(2026, 9, 2, 3, 41, 7, [TimeSpan]::Zero)
+            Data = [ordered]@{ completedAtUtc = '2020-01-01T00:00:00.0000000+00:00' }
+        }
+
+        $lines[0] | Should -Match '"completedAtUtc":"2020-01-01T00:00:00\.0000000\+00:00"'
+    }
+
+    It 'renders a multi-line console block in Text without collapsing it into one event line' {
+        $rendered = Invoke-CompletionSummaryText -Arguments @{
+            Headline = 'Bootstrap completed and verified in 00:55:12.'
+            Banner = 'BOOTSTRAP COMPLETE'
+            CompletedAt = [DateTimeOffset]::new(2026, 9, 2, 3, 41, 7, [TimeSpan]::Zero)
+            Facts = [ordered]@{ 'Duration' = '00:55:12'; 'Deployment' = 'gwdc153-dev' }
+            Endpoints = [ordered]@{ 'Admin UI' = 'https://admin.example.test/' }
+            NextSteps = @('Sign in to the Admin UI.')
+            Data = [ordered]@{ step = 'End-to-end deployment verification' }
+        }
+
+        $rendered | Should -Match 'BOOTSTRAP COMPLETE'
+        $rendered | Should -Match 'Finished\s+2026-09-02'
+        $rendered | Should -Match 'Duration\s+00:55:12'
+        $rendered | Should -Match 'Deployment\s+gwdc153-dev'
+        $rendered | Should -Match 'Endpoints'
+        $rendered | Should -Match 'Admin UI\s+https://admin\.example\.test/'
+        $rendered | Should -Match '1\. Sign in to the Admin UI\.'
+        # Text mode must not also stream the bounded one-line Result event, or the
+        # console would report completion twice in two different shapes.
+        $rendered | Should -Not -Match '"schemaVersion"'
+    }
+
+    It 'sanitizes control characters out of every rendered console line' {
+        $rendered = Invoke-CompletionSummaryText -Arguments @{
+            Headline = "Bootstrap completed.`nInjected second line"
+            Banner = 'BOOTSTRAP COMPLETE'
+            CompletedAt = [DateTimeOffset]::new(2026, 9, 2, 3, 41, 7, [TimeSpan]::Zero)
+            Data = [ordered]@{ step = 'End-to-end deployment verification' }
+        }
+
+        $rendered | Should -Match 'Bootstrap completed\. +Injected second line'
+        $rendered.Split("`n") | Where-Object { $_ -match 'Injected' } | Should -HaveCount 1
+    }
+
+    It 'spells out the operator offset so a bare local time is never ambiguous' {
+        Format-GatewayCompletionMoment -Moment ([DateTimeOffset]::new(
+            2026, 9, 2, 12, 41, 7, [TimeSpan]::FromHours(9))) |
+            Should -Match '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \(UTC[+-]\d{2}:\d{2}\)$'
+    }
+
+    It 'binds both bootstrap completion sites to the shared summary emitter' {
+        $source = Get-Content -LiteralPath (
+            Join-Path $repositoryRoot 'bootstrap/bootstrap.ps1') -Raw
+
+        ([regex]::Matches($source, 'Write-GatewayCompletionSummary')).Count | Should -Be 2
+        ([regex]::Matches($source, "stepsCompleted = ")).Count | Should -Be 2
+        ([regex]::Matches($source, 'readiness = \$')).Count | Should -Be 2
+    }
+}
+
 Describe 'Verified endpoint result contract' {
     It 'emits the validated Admin UI, API base, and API health URLs for Apply and Verify' {
         $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))

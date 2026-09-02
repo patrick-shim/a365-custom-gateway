@@ -13,7 +13,32 @@
         <p class="eyebrow">Step 6 of 6</p>
         <h1>Deployment readbacks are verified</h1>
         <p>The canonical bootstrap exited successfully and supplied exactly one validated endpoint result. This confirms the configured infrastructure and control-plane readbacks; it does not prove registration admission, an Active agent, or production support for the preview Agent 365 Registry dependency.</p>
+        @if (endpoints.CompletionSummary is { } completed)
+        {
+            <p class="finish-stamp">Finished <time datetime="@completed.CompletedAtUtc.ToString("O")">@FormatMoment(completed.CompletedAtUtc)</time> after <strong>@completed.Elapsed</strong>, completing all @completed.StepsTotal bootstrap steps.</p>
+        }
     </div>
+
+    @if (endpoints.CompletionSummary is { } summary)
+    {
+        <section class="setup-card">
+            <div class="card-section">
+                <h2>Deployment summary</h2>
+                <p>These are the validated facts this run reported on completion. Nothing here is a secret, and nothing was stored by this wizard.</p>
+                <dl class="summary-list">
+                    <div><dt>Finished</dt><dd>@FormatMoment(summary.CompletedAtUtc)</dd></div>
+                    <div><dt>Duration</dt><dd>@summary.Elapsed</dd></div>
+                    <div><dt>Steps completed</dt><dd>@summary.StepsCompleted of @summary.StepsTotal</dd></div>
+                    <div><dt>Deployment</dt><dd><code>@summary.DeploymentId</code></dd></div>
+                    <div><dt>Resource group</dt><dd><code>@summary.ResourceGroup</code></dd></div>
+                    <div><dt>Region</dt><dd>@summary.Region</dd></div>
+                    <div><dt>Subscription</dt><dd><code>@summary.SubscriptionId</code></dd></div>
+                    <div><dt>Readiness</dt><dd>@summary.Readiness</dd></div>
+                    <div><dt>Agent admission</dt><dd>@FormatAdmission(summary.ProvisioningAdmission)</dd></div>
+                </dl>
+            </div>
+        </section>
+    }
 
     <div class="review-grid finish-grid">
         <section class="setup-card">
@@ -81,6 +106,22 @@ else
 
         Activity.MarkCompleted();
     }
+
+    // The event carries true UTC. Operators read their own wall clock, so the
+    // offset is spelled out rather than leaving a bare local time to guess at.
+    private static string FormatMoment(DateTimeOffset completedAtUtc)
+    {
+        var local = completedAtUtc.ToLocalTime();
+        var offset = local.Offset;
+        var sign = offset.Ticks < 0 ? "-" : "+";
+        return $"{local:yyyy-MM-dd HH:mm:ss} (UTC{sign}{offset.Duration():hh\\:mm})";
+    }
+
+    private static string FormatAdmission(string value) => value switch
+    {
+        "OpenDevelopmentPreview" => "Open (development preview)",
+        _ => $"Closed ({value})"
+    };
 
     private void Close() => Lifetime.StopApplication();
 }

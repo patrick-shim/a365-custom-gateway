@@ -105,7 +105,17 @@ else if (snapshot.ResumeAuthorizationReady)
 }
 else if (snapshot.HasVerifiedDeployment)
 {
-    <div class="notice success" role="status"><strong>Deployment completed and verified</strong><span>Bootstrap exited successfully and supplied exactly one validated Admin UI/API endpoint result. Continue to the hosted Setup Center.</span></div>
+    <div class="notice success" role="status">
+        <strong>Deployment completed and verified</strong>
+        @if (snapshot.VerifiedEndpoints?.CompletionSummary is { } completed)
+        {
+            <span>All @completed.StepsTotal steps finished at @FormatMoment(completed.CompletedAtUtc) after @completed.Elapsed. Bootstrap supplied exactly one validated Admin UI/API endpoint result for <code>@completed.DeploymentId</code>. Continue for the full summary and the hosted Setup Center.</span>
+        }
+        else
+        {
+            <span>Bootstrap exited successfully and supplied exactly one validated Admin UI/API endpoint result. Continue to the hosted Setup Center.</span>
+        }
+    </div>
     <div class="page-actions"><FluentButton Appearance="Appearance.Accent" OnClick="ContinueToFinish">Continue</FluentButton></div>
 }
 
@@ -208,6 +218,14 @@ else if (snapshot.HasVerifiedDeployment)
     }
 
     private void ContinueToFinish() => Navigation.NavigateTo("/setup/finish");
+
+    private static string FormatMoment(DateTimeOffset completedAtUtc)
+    {
+        var local = completedAtUtc.ToLocalTime();
+        var offset = local.Offset;
+        var sign = offset.Ticks < 0 ? "-" : "+";
+        return $"{local:HH:mm:ss} (UTC{sign}{offset.Duration():hh\\:mm})";
+    }
 
     private static string FormatCommand(BootstrapCommand? value) => value switch
     {

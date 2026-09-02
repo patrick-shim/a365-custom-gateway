@@ -403,6 +403,14 @@ next run unable to tell an owned resource from someone else's.
 
 ## After verification
 
+A successful `up`, `resume`, or `verify` ends with a framed completion summary rather
+than a single line. It states when the run finished in your local clock with the UTC
+offset spelled out, how long it took, how many steps completed, the deployment,
+resource group, region, subscription, readiness tiers, agent admission, the state
+ledger path, the verified endpoints, and the numbered next steps. The guided Setup UI
+renders the same facts on its Progress and Finish pages from the same event, so the
+terminal and the browser cannot disagree about when or how the run ended.
+
 Open the hosted Admin UI with `./gateway open`, sign in as a
 `Gateway.Administrator`, register an external agent, and store the one-time Gateway
 key immediately. See the root [quickstart](../README.md#sign-in-and-register-an-agent)

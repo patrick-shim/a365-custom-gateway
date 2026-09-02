@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Gateway.Setup.Models;
@@ -480,7 +481,121 @@ internal static partial class BootstrapOutputSanitizer
             verificationMode,
             adminUiBaseAddress,
             apiBaseAddress,
-            apiHealthAddress);
+            apiHealthAddress,
+            TryReadCompletionSummary(data, index, total));
+        return true;
+    }
+
+    // The endpoint claim above is the security-relevant authority and stays strict.
+    // These are presentational completion facts, so an unrecognized or missing field
+    // drops the whole summary instead of downgrading a genuinely verified run to an
+    // error. Nothing here is rendered unless it survives its own bounded check.
+    private static BootstrapCompletionSummary? TryReadCompletionSummary(
+        JsonElement data,
+        int verifiedStepIndex,
+        int verifiedStepTotal)
+    {
+        if (!HasExactlyOneProperty(data, "completedAtUtc") ||
+            !HasExactlyOneProperty(data, "elapsed") ||
+            !HasExactlyOneProperty(data, "stepsCompleted") ||
+            !HasExactlyOneProperty(data, "deploymentId") ||
+            !HasExactlyOneProperty(data, "environment") ||
+            !HasExactlyOneProperty(data, "resourceGroup") ||
+            !HasExactlyOneProperty(data, "region") ||
+            !HasExactlyOneProperty(data, "subscriptionId") ||
+            !HasExactlyOneProperty(data, "readiness") ||
+            !HasExactlyOneProperty(data, "provisioningAdmission"))
+        {
+            return null;
+        }
+
+        if (!DateTimeOffset.TryParse(
+                ReadBoundedString(data, "completedAtUtc"),
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind,
+                out var completedAt))
+        {
+            return null;
+        }
+
+        if (!TryReadBoundedPattern(data, "elapsed", ElapsedPattern(), out var elapsed) ||
+            !TryReadBoundedPattern(data, "deploymentId", DeploymentIdPattern(), out var deploymentId) ||
+            !TryReadBoundedPattern(data, "environment", EnvironmentPattern(), out var environment) ||
+            !TryReadBoundedPattern(data, "resourceGroup", ResourceGroupPattern(), out var resourceGroup) ||
+            !TryReadBoundedPattern(data, "region", RegionPattern(), out var region) ||
+            !TryReadBoundedPattern(data, "provisioningAdmission", AdmissionPattern(), out var admission) ||
+            !Guid.TryParseExact(ReadBoundedString(data, "subscriptionId"), "D", out var subscriptionId) ||
+            subscriptionId == Guid.Empty ||
+            !data.TryGetProperty("stepsCompleted", out var stepsCompletedElement) ||
+            !stepsCompletedElement.TryGetInt32(out var stepsCompleted) ||
+            stepsCompleted != verifiedStepIndex ||
+            !TryReadReadiness(data, out var readiness))
+        {
+            return null;
+        }
+
+        return new BootstrapCompletionSummary(
+            completedAt.ToUniversalTime(),
+            elapsed,
+            stepsCompleted,
+            verifiedStepTotal,
+            deploymentId,
+            environment,
+            resourceGroup,
+            region,
+            subscriptionId.ToString("D"),
+            readiness,
+            admission);
+    }
+
+    private static bool TryReadBoundedPattern(
+        JsonElement data,
+        string propertyName,
+        Regex pattern,
+        out string value)
+    {
+        var candidate = ReadBoundedString(data, propertyName);
+        if (candidate is null || !pattern.IsMatch(candidate))
+        {
+            value = string.Empty;
+            return false;
+        }
+
+        value = candidate;
+        return true;
+    }
+
+    private static bool TryReadReadiness(JsonElement data, out string readiness)
+    {
+        readiness = string.Empty;
+        if (!data.TryGetProperty("readiness", out var element) ||
+            element.ValueKind != JsonValueKind.Array ||
+            element.GetArrayLength() is < 1 or > 8)
+        {
+            return false;
+        }
+
+        // Ordinal by construction: List<string>.Contains uses the default string
+        // comparer, so a repeated tier is rejected rather than rendered twice.
+        var tiers = new List<string>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            var tier = item.GetString();
+            if (tier is not ("InfrastructureReady" or "ControlPlaneReady" or "ProvisioningReady") ||
+                tiers.Contains(tier))
+            {
+                return false;
+            }
+
+            tiers.Add(tier);
+        }
+
+        readiness = string.Join(", ", tiers);
         return true;
     }
 
@@ -640,4 +755,22 @@ internal static partial class BootstrapOutputSanitizer
 
     [GeneratedRegex("(https?://[^\\s?#]+)(?:[?#][^\\s]*)", RegexOptions.CultureInvariant)]
     private static partial Regex UrlQueryPattern();
+
+    [GeneratedRegex("^[0-9]{2,4}:[0-5][0-9]:[0-5][0-9]$", RegexOptions.CultureInvariant)]
+    private static partial Regex ElapsedPattern();
+
+    [GeneratedRegex("^[a-z][a-z0-9]{1,7}-(?:dev|staging|prod)$", RegexOptions.CultureInvariant)]
+    private static partial Regex DeploymentIdPattern();
+
+    [GeneratedRegex("^(?:dev|staging|prod)$", RegexOptions.CultureInvariant)]
+    private static partial Regex EnvironmentPattern();
+
+    [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9._-]{0,89}$", RegexOptions.CultureInvariant)]
+    private static partial Regex ResourceGroupPattern();
+
+    [GeneratedRegex("^[a-z0-9]{2,40}$", RegexOptions.CultureInvariant)]
+    private static partial Regex RegionPattern();
+
+    [GeneratedRegex("^[A-Za-z][A-Za-z0-9]{0,63}$", RegexOptions.CultureInvariant)]
+    private static partial Regex AdmissionPattern();
 }

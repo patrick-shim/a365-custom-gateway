@@ -1909,13 +1909,44 @@ try {
             Test-GatewayBootstrapDeployment -Config $configuration -Foundation $foundation -Identity $identity -Blueprint $blueprint -Runtime $runtime -Database $database -SqlPrivateEndpoint $sqlPrivateEndpoint -AdminUi $adminUi -Images $images -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -DatabaseRecoveryPlan $verifyDatabaseValidationPlans.databaseRecoveryPlan -ManualDatabaseRepairPlan $verifyDatabaseValidationPlans.manualDatabaseRepairPlan -State $state -NonInteractive:$NonInteractive
         }
         Save-Output -Name 'verification' -Value $verification
-        Write-GatewayExperienceEvent -Type Result -Message "Verification passed. Admin UI: $($adminUi.adminUiUrl)" -Data ([ordered]@{
+        $verifyAdmissionReady = $verification.provisioningAdmissionReady -eq $true
+        $verifyReadiness = if ($verifyAdmissionReady) { @('InfrastructureReady', 'ControlPlaneReady', 'ProvisioningReady') } else { @('InfrastructureReady', 'ControlPlaneReady') }
+        $verifyAdmission = if ($verifyAdmissionReady) { 'OpenDevelopmentPreview' } else { [string]$verification.registrationMode }
+        $verifyElapsed = $stopwatch.Elapsed.ToString('hh\:mm\:ss')
+        $verifyDeploymentId = "$($configuration.projectName)-$($configuration.environment)"
+        Write-GatewayCompletionSummary -Headline "Verification passed for $verifyDeploymentId. Admin UI: $($adminUi.adminUiUrl)" -Banner 'VERIFICATION PASSED' -CompletedAt ([DateTimeOffset]::Now) -OutputFormat $OutputFormat -Facts ([ordered]@{
+            'Duration' = $verifyElapsed
+            'Checks' = 'Read-only readback of every persisted checkpoint'
+            'Deployment' = $verifyDeploymentId
+            'Resource group' = [string]$configuration.resourceGroupName
+            'Region' = [string]$configuration.location
+            'Subscription' = [string]$configuration.subscriptionId
+            'Readiness' = ($verifyReadiness -join ', ')
+            'Agent admission' = $verifyAdmission
+            'State ledger' = $statePath
+        }) -Endpoints ([ordered]@{
+            'Admin UI' = [string]$adminUi.adminUiUrl
+            'Gateway API' = "https://$($runtime.apiFqdn)"
+            'API health' = "https://$($runtime.apiFqdn)/health/checks"
+        }) -NextSteps @(
+            'Nothing was changed. Verify only reads the deployed resources back.'
+            'Open the Admin UI with: gateway open'
+        ) -Data ([ordered]@{
             step = 'End-to-end deployment verification'; index = $stepNames.Count; total = $stepNames.Count
+            deploymentId = $verifyDeploymentId
             category = 'deploymentVerified'; verified = $true; verificationMode = 'Verify'
             adminUiUrl = [string]$adminUi.adminUiUrl
             apiUrl = "https://$($runtime.apiFqdn)"
             apiHealthUrl = "https://$($runtime.apiFqdn)/health/checks"
-        }) -OutputFormat $OutputFormat
+            readiness = $verifyReadiness
+            provisioningAdmission = $verifyAdmission
+            elapsed = $verifyElapsed
+            stepsCompleted = $stepNames.Count
+            environment = [string]$configuration.environment
+            resourceGroup = [string]$configuration.resourceGroupName
+            region = [string]$configuration.location
+            subscriptionId = [string]$configuration.subscriptionId
+        })
         return
     }
 
@@ -2203,17 +2234,41 @@ try {
     Save-Output -Name 'verification' -Value $verification
 
     $provisioningAdmissionReady = $verification.provisioningAdmissionReady -eq $true
+    $completedAt = [DateTimeOffset]::Now
+    $elapsed = $stopwatch.Elapsed.ToString('hh\:mm\:ss')
+    $deploymentId = "$($configuration.projectName)-$($configuration.environment)"
+    $readiness = if ($provisioningAdmissionReady) { @('InfrastructureReady', 'ControlPlaneReady', 'ProvisioningReady') } else { @('InfrastructureReady', 'ControlPlaneReady') }
+    $provisioningAdmission = if ($provisioningAdmissionReady) { 'OpenDevelopmentPreview' } else { [string]$verification.registrationMode }
     $completionMessage = if ($provisioningAdmissionReady) {
-        "Bootstrap completed and verified with development provisioning admission open in $($stopwatch.Elapsed.ToString('hh\:mm\:ss')). Admin UI: $($adminUi.adminUiUrl)"
+        "Bootstrap completed and verified in $elapsed with development provisioning admission open. Admin UI: $($adminUi.adminUiUrl)"
     }
     else {
-        "Gateway deployment completed and verified in $($stopwatch.Elapsed.ToString('hh\:mm\:ss')); provisioning admission remains closed. Admin UI: $($adminUi.adminUiUrl)"
+        "Gateway deployment completed and verified in $elapsed; provisioning admission remains closed. Admin UI: $($adminUi.adminUiUrl)"
     }
-    Write-GatewayExperienceEvent -Type Result -Message $completionMessage -Data ([ordered]@{
+    Write-GatewayCompletionSummary -Headline $completionMessage -Banner 'BOOTSTRAP COMPLETE' -CompletedAt $completedAt -OutputFormat $OutputFormat -Facts ([ordered]@{
+        'Duration' = $elapsed
+        'Steps completed' = "$($stepNames.Count) of $($stepNames.Count)"
+        'Deployment' = $deploymentId
+        'Resource group' = [string]$configuration.resourceGroupName
+        'Region' = [string]$configuration.location
+        'Subscription' = [string]$configuration.subscriptionId
+        'Readiness' = ($readiness -join ', ')
+        'Agent admission' = $provisioningAdmission
+        'State ledger' = $statePath
+    }) -Endpoints ([ordered]@{
+        'Admin UI' = [string]$adminUi.adminUiUrl
+        'Gateway API' = "https://$($runtime.apiFqdn)"
+        'API health' = "https://$($runtime.apiFqdn)/health/checks"
+    }) -NextSteps @(
+        "Sign in to the Admin UI as the administrator who authorized this bootstrap."
+        "Confirm the API reports Healthy at https://$($runtime.apiFqdn)/health/checks."
+        'Register the first agent from the Admin UI once admission is reported open.'
+        'Re-check this deployment at any time with: gateway verify'
+    ) -Data ([ordered]@{
         step = 'End-to-end deployment verification'
         index = $stepNames.Count
         total = $stepNames.Count
-        deploymentId = "$($configuration.projectName)-$($configuration.environment)"
+        deploymentId = $deploymentId
         category = 'deploymentVerified'
         verified = $true
         verificationMode = 'Apply'
@@ -2221,9 +2276,15 @@ try {
         apiUrl = "https://$($runtime.apiFqdn)"
         apiHealthUrl = "https://$($runtime.apiFqdn)/health/checks"
         statePath = $statePath
-        readiness = if ($provisioningAdmissionReady) { @('InfrastructureReady', 'ControlPlaneReady', 'ProvisioningReady') } else { @('InfrastructureReady', 'ControlPlaneReady') }
-        provisioningAdmission = if ($provisioningAdmissionReady) { 'OpenDevelopmentPreview' } else { [string]$verification.registrationMode }
-    }) -OutputFormat $OutputFormat
+        readiness = $readiness
+        provisioningAdmission = $provisioningAdmission
+        elapsed = $elapsed
+        stepsCompleted = $stepNames.Count
+        environment = [string]$configuration.environment
+        resourceGroup = [string]$configuration.resourceGroupName
+        region = [string]$configuration.location
+        subscriptionId = [string]$configuration.subscriptionId
+    })
 
     if (-not $provisioningAdmissionReady) {
         # Agent Registration is development-only while the Registry create API is preview.
