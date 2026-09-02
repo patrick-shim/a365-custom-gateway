@@ -4211,15 +4211,15 @@ function Assert-GatewayExactContainerEnvironment {
         }
     }
     foreach ($name in @($ExpectedValues.Keys)) {
-        if (-not $actualByName.ContainsKey([string]$name)) { throw 'A required value-backed container environment variable is absent.' }
+        if (-not $actualByName.ContainsKey([string]$name)) { throw "A required value-backed container environment variable is absent: $name." }
         $entry = $actualByName[[string]$name]
         if (-not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $entry -Name 'secretRef')) -or
             [string](Get-GatewayOptionalObjectProperty -Object $entry -Name 'value') -cne [string]$ExpectedValues[$name]) {
-            throw 'A value-backed container environment variable does not match its exact reviewed value contract.'
+            throw "A value-backed container environment variable does not match its exact reviewed value contract: $name."
         }
     }
     foreach ($name in @($ExpectedSecretRefs.Keys)) {
-        if (-not $actualByName.ContainsKey([string]$name)) { throw 'A required secret-backed container environment variable is absent.' }
+        if (-not $actualByName.ContainsKey([string]$name)) { throw "A required secret-backed container environment variable is absent: $name." }
         $entry = $actualByName[[string]$name]
         if (-not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $entry -Name 'value')) -or
             [string](Get-GatewayOptionalObjectProperty -Object $entry -Name 'secretRef') -cne [string]$ExpectedSecretRefs[$name]) {
@@ -4574,7 +4574,7 @@ function Test-GatewayGroupDeploymentEvidence {
             -not [string]::IsNullOrWhiteSpace([string]$Evidence.promptShieldEndpoint)) { throw 'mismatch' }
         return $true
     }
-    catch { throw 'ARM deployment revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.' }
+    catch { throw "ARM deployment revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose. Cause: $($_.Exception.Message)" }
 }
 
 function Assert-GatewayDeploymentOutputEvidenceMap {
@@ -4716,7 +4716,7 @@ function Test-GatewayNamedGroupDeployment {
             -not ([string]$secretAssignments[0].roleDefinitionId).EndsWith('/4633458b-17de-408a-b874-0445c86b69e6', [StringComparison]::OrdinalIgnoreCase)) { throw 'mismatch' }
         return $true
     }
-    catch { throw 'Named ARM deployment revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.' }
+    catch { throw "Named ARM deployment revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose. Cause: $($_.Exception.Message)" }
 }
 
 function Test-GatewayApplicationEvidence {

@@ -541,9 +541,13 @@ module workerApp './modules/container-app-worker.bicep' = {
     cpu: workerCpu
     memory: workerMemory
     // SQL session-owned job locks and idempotent provider discovery protect
-    // duplicate delivery across the configured worker scale range.
-    maxReplicas: workerMaxReplicas
-    maxConcurrentCalls: 5
+    // duplicate delivery across the configured worker scale range. Registry
+    // preview provisioning is additionally pinned to one replica and one
+    // Service Bus callback; the preview Registry dependency is not safe to
+    // call concurrently, and both bootstrap verification and the provisioning
+    // preflight require that exact single-flight shape.
+    maxReplicas: effectiveWorkerProvisioningExecutionEnabled ? 1 : workerMaxReplicas
+    maxConcurrentCalls: effectiveWorkerProvisioningExecutionEnabled ? 1 : 5
     serviceBusNamespace: serviceBus.outputs.namespaceFqdn
     serviceBusNamespaceName: serviceBus.outputs.namespaceName
     serviceBusQueueName: serviceBus.outputs.queueName

@@ -1248,7 +1248,9 @@ function Invoke-GatewayStateStep {
     catch {
         $stepTimer.Stop()
         if ($OutputFormat -eq 'Text') {
-            Write-GatewayExperienceEvent -Type Warning -Message "Step needs attention: $Name. Correct the reported cause and run gateway up again; resumable evidence has been preserved." -Data ([ordered]@{ step = $Name; resumable = $true; durationMilliseconds = [int]$stepTimer.ElapsedMilliseconds }) -OutputFormat Text
+            $stepCause = [string]$_.Exception.Message
+            if ([string]::IsNullOrWhiteSpace($stepCause)) { $stepCause = 'the failing check reported no cause' }
+            Write-GatewayExperienceEvent -Type Warning -Message "Step needs attention: $Name [$stepCause]. Correct the reported cause and run gateway up again; resumable evidence has been preserved." -Data ([ordered]@{ step = $Name; resumable = $true; cause = $stepCause; durationMilliseconds = [int]$stepTimer.ElapsedMilliseconds }) -OutputFormat Text
         }
         throw
     }
