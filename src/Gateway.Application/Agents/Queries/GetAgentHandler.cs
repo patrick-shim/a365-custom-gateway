@@ -12,13 +12,19 @@ internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDeta
 {
     private readonly IAgentRepository _agentRepository;
     private readonly IProvisioningJobRepository _provisioningJobRepository;
+    private readonly IAiInteractionRepository _interactionRepository;
+    private readonly IActivityReceiptRepository _activityReceiptRepository;
 
     public GetAgentHandler(
         IAgentRepository agentRepository,
-        IProvisioningJobRepository provisioningJobRepository)
+        IProvisioningJobRepository provisioningJobRepository,
+        IAiInteractionRepository interactionRepository,
+        IActivityReceiptRepository activityReceiptRepository)
     {
         _agentRepository = agentRepository;
         _provisioningJobRepository = provisioningJobRepository;
+        _interactionRepository = interactionRepository;
+        _activityReceiptRepository = activityReceiptRepository;
     }
 
     public async Task<AgentDetailDto> Handle(GetAgentQuery request, CancellationToken cancellationToken)
@@ -47,6 +53,12 @@ internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDeta
 
         var observabilityDestinations = agent.FeatureConfiguration.ObservabilityMode.ToDestinations();
 
+        var lastActivity = await AgentLastActivity.ResolveAsync(
+            _interactionRepository,
+            _activityReceiptRepository,
+            new[] { agent.Id },
+            cancellationToken);
+
         return new AgentDetailDto(
             agent.Id,
             agent.ExternalAgentId.Value,
@@ -67,7 +79,7 @@ internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDeta
                 observabilityDestinations.Agent365ObservabilityEnabled,
                 observabilityDestinations.AzureMonitorExportEnabled,
                 agent.FeatureConfiguration.PromptShieldEnabled),
-            null,
+            AgentLastActivity.For(lastActivity, agent.Id),
             agent.CreatedAtUtc,
             agent.UpdatedAtUtc,
             agent.OwnerObjectId,

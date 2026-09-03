@@ -15,6 +15,19 @@ public sealed class GetAgentHandlerTests
     private readonly IAgentRepository _agentRepository = Substitute.For<IAgentRepository>();
     private readonly IProvisioningJobRepository _jobRepository =
         Substitute.For<IProvisioningJobRepository>();
+    private readonly IAiInteractionRepository _interactionRepository =
+        Substitute.For<IAiInteractionRepository>();
+    private readonly IActivityReceiptRepository _activityReceiptRepository =
+        Substitute.For<IActivityReceiptRepository>();
+
+    public GetAgentHandlerTests()
+    {
+        // Default to "never called" so each test only stubs the source it cares
+        // about. Set here rather than in HandleAsync, which would otherwise
+        // overwrite whatever a test had just arranged.
+        GivenInteractions();
+        GivenActivities();
+    }
 
     [Fact]
     public async Task Handle_Should_ExposeSupportedForRetrySafeCurrentFailure()
@@ -95,15 +108,58 @@ public sealed class GetAgentHandlerTests
         result.RetryProvisioning.Reason.Should().Contain("Reconcile Microsoft resource state manually");
     }
 
+    [Fact]
+    public async Task Handle_Should_ReportTheAgentsRealLastActivity()
+    {
+        var agent = CreateAgent(AgentStatus.Active);
+        var lastCalled = new DateTime(2026, 9, 2, 15, 30, 0, DateTimeKind.Utc);
+        GivenActivities((agent.Id, lastCalled));
+
+        var result = await HandleAsync(agent, []);
+
+        result.LastActivityAtUtc.Should().Be(
+            lastCalled,
+            "the detail page reported a hardcoded null before, so an agent that had "
+            + "been called for weeks still displayed as never used");
+    }
+
+    [Fact]
+    public async Task Handle_Should_ReportNoLastActivityForAnAgentThatWasNeverCalled()
+    {
+        var agent = CreateAgent(AgentStatus.Active);
+
+        var result = await HandleAsync(agent, []);
+
+        result.LastActivityAtUtc.Should().BeNull();
+    }
+
     private async Task<Gateway.Contracts.Responses.AgentDetailDto> HandleAsync(
         AgentRegistration agent,
         List<ProvisioningJob> jobs)
     {
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>()).Returns(agent);
         _jobRepository.GetByAgentIdAsync(agent.Id, Arg.Any<CancellationToken>()).Returns(jobs);
-        var handler = new GetAgentHandler(_agentRepository, _jobRepository);
+        var handler = new GetAgentHandler(
+            _agentRepository,
+            _jobRepository,
+            _interactionRepository,
+            _activityReceiptRepository);
 
         return await handler.Handle(new GetAgentQuery(agent.Id), CancellationToken.None);
+    }
+
+    private void GivenInteractions(params (Guid AgentId, DateTime ReceivedAtUtc)[] rows)
+    {
+        _interactionRepository
+            .GetLatestReceivedAtUtcAsync(Arg.Any<IReadOnlyCollection<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(rows.ToDictionary(row => row.AgentId, row => row.ReceivedAtUtc));
+    }
+
+    private void GivenActivities(params (Guid AgentId, DateTime ReceivedAtUtc)[] rows)
+    {
+        _activityReceiptRepository
+            .GetLatestReceivedAtUtcAsync(Arg.Any<IReadOnlyCollection<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(rows.ToDictionary(row => row.AgentId, row => row.ReceivedAtUtc));
     }
 
     private static AgentRegistration CreateAgent(AgentStatus status) => new()

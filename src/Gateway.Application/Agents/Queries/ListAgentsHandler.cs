@@ -10,10 +10,17 @@ namespace Gateway.Application.Agents.Queries;
 internal sealed class ListAgentsHandler : IRequestHandler<ListAgentsQuery, AgentListResponse>
 {
     private readonly IAgentRepository _agentRepository;
+    private readonly IAiInteractionRepository _interactionRepository;
+    private readonly IActivityReceiptRepository _activityReceiptRepository;
 
-    public ListAgentsHandler(IAgentRepository agentRepository)
+    public ListAgentsHandler(
+        IAgentRepository agentRepository,
+        IAiInteractionRepository interactionRepository,
+        IActivityReceiptRepository activityReceiptRepository)
     {
         _agentRepository = agentRepository;
+        _interactionRepository = interactionRepository;
+        _activityReceiptRepository = activityReceiptRepository;
     }
 
     public async Task<AgentListResponse> Handle(ListAgentsQuery request, CancellationToken cancellationToken)
@@ -28,6 +35,12 @@ internal sealed class ListAgentsHandler : IRequestHandler<ListAgentsQuery, Agent
             request.Cursor);
 
         var (agents, totalCount) = await _agentRepository.ListAsync(filter, cancellationToken);
+
+        var lastActivity = await AgentLastActivity.ResolveAsync(
+            _interactionRepository,
+            _activityReceiptRepository,
+            agents.Select(agent => agent.Id).ToList(),
+            cancellationToken);
 
         var items = agents
             .Select(agent =>
@@ -54,7 +67,7 @@ internal sealed class ListAgentsHandler : IRequestHandler<ListAgentsQuery, Agent
                         destinations.Agent365ObservabilityEnabled,
                         destinations.AzureMonitorExportEnabled,
                         agent.FeatureConfiguration.PromptShieldEnabled),
-                    null,
+                    AgentLastActivity.For(lastActivity, agent.Id),
                     agent.CreatedAtUtc,
                     agent.UpdatedAtUtc);
             })

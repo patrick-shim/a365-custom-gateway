@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -29,5 +30,27 @@ internal sealed class ActivityReceiptRepository : IActivityReceiptRepository
         return await _dbContext.ActivityReceipts
             .AnyAsync(r => r.AgentRegistrationId == agentRegistrationId
                 && r.ExternalActivityId == externalActivityId, ct);
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, DateTime>> GetLatestReceivedAtUtcAsync(
+        IReadOnlyCollection<Guid> agentRegistrationIds,
+        CancellationToken ct)
+    {
+        if (agentRegistrationIds.Count == 0)
+        {
+            return ReadOnlyDictionary<Guid, DateTime>.Empty;
+        }
+
+        var latest = await _dbContext.ActivityReceipts
+            .Where(receipt => agentRegistrationIds.Contains(receipt.AgentRegistrationId))
+            .GroupBy(receipt => receipt.AgentRegistrationId)
+            .Select(group => new
+            {
+                AgentRegistrationId = group.Key,
+                ReceivedAtUtc = group.Max(receipt => receipt.ReceivedAtUtc)
+            })
+            .ToListAsync(ct);
+
+        return latest.ToDictionary(entry => entry.AgentRegistrationId, entry => entry.ReceivedAtUtc);
     }
 }
