@@ -549,17 +549,75 @@ Describe 'Bootstrap state compatibility and atomic persistence' {
         $loaded.configurationFingerprint | Should -Be $state.configurationFingerprint
     }
 
-    It 'refuses stale evidence after any configuration change' {
+    It 'refuses stale evidence after a deployment identity change' -ForEach @(
+        @{ Field = 'tenantId'; Value = '44444444-4444-4444-8444-444444444444' }
+        @{ Field = 'location'; Value = 'westeurope' }
+        @{ Field = 'projectName'; Value = 'newname' }
+    ) {
         $config = New-TestBootstrapConfig
         $state = New-BootstrapState -Config $config
         $state.steps['Azure foundation'] = [ordered]@{ status = 'Completed'; evidence = [ordered]@{ resourceGroup = 'safe-id' } }
-        $path = Join-Path $TestDrive 'stale.json'
+        $path = Join-Path $TestDrive "stale-$Field.json"
         Save-BootstrapState -State $state -Path $path
         $changed = Copy-TestBootstrapConfig -Config $config
-        $changed.projectName = 'newname'
+        $changed.$Field = $Value
 
         { Read-BootstrapState -Path $path -Config $changed } |
-            Should -Throw '*configuration changed*Refusing to reuse*'
+            Should -Throw "*deployment identity changed*$Field*Refusing to reuse*"
+    }
+
+    It 'reconciles existing evidence after a reconcilable setting change' {
+        $config = New-TestBootstrapConfig
+        $state = New-BootstrapState -Config $config
+        $state.steps['Azure foundation'] = [ordered]@{ status = 'Completed'; evidence = [ordered]@{ resourceGroup = 'safe-id' } }
+        $path = Join-Path $TestDrive 'reconcile.json'
+        Save-BootstrapState -State $state -Path $path
+        $changed = Copy-TestBootstrapConfig -Config $config
+        $changed.agent365.allowDevelopmentRegistryPreview = $true
+
+        $loaded = Read-BootstrapState -Path $path -Config $changed
+
+        # Evidence is kept so each step's own validator decides what still matches;
+        # Apply stays blocked until a fresh plan is accepted for the new fingerprint.
+        $loaded.configurationFingerprint | Should -Be (Get-BootstrapConfigurationFingerprint -Config $changed)
+        $loaded.steps['Azure foundation'].status | Should -Be 'Completed'
+        $loaded.deploymentOwnershipId | Should -Be $state.deploymentOwnershipId
+    }
+
+    It 'records a fingerprint-only audit entry for a reconciled configuration change' {
+        $config = New-TestBootstrapConfig
+        $state = New-BootstrapState -Config $config
+        $state.steps['Azure foundation'] = [ordered]@{ status = 'Completed'; evidence = [ordered]@{ resourceGroup = 'safe-id' } }
+        $path = Join-Path $TestDrive 'reconcile-audit.json'
+        Save-BootstrapState -State $state -Path $path
+        $originalFingerprint = $state.configurationFingerprint
+        $changed = Copy-TestBootstrapConfig -Config $config
+        $changed.sql.skuName = 'S0'
+
+        $loaded = Read-BootstrapState -Path $path -Config $changed
+
+        $records = @($loaded.configurationChanges)
+        $records.Count | Should -Be 1
+        $records[0].previousConfigurationFingerprint | Should -Be $originalFingerprint
+        $records[0].configurationFingerprint | Should -Be (Get-BootstrapConfigurationFingerprint -Config $changed)
+        # Configuration values can name operators and tenants; record the transition only.
+        ($records[0] | ConvertTo-Json -Depth 10) | Should -Not -Match 'S0'
+    }
+
+    It 'refuses to reconcile evidence that has no recorded deployment identity' {
+        $config = New-TestBootstrapConfig
+        $state = New-BootstrapState -Config $config
+        $state.steps['Azure foundation'] = [ordered]@{ status = 'Completed'; evidence = [ordered]@{ resourceGroup = 'safe-id' } }
+        $path = Join-Path $TestDrive 'reconcile-no-identity.json'
+        Save-BootstrapState -State $state -Path $path
+        $raw = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -Depth 100 -AsHashtable
+        $raw.Remove('configuration')
+        $raw | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $path -Encoding utf8NoBOM
+        $changed = Copy-TestBootstrapConfig -Config $config
+        $changed.agent365.allowDevelopmentRegistryPreview = $true
+
+        { Read-BootstrapState -Path $path -Config $changed } |
+            Should -Throw '*no recorded deployment identity*'
     }
 
     It 'refuses Entra adoption evidence that predates the ownership marker' {

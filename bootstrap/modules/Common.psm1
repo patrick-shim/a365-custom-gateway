@@ -3,6 +3,8 @@ $ErrorActionPreference = 'Stop'
 
 $script:BootstrapStateSchemaVersion = 2
 $script:BootstrapVersion = '2.0.0'
+# Bounded audit trail of reconciled configuration changes kept in bootstrap state.
+$script:BootstrapConfigurationChangeHistoryLimit = 20
 $script:BootstrapEventWriter = $null
 $script:BootstrapStructuredOutput = $false
 $script:BootstrapExecutionSourceRoot = ''
@@ -2735,6 +2737,75 @@ function Test-BootstrapStateHasEvidence {
     return $false
 }
 
+function Get-BootstrapDeploymentIdentityFieldNames {
+    # Deployment identity pins which Azure objects the recorded evidence describes.
+    # New-BootstrapState persists exactly these fields under state.configuration.
+    return @('subscriptionId', 'tenantId', 'environment', 'location', 'projectName', 'resourceGroupName')
+}
+
+function Assert-BootstrapDeploymentIdentityUnchanged {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)]$Config
+    )
+
+    if (-not $State.Contains('configuration') -or $State['configuration'] -isnot [System.Collections.IDictionary]) {
+        throw 'Bootstrap state contains reusable evidence but no recorded deployment identity. Refusing to reconcile a configuration change; preserve the state for review and choose a distinct deployment identity.'
+    }
+
+    $recordedIdentity = $State['configuration']
+    $changed = [Collections.Generic.List[string]]::new()
+    foreach ($field in (Get-BootstrapDeploymentIdentityFieldNames)) {
+        $recorded = if ($recordedIdentity.Contains($field)) { [string]$recordedIdentity[$field] } else { '' }
+        $current = [string]$Config.$field
+        # GUID identity fields are compared in canonical form so a pure formatting
+        # difference is never mistaken for a different deployment.
+        if ($field -cin @('subscriptionId', 'tenantId')) {
+            $recordedGuid = [guid]::Empty
+            $currentGuid = [guid]::Empty
+            if ([guid]::TryParse($recorded, [ref]$recordedGuid) -and [guid]::TryParse($current, [ref]$currentGuid)) {
+                $recorded = $recordedGuid.ToString('D')
+                $current = $currentGuid.ToString('D')
+            }
+        }
+        # Case-insensitive, matching the deploymentKey comparison above.
+        if ($recorded -ne $current) { $changed.Add($field) }
+    }
+    if ($changed.Count -gt 0) {
+        throw "Bootstrap deployment identity changed after state evidence was recorded ($($changed -join ', ')). Refusing to reuse completed, running, or failed steps. Restore the recorded deployment identity or choose a distinct deployment identity; do not edit the state file."
+    }
+    return $true
+}
+
+function Add-BootstrapConfigurationChangeRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$PreviousFingerprint,
+        [Parameter(Mandatory)][string]$Fingerprint
+    )
+
+    # Fingerprints only. Configuration is non-secret by contract but still names
+    # operators, tenants, and resources, so the audit trail records the transition
+    # rather than the content. The reopened steps are the reviewable diff.
+    $records = [Collections.Generic.List[object]]::new()
+    if ($State.Contains('configurationChanges') -and
+        $State['configurationChanges'] -is [System.Collections.IEnumerable] -and
+        $State['configurationChanges'] -isnot [string]) {
+        foreach ($record in $State['configurationChanges']) { $records.Add($record) }
+    }
+
+    $records.Add([ordered]@{
+        changedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        bootstrapVersion = $script:BootstrapVersion
+        previousConfigurationFingerprint = $PreviousFingerprint
+        configurationFingerprint = $Fingerprint
+    })
+    while ($records.Count -gt $script:BootstrapConfigurationChangeHistoryLimit) { $records.RemoveAt(0) }
+    $State['configurationChanges'] = @($records)
+}
+
 function Assert-BootstrapStateAllowsSourcePlan {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
 
@@ -2954,7 +3025,19 @@ function Read-BootstrapState {
     $expectedFingerprint = Get-BootstrapConfigurationFingerprint -Config $Config
     if ($recordedFingerprint -cne $expectedFingerprint) {
         if (Test-BootstrapStateHasEvidence -State $state) {
-            throw 'Bootstrap configuration changed after state evidence was recorded. Refusing to reuse completed, running, or failed steps. Restore the exact original configuration or choose a distinct deployment identity; do not edit the state file.'
+            # Deployment identity is immutable for a state file; every other setting is a
+            # reconcilable deployment input. Rebind the fingerprint and let each step's own
+            # Validate block decide which recorded evidence still matches the new
+            # configuration. This never widens what may run: the accepted plan is bound to
+            # the state fingerprint, so Apply and Resume stay closed until the operator
+            # reviews a fresh plan for the changed configuration.
+            Assert-BootstrapDeploymentIdentityUnchanged -State $state -Config $Config | Out-Null
+            Add-BootstrapConfigurationChangeRecord `
+                -State $state `
+                -PreviousFingerprint $recordedFingerprint `
+                -Fingerprint $expectedFingerprint
+            $state['configurationFingerprint'] = $expectedFingerprint
+            return $state
         }
         return New-BootstrapState -Config $Config
     }

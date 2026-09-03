@@ -193,6 +193,29 @@ certificate material in configuration. Purview automation records only an
 application ID, organization domain, and Key Vault secret URI; the certificate is
 loaded through its approved non-echoing runtime path.
 
+### Changing configuration after a deployment has started
+
+A deployment state is bound to three generations: its deployment identity, its
+configuration, and the bootstrap source that produced its evidence.
+
+Deployment identity is immutable for the life of a state file. It is exactly
+`subscriptionId`, `tenantId`, `environment`, `location`, `projectName`, and
+`resourceGroupName`. Changing any of them means the recorded evidence describes
+different Azure objects, so bootstrap refuses to load that state and names the
+fields that moved.
+
+Every other setting is a reconcilable deployment input. Changing one is not an
+error. Bootstrap rebinds the recorded configuration fingerprint, appends a
+fingerprint-only entry to `state.configurationChanges`, and keeps the existing
+evidence so each step's own validator decides what still matches. No step is
+trusted because it was recorded, and nothing new becomes runnable.
+
+Reconciling is not reconfiguring. The accepted plan is bound to the previous
+fingerprint, so a configuration change discards it, and a deployment that already
+holds checkpoints cannot be re-planned. There is no supported way to change a
+setting on a started deployment and then continue that deployment. Start over
+from a clean initial state instead.
+
 ## Plan, Apply, Resume, Verify
 
 Bootstrap is a resumable state machine:
