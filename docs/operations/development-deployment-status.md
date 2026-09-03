@@ -28,15 +28,31 @@ deployment:
   blueprint, exercising both the create-new and use-existing agent identity
   modes;
 - the seven persisted provisioning workflow stages driven over the v3 queue
-  boundary; and
+  boundary;
 - the external-agent data-plane surface returning its documented status codes for
   prompt evaluation, interaction submission, single activity submission, and
   batch activity submission, including the required idempotency-key and
-  two-call receipt handshake.
+  two-call receipt handshake;
+- per-sink Agent 365 export acceptance, read from the `results` array rather than
+  from `partialSuccess` alone, with every submitted span accepted; and
+- distinct telemetry role names for the API and the provisioning worker, so the
+  two hosts can be told apart in Azure Monitor.
 
 Prompt Shields was verified enforcing per agent prompt, which is the intended
 scope: Prompt Shields is evaluated per agent request, while Purview DLP applies
 at blueprint level.
+
+Agent 365 activity attribution was verified in the Microsoft 365 admin center.
+Each agent's own Activity tab reported a session count equal to the number of
+allowed invocations made against that agent, and a prompt that Prompt Shields
+blocked produced no session at all. That is per-agent attribution, not a pooled
+total, and it confirms that blocking happens before any Agent 365 activity is
+emitted.
+
+Note one admin-center inconsistency that is not a gateway defect: the agent list
+view's rollup columns for active users, total sessions, and last used can still
+read empty while the per-agent Activity tab shows live data. The list view and
+the detail tab are served by different aggregates. Read the per-agent tab.
 
 Those observations prove the deployed build that produced them. They do not
 prove that later source changes are deployed.
@@ -45,31 +61,48 @@ prove that later source changes are deployed.
 
 Fail closed on each of these; none may be reported as met.
 
-- **Agent 365 export acceptance.** The exporter received HTTP 200 from the
-  observability ingest endpoint, but a 200 is not proof of ingestion. Microsoft
-  documents that a whole-request routing decision can leave
-  `partialSuccess.rejectedSpans` at `0` while `results` reports every span
-  rejected. The deployed build only inspected `partialSuccess`, so acceptance was
-  never actually established.
 - **Purview DLP at blueprint level.** Purview remains disabled by configuration,
-  so no blueprint-scoped DLP verdict exists.
-- **Microsoft 365 admin center activities.** The Activity surface showed no rows
-  for a registered agent. Note that admin-center activity metrics are documented
-  as supporting a specific set of agent types, which does not currently include a
-  custom gateway platform, so this surface may be legitimately unavailable rather
-  than merely empty.
-- **Purview and Defender interaction logs.** The Defender advanced-hunting table
-  that would carry these rows has ingested nothing tenant-wide since early
-  August 2026. That emptiness is an ingestion gap in the table itself, not
-  evidence that gateway spans were rejected, and it must not be read as either
+  so no blueprint-scoped DLP verdict exists. Enabling it also requires bootstrap
+  to provision the Purview policy-automation application and certificate, which
+  it does not yet do.
+- **Azure Monitor mirror completeness.** The Agent 365 sink is proven per sink,
+  but the parallel Azure Monitor mirror is not yet measurable: nothing asserts
+  that a mirrored span exists for every emitted event. Treat the mirror as
+  lossy until an emitted-versus-mirrored count check passes.
+- **Defender agent inventory for the current agents.** The Defender advanced
+  hunting inventory table does carry the gateway's own platform value alongside
+  the first-party agent platforms, which proves gateway-created agent identities
+  reach Defender. It is a periodic snapshot, not a live feed: the most recent
+  snapshot predated the current registrations by several hours, so those specific
+  agents were legitimately not in it yet. Absence within one snapshot interval is
+  latency, not rejection.
+- **Defender cloud app interaction rows.** The advanced hunting table that would
+  carry these rows has ingested nothing tenant-wide for the entire retention
+  window. That emptiness is an ingestion gap in the table itself, not evidence
+  that gateway spans were rejected, and it must not be read as either
   confirmation or refutation.
+- **Purview unified audit records.** A portal audit search over a window that
+  fully covers the exercised traffic, filtered to the four documented Agent 365
+  activity operations, completed successfully and returned zero records. That is
+  **not** evidence of absence. The search completed roughly forty minutes after
+  the traffic, and Microsoft documents agent audit entries as taking thirty
+  minutes to two hours to appear, with no committed upper bound. Re-run the same
+  search at least two hours after the traffic before drawing any conclusion, and
+  include both documented spellings of the guardrail operation, because the audit
+  activities table and the Management Activity API schema disagree on whether the
+  recorded operation is the bare guardrail name or its applied form.
+
+When reading either portal, note that timestamps render in the signed-in
+operator's local time zone while the gateway's own evidence is in UTC. Compare
+them by converting explicitly; a snapshot that looks current can be most of a
+day old.
 
 ## Relationship to the current source tree
 
-The current source contains verification and telemetry corrections that are
-**not deployed**:
+The verification and telemetry corrections listed below are **deployed** in the
+current development gateway, and their live outcomes are recorded above:
 
-- the Agent 365 exporter now proves acceptance from the per-sink statuses in
+- the Agent 365 exporter proves acceptance from the per-sink statuses in
   `results` and fails closed with a bounded reason, instead of trusting
   `partialSuccess` alone;
 - the tracer records every gateway span regardless of the caller's sampling
@@ -82,7 +115,8 @@ The current source contains verification and telemetry corrections that are
 
 A source revision is not deployed evidence until immutable image digests, exact
 resource readbacks, health checks, queue state, and a bounded registration are
-recorded for that revision.
+recorded for that revision. Anything committed after this checkpoint is
+undeployed until the next clean provision records its own readbacks.
 
 ## Shipping a source change to an existing deployment
 
@@ -104,7 +138,7 @@ corrections and deploy them together rather than one per cycle.
 
 ## Offline gate
 
-All eight .NET test projects pass 1,713 tests with zero failures, and the
+All eight .NET test projects pass 1,734 tests with zero failures, and the
 solution build completes with zero warnings and zero errors under
 `-warnaserror`.
 
