@@ -597,6 +597,136 @@ public sealed class AgentDetailsPageTests : BunitContext
             DateTime.UtcNow.AddDays(364),
             revokedAtUtc);
 
+    [Fact]
+    public void PausedRegistration_OffersARouteBackToTheWaitingOperation()
+    {
+        var auth = AddAuthorization();
+        auth.SetAuthorized("Portal user");
+        auth.SetRoles(GatewayRoles.Administrator);
+        var agentId = Guid.NewGuid();
+        var operationId = Guid.NewGuid();
+        ArrangeAgent(agentId, WaitingOperation(operationId));
+
+        var cut = Render<AgentDetails>(parameters => parameters
+            .Add(component => component.AgentId, agentId));
+
+        cut.WaitForAssertion(() =>
+        {
+            // Closing the tab that provisioning happened to be open in used to
+            // strand the agent: the detail page showed only "Provisioning retry
+            // unavailable" with no way back to the operation that was waiting.
+            var hrefs = cut.FindAll("fluent-anchor")
+                .Select(anchor => anchor.GetAttribute("href"))
+                .ToList();
+            hrefs.Should().Contain($"/operations/{operationId:D}");
+            cut.Markup.Should().Contain("Finish Agent 365 registration");
+        });
+    }
+
+    [Fact]
+    public void PausedRegistration_PointsAtTheNewestWaitingOperation()
+    {
+        var auth = AddAuthorization();
+        auth.SetAuthorized("Portal user");
+        auth.SetRoles(GatewayRoles.Administrator);
+        var agentId = Guid.NewGuid();
+        var supersededId = Guid.NewGuid();
+        var newestId = Guid.NewGuid();
+        ArrangeAgent(
+            agentId,
+            WaitingOperation(supersededId, DateTime.UtcNow.AddHours(-3)),
+            WaitingOperation(newestId, DateTime.UtcNow.AddMinutes(-5)));
+
+        var cut = Render<AgentDetails>(parameters => parameters
+            .Add(component => component.AgentId, agentId));
+
+        cut.WaitForAssertion(() =>
+        {
+            var hrefs = cut.FindAll("fluent-anchor")
+                .Select(anchor => anchor.GetAttribute("href"))
+                .ToList();
+            hrefs.Should().Contain($"/operations/{newestId:D}");
+            hrefs.Should().NotContain(
+                $"/operations/{supersededId:D}",
+                "an older paused attempt is not the one an administrator should resume");
+        });
+    }
+
+    [Theory]
+    [InlineData("Running")]
+    [InlineData("Completed")]
+    [InlineData("Failed")]
+    [InlineData("RequiresManualIntervention")]
+    public void OperationsThatAreNotWaitingOnAnAdministrator_RaiseNoCallToAction(string status)
+    {
+        var auth = AddAuthorization();
+        auth.SetAuthorized("Portal user");
+        auth.SetRoles(GatewayRoles.Administrator);
+        var agentId = Guid.NewGuid();
+        ArrangeAgent(agentId, WaitingOperation(Guid.NewGuid()) with { Status = status });
+
+        var cut = Render<AgentDetails>(parameters => parameters
+            .Add(component => component.AgentId, agentId));
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.FindAll("#overview-heading").Should().NotBeEmpty();
+            cut.Markup.Should().NotContain(
+                "Finish Agent 365 registration",
+                "prompting for an action that is not pending would send administrators "
+                + "to an operation with nothing to do");
+        });
+    }
+
+    [Fact]
+    public void ReadOnlyRoles_AreNotShownTheAdministratorCallToAction()
+    {
+        var auth = AddAuthorization();
+        auth.SetAuthorized("Portal user");
+        auth.SetRoles(GatewayRoles.SupportReader);
+        var agentId = Guid.NewGuid();
+        ArrangeAgent(agentId, WaitingOperation(Guid.NewGuid()));
+
+        var cut = Render<AgentDetails>(parameters => parameters
+            .Add(component => component.AgentId, agentId));
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.FindAll("#overview-heading").Should().NotBeEmpty();
+            cut.Markup.Should().NotContain("Finish Agent 365 registration");
+        });
+    }
+
+    private void ArrangeAgent(Guid agentId, params ProvisioningJobDto[] jobs)
+    {
+        _api.GetAgentAsync(agentId, Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<AgentDetailDto>(
+                CreateAgent(agentId, status: "Provisioning"),
+                "\"version-1\"",
+                "detail-correlation"));
+        _api.GetProvisioningHistoryAsync(agentId, Arg.Any<CancellationToken>())
+            .Returns(new ProvisioningHistoryResponse(agentId, [.. jobs]));
+        _api.GetAgentAuditEventsAsync(
+                agentId,
+                Arg.Any<AuditEventQuery>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AuditEventListResponse([], null));
+        _api.GetAgentIngressCredentialsAsync(agentId, Arg.Any<CancellationToken>())
+            .Returns(new AgentIngressCredentialListResponse(agentId, []));
+    }
+
+    private static ProvisioningJobDto WaitingOperation(
+        Guid operationId,
+        DateTime? startedAtUtc = null) => new(
+        operationId,
+        "ProvisionAgent",
+        "AwaitingAdministratorAction",
+        PercentComplete: 71,
+        StartedAtUtc: startedAtUtc ?? DateTime.UtcNow.AddMinutes(-10),
+        CompletedAtUtc: null,
+        Error: null,
+        Steps: null);
+
     private static AgentDetailDto CreateAgent(
         Guid agentId,
         ProvisioningStatusDto? provisioning = null,

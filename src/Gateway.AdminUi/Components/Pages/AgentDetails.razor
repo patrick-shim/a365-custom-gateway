@@ -55,6 +55,24 @@ else if (agentResource is not null)
         </div>
     }
 
+    @if (canViewProvisioning && PendingAdministratorAction is { } waitingOperation)
+    {
+        <div class="error-panel" role="alert" style="margin-top: 1rem">
+            <span class="error-symbol" aria-hidden="true">!</span>
+            <div>
+                <strong>Provisioning is waiting for an administrator</strong>
+                <p>
+                    This registration stopped part-way through Agent 365 registration and cannot continue on its own.
+                    Open the operation to review what is required and finish it.
+                </p>
+                <FluentAnchor Appearance="Appearance.Accent"
+                              Href="@OperationHref(waitingOperation)">
+                    Finish Agent 365 registration
+                </FluentAnchor>
+            </div>
+        </div>
+    }
+
     <div class="content-grid">
         <div class="stack">
             <section class="card" aria-labelledby="overview-heading">
@@ -481,6 +499,17 @@ else if (agentResource is not null)
                             }
                             @if (isAdministrator)
                             {
+                                @if (PendingAdministratorAction is { } pendingOperation)
+                                {
+                                    <div class="action-tile">
+                                        <strong>Finish Agent 365 registration</strong>
+                                        <p>Provisioning is paused until an administrator completes the delegated Agent 365 registry step.</p>
+                                        <FluentAnchor Appearance="Appearance.Accent"
+                                                      Href="@OperationHref(pendingOperation)">
+                                            Open operation
+                                        </FluentAnchor>
+                                    </div>
+                                }
                                 @if (CanRetry(agent))
                                 {
                                     <div class="action-tile">
@@ -708,6 +737,29 @@ else if (agentResource is not null)
 
     [Parameter]
     public Guid AgentId { get; set; }
+
+    /// <summary>
+    /// The newest operation that stopped and is waiting on an administrator, if any.
+    /// </summary>
+    /// <remarks>
+    /// Without this the only route back to a paused registration was the operation
+    /// page the browser happened to be on when provisioning stopped, so closing the
+    /// tab stranded the agent: the detail page showed "Provisioning retry
+    /// unavailable" and nothing else. This page only points at the waiting
+    /// operation. The operation page stays the single authority on whether the
+    /// delegated action is still available, so the two can never disagree.
+    /// </remarks>
+    private ProvisioningJobDto? PendingAdministratorAction =>
+        provisioningHistory?.Jobs
+            .Where(job => string.Equals(
+                job.Status,
+                "AwaitingAdministratorAction",
+                StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(job => job.StartedAtUtc)
+            .FirstOrDefault();
+
+    private static string OperationHref(ProvisioningJobDto job) =>
+        $"/operations/{job.OperationId:D}";
 
     protected override async Task OnParametersSetAsync()
     {
