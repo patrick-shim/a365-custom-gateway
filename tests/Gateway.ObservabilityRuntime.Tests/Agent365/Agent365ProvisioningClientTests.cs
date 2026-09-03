@@ -433,6 +433,120 @@ public sealed class Agent365ProvisioningClientTests
     }
 
     [Fact]
+    public async Task ExecuteEnsureBlueprintPrincipal_RetriesCreateAfterRejectionWhenNoPrincipalExists()
+    {
+        var handler = new RecordingHttpMessageHandler((_, index) => index switch
+        {
+            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
+            1 => JsonResponse(HttpStatusCode.BadRequest, new { }),
+            2 or 3 or 4 => JsonResponse(HttpStatusCode.NotFound, new { }),
+            5 => JsonResponse(HttpStatusCode.Created, new
+            {
+                id = BlueprintPrincipalObjectId,
+                appId = BlueprintClientId
+            }),
+            6 => JsonResponse(HttpStatusCode.OK, new
+            {
+                id = BlueprintPrincipalObjectId,
+                appId = BlueprintClientId
+            }),
+            _ => throw new InvalidOperationException("Unexpected Graph request.")
+        });
+        var client = CreateClient(
+            handler,
+            postMutationVerificationLookupDelays: [TimeSpan.Zero],
+            blueprintPrincipalCreateRetryDelays: [TimeSpan.Zero, TimeSpan.Zero]);
+
+        var result = await client.ExecuteStepAsync(
+            CreateRequest(
+                ProvisioningStepType.EnsureBlueprintPrincipal,
+                CreateResolvedBlueprintState()),
+            CancellationToken.None);
+
+        result.State.BlueprintPrincipalObjectId.Should().Be(
+            BlueprintPrincipalObjectId.ToString("D"));
+        handler.Requests.Count(candidate => candidate.Method == HttpMethod.Post)
+            .Should().Be(2);
+        handler.Requests.Should().HaveCount(7);
+    }
+
+    [Fact]
+    public async Task ExecuteEnsureBlueprintPrincipal_FailsClosedWhenCreateRetryBudgetIsExhausted()
+    {
+        var handler = new RecordingHttpMessageHandler((request, _) =>
+            request.Method == HttpMethod.Post
+                ? JsonResponse(HttpStatusCode.BadRequest, new { })
+                : JsonResponse(HttpStatusCode.NotFound, new { }));
+        var client = CreateClient(
+            handler,
+            blueprintPrincipalCreateRetryDelays: [TimeSpan.Zero, TimeSpan.Zero]);
+        var request = CreateRequest(
+            ProvisioningStepType.EnsureBlueprintPrincipal,
+            CreateResolvedBlueprintState());
+
+        var action = () => client.ExecuteStepAsync(request, CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
+        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_CONFIGURATION_INVALID);
+        exception.Which.IsTransient.Should().BeFalse();
+        handler.Requests.Count(candidate => candidate.Method == HttpMethod.Post)
+            .Should().Be(3);
+    }
+
+    [Fact]
+    public async Task ExecuteEnsureBlueprintPrincipal_DoesNotRetryCreateWhenGraphDeniesPermission()
+    {
+        var handler = new RecordingHttpMessageHandler((request, _) =>
+            request.Method == HttpMethod.Post
+                ? JsonResponse(HttpStatusCode.Forbidden, new { })
+                : JsonResponse(HttpStatusCode.NotFound, new { }));
+        var client = CreateClient(
+            handler,
+            blueprintPrincipalCreateRetryDelays: [TimeSpan.Zero, TimeSpan.Zero]);
+        var request = CreateRequest(
+            ProvisioningStepType.EnsureBlueprintPrincipal,
+            CreateResolvedBlueprintState());
+
+        var action = () => client.ExecuteStepAsync(request, CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365ProvisioningException>();
+        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_DEPENDENCY_FORBIDDEN);
+        handler.Requests.Count(candidate => candidate.Method == HttpMethod.Post)
+            .Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ExecuteEnsureBlueprintPrincipal_StopsRetryingWhenLookupFindsTheCreatedPrincipal()
+    {
+        var handler = new RecordingHttpMessageHandler((_, index) => index switch
+        {
+            0 => JsonResponse(HttpStatusCode.NotFound, new { }),
+            1 => JsonResponse(HttpStatusCode.BadRequest, new { }),
+            2 or 3 => JsonResponse(HttpStatusCode.OK, new
+            {
+                id = BlueprintPrincipalObjectId,
+                appId = BlueprintClientId
+            }),
+            _ => throw new InvalidOperationException("Unexpected Graph request.")
+        });
+        var client = CreateClient(
+            handler,
+            postMutationVerificationLookupDelays: [TimeSpan.Zero],
+            blueprintPrincipalCreateRetryDelays: [TimeSpan.Zero, TimeSpan.Zero]);
+
+        var result = await client.ExecuteStepAsync(
+            CreateRequest(
+                ProvisioningStepType.EnsureBlueprintPrincipal,
+                CreateResolvedBlueprintState()),
+            CancellationToken.None);
+
+        result.State.BlueprintPrincipalObjectId.Should().Be(
+            BlueprintPrincipalObjectId.ToString("D"));
+        handler.Requests.Count(candidate => candidate.Method == HttpMethod.Post)
+            .Should().Be(1);
+    }
+
+    [Fact]
     public async Task ExecuteResolveBlueprint_PreservesExistingPlannedRegistryId()
     {
         var expectedDisplayName =
@@ -1637,7 +1751,8 @@ public sealed class Agent365ProvisioningClientTests
         Agent365Options? options = null,
         IAgent365ObservabilityTokenProvider? observabilityTokenProvider = null,
         IReadOnlyList<TimeSpan>? federatedCredentialVerificationLookupDelays = null,
-        IReadOnlyList<TimeSpan>? postMutationVerificationLookupDelays = null)
+        IReadOnlyList<TimeSpan>? postMutationVerificationLookupDelays = null,
+        IReadOnlyList<TimeSpan>? blueprintPrincipalCreateRetryDelays = null)
     {
         tokenProvider ??= new RecordingTokenProvider();
         logger ??= new RecordingLogger<Agent365ProvisioningClient>();
@@ -1654,7 +1769,8 @@ public sealed class Agent365ProvisioningClientTests
             graph,
             observabilityTokenProvider,
             federatedCredentialVerificationLookupDelays,
-            postMutationVerificationLookupDelays);
+            postMutationVerificationLookupDelays,
+            blueprintPrincipalCreateRetryDelays);
     }
 
     private static Agent365Options CreateValidOptions()

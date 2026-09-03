@@ -35,6 +35,12 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         TimeSpan.FromSeconds(16),
         TimeSpan.FromSeconds(24)
     ];
+    private static readonly TimeSpan[] BlueprintPrincipalCreateRetryDelays =
+    [
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(10)
+    ];
 
     private readonly ILogger<Agent365ProvisioningClient> _logger;
     private readonly Agent365Options _options;
@@ -42,6 +48,7 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
     private readonly IAgent365ObservabilityTokenProvider? _observabilityTokenProvider;
     private readonly IReadOnlyList<TimeSpan> _federatedCredentialVerificationLookupDelays;
     private readonly IReadOnlyList<TimeSpan> _postMutationVerificationLookupDelays;
+    private readonly IReadOnlyList<TimeSpan> _blueprintPrincipalCreateRetryDelays;
 
     internal Agent365ProvisioningClient(
         ILogger<Agent365ProvisioningClient> logger,
@@ -73,7 +80,8 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         MicrosoftGraphProvisioningClient graph,
         IAgent365ObservabilityTokenProvider? observabilityTokenProvider,
         IReadOnlyList<TimeSpan>? federatedCredentialVerificationLookupDelays = null,
-        IReadOnlyList<TimeSpan>? postMutationVerificationLookupDelays = null)
+        IReadOnlyList<TimeSpan>? postMutationVerificationLookupDelays = null,
+        IReadOnlyList<TimeSpan>? blueprintPrincipalCreateRetryDelays = null)
     {
         _logger = logger;
         _options = options;
@@ -85,6 +93,9 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
         _postMutationVerificationLookupDelays =
             postMutationVerificationLookupDelays?.ToArray()
             ?? PostMutationVerificationLookupDelays;
+        _blueprintPrincipalCreateRetryDelays =
+            blueprintPrincipalCreateRetryDelays?.ToArray()
+            ?? BlueprintPrincipalCreateRetryDelays;
     }
 
     public async Task<Agent365ProvisioningStepResult> ExecuteStepAsync(
@@ -801,28 +812,9 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
 
             if (principal is null)
             {
-                try
-                {
-                    principal = await _graph.CreateBlueprintPrincipalAsync(
-                        blueprintClientId.ToString("D"),
-                        cancellationToken);
-                }
-                catch (Agent365ProvisioningException exception)
-                {
-                    principal = await RecoverLookupAsync(
-                        () => _graph.GetBlueprintPrincipalByAppIdAsync(
-                            blueprintClientId.ToString("D"),
-                            cancellationToken),
-                        cancellationToken);
-
-                    if (principal is null)
-                    {
-                        if (CanRecoverCreate(exception))
-                            throw AmbiguousCreate();
-
-                        throw;
-                    }
-                }
+                principal = await CreateBlueprintPrincipalWithRetryAsync(
+                    blueprintClientId,
+                    cancellationToken);
             }
         }
 
@@ -839,6 +831,58 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
             request,
             state with { BlueprintPrincipalObjectId = principalObjectId },
             "AgentIdentityBlueprintPrincipalVerified");
+    }
+
+    // Microsoft Graph can reject the blueprint principal create outright while the blueprint
+    // application is still replicating to the principal-creation endpoint, and the same request
+    // succeeds moments later. Retry that rejection a bounded number of times, then fail closed.
+    // Re-posting is safe only because every attempt is followed by an appId lookup that must
+    // prove no principal exists, and Microsoft Entra keeps at most one principal per appId.
+    private async Task<GraphServicePrincipal> CreateBlueprintPrincipalWithRetryAsync(
+        Guid blueprintClientId,
+        CancellationToken cancellationToken)
+    {
+        var applicationClientId = blueprintClientId.ToString("D");
+        var attempt = 0;
+
+        while (true)
+        {
+            try
+            {
+                return await _graph.CreateBlueprintPrincipalAsync(
+                    applicationClientId,
+                    cancellationToken);
+            }
+            catch (Agent365ProvisioningException exception)
+            {
+                var existing = await RecoverLookupAsync(
+                    () => _graph.GetBlueprintPrincipalByAppIdAsync(
+                        applicationClientId,
+                        cancellationToken),
+                    cancellationToken);
+                if (existing is not null)
+                    return existing;
+
+                if (CanRecoverCreate(exception))
+                    throw AmbiguousCreate();
+
+                if (!IsRetryableCreateRejection(exception) ||
+                    attempt >= _blueprintPrincipalCreateRetryDelays.Count)
+                {
+                    throw;
+                }
+
+                var delay = _blueprintPrincipalCreateRetryDelays[attempt];
+                attempt++;
+                _logger.LogWarning(
+                    "Microsoft Graph rejected the blueprint principal create and no principal exists; retrying attempt {Attempt} of {RetryBudget}.",
+                    attempt,
+                    _blueprintPrincipalCreateRetryDelays.Count);
+
+                if (delay > TimeSpan.Zero)
+                    await Task.Delay(delay, cancellationToken);
+            }
+        }
     }
 
     private async Task<Agent365ProvisioningStepResult> CreateAgentIdentityAsync(
@@ -1692,6 +1736,14 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
                 exception.ErrorCode,
                 "MICROSOFT_GRAPH_RESOURCE_NOT_FOUND",
                 StringComparison.Ordinal);
+    }
+
+    private static bool IsRetryableCreateRejection(Agent365ProvisioningException exception)
+    {
+        return string.Equals(
+            exception.ErrorCode,
+            "MICROSOFT_GRAPH_REQUEST_REJECTED",
+            StringComparison.Ordinal);
     }
 
     private static async Task<T?> RecoverLookupAsync<T>(
