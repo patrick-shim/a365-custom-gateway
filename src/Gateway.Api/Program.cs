@@ -62,7 +62,7 @@ builder.Services.AddPurviewServices(builder.Configuration);
 
 builder.Services.AddPromptShieldServices(builder.Configuration);
 
-builder.Services.AddGatewayObservability(builder.Configuration);
+builder.Services.AddGatewayObservability(builder.Configuration, GatewayServiceNames.Api);
 
 builder.Services.AddHttpClient();
 

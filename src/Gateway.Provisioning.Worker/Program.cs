@@ -11,7 +11,9 @@ builder.Services.AddApplicationServices();
 builder.Services.AddInfrastructureServices(builder.Configuration);
 builder.Services.AddAgent365Services(builder.Configuration);
 builder.Services.AddPurviewServices(builder.Configuration);
-builder.Services.AddGatewayObservability(builder.Configuration);
+builder.Services.AddGatewayObservability(
+    builder.Configuration,
+    GatewayServiceNames.ProvisioningWorker);
 
 builder.Services.Configure<ProvisioningWorkerOptions>(
     builder.Configuration.GetSection("ProvisioningWorker"));
