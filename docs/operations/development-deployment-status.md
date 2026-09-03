@@ -1,6 +1,6 @@
 # Development deployment status
 
-Last updated: 2026-09-01 (Asia/Seoul).
+Last updated: 2026-09-03 (Asia/Seoul).
 
 This checkpoint separates deployed evidence from source claims. It intentionally
 contains no subscription, tenant, resource-group, application, principal,
@@ -12,102 +12,120 @@ For unfinished source work after a fetch, pull, or fresh clone, begin with the
 tracked [agent continuation checkpoint](../agent-continuation.md). Git alone does
 not transfer the ignored state required to Resume an existing deployment.
 
-## What has been verified in a clean subscription
+## What is deployed and verified
 
-An internal development deployment verified the audience bootstrap path through:
+A user-operated bootstrap run provisioned a gateway into an empty resource group
+and reached all nineteen steps `Completed`. Verified against that live
+deployment:
 
-- one bootstrap-owned Azure resource group;
+- one bootstrap-owned Azure resource group, provisioned only through the
+  `gateway` launcher;
 - Azure SQL initialized with Microsoft Entra authentication only;
-- immutable API, worker, and Admin UI images;
-- healthy API readiness endpoints and working Admin UI sign-in;
-- the current seven-step provisioning workflow and one Active registration;
-- one accepted Agent 365 activity; and
-- resumable recovery after a stale final provider read, without another Registry
-  POST.
+- immutable API, worker, Admin UI, and database-migrator images;
+- healthy API readiness endpoints and working Admin UI sign-in as the deployment
+  owner;
+- six external agents registered across three blueprints, two agents per
+  blueprint, exercising both the create-new and use-existing agent identity
+  modes;
+- the seven persisted provisioning workflow stages driven over the v3 queue
+  boundary; and
+- the external-agent data-plane surface returning its documented status codes for
+  prompt evaluation, interaction submission, single activity submission, and
+  batch activity submission, including the required idempotency-key and
+  two-call receipt handshake.
 
-Those observations prove the deployed build that produced them. They do not prove
-that later source changes are deployed.
+Prompt Shields was verified enforcing per agent prompt, which is the intended
+scope: Prompt Shields is evaluated per agent request, while Purview DLP applies
+at blueprint level.
+
+Those observations prove the deployed build that produced them. They do not
+prove that later source changes are deployed.
+
+## What is not yet proven
+
+Fail closed on each of these; none may be reported as met.
+
+- **Agent 365 export acceptance.** The exporter received HTTP 200 from the
+  observability ingest endpoint, but a 200 is not proof of ingestion. Microsoft
+  documents that a whole-request routing decision can leave
+  `partialSuccess.rejectedSpans` at `0` while `results` reports every span
+  rejected. The deployed build only inspected `partialSuccess`, so acceptance was
+  never actually established.
+- **Purview DLP at blueprint level.** Purview remains disabled by configuration,
+  so no blueprint-scoped DLP verdict exists.
+- **Microsoft 365 admin center activities.** The Activity surface showed no rows
+  for a registered agent. Note that admin-center activity metrics are documented
+  as supporting a specific set of agent types, which does not currently include a
+  custom gateway platform, so this surface may be legitimately unavailable rather
+  than merely empty.
+- **Purview and Defender interaction logs.** The Defender advanced-hunting table
+  that would carry these rows has ingested nothing tenant-wide since early
+  August 2026. That emptiness is an ingestion gap in the table itself, not
+  evidence that gateway spans were rejected, and it must not be read as either
+  confirmation or refutation.
 
 ## Relationship to the current source tree
 
-The checked-out source uses the root `gateway` launcher, one clean-subscription
-bootstrap, the fixed Know Your Data Group location, and blueprint-specific DLP
-Individual locations. A source revision is not deployed evidence until immutable
-image digests, exact resource readbacks, health checks, queue state, and a bounded
-first registration are recorded for that revision.
+The current source contains verification and telemetry corrections that are
+**not deployed**:
 
-The current source correction adds a dedicated checkpoint-aware Resume path,
-post-lock state reread and started-Apply routing, exact subscription binding for
-secure ARM mutations, and one management-plane-only Admin UI credential transfer
-for a private vault. It also adds Windows prerequisite repair and hosted Windows
-Bicep compilation coverage. None of those source changes has been deployed or
-live-verified at this checkpoint.
+- the Agent 365 exporter now proves acceptance from the per-sink statuses in
+  `results` and fails closed with a bounded reason, instead of trusting
+  `partialSuccess` alone;
+- the tracer records every gateway span regardless of the caller's sampling
+  decision, because an external agent arriving with `sampled=0` was previously
+  able to suppress the gateway's own audit span;
+- the Azure SDK activity sources are subscribed, so Service Bus and Blob
+  dependencies are no longer invisible; and
+- each host reports its own `service.name`, so API and worker telemetry can be
+  told apart in Azure Monitor.
 
-The next clean deployment is user-operated and must use a new deployment identity.
-Do not point a fresh local bootstrap state at an existing resource group or reuse
-state from a deleted resource group.
+A source revision is not deployed evidence until immutable image digests, exact
+resource readbacks, health checks, queue state, and a bounded registration are
+recorded for that revision.
 
-## Current user-operated clean-subscription checkpoint
+## Shipping a source change to an existing deployment
 
-The interrupted clean-subscription target remains stopped and untouched during this
-pause. Its resource group was not deleted, no tenant object was removed, and no new
-Azure, Entra, SQL, Graph, Service Bus, Purview, or deployment call was made while
-preparing this checkpoint. That target is not current-source deployment evidence.
+Bootstrap is provision-once by design. Once a deployment has recorded durable
+state evidence, its accepted source is immutable: Plan routes to Resume, and
+Resume refuses when the working tree no longer matches the accepted source
+fingerprint. The engine states the supported remedies itself — restore the exact
+prior source, or choose a distinct project/resource group.
 
-Before a later clean run, an operator must re-establish the exact authorized tenant
-and subscription boundary, verify the stopped disposable target, delete only that
-reviewed target, and prove exact absence. The next bootstrap must then use a new
-unused deployment identity; preserved state from the stopped target must not be
-forced into another resource group.
+There is therefore **no in-place application upgrade path, and none should be
+added without an explicit decision**, because mixing source generations inside
+one deployment state is exactly what the guard exists to prevent. To deploy
+changed application source, run a new bootstrap under a new unused deployment
+identity. Do not delete `.bootstrap/` state to force progress, and do not point
+fresh state at an existing resource group.
 
-The next run starts from a new unused deployment identity and selects Korea Central
-through the subscription-backed Setup dropdown, which persists `koreacentral`.
-Doctor and Plan must prove the exact configured Azure SQL path in that region before
-any mutation. The resulting source/configuration/plan fingerprints and deployed
-readbacks become the new environment evidence only after verification completes.
+Because each deploy cycle is a full clean provision, batch pending source
+corrections and deploy them together rather than one per cycle.
 
-## Paused source checkpoint
+## Offline gate
 
-The backend Resume contract is implemented and has focused offline coverage:
+All eight .NET test projects pass 1,713 tests with zero failures, and the
+solution build completes with zero warnings and zero errors under
+`-warnaserror`.
 
-- a started `Up` or explicit `Apply` is routed from state reread under the lock;
-- every completed checkpoint is independently revalidated without another Plan;
-- a read-only non-interactive review emits the preserved accepted-Plan fingerprint
-  and one checkpoint-bound Resume authorization fingerprint without mutation;
-- confirmed non-interactive Resume requires both exact fingerprints and rejects a
-  changed current record before any remaining deployment step;
-- secure ARM deployments require the canonical configured subscription; and
-- private-vault Admin UI credential transfer uses one secure ARM child resource,
-  no Key Vault data-plane authority, no value output, and value-free exact readback.
+Run the test projects individually. `src/A365Gateway.slnx` deliberately contains
+only shipping projects, so a solution-scoped `dotnet test` matches no test
+project, produces no output, and exits successfully without running anything.
+Treat an empty test run as a failure to execute, never as a pass.
 
-The combined Resume and Azure regression suite passed 323 of 323 tests. Entra
-credential and orphan-cleanup coverage passed 33 of 33; Windows Bicep prerequisite
-coverage passed 9 of 9; the Windows Azure CLI boundary passed 8 of 8; and the source
-compiler passed 10 of 10, parsed 18 PowerShell files and two JSON contracts, and
-compiled 27 Bicep templates plus three parameter files locally through the explicit
-Windows Bicep compilation lane. The complete bootstrap Pester set passed 741 tests
-on Windows with zero failures and seven skips. All eight .NET test projects passed
-1,681 tests, and the Release solution build completed with zero warnings and zero
-errors. Launcher coverage executed 11 tests on Windows and skipped six non-Windows
-cases as designed.
-
-The backend source in this checkpoint passed a final hash-scoped security rereview:
-356 focused tests passed and all four prior Resume/private-vault findings were
-closed. It has not completed hosted Windows launcher execution, browser testing, or
-live deployment. Setup's ephemeral two-step Resume review and confirmation
-service/UI integration is now implemented, tested, and rereviewed; what remains for
-that area is fixture-backed browser inspection over preserved stopped state, so a
-restarted Setup process is still not claimed as end-to-end Resume recovery.
+On Windows, a POSIX shell harness may strip the NuGet and `PATHEXT` environment
+variables that `dotnet`, `git`, and `az` require; re-export them before invoking
+any gate. Invoke PowerShell as `pwsh -NoProfile -File <path>` rather than with an
+inline `-Command` string.
 
 ## Optional protection evidence
 
-Prompt Shields reached Azure AI Content Safety successfully in the internal
-development environment. The combined Prompt Shields plus Purview request then
-failed closed at the Purview dependency.
+Prompt Shields reached Azure AI Content Safety successfully. The combined Prompt
+Shields plus Purview request failed closed at the Purview dependency.
 
 Directory readback showed the intended Purview Graph app-role assignments, but a
-safe in-memory check showed that the managed-identity token did not yet contain the
-required Purview roles. No token was printed or persisted. Therefore:
+safe in-memory check showed that the managed-identity token did not yet contain
+the required Purview roles. No token was printed or persisted. Therefore:
 
 - policy-object readback is configuration evidence only;
 - directory role assignment is not token-role evidence;
@@ -121,16 +139,21 @@ configuration and validation boundary.
 
 ## Live-action boundary
 
-- Do not mutate or delete the stopped disposable target until the user returns and
-  reauthorizes continuation after reviewing this pause commit.
-- Do not run a new bootstrap against the preserved internal development resource
-  group or adopt it from a new local state directory.
+- Do not delete or re-provision the current development resource group without a
+  fresh, explicit user authorization for that specific group. Authorization given
+  for one deployment's teardown does not carry to the next.
+- Do not run a new bootstrap against an existing gateway-owned resource group or
+  adopt it from a new local state directory.
 - Do not access, replay, or dispose of retained dead-letter evidence without a
   separately authorized incident procedure.
 - Do not expose or attempt to recover a one-time Gateway key.
 - Do not describe current source as deployed until its own readbacks are recorded.
 - Do not enable Purview runtime enforcement merely because directory assignments
   or policy objects exist.
+- Do not treat an empty telemetry table as proof that an export was rejected.
+- Keep unfiltered provider text in ignored `.bootstrap/diagnostics/` only; it can
+  contain identities and headers and must never be pasted into an issue, a chat,
+  or a shared log.
 
 ## Evidence required after a future deployment
 
@@ -143,11 +166,13 @@ only the non-sensitive outcome here:
 4. API and Admin UI health;
 5. active/scheduled/dead-letter counts for every owned queue;
 6. one bounded registration through `Active` without duplicate Registry mutation;
-7. optional Prompt Shields and Purview results, clearly separated; and
-8. the next safe operator action.
+7. per-sink Agent 365 export acceptance, not merely an HTTP status;
+8. optional Prompt Shields and Purview results, clearly separated; and
+9. the next safe operator action.
 
 The durable deployment lessons are reflected in code and runbooks: private SQL
 requires private execution reachability, ACR pull identity must exist before first
 workload pull, an empty database is the only automatic initialization target,
-unknown Registry POST outcomes are GET-only, and optional protection readiness
-must not close the core registration path.
+unknown Registry POST outcomes are GET-only, optional protection readiness must
+not close the core registration path, and a success status code from a dependency
+is never by itself proof that the dependency accepted the payload.
