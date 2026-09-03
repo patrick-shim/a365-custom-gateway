@@ -187,6 +187,150 @@ public sealed class ObservabilityExporterTests
         exception.Which.Code.Should().Be("SpansRejected");
     }
 
+    [Fact]
+    public async Task ExportActivityAsync_EverySinkSent_Accepts()
+    {
+        var handler = new RecordingHttpMessageHandler(_ => ResultsResponse(new
+        {
+            flashpoint = new { status = "sent" },
+            sentinel = new { status = "sent" },
+            esp = new { status = "sent" }
+        }));
+        var exporter = CreateExporter(handler, new RecordingTokenProvider());
+
+        var action = () => exporter.ExportActivityAsync(CreateRequest("chat"), CancellationToken.None);
+
+        await action.Should().NotThrowAsync();
+    }
+
+    // The decisive case. Microsoft documents that an ineligible tenant answers
+    // 200 OK with partialSuccess.rejectedSpans still 0 while every sink rejects
+    // the span, so partialSuccess alone silently reports a successful export.
+    [Fact]
+    public async Task ExportActivityAsync_SinksRejectedWhilePartialSuccessIsZero_ThrowsTerminalExceptionCarryingReason()
+    {
+        var handler = new RecordingHttpMessageHandler(_ => ResultsResponse(new
+        {
+            flashpoint = new { status = "rejected", reason = "tenant_not_licensed" },
+            sentinel = new { status = "rejected", reason = "tenant_not_licensed" },
+            esp = new { status = "rejected", reason = "tenant_not_licensed" }
+        }));
+        var exporter = CreateExporter(handler, new RecordingTokenProvider());
+
+        var action = () => exporter.ExportActivityAsync(
+            CreateRequest("invoke_agent"),
+            CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365ObservabilityConfigurationException>();
+        exception.Which.Code.Should().Be("SpansRejected:tenant_not_licensed");
+    }
+
+    [Fact]
+    public async Task ExportActivityAsync_AtLeastOneSinkSent_AcceptsDespiteNotRoutedSinks()
+    {
+        var handler = new RecordingHttpMessageHandler(_ => ResultsResponse(new
+        {
+            flashpoint = new { status = "sent" },
+            sentinel = new { status = "not_routed", reason = "sink_not_enabled" }
+        }));
+        var exporter = CreateExporter(handler, new RecordingTokenProvider());
+
+        var action = () => exporter.ExportActivityAsync(CreateRequest("chat"), CancellationToken.None);
+
+        await action.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task ExportActivityAsync_EverySinkNotRouted_ThrowsTerminalExceptionCarryingReason()
+    {
+        var handler = new RecordingHttpMessageHandler(_ => ResultsResponse(new
+        {
+            flashpoint = new { status = "not_routed", reason = "sink_not_enabled" },
+            sentinel = new { status = "not_routed", reason = "sink_not_enabled" }
+        }));
+        var exporter = CreateExporter(handler, new RecordingTokenProvider());
+
+        var action = () => exporter.ExportActivityAsync(CreateRequest("chat"), CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365ObservabilityConfigurationException>();
+        exception.Which.Code.Should().Be("SpansNotRouted:sink_not_enabled");
+    }
+
+    [Fact]
+    public async Task ExportActivityAsync_ResultsReportNoSinkForASpan_ThrowsTerminalException()
+    {
+        var handler = new RecordingHttpMessageHandler(_ => ResultsResponse(new { }));
+        var exporter = CreateExporter(handler, new RecordingTokenProvider());
+
+        var action = () => exporter.ExportActivityAsync(CreateRequest("chat"), CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365ObservabilityConfigurationException>();
+        exception.Which.Code.Should().Be("SpansNotRouted:unspecified");
+    }
+
+    // The rejection reason is a service-controlled enum rather than customer
+    // content, but it reaches persisted error codes and audit rows, so it stays
+    // bounded and single-line no matter what the service sends.
+    [Fact]
+    public async Task ExportActivityAsync_RejectionReason_IsBoundedBeforeReachingTheErrorCode()
+    {
+        var handler = new RecordingHttpMessageHandler(_ => ResultsResponse(new
+        {
+            flashpoint = new
+            {
+                status = "rejected",
+                reason = new string('x', 200) + " drop\r\ntable"
+            }
+        }));
+        var exporter = CreateExporter(handler, new RecordingTokenProvider());
+
+        var action = () => exporter.ExportActivityAsync(CreateRequest("chat"), CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365ObservabilityConfigurationException>();
+        exception.Which.Code.Should().Be("SpansRejected:" + new string('x', 64));
+    }
+
+    // Responses that carry results but omit partialSuccess must still be
+    // inspected; the routing verdict lives only in results.
+    [Fact]
+    public async Task ExportActivityAsync_ResultsRejectedWithoutPartialSuccess_ThrowsTerminalException()
+    {
+        var handler = new RecordingHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(new
+            {
+                results = new[]
+                {
+                    new
+                    {
+                        spanId = "0123456789abcdef",
+                        sinks = new
+                        {
+                            flashpoint = new { status = "rejected", reason = "tenant_not_licensed" }
+                        }
+                    }
+                }
+            })
+        });
+        var exporter = CreateExporter(handler, new RecordingTokenProvider());
+
+        var action = () => exporter.ExportActivityAsync(CreateRequest("chat"), CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365ObservabilityConfigurationException>();
+        exception.Which.Code.Should().Be("SpansRejected:tenant_not_licensed");
+    }
+
+    [Fact]
+    public async Task ExportActivityAsync_ResponseOmitsResults_AcceptsOnPartialSuccessAlone()
+    {
+        var handler = new RecordingHttpMessageHandler(_ => SuccessResponse());
+        var exporter = CreateExporter(handler, new RecordingTokenProvider());
+
+        var action = () => exporter.ExportActivityAsync(CreateRequest("chat"), CancellationToken.None);
+
+        await action.Should().NotThrowAsync();
+    }
+
     private static ObservabilityExporter CreateExporter(
         RecordingHttpMessageHandler handler,
         IAgent365ObservabilityTokenProvider tokenProvider)
@@ -227,6 +371,20 @@ public sealed class ObservabilityExporterTests
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = JsonContent.Create(new { partialSuccess = (object?)null })
+        };
+    }
+
+    // Mirrors the documented response shape: results[].sinks is an object map of
+    // sink name to { status, reason }, alongside a clean partialSuccess.
+    private static HttpResponseMessage ResultsResponse(object sinks)
+    {
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(new
+            {
+                partialSuccess = new { rejectedSpans = 0, errorMessage = "" },
+                results = new[] { new { spanId = "0123456789abcdef", sinks } }
+            })
         };
     }
 

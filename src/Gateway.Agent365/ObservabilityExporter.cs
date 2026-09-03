@@ -22,6 +22,9 @@ public sealed class ObservabilityExporter : IObservabilityExporter
     private const string RedactedOutput = "[{\"role\":\"assistant\",\"content\":\"[REDACTED]\"}]";
     private const string RedactedToolData = "{\"content\":\"[REDACTED]\"}";
 
+    private const string UnspecifiedReason = "unspecified";
+    private const int MaxSinkReasonLength = 64;
+
     private static readonly HashSet<string> SupportedOperations = new(StringComparer.Ordinal)
     {
         "invoke_agent",
@@ -196,7 +199,11 @@ public sealed class ObservabilityExporter : IObservabilityExporter
                     $"Http{(int)response.StatusCode}");
             }
 
-            await EnsureNoRejectedSpansAsync(response, cancellationToken);
+            await EnsureExportAcceptedAsync(
+                response,
+                request.AgentRegistrationId,
+                operation,
+                cancellationToken);
         }
 
         _logger.LogInformation(
@@ -302,28 +309,23 @@ public sealed class ObservabilityExporter : IObservabilityExporter
             ToOtlpAttributes(attributes));
     }
 
-    private static async Task EnsureNoRejectedSpansAsync(
+    // A 200 OK only means Agent 365 processed the request. Microsoft documents
+    // that a whole-request routing decision can leave partialSuccess.rejectedSpans
+    // at 0 while results shows every span rejected, so the per-sink statuses in
+    // results are the only reliable proof that telemetry was actually accepted.
+    private async Task EnsureExportAcceptedAsync(
         HttpResponseMessage response,
+        Guid agentRegistrationId,
+        string operation,
         CancellationToken cancellationToken)
     {
         try
         {
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            if (!document.RootElement.TryGetProperty("partialSuccess", out var partialSuccess)
-                || partialSuccess.ValueKind == JsonValueKind.Null)
-            {
-                return;
-            }
 
-            if (partialSuccess.ValueKind != JsonValueKind.Object)
-                throw new Agent365ObservabilityConfigurationException("InvalidExportResponse");
-
-            if (partialSuccess.TryGetProperty("rejectedSpans", out var rejectedSpans)
-                && TryReadPositiveInt64(rejectedSpans))
-            {
-                throw new Agent365ObservabilityConfigurationException("SpansRejected");
-            }
+            EnsureNoPartialSuccessRejection(document.RootElement);
+            EnsureEverySpanReachedASink(document.RootElement, agentRegistrationId, operation);
         }
         catch (Agent365ObservabilityExportException)
         {
@@ -333,6 +335,129 @@ public sealed class ObservabilityExporter : IObservabilityExporter
         {
             throw new Agent365ObservabilityTransientException("InvalidExportResponse", exception);
         }
+    }
+
+    private static void EnsureNoPartialSuccessRejection(JsonElement root)
+    {
+        if (!root.TryGetProperty("partialSuccess", out var partialSuccess)
+            || partialSuccess.ValueKind == JsonValueKind.Null)
+        {
+            return;
+        }
+
+        if (partialSuccess.ValueKind != JsonValueKind.Object)
+            throw new Agent365ObservabilityConfigurationException("InvalidExportResponse");
+
+        if (partialSuccess.TryGetProperty("rejectedSpans", out var rejectedSpans)
+            && TryReadPositiveInt64(rejectedSpans))
+        {
+            throw new Agent365ObservabilityConfigurationException("SpansRejected");
+        }
+    }
+
+    private void EnsureEverySpanReachedASink(
+        JsonElement root,
+        Guid agentRegistrationId,
+        string operation)
+    {
+        if (!root.TryGetProperty("results", out var results)
+            || results.ValueKind == JsonValueKind.Null)
+        {
+            // Responses that omit results leave partialSuccess as the only signal.
+            return;
+        }
+
+        if (results.ValueKind != JsonValueKind.Array)
+            throw new Agent365ObservabilityConfigurationException("InvalidExportResponse");
+
+        var unroutedSinks = new List<string>();
+
+        foreach (var result in results.EnumerateArray())
+        {
+            var sentSinks = 0;
+            string? firstUnroutedReason = null;
+
+            if (result.ValueKind == JsonValueKind.Object
+                && result.TryGetProperty("sinks", out var sinks)
+                && sinks.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var sink in sinks.EnumerateObject())
+                {
+                    switch (ReadSinkStatus(sink))
+                    {
+                        case "sent":
+                            sentSinks++;
+                            break;
+                        case "rejected":
+                            throw new Agent365ObservabilityConfigurationException(
+                                $"SpansRejected:{ReadSinkReason(sink)}");
+                        default:
+                            // not_routed, or a status this build does not recognize.
+                            firstUnroutedReason ??= ReadSinkReason(sink);
+                            unroutedSinks.Add(sink.Name);
+                            break;
+                    }
+                }
+            }
+
+            if (sentSinks == 0)
+            {
+                throw new Agent365ObservabilityConfigurationException(
+                    $"SpansNotRouted:{firstUnroutedReason ?? UnspecifiedReason}");
+            }
+        }
+
+        if (unroutedSinks.Count > 0)
+        {
+            _logger.LogWarning(
+                "Agent 365 accepted the {Operation} span for agent {AgentRegistrationId} but did not route it to sink(s) {UnroutedSinks}",
+                operation,
+                agentRegistrationId,
+                string.Join(",", unroutedSinks.Distinct(StringComparer.Ordinal)));
+        }
+    }
+
+    private static string? ReadSinkStatus(JsonProperty sink)
+    {
+        return sink.Value.ValueKind == JsonValueKind.Object
+            && sink.Value.TryGetProperty("status", out var status)
+            && status.ValueKind == JsonValueKind.String
+                ? status.GetString()
+                : null;
+    }
+
+    private static string ReadSinkReason(JsonProperty sink)
+    {
+        var reason = sink.Value.ValueKind == JsonValueKind.Object
+            && sink.Value.TryGetProperty("reason", out var element)
+            && element.ValueKind == JsonValueKind.String
+                ? element.GetString()
+                : null;
+
+        return SanitizeSinkReason(reason);
+    }
+
+    // Sink reasons are a service-controlled enum such as tenant_not_licensed
+    // rather than customer content, so they are safe to surface. Bound them
+    // anyway: this value reaches persisted error codes and audit rows.
+    private static string SanitizeSinkReason(string? reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            return UnspecifiedReason;
+
+        var builder = new StringBuilder(MaxSinkReasonLength);
+        foreach (var character in reason.Trim())
+        {
+            if (builder.Length == MaxSinkReasonLength)
+                break;
+
+            builder.Append(
+                char.IsAsciiLetterOrDigit(character) || character is '_' or '-' or '.'
+                    ? character
+                    : '_');
+        }
+
+        return builder.Length == 0 ? UnspecifiedReason : builder.ToString();
     }
 
     private static bool TryReadPositiveInt64(JsonElement element)

@@ -363,7 +363,14 @@ public class InfrastructureAsCodeSecurityTests
             "agent365DelegatedRegistryEnabled: effectiveContinuousDevelopmentProvisioningEnabled");
         main.Should().Contain("minReplicas: apiMinReplicas");
         main.Should().Contain("maxReplicas: apiMaxReplicas");
-        main.Should().Contain("maxReplicas: workerMaxReplicas");
+        // The worker scale range still comes from the parameter, but Registry
+        // preview provisioning pins it to a single replica taking a single
+        // Service Bus callback, because the preview dependency is not safe to
+        // call concurrently.
+        main.Should().Contain(
+            "maxReplicas: effectiveWorkerProvisioningExecutionEnabled ? 1 : workerMaxReplicas");
+        main.Should().Contain(
+            "maxConcurrentCalls: effectiveWorkerProvisioningExecutionEnabled ? 1 : 5");
         main.Should().Contain("output apiMinReplicas int = apiMinReplicas");
         main.Should().Contain("output apiMaxReplicas int = apiMaxReplicas");
         main.Should().NotContain("effectiveApiBoundedActionEnabled");
