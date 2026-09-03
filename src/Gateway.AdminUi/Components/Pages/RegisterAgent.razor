@@ -258,6 +258,21 @@ else
                     }
                     else if (blueprintOptionsLoaded)
                     {
+                        @if (BlueprintFilterAvailable)
+                        {
+                            <div class="form-field full">
+                                <label for="blueprint-filter">Filter blueprints</label>
+                                <input id="blueprint-filter"
+                                       class="form-control"
+                                       type="search"
+                                       autocomplete="off"
+                                       placeholder="Filter by name or Graph ID"
+                                       value="@blueprintFilter"
+                                       @oninput="OnBlueprintFilterChanged"
+                                       aria-describedby="blueprint-filter-status" />
+                                <span id="blueprint-filter-status" class="field-help" role="status" aria-live="polite">@BlueprintFilterStatus</span>
+                            </div>
+                        }
                         <div class="form-field full">
                             <label for="existing-blueprint">Existing reusable blueprint</label>
                             <InputSelect id="existing-blueprint"
@@ -265,12 +280,27 @@ else
                                          @bind-Value="form.BlueprintObjectId"
                                          aria-describedby="existing-blueprint-help blueprint-inventory-status">
                                 <option value="">Select an Agent 365-compatible blueprint</option>
-                                @foreach (var blueprint in blueprintOptions)
+                                @if (FilteredCompatibleBlueprints.Count > 0)
                                 {
-                                    <option value="@blueprint.BlueprintObjectId"
-                                            disabled="@(!blueprint.IsAgent365Compatible)">
-                                        @FormatBlueprintOption(blueprint)
-                                    </option>
+                                    <optgroup label="Available for Agent 365">
+                                        @foreach (var blueprint in FilteredCompatibleBlueprints)
+                                        {
+                                            <option value="@blueprint.BlueprintObjectId">
+                                                @FormatBlueprintOption(blueprint)
+                                            </option>
+                                        }
+                                    </optgroup>
+                                }
+                                @if (FilteredIncompatibleBlueprints.Count > 0)
+                                {
+                                    <optgroup label="Unavailable — missing a manager application this Gateway requires">
+                                        @foreach (var blueprint in FilteredIncompatibleBlueprints)
+                                        {
+                                            <option value="@blueprint.BlueprintObjectId" disabled>
+                                                @FormatBlueprintOption(blueprint)
+                                            </option>
+                                        }
+                                    </optgroup>
                                 }
                             </InputSelect>
                             <span id="existing-blueprint-help" class="field-help">Choose by name. The shown Graph ID comes from the typed catalog; Graph <code>id</code> and <code>appId</code> may be the same GUID, and the Gateway preserves their route-specific fields. Inventory entries that are missing a manager application required by this Gateway remain visible but cannot be selected.</span>
@@ -509,6 +539,7 @@ else
     private string? identityError;
     private string? ownerDisplay;
     private string blueprintInventoryStatus = string.Empty;
+    private string blueprintFilter = string.Empty;
     private bool blueprintOptionsLoaded;
     private bool blueprintOptionsLoading;
     private bool purviewProfilesLoaded;
@@ -847,6 +878,72 @@ else
 
     private int CompatibleBlueprintCount =>
         blueprintOptions.Count(item => item.IsAgent365Compatible);
+
+    // A directory that has accumulated dozens of blueprints makes a flat list
+    // unusable, because the few selectable entries are buried among the ones this
+    // Gateway cannot manage. Offer the filter only once the list is long enough to
+    // need it, so a small inventory keeps its simpler form.
+    private const int BlueprintFilterThreshold = 8;
+
+    private bool BlueprintFilterAvailable =>
+        blueprintOptions.Count > BlueprintFilterThreshold;
+
+    private IReadOnlyList<AgentIdentityBlueprintSummaryDto> FilteredCompatibleBlueprints =>
+        FilterBlueprints(compatible: true);
+
+    private IReadOnlyList<AgentIdentityBlueprintSummaryDto> FilteredIncompatibleBlueprints =>
+        FilterBlueprints(compatible: false);
+
+    private IReadOnlyList<AgentIdentityBlueprintSummaryDto> FilterBlueprints(bool compatible) =>
+        blueprintOptions
+            .Where(item => item.IsAgent365Compatible == compatible && MatchesBlueprintFilter(item))
+            .ToArray();
+
+    // Keep the current selection listed even when it no longer matches, so narrowing
+    // the filter can never silently drop the blueprint the operator already chose.
+    // Every whitespace-separated term must match, because blueprint names are long
+    // and multi-word, and an operator recalls scattered fragments of one rather than
+    // an exact contiguous substring.
+    private bool MatchesBlueprintFilter(AgentIdentityBlueprintSummaryDto blueprint)
+    {
+        var objectId = blueprint.BlueprintObjectId.ToString("D");
+        if (string.Equals(objectId, form.BlueprintObjectId, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var terms = blueprintFilter.Split(
+            (char[]?)null,
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (terms.Length == 0)
+        {
+            return true;
+        }
+
+        var displayName = blueprint.DisplayName ?? string.Empty;
+        return terms.All(term =>
+            displayName.Contains(term, StringComparison.OrdinalIgnoreCase) ||
+            objectId.Contains(term, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string BlueprintFilterStatus
+    {
+        get
+        {
+            var matches = FilteredCompatibleBlueprints.Count + FilteredIncompatibleBlueprints.Count;
+            if (matches == 0)
+            {
+                return "No blueprint matches this filter. Clear it to see the full inventory.";
+            }
+
+            return matches == 1
+                ? $"1 of {blueprintOptions.Count} blueprints match; {FilteredCompatibleBlueprints.Count} available for Agent 365."
+                : $"{matches} of {blueprintOptions.Count} blueprints match; {FilteredCompatibleBlueprints.Count} available for Agent 365.";
+        }
+    }
+
+    private void OnBlueprintFilterChanged(ChangeEventArgs eventArgs) =>
+        blueprintFilter = eventArgs.Value?.ToString() ?? string.Empty;
 
     private bool SelectedBlueprintIsCurrent() =>
         blueprintOptionsLoaded &&

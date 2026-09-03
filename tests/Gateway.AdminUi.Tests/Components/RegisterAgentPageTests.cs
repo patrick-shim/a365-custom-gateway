@@ -143,6 +143,86 @@ public sealed class RegisterAgentPageTests : BunitContext
     }
 
     [Fact]
+    public void SmallBlueprintInventory_DoesNotOfferAFilter()
+    {
+        _authorization.SetClaims(new Claim("oid", "02ed1e89-4ad1-4073-8e90-4aa865784896"));
+
+        var cut = Render<RegisterAgent>();
+
+        cut.FindAll("#blueprint-filter").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void LargeBlueprintInventory_ListsAvailableBlueprintsBeforeUnavailableOnes()
+    {
+        _authorization.SetClaims(new Claim("oid", "02ed1e89-4ad1-4073-8e90-4aa865784896"));
+        _api.GetAgentIdentityBlueprintsAsync(Arg.Any<CancellationToken>())
+            .Returns(CreateLargeBlueprintInventory(compatible: 9, incompatible: 36));
+
+        var cut = Render<RegisterAgent>();
+
+        var groups = cut.FindAll("#existing-blueprint optgroup");
+        groups.Should().HaveCount(2);
+        groups[0].GetAttribute("label").Should().Contain("Available");
+        groups[1].GetAttribute("label").Should().Contain("Unavailable");
+        groups[0].QuerySelectorAll("option").Should().HaveCount(9);
+        groups[1].QuerySelectorAll("option").Should().HaveCount(36);
+        groups[0].QuerySelectorAll("option")
+            .Should().OnlyContain(option => !option.HasAttribute("disabled"));
+        groups[1].QuerySelectorAll("option")
+            .Should().OnlyContain(option => option.HasAttribute("disabled"));
+        cut.Find("#blueprint-filter").Should().NotBeNull();
+    }
+
+    [Fact]
+    public void BlueprintFilter_NarrowsBothGroupsAndReportsTheMatchCount()
+    {
+        _authorization.SetClaims(new Claim("oid", "02ed1e89-4ad1-4073-8e90-4aa865784896"));
+        _api.GetAgentIdentityBlueprintsAsync(Arg.Any<CancellationToken>())
+            .Returns(CreateLargeBlueprintInventory(compatible: 9, incompatible: 36));
+
+        var cut = Render<RegisterAgent>();
+        cut.Find("#blueprint-filter").Input("Available 03");
+
+        var options = cut.FindAll("#existing-blueprint optgroup option");
+        options.Should().HaveCount(1);
+        options[0].TextContent.Should().Contain("Available blueprint 03");
+        cut.Find("#blueprint-filter-status").TextContent.Should().Contain("1");
+    }
+
+    [Fact]
+    public void BlueprintFilter_KeepsTheCurrentSelectionVisibleWhenItNoLongerMatches()
+    {
+        _authorization.SetClaims(new Claim("oid", "02ed1e89-4ad1-4073-8e90-4aa865784896"));
+        _api.GetAgentIdentityBlueprintsAsync(Arg.Any<CancellationToken>())
+            .Returns(CreateLargeBlueprintInventory(compatible: 9, incompatible: 36));
+
+        var cut = Render<RegisterAgent>();
+        var selected = LargeInventoryObjectId(1).ToString("D");
+        cut.Find("#existing-blueprint").Change(selected);
+        cut.Find("#blueprint-filter").Input("Available 07");
+
+        var options = cut.FindAll("#existing-blueprint optgroup option");
+        options.Should().HaveCount(2);
+        options.Should().Contain(option => option.GetAttribute("value") == selected);
+    }
+
+    [Fact]
+    public void BlueprintFilter_ExplainsWhenNothingMatches()
+    {
+        _authorization.SetClaims(new Claim("oid", "02ed1e89-4ad1-4073-8e90-4aa865784896"));
+        _api.GetAgentIdentityBlueprintsAsync(Arg.Any<CancellationToken>())
+            .Returns(CreateLargeBlueprintInventory(compatible: 9, incompatible: 36));
+
+        var cut = Render<RegisterAgent>();
+        cut.Find("#blueprint-filter").Input("no-such-blueprint");
+
+        cut.FindAll("#existing-blueprint optgroup option").Should().BeEmpty();
+        cut.Find("#blueprint-filter-status").TextContent
+            .Should().Contain("No blueprint matches");
+    }
+
+    [Fact]
     public async Task MissingBlueprintSelection_FailsValidationWithoutSubmitting()
     {
         const string ownerObjectId = "02ed1e89-4ad1-4073-8e90-4aa865784896";
@@ -820,4 +900,37 @@ public sealed class RegisterAgentPageTests : BunitContext
             IsAgent365Compatible: true,
             Agent365CompatibilityIssue: null)
     ]);
+
+    private static Guid LargeInventoryObjectId(int index) =>
+        Guid.Parse($"0000{index:D4}-0000-4000-8000-000000000000");
+
+    private static AgentIdentityBlueprintListResponse CreateLargeBlueprintInventory(
+        int compatible,
+        int incompatible)
+    {
+        var items = new List<AgentIdentityBlueprintSummaryDto>(compatible + incompatible);
+        for (var index = 1; index <= compatible; index++)
+        {
+            var objectId = LargeInventoryObjectId(index);
+            items.Add(new AgentIdentityBlueprintSummaryDto(
+                objectId,
+                objectId,
+                $"Available blueprint {index:D2}",
+                IsAgent365Compatible: true,
+                Agent365CompatibilityIssue: null));
+        }
+
+        for (var index = 1; index <= incompatible; index++)
+        {
+            var objectId = LargeInventoryObjectId(1000 + index);
+            items.Add(new AgentIdentityBlueprintSummaryDto(
+                objectId,
+                objectId,
+                $"Legacy blueprint {index:D2}",
+                IsAgent365Compatible: false,
+                Agent365CompatibilityIssue: "MissingRequiredManagerApplications"));
+        }
+
+        return new AgentIdentityBlueprintListResponse(items);
+    }
 }
