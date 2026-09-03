@@ -10,14 +10,21 @@ public static class GatewayObservabilityMetrics
     private static readonly Counter<long> EmittedEvents = Meter.CreateCounter<long>(
         "gateway.observability.azure_monitor.emitted_events",
         unit: "{event}",
-        description: "Sanitized activity and interaction events emitted to the Azure Monitor pipeline.");
+        description: "Sanitized activity and interaction events offered to the Azure Monitor pipeline, split by whether a span was actually recorded.");
 
-    internal static void RecordAzureMonitorEmission(string recordType, string operation)
+    internal static void RecordAzureMonitorEmission(
+        string recordType,
+        string operation,
+        bool recorded)
     {
         EmittedEvents.Add(
             1,
             new KeyValuePair<string, object?>("gateway.record.type", recordType),
             new KeyValuePair<string, object?>("gateway.operation", operation),
-            new KeyValuePair<string, object?>("gateway.export.result", "emitted"));
+            // A constant dimension would make the counter unfalsifiable. Report the real
+            // outcome so an un-mirrored event is visible instead of being counted as sent.
+            new KeyValuePair<string, object?>(
+                "gateway.export.result",
+                recorded ? "recorded" : "not_recorded"));
     }
 }

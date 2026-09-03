@@ -17,6 +17,9 @@ using NSubstitute;
 
 namespace Gateway.ObservabilityRuntime.Tests.Worker;
 
+// Drives the sanitized mirror, so it emits gateway spans and counter measurements that
+// other telemetry-observing tests would otherwise pick up as their own.
+[Collection(TelemetryCollection.Name)]
 public sealed class ProvisioningMessageHandlerTests
 {
     private const string PlannedRegistryId =

@@ -65,10 +65,19 @@ Fail closed on each of these; none may be reported as met.
   so no blueprint-scoped DLP verdict exists. Enabling it also requires bootstrap
   to provision the Purview policy-automation application and certificate, which
   it does not yet do.
-- **Azure Monitor mirror completeness.** The Agent 365 sink is proven per sink,
-  but the parallel Azure Monitor mirror is not yet measurable: nothing asserts
-  that a mirrored span exists for every emitted event. Treat the mirror as
-  lossy until an emitted-versus-mirrored count check passes.
+- **Azure Monitor mirror completeness.** The Agent 365 sink is proven per sink.
+  The mirror is now *instrumentable* but is still not *proven*. The counter
+  `gateway.observability.azure_monitor.emitted_events` previously hardcoded its
+  `gateway.export.result` dimension to `emitted` and incremented even when no
+  span had been created, so it could not distinguish an event that was never
+  recorded from one recorded and then lost in export. That dimension now carries
+  the real outcome, `recorded` or `not_recorded`, and the worker logs a warning
+  whenever an event whose idempotency claim was already consumed produced no
+  span, because such an event can never be mirrored again. This is a source
+  correction that has not been deployed. Treat the mirror as lossy until a live
+  emitted-versus-mirrored count check passes on a deployed build: query the
+  counter split by `gateway.export.result` and confirm `not_recorded` is zero
+  over the same window as the exercised traffic.
 - **Defender agent inventory for the current agents.** The Defender advanced
   hunting inventory table does carry the gateway's own platform value alongside
   the first-party agent platforms, which proves gateway-created agent identities
@@ -138,7 +147,7 @@ corrections and deploy them together rather than one per cycle.
 
 ## Offline gate
 
-All eight .NET test projects pass 1,734 tests with zero failures, and the
+All eight .NET test projects pass 1,743 tests with zero failures, and the
 solution build completes with zero warnings and zero errors under
 `-warnaserror`.
 

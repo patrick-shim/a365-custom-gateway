@@ -186,13 +186,24 @@ internal sealed class ProvisioningMessageHandler
         {
             if (shouldEmitAzureMonitorMirror)
             {
-                SanitizedTelemetryEmitter.EmitAzureMonitorMirror(
+                var mirrored = SanitizedTelemetryEmitter.EmitAzureMonitorMirror(
                     agent.Id,
                     record.Id,
                     "interaction",
                     "chat",
                     record.OccurredAtUtc,
                     record.ReceivedAtUtc);
+
+                if (!mirrored)
+                {
+                    // The idempotency claim is already consumed, so this event will never be
+                    // mirrored again. Say so instead of letting it disappear silently.
+                    _logger.LogWarning(
+                        "Azure Monitor mirror produced no span for interaction {RecordId} on agent {AgentId} (correlation {CorrelationId}); the claim is consumed and the event will not be mirrored again.",
+                        record.Id,
+                        agent.Id,
+                        record.CorrelationId);
+                }
             }
 
             if (destinations.HasFlag(ObservabilityDestinations.Agent365))
@@ -328,13 +339,24 @@ internal sealed class ProvisioningMessageHandler
         {
             if (shouldEmitAzureMonitorMirror)
             {
-                SanitizedTelemetryEmitter.EmitAzureMonitorMirror(
+                var mirrored = SanitizedTelemetryEmitter.EmitAzureMonitorMirror(
                     agent.Id,
                     receipt.Id,
                     "activity",
                     operation,
                     receipt.OccurredAtUtc,
                     receipt.ReceivedAtUtc);
+
+                if (!mirrored)
+                {
+                    // The idempotency claim is already consumed, so this event will never be
+                    // mirrored again. Say so instead of letting it disappear silently.
+                    _logger.LogWarning(
+                        "Azure Monitor mirror produced no span for activity {ReceiptId} on agent {AgentId} (correlation {CorrelationId}); the claim is consumed and the event will not be mirrored again.",
+                        receipt.Id,
+                        agent.Id,
+                        receipt.CorrelationId);
+                }
             }
 
             if (destinations.HasFlag(ObservabilityDestinations.Agent365))
