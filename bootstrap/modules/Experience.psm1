@@ -751,7 +751,7 @@ function New-GatewayBootstrapConfiguration {
 
     $subscriptionChoices = @($subscriptions | ForEach-Object {
         [ordered]@{
-            label = "$(ConvertTo-GatewaySafeDisplayText $_.name) ($([string]$_.id).Substring(0, 8))...)"
+            label = "$(ConvertTo-GatewaySafeDisplayText $_.name) ($(ConvertTo-GatewaySafeDisplayText -Value $_.id -MaximumLength 8))"
             description = "Tenant $($_.tenantId)"
             value = $_
         }
@@ -808,7 +808,7 @@ function New-GatewayBootstrapConfiguration {
 
     Write-Host ''
     Write-Host 'Agent 365 managerApplications grant first-party manager authority and must be independently reviewed for this tenant/provider version.' -ForegroundColor Yellow
-    Write-Host 'Do not copy IDs from blueprint discovery alone. Follow docs/operations/entra-setup-runbook.md section 4.3.' -ForegroundColor DarkGray
+    Write-Host 'Do not copy IDs from blueprint discovery alone. Follow the "Reviewed manager applications" section of docs/operations/entra-setup-runbook.md.' -ForegroundColor DarkGray
     $reviewedManagerApplicationIds = @()
     while ($reviewedManagerApplicationIds.Count -eq 0) {
         $managerInput = Read-GatewayText -Prompt 'Reviewed manager application ID(s), comma-separated' -Pattern '^[0-9A-Fa-f,; \-]+$' -ValidationMessage 'Enter one to ten comma-separated GUIDs.'

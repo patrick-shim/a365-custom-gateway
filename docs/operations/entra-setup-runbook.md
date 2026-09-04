@@ -61,6 +61,37 @@ Bootstrap creates or selects a typed Agent Identity blueprint and verifies
 under the selected blueprint. Equality between provider object/client IDs does not
 make their resource types interchangeable.
 
+## Reviewed manager applications
+
+Setup asks for `Reviewed manager application ID(s), comma-separated` and stores the
+answer as `agent365.reviewedManagerApplicationIds`. These are Microsoft first-party
+application IDs that hold manager authority over every Agent ID created under the
+blueprint, so bootstrap treats them as an authorization decision rather than a
+discovered fact.
+
+List the candidate IDs the provider currently reports:
+
+```bash
+az rest --method GET --url 'https://graph.microsoft.com/v1.0/applications/microsoft.graph.agentIdentityBlueprint?$select=id,appId,displayName,managerApplications'
+```
+
+Quote the URL with single quotes. They are literal in both `bash` and PowerShell, so
+the same command works unchanged on Windows and macOS; double quotes would let
+PowerShell expand `$select`.
+
+Reviewing means confirming each returned ID against Microsoft's published first-party
+application IDs for your tenant and provider version, then entering the IDs you
+confirmed. Echoing discovery back is not a review: the check exists so that a
+blueprint which silently gains a manager cannot grant that manager authority just by
+being read.
+
+Bootstrap accepts one to ten distinct GUIDs and requires the configured set to equal
+the blueprint's `managerApplications` exactly. A mismatch fails with
+`The seed blueprint managerApplications do not exactly match the independently
+reviewed configuration.` Re-run the command above and compare before changing
+configuration; a set that grew since the last run is a change to authority and
+deserves a fresh review, not a wider allowlist.
+
 ## Read-only verification
 
 Run:

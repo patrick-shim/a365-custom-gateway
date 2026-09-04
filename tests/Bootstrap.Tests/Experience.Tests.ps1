@@ -225,6 +225,87 @@ Describe 'Experience Windows-safe Azure CLI command boundary' {
     }
 }
 
+Describe 'Experience runbook pointers' {
+    It 'names only Entra runbook sections that exist' {
+        # Derived from the loaded module because the file-level root variable is
+        # bound during discovery and is not in scope while the test runs.
+        $repositoryRoot = [IO.Path]::GetFullPath((Join-Path `
+            ([IO.Path]::GetDirectoryName((Get-Module Experience).Path)) '../..'))
+        $runbookPath = Join-Path $repositoryRoot 'docs/operations/entra-setup-runbook.md'
+        $headings = @(Select-String -LiteralPath $runbookPath -Pattern '^##\s+(.+?)\s*$' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value })
+        $headings.Count | Should -BeGreaterThan 0
+
+        $moduleFiles = @(Get-ChildItem `
+            -LiteralPath (Join-Path $repositoryRoot 'bootstrap/modules') -Filter '*.psm1')
+        $moduleFiles.Count | Should -BeGreaterThan 0
+        $references = @(Select-String `
+            -LiteralPath @($moduleFiles.FullName) -Pattern 'entra-setup-runbook\.md')
+        $references.Count | Should -BeGreaterThan 0
+
+        foreach ($reference in $references) {
+            # The runbook has never used numbered headings, so a "section 4.3" style
+            # pointer sends the operator to a section that cannot exist.
+            $reference.Line | Should -Not -Match 'section\s+\d'
+            $named = [regex]::Match($reference.Line, '"([^"]+)"\s+section of')
+            $named.Success | Should -BeTrue
+            $headings | Should -Contain $named.Groups[1].Value
+        }
+    }
+}
+
+Describe 'Experience CLI subscription choice label' {
+    InModuleScope Experience {
+        BeforeAll {
+            $tokens = $null
+            $parseErrors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile(
+                (Get-Module Experience).Path, [ref]$tokens, [ref]$parseErrors)
+            $parseErrors.Count | Should -Be 0
+            $function = $ast.Find({ param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ceq 'New-GatewayBootstrapConfiguration'
+            }, $true)
+            $assignment = $function.Body.Find({ param($node)
+                $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                    $node.Left.Extent.Text -ceq '$subscriptionChoices'
+            }, $true)
+            $hashtable = $assignment.Find({ param($node)
+                $node -is [Management.Automation.Language.HashtableAst]
+            }, $true)
+            $labelPair = @($hashtable.KeyValuePairs |
+                Where-Object { $_.Item1.Extent.Text -ceq 'label' })
+            $labelPair.Count | Should -Be 1
+            $script:renderLabel = [scriptblock]::Create(
+                "`$_ = `$args[0]`n$($labelPair[0].Item2.Extent.Text)")
+        }
+
+        It 'shortens the subscription id instead of printing it in full' {
+            $rendered = & $script:renderLabel ([pscustomobject]@{
+                name = 'Contoso Production'
+                id = '11111111-1111-4111-8111-111111111111'
+                tenantId = '22222222-2222-4222-8222-222222222222'
+            })
+
+            # The trailing ellipsis was always the intent: the operator only needs
+            # enough of the id to tell two similarly named subscriptions apart.
+            $rendered | Should -BeExactly 'Contoso Production (11111111...)'
+            $rendered | Should -Not -Match '11111111-1111-4111-8111-111111111111'
+            $rendered | Should -Not -Match 'Substring'
+        }
+
+        It 'renders a subscription id shorter than the truncation length without failing' {
+            $rendered = & $script:renderLabel ([pscustomobject]@{
+                name = 'Short'
+                id = 'abc'
+                tenantId = '22222222-2222-4222-8222-222222222222'
+            })
+
+            $rendered | Should -BeExactly 'Short (abc)'
+        }
+    }
+}
+
 Describe 'Experience CLI Azure region choice boundary' {
     InModuleScope Experience {
         BeforeEach {
