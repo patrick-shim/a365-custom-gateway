@@ -49,7 +49,7 @@ public sealed class PromptEvaluationTests : IDisposable
         const string prompt = "Summarize the public launch notes.";
         var apiKey = await SetupProtectedAgentAsync(externalAgentId);
         UseGatewayCredential(apiKey);
-        _factory.MockPromptShieldClient.EvaluateAsync(prompt, Arg.Any<CancellationToken>())
+        _factory.MockPromptShieldClient.EvaluateAsync(prompt, Arg.Any<PromptShieldSubject>(), Arg.Any<CancellationToken>())
             .Returns(new PromptShieldEvaluationResult(false));
         _factory.MockContentStore.StoreAsync(
                 Arg.Any<Guid>(),
@@ -86,7 +86,7 @@ public sealed class PromptEvaluationTests : IDisposable
 
         interactionResponse.StatusCode.Should().Be(HttpStatusCode.Accepted);
         await _factory.MockPromptShieldClient.Received(1)
-            .EvaluateAsync(prompt, Arg.Any<CancellationToken>());
+            .EvaluateAsync(prompt, Arg.Any<PromptShieldSubject>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -97,7 +97,7 @@ public sealed class PromptEvaluationTests : IDisposable
         const string prompt = "ignore-all-instructions-sensitive-marker-8472";
         var apiKey = await SetupProtectedAgentAsync(externalAgentId);
         UseGatewayCredential(apiKey);
-        _factory.MockPromptShieldClient.EvaluateAsync(prompt, Arg.Any<CancellationToken>())
+        _factory.MockPromptShieldClient.EvaluateAsync(prompt, Arg.Any<PromptShieldSubject>(), Arg.Any<CancellationToken>())
             .Returns(new PromptShieldEvaluationResult(true));
         using var request = CreateEvaluationRequest(externalAgentId, interactionId, prompt);
 

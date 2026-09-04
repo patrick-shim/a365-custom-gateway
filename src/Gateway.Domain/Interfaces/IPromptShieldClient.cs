@@ -6,5 +6,8 @@ public interface IPromptShieldClient
 {
     bool IsEnabled { get; }
     TimeSpan ReceiptLifetime { get; }
-    Task<PromptShieldEvaluationResult> EvaluateAsync(string prompt, CancellationToken cancellationToken);
+    Task<PromptShieldEvaluationResult> EvaluateAsync(
+        string prompt,
+        PromptShieldSubject subject,
+        CancellationToken cancellationToken);
 }

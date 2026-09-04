@@ -42,6 +42,20 @@ Prompt Shields was verified enforcing per agent prompt, which is the intended
 scope: Prompt Shields is evaluated per agent request, while Purview DLP applies
 at blueprint level.
 
+The deployed build proved that scope behaviourally, by blocking one agent's
+prompt without affecting its blueprint siblings, but it did not record *which*
+Agent 365 identity a verdict belonged to. A source correction now carries the
+calling agent's Agent 365 agent ID and blueprint ID into every evaluation, tags
+them onto the trace, and persists them on the stored evaluation record, so a
+verdict answers "which agent made this call" on its own. An agent whose Agent
+365 provisioning has not completed still receives a real verdict; the missing
+identity is recorded as absent and logged, never backfilled with a placeholder.
+The identity is deliberately not sent to Azure AI Content Safety, which has no
+field for it. This is a source correction that has not been deployed. Treat
+per-verdict identity attribution as unproven until a deployed build shows a
+non-null `Agent365AgentId` on `dbo.PromptEvaluationRecords` for a live
+evaluation.
+
 Agent 365 activity attribution was verified in the Microsoft 365 admin center.
 Each agent's own Activity tab reported a session count equal to the number of
 allowed invocations made against that agent, and a prompt that Prompt Shields
@@ -145,9 +159,21 @@ fresh state at an existing resource group.
 Because each deploy cycle is a full clean provision, batch pending source
 corrections and deploy them together rather than one per cycle.
 
+Pending that batch, in commit order:
+
+- transient Microsoft Graph 400 handling when establishing a blueprint principal;
+- the existing-blueprint picker remaining usable past forty blueprints;
+- the honest `recorded` / `not_recorded` outcome on the Azure Monitor mirror; and
+- per-agent Prompt Shields identity attribution, which also adds
+  `infrastructure/sql/20260903_prompt_evaluation_agent_identity.sql`.
+
+That last item is the only one in the batch that changes the database schema, so
+the next provision will apply a new migration script and record a different
+schema fingerprint. That is expected, not drift.
+
 ## Offline gate
 
-All eight .NET test projects pass 1,743 tests with zero failures, and the
+All eight .NET test projects pass 1,748 tests with zero failures, and the
 solution build completes with zero warnings and zero errors under
 `-warnaserror`.
 

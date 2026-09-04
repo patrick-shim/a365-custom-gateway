@@ -561,6 +561,7 @@ public class InfrastructureAsCodeSecurityTests
         runner.Should().Contain("20260824_agent_identity_workflow_v2.sql");
         runner.Should().Contain("20260829_purview_policy_profiles.sql");
         runner.Should().Contain("20260829_prompt_protection.sql");
+        runner.Should().Contain("20260903_prompt_evaluation_agent_identity.sql");
 
         var purviewMigration = ReadRepositoryFile(
             "infrastructure", "sql", "20260829_purview_policy_profiles.sql");

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -29,10 +30,30 @@ public sealed class PromptShieldClient : IPromptShieldClient
 
     public async Task<PromptShieldEvaluationResult> EvaluateAsync(
         string prompt,
+        PromptShieldSubject subject,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(subject);
         if (!IsEnabled)
             throw new PromptShieldException("PROMPT_SHIELD_NOT_CONFIGURED", "Prompt Shields is not enabled.");
+
+        // Attribute the outbound evaluation to the calling agent on the ambient span,
+        // so a verdict in the trace can be traced back to one Agent 365 identity.
+        // The identity is deliberately not added to the request body: Prompt Shields
+        // has no field for it, and inventing one would ship tenant identifiers to the
+        // provider for no decision benefit.
+        var activity = Activity.Current;
+        if (activity is not null)
+        {
+            activity.SetTag("gateway.agent.registration_id", subject.AgentRegistrationId.ToString("D"));
+            activity.SetTag("gateway.correlation.id", subject.CorrelationId);
+            activity.SetTag(
+                "gateway.a365.agent_id",
+                subject.Agent365AgentId?.ToString("D") ?? "unknown");
+            activity.SetTag(
+                "gateway.a365.blueprint_id",
+                subject.BlueprintId?.ToString("D") ?? "unknown");
+        }
 
         try
         {

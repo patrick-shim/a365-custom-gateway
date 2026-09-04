@@ -42,7 +42,7 @@ public sealed class EvaluatePromptHandlerTests
         var agent = CreateAgent(promptShieldEnabled: true);
         var command = CreateCommand(agent.Id);
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>()).Returns(agent);
-        _promptShield.EvaluateAsync(command.Prompt.Content, Arg.Any<CancellationToken>())
+        _promptShield.EvaluateAsync(command.Prompt.Content, Arg.Any<PromptShieldSubject>(), Arg.Any<CancellationToken>())
             .Returns(new PromptShieldEvaluationResult(false));
         var handler = CreateHandler();
 
@@ -70,7 +70,7 @@ public sealed class EvaluatePromptHandlerTests
         var agent = CreateAgent(promptShieldEnabled: true);
         var command = CreateCommand(agent.Id);
         _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>()).Returns(agent);
-        _promptShield.EvaluateAsync(command.Prompt.Content, Arg.Any<CancellationToken>())
+        _promptShield.EvaluateAsync(command.Prompt.Content, Arg.Any<PromptShieldSubject>(), Arg.Any<CancellationToken>())
             .Returns(new PromptShieldEvaluationResult(true));
         var handler = CreateHandler();
 
@@ -82,6 +82,72 @@ public sealed class EvaluatePromptHandlerTests
         result.UserMessage.Should().NotContain(command.Prompt.Content);
         await _idempotency.Received(1).SaveAsync(
             Arg.Is<IdempotencyRecord>(record => record.ResponseStatusCode == 403),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Handle_AttributesThePromptShieldCallToTheCallingAgent365Identity()
+    {
+        var agent = CreateAgent(promptShieldEnabled: true);
+        agent.Agent365AgentId = Guid.NewGuid().ToString("D");
+        agent.BlueprintId = Guid.NewGuid().ToString("D");
+        var command = CreateCommand(agent.Id);
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>()).Returns(agent);
+        _promptShield.EvaluateAsync(
+                command.Prompt.Content,
+                Arg.Any<PromptShieldSubject>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new PromptShieldEvaluationResult(false));
+        var handler = CreateHandler();
+
+        await handler.Handle(command, CancellationToken.None);
+
+        // Prompt Shields is a per-agent control, not a blueprint-level one, so the
+        // verdict has to name the individual agent identity that made the call.
+        await _promptShield.Received(1).EvaluateAsync(
+            command.Prompt.Content,
+            Arg.Is<PromptShieldSubject>(subject =>
+                subject.AgentRegistrationId == agent.Id
+                && subject.Agent365AgentId == Guid.Parse(agent.Agent365AgentId!)
+                && subject.BlueprintId == Guid.Parse(agent.BlueprintId!)),
+            Arg.Any<CancellationToken>());
+        await _repository.Received(1).AddAsync(
+            Arg.Is<PromptEvaluationRecord>(record =>
+                record.Agent365AgentId == Guid.Parse(agent.Agent365AgentId!)
+                && record.BlueprintId == Guid.Parse(agent.BlueprintId!)),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Handle_RecordsTheAgent365IdentityAsUnknownRatherThanInventingOne()
+    {
+        var agent = CreateAgent(promptShieldEnabled: true);
+        agent.Agent365AgentId = null;
+        agent.BlueprintId = null;
+        var command = CreateCommand(agent.Id);
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>()).Returns(agent);
+        _promptShield.EvaluateAsync(
+                command.Prompt.Content,
+                Arg.Any<PromptShieldSubject>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new PromptShieldEvaluationResult(false));
+        var handler = CreateHandler();
+
+        var result = await handler.Handle(command, CancellationToken.None);
+
+        // An agent whose Agent 365 provisioning has not completed still gets a real
+        // verdict; what it must not get is a fabricated identity on the evidence.
+        result.Allowed.Should().BeTrue();
+        await _promptShield.Received(1).EvaluateAsync(
+            command.Prompt.Content,
+            Arg.Is<PromptShieldSubject>(subject =>
+                subject.AgentRegistrationId == agent.Id
+                && subject.Agent365AgentId == null
+                && subject.BlueprintId == null),
+            Arg.Any<CancellationToken>());
+        await _repository.Received(1).AddAsync(
+            Arg.Is<PromptEvaluationRecord>(record =>
+                record.Agent365AgentId == null && record.BlueprintId == null),
             Arg.Any<CancellationToken>());
     }
 

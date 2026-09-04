@@ -96,7 +96,8 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         }
 
         var correlationId = Guid.NewGuid().ToString("D");
-        var promptShieldTask = EvaluatePromptShieldAsync(agent, request.Prompt.Content, correlationId, cancellationToken);
+        var subject = CreatePromptShieldSubject(agent, correlationId);
+        var promptShieldTask = EvaluatePromptShieldAsync(agent, request.Prompt.Content, subject, cancellationToken);
         var purviewTask = EvaluatePurviewAsync(agent, request, correlationId, cancellationToken);
         await Task.WhenAll(promptShieldTask, purviewTask);
         var promptShieldDecision = await promptShieldTask;
@@ -126,6 +127,8 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         {
             Id = evaluationId,
             AgentRegistrationId = agent.Id,
+            Agent365AgentId = subject.Agent365AgentId,
+            BlueprintId = subject.BlueprintId,
             ExternalInteractionId = request.InteractionId,
             TenantUserObjectId = tenantUserObjectId ?? string.Empty,
             PromptHashSalt = salt,
@@ -175,25 +178,50 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         return response;
     }
 
+    // Prompt Shields is scoped to one agent, not to the blueprint its siblings share,
+    // so every verdict is attributed to a single Agent 365 identity. An agent whose
+    // provisioning has not completed yet is reported as unknown rather than being
+    // given a placeholder identity that the evidence would then appear to confirm.
+    private static PromptShieldSubject CreatePromptShieldSubject(
+        AgentRegistration agent,
+        string correlationId) => new(
+            agent.Id,
+            ParseIdentity(agent.Agent365AgentId),
+            ParseIdentity(agent.BlueprintId),
+            correlationId);
+
+    private static Guid? ParseIdentity(string? value) =>
+        Guid.TryParse(value, out var parsed) && parsed != Guid.Empty ? parsed : null;
+
     private async Task<PromptShieldDecisionType> EvaluatePromptShieldAsync(
         AgentRegistration agent,
         string prompt,
-        string correlationId,
+        PromptShieldSubject subject,
         CancellationToken cancellationToken)
     {
         if (!agent.FeatureConfiguration.PromptShieldEnabled)
             return PromptShieldDecisionType.Disabled;
+
+        if (subject.Agent365AgentId is null)
+        {
+            _logger.LogWarning(
+                "Prompt Shield evaluated a prompt for agent registration {AgentRegistrationId}, correlation {CorrelationId}, that has no verified Agent 365 identity; the verdict cannot be attributed to an Agent 365 agent.",
+                agent.Id,
+                subject.CorrelationId);
+        }
+
         try
         {
-            var result = await _promptShieldClient.EvaluateAsync(prompt, cancellationToken);
+            var result = await _promptShieldClient.EvaluateAsync(prompt, subject, cancellationToken);
             return result.AttackDetected ? PromptShieldDecisionType.Blocked : PromptShieldDecisionType.Allowed;
         }
         catch (PromptShieldException exception)
         {
             _logger.LogWarning(
-                "Prompt Shield evaluation failed closed for agent registration {AgentRegistrationId}, correlation {CorrelationId}, failure {FailureCode}",
+                "Prompt Shield evaluation failed closed for agent registration {AgentRegistrationId}, Agent 365 agent {Agent365AgentId}, correlation {CorrelationId}, failure {FailureCode}",
                 agent.Id,
-                correlationId,
+                subject.Agent365AgentId,
+                subject.CorrelationId,
                 exception.FailureCode);
             throw new DomainException("Prompt Shields could not return a trusted decision.", ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE);
         }

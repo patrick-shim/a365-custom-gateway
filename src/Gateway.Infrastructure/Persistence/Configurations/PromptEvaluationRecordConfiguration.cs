@@ -21,6 +21,9 @@ internal sealed class PromptEvaluationRecordConfiguration : IEntityTypeConfigura
         builder.Property(record => record.RowVersion).IsRowVersion();
         builder.HasIndex(record => new { record.AgentRegistrationId, record.ExternalInteractionId });
         builder.HasIndex(record => record.ExpiresAtUtc);
+        // Answers "what did Prompt Shields decide for this Agent 365 agent" directly,
+        // without joining back through the gateway registration.
+        builder.HasIndex(record => new { record.Agent365AgentId, record.CreatedAtUtc });
         builder.HasOne(record => record.AgentRegistration)
             .WithMany()
             .HasForeignKey(record => record.AgentRegistrationId)
