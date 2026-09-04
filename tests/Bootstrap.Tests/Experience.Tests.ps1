@@ -52,6 +52,34 @@ Describe 'Experience API image boundary' {
     }
 }
 
+Describe 'Experience Purview runtime adapter boundary' {
+    BeforeAll {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            (Get-Module Experience).Path, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $groupFunction = $ast.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Test-GatewayGroupDeploymentEvidence'
+        }, $true)
+        $script:purviewAssignment = $groupFunction.Body.Find({ param($node)
+            $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                [string]$node.Left -ceq '$expectedPurviewEnabled'
+        }, $true).Extent.Text
+    }
+
+    It 'expects the deployed Purview adapter state to follow the reviewed configuration' {
+        # A constant expectation here silently pins Purview__Enabled to one value
+        # and makes the opposite deployment unverifiable, not merely unverified.
+        $runner = [scriptblock]::Create(
+            "param(`$Config); Set-StrictMode -Version Latest; $script:purviewAssignment; return `$expectedPurviewEnabled")
+
+        & $runner ([pscustomobject]@{ purview = [pscustomobject]@{ enabled = $true } }) | Should -BeTrue
+        & $runner ([pscustomobject]@{ purview = [pscustomobject]@{ enabled = $false } }) | Should -BeFalse
+    }
+}
+
 Describe 'Experience strict-mode array cardinality boundaries' {
     BeforeAll {
         $tokens = $null

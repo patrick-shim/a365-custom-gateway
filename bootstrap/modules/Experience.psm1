@@ -4547,7 +4547,7 @@ function Test-GatewayGroupDeploymentEvidence {
             $storageName = [string]$Matches.name
             $sqlConnection = "Server=tcp:$($Evidence.sqlServerFqdn),1433;Database=GatewayDb;Authentication=Active Directory Managed Identity;Encrypt=True;TrustServerCertificate=False;"
             $serviceBusNamespace = "sb-$($Config.projectName)-$($Config.environment).servicebus.windows.net"
-            $expectedPurviewEnabled = $false
+            $expectedPurviewEnabled = [bool]($Config.purview.enabled -eq $true)
             $booleanEnvironment = Get-GatewayArmBooleanEnvironmentContract `
                 -RuntimeEnabled ([bool]$isRuntime) `
                 -RegistryPreviewEnabled ([bool]$expectedPreview) `

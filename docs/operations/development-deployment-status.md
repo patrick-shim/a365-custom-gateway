@@ -101,10 +101,25 @@ prove that later source changes are deployed.
 
 Fail closed on each of these; none may be reported as met.
 
-- **Purview DLP at blueprint level.** Purview remains disabled by configuration,
-  so no blueprint-scoped DLP verdict exists. Enabling it also requires bootstrap
-  to provision the Purview policy-automation application and certificate, which
-  it does not yet do.
+- **Purview DLP at blueprint level.** No blueprint-scoped DLP verdict has been
+  observed, so this remains unmet. Two coupled constants previously pinned
+  `Purview__Enabled` to false on every deployment: the policy evidence builder
+  reported the adapter as disabled even after the collection, the DLP policy,
+  and the DLP rule passed exact typed readback, and the deployment-evidence
+  validator expected that same false value, so it would have rejected a
+  deployment that enabled it. Being mutually consistent, neither ever failed a
+  check. Both now follow the reviewed configuration, but that is a source
+  correction which has not been deployed. Provisioning the Purview
+  policy-automation application and certificate is *not* a prerequisite here:
+  bootstrap already authors the blueprint-scoped DLP policy over the operator's
+  interactive session, and registering an agent against an *existing* blueprint
+  never enters the profile-provisioning path. That automation identity is
+  required only to create a *new* protected blueprint, where the worker must
+  author policies unattended. Enabling the adapter makes the runtime path
+  reachable, not correct: evaluation stays per-agent opt-in and fails closed,
+  and a managed identity lacking the Purview Graph roles still fails the
+  request. Treat the feature as unproven until a live allow and block pair is
+  observed on a deployed build.
 - **Azure Monitor mirror completeness.** The Agent 365 sink is proven per sink.
   The mirror is now *instrumentable* but is still not *proven*. The counter
   `gateway.observability.azure_monitor.emitted_events` previously hardcoded its

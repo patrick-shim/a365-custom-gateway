@@ -774,7 +774,12 @@ function Get-BootstrapPurviewPolicyEvidence {
             Assert-BootstrapPurviewRuleObject -Rule $rule[0] -Name ([string]$Config.purview.dlpRuleName) -PolicyName ([string]$Config.purview.dlpPolicyName) -SensitiveInformationTypeId ([string]$selectedType.id) -SensitiveInformationType ([string]$selectedType.name) | Out-Null
             return [ordered]@{
                 configured = $true
-                enabled = $false
+                # The reviewed collection, policy, and rule exist with the exact
+                # typed shape, so the runtime adapter becomes reachable. Reachable
+                # is not proven: the managed-identity token may not carry the
+                # Purview Graph roles yet, so propagationStatus stays pending until
+                # a live allow/block check confirms enforcement.
+                enabled = [bool]($Config.purview.enabled -eq $true)
                 collectionPolicyName = [string]$Config.purview.collectionPolicyName
                 dlpPolicyName = [string]$Config.purview.dlpPolicyName
                 dlpRuleName = [string]$Config.purview.dlpRuleName

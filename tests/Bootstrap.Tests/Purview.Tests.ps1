@@ -499,5 +499,62 @@ Describe 'Purview exact typed readback' {
                 -Name 'クレジットカード番号' } |
                 Should -Throw '*ID and exact Name no longer match*'
         }
+
+        It 'reports the runtime adapter as enabled once the reviewed policy objects pass exact typed readback' {
+            function Get-FeatureConfiguration { param($FeatureScenario) }
+            function Get-DlpCompliancePolicy { param($Identity, $ErrorAction) }
+            function Get-DlpComplianceRule { param($Identity, $ErrorAction) }
+            Mock Get-FeatureConfiguration { [pscustomobject]@{ Name = 'Collection'; Identity = 'Collection' } }
+            Mock Get-DlpCompliancePolicy { @([pscustomobject]@{ Name = 'Policy'; Identity = 'Policy' }) }
+            Mock Get-DlpComplianceRule { @([pscustomobject]@{ Name = 'Rule'; Identity = 'Rule' }) }
+            Mock Resolve-BootstrapPurviewSensitiveInformationType {
+                [pscustomobject]@{
+                    id = $script:sensitiveInformationTypeId
+                    name = 'Credit Card Number'
+                    publisher = 'Microsoft Corporation'
+                }
+            }
+            Mock Assert-BootstrapPurviewCollectionObject { $true }
+            Mock Assert-BootstrapPurviewPolicyObject { $true }
+            Mock Assert-BootstrapPurviewRuleObject { $true }
+
+            $evidence = Get-BootstrapPurviewPolicyEvidence `
+                -Config ([pscustomobject]@{
+                    tenantId = '22222222-2222-4222-8222-222222222222'
+                    purview = [pscustomobject]@{
+                        enabled = $true
+                        collectionPolicyName = 'Collection'
+                        dlpPolicyName = 'Policy'
+                        dlpRuleName = 'Rule'
+                        sensitiveInformationTypeId = $script:sensitiveInformationTypeId
+                        sensitiveInformationType = 'Credit Card Number'
+                    }
+                }) `
+                -Blueprint ([pscustomobject]@{
+                    applicationId = $script:blueprintId
+                    displayName = 'Reviewed blueprint'
+                }) `
+                -MaximumAttempts 1
+
+            $evidence.configured | Should -BeTrue
+            # The adapter must become reachable, otherwise a reviewed blueprint DLP
+            # policy can never produce a runtime verdict and the feature is dead.
+            $evidence.enabled | Should -BeTrue
+            $evidence.exactTypedReadback | Should -BeTrue
+            $evidence.blueprintApplicationId | Should -BeExactly $script:blueprintId
+            $evidence.enforcementPlane | Should -BeExactly 'Application'
+            # Authoring readback is not runtime proof; propagation stays unproven.
+            $evidence.propagationStatus | Should -BeExactly 'PendingLiveVerification'
+        }
+
+        It 'keeps the runtime adapter disabled when the reviewed configuration does not request Purview' {
+            $evidence = Ensure-BootstrapPurviewPolicies `
+                -Config ([pscustomobject]@{ purview = [pscustomobject]@{ enabled = $false } }) `
+                -Blueprint ([pscustomobject]@{ applicationId = $script:blueprintId }) `
+                -UserPrincipalName 'operator@example.test'
+
+            $evidence.configured | Should -BeFalse
+            $evidence.enabled | Should -BeFalse
+        }
     }
 }
