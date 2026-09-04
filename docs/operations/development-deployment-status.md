@@ -1,6 +1,6 @@
 # Development deployment status
 
-Last updated: 2026-09-03 (Asia/Seoul).
+Last updated: 2026-09-04 (Asia/Seoul).
 
 This checkpoint separates deployed evidence from source claims. It intentionally
 contains no subscription, tenant, resource-group, application, principal,
@@ -68,6 +68,32 @@ view's rollup columns for active users, total sessions, and last used can still
 read empty while the per-agent Activity tab shows live data. The list view and
 the detail tab are served by different aggregates. Read the per-agent tab.
 
+Agent 365 interaction logging was verified in the Purview unified audit log. A
+portal audit search over a window that fully covers the exercised traffic,
+filtered by Agent 365 **record type** rather than by operation name, completed
+and returned eighty-six records: forty-three `InvokeAgent`, thirty-six
+`InferenceCall`, and seven `ExecuteToolBySDK`. Those are the gateway's own
+exported spans arriving in the tenant audit store, and they cover every operation
+the gateway emits, tool activity included. Interaction logging is met.
+
+Tool activity took two searches to find, because its operation name is
+`ExecuteToolBySDK` and not `ExecuteTool`. An earlier revision of this checkpoint
+recorded zero tool records and left the cause undetermined between a Microsoft
+audit coverage gap and a defect in the gateway's tool child span. It was neither:
+the search filtered on a name the audit store does not use, so it matched
+nothing. The record-type search found all seven, and eighty-six minus the
+seventy-nine that the operation-name search returned is exactly that count.
+
+The record-type search also returned zero guardrail records, which settles that
+question, because a record type is chosen from a picker and cannot be misspelled
+the way an operation name can. The absence is expected rather than a gap. The
+gateway's activity type enumeration has no guardrail member, so the gateway
+cannot emit a guardrail activity at all, and it calls Prompt Shields as Azure AI
+Content Safety, which sits outside Agent 365. An Agent 365 guardrail audit record
+could only be produced by Agent 365's own guardrail evaluation, which the gateway
+never invokes. Do not treat the absence as a defect, and do not add a guardrail
+operation to the exporter to manufacture one.
+
 Those observations prove the deployed build that produced them. They do not
 prove that later source changes are deployed.
 
@@ -104,21 +130,31 @@ Fail closed on each of these; none may be reported as met.
   window. That emptiness is an ingestion gap in the table itself, not evidence
   that gateway spans were rejected, and it must not be read as either
   confirmation or refutation.
-- **Purview unified audit records.** A portal audit search over a window that
-  fully covers the exercised traffic, filtered to the four documented Agent 365
-  activity operations, completed successfully and returned zero records. That is
-  **not** evidence of absence. The search completed roughly forty minutes after
-  the traffic, and Microsoft documents agent audit entries as taking thirty
-  minutes to two hours to appear, with no committed upper bound. Re-run the same
-  search at least two hours after the traffic before drawing any conclusion, and
-  include both documented spellings of the guardrail operation, because the audit
-  activities table and the Management Activity API schema disagree on whether the
-  recorded operation is the bare guardrail name or its applied form.
 
 When reading either portal, note that timestamps render in the signed-in
 operator's local time zone while the gateway's own evidence is in UTC. Compare
 them by converting explicitly; a snapshot that looks current can be most of a
 day old.
+
+Purview audit search additionally distinguishes **record types** from **operation
+names**, and for Agent 365 the two spellings differ in a way that follows no
+single rule. The record types are `AIInvokeAgent`, `AIInferenceCall`,
+`AIExecuteTool`, and `AIGuardrail`. The operation names are `InvokeAgent`,
+`InferenceCall`, and `ExecuteToolBySDK`: the first two are the record type minus
+its `AI` prefix, the third is not, so an operation name cannot be derived from a
+record type and must be read off an actual record. A name the audit store does
+not use returns zero rows with no error, which reads exactly like an ingestion
+failure. Every "missing records" finding in earlier revisions of this checkpoint
+was this mistake — twice a record-type spelling was entered in the "Activities -
+operation names" box and returned zero, and once `ExecuteTool` was entered and
+silently omitted the seven tool records that were present all along.
+
+Prefer filtering by record type, because the picker offers only valid values and
+so cannot be misspelled. Before concluding anything from a zero-result search,
+run the same window with every filter cleared as a control: if the unfiltered
+control returns rows, the pipeline is ingesting and the zero is a filter error,
+not latency. Confirm what was actually submitted from the results-page URL,
+because the search form resets to its defaults as soon as the search is queued.
 
 ## Relationship to the current source tree
 
