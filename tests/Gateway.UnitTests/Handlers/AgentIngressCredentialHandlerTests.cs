@@ -215,18 +215,18 @@ public sealed class AgentIngressCredentialHandlerTests
 
     private static AgentRegistration CreateAgent(
         AgentStatus status = AgentStatus.Active) => new()
-    {
-        Id = Guid.NewGuid(),
-        ExternalAgentId = new ExternalAgentId($"rotation-agent-{Guid.NewGuid():N}"),
-        Name = "Rotation agent",
-        OwnerObjectId = "owner-object-id",
-        Environment = AgentEnvironment.Development,
-        Status = status,
-        CreatedAtUtc = DateTime.UtcNow.AddDays(-1),
-        UpdatedAtUtc = DateTime.UtcNow.AddDays(-1),
-        CreatedByObjectId = "creator-object-id",
-        UpdatedByObjectId = "creator-object-id"
-    };
+        {
+            Id = Guid.NewGuid(),
+            ExternalAgentId = new ExternalAgentId($"rotation-agent-{Guid.NewGuid():N}"),
+            Name = "Rotation agent",
+            OwnerObjectId = "owner-object-id",
+            Environment = AgentEnvironment.Development,
+            Status = status,
+            CreatedAtUtc = DateTime.UtcNow.AddDays(-1),
+            UpdatedAtUtc = DateTime.UtcNow.AddDays(-1),
+            CreatedByObjectId = "creator-object-id",
+            UpdatedByObjectId = "creator-object-id"
+        };
 
     private static AgentIngressCredential CreateCredential(Guid agentId) => new()
     {

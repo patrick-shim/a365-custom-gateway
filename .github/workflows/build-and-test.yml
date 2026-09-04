@@ -32,7 +32,27 @@ jobs:
         run: dotnet restore src/A365Gateway.slnx
 
       - name: Check formatting
-        run: dotnet format src/A365Gateway.slnx --verify-no-changes
+        # src/A365Gateway.slnx deliberately contains only shipping projects, so
+        # formatting it alone leaves every tests/ project unchecked. Two whitespace
+        # violations reached main that way. Each test project is listed explicitly
+        # because there is no solution that spans them.
+        run: |
+          set -euo pipefail
+          for target in \
+            src/A365Gateway.slnx \
+            tests/Gateway.AdminUi.Tests/Gateway.AdminUi.Tests.csproj \
+            tests/Gateway.ArchitectureTests/Gateway.ArchitectureTests.csproj \
+            tests/Gateway.EndToEndTests/Gateway.EndToEndTests.csproj \
+            tests/Gateway.IntegrationTests/Gateway.IntegrationTests.csproj \
+            tests/Gateway.ObservabilityRuntime.Tests/Gateway.ObservabilityRuntime.Tests.csproj \
+            tests/Gateway.SecurityTests/Gateway.SecurityTests.csproj \
+            tests/Gateway.Setup.Tests/Gateway.Setup.Tests.csproj \
+            tests/Gateway.UnitTests/Gateway.UnitTests.csproj
+          do
+            echo "::group::dotnet format $target"
+            dotnet format "$target" --verify-no-changes
+            echo "::endgroup::"
+          done
 
       - name: Build solution
         run: dotnet build src/A365Gateway.slnx -c Release --no-restore

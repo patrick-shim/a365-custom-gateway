@@ -275,7 +275,8 @@ public sealed class BootstrapOutputSanitizerTests
 
     [Fact]
     public void DeploymentVerificationMessageWithoutTypedAuthority_DoesNotExposeAnAddress()
-    {        const string line = """
+    {
+        const string line = """
             {"schemaVersion":1,"type":"Result","message":"Gateway deployment completed and verified.","data":{"step":"End-to-end deployment verification","index":19,"total":19,"adminUiUrl":"https://admin.example.test/"}}
             """;
 
