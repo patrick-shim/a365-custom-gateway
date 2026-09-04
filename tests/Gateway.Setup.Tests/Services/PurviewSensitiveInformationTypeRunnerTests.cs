@@ -176,9 +176,33 @@ public sealed class PurviewSensitiveInformationTypeRunnerTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(root))
+        // The cancellation test kills a child whose working directory is this root,
+        // and Windows releases that handle after Kill returns, so a single delete
+        // intermittently throws IOException from teardown. Retry briefly, then leave
+        // the temporary directory to the operating system rather than failing a run
+        // over cleanup.
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            Directory.Delete(root, recursive: true);
+            if (!Directory.Exists(root))
+            {
+                return;
+            }
+
+            try
+            {
+                Directory.Delete(root, recursive: true);
+                return;
+            }
+            catch (IOException)
+            {
+                // A short bounded retry handles process/file-handle release races.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Same race, reported differently when the handle is on a child file.
+            }
+
+            Thread.Sleep(TimeSpan.FromMilliseconds(50 * (attempt + 1)));
         }
     }
 
