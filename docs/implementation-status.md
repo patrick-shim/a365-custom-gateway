@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-09-01 (Asia/Seoul).
+Last updated: 2026-09-04 (Asia/Seoul).
 
 This is the concise source-of-truth checkpoint for contributors. Public setup starts
 at the repository [README](../README.md). Exact deployed development evidence is in
@@ -177,32 +177,42 @@ adapter disabled until safe token-role and bounded data-plane verification pass.
 
 ## Source verification
 
-The consolidated source gate completed on 2026-09-02. Every result below was
-measured on Windows unless it states otherwise. Hosted Windows launcher, browser,
-and live deployment evidence remain outstanding.
+Every result below was measured on Windows at the current checkpoint unless it
+states otherwise. Hosted Windows launcher, browser, and live deployment evidence
+remain outstanding.
 
 | Verification project | Passed | Failed | Skipped |
 |---|---:|---:|---:|
-| Gateway.UnitTests | 640 | 0 | 0 |
-| Gateway.AdminUi.Tests | 157 | 0 | 0 |
-| Gateway.Setup.Tests | 300 | 0 | 0 |
-| Gateway.ObservabilityRuntime.Tests | 158 | 0 | 0 |
+| Gateway.UnitTests | 655 | 0 | 0 |
+| Gateway.AdminUi.Tests | 169 | 0 | 0 |
+| Gateway.Setup.Tests | 317 | 0 | 0 |
+| Gateway.ObservabilityRuntime.Tests | 179 | 0 | 0 |
 | Gateway.ArchitectureTests | 115 | 0 | 0 |
 | Gateway.IntegrationTests | 85 | 0 | 0 |
 | Gateway.EndToEndTests | 102 | 0 | 0 |
 | Gateway.SecurityTests | 126 | 0 | 0 |
-| **.NET total** | **1,683** | **0** | **0** |
+| **.NET total** | **1,748** | **0** | **0** |
 
 Run these eight projects directly. `src/A365Gateway.slnx` contains no test project,
 so `dotnet test` against that solution reports success without executing a test.
 
-The PowerShell source gate discovered 766 tests on Windows: 759 passed, none failed,
-and seven non-Windows cases were intentionally skipped. It validated 18 PowerShell
-source files and two JSON contracts, then compiled 27 Bicep templates and three
-Bicep parameter files. Release build completed with zero warnings and zero errors;
-`dotnet format --verify-no-changes`, whitespace, launcher syntax, OpenAPI YAML
-parsing, local documentation links, and ignored secret/state path checks also
-passed.
+The PowerShell gate spans three Pester directories, not one: `tests/Bootstrap.Tests`
+contributes 740 passed with seven non-Windows cases intentionally skipped,
+`tests/Gateway.Purview.Tests` contributes 22, and `tests/Operations.Tests`
+contributes 32, for 794 passed and none failed out of 801 discovered. Run them
+through `tools/Test-BootstrapSource.ps1 -RunPester`, whose `$pesterPaths` array is
+the authoritative list, rather than naming directories individually. Adding
+`-CompileBicep` validates 18 PowerShell source files and two JSON contracts, then
+compiles 27 Bicep templates and three Bicep parameter files. Release build completes
+with zero warnings and zero errors.
+
+`dotnet format --verify-no-changes` is not invoked by that script or by any other
+local script, so run it by hand over the solution and each test project.
+Continuous integration formatted only `src/A365Gateway.slnx`, which by design
+contains no test project, so nothing under `tests/` was checked; two whitespace
+violations reached `main` through that gap and are now corrected, and the CI job
+covers all nine targets. Whitespace, launcher syntax, OpenAPI YAML parsing, local
+documentation links, and ignored secret/state path checks pass.
 
 Setup regression coverage now includes Windows-safe Azure CLI/Bicep invocation,
 one circuit-scoped wizard under a single interactive router, explicit subscription
@@ -225,25 +235,14 @@ history and completed-prefix evidence, and the deterministic governance-NSG
 What-If extension on later Resume. These cases are included in the consolidated
 PowerShell source gate above.
 
-The current pause checkpoint has the following narrower offline evidence, measured
-on Windows unless a row states otherwise:
+The launcher, standalone source-compiler, Azure CLI boundary, Bicep prerequisite,
+and Entra credential and orphan-cleanup regressions that earlier revisions listed as
+a separate table are files inside `tests/Bootstrap.Tests` and are already counted in
+its 740. Do not restate a subset as though it were an independent gate.
 
-| Current correction gate | Passed | Failed | Skipped |
-|---|---:|---:|---:|
-| Complete .NET test set | 1,683 | 0 | 0 |
-| Complete bootstrap Pester set on Windows | 759 | 0 | 7 |
-| Launcher regressions executed on Windows | 11 | 0 | 6 |
-| Standalone source-compiler regressions | 10 | 0 | 0 |
-| Windows Azure CLI boundary regressions | 8 | 0 | 0 |
-| Windows Bicep prerequisite regressions | 9 | 0 | 0 |
-| Entra credential and orphan-cleanup regressions | 33 | 0 | 0 |
-
-The Release solution build completed with zero warnings and zero errors. The source
-compiler parsed 18 PowerShell files and two JSON contracts, then locally compiled
-27 Bicep templates and three parameter files. The explicit Windows Bicep compilation
-lane has now run for this source generation and passed.
-
-Closing that lane required one contributor-tool correction. `tools/Test-BootstrapSource.ps1`
+The explicit Windows Bicep compilation lane has run for this source generation and
+passed. Closing that lane required one contributor-tool correction.
+`tools/Test-BootstrapSource.ps1`
 resolved the Azure CLI with an unbounded `Get-Command az -CommandType Application`.
 The Azure CLI MSI installs both `az.cmd` and an extensionless shim in the same
 directory, so that call returned two matches whose `Source` cast to a single
@@ -258,11 +257,16 @@ deployment against the exact configured subscription, emits no secret value, and
 requires only value-free management-plane metadata readback. The obsolete Key
 Vault data-plane credential helpers and their direct tests were removed.
 
-The source in this checkpoint has not been deployed or live-tested. The local
-results above are not a release claim and do not replace the required hosted
-Windows, browser, and authorized live-deployment gates. A final hash-scoped
-security rereview of the backend Resume and private-vault boundaries passed 356 of
-356 focused tests with no remaining blocker.
+The current source is ahead of the deployed build, so the results above are source
+evidence and not a release claim. Earlier revisions of this file were written before
+any live deployment existed; that is no longer the situation. A gateway has been
+provisioned and verified on Azure, and
+[the deployment status](operations/development-deployment-status.md) is the
+authoritative record of exactly which revision that evidence belongs to. Anything
+committed after that checkpoint is undeployed until the next clean provision records
+its own readbacks. A final hash-scoped security rereview of the backend Resume and
+private-vault boundaries passed with no remaining blocker; those cases are included
+in the .NET total above.
 
 ## Known external limitations
 
@@ -278,19 +282,36 @@ security rereview of the backend Resume and private-vault boundaries passed 356 
 
 ## Safe resume point
 
-The Setup two-step Resume review and confirmation integration described above is
-implemented, tested, and independently rereviewed, and the Windows Bicep compilation
-lane has passed. Continue with the platform and browser checks named in the
-[agent continuation checkpoint](agent-continuation.md): a hosted Windows run of the
-root `gateway.cmd` launcher with real prerequisite detection and repair, the macOS
-root `gateway` launcher and core Setup path with Purview disabled, and fixture-backed
-local browser inspection of the Setup Resume journey at desktop and narrow widths
-over representative preserved stopped state. Do not start a live provider action
-while any of those checks is unresolved.
+The offline gate is green for this source generation, and the Setup two-step Resume
+review and confirmation integration is implemented, tested, and independently
+rereviewed. A source revision is not deployed evidence, and the current source is
+ahead of the deployed build.
 
-For any later authorized Azure, Entra, SQL, Graph, Purview, or deployment action,
-first read the deployment status and relevant runbook. Preserve ignored bootstrap
-state and never read or print `.secret`/`.secrets` values. The next clean deployment
-must use a new unused deployment identity and follow the public README only after
-the Resume-enabled Setup journey is complete. No agent, assistant, or contributor
-may resume live work until the user returns and explicitly requests it.
+The remaining goal is live: a blueprint-scoped Purview DLP allow and block pair
+observed on a deployed build. It cannot be reached by changing the existing
+deployment, because bootstrap refuses to mix source generations inside one
+deployment state; the supported path is a fresh provision under a new unused
+deployment identity with Purview enabled from the start. The
+[Purview runbook](operations/purview-setup-runbook.md) states that as its case B,
+and `.\gateway.cmd plan` — `./gateway plan` on macOS — is the discriminator. That
+run authors tenant policy over an interactive sign-in, so it is Windows-only and
+cannot run unattended.
+
+Two platform checks are still open and neither blocks that goal: the macOS root
+`gateway` launcher on the core path with Purview disabled, and fixture-backed local
+browser inspection of the Setup Resume journey at desktop and narrow widths over
+representative preserved stopped state. The hosted Windows launcher check named in
+earlier revisions is closed; operator-run Windows bootstraps have provisioned
+complete gateways through `gateway.cmd`.
+
+The first unfinished source task is described in the
+[agent continuation checkpoint](agent-continuation.md): validators throw a bare
+`'mismatch'`, so a failed step names itself but never the field that disagreed.
+
+For any authorized Azure, Entra, SQL, Graph, Purview, or deployment action, first
+read [the deployment status](operations/development-deployment-status.md) and the
+relevant runbook. Preserve ignored bootstrap state and never read or print
+`.secret`/`.secrets` values. Live authorization does not travel with Git: a grant
+recorded in chat history, in a previous session, or for a previous deployment is not
+a grant for the next one, and creating or retiring a resource group each require a
+fresh explicit authorization naming that specific group.

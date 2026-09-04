@@ -241,12 +241,24 @@ schema fingerprint. That is expected, not drift.
 
 All eight .NET test projects pass 1,748 tests with zero failures, and the
 solution build completes with zero warnings and zero errors under
-`-warnaserror`.
+`-warnaserror`. The PowerShell side is 794 passed, zero failed, and seven
+non-Windows cases skipped out of 801 discovered.
 
 Run the test projects individually. `src/A365Gateway.slnx` deliberately contains
 only shipping projects, so a solution-scoped `dotnet test` matches no test
 project, produces no output, and exits successfully without running anything.
 Treat an empty test run as a failure to execute, never as a pass.
+
+The Pester tests are spread across three directories — `tests/Bootstrap.Tests`,
+`tests/Gateway.Purview.Tests`, and `tests/Operations.Tests` — so run them through
+`tools/Test-BootstrapSource.ps1 -RunPester`, whose `$pesterPaths` array is the
+authoritative list, rather than naming a directory directly.
+
+`dotnet format --verify-no-changes` is wired into no local script and must be run
+by hand over the solution and each test project. Continuous integration formatted
+only `src/A365Gateway.slnx`, which contains no test project, so nothing under
+`tests/` was checked; two whitespace violations reached `main` through that gap and
+are now corrected, and the CI job covers all nine targets.
 
 On Windows, a POSIX shell harness may strip the NuGet and `PATHEXT` environment
 variables that `dotnet`, `git`, and `az` require; re-export them before invoking

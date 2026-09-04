@@ -1,6 +1,6 @@
 # Agent continuation checkpoint
 
-Last updated: 2026-09-02 (Asia/Seoul).
+Last updated: 2026-09-04 (Asia/Seoul).
 
 This tracked file is the bounded continuation seed for Claude, Codex, GitHub
 Copilot, other automation, and human contributors after a fetch, pull, fresh clone,
@@ -100,45 +100,168 @@ Gateway. Windows is the primary audience. Optional Purview selection and policy
 authoring remain Windows-only; the core path remains cross-platform with Purview
 disabled.
 
-The current source has passed these local offline gates. Every row was measured on
-Windows unless it states otherwise:
+The current source has passed these local offline gates. Both rows were measured on
+Windows at this checkpoint:
 
 | Evidence | Result |
 |---|---:|
-| Complete .NET test set | 1,683 passed |
-| Complete bootstrap Pester set on Windows | 759 passed, 7 skipped |
-| Launcher regressions executed on Windows | 11 passed, 6 skipped |
-| Standalone source-compiler regressions | 10 passed |
-| Windows Azure CLI boundary regressions | 8 passed |
-| Windows Bicep prerequisite regressions | 9 passed |
-| Entra credential and orphan-cleanup regressions | 33 passed |
-| Final backend Resume/private-vault security rereview | 356 passed |
+| The eight .NET test projects under `tests/` | 1,748 passed, 0 failed |
+| The three Pester suites, run as one gate | 794 passed, 0 failed, 7 skipped |
 
-The Release solution build completed with zero warnings and zero errors. Source
-validation parsed 18 PowerShell files and two JSON contracts and locally compiled
-27 Bicep templates and three parameter files through the explicit Windows Bicep
-compilation lane. These results are source evidence, not a hosted-Windows launcher,
-browser, deployment, or live-Gateway claim.
+Pester tests live in three separate directories, not one. `tests/Bootstrap.Tests`
+holds 740 of them, `tests/Gateway.Purview.Tests` holds 22, and
+`tests/Operations.Tests` holds 32. Run all three through the canonical gate rather
+than naming a directory directly, because that script is what defines the set:
 
-The cross-tool handoff itself was also revalidated at this checkpoint: all 17 Codex
-role definitions parsed, all 20 Claude agent/skill frontmatters parsed, and local
-links and anchors passed across 54 Markdown files. The schema-v2 delivery-ledger
-regression suite passed, including source binding, coordinator/delegate isolation,
-assignment provenance, redaction, rotation, exact pre-append rejection of oversized
-current-checkpoint and handoff payloads, legacy and rotated-empty-tail migration,
-writer-locked bounded normal validation, explicit full-history audit and historical
-tamper detection, and checkpoint/handoff integrity. The focused Release architecture
-suite passed all 115 tests. `.secret`, `.secrets`, `.bootstrap/`,
-`bootstrap/config.json`, `.agent-runtime/`, and legacy `.agents/runtime/` remain
-outside tracked source.
+```powershell
+pwsh -NoProfile -File tools/Test-BootstrapSource.ps1 -RunPester -CompileBicep
+```
+
+Its `$pesterPaths` array is the authoritative list. If a fourth suite is added
+later, it belongs there, and a checkpoint that names directories individually will
+silently stop covering it.
+
+Every narrower lane named in earlier revisions of this file — launcher,
+source-compiler, Azure CLI boundary, Bicep prerequisite, and Entra credential
+regressions — is a file inside `tests/Bootstrap.Tests` and is already counted in
+its 740. Do not restate a subset as though it were an independent gate.
+
+Run the .NET projects individually. `src/A365Gateway.slnx` deliberately contains
+only shipping projects, so a solution-scoped `dotnet test` matches no test project,
+runs nothing, and still exits successfully; treat an empty run as a failure to
+execute, never as a pass. The bootstrap Pester set takes roughly seventeen minutes
+on Windows, and PowerShell buffers redirected output, so a log file that stops
+growing for several minutes is normal. Confirm progress from the file's size and
+modification time before concluding that a run has hung. Pester 5 also discovers
+every test file before running any of them, so editing a module mid-suite
+contaminates the result; stop the run and start it again instead.
+
+The Release solution build completes with zero warnings and zero errors under
+`-warnaserror`. The same gate command above also parsed 18 PowerShell files and two
+JSON contracts and locally compiled 27 Bicep templates and three parameter files;
+`-CompileBicep` is what opens that Windows compilation lane, and the script skips it
+silently when the switch is absent.
+
+`dotnet format --verify-no-changes` is not part of that script and is not part of
+any local script, so run it by hand over `src/A365Gateway.slnx` and each of the
+eight test projects. Continuous integration used to format only the solution, which
+by design contains no test project, so nothing under `tests/` was ever checked; that
+job now formats all nine targets. Two whitespace violations reached `main` through
+the gap.
+
+These results are source evidence. They are not a hosted-Windows launcher, browser,
+deployment, or live-Gateway claim.
+
+The cross-tool handoff itself was revalidated at this checkpoint: all 17 Codex role
+definitions in `.codex/agents/` parsed, all 20 Claude agent and skill frontmatters
+under `.claude/` parsed, and every local link and anchor resolved across 56 Markdown
+files. The schema-v2 delivery-ledger regressions and the focused Release
+architecture suite are .NET tests counted inside the 1,748 above rather than
+separate gates; between them they cover source binding, coordinator/delegate
+isolation, assignment provenance, redaction, rotation, exact pre-append rejection of
+oversized current-checkpoint and handoff payloads, legacy and rotated-empty-tail
+migration, writer-locked bounded normal validation, explicit full-history audit with
+historical tamper detection, and checkpoint/handoff integrity.
+
+`.secret`, `.secrets`, `.bootstrap/`, `bootstrap/config.json`, `.agent-runtime/`,
+and legacy `.agents/runtime/` remain outside tracked source.
+
+One cross-tool gap is open and is deliberately left alone here rather than fixed in
+a documentation pass: `.codex/agents/` defines `bootstrap-delivery-reviewer` with no
+matching definition under `.claude/agents/`, so that role exists for Codex and not
+for Claude. Raise it before relying on that reviewer role from either tool.
 
 ## First unfinished source task
 
-The local Setup application's restarted-process, two-step Resume integration is
-implemented, tested, and independently rereviewed. The remaining first task is
-platform and browser validation of that journey, not new service code.
+No source defect currently blocks a deployment. The offline gates above pass on
+this source generation, and the Setup Resume integration that earlier revisions of
+this file named as the first task is implemented, tested, and independently
+rereviewed. Its record is kept below as history, not as work.
 
-Implemented and covered at this checkpoint:
+Two kinds of work remain, and they are not interchangeable. One is live and belongs
+to the operator. The other is source, and is what a receiving agent should pick up.
+
+### The blocking work is live and operator-gated
+
+Every stated Gateway delivery goal is met except one: a blueprint-scoped Microsoft
+Purview DLP verdict has never been observed on a deployed build. The source needed
+for it is committed. None of it is deployed.
+
+That goal cannot be reached by changing the existing deployment. Bootstrap refuses
+to mix source generations inside one deployment state, so once a deployment has
+recorded durable state evidence, a working tree carrying newer commits is rejected
+rather than applied. Because corrections are pending, this is the ordinary
+condition rather than an error to work around. The supported path is a fresh
+provision under a new, unused deployment identity with Purview enabled from the
+start, which also lands every pending correction in one cycle.
+`docs/operations/purview-setup-runbook.md` states that procedure as its case B, and
+`.\gateway.cmd plan` — `./gateway plan` on macOS — is the discriminator that proves
+which case a given machine is actually in.
+
+Three properties of that run belong to the operator and to no agent:
+
+- it authors tenant policy over an interactive `Connect-IPPSSession` sign-in, so it
+  cannot run unattended, and `--non-interactive` must fail closed rather than
+  author policy without a signed-in operator;
+- Security & Compliance PowerShell is unavailable in PowerShell 7 on macOS and
+  Linux, so this particular run is Windows-only, while the core bootstrap stays
+  cross-platform with Purview disabled; and
+- creating a new deployment, and retiring the superseded one afterwards, each
+  require a fresh explicit authorization naming that specific resource group.
+  Authorization for one deployment's teardown never carries to the next.
+
+Do not attempt to reach this goal by hand-editing `bootstrap/config.json`, by
+deleting `.bootstrap/` state, or by pointing fresh state at an existing resource
+group. A sensitive-information-type GUID that was not chosen through the
+tenant-backed picker fails closed mid-run, after the deployment steps have already
+restarted.
+
+### The first unfinished source task is diagnosable step-failure causes
+
+A step whose validator throws is recorded as `Failed` under one generic sentence —
+"could not be independently revalidated" — which names the step but never the field
+that disagreed. One hundred and twenty-five validator branches under
+`bootstrap/modules/` throw the bare literal `'mismatch'`, so the specific comparison
+that failed is discarded at the throw site and cannot be recovered downstream.
+
+This costs more than readability. A `Failed` step is not merely noisy: on the next
+run the engine consults the anti-replay guard instead of replaying, and a step it
+cannot reconcile exactly strands the deployment. An operator who cannot see which
+field mismatched has no basis for choosing between correcting the input and
+abandoning the deployment.
+
+One instance of this class is already fixed, and is the worked example to follow.
+`Test-GatewayPurviewEvidence` threw before assigning `$connectionId` while its
+`finally` block read that variable, so strict mode replaced every fast-path
+mismatch reason with a variable-not-set error. Initializing the variable before
+`try` — the idiom `Ensure-BootstrapPurviewPolicies` already uses — restored the
+real reason.
+
+The remaining work is to carry the failing comparison out of the validator in a
+bounded, non-secret form: the property name and the fact that it disagreed, never
+the expected or actual value, because these validators compare resource IDs,
+endpoints, principal IDs, and image digests. Add focused failing tests first, keep
+the change mechanical, and rerun the complete bootstrap Pester set.
+
+Two smaller source items are parked behind an explicit decision rather than
+forgotten, and should not be started without one:
+
+- Purview is currently split between a bootstrap-time concern and a Gateway
+  feature. The reviewed intent is that bootstrap provisions the Gateway and the
+  Gateway owns per-blueprint DLP thereafter. `Purview.psm1` also swallows an
+  exception where it should surface a bounded cause.
+- The Purview policy-automation application and certificate exist only for
+  worker-authored protection profiles, the path taken when the Gateway creates a
+  *new* protected blueprint. That identity is not a prerequisite for the live goal
+  above, because registering an agent against an *existing* blueprint never enters
+  the profile-provisioning path.
+
+### Completed record
+
+The entries below are finished work, kept because each encodes a constraint that is
+cheaper to read than to rediscover. Nothing in this subsection is an open task.
+
+The local Setup application's restarted-process, two-step Resume integration:
 
 - `tools/Gateway.Setup/Services/BootstrapCommand.cs` expresses distinct read-only
   review and confirmed Resume argument contracts. The review adds
@@ -160,8 +283,8 @@ Implemented and covered at this checkpoint:
 - `bootstrap/bootstrap.ps1` was left unchanged; the backend contract remained
   authoritative and no regression proved a backend defect.
 
-Corrected after this checkpoint, in response to a stopped `Inert identity deployment`
-step that reported no diagnosable cause:
+Corrected later, in response to a stopped `Inert identity deployment` step that
+reported no diagnosable cause:
 
 - `Invoke-BootstrapCommand` no longer discards failed provider output. It extracts a
   bounded signature — at most eight `code`/`errorCode` values and four correlation
@@ -245,17 +368,21 @@ step that reported no diagnosable cause:
   because a bare local time in a log is ambiguous and a bare UTC time makes the reader
   do arithmetic before they can trust it.
 
-The remaining validation work, in order:
+Two platform validations from that record are still open, and one is now closed:
 
-1. Fixture-backed local browser inspection of the Setup Resume journey at desktop
-   and narrow widths, including a newly started Setup process over representative
-   preserved stopped state. This is the gate that would let a restarted Setup
-   process be claimed as end-to-end Resume recovery; until it passes, terminal
-   Resume remains the only documented recovery path.
-2. A hosted Windows run of the root `gateway.cmd` launcher with real prerequisite
-   detection and repair. The launcher regression suite now executes on Windows, but
-   an actual hosted launcher run has not happened.
-3. The macOS root `gateway` launcher and core Setup path with Purview disabled.
+1. **Open.** Fixture-backed local browser inspection of the Setup Resume journey at
+   desktop and narrow widths, including a newly started Setup process over
+   representative preserved stopped state. This is the gate that would let a
+   restarted Setup process be claimed as end-to-end Resume recovery; until it
+   passes, terminal Resume remains the only documented recovery path.
+2. **Open.** The macOS root `gateway` launcher and core Setup path with Purview
+   disabled. Keep Purview disabled there: Security & Compliance PowerShell is
+   unavailable in PowerShell 7 on macOS, so a Purview-enabled macOS run is expected
+   to stop before any provider call rather than to succeed.
+3. **Closed.** A hosted Windows run of the root `gateway.cmd` launcher with real
+   prerequisite detection and repair. Operator-run Windows bootstraps have since
+   provisioned complete gateways through the launcher and reached all nineteen
+   steps `Completed`. Treat the launcher itself as exercised on Windows.
 
 One contributor-tool defect was found and corrected while closing the Windows Bicep
 compilation lane. `tools/Test-BootstrapSource.ps1` resolved the Azure CLI with an
@@ -276,11 +403,12 @@ The focused test surfaces for this area are:
 - `tests/Gateway.Setup.Tests/Services/BootstrapExecutionCoordinatorTests.cs`; and
 - `tests/Gateway.Setup.Tests/RepositoryLayoutTests.cs` for structural UI guards.
 
-## Acceptance criteria
+## Acceptance criteria for the Setup Resume integration
 
-The Setup integration is acceptable only when all of the following are proved.
-Items 1 through 7 are proved by the tests above; the browser journey in the
-remaining validation list is what extends them to a recovery claim.
+These are now regression invariants rather than open criteria. Items 1 through 7
+are proved by the tests listed above; the browser journey is what would extend them
+to an end-to-end recovery claim. Preserve all seven in any later change to this
+area.
 
 1. A stopped accepted deployment offers read-only Resume review, not direct
    mutation and not a new Plan.
@@ -303,46 +431,64 @@ independent hash-scoped security rereview before broader gates.
 
 ## Gates still required
 
-Before any live action, complete and record:
+The offline gate is green for this source generation. The eight .NET test projects,
+all three Pester suites, the Release build under `-warnaserror`, and the format,
+whitespace, source, Bicep, documentation-link, and secret/state-path checks all
+pass, and the two measured totals are recorded above. Rerun them after any further
+source change.
 
-- a hosted Windows run of the root `gateway.cmd` launcher and prerequisite
-  detection and repair;
-- the macOS root `gateway` launcher and core Setup path with Purview disabled; and
-- fixture-backed local browser inspection of the Setup Resume journey at desktop
-  and narrow widths, including a newly started Setup process over representative
-  preserved stopped state.
+Rerun the format check deliberately, because no local script performs it. Two
+whitespace violations were sitting on `main` at this checkpoint — a collapsed brace
+in `tests/Gateway.Setup.Tests` and an under-indented object initializer in
+`tests/Gateway.UnitTests` — and both are now corrected. Neither could fail a test or
+a build, and continuous integration formatted only `src/A365Gateway.slnx`, which
+contains no test project, so nothing under `tests/` was checked at all. That CI job
+now formats all nine targets; locally, still run it by hand.
 
-The full .NET and bootstrap suites, Release build, format, whitespace, source,
-Bicep, documentation-link, and secret/state-path checks have passed for this source
-generation and are recorded above. Rerun them after any further source change.
+Two platform gates remain open, both described in the completed record above: the
+macOS root `gateway` launcher on the core path with Purview disabled, and
+fixture-backed local browser inspection of the Setup Resume journey. Neither blocks
+the live goal.
 
-A separate operator prerequisite applies to the next live Apply or Resume. The
-current development subscription already holds a free Content Safety account outside
-the target resource group, so a free-SKU Prompt Shields deployment fails ARM
-preflight. The new read-only capacity check now names that account and stops before
-mutation, but resolving it is the user's decision and requires the user's own
-authorized action: choose a paid SKU, disable Prompt Shields for base verification,
-or delete the unused account. No agent may delete it.
+The live gates that earlier revisions of this file listed as missing are now closed
+on a deployed build, and `docs/operations/development-deployment-status.md` holds
+the authoritative record: signed-in Plan, explicit Apply, exact resource and image
+readback, API and Admin UI health, Admin UI sign-in, bounded registrations reaching
+`Active` across multiple blueprints, and a bounded data-plane use check. Prompt
+Shields is proven enforcing per agent request. Agent 365 activity attribution and
+interaction logging are proven per agent.
 
-Note that `src/A365Gateway.slnx` contains no test projects, so `dotnet test` against
-that solution reports success without running a single test. Always run the eight
-projects under `tests/` to obtain a real .NET result.
+One live gate remains open, and it is the whole of the remaining goal: a
+blueprint-scoped Purview DLP allow and block pair observed on a deployed build.
+Optional Prompt Shields and Purview evidence stays separate from core bootstrap
+completion; neither may be folded into a claim that bootstrap itself succeeded.
 
-Still missing after those source/platform checks are an authorized fresh-clone
-browser and live deployment: signed-in Plan, explicit Apply, exact resource and
-image readback, API/Admin UI health, Admin UI sign-in, one bounded registration
-through `Active`, and a bounded Gateway data-plane use check. Optional Prompt
-Shields and Purview evidence must remain separate from core bootstrap completion.
+An operator prerequisite that earlier revisions recorded as blocking is no longer
+blocking, and should not be re-raised as one. Azure permits a single free Content
+Safety account per Cognitive Services account type per subscription, and a
+soft-deleted account holds that slot for the rest of its retention window while
+being absent from every resource listing, so a free-SKU Prompt Shields deployment
+failed ARM preflight with no deployment record to read back. Later runs provisioned
+successfully, so the conflict is resolved for the current subscription. The
+read-only capacity check still runs during Plan and Apply and still names the
+conflicting account, live or soft-deleted, together with the exact
+`az cognitiveservices account purge` command. No agent may delete or purge such an
+account; that stays the user's decision and the user's own authorized action.
 
 ## Current pause and stopping condition
 
-No Azure, Entra, SQL, Graph, Service Bus, Purview, deployment, cleanup, or other
-live-provider action is authorized at this checkpoint. Do not mutate or delete a
-stopped target, and do not begin a new deployment. The user must return and
-explicitly request live continuation after reviewing the source commit.
+Live authorization does not travel with Git. On a fresh checkout, treat every
+Azure, Entra, SQL, Graph, Service Bus, Purview, deployment, and cleanup action as
+unauthorized until the user grants it for this machine and for that specific
+target. A grant recorded in chat history, in a previous session, or for a previous
+deployment is not a grant for the next one. Do not mutate or delete a stopped
+target, and do not begin a new deployment, on the strength of this file.
 
-Source-only work may continue through the Setup integration and offline gates. Stop
-before the first live action and record the exact remaining evidence. After any
+That boundary is exactly where the remaining goal sits. The source is ready; the
+run is not an agent's to start.
+
+Source-only work may continue through the open tasks above and the offline gates.
+Stop before the first live action and record the exact remaining evidence. After any
 verified change, update this checkpoint and both status files, validate all links,
 commit every intended tracked file, and push the reviewed branch so the next
 receiver starts from Git rather than from chat history.
