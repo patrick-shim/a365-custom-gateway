@@ -109,7 +109,15 @@ Fail closed on each of these; none may be reported as met.
   validator expected that same false value, so it would have rejected a
   deployment that enabled it. Being mutually consistent, neither ever failed a
   check. Both now follow the reviewed configuration, but that is a source
-  correction which has not been deployed. Provisioning the Purview
+  correction which has not been deployed. A second blocker sat behind the first
+  and would have stopped the very next run: a step that completed while Purview
+  was disabled records `configured: false`, and the validator rejected that as a
+  mismatch while the anti-replay guard refused to run the step again, so the run
+  failed and flipped the step to `Failed`, after which the reconciler found no
+  tenant object to recover and the deployment could not proceed at all. The
+  guard now scopes itself to evidence of an actual prior authoring attempt,
+  which the disabled early return provably is not, so a no-op completion simply
+  runs while a real prior mutation still fails closed. Provisioning the Purview
   policy-automation application and certificate is *not* a prerequisite here:
   bootstrap already authors the blueprint-scoped DLP policy over the operator's
   interactive session, and registering an agent against an *existing* blueprint
@@ -214,9 +222,16 @@ Pending that batch, in commit order:
 
 - transient Microsoft Graph 400 handling when establishing a blueprint principal;
 - the existing-blueprint picker remaining usable past forty blueprints;
-- the honest `recorded` / `not_recorded` outcome on the Azure Monitor mirror; and
+- the honest `recorded` / `not_recorded` outcome on the Azure Monitor mirror;
 - per-agent Prompt Shields identity attribution, which also adds
-  `infrastructure/sql/20260903_prompt_evaluation_agent_identity.sql`.
+  `infrastructure/sql/20260903_prompt_evaluation_agent_identity.sql`;
+- the Purview runtime adapter following the reviewed configuration once the
+  policy objects pass exact typed readback;
+- the setup wizard defaulting to the recorded deployment identity, so accepting
+  the defaults reconfigures that deployment instead of silently naming a new
+  one; and
+- the Purview anti-replay guard scoping itself to a real prior authoring
+  attempt, so enabling Purview after a disabled no-op completion can proceed.
 
 That last item is the only one in the batch that changes the database schema, so
 the next provision will apply a new migration script and record a different
@@ -249,7 +264,9 @@ the required Purview roles. No token was printed or persisted. Therefore:
 
 - policy-object readback is configuration evidence only;
 - directory role assignment is not token-role evidence;
-- the current source correctly keeps `Purview__Enabled=false` during bootstrap;
+- the deployed build was provisioned with `Purview__Enabled=false`, which was
+  correct for it; current source instead derives that flag from the reviewed
+  configuration once the policy objects pass exact typed readback;
 - Purview runtime readiness requires a fresh managed-identity token-role check and
   a bounded allow/block request; and
 - the repository does not claim response-side inline DLP enforcement.

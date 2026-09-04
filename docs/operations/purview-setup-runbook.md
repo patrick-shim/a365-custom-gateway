@@ -2,8 +2,10 @@
 
 Purview is an optional Gateway runtime feature, not a prerequisite for deploying or
 using the core Gateway. Configure and validate it after the base deployment is
-healthy. Keep `Purview__Enabled=false` until every runtime prerequisite below is
-verified.
+healthy. Leave Purview disabled in the bootstrap configuration until every runtime
+prerequisite below is verified; bootstrap derives `Purview__Enabled` from that
+configuration once the policy objects pass exact typed readback, so the flag is
+never set by hand.
 
 ## Scope model
 
@@ -32,8 +34,9 @@ are carried as `aiAgentInfo` attribution; the child is not the DLP policy locati
 - tenant licensing and availability for the selected Purview capabilities;
 - Security & Compliance PowerShell access;
 - a Windows workstation for optional SIT inventory and policy authoring;
-- an approved certificate-authenticated automation application when Gateway-managed
-  profiles are enabled;
+- a certificate-authenticated automation application **only** when the Gateway
+  itself must author policy for a newly created protected blueprint; registering
+  an agent against an existing blueprint never uses it;
 - certificate PFX stored in the reviewed Key Vault secret path;
 - the narrow compliance RBAC required for FeatureConfiguration and DLP cmdlets;
 - API managed-identity Graph application roles for runtime processing;
@@ -57,6 +60,136 @@ Microsoft does not publish a cmdlet-specific least-privilege role mapping for
 the commands permitted by the signed-in account's RBAC. Setup therefore tests the
 real command and inventory and stops if authorization cannot be proven; do not grant
 a broader role merely to bypass that check.
+
+## Enable Purview on an existing deployment
+
+Purview is reconcilable input rather than deployment identity, so enabling it is
+a configuration change and not a teardown. Whether that change can be applied to
+an existing deployment depends on a second, independent condition: bootstrap
+refuses to mix source generations inside one deployment state. Establish which
+case you are in before doing anything, because the two paths differ completely.
+
+```powershell
+.\gateway.cmd plan
+```
+
+If `plan` refuses with *"Bootstrap source changed after durable state evidence was
+recorded"*, the working tree no longer matches the source that provisioned the
+deployment, and no in-place path exists. Use case B.
+
+Run either case on Windows. The Purview authoring step cannot run on macOS or
+Linux for the reason given above, and it cannot run unattended.
+
+### Case A — the source is unchanged
+
+Deployment identity is exactly `subscriptionId`, `tenantId`, `environment`,
+`location`, `projectName`, and `resourceGroupName`. Keep all six as recorded, or
+bootstrap treats the run as a different deployment and provisions a separate one
+beside the existing gateway. Both initializers offer the recorded project name and
+resource group back as defaults whenever the subscription, tenant, and environment
+already match, and state which deployment they are reconfiguring; accepting those
+defaults is the reconciling path.
+
+1. Rewrite the configuration with Purview enabled, selecting the sensitive
+   information type through the tenant-backed picker described in
+   [Select a sensitive information type](#select-a-sensitive-information-type):
+
+   ```powershell
+   .\gateway.cmd init
+   ```
+
+   Guided Setup (`.\gateway.cmd setup`) presents the identical contract in the
+   browser. Either is acceptable; do not hand-edit `bootstrap/config.json` to
+   insert a sensitive-information-type GUID, because an unverified GUID fails
+   closed mid-run after the deployment steps have already restarted.
+
+2. Apply the change:
+
+   ```powershell
+   .\gateway.cmd up --config bootstrap/config.json
+   ```
+
+   Bootstrap reopens `Purview policies` and `Gateway runtime deployment`. The
+   first authors the collection, DLP policy, and DLP rule over an interactive
+   `Connect-IPPSSession` sign-in and verifies them by exact typed readback; the
+   second redeploys the API and worker with the adapter enabled. Stay at the
+   terminal: the compliance sign-in is a browser handoff that the run waits on,
+   and `--non-interactive` makes the run fail closed at the Purview step rather
+   than authoring policy without a signed-in operator.
+
+   Reopening is safe here only because the recorded completion was a no-op. A
+   step that completed while Purview was disabled records `configured: false`,
+   which is written before any tenant object is created, so there is nothing to
+   repeat and bootstrap simply runs it. Evidence from a run that *did* author
+   policy is treated differently: it fails closed rather than replaying a
+   mutation, and the run stops with the step preserved for exact reconciliation.
+   If that happens, review the tenant policies named in the configuration before
+   resuming; do not delete `.bootstrap/` state to clear it.
+
+Then continue with the registration and runtime checks below.
+
+### Case B — the source has changed
+
+This is the normal case whenever pending source corrections are waiting to ship,
+and it is the only supported path then. There is no in-place application upgrade,
+and none should be added: mixing source generations inside one deployment state is
+exactly what the guard prevents. Do not delete `.bootstrap/` state to force the
+in-place path, and do not point fresh state at an existing resource group.
+
+Provision a new deployment with Purview enabled from the start, which also lands
+every pending correction in the same cycle:
+
+1. Run `.\gateway.cmd init` (or `.\gateway.cmd setup`) and enter a **new** project
+   name rather than accepting the recorded one. The wizard states which
+   deployment the defaults would reconfigure, so read that line before pressing
+   Enter. Enable Purview and select the sensitive information type through the
+   tenant-backed picker described in
+   [Select a sensitive information type](#select-a-sensitive-information-type).
+
+2. Run `.\gateway.cmd up --config bootstrap/config.json` and stay at the terminal
+   for the interactive compliance sign-in. Purview is authored during the run
+   rather than reopened afterwards, so no replay boundary is involved.
+
+3. Retire the superseded deployment only after the new one is verified, and only
+   under a fresh explicit authorization for that specific resource group.
+
+Then continue with the registration and runtime checks below.
+
+### Register and verify
+
+1. Enable Purview on exactly one registration. In the Admin UI, register an agent
+   against an **existing** blueprint and select **Enable Microsoft Purview**. That
+   path requires no protection profile and no automation application; profile
+   provisioning is reached only when creating a *new* protected blueprint, where
+   the worker must author policy unattended.
+
+2. Exercise the runtime with the sample external agent, which carries the Entra
+   user object ID that Purview evaluation requires:
+
+   ```powershell
+   dotnet run --project src/ExternalAgent.Sample -- `
+     --api-base-url https://YOUR-GATEWAY-API `
+     --external-agent-id YOUR-EXTERNAL-AGENT-ID `
+     --tenant-user-object-id YOUR-ENTRA-USER-OBJECT-ID `
+     --message "benign text"
+   ```
+
+   The sample accepts only those four arguments and rejects any other. It reads
+   the Gateway key from stdin or a non-echoing prompt by design; never pass the
+   key as an argument, where it would land in shell history and process listings.
+
+   Repeat with organization-approved synthetic sensitive content matching the
+   selected type. Both outcomes are required: the benign call must return the
+   exact nonblocking decision, and the sensitive call must return the expected
+   block. A block on its own does not distinguish enforcement from a
+   misconfigured deny.
+
+Until both outcomes are observed on the deployed build, the feature is enabled but
+unproven. Bootstrap records `propagationStatus = PendingLiveVerification` for
+precisely this reason: exact typed readback proves the policy objects exist, never
+that the managed identity's token carries the Graph roles or that the policy has
+propagated. See [Exact readback](#exact-readback) and
+[Managed-identity token readiness](#managed-identity-token-readiness) below.
 
 ## Select a sensitive information type
 

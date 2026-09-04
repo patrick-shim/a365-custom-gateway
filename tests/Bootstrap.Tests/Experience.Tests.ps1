@@ -4590,3 +4590,196 @@ Describe 'Resume-time Admin UI Gateway role boundary' {
         }
     }
 }
+
+Describe 'Experience setup identity defaults' {
+    BeforeAll {
+        $script:recordedConfiguration = [pscustomobject]@{
+            subscriptionId = '11111111-1111-4111-8111-111111111111'
+            tenantId = '22222222-2222-4222-8222-222222222222'
+            environment = 'dev'
+            location = 'koreacentral'
+            projectName = 'gwf20a6'
+            resourceGroupName = 'rg-gwf20a6-dev'
+        }
+    }
+
+    It 'offers the recorded deployment identity back when the operator returns to the same deployment' {
+        # Defaulting to a fresh random project here turns a reconfiguration into
+        # a second full provision against a brand-new resource group, which the
+        # operator only discovers after the run completes.
+        $defaults = Get-GatewaySetupIdentityDefaults `
+            -ExistingConfiguration $script:recordedConfiguration `
+            -SubscriptionId '11111111-1111-4111-8111-111111111111' `
+            -TenantId '22222222-2222-4222-8222-222222222222' `
+            -Environment 'dev' `
+            -FallbackProjectName 'gwnew01'
+
+        $defaults.sameDeployment | Should -BeTrue
+        $defaults.projectName | Should -BeExactly 'gwf20a6'
+        $defaults.resourceGroupName | Should -BeExactly 'rg-gwf20a6-dev'
+        $defaults.location | Should -BeExactly 'koreacentral'
+    }
+
+    It 'keeps the fresh project name when the environment differs, because that is a different deployment' {
+        $defaults = Get-GatewaySetupIdentityDefaults `
+            -ExistingConfiguration $script:recordedConfiguration `
+            -SubscriptionId '11111111-1111-4111-8111-111111111111' `
+            -TenantId '22222222-2222-4222-8222-222222222222' `
+            -Environment 'staging' `
+            -FallbackProjectName 'gwnew01'
+
+        $defaults.sameDeployment | Should -BeFalse
+        $defaults.projectName | Should -BeExactly 'gwnew01'
+        $defaults.resourceGroupName | Should -BeExactly ''
+        # A region is an account-scoped choice, so it is still offered back.
+        $defaults.sameAccount | Should -BeTrue
+        $defaults.location | Should -BeExactly 'koreacentral'
+    }
+
+    It 'ignores a configuration recorded against a different subscription or tenant' {
+        foreach ($case in @(
+            @{ subscriptionId = '33333333-3333-4333-8333-333333333333'; tenantId = '22222222-2222-4222-8222-222222222222' },
+            @{ subscriptionId = '11111111-1111-4111-8111-111111111111'; tenantId = '44444444-4444-4444-8444-444444444444' }
+        )) {
+            $defaults = Get-GatewaySetupIdentityDefaults `
+                -ExistingConfiguration $script:recordedConfiguration `
+                -SubscriptionId ([string]$case.subscriptionId) `
+                -TenantId ([string]$case.tenantId) `
+                -Environment 'dev' `
+                -FallbackProjectName 'gwnew01'
+
+            $defaults.sameAccount | Should -BeFalse
+            $defaults.sameDeployment | Should -BeFalse
+            $defaults.projectName | Should -BeExactly 'gwnew01'
+            $defaults.location | Should -BeExactly ''
+        }
+    }
+
+    It 'falls back cleanly when no configuration is readable or it omits the identity' {
+        $defaults = Get-GatewaySetupIdentityDefaults `
+            -ExistingConfiguration $null `
+            -SubscriptionId '11111111-1111-4111-8111-111111111111' `
+            -TenantId '22222222-2222-4222-8222-222222222222' `
+            -Environment 'dev' `
+            -FallbackProjectName 'gwnew01'
+
+        $defaults.sameAccount | Should -BeFalse
+        $defaults.projectName | Should -BeExactly 'gwnew01'
+
+        # A partially written configuration must not throw on a missing member.
+        $defaults = Get-GatewaySetupIdentityDefaults `
+            -ExistingConfiguration ([pscustomobject]@{ subscriptionId = '11111111-1111-4111-8111-111111111111' }) `
+            -SubscriptionId '11111111-1111-4111-8111-111111111111' `
+            -TenantId '22222222-2222-4222-8222-222222222222' `
+            -Environment 'dev' `
+            -FallbackProjectName 'gwnew01'
+
+        $defaults.sameAccount | Should -BeFalse
+        $defaults.projectName | Should -BeExactly 'gwnew01'
+    }
+
+    It 'uses those defaults in the setup wizard instead of always generating a new project' {
+        # A helper nothing calls would leave the wizard silently proposing a
+        # second deployment, which is the whole failure being guarded here.
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            (Get-Module Experience).Path, [ref]$tokens, [ref]$parseErrors)
+        $parseErrors.Count | Should -Be 0
+        $wizard = $ast.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'New-GatewayBootstrapConfiguration'
+        }, $true)
+
+        $wizard.Extent.Text | Should -Match 'Get-GatewaySetupIdentityDefaults'
+        $wizard.Extent.Text | Should -Match '-Default \$identityDefaults\.projectName'
+    }
+}
+
+Describe 'Experience Purview no-op completion replay boundary' {
+    BeforeAll {
+        $script:purviewEnabledConfig = [pscustomobject]@{
+            tenantId = '22222222-2222-4222-8222-222222222222'
+            purview = [pscustomobject]@{ enabled = $true }
+        }
+        $script:purviewDisabledConfig = [pscustomobject]@{
+            tenantId = '22222222-2222-4222-8222-222222222222'
+            purview = [pscustomobject]@{ enabled = $false }
+        }
+        $script:purviewBlueprint = [pscustomobject]@{
+            applicationId = '55555555-5555-4555-8555-555555555555'
+        }
+        # The exact shape the disabled early return records.
+        $script:purviewNoOpEvidence = [ordered]@{ configured = $false; enabled = $false }
+    }
+
+    It 'reports a disabled no-op completion as stale rather than refusing to replay' {
+        # The disabled early return is the only writer of configured=false, and it
+        # returns before any policy mutation, so no tenant object exists to
+        # reconcile and the step is safe to simply run. Throwing here strands the
+        # deployment permanently: the completed branch flips the step to Failed,
+        # and the reconciler then finds no policy objects to recover from.
+        $result = Test-GatewayPurviewEvidence `
+            -Config $script:purviewEnabledConfig `
+            -Blueprint $script:purviewBlueprint `
+            -Evidence $script:purviewNoOpEvidence `
+            -UserPrincipalName 'operator@contoso.example'
+
+        $result | Should -BeOfType [bool]
+        $result | Should -BeFalse
+    }
+
+    It 'still refuses to replay when previously authored evidence no longer matches' {
+        # Evidence recording a real authoring attempt must keep failing closed,
+        # because repeating that mutation is exactly what the guard prevents.
+        $mismatched = [ordered]@{
+            configured = $true
+            enabled = $true
+            blueprintApplicationId = '99999999-9999-4999-8999-999999999999'
+            enforcementPlane = 'Application'
+            exactTypedReadback = $true
+        }
+
+        {
+            Test-GatewayPurviewEvidence `
+                -Config $script:purviewEnabledConfig `
+                -Blueprint $script:purviewBlueprint `
+                -Evidence $mismatched `
+                -UserPrincipalName 'operator@contoso.example'
+        } | Should -Throw '*refusing automatic policy replay*'
+    }
+
+    It 'keeps refusing Purview revalidation in non-interactive mode' {
+        # The no-op allowance must not open an unattended policy-authoring path.
+        {
+            Test-GatewayPurviewEvidence `
+                -Config $script:purviewEnabledConfig `
+                -Blueprint $script:purviewBlueprint `
+                -Evidence $script:purviewNoOpEvidence `
+                -UserPrincipalName 'operator@contoso.example' `
+                -NonInteractive
+        } | Should -Throw '*non-interactive*'
+    }
+
+    It 'keeps reusing the no-op completion while Purview stays disabled' {
+        $result = Test-GatewayPurviewEvidence `
+            -Config $script:purviewDisabledConfig `
+            -Blueprint $script:purviewBlueprint `
+            -Evidence $script:purviewNoOpEvidence `
+            -UserPrincipalName 'operator@contoso.example'
+
+        $result | Should -BeTrue
+    }
+
+    It 'scopes the anti-replay guard to a prior authoring attempt' {
+        # Returning $false is not enough on its own: while
+        # -NoAutomaticReplayAfterStart stays pinned to the configuration flag, the
+        # completed branch fails the step instead of running the action.
+        $bootstrapPath = Join-Path (Split-Path -Parent (Split-Path -Parent (Get-Module Experience).Path)) 'bootstrap.ps1'
+        $bootstrapText = Get-Content -Raw -Path $bootstrapPath
+
+        $bootstrapText | Should -Match '\$purviewPreviouslyAuthored\s*='
+        $bootstrapText | Should -Match '\$purviewPreviouslyAuthored[\s\S]{0,400}?evidence\.configured -eq \$true'
+        $bootstrapText | Should -Match 'NoAutomaticReplayAfterStart:\(\$configuration\.purview\.enabled -eq \$true -and \$purviewPreviouslyAuthored\)'
+    }
+}

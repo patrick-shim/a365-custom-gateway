@@ -703,6 +703,74 @@ function Read-GatewayAzureLocation {
     return $selectedName
 }
 
+function Get-GatewaySetupConfigurationMember {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    # A previously written configuration may be partial or hand-edited, so a
+    # missing member reads as absent rather than terminating the wizard.
+    if ($null -eq $InputObject) { return '' }
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        if ($InputObject.Contains($Name)) { return [string]$InputObject[$Name] }
+        return ''
+    }
+    $member = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $member) { return '' }
+    return [string]$member.Value
+}
+
+function Get-GatewaySetupIdentityDefaults {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]$ExistingConfiguration,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$SubscriptionId,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$TenantId,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Environment,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$FallbackProjectName
+    )
+
+    # Subscription, tenant, environment, location, project name, and resource
+    # group together pin the deployment identity that recorded evidence
+    # describes. Offer the project name and resource group back only when the
+    # subscription, tenant, and environment all match, because that is the only
+    # case where reusing them reconciles the existing deployment rather than
+    # naming a different one. A region is an account-scoped choice, so it keeps
+    # its wider account-level condition.
+    $recordedSubscriptionId = Get-GatewaySetupConfigurationMember -InputObject $ExistingConfiguration -Name 'subscriptionId'
+    $recordedTenantId = Get-GatewaySetupConfigurationMember -InputObject $ExistingConfiguration -Name 'tenantId'
+    $recordedEnvironment = Get-GatewaySetupConfigurationMember -InputObject $ExistingConfiguration -Name 'environment'
+
+    $sameAccount = ($null -ne $ExistingConfiguration) -and
+        ($recordedSubscriptionId -ceq $SubscriptionId) -and
+        ($recordedTenantId -ceq $TenantId) -and
+        (-not [string]::IsNullOrWhiteSpace($recordedSubscriptionId)) -and
+        (-not [string]::IsNullOrWhiteSpace($recordedTenantId))
+    $sameDeployment = $sameAccount -and ($recordedEnvironment -ceq $Environment)
+
+    $projectName = $FallbackProjectName
+    $resourceGroupName = ''
+    $location = ''
+    if ($sameAccount) {
+        $location = Get-GatewaySetupConfigurationMember -InputObject $ExistingConfiguration -Name 'location'
+    }
+    if ($sameDeployment) {
+        $recordedProjectName = Get-GatewaySetupConfigurationMember -InputObject $ExistingConfiguration -Name 'projectName'
+        if (-not [string]::IsNullOrWhiteSpace($recordedProjectName)) { $projectName = $recordedProjectName }
+        $resourceGroupName = Get-GatewaySetupConfigurationMember -InputObject $ExistingConfiguration -Name 'resourceGroupName'
+    }
+
+    return [ordered]@{
+        sameAccount = [bool]$sameAccount
+        sameDeployment = [bool]$sameDeployment
+        projectName = [string]$projectName
+        resourceGroupName = [string]$resourceGroupName
+        location = [string]$location
+    }
+}
+
 function New-GatewayBootstrapConfiguration {
     [CmdletBinding()]
     param(
@@ -779,17 +847,29 @@ function New-GatewayBootstrapConfiguration {
     $profile = Read-GatewayChoice -Prompt 'Choose a deployment profile' -Choices $profiles -DefaultIndex 0
     $environment = [string]$profile.environment
     $randomProject = 'gw' + [guid]::NewGuid().ToString('N').Substring(0, 5)
-    $projectName = Read-GatewayText -Prompt 'Short project name (used for tenant/global resource isolation)' -Default $randomProject -Pattern '^[a-z][a-z0-9]{1,7}$' -ValidationMessage 'Use 2-8 lowercase letters/digits, starting with a letter.'
-    $configuredLocation = ''
-    if ($null -ne $existingConfiguration -and
-        [string]$existingConfiguration.subscriptionId -ceq [string]$subscription.id -and
-        [string]$existingConfiguration.tenantId -ceq [string]$subscription.tenantId) {
-        $configuredLocation = [string]$existingConfiguration.location
+    $identityDefaults = Get-GatewaySetupIdentityDefaults `
+        -ExistingConfiguration $existingConfiguration `
+        -SubscriptionId ([string]$subscription.id) `
+        -TenantId ([string]$subscription.tenantId) `
+        -Environment $environment `
+        -FallbackProjectName $randomProject
+    if ($identityDefaults.sameDeployment) {
+        Write-Host "Reusing the recorded deployment identity '$($identityDefaults.projectName)' in $environment. Accepting these defaults reconfigures that deployment; entering a different project name provisions a separate one." -ForegroundColor Cyan
     }
+    $projectName = Read-GatewayText -Prompt 'Short project name (used for tenant/global resource isolation)' -Default $identityDefaults.projectName -Pattern '^[a-z][a-z0-9]{1,7}$' -ValidationMessage 'Use 2-8 lowercase letters/digits, starting with a letter.'
+    $configuredLocation = [string]$identityDefaults.location
     $location = Read-GatewayAzureLocation `
         -SubscriptionId ([string]$subscription.id) `
         -ConfiguredLocation $configuredLocation
-    $resourceGroupName = Read-GatewayText -Prompt 'Resource group name' -Default "rg-$projectName-$environment" -Pattern '^[A-Za-z0-9._()\-]{1,90}$' -ValidationMessage 'Enter a valid Azure resource group name (1-90 characters).'
+    $defaultResourceGroupName = "rg-$projectName-$environment"
+    # Only offer the recorded resource group back when the project name was
+    # kept as well, otherwise the default would name another deployment's group.
+    if ($identityDefaults.sameDeployment -and
+        $projectName -ceq [string]$identityDefaults.projectName -and
+        -not [string]::IsNullOrWhiteSpace([string]$identityDefaults.resourceGroupName)) {
+        $defaultResourceGroupName = [string]$identityDefaults.resourceGroupName
+    }
+    $resourceGroupName = Read-GatewayText -Prompt 'Resource group name' -Default $defaultResourceGroupName -Pattern '^[A-Za-z0-9._()\-]{1,90}$' -ValidationMessage 'Enter a valid Azure resource group name (1-90 characters).'
 
     $suggestedEmail = ''
     try {
@@ -5452,6 +5532,15 @@ function Test-GatewayPurviewEvidence {
     if ($NonInteractive) {
         throw 'Purview revalidation requires an interactive Security & Compliance session; refusing automatic policy replay in non-interactive mode.'
     }
+    # A completion recorded by the disabled early return proves that no collection,
+    # policy, or rule was ever authored, so there is no mutation to repeat and no
+    # tenant object to reconcile. Report it as stale so the step runs, rather than
+    # failing closed against a mutation that never happened.
+    if ($Evidence -and $Evidence.configured -eq $false -and $Evidence.enabled -eq $false) { return $false }
+    # The mismatch checks below throw before a connection is opened, and the
+    # finally block reads this variable on the way out. Initialize it so the
+    # cleanup cannot replace the real reason with a strict-mode variable error.
+    $connectionId = ''
     try {
         if (-not $Evidence -or $Evidence.configured -ne $true -or
             [string]$Evidence.blueprintApplicationId -ne [string]$Blueprint.applicationId -or

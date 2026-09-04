@@ -2160,6 +2160,16 @@ try {
             step = 'Purview policies'; index = 14; total = $stepNames.Count
         }) -OutputFormat $OutputFormat
     }
+    # The anti-replay guard exists to protect a prior policy-authoring attempt. A
+    # step that completed through the disabled early return authored nothing, so
+    # treating it as unsafe to replay would strand the deployment the moment
+    # Purview is turned on: the completed branch fails the step, and the
+    # reconciler then has no tenant object to recover from.
+    $purviewPreviouslyAuthored = ($state.steps -is [System.Collections.IDictionary]) -and
+        $state.steps.Contains('Purview policies') -and
+        ($state.steps['Purview policies'] -is [System.Collections.IDictionary]) -and
+        ($state.steps['Purview policies'].evidence -is [System.Collections.IDictionary]) -and
+        $state.steps['Purview policies'].evidence.configured -eq $true
     $purview = Invoke-GatewayStateStep -Name 'Purview policies' -Validate {
         Test-GatewayPurviewEvidence -Config $configuration -Blueprint $blueprint -Evidence $state.steps['Purview policies'].evidence -UserPrincipalName ([string]$azureIdentity.userPrincipalName) -NonInteractive:$NonInteractive
     } -Reconcile {
@@ -2176,7 +2186,7 @@ try {
                 if (-not [string]::IsNullOrWhiteSpace($connectionId)) { Disconnect-BootstrapPurview -ConnectionId $connectionId }
             }
         }
-    } -NoAutomaticReplayAfterStart:($configuration.purview.enabled -eq $true) -Action {
+    } -NoAutomaticReplayAfterStart:($configuration.purview.enabled -eq $true -and $purviewPreviouslyAuthored) -Action {
         # Interactive compliance connection setup can emit module objects. The
         # state contract stores only the provider's final non-secret evidence map.
         $created = @(Ensure-BootstrapPurviewPolicies -Config $configuration -Blueprint $blueprint -UserPrincipalName ([string]$azureIdentity.userPrincipalName) -NonInteractive:$NonInteractive)
