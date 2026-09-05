@@ -66,16 +66,20 @@ propagation, token-role, or allow/block evidence.
 Canonical source gate: 20 PowerShell files and 2 JSON files, with 28 Bicep templates and 3 parameter files compiled, with Pester behavior tests.
 
 
-The first hosted run passed .NET, Bicep, and Windows gates, but exposed
-Windows-only fixture paths and a macOS-unsupported certificate import in two
-Pester files. The corrective tests use a native temporary source path and prove
-the passwordless PKCS12 private key by an in-memory signature against the exact
-exported certificate, including rejection of a public-only package. Both affected
-files passed again (11 tests, zero failures/skips) in the canonical checkout and
-clean export; independent review of this correction passed. Production source,
-test counts, and UI contracts are unchanged, so the earlier full integrated
-results above remain applicable alongside this incremental evidence. All five
-hosted jobs must pass for the actual release commit before source closure.
+Hosted validation exposed Windows-only fixture paths and platform differences
+in passwordless PKCS12 verification. The tests now use a native temporary path and
+accept both documented null and empty password encodings independently for the
+MAC, safe contents, and private key. All eight synthetic encoding combinations
+pass; nonempty-password and public-only packages are rejected. The actual export
+must retain the exact certificate and prove its matching private key by an
+in-memory signature. Both affected files passed again (11 tests, zero
+failures/skips) in the canonical checkout and clean export; fresh independent
+review of the encoding correction passed. Production source, test counts, and UI
+contracts are unchanged, so the earlier full integrated results above remain
+applicable alongside this incremental evidence. The preceding hosted run passed
+.NET, Bicep, Ubuntu, and macOS; the Windows proof correction still requires
+exact-commit hosted acceptance at this handoff. All five hosted jobs must pass
+before source closure.
 
 The fresh independent review passed the combined source after explicitly
 rechecking all four original findings: shared API/worker runtime identity and

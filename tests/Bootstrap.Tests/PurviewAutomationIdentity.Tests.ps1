@@ -8,6 +8,7 @@ Describe 'Purview automation exact compliance RBAC boundary' {
         # Decode bags and import RSA directly: macOS cannot load an X509 private key
         # with EphemeralKeySet. No keychain or temporary certificate store is used.
         # https://learn.microsoft.com/dotnet/api/system.security.cryptography.pkcs.pkcs12info
+        # https://learn.microsoft.com/dotnet/api/system.security.cryptography.pkcs.pkcs12info.verifymac
         # https://learn.microsoft.com/dotnet/api/system.security.cryptography.rsa.importencryptedpkcs8privatekey
         Add-Type -AssemblyName System.Security.Cryptography.Pkcs
         if (-not ('Gateway.Bootstrap.Tests.Pkcs12PrivateKeyProof' -as [type])) {
@@ -24,11 +25,37 @@ namespace Gateway.Bootstrap.Tests
 {
     public static class Pkcs12PrivateKeyProof
     {
-        public static bool Verify(byte[] pfx, byte[] expectedCertificate)
+        public static byte[] CreateEncodingFixture(X509Certificate2 certificate, RSA privateKey, int variant)
         {
+            if (variant < 0 || variant > 8)
+                throw new ArgumentOutOfRangeException(nameof(variant));
+            string macPassword = variant == 8 ? "synthetic-nonempty" : (variant & 1) == 0 ? string.Empty : null;
+            string safePassword = (variant & 2) == 0 ? string.Empty : null;
+            string keyPassword = (variant & 4) == 0 ? string.Empty : null;
+            var pbe = new PbeParameters(PbeEncryptionAlgorithm.TripleDes3KeyPkcs12, HashAlgorithmName.SHA1, 1);
+            var contents = new Pkcs12SafeContents();
+            contents.AddCertificate(certificate);
+            contents.AddShroudedKey(privateKey, keyPassword, pbe);
+            var builder = new Pkcs12Builder();
+            builder.AddSafeContentsEncrypted(contents, safePassword, pbe);
+            builder.SealWithMac(macPassword, HashAlgorithmName.SHA256, 1);
+            return builder.Encode();
+        }
+
+        public static bool Verify(byte[] pfx, byte[] expectedCertificate)
+            => Verify(pfx, expectedCertificate, out _);
+
+        public static bool Verify(byte[] pfx, byte[] expectedCertificate, out string failure)
+        {
+            failure = "PfxLength";
             var info = Pkcs12Info.Decode(pfx, out int consumed, skipCopy: true);
-            if (consumed != pfx.Length || info.IntegrityMode != Pkcs12IntegrityMode.Password ||
-                !info.VerifyMac(ReadOnlySpan<char>.Empty))
+            if (consumed != pfx.Length)
+                return false;
+            failure = "PasswordlessMac";
+            // PKCS12 distinguishes null (default span) from empty (string span).
+            // Both are passwordless, and each protected section chooses its encoding.
+            if (info.IntegrityMode != Pkcs12IntegrityMode.Password ||
+                !(info.VerifyMac(ReadOnlySpan<char>.Empty) || info.VerifyMac(string.Empty.AsSpan())))
                 return false;
 
             using var privateKey = RSA.Create();
@@ -39,8 +66,18 @@ namespace Gateway.Bootstrap.Tests
             {
                 foreach (var contents in info.AuthenticatedSafe)
                 {
+                    failure = "SafeContents";
                     if (contents.ConfidentialityMode == Pkcs12ConfidentialityMode.Password)
-                        contents.Decrypt(ReadOnlySpan<char>.Empty);
+                    {
+                        try
+                        {
+                            contents.Decrypt(ReadOnlySpan<char>.Empty);
+                        }
+                        catch (CryptographicException)
+                        {
+                            contents.Decrypt(string.Empty.AsSpan());
+                        }
+                    }
                     if (contents.ConfidentialityMode != Pkcs12ConfidentialityMode.None)
                         return false;
 
@@ -48,19 +85,31 @@ namespace Gateway.Bootstrap.Tests
                     {
                         if (bag is Pkcs12ShroudedKeyBag encrypted)
                         {
-                            privateKey.ImportEncryptedPkcs8PrivateKey(ReadOnlySpan<char>.Empty,
-                                encrypted.EncryptedPkcs8PrivateKey.Span, out int keyBytes);
+                            failure = "EncryptedPrivateKey";
+                            int keyBytes;
+                            try
+                            {
+                                privateKey.ImportEncryptedPkcs8PrivateKey(ReadOnlySpan<char>.Empty,
+                                    encrypted.EncryptedPkcs8PrivateKey.Span, out keyBytes);
+                            }
+                            catch (CryptographicException)
+                            {
+                                privateKey.ImportEncryptedPkcs8PrivateKey(string.Empty.AsSpan(),
+                                    encrypted.EncryptedPkcs8PrivateKey.Span, out keyBytes);
+                            }
                             if (++keyCount != 1 || keyBytes != encrypted.EncryptedPkcs8PrivateKey.Length)
                                 return false;
                         }
                         else if (bag is Pkcs12KeyBag plain)
                         {
+                            failure = "PrivateKey";
                             privateKey.ImportPkcs8PrivateKey(plain.Pkcs8PrivateKey.Span, out int keyBytes);
                             if (++keyCount != 1 || keyBytes != plain.Pkcs8PrivateKey.Length)
                                 return false;
                         }
                         else if (bag is Pkcs12CertBag certBag && certBag.IsX509Certificate)
                         {
+                            failure = "CertificateMatch";
                             using var certificate = certBag.GetCertificate();
                             if (++certificateCount != 1 ||
                                 !certificate.RawData.AsSpan().SequenceEqual(expectedCertificate))
@@ -69,16 +118,22 @@ namespace Gateway.Bootstrap.Tests
                         }
                         else
                         {
+                            failure = "UnexpectedBag";
                             return false;
                         }
                     }
                 }
 
+                failure = "KeyAndCertificateCounts";
                 if (keyCount != 1 || certificateCount != 1 || publicKey == null)
                     return false;
+                failure = "SignatureMatch";
                 byte[] challenge = { 1, 2, 3, 4 };
                 byte[] signature = privateKey.SignData(challenge, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-                return publicKey.VerifyData(challenge, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                bool verified = publicKey.VerifyData(challenge, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                if (verified)
+                    failure = "None";
+                return verified;
             }
             finally
             {
@@ -310,8 +365,29 @@ namespace Gateway.Bootstrap.Tests
                     [DateTimeOffset]::UtcNow.AddDays(1))
                 $pfx = $certificate.Export(
                     [Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12)
-                [Gateway.Bootstrap.Tests.Pkcs12PrivateKeyProof]::Verify($pfx, $certificate.RawData) |
-                    Should -BeTrue
+                $proofFailure = ''
+                [Gateway.Bootstrap.Tests.Pkcs12PrivateKeyProof]::Verify($pfx, $certificate.RawData, [ref]$proofFailure) |
+                    Should -BeTrue -Because "the exported certificate must retain its matching private key (bounded proof stage: $proofFailure)"
+
+                # PKCS12 independently encodes null versus empty passwords for
+                # integrity, safe contents, and private keys. Exercise all eight.
+                foreach ($variant in 0..8) {
+                    $encodingPfx = $null
+                    try {
+                        $encodingPfx = [Gateway.Bootstrap.Tests.Pkcs12PrivateKeyProof]::CreateEncodingFixture(
+                            $certificate, $rsa, $variant)
+                        $verified = [Gateway.Bootstrap.Tests.Pkcs12PrivateKeyProof]::Verify($encodingPfx, $certificate.RawData)
+                        if ($variant -eq 8) {
+                            $verified | Should -BeFalse -Because 'a nonempty password is outside the passwordless contract'
+                        }
+                        else {
+                            $verified | Should -BeTrue -Because "passwordless encoding variant $variant must retain the matching private key"
+                        }
+                    }
+                    finally {
+                        if ($encodingPfx) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($encodingPfx) }
+                    }
+                }
 
                 # A parseable PFX containing only the public certificate must fail.
                 $publicContents = [Security.Cryptography.Pkcs.Pkcs12SafeContents]::new()

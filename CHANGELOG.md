@@ -21,7 +21,8 @@ Protection governance source release candidate.
   limits runtime validation to enforcement mode.
 
 - Bootstrap certificate tests use native temporary paths and in-memory PKCS12
-  private-key proof on every platform, without certificate-store fallback.
+  private-key proof with both documented null and empty password encodings,
+  without certificate-store fallback.
 
 ### Validation boundary
 
@@ -33,11 +34,12 @@ Protection governance source release candidate.
   in favor of bUnit and independent source review after browser policy blocked it.
 - Clean export passed Release, all eight test projects, canonical bootstrap
   source/Pester/Bicep, layout, and launcher smoke with all intended new files.
-- The first hosted run passed .NET, Bicep, and Windows but exposed certificate-test
-  portability failures on Linux/macOS. The two-file correction passed 11 affected
-  tests in the canonical checkout and clean export, plus independent review.
-  Production source and full-suite test counts are unchanged; all hosted jobs
-  must pass for the corrective commit.
+- Certificate-test portability corrections passed 11 affected tests in the
+  canonical checkout and clean export, plus fresh independent review. Synthetic
+  fixtures cover all eight null/empty password encoding combinations and reject
+  nonempty-password and public-only packages. The preceding hosted run passed
+  .NET, Bicep, Ubuntu, and macOS; all jobs must pass for the final Windows proof
+  correction. Production source and full-suite test counts are unchanged.
 - Source remains undeployed; live E2E is postponed. Hosted CI must be green for
   the exact commit, followed by fresh authorization naming an exact unused
   resource group. Git and documentation transfer no live authority.
