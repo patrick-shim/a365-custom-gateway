@@ -217,9 +217,9 @@ Run these eight projects directly. `src/A365Gateway.slnx` contains no test proje
 so `dotnet test` against that solution reports success without executing a test.
 
 The PowerShell gate spans three Pester directories, not one: `tests/Bootstrap.Tests`
-contributes 747 passed with seven non-Windows cases intentionally skipped,
+contributes 748 passed with seven non-Windows cases intentionally skipped,
 `tests/Gateway.Purview.Tests` contributes 22, and `tests/Operations.Tests`
-contributes 32, for 801 passed and none failed out of 808 discovered. Run them
+contributes 32, for 802 passed and none failed out of 809 discovered. Run them
 through `tools/Test-BootstrapSource.ps1 -RunPester`, whose `$pesterPaths` array is
 the authoritative list, rather than naming directories individually. Adding
 `-CompileBicep` validates 18 PowerShell source files and two JSON contracts, then
@@ -258,7 +258,7 @@ PowerShell source gate above.
 The launcher, standalone source-compiler, Azure CLI boundary, Bicep prerequisite,
 and Entra credential and orphan-cleanup regressions that earlier revisions listed as
 a separate table are files inside `tests/Bootstrap.Tests` and are already counted in
-its 747. Do not restate a subset as though it were an independent gate.
+its 748. Do not restate a subset as though it were an independent gate.
 
 The explicit Windows Bicep compilation lane has run for this source generation and
 passed. Closing that lane required one contributor-tool correction.
@@ -271,6 +271,13 @@ resolver now binds exactly one command source and deterministically promotes an
 extensionless shim to its sibling Windows launcher before the existing bundled-Python
 mapping. Anything else still fails closed. The shipped bootstrap engine resolves the
 Azure CLI through a different, single-match call and was not affected.
+
+The first hosted beta-candidate run exposed the same multi-match shape for `chmod`
+on Ubuntu: both `/bin/chmod` and `/usr/bin/chmod` were returned, and PowerShell
+collapsed their `Source` values into one invalid command path. Restricted diagnostic
+files and temporary ARM parameter files now use one shared deterministic
+application-command resolver. The focused Linux-shaped regression and the complete
+Windows Pester gate pass; the corrected commit still requires its own hosted CI run.
 
 The secure credential path uses one ARM child-resource
 deployment against the exact configured subscription, emits no secret value, and

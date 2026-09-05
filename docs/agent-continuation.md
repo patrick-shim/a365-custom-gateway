@@ -116,10 +116,10 @@ Windows at this checkpoint:
 | Evidence | Result |
 |---|---:|
 | The eight .NET test projects under `tests/` | 1,767 passed, 0 failed |
-| The three Pester suites, run as one gate | 801 passed, 0 failed, 7 skipped |
+| The three Pester suites, run as one gate | 802 passed, 0 failed, 7 skipped |
 
 Pester tests live in three separate directories, not one. `tests/Bootstrap.Tests`
-holds 747 of them, `tests/Gateway.Purview.Tests` holds 22, and
+holds 748 of them, `tests/Gateway.Purview.Tests` holds 22, and
 `tests/Operations.Tests` holds 32. Run all three through the canonical gate rather
 than naming a directory directly, because that script is what defines the set:
 
@@ -134,7 +134,7 @@ silently stop covering it.
 Every narrower lane named in earlier revisions of this file — launcher,
 source-compiler, Azure CLI boundary, Bicep prerequisite, and Entra credential
 regressions — is a file inside `tests/Bootstrap.Tests` and is already counted in
-its 747. Do not restate a subset as though it were an independent gate.
+its 748. Do not restate a subset as though it were an independent gate.
 
 Run the .NET projects individually. `src/A365Gateway.slnx` deliberately contains
 only shipping projects, so a solution-scoped `dotnet test` matches no test project,
@@ -261,6 +261,13 @@ The `0.1.0-beta.1` source audit found and corrected three release blockers:
 
 These are source changes and invalidate prior deployment evidence. The next clean
 provision must include the new migration and record its own exact readbacks.
+
+The first hosted candidate CI run passed Windows, macOS, Bicep, Release, formatting,
+and all .NET projects, but Ubuntu exposed duplicate `chmod` application discoveries
+for `/bin` and `/usr/bin`. Secure temporary ARM parameters and restricted provider
+diagnostics now share a deterministic single-command resolver. Local focused and
+complete gates pass; the correction must be pushed and pass a new hosted run before
+deployment.
 
 ### Parked source decisions
 

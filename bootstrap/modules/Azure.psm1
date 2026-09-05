@@ -491,7 +491,7 @@ function Invoke-ArmDeploymentWithSecureParameters {
             }
         }
         else {
-            $chmod = Get-Command chmod -CommandType Application -ErrorAction SilentlyContinue
+            $chmod = Get-BootstrapSingleApplicationCommand -Name 'chmod'
             if ($null -eq $chmod) {
                 throw 'Could not locate chmod before writing the temporary ARM parameter file.'
             }

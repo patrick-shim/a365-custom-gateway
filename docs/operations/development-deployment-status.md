@@ -253,8 +253,8 @@ expected, not drift.
 
 All eight .NET test projects pass 1,767 tests with zero failures, and the
 solution build completes with zero warnings and zero errors under
-`-warnaserror`. The PowerShell side is 801 passed, zero failed, and seven
-non-Windows cases skipped out of 808 discovered.
+`-warnaserror`. The PowerShell side is 802 passed, zero failed, and seven
+non-Windows cases skipped out of 809 discovered.
 
 Run the test projects individually. `src/A365Gateway.slnx` deliberately contains
 only shipping projects, so a solution-scoped `dotnet test` matches no test

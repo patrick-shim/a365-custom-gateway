@@ -1151,6 +1151,23 @@ Describe 'Bootstrap state compatibility and atomic persistence' {
     }
 }
 
+Describe 'Deterministic native application resolution' {
+    InModuleScope Common {
+        It 'selects one canonical command when PATH exposes duplicate application entries' {
+            Mock Get-Command {
+                @(
+                    [pscustomobject]@{ Source = '/usr/bin/chmod' }
+                    [pscustomobject]@{ Source = '/bin/chmod' }
+                )
+            }
+
+            $command = Get-BootstrapSingleApplicationCommand -Name 'chmod'
+
+            $command.Source | Should -BeExactly '/bin/chmod'
+        }
+    }
+}
+
 Describe 'External command redaction' {
     It 'does not include captured provider output in a thrown failure' {
         $pwsh = (Get-Process -Id $PID).Path

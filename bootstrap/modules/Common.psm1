@@ -591,10 +591,21 @@ function Set-BootstrapRestrictedFilePermission {
         Set-Acl -LiteralPath $Path -AclObject $acl
         return
     }
-    $chmod = Get-Command chmod -CommandType Application -ErrorAction SilentlyContinue
+    $chmod = Get-BootstrapSingleApplicationCommand -Name 'chmod'
     if ($null -eq $chmod) { throw 'Could not locate chmod before writing a restricted bootstrap file.' }
     & $chmod.Source 600 $Path
     if ($LASTEXITCODE -ne 0) { throw 'Could not restrict a bootstrap file to the current user.' }
+}
+
+function Get-BootstrapSingleApplicationCommand {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9._-]+$')][string]$Name)
+
+    $commands = @(Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue)
+    if ($commands.Count -eq 0) { return $null }
+    return $commands |
+        Sort-Object -Property Source |
+        Select-Object -First 1
 }
 
 function New-BootstrapProviderFailureException {
