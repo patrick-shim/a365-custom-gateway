@@ -12,6 +12,12 @@ internal sealed class PromptShieldOptionsValidator : IValidateOptions<PromptShie
             return ValidateOptionsResult.Fail("PromptShield:ReceiptLifetimeSeconds must be between 30 and 900.");
         if (!string.Equals(options.ApiVersion, "2024-09-01", StringComparison.Ordinal))
             return ValidateOptionsResult.Fail("PromptShield:ApiVersion must be the validated 2024-09-01 API version.");
+        if (!string.IsNullOrWhiteSpace(options.ManagedIdentityClientId) &&
+            (!Guid.TryParse(options.ManagedIdentityClientId, out var clientId) || clientId == Guid.Empty))
+        {
+            return ValidateOptionsResult.Fail(
+                "PromptShield:ManagedIdentityClientId must be a non-empty GUID.");
+        }
         if (!options.Enabled)
             return ValidateOptionsResult.Success;
         if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint)

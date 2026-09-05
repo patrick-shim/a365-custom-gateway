@@ -18,12 +18,19 @@ Follow the complete Required reading sequence in the binding `AGENTS.md`, then u
 the `a365-bootstrap-delivery` skill and its canonical recording contract. If the
 ignored runtime checkpoint is absent after a Git transfer, start from the tracked
 `docs/agent-continuation.md` source checkpoint as that skill directs.
+Record an Intent and Result around every material action.
 
-Coordinate the public journey from a fresh checkout through the root launcher,
-Setup, Plan, Apply or Resume, Verify, Admin UI sign-in, and the explicitly enabled
-Gateway functions. Keep one owner per exact file or external boundary; never allow
-overlapping edits. Require a recorded assignment, bounded validation and stopping
-condition, structured handoff, and coordinator receipt for delegated work.
+Coordinate the public journey from a fresh checkout through `.\gateway.cmd setup`
+on Windows or `./gateway setup` on macOS/Linux, then Plan, Apply or Resume, Verify,
+Admin UI sign-in, and the explicitly enabled Gateway functions.
+`bootstrap/bootstrap.ps1` remains the canonical engine. Keep source continuation
+separate from deployment-state Resume: `.agent-runtime/`, retained legacy
+`.agents/runtime/`, and `.bootstrap/` are local-only, and transferred source does
+not transfer deployment state, live authority, or provider evidence.
+
+Keep one owner per exact file or external boundary; never allow overlapping edits.
+Require a recorded assignment, bounded validation and stopping condition,
+structured handoff, and coordinator receipt for delegated work.
 
 Advance Plan, Build, OfflineValidate, Deploy, LiveValidate, UpdateCheckpoint, and
 Complete only with the canonical gate evidence. A source change invalidates its

@@ -141,12 +141,14 @@ public sealed class CompleteAgent365RegistrationHandlerTests
     }
 
     [Fact]
-    public async Task Handle_ShouldResumeAcceptedRunningAttemptWithoutGetOrPost()
+    public async Task Handle_ShouldVerifyPlannedIdWhenRunningAttemptContainsReturnedId()
     {
         var fixture = new Fixture();
         var scenario = CreateAwaitingScenario();
         var registryId = Guid.NewGuid().ToString("D");
         MarkRunningAttempt(scenario, registryId);
+        var attempt = JsonSerializer.Deserialize<Agent365RegistryAttemptState>(
+            scenario.RegisterStep.ResultData!)!;
         fixture.Arrange(scenario);
 
         await fixture.CreateHandler().Handle(
@@ -154,7 +156,10 @@ public sealed class CompleteAgent365RegistrationHandlerTests
             CancellationToken.None);
 
         await fixture.RegistryClient.DidNotReceiveWithAnyArgs().CreateAsync(default!, default);
-        await fixture.RegistryClient.DidNotReceiveWithAnyArgs().VerifyAsync(default!, default!, default);
+        await fixture.RegistryClient.Received(1).VerifyAsync(
+            attempt.PlannedAgent365RegistrationId,
+            Arg.Any<Agent365DelegatedRegistryRequest>(),
+            Arg.Any<CancellationToken>());
         await fixture.TokenProvider.Received(1).GetTokenAsync(Arg.Any<CancellationToken>());
         scenario.RegisterStep.Status.Should().Be(StepStatus.Completed);
     }
@@ -166,6 +171,8 @@ public sealed class CompleteAgent365RegistrationHandlerTests
         var scenario = CreateAwaitingScenario();
         var registryId = Guid.NewGuid().ToString("D");
         MarkRunningAttempt(scenario, registryId);
+        var attempt = JsonSerializer.Deserialize<Agent365RegistryAttemptState>(
+            scenario.RegisterStep.ResultData!)!;
         fixture.Arrange(scenario);
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -174,9 +181,12 @@ public sealed class CompleteAgent365RegistrationHandlerTests
             new CompleteAgent365RegistrationCommand(scenario.Job.Id, scenario.CallerObjectId),
             cancellation.Token);
 
-        response.Agent365RegistrationId.Should().Be(registryId);
+        response.Agent365RegistrationId.Should().Be(attempt.PlannedAgent365RegistrationId);
         await fixture.RegistryClient.DidNotReceiveWithAnyArgs().CreateAsync(default!, default);
-        await fixture.RegistryClient.DidNotReceiveWithAnyArgs().VerifyAsync(default!, default!, default);
+        await fixture.RegistryClient.Received(1).VerifyAsync(
+            attempt.PlannedAgent365RegistrationId,
+            Arg.Any<Agent365DelegatedRegistryRequest>(),
+            Arg.Any<CancellationToken>());
         await fixture.UnitOfWork.Received(1).SaveChangesAsync(
             Arg.Is<CancellationToken>(token => !token.IsCancellationRequested));
         scenario.RegisterStep.Status.Should().Be(StepStatus.Completed);
@@ -238,6 +248,37 @@ public sealed class CompleteAgent365RegistrationHandlerTests
             Arg.Any<CancellationToken>());
         await fixture.RegistryClient.DidNotReceiveWithAnyArgs().VerifyAsync(default!, default!, default);
         await fixture.OutboxRepository.DidNotReceiveWithAnyArgs().AddAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task Handle_ShouldPersistResetAfterCallerCancelsFollowingDurableIntent()
+    {
+        var fixture = new Fixture();
+        var scenario = CreateAwaitingScenario();
+        fixture.Arrange(scenario);
+        using var cancellation = new CancellationTokenSource();
+        Func<NSubstitute.Core.CallInfo, Task<string>> failAfterCancellation = _ =>
+        {
+            cancellation.Cancel();
+            return Task.FromException<string>(new Agent365DelegatedRegistryException(
+                ErrorCodes.AGENT365_REGISTRY_DELEGATED_ACCESS_REQUIRED,
+                "Administrator consent is required.",
+                mutationMayHaveOccurred: false));
+        };
+        fixture.RegistryClient.CreateAsync(
+                Arg.Any<Agent365DelegatedRegistryRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(failAfterCancellation);
+
+        var action = () => fixture.CreateHandler().Handle(
+            new CompleteAgent365RegistrationCommand(scenario.Job.Id, scenario.CallerObjectId),
+            cancellation.Token);
+
+        await action.Should().ThrowAsync<DomainException>();
+        scenario.RegisterStep.Status.Should().Be(StepStatus.Pending);
+        scenario.RegisterStep.ResultData.Should().BeNull();
+        await fixture.UnitOfWork.Received().SaveChangesAsync(
+            Arg.Is<CancellationToken>(token => !token.IsCancellationRequested));
     }
 
     [Fact]

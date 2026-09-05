@@ -27,6 +27,19 @@ For bootstrap implementation, recovery, validation, or handoff work, read
 `.agents/skills/a365-bootstrap-delivery/SKILL.md` and use its durable ledger
 protocol before taking a task action.
 
+Keep one owner per exact file or read-only boundary. Every delegation requires
+a recorded assignment with validation, a stopping condition, and its starting
+checkpoint; the delegate records a structured handoff and the coordinator
+records a receipt before using it. Do not let delegate events replace the
+coordinator's current objective or gate.
+
+The bootstrap delivery gates are exactly Plan, Build, OfflineValidate, Deploy,
+LiveValidate, UpdateCheckpoint, and Complete. Advance only with the canonical
+gate evidence. A source change invalidates Build and every later gate; a
+documentation-only correction invalidates UpdateCheckpoint and Complete.
+Offline tests, provider configuration, process exit, and platform `Running`
+state are not live-readiness proof.
+
 ## Product invariants
 
 - The Gateway is N:N. One registration binds one generated external ID and Gateway
@@ -39,6 +52,9 @@ protocol before taking a task action.
   POST; an ambiguous outcome permits exact-ID GET only and never another POST.
 - `Active` requires final provider verification. Local state, mocked tests, and
   deployment success are not external-resource proof.
+- Source checkpoints and local tests are source evidence only. Deployment and
+  live-function claims require current authorized readback from the exact
+  target and never transfer through Git.
 - Data-plane ingress uses a registration-scoped Gateway key, constant-time salted
   verifier comparison, and an `externalAgentId` cross-check. Clear keys are issued
   once and never replayed.

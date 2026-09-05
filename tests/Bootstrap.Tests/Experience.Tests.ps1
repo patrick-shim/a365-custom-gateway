@@ -137,7 +137,8 @@ Describe 'Experience strict-mode array cardinality boundaries' {
         & $validationRunner -grants $valid -gatewayPrincipals $principal | Should -BeTrue
         foreach ($scope in @('', 'access_as_user unexpected')) {
             $invalid = @([pscustomobject]@{ resourceId = $resourceId; consentType = 'AllPrincipals'; scope = $scope })
-            { & $validationRunner -grants $invalid -gatewayPrincipals $principal } | Should -Throw '*mismatch*'
+            { & $validationRunner -grants $invalid -gatewayPrincipals $principal } |
+                Should -Throw 'Bootstrap validation property disagreed.'
         }
     }
 }
@@ -151,6 +152,23 @@ Describe 'Experience Azure resource-provider readback boundary' {
                 $script:readProviders.Add([string]$Arguments[3])
                 return 'Registered'
             }
+        }
+
+        It 'preserves only the exact resource-provider property cause across its curated catch' {
+            Mock Invoke-AzTsv { return 'Rejected-value-must-not-appear' }
+            $caught = $null
+
+            try {
+                Test-GatewayResourceProviderEvidence
+            }
+            catch {
+                $caught = $_
+            }
+
+            $caught | Should -Not -BeNullOrEmpty
+            Get-BootstrapExceptionValidationMismatchPropertyName -Exception $caught.Exception |
+                Should -BeExactly 'resourceProvider.registrationState'
+            $caught.Exception.Message | Should -Not -Match 'Rejected-value-must-not-appear|Registered'
         }
 
         It 'revalidates the exact provider set including AlertsManagement before Resume' {
@@ -1388,6 +1406,48 @@ Describe 'Workload deployment output mapping' {
                 Should -BeTrue
         }
 
+        It 'reports the exact mapped output or evidence property without values' -TestCases @(
+            @{ Mutation = 'MissingOutput'; ExpectedProperty = 'outputs.runtimeImagePullIdentityId' }
+            @{ Mutation = 'MissingEvidence'; ExpectedProperty = 'evidence.runtimeImagePullIdentityId' }
+            @{ Mutation = 'WrongOutput'; ExpectedProperty = 'outputs.runtimeImagePullIdentityId.value' }
+        ) {
+            param([string]$Mutation, [string]$ExpectedProperty)
+            $outputs = [ordered]@{
+                runtimeImagePullIdentityId = [pscustomobject]@{ value = 'expected-value-must-not-appear' }
+            }
+            $evidence = [ordered]@{
+                runtimeImagePullIdentityId = 'expected-value-must-not-appear'
+            }
+            if ($Mutation -eq 'MissingOutput') {
+                $outputs.Remove('runtimeImagePullIdentityId')
+            }
+            elseif ($Mutation -eq 'MissingEvidence') {
+                $evidence.Remove('runtimeImagePullIdentityId')
+            }
+            else {
+                $outputs.runtimeImagePullIdentityId.value = 'actual-value-must-not-appear'
+            }
+
+            $caught = $null
+            try {
+                Assert-GatewayDeploymentOutputEvidenceMap `
+                    -Outputs $outputs `
+                    -Evidence $evidence `
+                    -OutputToEvidenceName ([ordered]@{
+                        runtimeImagePullIdentityId = 'runtimeImagePullIdentityId'
+                    })
+            }
+            catch {
+                $caught = $_
+            }
+
+            $caught | Should -Not -BeNullOrEmpty
+            Get-BootstrapExceptionValidationMismatchPropertyName -Exception $caught.Exception |
+                Should -BeExactly $ExpectedProperty
+            $caught.Exception.Message |
+                Should -Not -Match 'expected-value-must-not-appear|actual-value-must-not-appear'
+        }
+
         It 'accepts only the exact source-bound runtime image-pull identity and AcrPull receipt' {
             $subscriptionId = '11111111-1111-4111-8111-111111111111'
             $ownershipId = '22222222-2222-4222-8222-222222222222'
@@ -1499,20 +1559,20 @@ Describe 'Workload deployment output mapping' {
             { Assert-GatewayRuntimeImagePullIdentityEvidence `
                 -Config $config -Evidence $evidence -ExpectedRegistryId $registryId `
                 -DeploymentOwnershipId $ownershipId -SourceFingerprint $sourceFingerprint } |
-                Should -Throw '*unavailable or mismatched*'
+                Should -Throw 'Dedicated runtime image-pull identity, AcrPull receipt, ACR policy, or ownership/source evidence is unavailable or mismatched.'
 
             $evidence.runtimeImagePullIdentityId = "$identityId/extra"
             { Assert-GatewayRuntimeImagePullIdentityEvidence `
                 -Config $config -Evidence $evidence -ExpectedRegistryId $registryId `
                 -DeploymentOwnershipId $ownershipId -SourceFingerprint $sourceFingerprint } |
-                Should -Throw '*unavailable or mismatched*'
+                Should -Throw 'Dedicated runtime image-pull identity, AcrPull receipt, ACR policy, or ownership/source evidence is unavailable or mismatched.'
 
             $evidence.runtimeImagePullIdentityId = $identityId
             $evidence.runtimeImagePullAcrPullRoleAssignmentId = "$registryId/providers/Microsoft.Authorization/roleAssignments/not-a-guid"
             { Assert-GatewayRuntimeImagePullIdentityEvidence `
                 -Config $config -Evidence $evidence -ExpectedRegistryId $registryId `
                 -DeploymentOwnershipId $ownershipId -SourceFingerprint $sourceFingerprint } |
-                Should -Throw '*unavailable or mismatched*'
+                Should -Throw 'Dedicated runtime image-pull identity, AcrPull receipt, ACR policy, or ownership/source evidence is unavailable or mismatched.'
         }
     }
 }
@@ -1572,12 +1632,26 @@ Describe 'Database attestation deployment readback boundary' {
                 $script:attestationOutputs.databaseAttestationDatabaseName.value = 'GatewayDb'
             }
 
-            { Assert-GatewayDatabaseAttestationDeploymentContract `
-                -Parameters $script:attestationParameters `
-                -Outputs $script:attestationOutputs `
-                -Evidence $script:attestationEvidence `
-                -ExpectedValues $script:attestationExpected } |
-                Should -Throw '*mismatch*'
+            $caught = $null
+            try {
+                Assert-GatewayDatabaseAttestationDeploymentContract `
+                    -Parameters $script:attestationParameters `
+                    -Outputs $script:attestationOutputs `
+                    -Evidence $script:attestationEvidence `
+                    -ExpectedValues $script:attestationExpected
+            }
+            catch {
+                $caught = $_
+            }
+
+            $expectedProperty = if ($Mutation -eq 'Missing') {
+                'outputs.databaseAttestationDatabaseName'
+            }
+            else {
+                'outputs.databaseAttestationDatabaseName.value'
+            }
+            Get-BootstrapExceptionValidationMismatchPropertyName -Exception $caught.Exception |
+                Should -BeExactly $expectedProperty
         }
 
         It 'rejects missing or wrong derived database-name evidence' -TestCases @(
@@ -1592,12 +1666,20 @@ Describe 'Database attestation deployment readback boundary' {
                 $script:attestationEvidence.databaseAttestationDatabaseName = 'GatewayDb'
             }
 
-            { Assert-GatewayDatabaseAttestationDeploymentContract `
-                -Parameters $script:attestationParameters `
-                -Outputs $script:attestationOutputs `
-                -Evidence $script:attestationEvidence `
-                -ExpectedValues $script:attestationExpected } |
-                Should -Throw '*mismatch*'
+            $caught = $null
+            try {
+                Assert-GatewayDatabaseAttestationDeploymentContract `
+                    -Parameters $script:attestationParameters `
+                    -Outputs $script:attestationOutputs `
+                    -Evidence $script:attestationEvidence `
+                    -ExpectedValues $script:attestationExpected
+            }
+            catch {
+                $caught = $_
+            }
+
+            Get-BootstrapExceptionValidationMismatchPropertyName -Exception $caught.Exception |
+                Should -BeExactly 'evidence.databaseAttestationDatabaseName'
         }
 
         It 'still rejects a <Mutation> top-level <Field> parameter' -TestCases @(
@@ -1621,12 +1703,26 @@ Describe 'Database attestation deployment readback boundary' {
                 $script:attestationParameters[$Field].value = 'unexpected'
             }
 
-            { Assert-GatewayDatabaseAttestationDeploymentContract `
-                -Parameters $script:attestationParameters `
-                -Outputs $script:attestationOutputs `
-                -Evidence $script:attestationEvidence `
-                -ExpectedValues $script:attestationExpected } |
-                Should -Throw '*mismatch*'
+            $caught = $null
+            try {
+                Assert-GatewayDatabaseAttestationDeploymentContract `
+                    -Parameters $script:attestationParameters `
+                    -Outputs $script:attestationOutputs `
+                    -Evidence $script:attestationEvidence `
+                    -ExpectedValues $script:attestationExpected
+            }
+            catch {
+                $caught = $_
+            }
+
+            $expectedProperty = if ($Mutation -eq 'Missing') {
+                "parameters.$Field"
+            }
+            else {
+                "parameters.$Field.value"
+            }
+            Get-BootstrapExceptionValidationMismatchPropertyName -Exception $caught.Exception |
+                Should -BeExactly $expectedProperty
         }
     }
 }
@@ -4746,7 +4842,7 @@ Describe 'Experience Purview no-op completion replay boundary' {
                 -Blueprint $script:purviewBlueprint `
                 -Evidence $mismatched `
                 -UserPrincipalName 'operator@contoso.example'
-        } | Should -Throw '*refusing automatic policy replay*'
+        } | Should -Throw 'Purview policy revalidation was unavailable or mismatched; refusing automatic policy replay. Reauthenticate interactively and review the tenant policies.'
     }
 
     It 'keeps refusing Purview revalidation in non-interactive mode' {

@@ -28,9 +28,10 @@ Graph access through OBO. No app-only Registry fallback exists.
 ## Registration
 
 Creating a registration accepts display name, environment, blueprint selection, and
-optional protection settings. The API generates the external ID, rechecks blueprint
-compatibility, persists the registration, and returns a one-time Gateway key after
-the boundary is accepted.
+optional protection settings plus a proposed external ID. The Admin UI generates
+that ID for its user; direct API clients supply one that meets the contract. The API
+validates its format and uniqueness, rechecks blueprint compatibility, persists the
+registration, and returns a one-time Gateway key after the boundary is accepted.
 
 The clear key appears once. API responses and clients must not log, cache, or place
 it in a URL. Losing it requires issuing a replacement and revoking the old key.

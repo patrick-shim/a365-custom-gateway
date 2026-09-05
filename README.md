@@ -6,14 +6,20 @@ reusable Agent ID blueprint, and receives a Gateway external ID plus a one-time
 ingress key. The agent then submits activity and interaction data through the
 Gateway API without receiving an Entra token or managed-identity identifier.
 
+Version `0.1.0-beta.1` is a prerelease source contract, not proof that this checkout
+is deployed. The current source is ahead of the deployment evidence recorded in
+[development deployment status](docs/operations/development-deployment-status.md),
+and a Purview DLP allow/block pair has not been live-proven on a deployed build.
+
 The supported fresh-subscription installer is the repository-root `gateway`
 launcher. It configures, plans, deploys, and verifies the complete Gateway. The
 terminal launcher also supports checkpoint-aware Resume. A restarted Setup browser
-process now offers the same read-only review and separate confirmation, but that
+process implements the same read-only review and separate confirmation, but that
 browser path has not yet been validated against preserved stopped state; use the
 terminal recovery command described below.
 
-> The Agent 365 Registry dependency is currently a preview capability. The bootstrap
+> The Agent 365 Registry dependency is currently a beta capability that Microsoft
+> does not support for production use. The bootstrap
 > can open the end-to-end Registry path only for an explicitly configured
 > development environment. Staging and production deployments keep that boundary
 > closed.
@@ -91,7 +97,8 @@ run `./gateway resume` on macOS/Linux or `.\gateway.cmd resume` on Windows; do n
 delete `.bootstrap/` or start a second deployment.
 Terminal Resume is the supported recovery path after Setup has closed or restarted.
 The Setup browser's separate read-only Resume review and second confirmation are
-still being integrated and are not yet an end-to-end recovery claim.
+implemented and covered by local tests, but are not an end-to-end recovery claim
+until validated in a browser against preserved stopped state.
 
 See the [bootstrap guide](bootstrap/README.md) for prerequisites, configuration,
 automation, and recovery behavior.
@@ -163,9 +170,10 @@ must not combine them:
 
 The [Purview runbook](docs/operations/purview-setup-runbook.md) describes the
 post-bootstrap Security & Compliance PowerShell application, certificate, roles,
-policy readback, token-role check, and bounded runtime validation. Bootstrap does
-not turn on the Purview runtime adapter: policy readback alone is not a data-plane
-verdict test.
+policy readback, token-role check, and bounded runtime validation. When Purview is
+selected before Plan, bootstrap can deploy the runtime adapter after exact policy
+readback. That readback does not prove token-role propagation or a data-plane
+verdict, and no registration uses Purview unless an administrator selects it.
 
 ## Architecture
 
@@ -177,7 +185,7 @@ flowchart TB
     api --> sql[(Azure SQL)]
     api --> blob[(Encrypted Blob storage)]
     sql --> relay[Transactional outbox relay]
-    relay --> bus[Service Bus workflow-v3]
+    relay --> bus[Service Bus gateway-provisioning-v3]
     bus --> worker[Provisioning worker]
     worker --> sql
     worker --> entra[Microsoft Entra Agent ID]
@@ -206,6 +214,10 @@ The table uses the macOS/Linux launcher. On Windows, replace `./gateway` with
 | `./gateway resume` | Reconcile and continue an interrupted accepted deployment. |
 | `./gateway diagnose` | Write a sanitized diagnostic bundle, including when configuration cannot load. |
 | `./gateway open` | Open the recorded verified Admin UI endpoint. |
+
+`verify` performs live provider reads, and `resume` can mutate the recorded target.
+Before either action, confirm current authority for that exact tenant, subscription,
+resource group, and operation; a prior deployment approval does not carry forward.
 
 Use [operations](operations/README.md) for an existing environment and
 [infrastructure](infrastructure/README.md) for the declarative asset map. The

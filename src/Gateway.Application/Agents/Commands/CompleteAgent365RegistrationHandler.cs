@@ -86,10 +86,7 @@ internal sealed class CompleteAgent365RegistrationHandler :
         if (registerStep.Status == StepStatus.Running)
         {
             attempt = ReadAttempt(registerStep, callerObjectId);
-            var returnedId = IsSafeRegistryId(attempt.ReturnedAgent365RegistrationId)
-                ? attempt.ReturnedAgent365RegistrationId
-                : null;
-            var recoveryId = returnedId ?? RequireSafeRegistryId(attempt.PlannedAgent365RegistrationId);
+            var recoveryId = RequireSafeRegistryId(attempt.PlannedAgent365RegistrationId);
             var recoveryRequest = BuildRegistryRequest(
                 job,
                 agent,
@@ -103,22 +100,9 @@ internal sealed class CompleteAgent365RegistrationHandler :
             // the API without any persisted mutation.
             _ = await _delegatedTokenProvider.GetTokenAsync(cancellationToken);
 
-            // A returned ID is persisted only after Graph accepted the create
-            // with a successful response (or returned the existing ID on a
-            // conflict). This matches the A365 CLI boundary: do not require an
-            // immediate GET after a documented 201 Created response.
-            if (returnedId is not null)
-            {
-                return await AcceptAndContinueAsync(
-                    job,
-                    agent,
-                    registerStep,
-                    state,
-                    attempt,
-                    returnedId,
-                    CancellationToken.None);
-            }
-
+            // Running state can outlive older source generations. Reconcile the
+            // creator-bound planned ID by exact GET even when a prior version
+            // persisted a returned ID, so no non-201 response can be accepted.
             return await VerifyAndContinueAsync(
                 job,
                 agent,
@@ -180,7 +164,7 @@ internal sealed class CompleteAgent365RegistrationHandler :
                     registerStep,
                     exception.ErrorCode,
                     exception.SafeSummary,
-                    cancellationToken);
+                    CancellationToken.None);
                 throw new DomainException(
                     exception.SafeSummary,
                     ErrorCodes.AGENT365_REGISTRY_DELEGATED_ACCESS_REQUIRED);

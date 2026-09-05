@@ -12,6 +12,19 @@ namespace Gateway.ArchitectureTests;
 /// </summary>
 public class InfrastructureAsCodeSecurityTests
 {
+    [Fact]
+    public void AdminUiContainerBuild_ShouldIncludeCentralReleaseVersionMetadata()
+    {
+        var dockerfile = ReadRepositoryFile("src", "Gateway.AdminUi", "Dockerfile");
+
+        dockerfile.Should().Contain("COPY [\"Directory.Build.props\", \"./\"]");
+        dockerfile.IndexOf("COPY [\"Directory.Build.props\", \"./\"]", StringComparison.Ordinal)
+            .Should().BeLessThan(
+                dockerfile.IndexOf(
+                    "RUN dotnet restore \"src/Gateway.AdminUi/Gateway.AdminUi.csproj\"",
+                    StringComparison.Ordinal));
+    }
+
     private static readonly string RepositoryRoot = FindRepositoryRoot();
 
     [Fact]
@@ -246,6 +259,43 @@ public class InfrastructureAsCodeSecurityTests
         migration.Should().Contain("DEFAULT 1 WITH VALUES");
         migration.Should().NotContainEquivalentOf("DROP ");
         migration.Should().NotContainEquivalentOf("DELETE ");
+    }
+
+    [Fact]
+    public void ActiveAgentIdentityUniquenessMigration_ShouldFailClosedWithoutRewritingRegistrations()
+    {
+        const string migrationName = "20260905_active_agent_identity_uniqueness.sql";
+        var migration = ReadRepositoryFile("infrastructure", "sql", migrationName);
+        var sqlDirectory = Path.Combine(FindRepositoryRoot(), "infrastructure", "sql");
+        var orderedMigrationNames = Directory
+            .EnumerateFiles(sqlDirectory, "*.sql")
+            .Select(Path.GetFileName)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        migration.Should().Contain("OBJECT_ID(N'dbo.AgentRegistrations', N'U') IS NULL");
+        migration.Should().Contain(
+            "COL_LENGTH(N'dbo.AgentRegistrations', N'AgentIdentityObjectId') IS NULL");
+        migration.Should().Contain(
+            "COL_LENGTH(N'dbo.AgentRegistrations', N'IsDeleted') IS NULL");
+        migration.Should().Contain("WITH (UPDLOCK, HOLDLOCK)");
+        migration.Should().Contain("sys.sp_getapplock");
+        migration.Should().Contain("@LockOwner = N'Transaction'");
+        migration.IndexOf("sys.sp_getapplock", StringComparison.Ordinal).Should().BeLessThan(
+            migration.IndexOf("DECLARE @ExistingIndexId", StringComparison.Ordinal));
+        migration.Should().Contain("GROUP BY [AgentIdentityObjectId]");
+        migration.Should().Contain("HAVING COUNT_BIG(*) > 1");
+        migration.Should().Contain(
+            "CREATE UNIQUE INDEX [IX_AgentRegistrations_AgentIdentityObjectId]");
+        migration.Should().MatchRegex(
+            @"WHERE \[AgentIdentityObjectId\] IS NOT NULL\s+AND \[IsDeleted\] = 0;");
+        migration.Should().Contain("no data was changed");
+        migration.Should().NotMatchRegex(@"(?im)^\s*(DELETE|UPDATE|DROP)\s+");
+        migration.Should().NotContain("[ExternalClientId]");
+        Array.IndexOf(orderedMigrationNames, migrationName).Should().BeGreaterThan(
+            Array.IndexOf(
+                orderedMigrationNames,
+                "20260903_prompt_evaluation_agent_identity.sql"));
     }
 
     [Fact]

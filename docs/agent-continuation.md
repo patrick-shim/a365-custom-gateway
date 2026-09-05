@@ -1,6 +1,6 @@
 # Agent continuation checkpoint
 
-Last updated: 2026-09-04 (Asia/Seoul).
+Last updated: 2026-09-05 (Asia/Seoul).
 
 This tracked file is the bounded continuation seed for Claude, Codex, GitHub
 Copilot, other automation, and human contributors after a fetch, pull, fresh clone,
@@ -100,16 +100,26 @@ Gateway. Windows is the primary audience. Optional Purview selection and policy
 authoring remain Windows-only; the core path remains cross-platform with Purview
 disabled.
 
+The commit containing this checkpoint is the `0.1.0-beta.1` source candidate. After
+that commit is merged and pushed to `main`, the first unfinished action is to name
+and explicitly authorize one new unused Windows deployment resource group. Bootstrap
+that exact commit with Prompt Shields and Purview enabled, then register two agents
+on one newly created blueprint and two agents on one existing blueprint. Validate
+all four through truthful `Active`, Agent 365 observability, Prompt Shields allow
+and block behavior, and a blueprint-scoped Purview DLP allow/block pair. Only after
+that evidence is recorded should the project produce the requested novice-friendly
+Setup, console, and Admin UI improvement plan.
+
 The current source has passed these local offline gates. Both rows were measured on
 Windows at this checkpoint:
 
 | Evidence | Result |
 |---|---:|
-| The eight .NET test projects under `tests/` | 1,748 passed, 0 failed |
-| The three Pester suites, run as one gate | 794 passed, 0 failed, 7 skipped |
+| The eight .NET test projects under `tests/` | 1,767 passed, 0 failed |
+| The three Pester suites, run as one gate | 801 passed, 0 failed, 7 skipped |
 
 Pester tests live in three separate directories, not one. `tests/Bootstrap.Tests`
-holds 740 of them, `tests/Gateway.Purview.Tests` holds 22, and
+holds 747 of them, `tests/Gateway.Purview.Tests` holds 22, and
 `tests/Operations.Tests` holds 32. Run all three through the canonical gate rather
 than naming a directory directly, because that script is what defines the set:
 
@@ -124,7 +134,7 @@ silently stop covering it.
 Every narrower lane named in earlier revisions of this file — launcher,
 source-compiler, Azure CLI boundary, Bicep prerequisite, and Entra credential
 regressions — is a file inside `tests/Bootstrap.Tests` and is already counted in
-its 740. Do not restate a subset as though it were an independent gate.
+its 747. Do not restate a subset as though it were an independent gate.
 
 Run the .NET projects individually. `src/A365Gateway.slnx` deliberately contains
 only shipping projects, so a solution-scoped `dotnet test` matches no test project,
@@ -156,7 +166,7 @@ The cross-tool handoff itself was revalidated at this checkpoint: all 17 Codex r
 definitions in `.codex/agents/` parsed, all 20 Claude agent and skill frontmatters
 under `.claude/` parsed, and every local link and anchor resolved across 56 Markdown
 files. The schema-v2 delivery-ledger regressions and the focused Release
-architecture suite are .NET tests counted inside the 1,748 above rather than
+architecture suite are .NET tests counted inside the 1,767 above rather than
 separate gates; between them they cover source binding, coordinator/delegate
 isolation, assignment provenance, redaction, rotation, exact pre-append rejection of
 oversized current-checkpoint and handoff payloads, legacy and rotated-empty-tail
@@ -166,20 +176,22 @@ historical tamper detection, and checkpoint/handoff integrity.
 `.secret`, `.secrets`, `.bootstrap/`, `bootstrap/config.json`, `.agent-runtime/`,
 and legacy `.agents/runtime/` remain outside tracked source.
 
-One cross-tool gap is open and is deliberately left alone here rather than fixed in
-a documentation pass: `.codex/agents/` defines `bootstrap-delivery-reviewer` with no
-matching definition under `.claude/agents/`, so that role exists for Codex and not
-for Claude. Raise it before relying on that reviewer role from either tool.
+Codex and Claude now both define the read-only `bootstrap-delivery-reviewer` role.
+The tracked role/frontmatter parity gate covers both definitions; runtime host
+discovery remains a tool-host concern rather than source evidence.
 
-## First unfinished source task
+## Current source-work boundary
 
 No source defect currently blocks a deployment. The offline gates above pass on
-this source generation, and the Setup Resume integration that earlier revisions of
-this file named as the first task is implemented, tested, and independently
-rereviewed. Its record is kept below as history, not as work.
+this source generation. The Setup Resume integration and the bounded validator
+mismatch diagnostics that earlier revisions named as unfinished are implemented,
+tested, and independently rereviewed. Their records are kept below as history, not
+as work.
 
-Two kinds of work remain, and they are not interchangeable. One is live and belongs
-to the operator. The other is source, and is what a receiving agent should pick up.
+The remaining delivery work is live and belongs to the operator. No additional
+source implementation task is selected before that run. Two smaller design items
+remain parked behind explicit decisions and must not be started merely to keep an
+agent busy.
 
 ### The blocking work is live and operator-gated
 
@@ -216,35 +228,44 @@ group. A sensitive-information-type GUID that was not chosen through the
 tenant-backed picker fails closed mid-run, after the deployment steps have already
 restarted.
 
-### The first unfinished source task is diagnosable step-failure causes
+### Completed source task: diagnosable step-failure causes
 
-A step whose validator throws is recorded as `Failed` under one generic sentence —
-"could not be independently revalidated" — which names the step but never the field
-that disagreed. One hundred and twenty-five validator branches under
-`bootstrap/modules/` throw the bare literal `'mismatch'`, so the specific comparison
-that failed is discarded at the throw site and cannot be recovered downstream.
+Validator branches now throw typed mismatch metadata containing only a bounded
+property path. `Invoke-BootstrapStateStep` carries that path into the failed
+checkpoint and operator error while suppressing expected and actual values.
+Validator catches retain their curated direct-call diagnostics and preserve the
+typed mismatch as an inner exception, so both contracts hold. Dynamic deployment
+parameter, output, and evidence names are validated by the same bounded path
+grammar. Arbitrary validator and provider exception text is not reflected.
 
-This costs more than readability. A `Failed` step is not merely noisy: on the next
-run the engine consults the anti-replay guard instead of replaying, and a step it
-cannot reconcile exactly strands the deployment. An operator who cannot see which
-field mismatched has no basis for choosing between correcting the input and
-abandoning the deployment.
+Focused regressions were written before the implementation. The complete Pester
+gate, all eight .NET test projects, Release build, Bicep compilation, and all nine
+format targets pass. A final independent rereview found no remaining significant
+issue.
 
-One instance of this class is already fixed, and is the worked example to follow.
-`Test-GatewayPurviewEvidence` threw before assigning `$connectionId` while its
-`finally` block read that variable, so strict mode replaced every fast-path
-mismatch reason with a variable-not-set error. Initializing the variable before
-`try` — the idiom `Ensure-BootstrapPurviewPolicies` already uses — restored the
-real reason.
+### Release-candidate source corrections
 
-The remaining work is to carry the failing comparison out of the validator in a
-bounded, non-secret form: the property name and the fact that it disagreed, never
-the expected or actual value, because these validators compare resource IDs,
-endpoints, principal IDs, and image digests. Add focused failing tests first, keep
-the change mechanical, and rerun the complete bootstrap Pester set.
+The `0.1.0-beta.1` source audit found and corrected three release blockers:
 
-Two smaller source items are parked behind an explicit decision rather than
-forgotten, and should not be started without one:
+- Registry creation now emits exactly one POST and accepts only the documented
+  `201 Created`; timeout, transport, retryable HTTP, conflict, and non-201 2xx
+  outcomes use exact planned-ID GET recovery without replay. Every persisted
+  `Running` attempt rechecks the planned ID, including state written by older source,
+  and failure-state persistence does not reuse a cancelled request token.
+- Prompt Shields now authenticates with `ManagedIdentityCredential` only and
+  rejects an invalid configured user-assigned client ID.
+- active registrations cannot share either a child Agent Identity object ID or
+  child client ID. The new ordered SQL migration fails closed on existing
+  duplicates, serializes concurrent prepare runs with a transaction-owned database
+  application lock, and never rewrites registrations.
+
+These are source changes and invalidate prior deployment evidence. The next clean
+provision must include the new migration and record its own exact readbacks.
+
+### Parked source decisions
+
+These items are deliberately parked and should not be started without an explicit
+decision:
 
 - Purview is currently split between a bootstrap-time concern and a Gateway
   feature. The reviewed intent is that bootstrap provisions the Gateway and the
@@ -484,11 +505,12 @@ target. A grant recorded in chat history, in a previous session, or for a previo
 deployment is not a grant for the next one. Do not mutate or delete a stopped
 target, and do not begin a new deployment, on the strength of this file.
 
-That boundary is exactly where the remaining goal sits. The source is ready; the
-run is not an agent's to start.
+That boundary is exactly where the remaining goal sits. The source is ready. The
+next run starts only after this candidate is on `main` and the user explicitly names
+and authorizes its new resource group.
 
-Source-only work may continue through the open tasks above and the offline gates.
-Stop before the first live action and record the exact remaining evidence. After any
+Source-only work may continue only after an explicit objective is selected. Stop
+before the first live action and record the exact remaining evidence. After any
 verified change, update this checkpoint and both status files, validate all links,
 commit every intended tracked file, and push the reviewed branch so the next
 receiver starts from Git rather than from chat history.

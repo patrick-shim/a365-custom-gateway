@@ -5,7 +5,8 @@ tenant-owned Azure control plane. Each registration binds one external agent ID,
 one reusable Agent Identity blueprint, one child Entra Agent ID, and one Gateway
 credential lifecycle.
 
-Agent 365 Registry is currently a preview dependency. The repository therefore
+Agent 365 Registry is currently a beta dependency that Microsoft does not support
+for production use. The repository therefore
 defaults non-development deployments to closed registration admission and never
 presents Gateway state as independent Microsoft-side proof.
 
@@ -22,7 +23,7 @@ flowchart LR
     Bus --> Worker[Provisioning worker]
     Worker --> Sql
     Worker -->|application roles| Graph[Microsoft Graph]
-    Api -->|delegated OBO| Registry[Agent 365 Registry preview]
+    Api -->|delegated OBO| Registry[Agent 365 Registry beta]
     Api -->|managed identity| Shield[Azure AI Content Safety]
     Api -->|managed identity| Purview[Microsoft Purview Graph APIs]
     Worker -->|optional certificate auth| Compliance[Security & Compliance PowerShell]
@@ -53,8 +54,10 @@ returned once; only a salted verifier and lifecycle metadata are stored.
 flowchart TD
     Clone[Clone repository] --> Setup[Run gateway setup]
     Setup --> Plan[Review subscription, tenant, permissions, and options]
-    Plan --> Deploy[Deploy Azure and Entra resources]
-    Deploy --> Verify[Verify exact resource and identity readbacks]
+    Plan --> Apply[Confirm and apply the accepted plan]
+    Apply -->|interrupted| Resume[Review checkpoint and confirm Resume]
+    Apply -->|completed| Verify[Verify exact resource and identity readbacks]
+    Resume --> Verify
     Verify --> Portal[Open Admin UI]
     Portal --> Register[Create a registration]
     Register --> Provision[Provision child identity]
@@ -85,7 +88,7 @@ sequenceDiagram
     participant API as Gateway API
     participant DB as Azure SQL
     participant O as Outbox relay
-    participant Q as Service Bus v3
+    participant Q as Service Bus gateway-provisioning-v3
     participant W as Worker
     participant G as Microsoft Graph
     participant R as Agent 365 Registry

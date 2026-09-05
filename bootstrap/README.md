@@ -22,9 +22,9 @@ The deployed system includes:
 - Entra applications, app roles, managed identities, federated credentials, and
   the seed Agent ID blueprint;
 - the ordered Gateway database schema; and
-- optional Azure AI Content Safety and optional Purview policy-authoring
-  prerequisites. Purview runtime enforcement is enabled only after the separate
-  post-bootstrap verification in the Purview runbook.
+- optional Azure AI Content Safety and optional Purview policy/runtime
+  configuration. Exact Purview policy readback can make the adapter reachable, but
+  does not prove token-role propagation or a live allow/block verdict.
 
 ```mermaid
 flowchart TD
@@ -108,7 +108,7 @@ explicit confirmation before Apply. If an accepted deployment later stops, Setup
 offers a read-only resume review first. That review runs its own process, installs
 nothing, changes no Azure, Entra, Agent 365, SQL, or policy resource, and returns
 one accepted plan fingerprint plus a single-use authorization. Only then does Setup
-offer a separate Resume confirmation. This source path is implemented and covered by
+offer a separate Resume confirmation. This path is implemented and covered by
 tests; it has not yet been exercised in a hosted browser against preserved stopped
 state, so use the terminal Resume path for recovery evidence.
 
@@ -175,7 +175,7 @@ Configuration selects:
   email;
 - SQL service tier;
 - seed blueprint name and reviewed manager-application allowlist;
-- development-only Registry preview enablement; and
+- development-only Registry beta enablement; and
 - optional Prompt Shields and Purview settings.
 
 When Purview is enabled, configuration binds `sensitiveInformationTypeId` to the
@@ -185,7 +185,7 @@ canonical lowercase `D` form and preserve the Name exactly without trimming,
 case-folding, translation, or Unicode normalization.
 
 The deployment profile matters. A development configuration may explicitly enable
-the preview Registry path so a registration can reach Gateway-reported `Active`.
+the beta Registry path so a registration can reach Gateway-reported `Active`.
 Staging and production configurations keep Registry creation closed.
 
 Do not put credentials, tokens, Gateway keys, prompt/response content, or
@@ -204,17 +204,12 @@ Deployment identity is immutable for the life of a state file. It is exactly
 different Azure objects, so bootstrap refuses to load that state and names the
 fields that moved.
 
-Every other setting is a reconcilable deployment input. Changing one is not an
-error. Bootstrap rebinds the recorded configuration fingerprint, appends a
-fingerprint-only entry to `state.configurationChanges`, and keeps the existing
-evidence so each step's own validator decides what still matches. No step is
-trusted because it was recorded, and nothing new becomes runnable.
-
-Reconciling is not reconfiguring. The accepted plan is bound to the previous
-fingerprint, so a configuration change discards it, and a deployment that already
-holds checkpoints cannot be re-planned. There is no supported way to change a
-setting on a started deployment and then continue that deployment. Start over
-from a clean initial state instead.
+For every other setting, bootstrap can detect and record a fingerprint-only
+configuration change while retaining prior evidence for diagnosis. That
+reconciliation is not authorization to reconfigure: an accepted plan is bound to
+the original fingerprint, a deployment with checkpoints cannot receive a fresh
+Plan, and Resume cannot use a changed configuration. Preserve the existing state
+and use a new isolated deployment identity for changed settings.
 
 ## Plan, Apply, Resume, Verify
 
@@ -234,7 +229,7 @@ Bootstrap is a resumable state machine:
 
 Terminal Resume is supported. The engine runs a read-only checkpoint review and then
 requires both the accepted-Plan fingerprint and the resulting Resume authorization
-fingerprint in a separately authorized process. The local Setup UI now performs that
+fingerprint in a separately authorized process. The local Setup UI performs that
 same two-process exchange after Setup restarts: it starts one read-only review
 without `-Yes`, holds the returned authorization only in memory for a single
 confirmation, and discards it on restart, a changed checkpoint, another command, a
@@ -289,9 +284,12 @@ The selected GUID is re-resolved and must still map to the exact stored name bef
 configuration publication, policy mutation, and typed readback; a removed, renamed,
 duplicated, unauthorized, malformed, or oversized inventory stops safely. If
 `policyProvisioningEnabled` is true, the Gateway-managed profile path additionally
-uses its approved certificate authority. Bootstrap always deploys the Gateway with
-`Purview__Enabled=false`; enabling runtime enforcement requires the separate
-token-role and bounded data-plane checks in the Purview runbook.
+uses its approved certificate authority. When `purview.enabled` is true, exact policy
+readback allows bootstrap to deploy the API with `Purview__Enabled=true`.
+`propagationStatus` remains `PendingLiveVerification`: directory assignments and
+policy readback do not prove the managed-identity token roles or a runtime verdict.
+Keep Purview off on ordinary registrations; use one approved nonproduction
+registration for the bounded checks in the Purview runbook.
 
 Purview uses two distinct Application-plane locations:
 
@@ -342,8 +340,7 @@ messages, or run a second bootstrap against the same deployment.
 If Setup itself was closed or restarted, the terminal sequence above is the verified
 path. Setup also implements the equivalent browser exchange—a read-only Resume
 review, an in-memory single-use authorization handoff, and a separate
-confirmation—but that path is still pending validation against preserved stopped
-state.
+confirmation—but that path is not yet validated against preserved stopped state.
 
 Database recovery, one-shot manual database repair, and Admin UI upgrade are
 deliberately bounded commands. Use them only when the bootstrap identifies that
@@ -388,13 +385,17 @@ that looks completely clean can therefore fail every retry with the identical
 `CanNotCreateMultipleFreeAccounts` rejection. List whatever still holds a slot with
 `az cognitiveservices account list-deleted -o table`.
 
-Resolve the conflict in exactly one way, then run Resume:
+If Plan detects the conflict before checkpoints exist, either choose a paid SKU or
+disable Prompt Shields, then run Plan again. If Apply detects a new conflict after
+checkpoints exist, changing either setting invalidates the accepted plan and cannot
+authorize Resume; preserve the state and use a new isolated deployment identity.
+Keeping the accepted plan and resuming requires the conflicting slot to be released:
 
 - purge the named account to release its slot, with `az cognitiveservices account
-  purge --location <region> --resource-group <group> --name <account>`,
-- set `promptShield.skuName` to a paid SKU such as `S0`, or
-- set `promptShield.enabled` to `false` and configure Prompt Shields after base
-  verification.
+  purge --location <region> --resource-group <group> --name <account>`.
+
+Purging is destructive and requires separate current authorization for that exact
+soft-deleted account; the bootstrap never performs it.
 
 ### Starting over from a clean initial state
 
@@ -402,23 +403,21 @@ Resume continues the deployment you already own. When you instead want the very
 first state again, create a *new* deployment identity rather than repointing
 preserved state at existing resources:
 
-1. Confirm the current deployment is one you are willing to abandon. Bootstrap never
-   deletes Azure resources, so anything already created stays until you remove it.
-2. Remove the abandoned resource groups yourself, in the portal or with your own
-   authorized `az group delete`. A Container Apps environment also creates an
-   infrastructure group named `ME_<environment>_<resourceGroup>_<region>`; delete that
-   too. Deleting the group is not sufficient for Content Safety: the account inside it
-   becomes soft-deleted and keeps its free-tier slot, so purge it as well with
-   `az cognitiveservices account purge --location <region> --resource-group <group>
-   --name <account>`. Leaving either behind blocks the next deployment exactly as
-   described above.
-3. Move the existing configuration aside rather than editing it in place:
+1. Preserve the current deployment, configuration, and `.bootstrap/` evidence.
+   Bootstrap never deletes existing Azure or tenant resources.
+2. Move the existing configuration aside rather than editing it in place:
    `mv bootstrap/config.json bootstrap/config.json.previous`.
-4. Run `.\gateway.cmd setup` (Windows) or `./gateway setup` (macOS, Linux). Setup
+3. Run `.\gateway.cmd setup` (Windows) or `./gateway setup` (macOS, Linux). Setup
    generates a new project name, a new deployment ownership ID, and a new resource
    group, then writes a fresh `bootstrap/config.json` and a fresh ignored `.bootstrap/`
    ledger beside it.
-5. Run Plan, review it, and confirm Apply.
+4. Run Plan, review it, and confirm Apply.
+
+Retiring the prior deployment is not a prerequisite. If the owner later chooses to
+remove it, each resource-group deletion and any Content Safety purge is a separate
+destructive action requiring current authorization for that exact target. A
+Container Apps environment may also own an infrastructure group named
+`ME_<environment>_<resourceGroup>_<region>`.
 
 Do not delete `.bootstrap/` to force a stopped deployment forward. That state is the
 only record of what was already created in your tenant, and removing it makes the

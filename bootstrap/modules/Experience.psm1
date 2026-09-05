@@ -1973,19 +1973,33 @@ function Test-GatewayNetworkHardeningEvidence {
 
     try {
         $expectedVaultName = "kv-$($Config.projectName)-$($Config.environment)"
-        if ($Evidence -isnot [System.Collections.IDictionary] -or
-            [string]$Evidence.sharedKeyVault -cne $expectedVaultName -or
-            [string]$Evidence.publicNetworkAccess -cne 'Disabled' -or
-            $Evidence.exactPostMutationReadback -ne $true) {
-            throw 'mismatch'
+        if ($Evidence -isnot [System.Collections.IDictionary]) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence')
+        }
+        if ([string]$Evidence.sharedKeyVault -cne $expectedVaultName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.sharedKeyVault')
+        }
+        if ([string]$Evidence.publicNetworkAccess -cne 'Disabled') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.publicNetworkAccess')
+        }
+        if ($Evidence.exactPostMutationReadback -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.exactPostMutationReadback')
         }
         $actual = Invoke-AzTsv -Arguments @(
             'keyvault', 'show', '--resource-group', [string]$Config.resourceGroupName,
             '--name', $expectedVaultName, '--query', 'properties.publicNetworkAccess')
-        if ($actual -cne 'Disabled') { throw 'mismatch' }
+        if ($actual -cne 'Disabled') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'keyVault.publicNetworkAccess')
+        }
         return $true
     }
     catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Network-hardening revalidation was unavailable or mismatched; no network mutation was attempted.',
+                $_.Exception)
+        }
         throw 'Network-hardening revalidation was unavailable or mismatched; no network mutation was attempted.'
     }
 }
@@ -4083,9 +4097,19 @@ function Test-GatewayResourceProviderEvidence {
     )) {
         try {
             $registrationState = Invoke-AzTsv -Arguments @('provider', 'show', '--namespace', $provider, '--query', 'registrationState')
-            if ($registrationState -ne 'Registered') { throw 'mismatch' }
+            if ($registrationState -ne 'Registered') {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'resourceProvider.registrationState')
+            }
         }
-        catch { throw 'Resource-provider revalidation was unavailable or mismatched; refusing automatic replay. Review access/policy and run gateway diagnose.' }
+        catch {
+            if (-not [string]::IsNullOrWhiteSpace(
+                    (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+                throw [InvalidOperationException]::new(
+                    'Resource-provider revalidation was unavailable or mismatched; refusing automatic replay. Review access/policy and run gateway diagnose.',
+                    $_.Exception)
+            }
+            throw 'Resource-provider revalidation was unavailable or mismatched; refusing automatic replay. Review access/policy and run gateway diagnose.'
+        }
     }
     return $true
 }
@@ -4104,18 +4128,24 @@ function Assert-GatewayRuntimeImagePullIdentityEvidence {
         $subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
         $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
         Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Runtime image-pull identity source fingerprint'
-        if ([string]$Config.subscriptionId -cne $subscriptionId -or
-            $DeploymentOwnershipId -cne $canonicalOwnershipId) {
-            throw 'mismatch'
+        if ([string]$Config.subscriptionId -cne $subscriptionId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'config.subscriptionId')
+        }
+        if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deploymentOwnershipId')
         }
 
         $resourceGroupScope = "/subscriptions/$subscriptionId/resourceGroups/$($Config.resourceGroupName)"
         $registryPrefix = "$resourceGroupScope/providers/Microsoft.ContainerRegistry/registries/"
         $registryId = $ExpectedRegistryId.TrimEnd('/')
-        if ($ExpectedRegistryId -cne $registryId -or
-            -not $registryId.StartsWith($registryPrefix, [StringComparison]::OrdinalIgnoreCase) -or
-            $registryId.Substring($registryPrefix.Length) -cnotmatch '^[A-Za-z0-9]{5,50}$') {
-            throw 'mismatch'
+        if ($ExpectedRegistryId -cne $registryId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'expectedRegistryId')
+        }
+        if (-not $registryId.StartsWith($registryPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'expectedRegistryId')
+        }
+        if ($registryId.Substring($registryPrefix.Length) -cnotmatch '^[A-Za-z0-9]{5,50}$') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'expectedRegistryId')
         }
         $registryName = $registryId.Substring($registryPrefix.Length)
 
@@ -4125,11 +4155,13 @@ function Assert-GatewayRuntimeImagePullIdentityEvidence {
         $principalId = [string](Get-GatewayOptionalObjectProperty -Object $Evidence -Name 'runtimeImagePullIdentityPrincipalId')
         $roleAssignmentId = [string](Get-GatewayOptionalObjectProperty -Object $Evidence -Name 'runtimeImagePullAcrPullRoleAssignmentId')
         $parsedPrincipalId = [guid]::Empty
-        if (-not $identityId.Equals($expectedIdentityId, [StringComparison]::OrdinalIgnoreCase) -or
-            -not [guid]::TryParse($principalId, [ref]$parsedPrincipalId) -or
+        if (-not $identityId.Equals($expectedIdentityId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.runtimeImagePullIdentityId')
+        }
+        if (-not [guid]::TryParse($principalId, [ref]$parsedPrincipalId) -or
             $parsedPrincipalId -eq [guid]::Empty -or
             $principalId -cne $parsedPrincipalId.ToString('D')) {
-            throw 'mismatch'
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.runtimeImagePullIdentityPrincipalId')
         }
 
         $roleAssignmentPrefix = "$registryId/providers/Microsoft.Authorization/roleAssignments/"
@@ -4141,7 +4173,7 @@ function Assert-GatewayRuntimeImagePullIdentityEvidence {
         if (-not [guid]::TryParse($roleAssignmentGuidText, [ref]$parsedRoleAssignmentId) -or
             $parsedRoleAssignmentId -eq [guid]::Empty -or
             $roleAssignmentGuidText -cne $parsedRoleAssignmentId.ToString('D')) {
-            throw 'mismatch'
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.runtimeImagePullAcrPullRoleAssignmentId')
         }
 
         $identity = Invoke-AzJson -Arguments @(
@@ -4149,13 +4181,18 @@ function Assert-GatewayRuntimeImagePullIdentityEvidence {
             '--resource-group', [string]$Config.resourceGroupName, '--name', $identityName,
             '--query', '{id:id,name:name,principalId:principalId,type:type,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
         )
-        if (-not ([string]$identity.id).Equals($expectedIdentityId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$identity.name -cne $identityName -or
-            [string]$identity.principalId -cne $principalId -or
-            [string]$identity.type -cne 'Microsoft.ManagedIdentity/userAssignedIdentities' -or
-            [string]$identity.ownershipId -cne $canonicalOwnershipId -or
-            [string]$identity.sourceFingerprint -cne $SourceFingerprint) {
-            throw 'mismatch'
+        $identityMismatchChecks = @(
+            'identity.id'; { -not ([string]$identity.id).Equals($expectedIdentityId, [StringComparison]::OrdinalIgnoreCase) }
+            'identity.name'; { [string]$identity.name -cne $identityName }
+            'identity.principalId'; { [string]$identity.principalId -cne $principalId }
+            'identity.type'; { [string]$identity.type -cne 'Microsoft.ManagedIdentity/userAssignedIdentities' }
+            'identity.ownershipId'; { [string]$identity.ownershipId -cne $canonicalOwnershipId }
+            'identity.sourceFingerprint'; { [string]$identity.sourceFingerprint -cne $SourceFingerprint }
+        )
+        for ($index = 0; $index -lt $identityMismatchChecks.Count; $index += 2) {
+            if (& ([scriptblock]$identityMismatchChecks[$index + 1])) {
+                throw (New-BootstrapValidationMismatchException -PropertyName ([string]$identityMismatchChecks[$index]))
+            }
         }
 
         $assignments = @(Invoke-AzJsonArray `
@@ -4167,16 +4204,23 @@ function Assert-GatewayRuntimeImagePullIdentityEvidence {
                 '--query', '[].{id:id,principalId:principalId,principalType:principalType,scope:scope,roleDefinitionId:roleDefinitionId,condition:condition,conditionVersion:conditionVersion,delegatedManagedIdentityResourceId:delegatedManagedIdentityResourceId}'
             ))
         $acrPullRoleId = "/subscriptions/$subscriptionId/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
-        if ($assignments.Count -ne 1 -or
-            -not ([string]$assignments[0].id).Equals($roleAssignmentId, [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$assignments[0].principalId).Equals($principalId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$assignments[0].principalType -cne 'ServicePrincipal' -or
-            -not ([string]$assignments[0].scope).Equals($registryId, [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$assignments[0].roleDefinitionId).Equals($acrPullRoleId, [StringComparison]::OrdinalIgnoreCase) -or
-            -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $assignments[0] -Name 'condition')) -or
-            -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $assignments[0] -Name 'conditionVersion')) -or
-            -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $assignments[0] -Name 'delegatedManagedIdentityResourceId'))) {
-            throw 'mismatch'
+        if ($assignments.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'roleAssignments.count')
+        }
+        $assignmentMismatchChecks = @(
+            'roleAssignment.id'; { -not ([string]$assignments[0].id).Equals($roleAssignmentId, [StringComparison]::OrdinalIgnoreCase) }
+            'roleAssignment.principalId'; { -not ([string]$assignments[0].principalId).Equals($principalId, [StringComparison]::OrdinalIgnoreCase) }
+            'roleAssignment.principalType'; { [string]$assignments[0].principalType -cne 'ServicePrincipal' }
+            'roleAssignment.scope'; { -not ([string]$assignments[0].scope).Equals($registryId, [StringComparison]::OrdinalIgnoreCase) }
+            'roleAssignment.roleDefinitionId'; { -not ([string]$assignments[0].roleDefinitionId).Equals($acrPullRoleId, [StringComparison]::OrdinalIgnoreCase) }
+            'roleAssignment.condition'; { -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $assignments[0] -Name 'condition')) }
+            'roleAssignment.conditionVersion'; { -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $assignments[0] -Name 'conditionVersion')) }
+            'roleAssignment.delegatedManagedIdentityResourceId'; { -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $assignments[0] -Name 'delegatedManagedIdentityResourceId')) }
+        )
+        for ($index = 0; $index -lt $assignmentMismatchChecks.Count; $index += 2) {
+            if (& ([scriptblock]$assignmentMismatchChecks[$index + 1])) {
+                throw (New-BootstrapValidationMismatchException -PropertyName ([string]$assignmentMismatchChecks[$index]))
+            }
         }
 
         # The typed `az acr show` projection in Azure CLI 2.89.1 omits
@@ -4187,17 +4231,28 @@ function Assert-GatewayRuntimeImagePullIdentityEvidence {
             '--ids', $registryId, '--api-version', '2023-11-01-preview',
             '--query', '{id:id,name:name,adminUserEnabled:properties.adminUserEnabled,armAudienceStatus:properties.policies.azureADAuthenticationAsArmPolicy.status,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
         )
-        if (-not ([string]$registry.id).Equals($registryId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$registry.name -cne $registryName -or
-            $registry.adminUserEnabled -ne $false -or
-            [string]$registry.armAudienceStatus -cne 'enabled' -or
-            [string]$registry.ownershipId -cne $canonicalOwnershipId -or
-            [string]$registry.sourceFingerprint -cne $SourceFingerprint) {
-            throw 'mismatch'
+        $registryMismatchChecks = @(
+            'registry.id'; { -not ([string]$registry.id).Equals($registryId, [StringComparison]::OrdinalIgnoreCase) }
+            'registry.name'; { [string]$registry.name -cne $registryName }
+            'registry.adminUserEnabled'; { $registry.adminUserEnabled -ne $false }
+            'registry.armAudienceStatus'; { [string]$registry.armAudienceStatus -cne 'enabled' }
+            'registry.ownershipId'; { [string]$registry.ownershipId -cne $canonicalOwnershipId }
+            'registry.sourceFingerprint'; { [string]$registry.sourceFingerprint -cne $SourceFingerprint }
+        )
+        for ($index = 0; $index -lt $registryMismatchChecks.Count; $index += 2) {
+            if (& ([scriptblock]$registryMismatchChecks[$index + 1])) {
+                throw (New-BootstrapValidationMismatchException -PropertyName ([string]$registryMismatchChecks[$index]))
+            }
         }
         return $true
     }
     catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Dedicated runtime image-pull identity, AcrPull receipt, ACR policy, or ownership/source evidence is unavailable or mismatched.',
+                $_.Exception)
+        }
         throw 'Dedicated runtime image-pull identity, AcrPull receipt, ACR policy, or ownership/source evidence is unavailable or mismatched.'
     }
 }
@@ -4214,56 +4269,120 @@ function Test-GatewaySubscriptionDeploymentEvidence {
         $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
         Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Foundation source fingerprint'
         $expectedDeploymentName = "a365gw-$($Config.projectName)-bootstrap-foundation-$($Config.environment)"
-        if ([string]$Evidence.deploymentName -ne $expectedDeploymentName -or
-            [string]$Evidence.resourceGroupName -ne [string]$Config.resourceGroupName -or
-            $DeploymentOwnershipId -cne $canonicalOwnershipId -or
-            [string]$Evidence.deploymentOwnershipId -cne $canonicalOwnershipId -or
-            [string]$Evidence.sourceFingerprint -cne $SourceFingerprint) { throw 'mismatch' }
+                if ([string]$Evidence.deploymentName -ne $expectedDeploymentName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.deploymentName')
+        }
+        if ([string]$Evidence.resourceGroupName -ne [string]$Config.resourceGroupName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.resourceGroupName')
+        }
+        if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deploymentOwnershipId')
+        }
+        if ([string]$Evidence.deploymentOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.deploymentOwnershipId')
+        }
+        if ([string]$Evidence.sourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.sourceFingerprint')
+        }
 
         $deployment = Invoke-AzJson -Arguments @(
             'deployment', 'sub', 'show', '--subscription', [string]$Config.subscriptionId,
             '--name', $expectedDeploymentName, '--query', '{state:properties.provisioningState,outputs:properties.outputs,parameters:properties.parameters}'
         )
-        if ([string]$deployment.state -ne 'Succeeded' -or
-            [string]$deployment.parameters.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
-            [string]$deployment.outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
-            [string]$deployment.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
-            [string]$deployment.outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
-            [string]$deployment.outputs.resourceGroupName.value -ne [string]$Evidence.resourceGroupName -or
-            [string]$deployment.outputs.containerAppsEnvironmentId.value -ne [string]$Evidence.containerAppsEnvironmentId -or
-            [string]$deployment.outputs.virtualNetworkId.value -ne [string]$Evidence.virtualNetworkId -or
-            [string]$deployment.outputs.privateEndpointSubnetId.value -ne [string]$Evidence.privateEndpointSubnetId -or
-            [string]$deployment.outputs.acrLoginServer.value -ne [string]$Evidence.acrLoginServer -or
-            [string]$deployment.outputs.runtimeImagePullIdentityId.value -ne [string]$Evidence.runtimeImagePullIdentityId -or
-            [string]$deployment.outputs.runtimeImagePullIdentityPrincipalId.value -ne [string]$Evidence.runtimeImagePullIdentityPrincipalId -or
-            [string]$deployment.outputs.runtimeImagePullAcrPullRoleAssignmentId.value -ne [string]$Evidence.runtimeImagePullAcrPullRoleAssignmentId) { throw 'mismatch' }
+                if ([string]$deployment.state -ne 'Succeeded') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.state')
+        }
+        if ([string]$deployment.parameters.deploymentOwnershipId.value -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.deploymentOwnershipId.value')
+        }
+        if ([string]$deployment.outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.deploymentOwnershipId.value')
+        }
+        if ([string]$deployment.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.bootstrapSourceFingerprint.value')
+        }
+        if ([string]$deployment.outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.bootstrapSourceFingerprint.value')
+        }
+        if ([string]$deployment.outputs.resourceGroupName.value -ne [string]$Evidence.resourceGroupName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.resourceGroupName.value')
+        }
+        if ([string]$deployment.outputs.containerAppsEnvironmentId.value -ne [string]$Evidence.containerAppsEnvironmentId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.containerAppsEnvironmentId.value')
+        }
+        if ([string]$deployment.outputs.virtualNetworkId.value -ne [string]$Evidence.virtualNetworkId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.virtualNetworkId.value')
+        }
+        if ([string]$deployment.outputs.privateEndpointSubnetId.value -ne [string]$Evidence.privateEndpointSubnetId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.privateEndpointSubnetId.value')
+        }
+        if ([string]$deployment.outputs.acrLoginServer.value -ne [string]$Evidence.acrLoginServer) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.acrLoginServer.value')
+        }
+        if ([string]$deployment.outputs.runtimeImagePullIdentityId.value -ne [string]$Evidence.runtimeImagePullIdentityId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.runtimeImagePullIdentityId.value')
+        }
+        if ([string]$deployment.outputs.runtimeImagePullIdentityPrincipalId.value -ne [string]$Evidence.runtimeImagePullIdentityPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.runtimeImagePullIdentityPrincipalId.value')
+        }
+        if ([string]$deployment.outputs.runtimeImagePullAcrPullRoleAssignmentId.value -ne [string]$Evidence.runtimeImagePullAcrPullRoleAssignmentId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.runtimeImagePullAcrPullRoleAssignmentId.value')
+        }
 
         $group = Invoke-AzJson -Arguments @(
             'group', 'show', '--subscription', [string]$Config.subscriptionId,
             '--name', [string]$Config.resourceGroupName,
             '--query', '{name:name,location:location,tags:tags}'
         )
-        if ([string]$group.name -ne [string]$Config.resourceGroupName -or
-            [string]$group.location -ne [string]$Config.location -or
-            [string]$group.tags.projectName -ne [string]$Config.projectName -or
-            [string]$group.tags.environment -ne [string]$Config.environment -or
-            [string]$group.tags.managedBy -ne 'bootstrap' -or
-            [string]$group.tags.deploymentId -ne "$($Config.projectName)-$($Config.environment)" -or
-            [string]$group.tags.bootstrapOwnershipId -cne $canonicalOwnershipId -or
-            [string]$group.tags.bootstrapSourceFingerprint -cne $SourceFingerprint) { throw 'mismatch' }
+                if ([string]$group.name -ne [string]$Config.resourceGroupName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'group.name')
+        }
+        if ([string]$group.location -ne [string]$Config.location) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'group.location')
+        }
+        if ([string]$group.tags.projectName -ne [string]$Config.projectName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'group.tags.projectName')
+        }
+        if ([string]$group.tags.environment -ne [string]$Config.environment) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'group.tags.environment')
+        }
+        if ([string]$group.tags.managedBy -ne 'bootstrap') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'group.tags.managedBy')
+        }
+        if ([string]$group.tags.deploymentId -ne "$($Config.projectName)-$($Config.environment)") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'group.tags.deploymentId')
+        }
+        if ([string]$group.tags.bootstrapOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'group.tags.bootstrapOwnershipId')
+        }
+        if ([string]$group.tags.bootstrapSourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'group.tags.bootstrapSourceFingerprint')
+        }
 
         foreach ($resource in @(
             [ordered]@{ id = [string]$Evidence.containerAppsEnvironmentId; type = 'Microsoft.App/managedEnvironments'; name = [string]$Evidence.containerAppsEnvironmentName; tagged = $true },
             [ordered]@{ id = [string]$Evidence.virtualNetworkId; type = 'Microsoft.Network/virtualNetworks'; name = [string]$Evidence.virtualNetworkName; tagged = $true },
             [ordered]@{ id = [string]$Evidence.privateEndpointSubnetId; type = 'Microsoft.Network/virtualNetworks/subnets'; name = [string]$Evidence.privateEndpointSubnetName; tagged = $false }
         )) {
-            if ([string]::IsNullOrWhiteSpace($resource.id)) { throw 'mismatch' }
+                        if ([string]::IsNullOrWhiteSpace($resource.id)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'resource.id')
+            }
             $actual = Invoke-AzJson -Arguments @('resource', 'show', '--ids', $resource.id, '--query', '{id:id,type:type,name:name,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}')
-            if ([string]$actual.id -ne $resource.id -or [string]$actual.type -ne $resource.type -or
-                -not ([string]$actual.name).EndsWith([string]$resource.name, [StringComparison]::OrdinalIgnoreCase) -or
-                ($resource.tagged -and (
-                    [string]$actual.ownershipId -cne $canonicalOwnershipId -or
-                    [string]$actual.sourceFingerprint -cne $SourceFingerprint))) { throw 'mismatch' }
+                        if ([string]$actual.id -ne $resource.id) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'actual.id')
+            }
+            if ([string]$actual.type -ne $resource.type) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'actual.type')
+            }
+            if (-not ([string]$actual.name).EndsWith([string]$resource.name, [StringComparison]::OrdinalIgnoreCase)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'actual.name')
+            }
+            if ((($resource.tagged)) -and ([string]$actual.ownershipId -cne $canonicalOwnershipId)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'actual.ownershipId')
+            }
+            if ((($resource.tagged)) -and ([string]$actual.sourceFingerprint -cne $SourceFingerprint)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'actual.sourceFingerprint')
+            }
         }
 
         $workspace = Invoke-AzJson -Arguments @(
@@ -4276,17 +4395,39 @@ function Test-GatewaySubscriptionDeploymentEvidence {
             '--ids', $expectedRegistryId, '--api-version', '2023-11-01-preview',
             '--query', '{id:id,name:name,loginServer:properties.loginServer,adminUserEnabled:properties.adminUserEnabled,armAudienceStatus:properties.policies.azureADAuthenticationAsArmPolicy.status,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
         )
-        if ([string]$workspace.name -ne [string]$Evidence.logAnalyticsWorkspaceName -or
-            [string]$workspace.location -ne [string]$Config.location -or
-            [string]$workspace.ownershipId -cne $canonicalOwnershipId -or
-            [string]$workspace.sourceFingerprint -cne $SourceFingerprint -or
-            -not ([string]$registry.id).Equals($expectedRegistryId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$registry.name -ne [string]$Evidence.acrName -or
-            [string]$registry.loginServer -ne [string]$Evidence.acrLoginServer -or
-            $registry.adminUserEnabled -ne $false -or
-            [string]$registry.armAudienceStatus -cne 'enabled' -or
-            [string]$registry.ownershipId -cne $canonicalOwnershipId -or
-            [string]$registry.sourceFingerprint -cne $SourceFingerprint) { throw 'mismatch' }
+                if ([string]$workspace.name -ne [string]$Evidence.logAnalyticsWorkspaceName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'workspace.name')
+        }
+        if ([string]$workspace.location -ne [string]$Config.location) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'workspace.location')
+        }
+        if ([string]$workspace.ownershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'workspace.ownershipId')
+        }
+        if ([string]$workspace.sourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'workspace.sourceFingerprint')
+        }
+        if (-not ([string]$registry.id).Equals($expectedRegistryId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'registry.id')
+        }
+        if ([string]$registry.name -ne [string]$Evidence.acrName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'registry.name')
+        }
+        if ([string]$registry.loginServer -ne [string]$Evidence.acrLoginServer) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'registry.loginServer')
+        }
+        if ($registry.adminUserEnabled -ne $false) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'registry.adminUserEnabled')
+        }
+        if ([string]$registry.armAudienceStatus -cne 'enabled') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'registry.armAudienceStatus')
+        }
+        if ([string]$registry.ownershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'registry.ownershipId')
+        }
+        if ([string]$registry.sourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'registry.sourceFingerprint')
+        }
         Assert-GatewayRuntimeImagePullIdentityEvidence `
             -Config $Config `
             -Evidence $Evidence `
@@ -4295,7 +4436,15 @@ function Test-GatewaySubscriptionDeploymentEvidence {
             -SourceFingerprint $SourceFingerprint | Out-Null
         return $true
     }
-    catch { throw 'Foundation revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.' }
+    catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Foundation revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.',
+                $_.Exception)
+        }
+        throw 'Foundation revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.'
+    }
 }
 
 function Get-GatewayOptionalObjectProperty {
@@ -4321,18 +4470,36 @@ function Assert-GatewayDatabaseAttestationDeploymentContract {
         $expectedValue = [string]$entry.Value
         if ($name -cne 'databaseAttestationDatabaseName') {
             $parameterProperty = Get-GatewayOptionalObjectProperty -Object $Parameters -Name $name
-            if ($null -eq $parameterProperty) { throw 'mismatch' }
+            if ($null -eq $parameterProperty) {
+                throw (New-BootstrapValidationMismatchException -PropertyName "parameters.$name")
+            }
             $parameterValue = Get-GatewayOptionalObjectProperty -Object $parameterProperty -Name 'value'
-            if ($null -eq $parameterValue -or [string]$parameterValue -cne $expectedValue) { throw 'mismatch' }
+            if ($null -eq $parameterValue) {
+                throw (New-BootstrapValidationMismatchException -PropertyName "parameters.$name.value")
+            }
+            if ([string]$parameterValue -cne $expectedValue) {
+                throw (New-BootstrapValidationMismatchException -PropertyName "parameters.$name.value")
+            }
         }
 
         $outputProperty = Get-GatewayOptionalObjectProperty -Object $Outputs -Name $name
         $evidenceValue = Get-GatewayOptionalObjectProperty -Object $Evidence -Name $name
-        if ($null -eq $outputProperty -or $null -eq $evidenceValue) { throw 'mismatch' }
+        if ($null -eq $outputProperty) {
+            throw (New-BootstrapValidationMismatchException -PropertyName "outputs.$name")
+        }
+        if ($null -eq $evidenceValue) {
+            throw (New-BootstrapValidationMismatchException -PropertyName "evidence.$name")
+        }
         $outputValue = Get-GatewayOptionalObjectProperty -Object $outputProperty -Name 'value'
-        if ($null -eq $outputValue -or
-            [string]$outputValue -cne $expectedValue -or
-            [string]$evidenceValue -cne $expectedValue) { throw 'mismatch' }
+        if ($null -eq $outputValue) {
+            throw (New-BootstrapValidationMismatchException -PropertyName "outputs.$name.value")
+        }
+        if ([string]$outputValue -cne $expectedValue) {
+            throw (New-BootstrapValidationMismatchException -PropertyName "outputs.$name.value")
+        }
+        if ([string]$evidenceValue -cne $expectedValue) {
+            throw (New-BootstrapValidationMismatchException -PropertyName "evidence.$name")
+        }
     }
     return $true
 }
@@ -4478,55 +4645,137 @@ function Test-GatewayGroupDeploymentEvidence {
     try {
         $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
         Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Deployment source fingerprint'
-        if ($DeploymentOwnershipId -cne $canonicalOwnershipId -or
-            [string]$Foundation.deploymentOwnershipId -cne $canonicalOwnershipId -or
-            [string]$Foundation.sourceFingerprint -cne $SourceFingerprint -or
-            [string]$Evidence.deploymentOwnershipId -cne $canonicalOwnershipId -or
-            [string]$Evidence.sourceFingerprint -cne $SourceFingerprint -or
-            [string]$Evidence.apiImage -cne $ApiImage -or
-            [string]$Evidence.workerImage -cne $WorkerImage -or
-            [string]$Evidence.runtimeImagePullIdentityId -cne [string]$Foundation.runtimeImagePullIdentityId -or
-            [string]$Evidence.runtimeImagePullIdentityPrincipalId -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId -or
-            [string]$Evidence.runtimeImagePullAcrPullRoleAssignmentId -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId) { throw 'mismatch' }
+                if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deploymentOwnershipId')
+        }
+        if ([string]$Foundation.deploymentOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'foundation.deploymentOwnershipId')
+        }
+        if ([string]$Foundation.sourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'foundation.sourceFingerprint')
+        }
+        if ([string]$Evidence.deploymentOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.deploymentOwnershipId')
+        }
+        if ([string]$Evidence.sourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.sourceFingerprint')
+        }
+        if ([string]$Evidence.apiImage -cne $ApiImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.apiImage')
+        }
+        if ([string]$Evidence.workerImage -cne $WorkerImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.workerImage')
+        }
+        if ([string]$Evidence.runtimeImagePullIdentityId -cne [string]$Foundation.runtimeImagePullIdentityId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.runtimeImagePullIdentityId')
+        }
+        if ([string]$Evidence.runtimeImagePullIdentityPrincipalId -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.runtimeImagePullIdentityPrincipalId')
+        }
+        if ([string]$Evidence.runtimeImagePullAcrPullRoleAssignmentId -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.runtimeImagePullAcrPullRoleAssignmentId')
+        }
         $inertDeploymentName = "a365gw-$($Config.projectName)-bootstrap-inert-$($Config.environment)"
         $runtimeDeploymentName = "a365gw-$($Config.projectName)-bootstrap-runtime-$($Config.environment)"
-        if ([string]$Evidence.deploymentName -notin @($inertDeploymentName, $runtimeDeploymentName)) { throw 'mismatch' }
+                if ([string]$Evidence.deploymentName -notin @($inertDeploymentName, $runtimeDeploymentName)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.deploymentName')
+        }
         $isRuntime = [string]$Evidence.deploymentName -eq $runtimeDeploymentName
-        if ($isRuntime -and (-not $Database -or
-            [string]$Database.deploymentOwnershipId -cne $canonicalOwnershipId -or
-            [string]$Database.acceptedSourceFingerprint -cne $SourceFingerprint -or
-            [string]$Database.server -cne [string]$Evidence.sqlServerFqdn -or
-            [string]$Database.database -cne 'GatewayDb' -or
-            [string]$Database.schemaFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
-            [string]$Database.apiPrincipalObjectId -cne ([guid][string]$Evidence.apiPrincipalId).ToString('D') -or
-            [string]$Database.workerPrincipalObjectId -cne ([guid][string]$Evidence.workerPrincipalId).ToString('D'))) { throw 'mismatch' }
+                if ((($isRuntime)) -and (-not $Database)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'isRuntime')
+        }
+        if ((($isRuntime)) -and ([string]$Database.deploymentOwnershipId -cne $canonicalOwnershipId)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'database.deploymentOwnershipId')
+        }
+        if ((($isRuntime)) -and ([string]$Database.acceptedSourceFingerprint -cne $SourceFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'database.acceptedSourceFingerprint')
+        }
+        if ((($isRuntime)) -and ([string]$Database.server -cne [string]$Evidence.sqlServerFqdn)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'database.server')
+        }
+        if ((($isRuntime)) -and ([string]$Database.database -cne 'GatewayDb')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'database.database')
+        }
+        if ((($isRuntime)) -and ([string]$Database.schemaFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'database.schemaFingerprint')
+        }
+        if ((($isRuntime)) -and ([string]$Database.apiPrincipalObjectId -cne ([guid][string]$Evidence.apiPrincipalId).ToString('D'))) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'database.apiPrincipalObjectId')
+        }
+        if ((($isRuntime)) -and ([string]$Database.workerPrincipalObjectId -cne ([guid][string]$Evidence.workerPrincipalId).ToString('D'))) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'database.workerPrincipalObjectId')
+        }
         $deployment = Invoke-AzJson -Arguments @(
             'deployment', 'group', 'show', '--subscription', [string]$Config.subscriptionId,
             '--resource-group', [string]$Config.resourceGroupName, '--name', [string]$Evidence.deploymentName,
             '--query', '{state:properties.provisioningState,outputs:properties.outputs,parameters:properties.parameters}'
         )
-        if ([string]$deployment.state -ne 'Succeeded' -or
-            [string]$deployment.parameters.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
-            [string]$deployment.outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
-            [string]$deployment.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
-            [string]$deployment.outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
-            [string]$deployment.parameters.apiContainerImage.value -cne $ApiImage -or
-            [string]$deployment.parameters.workerContainerImage.value -cne $WorkerImage -or
-            [string]$deployment.outputs.apiContainerImage.value -cne $ApiImage -or
-            [string]$deployment.outputs.workerContainerImage.value -cne $WorkerImage -or
-            [string]$deployment.parameters.containerAppsEnvironmentName.value -cne [string]$Foundation.containerAppsEnvironmentName -or
-            [string]$deployment.parameters.entraIdTenantId.value -cne [string]$Config.tenantId -or
-            [string]$deployment.parameters.entraIdClientId.value -cne [string]$Identity.gatewayApiClientId -or
-            [string]$deployment.parameters.entraIdAudience.value -cne [string]$Identity.gatewayApiTokenAudience -or
-            [string]$deployment.parameters.workerContainerAppName.value -cne "ca-gateway-worker-$($Config.environment)-v3" -or
-            [string]$deployment.parameters.runtimeImagePullIdentityId.value -cne [string]$Foundation.runtimeImagePullIdentityId -or
-            [string]$deployment.parameters.runtimeImagePullIdentityPrincipalId.value -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId -or
-            [string]$deployment.parameters.runtimeImagePullAcrPullRoleAssignmentId.value -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId -or
-            [string]$deployment.outputs.runtimeImagePullIdentityId.value -cne [string]$Foundation.runtimeImagePullIdentityId -or
-            [string]$deployment.outputs.runtimeImagePullIdentityPrincipalId.value -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId -or
-            [string]$deployment.outputs.runtimeImagePullAcrPullRoleAssignmentId.value -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId -or
-            [bool]$deployment.parameters.databaseAttestationEnabled.value -ne [bool]$isRuntime -or
-            [bool]$deployment.outputs.databaseAttestationEnabled.value -ne [bool]$isRuntime) { throw 'mismatch' }
+                if ([string]$deployment.state -ne 'Succeeded') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.state')
+        }
+        if ([string]$deployment.parameters.deploymentOwnershipId.value -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.deploymentOwnershipId.value')
+        }
+        if ([string]$deployment.outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.deploymentOwnershipId.value')
+        }
+        if ([string]$deployment.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.bootstrapSourceFingerprint.value')
+        }
+        if ([string]$deployment.outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.bootstrapSourceFingerprint.value')
+        }
+        if ([string]$deployment.parameters.apiContainerImage.value -cne $ApiImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.apiContainerImage.value')
+        }
+        if ([string]$deployment.parameters.workerContainerImage.value -cne $WorkerImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.workerContainerImage.value')
+        }
+        if ([string]$deployment.outputs.apiContainerImage.value -cne $ApiImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.apiContainerImage.value')
+        }
+        if ([string]$deployment.outputs.workerContainerImage.value -cne $WorkerImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.workerContainerImage.value')
+        }
+        if ([string]$deployment.parameters.containerAppsEnvironmentName.value -cne [string]$Foundation.containerAppsEnvironmentName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.containerAppsEnvironmentName.value')
+        }
+        if ([string]$deployment.parameters.entraIdTenantId.value -cne [string]$Config.tenantId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.entraIdTenantId.value')
+        }
+        if ([string]$deployment.parameters.entraIdClientId.value -cne [string]$Identity.gatewayApiClientId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.entraIdClientId.value')
+        }
+        if ([string]$deployment.parameters.entraIdAudience.value -cne [string]$Identity.gatewayApiTokenAudience) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.entraIdAudience.value')
+        }
+        if ([string]$deployment.parameters.workerContainerAppName.value -cne "ca-gateway-worker-$($Config.environment)-v3") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.workerContainerAppName.value')
+        }
+        if ([string]$deployment.parameters.runtimeImagePullIdentityId.value -cne [string]$Foundation.runtimeImagePullIdentityId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.runtimeImagePullIdentityId.value')
+        }
+        if ([string]$deployment.parameters.runtimeImagePullIdentityPrincipalId.value -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.runtimeImagePullIdentityPrincipalId.value')
+        }
+        if ([string]$deployment.parameters.runtimeImagePullAcrPullRoleAssignmentId.value -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.runtimeImagePullAcrPullRoleAssignmentId.value')
+        }
+        if ([string]$deployment.outputs.runtimeImagePullIdentityId.value -cne [string]$Foundation.runtimeImagePullIdentityId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.runtimeImagePullIdentityId.value')
+        }
+        if ([string]$deployment.outputs.runtimeImagePullIdentityPrincipalId.value -cne [string]$Foundation.runtimeImagePullIdentityPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.runtimeImagePullIdentityPrincipalId.value')
+        }
+        if ([string]$deployment.outputs.runtimeImagePullAcrPullRoleAssignmentId.value -cne [string]$Foundation.runtimeImagePullAcrPullRoleAssignmentId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.runtimeImagePullAcrPullRoleAssignmentId.value')
+        }
+        if ([bool]$deployment.parameters.databaseAttestationEnabled.value -ne [bool]$isRuntime) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.databaseAttestationEnabled.value')
+        }
+        if ([bool]$deployment.outputs.databaseAttestationEnabled.value -ne [bool]$isRuntime) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.databaseAttestationEnabled.value')
+        }
         $outputEvidenceNames = [ordered]@{
             apiFqdn = 'apiFqdn'
             apiPrincipalId = 'apiPrincipalId'
@@ -4548,8 +4797,8 @@ function Test-GatewayGroupDeploymentEvidence {
             -Evidence $Evidence `
             -OutputToEvidenceName $outputEvidenceNames | Out-Null
         $expectedRegistryId = "/subscriptions/$(([guid][string]$Config.subscriptionId).ToString('D'))/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.ContainerRegistry/registries/$($Foundation.acrName)"
-        if (-not ([string]$Evidence.containerRegistryId).Equals($expectedRegistryId, [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'mismatch'
+                if (-not ([string]$Evidence.containerRegistryId).Equals($expectedRegistryId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.containerRegistryId')
         }
         Assert-GatewayRuntimeImagePullIdentityEvidence `
             -Config $Config `
@@ -4558,7 +4807,9 @@ function Test-GatewayGroupDeploymentEvidence {
             -DeploymentOwnershipId $canonicalOwnershipId `
             -SourceFingerprint $SourceFingerprint | Out-Null
         foreach ($property in @('provisioningExecutionEnabled', 'workerProcessingEnabled')) {
-            if ([bool]$deployment.outputs.$property.value -ne [bool]$Evidence.$property) { throw 'mismatch' }
+            if ([bool]$deployment.outputs.$property.value -ne [bool]$Evidence.$property) {
+                throw (New-BootstrapValidationMismatchException -PropertyName "deployment.outputs.$property.value")
+            }
         }
         $expectedDatabaseValues = if ($isRuntime) {
             [ordered]@{
@@ -4587,24 +4838,54 @@ function Test-GatewayGroupDeploymentEvidence {
             -ExpectedValues $expectedDatabaseValues | Out-Null
         $expectedPreview = $isRuntime -and [string]$Config.environment -eq 'dev' -and
             $Config.agent365.allowDevelopmentRegistryPreview -eq $true
-        if ([bool]$Evidence.workerProcessingEnabled -ne $isRuntime -or
-            [bool]$Evidence.provisioningExecutionEnabled -ne $expectedPreview) { throw 'mismatch' }
+                if ([bool]$Evidence.workerProcessingEnabled -ne $isRuntime) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.workerProcessingEnabled')
+        }
+        if ([bool]$Evidence.provisioningExecutionEnabled -ne $expectedPreview) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.provisioningExecutionEnabled')
+        }
 
         $api = Invoke-AzJson -Arguments @('containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', "ca-gateway-api-$($Config.environment)")
         $worker = Invoke-AzJson -Arguments @('containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', "ca-gateway-worker-$($Config.environment)-v3")
-        if ([string]$api.name -ne "ca-gateway-api-$($Config.environment)" -or
-            [string]$api.properties.configuration.ingress.fqdn -ne [string]$Evidence.apiFqdn -or
-            [string]$api.identity.principalId -ne [string]$Evidence.apiPrincipalId -or
-            [string]$api.properties.provisioningState -ne 'Succeeded' -or
-            [string]$api.tags.bootstrapOwnershipId -cne $canonicalOwnershipId -or
-            [string]$api.tags.bootstrapSourceFingerprint -cne $SourceFingerprint -or
-            [string]$api.properties.template.containers[0].image -cne $ApiImage -or
-            [string]$worker.name -ne "ca-gateway-worker-$($Config.environment)-v3" -or
-            [string]$worker.identity.principalId -ne [string]$Evidence.workerPrincipalId -or
-            [string]$worker.properties.provisioningState -ne 'Succeeded' -or
-            [string]$worker.tags.bootstrapOwnershipId -cne $canonicalOwnershipId -or
-            [string]$worker.tags.bootstrapSourceFingerprint -cne $SourceFingerprint -or
-            [string]$worker.properties.template.containers[0].image -cne $WorkerImage) { throw 'mismatch' }
+                if ([string]$api.name -ne "ca-gateway-api-$($Config.environment)") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'api.name')
+        }
+        if ([string]$api.properties.configuration.ingress.fqdn -ne [string]$Evidence.apiFqdn) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'api.properties.configuration.ingress.fqdn')
+        }
+        if ([string]$api.identity.principalId -ne [string]$Evidence.apiPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'api.identity.principalId')
+        }
+        if ([string]$api.properties.provisioningState -ne 'Succeeded') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'api.properties.provisioningState')
+        }
+        if ([string]$api.tags.bootstrapOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'api.tags.bootstrapOwnershipId')
+        }
+        if ([string]$api.tags.bootstrapSourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'api.tags.bootstrapSourceFingerprint')
+        }
+        if ([string]$api.properties.template.containers[0].image -cne $ApiImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'api.properties.template.containers.image')
+        }
+        if ([string]$worker.name -ne "ca-gateway-worker-$($Config.environment)-v3") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'worker.name')
+        }
+        if ([string]$worker.identity.principalId -ne [string]$Evidence.workerPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'worker.identity.principalId')
+        }
+        if ([string]$worker.properties.provisioningState -ne 'Succeeded') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'worker.properties.provisioningState')
+        }
+        if ([string]$worker.tags.bootstrapOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'worker.tags.bootstrapOwnershipId')
+        }
+        if ([string]$worker.tags.bootstrapSourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'worker.tags.bootstrapSourceFingerprint')
+        }
+        if ([string]$worker.properties.template.containers[0].image -cne $WorkerImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'worker.properties.template.containers.image')
+        }
 
         if ($isRuntime -or -not $AllowRuntimeSupersession) {
             $expectedManagerIds = @(
@@ -4615,15 +4896,21 @@ function Test-GatewayGroupDeploymentEvidence {
                 }
             )
             $deploymentManagerIds = @($deployment.parameters.agent365ManagerApplicationIds.value | ForEach-Object { ([guid][string]$_).ToString('D') })
-            if (($deploymentManagerIds -join '|') -cne ($expectedManagerIds -join '|')) { throw 'mismatch' }
+                        if (($deploymentManagerIds -join '|') -cne ($expectedManagerIds -join '|')) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'deploymentManagerIds')
+            }
 
             $appInsightsConnectionString = Invoke-AzTsv -Arguments @(
                 'monitor', 'app-insights', 'component', 'show', '--resource-group', [string]$Config.resourceGroupName,
                 '--app', "ai-$($Config.projectName)-$($Config.environment)", '--query', 'connectionString'
             )
-            if ([string]::IsNullOrWhiteSpace($appInsightsConnectionString)) { throw 'mismatch' }
+                        if ([string]::IsNullOrWhiteSpace($appInsightsConnectionString)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'appInsightsConnectionString')
+            }
             $storagePattern = "^/subscriptions/$([regex]::Escape([string]$Config.subscriptionId))/resourceGroups/$([regex]::Escape([string]$Config.resourceGroupName))/providers/Microsoft\.Storage/storageAccounts/(?<name>[a-z0-9]{3,24})$"
-            if ([string]$Evidence.storageAccountId -cnotmatch $storagePattern) { throw 'mismatch' }
+                        if ([string]$Evidence.storageAccountId -cnotmatch $storagePattern) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.storageAccountId')
+            }
             $storageName = [string]$Matches.name
             $sqlConnection = "Server=tcp:$($Evidence.sqlServerFqdn),1433;Database=GatewayDb;Authentication=Active Directory Managed Identity;Encrypt=True;TrustServerCertificate=False;"
             $serviceBusNamespace = "sb-$($Config.projectName)-$($Config.environment).servicebus.windows.net"
@@ -4725,22 +5012,55 @@ function Test-GatewayGroupDeploymentEvidence {
             '--namespace-name', "sb-$($Config.projectName)-$($Config.environment)",
             '--name', [string]$Evidence.serviceBusQueueName, '--query', 'name'
         )
-        if ($registryLogin -ne [string]$Evidence.acrLoginServer -or
-            $vaultUri -ne [string]$Evidence.keyVaultUri -or
-            $sqlFqdn -ne [string]$Evidence.sqlServerFqdn -or
-            $queueName -ne [string]$Evidence.serviceBusQueueName) { throw 'mismatch' }
+                if ($registryLogin -ne [string]$Evidence.acrLoginServer) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.acrLoginServer')
+        }
+        if ($vaultUri -ne [string]$Evidence.keyVaultUri) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.keyVaultUri')
+        }
+        if ($sqlFqdn -ne [string]$Evidence.sqlServerFqdn) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.sqlServerFqdn')
+        }
+        if ($queueName -ne [string]$Evidence.serviceBusQueueName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.serviceBusQueueName')
+        }
 
         if ($Config.promptShield.enabled -eq $true) {
-            if ([string]::IsNullOrWhiteSpace([string]$Evidence.promptShieldAccountId) -or
-                [string]::IsNullOrWhiteSpace([string]$Evidence.promptShieldEndpoint)) { throw 'mismatch' }
+                        if ([string]::IsNullOrWhiteSpace([string]$Evidence.promptShieldAccountId)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.promptShieldAccountId')
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$Evidence.promptShieldEndpoint)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.promptShieldEndpoint')
+            }
             $contentSafety = Invoke-AzJson -Arguments @('resource', 'show', '--ids', [string]$Evidence.promptShieldAccountId, '--api-version', '2023-05-01', '--query', '{id:id,kind:kind}')
-            if ([string]$contentSafety.id -ne [string]$Evidence.promptShieldAccountId -or [string]$contentSafety.kind -ne 'ContentSafety') { throw 'mismatch' }
+                        if ([string]$contentSafety.id -ne [string]$Evidence.promptShieldAccountId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'contentSafety.id')
+            }
+            if ([string]$contentSafety.kind -ne 'ContentSafety') {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'contentSafety.kind')
+            }
         }
         elseif (-not [string]::IsNullOrWhiteSpace([string]$Evidence.promptShieldAccountId) -or
-            -not [string]::IsNullOrWhiteSpace([string]$Evidence.promptShieldEndpoint)) { throw 'mismatch' }
+            -not [string]::IsNullOrWhiteSpace([string]$Evidence.promptShieldEndpoint)) {
+            $propertyName = if (-not [string]::IsNullOrWhiteSpace([string]$Evidence.promptShieldAccountId)) {
+                'evidence.promptShieldAccountId'
+            }
+            else {
+                'evidence.promptShieldEndpoint'
+            }
+            throw (New-BootstrapValidationMismatchException -PropertyName $propertyName)
+        }
         return $true
     }
-    catch { throw "ARM deployment revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose. Cause: $($_.Exception.Message)" }
+    catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'ARM deployment revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.',
+                $_.Exception)
+        }
+        throw 'ARM deployment revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.'
+    }
 }
 
 function Assert-GatewayDeploymentOutputEvidenceMap {
@@ -4752,11 +5072,18 @@ function Assert-GatewayDeploymentOutputEvidenceMap {
     )
 
     foreach ($entry in $OutputToEvidenceName.GetEnumerator()) {
-        $output = Get-GatewayOptionalObjectProperty -Object $Outputs -Name ([string]$entry.Key)
-        $evidenceValue = Get-GatewayOptionalObjectProperty -Object $Evidence -Name ([string]$entry.Value)
-        if ($null -eq $output -or $null -eq $evidenceValue -or
-            [string]$output.value -ne [string]$evidenceValue) {
-            throw 'Deployment output evidence does not match the reviewed output-to-evidence contract.'
+        $outputName = [string]$entry.Key
+        $evidenceName = [string]$entry.Value
+        $output = Get-GatewayOptionalObjectProperty -Object $Outputs -Name $outputName
+        if ($null -eq $output) {
+            throw (New-BootstrapValidationMismatchException -PropertyName "outputs.$outputName")
+        }
+        $evidenceValue = Get-GatewayOptionalObjectProperty -Object $Evidence -Name $evidenceName
+        if ($null -eq $evidenceValue) {
+            throw (New-BootstrapValidationMismatchException -PropertyName "evidence.$evidenceName")
+        }
+        if ([string]$output.value -ne [string]$evidenceValue) {
+            throw (New-BootstrapValidationMismatchException -PropertyName "outputs.$outputName.value")
         }
     }
     return $true
@@ -4780,33 +5107,80 @@ function Test-GatewayNamedGroupDeployment {
         $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
         Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI source fingerprint'
         $expectedName = "a365gw-$($Config.projectName)-bootstrap-admin-$($Config.environment)"
-        if ($DeploymentName -ne $expectedName -or -not $Evidence -or
-            $DeploymentOwnershipId -cne $canonicalOwnershipId -or
-            [string]$Evidence.deploymentOwnershipId -cne $canonicalOwnershipId -or
-            [string]$Evidence.sourceFingerprint -cne $SourceFingerprint -or
-            [string]$Evidence.adminUiImage -cne $AdminUiImage -or
-            -not (Test-GatewayHttpsUrl -Url ([string]$Evidence.adminUiUrl))) { throw 'mismatch' }
+                if ($DeploymentName -ne $expectedName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deploymentName')
+        }
+        if (-not $Evidence) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence')
+        }
+        if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deploymentOwnershipId')
+        }
+        if ([string]$Evidence.deploymentOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.deploymentOwnershipId')
+        }
+        if ([string]$Evidence.sourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.sourceFingerprint')
+        }
+        if ([string]$Evidence.adminUiImage -cne $AdminUiImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.adminUiImage')
+        }
+        if (-not (Test-GatewayHttpsUrl -Url ([string]$Evidence.adminUiUrl))) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.adminUiUrl')
+        }
         $deployment = Invoke-AzJson -Arguments @(
             'deployment', 'group', 'show', '--subscription', [string]$Config.subscriptionId,
             '--resource-group', [string]$Config.resourceGroupName, '--name', $DeploymentName,
             '--query', '{state:properties.provisioningState,outputs:properties.outputs,parameters:properties.parameters}'
         )
-        if ([string]$deployment.state -ne 'Succeeded' -or
-            [string]$deployment.parameters.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
-            [string]$deployment.outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
-            [string]$deployment.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
-            [string]$deployment.outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
-            [string]$deployment.parameters.adminUiContainerImage.value -cne $AdminUiImage -or
-            [string]$deployment.outputs.adminUiContainerImage.value -cne $AdminUiImage -or
-            [string]$deployment.parameters.containerAppsEnvironmentName.value -cne [string]$Foundation.containerAppsEnvironmentName -or
-            [string]$deployment.parameters.entraIdTenantId.value -cne [string]$Config.tenantId -or
-            [string]$deployment.parameters.adminUiEntraClientId.value -cne [string]$AdminIdentity.adminUiClientId -or
-            [string]$deployment.parameters.adminUiGatewayApiScope.value -cne "$($Identity.gatewayApiScopeBaseUri)/access_as_user" -or
-            [string]$deployment.outputs.adminUiFqdn.value -ne [string]$Evidence.adminUiFqdn -or
-            [string]$deployment.outputs.adminUiUrl.value -ne [string]$Evidence.adminUiUrl -or
-            [string]$deployment.outputs.adminUiPrincipalId.value -ne [string]$Evidence.adminUiPrincipalId -or
-            [string]$deployment.outputs.adminUiSignInRedirectUri.value -ne [string]$Evidence.signInRedirectUri -or
-            [string]$deployment.outputs.adminUiSignedOutCallbackUri.value -ne [string]$Evidence.signedOutCallbackUri) { throw 'mismatch' }
+                if ([string]$deployment.state -ne 'Succeeded') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.state')
+        }
+        if ([string]$deployment.parameters.deploymentOwnershipId.value -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.deploymentOwnershipId.value')
+        }
+        if ([string]$deployment.outputs.deploymentOwnershipId.value -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.deploymentOwnershipId.value')
+        }
+        if ([string]$deployment.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.bootstrapSourceFingerprint.value')
+        }
+        if ([string]$deployment.outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.bootstrapSourceFingerprint.value')
+        }
+        if ([string]$deployment.parameters.adminUiContainerImage.value -cne $AdminUiImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.adminUiContainerImage.value')
+        }
+        if ([string]$deployment.outputs.adminUiContainerImage.value -cne $AdminUiImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.adminUiContainerImage.value')
+        }
+        if ([string]$deployment.parameters.containerAppsEnvironmentName.value -cne [string]$Foundation.containerAppsEnvironmentName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.containerAppsEnvironmentName.value')
+        }
+        if ([string]$deployment.parameters.entraIdTenantId.value -cne [string]$Config.tenantId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.entraIdTenantId.value')
+        }
+        if ([string]$deployment.parameters.adminUiEntraClientId.value -cne [string]$AdminIdentity.adminUiClientId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.adminUiEntraClientId.value')
+        }
+        if ([string]$deployment.parameters.adminUiGatewayApiScope.value -cne "$($Identity.gatewayApiScopeBaseUri)/access_as_user") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.adminUiGatewayApiScope.value')
+        }
+        if ([string]$deployment.outputs.adminUiFqdn.value -ne [string]$Evidence.adminUiFqdn) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.adminUiFqdn.value')
+        }
+        if ([string]$deployment.outputs.adminUiUrl.value -ne [string]$Evidence.adminUiUrl) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.adminUiUrl.value')
+        }
+        if ([string]$deployment.outputs.adminUiPrincipalId.value -ne [string]$Evidence.adminUiPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.adminUiPrincipalId.value')
+        }
+        if ([string]$deployment.outputs.adminUiSignInRedirectUri.value -ne [string]$Evidence.signInRedirectUri) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.adminUiSignInRedirectUri.value')
+        }
+        if ([string]$deployment.outputs.adminUiSignedOutCallbackUri.value -ne [string]$Evidence.signedOutCallbackUri) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.adminUiSignedOutCallbackUri.value')
+        }
         $admin = Invoke-AzJson -Arguments @(
             'containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName,
             '--name', "ca-gateway-admin-$($Config.environment)"
@@ -4817,40 +5191,104 @@ function Test-GatewayNamedGroupDeployment {
             '--query', '{id:id,name:name,principalId:principalId,ownershipId:tags.bootstrapOwnershipId}'
         )
         $attachedIdentityIds = @($admin.identity.userAssignedIdentities.PSObject.Properties.Name)
-        if ([string]$admin.name -ne "ca-gateway-admin-$($Config.environment)" -or
-            [string]$admin.properties.configuration.ingress.fqdn -ne [string]$Evidence.adminUiFqdn -or
-            [string]$admin.properties.provisioningState -ne 'Succeeded' -or
-            [string]$admin.tags.bootstrapOwnershipId -cne $canonicalOwnershipId -or
-            [string]$admin.tags.bootstrapSourceFingerprint -cne $SourceFingerprint -or
-            @($admin.properties.template.containers).Count -ne 1 -or
-            [string]$admin.properties.template.containers[0].image -cne $AdminUiImage -or
-            [string]$adminManagedIdentity.name -ne "id-gateway-admin-$($Config.environment)" -or
-            [string]$adminManagedIdentity.principalId -ne [string]$Evidence.adminUiPrincipalId -or
-            [string]$adminManagedIdentity.ownershipId -cne $canonicalOwnershipId -or
-            $attachedIdentityIds.Count -ne 1 -or
-            -not ([string]$attachedIdentityIds[0]).Equals([string]$adminManagedIdentity.id, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$Evidence.adminUiUrl -ne "https://$($Evidence.adminUiFqdn)" -or
-            [string]$Evidence.signInRedirectUri -ne "$(([string]$Evidence.adminUiUrl).TrimEnd('/'))/signin-oidc" -or
-            [string]$Evidence.signedOutCallbackUri -ne "$(([string]$Evidence.adminUiUrl).TrimEnd('/'))/signout-callback-oidc") { throw 'mismatch' }
+                if ([string]$admin.name -ne "ca-gateway-admin-$($Config.environment)") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.name')
+        }
+        if ([string]$admin.properties.configuration.ingress.fqdn -ne [string]$Evidence.adminUiFqdn) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.properties.configuration.ingress.fqdn')
+        }
+        if ([string]$admin.properties.provisioningState -ne 'Succeeded') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.properties.provisioningState')
+        }
+        if ([string]$admin.tags.bootstrapOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.tags.bootstrapOwnershipId')
+        }
+        if ([string]$admin.tags.bootstrapSourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.tags.bootstrapSourceFingerprint')
+        }
+        if (@($admin.properties.template.containers).Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.properties.template.containers')
+        }
+        if ([string]$admin.properties.template.containers[0].image -cne $AdminUiImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.properties.template.containers.image')
+        }
+        if ([string]$adminManagedIdentity.name -ne "id-gateway-admin-$($Config.environment)") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminManagedIdentity.name')
+        }
+        if ([string]$adminManagedIdentity.principalId -ne [string]$Evidence.adminUiPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminManagedIdentity.principalId')
+        }
+        if ([string]$adminManagedIdentity.ownershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminManagedIdentity.ownershipId')
+        }
+        if ($attachedIdentityIds.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'attachedIdentityIds.Count')
+        }
+        if (-not ([string]$attachedIdentityIds[0]).Equals([string]$adminManagedIdentity.id, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'attachedIdentityIds')
+        }
+        if ([string]$Evidence.adminUiUrl -ne "https://$($Evidence.adminUiFqdn)") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.adminUiUrl')
+        }
+        if ([string]$Evidence.signInRedirectUri -ne "$(([string]$Evidence.adminUiUrl).TrimEnd('/'))/signin-oidc") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.signInRedirectUri')
+        }
+        if ([string]$Evidence.signedOutCallbackUri -ne "$(([string]$Evidence.adminUiUrl).TrimEnd('/'))/signout-callback-oidc") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.signedOutCallbackUri')
+        }
 
-        if (-not (Test-GatewayContainerAppLocationEquivalent -ActualLocation ([string]$admin.location) -ExpectedLocation ([string]$Config.location)) -or
-            [string]$admin.identity.type -cne 'UserAssigned' -or
-            -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $admin.identity -Name 'principalId')) -or
-            -not ([string]$admin.properties.managedEnvironmentId).Equals([string]$Foundation.containerAppsEnvironmentId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$admin.properties.configuration.activeRevisionsMode -cne 'Single') { throw 'mismatch' }
+                if (-not (Test-GatewayContainerAppLocationEquivalent -ActualLocation ([string]$admin.location) -ExpectedLocation ([string]$Config.location))) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.location')
+        }
+        if ([string]$admin.identity.type -cne 'UserAssigned') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.identity.type')
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $admin.identity -Name 'principalId'))) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.identity')
+        }
+        if (-not ([string]$admin.properties.managedEnvironmentId).Equals([string]$Foundation.containerAppsEnvironmentId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.properties.managedEnvironmentId')
+        }
+        if ([string]$admin.properties.configuration.activeRevisionsMode -cne 'Single') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.properties.configuration.activeRevisionsMode')
+        }
         Assert-GatewayExactContainerRegistry -Registries $admin.properties.configuration.registries `
             -ExpectedServer ([string]$Runtime.acrLoginServer) -ExpectedIdentity ([string]$adminManagedIdentity.id) | Out-Null
         $adminSecrets = @($admin.properties.configuration.secrets)
-        if ($adminSecrets.Count -ne 1 -or [string]$adminSecrets[0].name -cne 'admin-ui-entra-client-secret' -or
-            [string]$adminSecrets[0].keyVaultUrl -cne [string]$AdminCredential.secretUri -or
-            -not ([string]$adminSecrets[0].identity).Equals([string]$adminManagedIdentity.id, [StringComparison]::OrdinalIgnoreCase) -or
-            -not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $adminSecrets[0] -Name 'value'))) { throw 'mismatch' }
+                if ($adminSecrets.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminSecrets.Count')
+        }
+        if ([string]$adminSecrets[0].name -cne 'admin-ui-entra-client-secret') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminSecrets.name')
+        }
+        if ([string]$adminSecrets[0].keyVaultUrl -cne [string]$AdminCredential.secretUri) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminSecrets.keyVaultUrl')
+        }
+        if (-not ([string]$adminSecrets[0].identity).Equals([string]$adminManagedIdentity.id, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminSecrets.identity')
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string](Get-GatewayOptionalObjectProperty -Object $adminSecrets[0] -Name 'value'))) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminSecrets')
+        }
         $adminIngress = $admin.properties.configuration.ingress
-        if ($adminIngress.external -ne $true -or $adminIngress.allowInsecure -ne $false -or
-            [int]$adminIngress.targetPort -ne 8080 -or
-            -not ([string]$adminIngress.transport).Equals('auto', [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$adminIngress.fqdn -cne [string]$Evidence.adminUiFqdn -or
-            [string]$adminIngress.stickySessions.affinity -cne 'sticky') { throw 'mismatch' }
+                if ($adminIngress.external -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminIngress.external')
+        }
+        if ($adminIngress.allowInsecure -ne $false) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminIngress.allowInsecure')
+        }
+        if ([int]$adminIngress.targetPort -ne 8080) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminIngress.targetPort')
+        }
+        if (-not ([string]$adminIngress.transport).Equals('auto', [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminIngress.transport')
+        }
+        if ([string]$adminIngress.fqdn -cne [string]$Evidence.adminUiFqdn) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminIngress.fqdn')
+        }
+        if ([string]$adminIngress.stickySessions.affinity -cne 'sticky') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminIngress.stickySessions.affinity')
+        }
         $adminEnvironment = [ordered]@{
             'ASPNETCORE_ENVIRONMENT' = 'Production'
             'ASPNETCORE_HTTP_PORTS' = '8080'
@@ -4867,8 +5305,12 @@ function Test-GatewayNamedGroupDeployment {
         Assert-GatewayExactContainerEnvironment -Entries $admin.properties.template.containers[0].env `
             -ExpectedValues $adminEnvironment `
             -ExpectedSecretRefs ([ordered]@{ 'EntraId__ClientSecret' = 'admin-ui-entra-client-secret' }) | Out-Null
-        if ([int]$admin.properties.template.scale.minReplicas -ne 1 -or
-            [int]$admin.properties.template.scale.maxReplicas -ne 1) { throw 'mismatch' }
+                if ([int]$admin.properties.template.scale.minReplicas -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.properties.template.scale.minReplicas')
+        }
+        if ([int]$admin.properties.template.scale.maxReplicas -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.properties.template.scale.maxReplicas')
+        }
 
         $adminSecretScope = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.KeyVault/vaults/kv-$($Config.projectName)-$($Config.environment)/secrets/admin-ui-entra-client-secret"
         $secretAssignments = @(Invoke-AzJson -Arguments @(
@@ -4876,13 +5318,29 @@ function Test-GatewayNamedGroupDeployment {
             '--scope', $adminSecretScope, '--include-inherited',
             '--query', '[].{principalId:principalId,scope:scope,roleDefinitionId:roleDefinitionId}'
         ))
-        if ($secretAssignments.Count -ne 1 -or
-            -not ([string]$secretAssignments[0].principalId).Equals([string]$Evidence.adminUiPrincipalId, [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$secretAssignments[0].scope).Equals($adminSecretScope, [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$secretAssignments[0].roleDefinitionId).EndsWith('/4633458b-17de-408a-b874-0445c86b69e6', [StringComparison]::OrdinalIgnoreCase)) { throw 'mismatch' }
+                if ($secretAssignments.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'secretAssignments.Count')
+        }
+        if (-not ([string]$secretAssignments[0].principalId).Equals([string]$Evidence.adminUiPrincipalId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'secretAssignments.principalId')
+        }
+        if (-not ([string]$secretAssignments[0].scope).Equals($adminSecretScope, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'secretAssignments.scope')
+        }
+        if (-not ([string]$secretAssignments[0].roleDefinitionId).EndsWith('/4633458b-17de-408a-b874-0445c86b69e6', [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'secretAssignments.roleDefinitionId')
+        }
         return $true
     }
-    catch { throw "Named ARM deployment revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose. Cause: $($_.Exception.Message)" }
+    catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Named ARM deployment revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.',
+                $_.Exception)
+        }
+        throw 'Named ARM deployment revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.'
+    }
 }
 
 function Test-GatewayApplicationEvidence {
@@ -4910,40 +5368,109 @@ function Test-GatewayApplicationEvidence {
         $application = Invoke-AzJson -Arguments @('rest', '--method', 'GET', '--url', "https://graph.microsoft.com/v1.0/applications/${objectId}?`$select=id,appId,displayName,signInAudience,identifierUris,tags,api,appRoles,requiredResourceAccess,passwordCredentials,keyCredentials,web,spa,publicClient,isFallbackPublicClient")
         $expectedTags = @('A365GatewayBootstrap', "A365GatewayOwnership:$(([guid]$ownershipId).ToString('D'))")
         $actualTags = @($application.tags | ForEach-Object { [string]$_ })
-        if ([string]$application.id -ne $objectId -or [string]$application.appId -ne $clientId -or
-            (@($actualTags | Sort-Object -Unique) -join '|') -cne (@($expectedTags | Sort-Object -Unique) -join '|') -or
-            $actualTags.Count -ne $expectedTags.Count -or [string]$application.signInAudience -cne 'AzureADMyOrg') { throw 'mismatch' }
-        if (@($application.keyCredentials).Count -ne 0 -or
-            @($application.spa.redirectUris).Count -ne 0 -or
-            @($application.publicClient.redirectUris).Count -ne 0) { throw 'mismatch' }
+                if ([string]$application.id -ne $objectId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.id')
+        }
+        if ([string]$application.appId -ne $clientId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.appId')
+        }
+        if ((@($actualTags | Sort-Object -Unique) -join '|') -cne (@($expectedTags | Sort-Object -Unique) -join '|')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'actualTags')
+        }
+        if ($actualTags.Count -ne $expectedTags.Count) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'actualTags.Count')
+        }
+        if ([string]$application.signInAudience -cne 'AzureADMyOrg') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.signInAudience')
+        }
+                if (@($application.keyCredentials).Count -ne 0) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.keyCredentials')
+        }
+        if (@($application.spa.redirectUris).Count -ne 0) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.spa.redirectUris')
+        }
+        if (@($application.publicClient.redirectUris).Count -ne 0) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.publicClient.redirectUris')
+        }
         Assert-ExactApplicationAuthenticationSurface -Application $application -ApplicationLabel "$ApplicationKind application" | Out-Null
         $ownerIds = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/applications/$objectId/owners?`$select=id" | ForEach-Object { [string]$_.id })
-        if ($ownerIds.Count -ne 1 -or -not $ownerIds[0].Equals($ownerObjectId, [StringComparison]::OrdinalIgnoreCase)) { throw 'mismatch' }
+                if ($ownerIds.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'ownerIds.Count')
+        }
+        if (-not $ownerIds[0].Equals($ownerObjectId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.owners')
+        }
         if ($ApplicationKind -eq 'GatewayApi') {
             $expectedDisplayName = "A365 Gateway API - $($Config.projectName)-$($Config.environment)"
             $expectedAudience = "api://a365-gateway-$($Config.projectName)-$($Config.environment)"
             $expectedRoles = @('Gateway.Administrator', 'Gateway.Operator', 'Gateway.Auditor', 'Gateway.SupportReader')
             $actualRoles = @($application.appRoles | ForEach-Object { [string]$_.value })
             $adminRoles = @($application.appRoles | Where-Object { [string]$_.value -ceq 'Gateway.Administrator' })
-            if ([string]$Evidence.gatewayApiScopeBaseUri -cne $expectedAudience -or
-                [string]$Evidence.gatewayApiTokenAudience -cne $clientId -or
-                [string]$application.displayName -cne $expectedDisplayName -or
-                @($application.identifierUris).Count -ne 1 -or [string]$application.identifierUris[0] -cne $expectedAudience -or
-                @($application.passwordCredentials).Count -ne 0 -or
-                @($application.web.redirectUris).Count -ne 0 -or
-                -not [string]::IsNullOrWhiteSpace([string]$application.web.logoutUrl) -or
-                -not [string]::IsNullOrWhiteSpace([string]$application.web.homePageUrl) -or
-                [int]$application.api.requestedAccessTokenVersion -ne 2 -or
-                @($application.api.oauth2PermissionScopes).Count -ne 1 -or [string]$application.api.oauth2PermissionScopes[0].value -cne 'access_as_user' -or
-                (@($actualRoles | Sort-Object -Unique) -join '|') -cne (@($expectedRoles | Sort-Object -Unique) -join '|') -or
-                $actualRoles.Count -ne $expectedRoles.Count -or
-                $adminRoles.Count -ne 1 -or [string]$adminRoles[0].id -ne [string]$Evidence.gatewayAdministratorRoleId -or
-                [string]$application.api.oauth2PermissionScopes[0].id -ne [string]$Evidence.gatewayApiAccessScopeId -or
-                @($application.appRoles | Where-Object { $_.isEnabled -ne $true -or @($_.allowedMemberTypes).Count -ne 1 -or [string]$_.allowedMemberTypes[0] -cne 'User' }).Count -gt 0) { throw 'mismatch' }
+                        if ([string]$Evidence.gatewayApiScopeBaseUri -cne $expectedAudience) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.gatewayApiScopeBaseUri')
+            }
+            if ([string]$Evidence.gatewayApiTokenAudience -cne $clientId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.gatewayApiTokenAudience')
+            }
+            if ([string]$application.displayName -cne $expectedDisplayName) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.displayName')
+            }
+            if (@($application.identifierUris).Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.identifierUris')
+            }
+            if ([string]$application.identifierUris[0] -cne $expectedAudience) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.identifierUris')
+            }
+            if (@($application.passwordCredentials).Count -ne 0) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.passwordCredentials')
+            }
+            if (@($application.web.redirectUris).Count -ne 0) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.web.redirectUris')
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$application.web.logoutUrl)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.web.logoutUrl')
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$application.web.homePageUrl)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.web.homePageUrl')
+            }
+            if ([int]$application.api.requestedAccessTokenVersion -ne 2) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.api.requestedAccessTokenVersion')
+            }
+            if (@($application.api.oauth2PermissionScopes).Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.api.oauth2PermissionScopes')
+            }
+            if ([string]$application.api.oauth2PermissionScopes[0].value -cne 'access_as_user') {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.api.oauth2PermissionScopes.value')
+            }
+            if ((@($actualRoles | Sort-Object -Unique) -join '|') -cne (@($expectedRoles | Sort-Object -Unique) -join '|')) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'actualRoles')
+            }
+            if ($actualRoles.Count -ne $expectedRoles.Count) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'actualRoles.Count')
+            }
+            if ($adminRoles.Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'adminRoles.Count')
+            }
+            if ([string]$adminRoles[0].id -ne [string]$Evidence.gatewayAdministratorRoleId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'adminRoles.id')
+            }
+            if ([string]$application.api.oauth2PermissionScopes[0].id -ne [string]$Evidence.gatewayApiAccessScopeId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.api.oauth2PermissionScopes.id')
+            }
+            if (@($application.appRoles | Where-Object { $_.isEnabled -ne $true -or @($_.allowedMemberTypes).Count -ne 1 -or [string]$_.allowedMemberTypes[0] -cne 'User' }).Count -gt 0) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.appRoles')
+            }
 
             $principals = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId%20eq%20'$clientId'&`$select=id,appId,passwordCredentials,keyCredentials,accountEnabled,appRoleAssignmentRequired,servicePrincipalType,servicePrincipalNames,tags,alternativeNames,appRoles,oauth2PermissionScopes")
-            if ($principals.Count -ne 1 -or [string]$principals[0].id -ne [string]$Evidence.gatewayApiServicePrincipalId -or
-                [string]$principals[0].appId -ne $clientId) { throw 'mismatch' }
+                        if ($principals.Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'principals.Count')
+            }
+            if ([string]$principals[0].id -ne [string]$Evidence.gatewayApiServicePrincipalId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'principals.id')
+            }
+            if ([string]$principals[0].appId -ne $clientId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'principals.appId')
+            }
             Assert-ExactBootstrapServicePrincipalBoundary `
                 -ServicePrincipal $principals[0] `
                 -ExpectedId ([string]$Evidence.gatewayApiServicePrincipalId) `
@@ -4968,18 +5495,48 @@ function Test-GatewayApplicationEvidence {
             $expectedRedirect = if ([string]::IsNullOrWhiteSpace($ExpectedAdminUiUrl)) { '' } else { "$($ExpectedAdminUiUrl.TrimEnd('/'))/signin-oidc" }
             $expectedLogout = if ([string]::IsNullOrWhiteSpace($ExpectedAdminUiUrl)) { '' } else { "$($ExpectedAdminUiUrl.TrimEnd('/'))/signout-callback-oidc" }
             $actualRedirects = @($application.web.redirectUris)
-            if ([string]$application.displayName -cne $expectedDisplayName -or @($application.identifierUris).Count -ne 0 -or
-                @($application.api.oauth2PermissionScopes).Count -ne 0 -or
-                $actualRedirects.Count -ne $(if ([string]::IsNullOrWhiteSpace($ExpectedAdminUiUrl)) { 0 } else { 1 }) -or
-                ($actualRedirects.Count -eq 1 -and [string]$actualRedirects[0] -cne $expectedRedirect) -or
-                [string]$application.web.logoutUrl -cne $expectedLogout -or
-                -not [string]::IsNullOrWhiteSpace([string]$application.web.homePageUrl) -or
-                $requirements.Count -ne 1 -or
-                -not ([string]$requirements[0].resourceAppId).Equals([string]$Evidence.gatewayApiClientId, [StringComparison]::OrdinalIgnoreCase) -or
-                @($requirements[0].resourceAccess).Count -ne 1 -or
-                -not ([string]$requirements[0].resourceAccess[0].id).Equals([string]$Evidence.gatewayApiAccessScopeId, [StringComparison]::OrdinalIgnoreCase) -or
-                [string]$requirements[0].resourceAccess[0].type -cne 'Scope' -or
-                $credentials.Count -gt 1 -or @($credentials | Where-Object { [string]$_.displayName -cne 'a365gw-bootstrap-admin-ui' }).Count -gt 0) { throw 'mismatch' }
+                        if ([string]$application.displayName -cne $expectedDisplayName) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.displayName')
+            }
+            if (@($application.identifierUris).Count -ne 0) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.identifierUris')
+            }
+            if (@($application.api.oauth2PermissionScopes).Count -ne 0) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.api.oauth2PermissionScopes')
+            }
+            if ($actualRedirects.Count -ne $(if ([string]::IsNullOrWhiteSpace($ExpectedAdminUiUrl)) { 0 } else { 1 })) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.web.redirectUris.Count')
+            }
+            if ($actualRedirects.Count -eq 1 -and [string]$actualRedirects[0] -cne $expectedRedirect) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.web.redirectUris')
+            }
+            if ([string]$application.web.logoutUrl -cne $expectedLogout) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.web.logoutUrl')
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$application.web.homePageUrl)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'application.web.homePageUrl')
+            }
+            if ($requirements.Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'requirements.Count')
+            }
+            if (-not ([string]$requirements[0].resourceAppId).Equals([string]$Evidence.gatewayApiClientId, [StringComparison]::OrdinalIgnoreCase)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'requirements.resourceAppId')
+            }
+            if (@($requirements[0].resourceAccess).Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'requirements.resourceAccess')
+            }
+            if (-not ([string]$requirements[0].resourceAccess[0].id).Equals([string]$Evidence.gatewayApiAccessScopeId, [StringComparison]::OrdinalIgnoreCase)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'requirements.resourceAccess.id')
+            }
+            if ([string]$requirements[0].resourceAccess[0].type -cne 'Scope') {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'requirements.resourceAccess.type')
+            }
+            if ($credentials.Count -gt 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'credentials.Count')
+            }
+            if (@($credentials | Where-Object { [string]$_.displayName -cne 'a365gw-bootstrap-admin-ui' }).Count -gt 0) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'credentials')
+            }
 
             foreach ($identifier in @(
                 [string]$Evidence.adminUiServicePrincipalId,
@@ -4987,8 +5544,15 @@ function Test-GatewayApplicationEvidence {
                 [string]$Evidence.gatewayApiAccessScopeId
             )) { Assert-GuidValue -Value $identifier -Label 'Admin UI delegated-consent evidence identifier' }
             $adminPrincipals = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId%20eq%20'$clientId'&`$select=id,appId,passwordCredentials,keyCredentials,accountEnabled,appRoleAssignmentRequired,servicePrincipalType,servicePrincipalNames,tags,alternativeNames,appRoles,oauth2PermissionScopes")
-            if ($adminPrincipals.Count -ne 1 -or [string]$adminPrincipals[0].id -ne [string]$Evidence.adminUiServicePrincipalId -or
-                [string]$adminPrincipals[0].appId -ne $clientId) { throw 'mismatch' }
+                        if ($adminPrincipals.Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'adminPrincipals.Count')
+            }
+            if ([string]$adminPrincipals[0].id -ne [string]$Evidence.adminUiServicePrincipalId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'adminPrincipals.id')
+            }
+            if ([string]$adminPrincipals[0].appId -ne $clientId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'adminPrincipals.appId')
+            }
             Assert-ExactBootstrapServicePrincipalBoundary `
                 -ServicePrincipal $adminPrincipals[0] `
                 -ExpectedId ([string]$Evidence.adminUiServicePrincipalId) `
@@ -5001,8 +5565,12 @@ function Test-GatewayApplicationEvidence {
                 -ExpectedAppRoleAssigneePrincipalId $ownerObjectId `
                 -ExpectedAppRoleId ([string]$adminRole[0].id) | Out-Null
             $gatewayPrincipals = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId%20eq%20'$($Evidence.gatewayApiClientId)'&`$select=id,appId")
-            if ($gatewayPrincipals.Count -ne 1 -or
-                [string]$gatewayPrincipals[0].appId -ne [string]$Evidence.gatewayApiClientId) { throw 'mismatch' }
+                        if ($gatewayPrincipals.Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'gatewayPrincipals.Count')
+            }
+            if ([string]$gatewayPrincipals[0].appId -ne [string]$Evidence.gatewayApiClientId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'gatewayPrincipals.appId')
+            }
             $grants = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId%20eq%20'$($Evidence.adminUiServicePrincipalId)'&`$select=id,resourceId,consentType,scope")
             $grantScopes = @(
                 if ($grants.Count -eq 1) {
@@ -5011,14 +5579,33 @@ function Test-GatewayApplicationEvidence {
                         [StringSplitOptions]::RemoveEmptyEntries -bor [StringSplitOptions]::TrimEntries)
                 }
             )
-            if ($grants.Count -ne 1 -or
-                [string]$grants[0].resourceId -ne [string]$gatewayPrincipals[0].id -or
-                [string]$grants[0].consentType -cne 'AllPrincipals' -or
-                $grantScopes.Count -ne 1 -or [string]$grantScopes[0] -cne 'access_as_user') { throw 'mismatch' }
+                        if ($grants.Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'grants.Count')
+            }
+            if ([string]$grants[0].resourceId -ne [string]$gatewayPrincipals[0].id) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'grants.resourceId')
+            }
+            if ([string]$grants[0].consentType -cne 'AllPrincipals') {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'grants.consentType')
+            }
+            if ($grantScopes.Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'grantScopes.Count')
+            }
+            if ([string]$grantScopes[0] -cne 'access_as_user') {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'grantScopes')
+            }
         }
         return $true
     }
-    catch { throw 'Entra application revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.' }
+    catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Entra application revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.',
+                $_.Exception)
+        }
+        throw 'Entra application revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.'
+    }
 }
 
 function Test-GatewayWorkflowIdentityEvidence {
@@ -5037,7 +5624,9 @@ function Test-GatewayWorkflowIdentityEvidence {
     try {
         $graphAppId = '00000003-0000-0000-c000-000000000000'
         $graphMatches = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId%20eq%20'$graphAppId'&`$select=id,appId,appRoles,oauth2PermissionScopes")
-        if ($graphMatches.Count -ne 1) { throw 'mismatch' }
+                if ($graphMatches.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'graphMatches.Count')
+        }
         $graph = $graphMatches[0]
 
         $expectedWorkerRoles = @(
@@ -5059,9 +5648,15 @@ function Test-GatewayWorkflowIdentityEvidence {
         $workerEvidenceRoles = @($Evidence.workerApplicationRoles.Keys | ForEach-Object { [string]$_ } | Sort-Object)
         $apiEvidenceRoles = @($Evidence.apiApplicationRoles.Keys | ForEach-Object { [string]$_ } | Sort-Object)
         $delegatedEvidenceScopes = @($Evidence.delegatedRegistryScopes | ForEach-Object { [string]$_ } | Sort-Object)
-        if (($workerEvidenceRoles -join '|') -ne (($expectedWorkerRoles | Sort-Object) -join '|') -or
-            ($apiEvidenceRoles -join '|') -ne ((@($expectedApiRoles) | Sort-Object) -join '|') -or
-            ($delegatedEvidenceScopes -join '|') -ne 'AgentRegistration.Read.All|AgentRegistration.ReadWrite.All') { throw 'mismatch' }
+                if (($workerEvidenceRoles -join '|') -ne (($expectedWorkerRoles | Sort-Object) -join '|')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'workerEvidenceRoles')
+        }
+        if (($apiEvidenceRoles -join '|') -ne ((@($expectedApiRoles) | Sort-Object) -join '|')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'apiEvidenceRoles')
+        }
+        if (($delegatedEvidenceScopes -join '|') -ne 'AgentRegistration.Read.All|AgentRegistration.ReadWrite.All') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'delegatedEvidenceScopes')
+        }
 
         foreach ($principal in @(
             [ordered]@{ id = [string]$Inert.workerPrincipalId; expected = $expectedWorkerRoles },
@@ -5072,45 +5667,98 @@ function Test-GatewayWorkflowIdentityEvidence {
             $actualValues = [Collections.Generic.List[string]]::new()
             foreach ($assignment in $graphAssignments) {
                 $published = @($graph.appRoles | Where-Object { [string]$_.id -eq [string]$assignment.appRoleId -and $_.isEnabled -eq $true })
-                if ($published.Count -ne 1) { throw 'mismatch' }
+                                if ($published.Count -ne 1) {
+                    throw (New-BootstrapValidationMismatchException -PropertyName 'published.Count')
+                }
                 $actualValues.Add([string]$published[0].value)
             }
-            if ((@($actualValues | Sort-Object -Unique) -join '|') -ne ((@($principal.expected) | Sort-Object) -join '|')) { throw 'mismatch' }
-            if ($actualValues.Count -ne @($principal.expected).Count -or $allAssignments.Count -ne @($principal.expected).Count) { throw 'mismatch' }
+                        if ((@($actualValues | Sort-Object -Unique) -join '|') -ne ((@($principal.expected) | Sort-Object) -join '|')) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'principal.expected')
+            }
+                        if ($actualValues.Count -ne @($principal.expected).Count) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'actualValues.Count')
+            }
+            if ($allAssignments.Count -ne @($principal.expected).Count) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'allAssignments.Count')
+            }
         }
 
         $application = Invoke-AzJson -Arguments @(
             'rest', '--method', 'GET', '--url',
             "https://graph.microsoft.com/v1.0/applications/$($Identity.gatewayApiApplicationObjectId)?`$select=id,appId,requiredResourceAccess"
         )
-        if ([string]$application.appId -ne [string]$Identity.gatewayApiClientId) { throw 'mismatch' }
+                if ([string]$application.appId -ne [string]$Identity.gatewayApiClientId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.appId')
+        }
         $requiredScopeValues = @('AgentRegistration.Read.All', 'AgentRegistration.ReadWrite.All')
         $publishedScopes = @($graph.oauth2PermissionScopes | Where-Object { $_.isEnabled -eq $true -and [string]$_.value -in $requiredScopeValues })
-        if ($publishedScopes.Count -ne 2) { throw 'mismatch' }
+                if ($publishedScopes.Count -ne 2) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'publishedScopes.Count')
+        }
         $graphRequirements = @($application.requiredResourceAccess | Where-Object { [string]$_.resourceAppId -eq $graphAppId })
-        if ($graphRequirements.Count -ne 1 -or @($application.requiredResourceAccess).Count -ne 1) { throw 'mismatch' }
+                if ($graphRequirements.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'graphRequirements.Count')
+        }
+        if (@($application.requiredResourceAccess).Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.requiredResourceAccess')
+        }
         $requiredIds = @($publishedScopes | ForEach-Object { [string]$_.id } | Sort-Object)
         $actualRequiredIds = @($graphRequirements[0].resourceAccess | Where-Object type -eq 'Scope' | ForEach-Object { [string]$_.id } | Sort-Object -Unique)
-        if (($requiredIds -join '|') -ne ($actualRequiredIds -join '|') -or @($graphRequirements[0].resourceAccess).Count -ne 2) { throw 'mismatch' }
+                if (($requiredIds -join '|') -ne ($actualRequiredIds -join '|')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'requiredIds')
+        }
+        if (@($graphRequirements[0].resourceAccess).Count -ne 2) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'graphRequirements.resourceAccess')
+        }
 
         $grants = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId%20eq%20'$($Identity.gatewayApiServicePrincipalId)'&`$select=id,resourceId,consentType,scope")
-        if ($grants.Count -ne 1 -or [string]$grants[0].resourceId -ne [string]$graph.id -or
-            [string]$grants[0].consentType -ne 'AllPrincipals') { throw 'mismatch' }
+                if ($grants.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'grants.Count')
+        }
+        if ([string]$grants[0].resourceId -ne [string]$graph.id) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'grants.resourceId')
+        }
+        if ([string]$grants[0].consentType -ne 'AllPrincipals') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'grants.consentType')
+        }
         $consentedScopes = @(([string]$grants[0].scope).Split(' ', [StringSplitOptions]::RemoveEmptyEntries) | Sort-Object -Unique)
-        if (($consentedScopes -join '|') -ne (($requiredScopeValues | Sort-Object) -join '|')) { throw 'mismatch' }
+                if (($consentedScopes -join '|') -ne (($requiredScopeValues | Sort-Object) -join '|')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'consentedScopes')
+        }
 
         $ficName = "a365gw-$($Config.projectName)-api-obo-$($Config.environment)"
-        if ([string]$Evidence.federatedCredentialName -ne $ficName) { throw 'mismatch' }
+                if ([string]$Evidence.federatedCredentialName -ne $ficName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.federatedCredentialName')
+        }
         $allFics = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/applications/$($Identity.gatewayApiApplicationObjectId)/federatedIdentityCredentials?`$select=id,name,issuer,subject,audiences")
         $fics = @($allFics | Where-Object name -eq $ficName)
-        if ($fics.Count -ne 1 -or $allFics.Count -ne 1 -or
-            [string]$fics[0].issuer -ne "https://login.microsoftonline.com/$($Config.tenantId)/v2.0" -or
-            [string]$fics[0].subject -ne [string]$Inert.apiPrincipalId -or
-            @($fics[0].audiences).Count -ne 1 -or
-            [string]$fics[0].audiences[0] -ne 'api://AzureADTokenExchange') { throw 'mismatch' }
+                if ($fics.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'fics.Count')
+        }
+        if ($allFics.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'allFics.Count')
+        }
+        if ([string]$fics[0].issuer -ne "https://login.microsoftonline.com/$($Config.tenantId)/v2.0") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'fics.issuer')
+        }
+        if ([string]$fics[0].subject -ne [string]$Inert.apiPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'fics.subject')
+        }
+        if (@($fics[0].audiences).Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'fics.audiences')
+        }
+        if ([string]$fics[0].audiences[0] -ne 'api://AzureADTokenExchange') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'fics.audiences')
+        }
         return $true
     }
     catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Workflow-v3 Entra revalidation was unavailable or mismatched; refusing automatic replay. Review identity/consent evidence and run gateway diagnose.',
+                $_.Exception)
+        }
         throw 'Workflow-v3 Entra revalidation was unavailable or mismatched; refusing automatic replay. Review identity/consent evidence and run gateway diagnose.'
     }
 }
@@ -5132,7 +5780,9 @@ function Test-GatewayDatabaseEvidence {
     try {
         $isRecovery = $null -ne $DatabaseRecoveryPlan
         $isManualRepair = $null -ne $ManualDatabaseRepairPlan
-        if ($isRecovery -and $isManualRepair) { throw 'mismatch' }
+                if ($isRecovery -and $isManualRepair) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'isRecovery')
+        }
         $isResumeAfterSchema = $isRecovery -or $isManualRepair
         $recoveryAttemptNumber = if ($isRecovery) { Get-GatewayDatabaseRecoveryAttemptNumber -RecoveryPlan $DatabaseRecoveryPlan } else { 0 }
         $recoveryContract = if ($isRecovery) { Get-GatewayDatabaseRecoveryAttemptContract -Config $Config -AttemptNumber $recoveryAttemptNumber } elseif ($isManualRepair) { Get-GatewayManualDatabaseRepairContract -Config $Config } else { $null }
@@ -5141,90 +5791,224 @@ function Test-GatewayDatabaseEvidence {
         $expectedExecutionPattern = "^$([regex]::Escape($expectedJobName))-[a-z0-9]{5,16}$"
         $privateEndpointAddressTuple = Assert-GatewaySqlPrivateEndpointAddressEvidenceTuple `
             -Config $Config -SqlServerFqdn ([string]$Inert.sqlServerFqdn) -Evidence $Evidence
-        if (-not $Evidence -or
-            [string]$Evidence.database -ne 'GatewayDb' -or
-            [string]$Evidence.server -ne [string]$Inert.sqlServerFqdn -or
-            [string]$Evidence.networkMode -cne 'PrivateContainerAppsJob' -or
-            $Evidence.privateNetworkExecutionVerified -ne $true -or
-            $Evidence.publicNetworkRestoredToDisabled -ne $true -or
-            $Evidence.temporaryFirewallRuleAbsenceVerified -ne $true -or
-            $Evidence.networkRecoveryRecordCleared -ne $true -or
-            -not ([string]$Evidence.networkOperationId).Equals(([guid]$DeploymentOwnershipId).ToString('D'), [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$Evidence.deploymentOwnershipId -cne ([guid]$DeploymentOwnershipId).ToString('D') -or
-            [string]$Evidence.acceptedSourceFingerprint -cne $SourceFingerprint -or
-            [string]$Evidence.schemaFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
-            [string]$Evidence.apiPrincipalName -cne "ca-gateway-api-$($Config.environment)" -or
-            [string]$Evidence.workerPrincipalName -cne "ca-gateway-worker-$($Config.environment)-v3" -or
-            [string]$Evidence.apiPrincipalObjectId -cne ([guid][string]$Inert.apiPrincipalId).ToString('D') -or
-            [string]$Evidence.workerPrincipalObjectId -cne ([guid][string]$Inert.workerPrincipalId).ToString('D') -or
-            [string]$Evidence.apiPrincipalClientId -cne ([guid][string]$Evidence.apiPrincipalClientId).ToString('D') -or
-            [string]$Evidence.workerPrincipalClientId -cne ([guid][string]$Evidence.workerPrincipalClientId).ToString('D') -or
-            [string]$Evidence.apiPrincipalClientId -ceq [string]$Evidence.workerPrincipalClientId -or
-            $Evidence.legacyPublicBootstrapClientIpv4Unused -ne $true -or
-            [string]$Evidence.databaseBootstrapJobName -cne $expectedJobName -or
-            [string]$Evidence.databaseBootstrapJobId -cne "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/jobs/$expectedJobName" -or
-            [string]$Evidence.databaseBootstrapJobPrincipalId -cne ([guid][string]$Evidence.databaseBootstrapJobPrincipalId).ToString('D') -or
-            [string]$Evidence.databaseBootstrapJobImage -cne $expectedJobImage -or
-            [string]$expectedJobImage -cnotmatch "^$([regex]::Escape([string]$Foundation.acrLoginServer))/gateway-db-migrator@sha256:[0-9a-f]{64}$" -or
-            [string]$Evidence.databaseBootstrapExecutionName -cnotmatch $expectedExecutionPattern -or
-            [string]$Evidence.databaseBootstrapExecutionIntentId -cne ([guid][string]$Evidence.databaseBootstrapExecutionIntentId).ToString('D') -or
-            [guid][string]$Evidence.databaseBootstrapExecutionIntentId -eq [guid]::Empty -or
-            [string]$Evidence.databaseBootstrapEvidenceFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
-            [string]$Evidence.originalSqlAdministratorObjectId -cne ([guid][string]$Evidence.originalSqlAdministratorObjectId).ToString('D') -or
-            [string]::IsNullOrWhiteSpace([string]$Evidence.originalSqlAdministratorLogin) -or
-            $Evidence.originalSqlAdministratorRestored -ne $true -or
-            (@($Evidence.apiDirectPermissions | ForEach-Object { [string]$_ } | Sort-Object) -join '|') -cne 'VIEW DEFINITION' -or
-            @($Evidence.workerDirectPermissions).Count -ne 0 -or
-            $StepRecord.status -ne 'Completed' -or
-            -not $StepRecord.Contains('startedAtUtc') -or
-            -not $StepRecord.Contains('completedAtUtc')) { throw 'mismatch' }
-        if ($isRecovery -and (
-            [string]$DatabaseRecoveryPlan.status -cne 'Completed' -or
-            [string]$Evidence.databaseRecoveryMode -cne 'ResumeAfterSchemaCompleted' -or
-            [int]$Evidence.databaseRecoveryAttemptNumber -ne $recoveryAttemptNumber -or
-            [string]$Evidence.databaseRecoveryPlanFingerprint -cne [string]$DatabaseRecoveryPlan.planFingerprint -or
-            [string]$Evidence.recoverySourceFingerprint -cne [string]$DatabaseRecoveryPlan.correctedSourceFingerprint -or
-            [string]$Evidence.originalFailedDatabaseBootstrapBoundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint -or
-            ($recoveryAttemptNumber -eq 2 -and (
-                [string]$Evidence.priorFailedDatabaseRecoveryBoundaryFingerprint -cne [string]$DatabaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint -or
-                [string]$Evidence.priorFailedDatabaseRecoveryPlanFingerprint -cne [string]$DatabaseRecoveryPlan.previousRecoveryPlanFingerprint)))) {
-            throw 'mismatch'
+                if (-not $Evidence) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence')
         }
-        if ($isManualRepair -and (
-            [string]$ManualDatabaseRepairPlan.status -cne 'Completed' -or
-            $ManualDatabaseRepairPlan.correctedImage -isnot [System.Collections.IDictionary] -or
-            [string]$ManualDatabaseRepairPlan.correctedImage.state -cne 'DigestCheckpointed' -or
-            [string]$ManualDatabaseRepairPlan.correctedImage.sourceFingerprint -cne [string]$ManualDatabaseRepairPlan.repairSourceFingerprint -or
-            [string]$ManualDatabaseRepairPlan.correctedImage.deploymentOwnershipId -cne ([guid]$DeploymentOwnershipId).ToString('D') -or
-            [string]$ManualDatabaseRepairPlan.correctedImage.recoveryPlanFingerprint -cne [string]$ManualDatabaseRepairPlan.planFingerprint -or
-            [string]$ManualDatabaseRepairPlan.correctedImage.intentId -cne [string]$ManualDatabaseRepairPlan.repairJob.imageIntentId -or
-            [string]$Evidence.databaseBootstrapJobImage -cne [string]$ManualDatabaseRepairPlan.correctedImage.image -or
-            [string]$Evidence.manualDatabaseRepairMode -cne 'ResumeAfterSchemaCompleted' -or
-            [string]$Evidence.manualDatabaseRepairPlanFingerprint -cne [string]$ManualDatabaseRepairPlan.planFingerprint -or
-            [string]$Evidence.manualDatabaseRepairSourceFingerprint -cne [string]$ManualDatabaseRepairPlan.repairSourceFingerprint -or
-            [string]$Evidence.exhaustedDatabaseRecoveryPlanFingerprint -cne [string]$ManualDatabaseRepairPlan.exhaustedRecoveryPlanFingerprint -or
-            [string]$Evidence.originalFailedDatabaseBootstrapBoundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.originalFailedJob.boundaryFingerprint -or
-            [string]$Evidence.firstFailedDatabaseRecoveryBoundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.firstFailedRecovery.boundaryFingerprint -or
-            [string]$Evidence.secondFailedDatabaseRecoveryBoundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.secondFailedRecovery.boundaryFingerprint)) {
-            throw 'mismatch'
+        if ([string]$Evidence.database -ne 'GatewayDb') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.database')
+        }
+        if ([string]$Evidence.server -ne [string]$Inert.sqlServerFqdn) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.server')
+        }
+        if ([string]$Evidence.networkMode -cne 'PrivateContainerAppsJob') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.networkMode')
+        }
+        if ($Evidence.privateNetworkExecutionVerified -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.privateNetworkExecutionVerified')
+        }
+        if ($Evidence.publicNetworkRestoredToDisabled -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.publicNetworkRestoredToDisabled')
+        }
+        if ($Evidence.temporaryFirewallRuleAbsenceVerified -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.temporaryFirewallRuleAbsenceVerified')
+        }
+        if ($Evidence.networkRecoveryRecordCleared -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.networkRecoveryRecordCleared')
+        }
+        if (-not ([string]$Evidence.networkOperationId).Equals(([guid]$DeploymentOwnershipId).ToString('D'), [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.networkOperationId')
+        }
+        if ([string]$Evidence.deploymentOwnershipId -cne ([guid]$DeploymentOwnershipId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.deploymentOwnershipId')
+        }
+        if ([string]$Evidence.acceptedSourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.acceptedSourceFingerprint')
+        }
+        if ([string]$Evidence.schemaFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.schemaFingerprint')
+        }
+        if ([string]$Evidence.apiPrincipalName -cne "ca-gateway-api-$($Config.environment)") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.apiPrincipalName')
+        }
+        if ([string]$Evidence.workerPrincipalName -cne "ca-gateway-worker-$($Config.environment)-v3") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.workerPrincipalName')
+        }
+        if ([string]$Evidence.apiPrincipalObjectId -cne ([guid][string]$Inert.apiPrincipalId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.apiPrincipalObjectId')
+        }
+        if ([string]$Evidence.workerPrincipalObjectId -cne ([guid][string]$Inert.workerPrincipalId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.workerPrincipalObjectId')
+        }
+        if ([string]$Evidence.apiPrincipalClientId -cne ([guid][string]$Evidence.apiPrincipalClientId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.apiPrincipalClientId')
+        }
+        if ([string]$Evidence.workerPrincipalClientId -cne ([guid][string]$Evidence.workerPrincipalClientId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.workerPrincipalClientId')
+        }
+        if ([string]$Evidence.apiPrincipalClientId -ceq [string]$Evidence.workerPrincipalClientId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.apiPrincipalClientId')
+        }
+        if ($Evidence.legacyPublicBootstrapClientIpv4Unused -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.legacyPublicBootstrapClientIpv4Unused')
+        }
+        if ([string]$Evidence.databaseBootstrapJobName -cne $expectedJobName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseBootstrapJobName')
+        }
+        if ([string]$Evidence.databaseBootstrapJobId -cne "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/jobs/$expectedJobName") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseBootstrapJobId')
+        }
+        if ([string]$Evidence.databaseBootstrapJobPrincipalId -cne ([guid][string]$Evidence.databaseBootstrapJobPrincipalId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseBootstrapJobPrincipalId')
+        }
+        if ([string]$Evidence.databaseBootstrapJobImage -cne $expectedJobImage) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseBootstrapJobImage')
+        }
+        if ([string]$expectedJobImage -cnotmatch "^$([regex]::Escape([string]$Foundation.acrLoginServer))/gateway-db-migrator@sha256:[0-9a-f]{64}$") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'expectedJobImage')
+        }
+        if ([string]$Evidence.databaseBootstrapExecutionName -cnotmatch $expectedExecutionPattern) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseBootstrapExecutionName')
+        }
+        if ([string]$Evidence.databaseBootstrapExecutionIntentId -cne ([guid][string]$Evidence.databaseBootstrapExecutionIntentId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseBootstrapExecutionIntentId')
+        }
+        if ([guid][string]$Evidence.databaseBootstrapExecutionIntentId -eq [guid]::Empty) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseBootstrapExecutionIntentId')
+        }
+        if ([string]$Evidence.databaseBootstrapEvidenceFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseBootstrapEvidenceFingerprint')
+        }
+        if ([string]$Evidence.originalSqlAdministratorObjectId -cne ([guid][string]$Evidence.originalSqlAdministratorObjectId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.originalSqlAdministratorObjectId')
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$Evidence.originalSqlAdministratorLogin)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.originalSqlAdministratorLogin')
+        }
+        if ($Evidence.originalSqlAdministratorRestored -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.originalSqlAdministratorRestored')
+        }
+        if ((@($Evidence.apiDirectPermissions | ForEach-Object { [string]$_ } | Sort-Object) -join '|') -cne 'VIEW DEFINITION') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.apiDirectPermissions')
+        }
+        if (@($Evidence.workerDirectPermissions).Count -ne 0) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.workerDirectPermissions')
+        }
+        if ($StepRecord.status -ne 'Completed') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'stepRecord.status')
+        }
+        if (-not $StepRecord.Contains('startedAtUtc')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'stepRecord.startedAtUtc')
+        }
+        if (-not $StepRecord.Contains('completedAtUtc')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'stepRecord.completedAtUtc')
+        }
+                if ((($isRecovery)) -and ([string]$DatabaseRecoveryPlan.status -cne 'Completed')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'databaseRecoveryPlan.status')
+        }
+        if ((($isRecovery)) -and ([string]$Evidence.databaseRecoveryMode -cne 'ResumeAfterSchemaCompleted')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseRecoveryMode')
+        }
+        if ((($isRecovery)) -and ([int]$Evidence.databaseRecoveryAttemptNumber -ne $recoveryAttemptNumber)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseRecoveryAttemptNumber')
+        }
+        if ((($isRecovery)) -and ([string]$Evidence.databaseRecoveryPlanFingerprint -cne [string]$DatabaseRecoveryPlan.planFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseRecoveryPlanFingerprint')
+        }
+        if ((($isRecovery)) -and ([string]$Evidence.recoverySourceFingerprint -cne [string]$DatabaseRecoveryPlan.correctedSourceFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.recoverySourceFingerprint')
+        }
+        if ((($isRecovery)) -and ([string]$Evidence.originalFailedDatabaseBootstrapBoundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.originalFailedDatabaseBootstrapBoundaryFingerprint')
+        }
+        if (((($isRecovery)) -and ($recoveryAttemptNumber -eq 2)) -and ([string]$Evidence.priorFailedDatabaseRecoveryBoundaryFingerprint -cne [string]$DatabaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.priorFailedDatabaseRecoveryBoundaryFingerprint')
+        }
+        if (((($isRecovery)) -and ($recoveryAttemptNumber -eq 2)) -and ([string]$Evidence.priorFailedDatabaseRecoveryPlanFingerprint -cne [string]$DatabaseRecoveryPlan.previousRecoveryPlanFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.priorFailedDatabaseRecoveryPlanFingerprint')
+        }
+                if ((($isManualRepair)) -and ([string]$ManualDatabaseRepairPlan.status -cne 'Completed')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'manualDatabaseRepairPlan.status')
+        }
+        if ((($isManualRepair)) -and ($ManualDatabaseRepairPlan.correctedImage -isnot [System.Collections.IDictionary])) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'manualDatabaseRepairPlan.correctedImage')
+        }
+        if ((($isManualRepair)) -and ([string]$ManualDatabaseRepairPlan.correctedImage.state -cne 'DigestCheckpointed')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'manualDatabaseRepairPlan.correctedImage.state')
+        }
+        if ((($isManualRepair)) -and ([string]$ManualDatabaseRepairPlan.correctedImage.sourceFingerprint -cne [string]$ManualDatabaseRepairPlan.repairSourceFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'manualDatabaseRepairPlan.correctedImage.sourceFingerprint')
+        }
+        if ((($isManualRepair)) -and ([string]$ManualDatabaseRepairPlan.correctedImage.deploymentOwnershipId -cne ([guid]$DeploymentOwnershipId).ToString('D'))) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'manualDatabaseRepairPlan.correctedImage.deploymentOwnershipId')
+        }
+        if ((($isManualRepair)) -and ([string]$ManualDatabaseRepairPlan.correctedImage.recoveryPlanFingerprint -cne [string]$ManualDatabaseRepairPlan.planFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'manualDatabaseRepairPlan.correctedImage.recoveryPlanFingerprint')
+        }
+        if ((($isManualRepair)) -and ([string]$ManualDatabaseRepairPlan.correctedImage.intentId -cne [string]$ManualDatabaseRepairPlan.repairJob.imageIntentId)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'manualDatabaseRepairPlan.correctedImage.intentId')
+        }
+        if ((($isManualRepair)) -and ([string]$Evidence.databaseBootstrapJobImage -cne [string]$ManualDatabaseRepairPlan.correctedImage.image)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseBootstrapJobImage')
+        }
+        if ((($isManualRepair)) -and ([string]$Evidence.manualDatabaseRepairMode -cne 'ResumeAfterSchemaCompleted')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.manualDatabaseRepairMode')
+        }
+        if ((($isManualRepair)) -and ([string]$Evidence.manualDatabaseRepairPlanFingerprint -cne [string]$ManualDatabaseRepairPlan.planFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.manualDatabaseRepairPlanFingerprint')
+        }
+        if ((($isManualRepair)) -and ([string]$Evidence.manualDatabaseRepairSourceFingerprint -cne [string]$ManualDatabaseRepairPlan.repairSourceFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.manualDatabaseRepairSourceFingerprint')
+        }
+        if ((($isManualRepair)) -and ([string]$Evidence.exhaustedDatabaseRecoveryPlanFingerprint -cne [string]$ManualDatabaseRepairPlan.exhaustedRecoveryPlanFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.exhaustedDatabaseRecoveryPlanFingerprint')
+        }
+        if ((($isManualRepair)) -and ([string]$Evidence.originalFailedDatabaseBootstrapBoundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.originalFailedJob.boundaryFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.originalFailedDatabaseBootstrapBoundaryFingerprint')
+        }
+        if ((($isManualRepair)) -and ([string]$Evidence.firstFailedDatabaseRecoveryBoundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.firstFailedRecovery.boundaryFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.firstFailedDatabaseRecoveryBoundaryFingerprint')
+        }
+        if ((($isManualRepair)) -and ([string]$Evidence.secondFailedDatabaseRecoveryBoundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.secondFailedRecovery.boundaryFingerprint)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.secondFailedDatabaseRecoveryBoundaryFingerprint')
         }
 
         $serverName = ([string]$Evidence.server).Split('.')[0]
         $database = Invoke-AzJson -Arguments @('sql', 'db', 'show', '--resource-group', [string]$Config.resourceGroupName, '--server', $serverName, '--name', 'GatewayDb', '--query', '{name:name,status:status}')
-        if ([string]$database.name -ne 'GatewayDb' -or [string]$database.status -ne 'Online') { throw 'mismatch' }
+                if ([string]$database.name -ne 'GatewayDb') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'database.name')
+        }
+        if ([string]$database.status -ne 'Online') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'database.status')
+        }
         $publicAccess = Invoke-AzTsv -Arguments @('sql', 'server', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $serverName, '--query', 'publicNetworkAccess')
         $azureAdOnly = Invoke-AzTsv -Arguments @('sql', 'server', 'ad-only-auth', 'get', '--resource-group', [string]$Config.resourceGroupName, '--name', $serverName, '--query', 'azureAdOnlyAuthentication')
-        if ($publicAccess -ne 'Disabled' -or $azureAdOnly -cne 'true') { throw 'mismatch' }
+                if ($publicAccess -ne 'Disabled') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'publicAccess')
+        }
+        if ($azureAdOnly -cne 'true') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'azureAdOnly')
+        }
         $operationMaterial = "$(([guid]$DeploymentOwnershipId).ToString('D').ToLowerInvariant())|$(([string]$Config.resourceGroupName).ToLowerInvariant())|$($serverName.ToLowerInvariant())|gatewaydb"
         $operationHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($operationMaterial))).ToLowerInvariant()
         $firewallRuleName = "temp-a365gw-migration-$($operationHash.Substring(0, 24))"
         $firewallRules = @(Invoke-AzJson -Arguments @('sql', 'server', 'firewall-rule', 'list', '--resource-group', [string]$Config.resourceGroupName, '--server', $serverName, '--query', '[].{name:name}'))
-        if ($firewallRules.Count -ne 0 -or [string]$Evidence.temporaryFirewallRuleName -cne $firewallRuleName) { throw 'mismatch' }
+                if ($firewallRules.Count -ne 0) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'firewallRules.Count')
+        }
+        if ([string]$Evidence.temporaryFirewallRuleName -cne $firewallRuleName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.temporaryFirewallRuleName')
+        }
 
         $sqlAdministrator = Get-GatewaySqlEntraAdministrator -Config $Config -ServerName $serverName
-        if ([string]$sqlAdministrator.objectId -cne [string]$Evidence.originalSqlAdministratorObjectId -or
-            [string]$sqlAdministrator.login -cne [string]$Evidence.originalSqlAdministratorLogin -or
-            [string]$sqlAdministrator.tenantId -cne ([guid][string]$Config.tenantId).ToString('D')) { throw 'mismatch' }
+                if ([string]$sqlAdministrator.objectId -cne [string]$Evidence.originalSqlAdministratorObjectId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'sqlAdministrator.objectId')
+        }
+        if ([string]$sqlAdministrator.login -cne [string]$Evidence.originalSqlAdministratorLogin) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'sqlAdministrator.login')
+        }
+        if ([string]$sqlAdministrator.tenantId -cne ([guid][string]$Config.tenantId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'sqlAdministrator.tenantId')
+        }
         $apiPrincipal = [ordered]@{ displayName = [string]$Evidence.apiPrincipalName; clientId = [string]$Evidence.apiPrincipalClientId }
         $workerPrincipal = [ordered]@{ displayName = [string]$Evidence.workerPrincipalName; clientId = [string]$Evidence.workerPrincipalClientId }
         $job = Get-GatewayDatabaseBootstrapJobEvidence `
@@ -5245,12 +6029,22 @@ function Test-GatewayDatabaseEvidence {
             -PriorFailedRecoveryBoundaryFingerprint $(if ($isRecovery -and $recoveryAttemptNumber -eq 2) { [string]$DatabaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint } else { '' }) `
             -FirstFailedRecoveryBoundaryFingerprint $(if ($isManualRepair) { [string]$ManualDatabaseRepairPlan.firstFailedRecovery.boundaryFingerprint } else { '' }) `
             -SecondFailedRecoveryBoundaryFingerprint $(if ($isManualRepair) { [string]$ManualDatabaseRepairPlan.secondFailedRecovery.boundaryFingerprint } else { '' })
-        if ([string]$job.jobId -cne [string]$Evidence.databaseBootstrapJobId -or
-            [string]$job.jobPrincipalId -cne [string]$Evidence.databaseBootstrapJobPrincipalId) { throw 'mismatch' }
+                if ([string]$job.jobId -cne [string]$Evidence.databaseBootstrapJobId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'job.jobId')
+        }
+        if ([string]$job.jobPrincipalId -cne [string]$Evidence.databaseBootstrapJobPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'job.jobPrincipalId')
+        }
         $executions = @(Get-GatewayDatabaseBootstrapExecutions -Config $Config -JobName ([string]$Evidence.databaseBootstrapJobName))
-        if ($executions.Count -ne 1 -or
-            [string]$executions[0].name -cne [string]$Evidence.databaseBootstrapExecutionName -or
-            [string]$executions[0].status -cne 'Succeeded') { throw 'mismatch' }
+                if ($executions.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'executions.Count')
+        }
+        if ([string]$executions[0].name -cne [string]$Evidence.databaseBootstrapExecutionName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'executions.name')
+        }
+        if ([string]$executions[0].status -cne 'Succeeded') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'executions.status')
+        }
         $execution = Get-GatewayDatabaseBootstrapExecutionEvidence `
             -Config $Config -JobName ([string]$Evidence.databaseBootstrapJobName) `
             -ExecutionName ([string]$Evidence.databaseBootstrapExecutionName) `
@@ -5263,17 +6057,30 @@ function Test-GatewayDatabaseEvidence {
             -RecoveryAttemptNumber $(if ($isRecovery) { $recoveryAttemptNumber } else { 1 })
 
         $ready = Invoke-WebRequest -Uri "https://$($Inert.apiFqdn)/health/ready" -Method Get -TimeoutSec 30 -SkipHttpErrorCheck
-        if ([int]$ready.StatusCode -lt 200 -or [int]$ready.StatusCode -ge 300) { throw 'mismatch' }
+                if ([int]$ready.StatusCode -lt 200) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'ready.StatusCode')
+        }
+        if ([int]$ready.StatusCode -ge 300) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'ready.StatusCode')
+        }
 
         $root = Get-RepositoryRoot
         $evidenceRoot = [IO.Path]::GetFullPath((Join-Path $root '.bootstrap/evidence'))
         $databaseEvidenceRoot = [IO.Path]::GetFullPath((Join-Path $evidenceRoot "$($Config.resourceGroupName)/database"))
         $expectedDirectory = if ($isResumeAfterSchema) { [IO.Path]::GetFullPath((Join-Path $databaseEvidenceRoot ([string]$recoveryContract.evidenceDirectoryName))) } else { $databaseEvidenceRoot }
-        if (-not $expectedDirectory.StartsWith($evidenceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
-            [IO.Path]::GetFullPath([string]$Evidence.evidenceDirectory) -ne $expectedDirectory) { throw 'mismatch' }
-        if (Test-Path -LiteralPath (Join-Path $databaseEvidenceRoot 'GatewayDb-network-recovery.json')) { throw 'mismatch' }
+                if (-not $expectedDirectory.StartsWith($evidenceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'expectedDirectory.StartsWith')
+        }
+        if ([IO.Path]::GetFullPath([string]$Evidence.evidenceDirectory) -ne $expectedDirectory) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.evidenceDirectory')
+        }
+                if (Test-Path -LiteralPath (Join-Path $databaseEvidenceRoot 'GatewayDb-network-recovery.json')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'databaseEvidenceRoot')
+        }
         $receiptPath = [IO.Path]::GetFullPath((Join-Path $databaseEvidenceRoot $(if ($isResumeAfterSchema) { [string]$recoveryContract.receiptFileName } else { 'private-database-bootstrap-receipt.json' })))
-        if ([IO.Path]::GetFullPath([string]$Evidence.databaseBootstrapCompletionReceipt) -ne $receiptPath) { throw 'mismatch' }
+                if ([IO.Path]::GetFullPath([string]$Evidence.databaseBootstrapCompletionReceipt) -ne $receiptPath) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseBootstrapCompletionReceipt')
+        }
         $receipt = Read-GatewayPrivateDatabaseBootstrapRecord -Path $receiptPath
         if ($isRecovery) {
             Assert-GatewayPrivateDatabaseRecoveryRecord `
@@ -5307,11 +6114,21 @@ function Test-GatewayDatabaseEvidence {
                 -OriginalAdministratorLogin ([string]$Evidence.originalSqlAdministratorLogin) `
                 -SqlPrivateEndpoint $privateEndpointAddressTuple | Out-Null
         }
-        if ([string]::IsNullOrWhiteSpace([string]$receipt.completedAtUtc) -or
-            [string]$receipt.executionName -cne [string]$Evidence.databaseBootstrapExecutionName -or
-            [string]$receipt.executionIntentId -cne [string]$Evidence.databaseBootstrapExecutionIntentId -or
-            [string]$receipt.evidenceFingerprint -cne [string]$Evidence.databaseBootstrapEvidenceFingerprint -or
-            [string]$receipt.jobPrincipalId -cne [string]$Evidence.databaseBootstrapJobPrincipalId) { throw 'mismatch' }
+                if ([string]::IsNullOrWhiteSpace([string]$receipt.completedAtUtc)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'receipt.completedAtUtc')
+        }
+        if ([string]$receipt.executionName -cne [string]$Evidence.databaseBootstrapExecutionName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'receipt.executionName')
+        }
+        if ([string]$receipt.executionIntentId -cne [string]$Evidence.databaseBootstrapExecutionIntentId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'receipt.executionIntentId')
+        }
+        if ([string]$receipt.evidenceFingerprint -cne [string]$Evidence.databaseBootstrapEvidenceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'receipt.evidenceFingerprint')
+        }
+        if ([string]$receipt.jobPrincipalId -cne [string]$Evidence.databaseBootstrapJobPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'receipt.jobPrincipalId')
+        }
         if ($isRecovery) {
             $originalFailure = Get-GatewayFailedDatabaseBootstrapBoundary `
                 -Config $Config -Foundation $Foundation -SqlPrivateEndpoint $privateEndpointAddressTuple `
@@ -5320,8 +6137,8 @@ function Test-GatewayDatabaseEvidence {
                 -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
                 -OriginalAdministratorObjectId ([string]$Evidence.originalSqlAdministratorObjectId) `
                 -OriginalAdministratorLogin ([string]$Evidence.originalSqlAdministratorLogin)
-            if ([string]$originalFailure.boundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint) {
-                throw 'mismatch'
+                        if ([string]$originalFailure.boundaryFingerprint -cne [string]$DatabaseRecoveryPlan.failedJob.boundaryFingerprint) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'originalFailure.boundaryFingerprint')
             }
             if ($recoveryAttemptNumber -eq 2) {
                 $priorFailure = Get-GatewayFailedDatabaseRecoveryBoundary `
@@ -5330,8 +6147,8 @@ function Test-GatewayDatabaseEvidence {
                     -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
                     -OriginalAdministratorObjectId ([string]$Evidence.originalSqlAdministratorObjectId) `
                     -OriginalAdministratorLogin ([string]$Evidence.originalSqlAdministratorLogin)
-                if ([string]$priorFailure.boundaryFingerprint -cne [string]$DatabaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint) {
-                    throw 'mismatch'
+                                if ([string]$priorFailure.boundaryFingerprint -cne [string]$DatabaseRecoveryPlan.priorFailedRecovery.boundaryFingerprint) {
+                    throw (New-BootstrapValidationMismatchException -PropertyName 'priorFailure.boundaryFingerprint')
                 }
             }
         }
@@ -5355,10 +6172,14 @@ function Test-GatewayDatabaseEvidence {
                 -ApiPrincipal $apiPrincipal -WorkerPrincipal $workerPrincipal `
                 -OriginalAdministratorObjectId ([string]$Evidence.originalSqlAdministratorObjectId) `
                 -OriginalAdministratorLogin ([string]$Evidence.originalSqlAdministratorLogin)
-            if ([string]$originalFailure.boundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.originalFailedJob.boundaryFingerprint -or
-                [string]$firstFailure.boundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.firstFailedRecovery.boundaryFingerprint -or
-                [string]$secondFailure.boundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.secondFailedRecovery.boundaryFingerprint) {
-                throw 'mismatch'
+                        if ([string]$originalFailure.boundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.originalFailedJob.boundaryFingerprint) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'originalFailure.boundaryFingerprint')
+            }
+            if ([string]$firstFailure.boundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.firstFailedRecovery.boundaryFingerprint) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'firstFailure.boundaryFingerprint')
+            }
+            if ([string]$secondFailure.boundaryFingerprint -cne [string]$ManualDatabaseRepairPlan.secondFailedRecovery.boundaryFingerprint) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'secondFailure.boundaryFingerprint')
             }
         }
         $executionStarted = [DateTimeOffset]::ParseExact(
@@ -5367,9 +6188,15 @@ function Test-GatewayDatabaseEvidence {
         $executionCompleted = [DateTimeOffset]::ParseExact(
             [string]$receipt.executionSucceededAtUtc, 'O', [Globalization.CultureInfo]::InvariantCulture,
             [Globalization.DateTimeStyles]::RoundtripKind)
-        if ([string]$execution.startTimeUtc -cne $executionStarted.ToUniversalTime().ToString('O') -or
-            [string]$execution.endTimeUtc -cne $executionCompleted.ToUniversalTime().ToString('O') -or
-            $executionCompleted -lt $executionStarted) { throw 'mismatch' }
+                if ([string]$execution.startTimeUtc -cne $executionStarted.ToUniversalTime().ToString('O')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'execution.startTimeUtc')
+        }
+        if ([string]$execution.endTimeUtc -cne $executionCompleted.ToUniversalTime().ToString('O')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'execution.endTimeUtc')
+        }
+        if ($executionCompleted -lt $executionStarted) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'executionCompleted')
+        }
         $records = @()
         $expectedEvidenceNames = @(
             'GatewayDb-private-initialize.json',
@@ -5377,43 +6204,106 @@ function Test-GatewayDatabaseEvidence {
             'GatewayDb-private-principal-worker.json'
         )
         $actualEvidenceFiles = @(Get-ChildItem -LiteralPath $expectedDirectory -Filter 'GatewayDb-*.json' -File | Sort-Object Name)
-        if ($actualEvidenceFiles.Count -ne 3 -or
-            (@($actualEvidenceFiles.Name) -join '|') -cne (($expectedEvidenceNames | Sort-Object) -join '|')) { throw 'mismatch' }
+                if ($actualEvidenceFiles.Count -ne 3) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'actualEvidenceFiles.Count')
+        }
+        if ((@($actualEvidenceFiles.Name) -join '|') -cne (($expectedEvidenceNames | Sort-Object) -join '|')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'actualEvidenceFiles.Name')
+        }
         foreach ($fileName in $expectedEvidenceNames) {
             $parsedRecords = @(ConvertFrom-GatewayDatabaseEvidenceJson -Json (Get-Content -LiteralPath (Join-Path $expectedDirectory $fileName) -Raw))
-            if ($parsedRecords.Count -ne 1) { throw 'mismatch' }
+                        if ($parsedRecords.Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'parsedRecords.Count')
+            }
             $record = $parsedRecords[0]
             $verified = [DateTimeOffset]::Parse([string]$record.VerifiedAtUtc)
-            if ($verified -lt $executionStarted.AddMinutes(-1) -or $verified -gt $executionCompleted.AddMinutes(1) -or
-                [string]$record.ExecutionIntentId -cne [string]$Evidence.databaseBootstrapExecutionIntentId) { throw 'mismatch' }
+                        if ($verified -lt $executionStarted.AddMinutes(-1)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'executionStarted.AddMinutes')
+            }
+            if ($verified -gt $executionCompleted.AddMinutes(1)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'executionCompleted.AddMinutes')
+            }
+            if ([string]$record.ExecutionIntentId -cne [string]$Evidence.databaseBootstrapExecutionIntentId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'record.ExecutionIntentId')
+            }
             $records += $record
         }
         $initialize = @($records | Where-Object { [string]$_.Phase -eq 'initialize' -and [string]$_.Server -eq [string]$Evidence.server -and [string]$_.Database -eq 'GatewayDb' })
-        if ($initialize.Count -ne 1 -or
-            $initialize[0].Verification.CurrentEfModelReady -ne $true -or
-            $initialize[0].Verification.WorkflowV2Ready -ne $true -or
-            [string]$initialize[0].Verification.CurrentSchemaFingerprint -cne [string]$Evidence.schemaFingerprint -or
-            [string]$initialize[0].InitializationIntent.MarkerName -cne 'A365GatewayBootstrapInitializationIntent' -or
-            [int]$initialize[0].InitializationIntent.SchemaVersion -ne 1 -or
-            [string]$initialize[0].InitializationIntent.DeploymentOwnershipId -cne ([guid]$DeploymentOwnershipId).ToString('D') -or
-            [string]$initialize[0].InitializationIntent.AcceptedSourceFingerprint -cne $SourceFingerprint -or
-            ($isResumeAfterSchema -and [string]$initialize[0].InitializationIntent.RecoveryMode -cne 'ResumeAfterSchemaCompleted') -or
-            [string]$initialize[0].InitializationIntent.Server -cne [string]$Evidence.server -or
-            [string]$initialize[0].InitializationIntent.Database -cne 'GatewayDb' -or
-            [string]$initialize[0].InitializationIntent.DatabaseCollation -cne 'SQL_Latin1_General_CP1_CI_AS' -or
-            [string]$initialize[0].InitializationIntent.CatalogCollation -cne 'SQL_Latin1_General_CP1_CI_AS' -or
-            [string]$initialize[0].InitializationIntent.DatabaseOwnerSidSha256 -cnotmatch '^sha256:[0-9a-f]{64}$' -or
-            $initialize[0].InitializationIntent.ExactReadbackVerified -ne $true -or
-            [string]$Evidence.initializationIntent.markerName -cne [string]$initialize[0].InitializationIntent.MarkerName -or
-            [int]$Evidence.initializationIntent.schemaVersion -ne [int]$initialize[0].InitializationIntent.SchemaVersion -or
-            [string]$Evidence.initializationIntent.deploymentOwnershipId -cne [string]$initialize[0].InitializationIntent.DeploymentOwnershipId -or
-            [string]$Evidence.initializationIntent.acceptedSourceFingerprint -cne [string]$initialize[0].InitializationIntent.AcceptedSourceFingerprint -or
-            [string]$Evidence.initializationIntent.server -cne [string]$initialize[0].InitializationIntent.Server -or
-            [string]$Evidence.initializationIntent.database -cne [string]$initialize[0].InitializationIntent.Database -or
-            [string]$Evidence.initializationIntent.databaseOwnerSidSha256 -cne [string]$initialize[0].InitializationIntent.DatabaseOwnerSidSha256 -or
-            [string]$Evidence.initializationIntent.databaseCollation -cne [string]$initialize[0].InitializationIntent.DatabaseCollation -or
-            [string]$Evidence.initializationIntent.catalogCollation -cne [string]$initialize[0].InitializationIntent.CatalogCollation -or
-            $Evidence.initializationIntent.exactReadbackVerified -ne $true) { throw 'mismatch' }
+                if ($initialize.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.Count')
+        }
+        if ($initialize[0].Verification.CurrentEfModelReady -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.Verification.CurrentEfModelReady')
+        }
+        if ($initialize[0].Verification.WorkflowV2Ready -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.Verification.WorkflowV2Ready')
+        }
+        if ([string]$initialize[0].Verification.CurrentSchemaFingerprint -cne [string]$Evidence.schemaFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.Verification.CurrentSchemaFingerprint')
+        }
+        if ([string]$initialize[0].InitializationIntent.MarkerName -cne 'A365GatewayBootstrapInitializationIntent') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.InitializationIntent.MarkerName')
+        }
+        if ([int]$initialize[0].InitializationIntent.SchemaVersion -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.InitializationIntent.SchemaVersion')
+        }
+        if ([string]$initialize[0].InitializationIntent.DeploymentOwnershipId -cne ([guid]$DeploymentOwnershipId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.InitializationIntent.DeploymentOwnershipId')
+        }
+        if ([string]$initialize[0].InitializationIntent.AcceptedSourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.InitializationIntent.AcceptedSourceFingerprint')
+        }
+        if ($isResumeAfterSchema -and [string]$initialize[0].InitializationIntent.RecoveryMode -cne 'ResumeAfterSchemaCompleted') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.InitializationIntent.RecoveryMode')
+        }
+        if ([string]$initialize[0].InitializationIntent.Server -cne [string]$Evidence.server) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.InitializationIntent.Server')
+        }
+        if ([string]$initialize[0].InitializationIntent.Database -cne 'GatewayDb') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.InitializationIntent.Database')
+        }
+        if ([string]$initialize[0].InitializationIntent.DatabaseCollation -cne 'SQL_Latin1_General_CP1_CI_AS') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.InitializationIntent.DatabaseCollation')
+        }
+        if ([string]$initialize[0].InitializationIntent.CatalogCollation -cne 'SQL_Latin1_General_CP1_CI_AS') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.InitializationIntent.CatalogCollation')
+        }
+        if ([string]$initialize[0].InitializationIntent.DatabaseOwnerSidSha256 -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.InitializationIntent.DatabaseOwnerSidSha256')
+        }
+        if ($initialize[0].InitializationIntent.ExactReadbackVerified -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'initialize.InitializationIntent.ExactReadbackVerified')
+        }
+        if ([string]$Evidence.initializationIntent.markerName -cne [string]$initialize[0].InitializationIntent.MarkerName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.initializationIntent.markerName')
+        }
+        if ([int]$Evidence.initializationIntent.schemaVersion -ne [int]$initialize[0].InitializationIntent.SchemaVersion) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.initializationIntent.schemaVersion')
+        }
+        if ([string]$Evidence.initializationIntent.deploymentOwnershipId -cne [string]$initialize[0].InitializationIntent.DeploymentOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.initializationIntent.deploymentOwnershipId')
+        }
+        if ([string]$Evidence.initializationIntent.acceptedSourceFingerprint -cne [string]$initialize[0].InitializationIntent.AcceptedSourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.initializationIntent.acceptedSourceFingerprint')
+        }
+        if ([string]$Evidence.initializationIntent.server -cne [string]$initialize[0].InitializationIntent.Server) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.initializationIntent.server')
+        }
+        if ([string]$Evidence.initializationIntent.database -cne [string]$initialize[0].InitializationIntent.Database) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.initializationIntent.database')
+        }
+        if ([string]$Evidence.initializationIntent.databaseOwnerSidSha256 -cne [string]$initialize[0].InitializationIntent.DatabaseOwnerSidSha256) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.initializationIntent.databaseOwnerSidSha256')
+        }
+        if ([string]$Evidence.initializationIntent.databaseCollation -cne [string]$initialize[0].InitializationIntent.DatabaseCollation) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.initializationIntent.databaseCollation')
+        }
+        if ([string]$Evidence.initializationIntent.catalogCollation -cne [string]$initialize[0].InitializationIntent.CatalogCollation) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.initializationIntent.catalogCollation')
+        }
+        if ($Evidence.initializationIntent.exactReadbackVerified -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.initializationIntent.exactReadbackVerified')
+        }
 
         foreach ($expectedPrincipal in @(
             [ordered]@{ name = "ca-gateway-api-$($Config.environment)"; clientId = [string]$Evidence.apiPrincipalClientId },
@@ -5424,20 +6314,40 @@ function Test-GatewayDatabaseEvidence {
                 [string]$_.RuntimePrincipal.Name -eq [string]$expectedPrincipal.name -and
                 [string]$_.RuntimePrincipal.ClientId -eq [string]$expectedPrincipal.clientId
             })
-            if ($principalRecords.Count -ne 1 -or
-                $principalRecords[0].Verification.CurrentEfModelReady -ne $true -or
-                $principalRecords[0].Verification.WorkflowV2Ready -ne $true -or
-                [string]$principalRecords[0].Verification.CurrentSchemaFingerprint -cne [string]$Evidence.schemaFingerprint) { throw 'mismatch' }
+                        if ($principalRecords.Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'principalRecords.Count')
+            }
+            if ($principalRecords[0].Verification.CurrentEfModelReady -ne $true) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'principalRecords.Verification.CurrentEfModelReady')
+            }
+            if ($principalRecords[0].Verification.WorkflowV2Ready -ne $true) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'principalRecords.Verification.WorkflowV2Ready')
+            }
+            if ([string]$principalRecords[0].Verification.CurrentSchemaFingerprint -cne [string]$Evidence.schemaFingerprint) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'principalRecords.Verification.CurrentSchemaFingerprint')
+            }
             $roles = @($principalRecords[0].RuntimePrincipal.DatabaseRoles | ForEach-Object { [string]$_ } | Sort-Object)
-            if (($roles -join '|') -ne 'db_datareader|db_datawriter') { throw 'mismatch' }
+                        if (($roles -join '|') -ne 'db_datareader|db_datawriter') {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'roles')
+            }
             $directPermissions = @($principalRecords[0].RuntimePrincipal.DirectPermissions | ForEach-Object { [string]$_ } | Sort-Object)
             $expectedDirectPermissions = if ([string]$expectedPrincipal.name -ceq [string]$Evidence.apiPrincipalName) { @('VIEW DEFINITION') } else { @() }
-            if (($directPermissions -join '|') -cne ($expectedDirectPermissions -join '|')) { throw 'mismatch' }
+                        if (($directPermissions -join '|') -cne ($expectedDirectPermissions -join '|')) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'directPermissions')
+            }
         }
-        if ([string]$Evidence.databaseBootstrapEvidenceFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject @($records))) { throw 'mismatch' }
+                if ([string]$Evidence.databaseBootstrapEvidenceFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject @($records))) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.databaseBootstrapEvidenceFingerprint')
+        }
         return $true
     }
     catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Gateway database revalidation was unavailable or mismatched; refusing automatic initialization or principal replay. Review SQL/evidence and run gateway diagnose.',
+                $_.Exception)
+        }
         throw 'Gateway database revalidation was unavailable or mismatched; refusing automatic initialization or principal replay. Review SQL/evidence and run gateway diagnose.'
     }
 }
@@ -5455,11 +6365,17 @@ function Test-GatewayAdminCredentialEvidence {
     try {
         $ownershipId = [guid]::Empty
         $credentialKeyId = [guid]::Empty
-        if (-not [guid]::TryParse($DeploymentOwnershipId, [ref]$ownershipId) -or
-            $ownershipId -eq [guid]::Empty -or
-            $DeploymentOwnershipId -cne $ownershipId.ToString('D') -or
-            [string]$AdminIdentity.deploymentOwnershipId -cne $ownershipId.ToString('D')) {
-            throw 'mismatch'
+                if (-not [guid]::TryParse($DeploymentOwnershipId, [ref]$ownershipId)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deploymentOwnershipId')
+        }
+        if ($ownershipId -eq [guid]::Empty) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'ownershipId')
+        }
+        if ($DeploymentOwnershipId -cne $ownershipId.ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deploymentOwnershipId')
+        }
+        if ([string]$AdminIdentity.deploymentOwnershipId -cne $ownershipId.ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'adminIdentity.deploymentOwnershipId')
         }
         Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI credential evidence source fingerprint'
         $evidenceNames = @(Get-GatewayArmObjectPropertyNames -Object $Evidence)
@@ -5467,26 +6383,46 @@ function Test-GatewayAdminCredentialEvidence {
             'secretUri', 'credentialKeyId', 'credentialExpiresAtUtc',
             'deploymentOwnershipId', 'sourceFingerprint', 'contentType'
         )
-        if ($evidenceNames.Count -ne $expectedEvidenceNames.Count -or
-            @($expectedEvidenceNames | Where-Object { $evidenceNames -cnotcontains $_ }).Count -ne 0 -or
-            -not [guid]::TryParse([string]$Evidence.credentialKeyId, [ref]$credentialKeyId) -or
-            $credentialKeyId -eq [guid]::Empty -or
-            [string]$Evidence.credentialKeyId -cne $credentialKeyId.ToString('D') -or
-            [string]$Evidence.deploymentOwnershipId -cne $ownershipId.ToString('D') -or
-            [string]$Evidence.sourceFingerprint -cne $SourceFingerprint -or
-            [string]$Evidence.contentType -cne 'application/vnd.a365-gateway.admin-ui-entra-client-secret') {
-            throw 'mismatch'
+                if ($evidenceNames.Count -ne $expectedEvidenceNames.Count) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidenceNames.Count')
+        }
+        if (@($expectedEvidenceNames | Where-Object { $evidenceNames -cnotcontains $_ }).Count -ne 0) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'expectedEvidenceNames')
+        }
+        if (-not [guid]::TryParse([string]$Evidence.credentialKeyId, [ref]$credentialKeyId)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.credentialKeyId')
+        }
+        if ($credentialKeyId -eq [guid]::Empty) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'credentialKeyId')
+        }
+        if ([string]$Evidence.credentialKeyId -cne $credentialKeyId.ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.credentialKeyId')
+        }
+        if ([string]$Evidence.deploymentOwnershipId -cne $ownershipId.ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.deploymentOwnershipId')
+        }
+        if ([string]$Evidence.sourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.sourceFingerprint')
+        }
+        if ([string]$Evidence.contentType -cne 'application/vnd.a365-gateway.admin-ui-entra-client-secret') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.contentType')
         }
         $expectedSecretUri = "$(([string]$Inert.keyVaultUri).TrimEnd('/'))/secrets/admin-ui-entra-client-secret"
-        if ([string]$Evidence.secretUri -ne $expectedSecretUri) { throw 'mismatch' }
+                if ([string]$Evidence.secretUri -ne $expectedSecretUri) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.secretUri')
+        }
 
         $application = Invoke-AzJson -Arguments @(
             'rest', '--method', 'GET', '--url',
             "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)?`$select=id,appId,passwordCredentials"
         )
-        if ([string]$application.appId -ne [string]$AdminIdentity.adminUiClientId) { throw 'mismatch' }
+                if ([string]$application.appId -ne [string]$AdminIdentity.adminUiClientId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.appId')
+        }
         $credentials = @($application.passwordCredentials | Where-Object { [string]$_.keyId -eq [string]$Evidence.credentialKeyId -and [string]$_.displayName -eq 'a365gw-bootstrap-admin-ui' })
-        if ($credentials.Count -ne 1) { throw 'mismatch' }
+                if ($credentials.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'credentials.Count')
+        }
         $expires = [DateTimeOffset]::Parse(
             [string]$credentials[0].endDateTime,
             [Globalization.CultureInfo]::InvariantCulture,
@@ -5495,8 +6431,12 @@ function Test-GatewayAdminCredentialEvidence {
             [string]$Evidence.credentialExpiresAtUtc,
             [Globalization.CultureInfo]::InvariantCulture,
             [Globalization.DateTimeStyles]::RoundtripKind)
-        if ($expires -le [DateTimeOffset]::UtcNow -or
-            $expires.ToUniversalTime() -ne $evidenceExpires.ToUniversalTime()) { throw 'mismatch' }
+                if ($expires -le [DateTimeOffset]::UtcNow) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'expires')
+        }
+        if ($expires.ToUniversalTime() -ne $evidenceExpires.ToUniversalTime()) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'expires.ToUniversalTime')
+        }
 
         # This helper uses an exact management-plane projection and rejects any
         # value-bearing or extra metadata before returning the safe shape.
@@ -5505,13 +6445,21 @@ function Test-GatewayAdminCredentialEvidence {
             -KeyVaultUri ([string]$Inert.keyVaultUri) `
             -DeploymentOwnershipId $ownershipId.ToString('D') `
             -SourceFingerprint $SourceFingerprint
-        if ([string]$secretMetadata.status -cne 'Present' -or
-            [string]$secretMetadata.tags.credentialKeyId -cne $credentialKeyId.ToString('D')) {
-            throw 'mismatch'
+                if ([string]$secretMetadata.status -cne 'Present') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'secretMetadata.status')
+        }
+        if ([string]$secretMetadata.tags.credentialKeyId -cne $credentialKeyId.ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'secretMetadata.tags.credentialKeyId')
         }
         return $true
     }
     catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Admin UI credential metadata revalidation was unavailable or mismatched; refusing automatic credential creation. No secret value was requested. Review Entra/Key Vault metadata and run gateway diagnose.',
+                $_.Exception)
+        }
         throw 'Admin UI credential metadata revalidation was unavailable or mismatched; refusing automatic credential creation. No secret value was requested. Review Entra/Key Vault metadata and run gateway diagnose.'
     }
 }
@@ -5542,19 +6490,44 @@ function Test-GatewayPurviewEvidence {
     # cleanup cannot replace the real reason with a strict-mode variable error.
     $connectionId = ''
     try {
-        if (-not $Evidence -or $Evidence.configured -ne $true -or
-            [string]$Evidence.blueprintApplicationId -ne [string]$Blueprint.applicationId -or
-            [string]$Evidence.enforcementPlane -ne 'Application' -or
-            $Evidence.exactTypedReadback -ne $true) { throw 'mismatch' }
+                if (-not $Evidence) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence')
+        }
+        if ($Evidence.configured -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.configured')
+        }
+        if ([string]$Evidence.blueprintApplicationId -ne [string]$Blueprint.applicationId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.blueprintApplicationId')
+        }
+        if ([string]$Evidence.enforcementPlane -ne 'Application') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.enforcementPlane')
+        }
+        if ($Evidence.exactTypedReadback -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.exactTypedReadback')
+        }
         $connectionId = Connect-BootstrapPurview -UserPrincipalName $UserPrincipalName -TenantId ([string]$Config.tenantId)
         $readback = Get-BootstrapPurviewPolicyEvidence -Config $Config -Blueprint $Blueprint -MaximumAttempts 1
-        if ($readback.exactTypedReadback -ne $true -or
-            [string]$readback.collectionPolicyName -cne [string]$Evidence.collectionPolicyName -or
-            [string]$readback.dlpPolicyName -cne [string]$Evidence.dlpPolicyName -or
-            [string]$readback.dlpRuleName -cne [string]$Evidence.dlpRuleName) { throw 'mismatch' }
+                if ($readback.exactTypedReadback -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'readback.exactTypedReadback')
+        }
+        if ([string]$readback.collectionPolicyName -cne [string]$Evidence.collectionPolicyName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'readback.collectionPolicyName')
+        }
+        if ([string]$readback.dlpPolicyName -cne [string]$Evidence.dlpPolicyName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'readback.dlpPolicyName')
+        }
+        if ([string]$readback.dlpRuleName -cne [string]$Evidence.dlpRuleName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'readback.dlpRuleName')
+        }
         return $true
     }
     catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Purview policy revalidation was unavailable or mismatched; refusing automatic policy replay. Reauthenticate interactively and review the tenant policies.',
+                $_.Exception)
+        }
         throw 'Purview policy revalidation was unavailable or mismatched; refusing automatic policy replay. Reauthenticate interactively and review the tenant policies.'
     }
     finally {
@@ -5578,7 +6551,9 @@ function Test-GatewayBlueprintEvidence {
             -DeploymentOwnershipId $DeploymentOwnershipId `
             -SourceFingerprint $SourceFingerprint
         $blueprint = Get-Agent365BlueprintByName -DisplayName $expectedDisplayName
-        if (-not $blueprint) { throw 'mismatch' }
+                if (-not $blueprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'blueprint')
+        }
         $current = Assert-Agent365SeedBlueprintSurface `
             -Blueprint $blueprint `
             -Config $Config `
@@ -5588,24 +6563,68 @@ function Test-GatewayBlueprintEvidence {
             -SponsorObjectId $SponsorObjectId `
             -GatewayManagedIdentityPrincipalId $GatewayManagedIdentityPrincipalId
         $evidenceManagers = @(Get-Agent365CanonicalIdentifierCollection -Values @($Evidence.managerApplicationIds) -Label 'Persisted Agent ID manager applications' -RequireNonEmpty)
-        if ([int]$Evidence.schemaVersion -ne 2 -or
-            [string]$Evidence.provenance -cne 'BootstrapOwnedDirectGraphV1' -or
-            [string]$Evidence.objectId -cne [string]$current.objectId -or
-            [string]$Evidence.applicationId -cne [string]$current.applicationId -or
-            [string]$Evidence.displayName -cne $expectedDisplayName -or
-            [string]$Evidence.deploymentOwnershipId -cne ([guid]$DeploymentOwnershipId).ToString('D') -or
-            [string]$Evidence.sourceFingerprint -cne $SourceFingerprint -or
-            [string]$Evidence.ownerObjectId -cne ([guid]$SponsorObjectId).ToString('D') -or
-            [string]$Evidence.sponsorObjectId -cne ([guid]$SponsorObjectId).ToString('D') -or
-            @($Evidence.ownerObjectIds).Count -ne 1 -or [string]$Evidence.ownerObjectIds[0] -cne ([guid]$SponsorObjectId).ToString('D') -or
-            @($Evidence.sponsorObjectIds).Count -ne 1 -or [string]$Evidence.sponsorObjectIds[0] -cne ([guid]$SponsorObjectId).ToString('D') -or
-            $Evidence.managerApplicationsPreflightConfirmed -ne $true -or
-            $Evidence.credentialCreationPerformed -ne $false -or
-            $Evidence.pristineAuthoritySurfaceConfirmed -ne $true -or
-            ($evidenceManagers -join '|') -cne (@($current.managerApplicationIds) -join '|')) { throw 'mismatch' }
+                if ([int]$Evidence.schemaVersion -ne 2) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.schemaVersion')
+        }
+        if ([string]$Evidence.provenance -cne 'BootstrapOwnedDirectGraphV1') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.provenance')
+        }
+        if ([string]$Evidence.objectId -cne [string]$current.objectId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.objectId')
+        }
+        if ([string]$Evidence.applicationId -cne [string]$current.applicationId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.applicationId')
+        }
+        if ([string]$Evidence.displayName -cne $expectedDisplayName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.displayName')
+        }
+        if ([string]$Evidence.deploymentOwnershipId -cne ([guid]$DeploymentOwnershipId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.deploymentOwnershipId')
+        }
+        if ([string]$Evidence.sourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.sourceFingerprint')
+        }
+        if ([string]$Evidence.ownerObjectId -cne ([guid]$SponsorObjectId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.ownerObjectId')
+        }
+        if ([string]$Evidence.sponsorObjectId -cne ([guid]$SponsorObjectId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.sponsorObjectId')
+        }
+        if (@($Evidence.ownerObjectIds).Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.ownerObjectIds')
+        }
+        if ([string]$Evidence.ownerObjectIds[0] -cne ([guid]$SponsorObjectId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.ownerObjectIds')
+        }
+        if (@($Evidence.sponsorObjectIds).Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.sponsorObjectIds')
+        }
+        if ([string]$Evidence.sponsorObjectIds[0] -cne ([guid]$SponsorObjectId).ToString('D')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.sponsorObjectIds')
+        }
+        if ($Evidence.managerApplicationsPreflightConfirmed -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.managerApplicationsPreflightConfirmed')
+        }
+        if ($Evidence.credentialCreationPerformed -ne $false) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.credentialCreationPerformed')
+        }
+        if ($Evidence.pristineAuthoritySurfaceConfirmed -ne $true) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.pristineAuthoritySurfaceConfirmed')
+        }
+        if (($evidenceManagers -join '|') -cne (@($current.managerApplicationIds) -join '|')) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'current.managerApplicationIds')
+        }
         return $true
     }
-    catch { throw 'Agent ID blueprint revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.' }
+    catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Agent ID blueprint revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.',
+                $_.Exception)
+        }
+        throw 'Agent ID blueprint revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.'
+    }
 }
 
 function Test-GatewaySqlPrivateEndpointEvidence {
@@ -5622,7 +6641,9 @@ function Test-GatewaySqlPrivateEndpointEvidence {
     try {
         $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
         Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'SQL private-endpoint source fingerprint'
-        if ($DeploymentOwnershipId -cne $canonicalOwnershipId) { throw 'mismatch' }
+                if ($DeploymentOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deploymentOwnershipId')
+        }
         $serverName = $SqlServerFqdn.Split('.')[0]
         $resourceGroupScope = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)"
         $serverId = "$resourceGroupScope/providers/Microsoft.Sql/servers/$serverName"
@@ -5646,87 +6667,184 @@ function Test-GatewaySqlPrivateEndpointEvidence {
             [ordered]@{ name = 'privateDnsARecordSetId'; expected = $recordSetId },
             [ordered]@{ name = 'privateDnsARecordName'; expected = $serverName }
         )) {
-            if (-not ([string]$Evidence[$property.name]).Equals([string]$property.expected, [StringComparison]::OrdinalIgnoreCase)) { throw 'mismatch' }
+            if (-not ([string]$Evidence[$property.name]).Equals([string]$property.expected, [StringComparison]::OrdinalIgnoreCase)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName "evidence.$($property.name)")
+            }
         }
         Assert-BootstrapIpv4Value -Value ([string]$Evidence.privateEndpointIpv4Address) -Label 'Persisted SQL private-endpoint IPv4 address'
         Assert-BootstrapIpv4Value -Value ([string]$Evidence.privateDnsARecordIpv4Address) -Label 'Persisted SQL private DNS A-record IPv4 address'
-        if ([string]$Evidence.privateEndpointIpv4Address -cne [string]$Evidence.privateDnsARecordIpv4Address -or
-            [string]::IsNullOrWhiteSpace([string]$Evidence.privateEndpointNetworkInterfaceId)) { throw 'mismatch' }
+                if ([string]$Evidence.privateEndpointIpv4Address -cne [string]$Evidence.privateDnsARecordIpv4Address) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.privateEndpointIpv4Address')
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$Evidence.privateEndpointNetworkInterfaceId)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.privateEndpointNetworkInterfaceId')
+        }
 
         $validationStage = 'ARM deployment readback'
         $deployment = Invoke-AzJson -Arguments @(
             'deployment', 'group', 'show', '--resource-group', [string]$Config.resourceGroupName,
             '--name', $deploymentName, '--query', '{state:properties.provisioningState,parameters:properties.parameters,outputs:properties.outputs}'
         )
-        if ([string]$deployment.state -cne 'Succeeded' -or
-            [string]$deployment.parameters.deploymentOwnershipId.value -cne $canonicalOwnershipId -or
-            [string]$deployment.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint -or
-            -not ([string]$deployment.parameters.privateEndpointSubnetId.value).Equals([string]$Foundation.privateEndpointSubnetId, [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$deployment.parameters.virtualNetworkId.value).Equals([string]$Foundation.virtualNetworkId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$deployment.parameters.sqlServerName.value -cne $serverName -or
-            -not ([string]$deployment.outputs.privateEndpointId.value).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$deployment.outputs.privateDnsZoneId.value).Equals($zoneId, [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$deployment.outputs.virtualNetworkLinkId.value).Equals($linkId, [StringComparison]::OrdinalIgnoreCase) -or
-            -not ([string]$deployment.outputs.privateDnsZoneGroupId.value).Equals($zoneGroupId, [StringComparison]::OrdinalIgnoreCase)) { throw 'mismatch' }
+                if ([string]$deployment.state -cne 'Succeeded') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.state')
+        }
+        if ([string]$deployment.parameters.deploymentOwnershipId.value -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.deploymentOwnershipId.value')
+        }
+        if ([string]$deployment.parameters.bootstrapSourceFingerprint.value -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.bootstrapSourceFingerprint.value')
+        }
+        if (-not ([string]$deployment.parameters.privateEndpointSubnetId.value).Equals([string]$Foundation.privateEndpointSubnetId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.privateEndpointSubnetId.value')
+        }
+        if (-not ([string]$deployment.parameters.virtualNetworkId.value).Equals([string]$Foundation.virtualNetworkId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.virtualNetworkId.value')
+        }
+        if ([string]$deployment.parameters.sqlServerName.value -cne $serverName) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.sqlServerName.value')
+        }
+        if (-not ([string]$deployment.outputs.privateEndpointId.value).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.privateEndpointId.value')
+        }
+        if (-not ([string]$deployment.outputs.privateDnsZoneId.value).Equals($zoneId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.privateDnsZoneId.value')
+        }
+        if (-not ([string]$deployment.outputs.virtualNetworkLinkId.value).Equals($linkId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.virtualNetworkLinkId.value')
+        }
+        if (-not ([string]$deployment.outputs.privateDnsZoneGroupId.value).Equals($zoneGroupId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.privateDnsZoneGroupId.value')
+        }
 
         $validationStage = 'private endpoint readback'
         $privateEndpoint = Invoke-AzJson -Arguments @('network', 'private-endpoint', 'show', '--ids', $privateEndpointId)
         $connections = @($privateEndpoint.privateLinkServiceConnections)
         $manualConnections = @($privateEndpoint.manualPrivateLinkServiceConnections)
         $validationStage = 'private endpoint identity and ownership readback'
-        if (-not ([string]$privateEndpoint.id).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$privateEndpoint.name -cne "pe-$serverName" -or
-            [string]$privateEndpoint.location -cne [string]$Config.location -or
-            [string]$privateEndpoint.provisioningState -cne 'Succeeded' -or
-            [string]$privateEndpoint.tags.bootstrapOwnershipId -cne $canonicalOwnershipId -or
-            [string]$privateEndpoint.tags.bootstrapSourceFingerprint -cne $SourceFingerprint) { throw 'mismatch' }
+                if (-not ([string]$privateEndpoint.id).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'privateEndpoint.id')
+        }
+        if ([string]$privateEndpoint.name -cne "pe-$serverName") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'privateEndpoint.name')
+        }
+        if ([string]$privateEndpoint.location -cne [string]$Config.location) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'privateEndpoint.location')
+        }
+        if ([string]$privateEndpoint.provisioningState -cne 'Succeeded') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'privateEndpoint.provisioningState')
+        }
+        if ([string]$privateEndpoint.tags.bootstrapOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'privateEndpoint.tags.bootstrapOwnershipId')
+        }
+        if ([string]$privateEndpoint.tags.bootstrapSourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'privateEndpoint.tags.bootstrapSourceFingerprint')
+        }
         $validationStage = 'private endpoint subnet and connection cardinality readback'
-        if (-not ([string]$privateEndpoint.subnet.id).Equals([string]$Foundation.privateEndpointSubnetId, [StringComparison]::OrdinalIgnoreCase) -or
-            $manualConnections.Count -ne 0 -or $connections.Count -ne 1) { throw 'mismatch' }
+                if (-not ([string]$privateEndpoint.subnet.id).Equals([string]$Foundation.privateEndpointSubnetId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'privateEndpoint.subnet.id')
+        }
+        if ($manualConnections.Count -ne 0) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'manualConnections.Count')
+        }
+        if ($connections.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'connections.Count')
+        }
         $connectionGroupIds = @($connections[0].groupIds | ForEach-Object { [string]$_ })
         $validationStage = 'private endpoint SQL connection name readback'
-        if ([string]$connections[0].name -cne "peconn-$serverName") { throw 'mismatch' }
+                if ([string]$connections[0].name -cne "peconn-$serverName") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'connections.name')
+        }
         $validationStage = 'private endpoint SQL resource binding readback'
-        if (-not ([string]$connections[0].privateLinkServiceId).Equals($serverId, [StringComparison]::OrdinalIgnoreCase)) { throw 'mismatch' }
+                if (-not ([string]$connections[0].privateLinkServiceId).Equals($serverId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'connections.privateLinkServiceId')
+        }
         $validationStage = 'private endpoint SQL group binding readback'
-        if ($connectionGroupIds.Count -ne 1 -or
-            -not [string]::Equals([string]($connectionGroupIds[0]), 'sqlServer', [StringComparison]::Ordinal)) { throw 'mismatch' }
+                if ($connectionGroupIds.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'connectionGroupIds.Count')
+        }
+        if (-not [string]::Equals([string]($connectionGroupIds[0]), 'sqlServer', [StringComparison]::Ordinal)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'connectionGroupIds')
+        }
         $validationStage = 'private endpoint SQL approval readback'
-        if ([string]$connections[0].privateLinkServiceConnectionState.status -cne 'Approved') { throw 'mismatch' }
+                if ([string]$connections[0].privateLinkServiceConnectionState.status -cne 'Approved') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'connections.privateLinkServiceConnectionState.status')
+        }
 
         $validationStage = 'private DNS zone readback'
         $zone = Invoke-AzJson -Arguments @('network', 'private-dns', 'zone', 'show', '--ids', $zoneId)
-        if (-not ([string]$zone.id).Equals($zoneId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$zone.name -cne 'privatelink.database.windows.net' -or
-            [string]$zone.location -cne 'global' -or
-            [string]$zone.tags.bootstrapOwnershipId -cne $canonicalOwnershipId -or
-            [string]$zone.tags.bootstrapSourceFingerprint -cne $SourceFingerprint) { throw 'mismatch' }
+                if (-not ([string]$zone.id).Equals($zoneId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'zone.id')
+        }
+        if ([string]$zone.name -cne 'privatelink.database.windows.net') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'zone.name')
+        }
+        if ([string]$zone.location -cne 'global') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'zone.location')
+        }
+        if ([string]$zone.tags.bootstrapOwnershipId -cne $canonicalOwnershipId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'zone.tags.bootstrapOwnershipId')
+        }
+        if ([string]$zone.tags.bootstrapSourceFingerprint -cne $SourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'zone.tags.bootstrapSourceFingerprint')
+        }
 
         $validationStage = 'private DNS virtual-network link readback'
         $link = Invoke-AzJson -Arguments @('network', 'private-dns', 'link', 'vnet', 'show', '--ids', $linkId)
-        if (-not ([string]$link.id).Equals($linkId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$link.name -cne "link-$($Config.projectName)-$($Config.environment)-sql" -or
-            [string]$link.location -cne 'global' -or
-            [string]$link.provisioningState -cne 'Succeeded' -or
-            $link.registrationEnabled -ne $false -or
-            -not ([string]$link.virtualNetwork.id).Equals([string]$Foundation.virtualNetworkId, [StringComparison]::OrdinalIgnoreCase)) { throw 'mismatch' }
+                if (-not ([string]$link.id).Equals($linkId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'link.id')
+        }
+        if ([string]$link.name -cne "link-$($Config.projectName)-$($Config.environment)-sql") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'link.name')
+        }
+        if ([string]$link.location -cne 'global') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'link.location')
+        }
+        if ([string]$link.provisioningState -cne 'Succeeded') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'link.provisioningState')
+        }
+        if ($link.registrationEnabled -ne $false) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'link.registrationEnabled')
+        }
+        if (-not ([string]$link.virtualNetwork.id).Equals([string]$Foundation.virtualNetworkId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'link.virtualNetwork.id')
+        }
 
         $validationStage = 'private DNS zone-group readback'
         $zoneGroup = Invoke-AzJson -Arguments @('network', 'private-endpoint', 'dns-zone-group', 'show', '--ids', $zoneGroupId)
         $zoneConfigs = @($zoneGroup.privateDnsZoneConfigs)
-        if (-not ([string]$zoneGroup.id).Equals($zoneGroupId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$zoneGroup.name -cne 'sqlDnsGroup' -or [string]$zoneGroup.provisioningState -cne 'Succeeded' -or
-            $zoneConfigs.Count -ne 1 -or [string]$zoneConfigs[0].name -cne 'sql' -or
-            -not ([string]$zoneConfigs[0].privateDnsZoneId).Equals($zoneId, [StringComparison]::OrdinalIgnoreCase)) { throw 'mismatch' }
+                if (-not ([string]$zoneGroup.id).Equals($zoneGroupId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'zoneGroup.id')
+        }
+        if ([string]$zoneGroup.name -cne 'sqlDnsGroup') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'zoneGroup.name')
+        }
+        if ([string]$zoneGroup.provisioningState -cne 'Succeeded') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'zoneGroup.provisioningState')
+        }
+        if ($zoneConfigs.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'zoneConfigs.Count')
+        }
+        if ([string]$zoneConfigs[0].name -cne 'sql') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'zoneConfigs.name')
+        }
+        if (-not ([string]$zoneConfigs[0].privateDnsZoneId).Equals($zoneId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'zoneConfigs.privateDnsZoneId')
+        }
 
         $validationStage = 'SQL server connection enumeration'
         $serverConnections = @(Invoke-AzJsonArray -OperationLabel 'SQL server private-endpoint connection discovery' -Arguments @(
             'network', 'private-endpoint-connection', 'list', '--id', $serverId,
             '--query', '[].{id:id,privateEndpointId:properties.privateEndpoint.id,status:properties.privateLinkServiceConnectionState.status}'
         ))
-        if ($serverConnections.Count -ne 1 -or
-            -not ([string]$serverConnections[0].privateEndpointId).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$serverConnections[0].status -cne 'Approved') { throw 'mismatch' }
+                if ($serverConnections.Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'serverConnections.Count')
+        }
+        if (-not ([string]$serverConnections[0].privateEndpointId).Equals($privateEndpointId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'serverConnections.privateEndpointId')
+        }
+        if ([string]$serverConnections[0].status -cne 'Approved') {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'serverConnections.status')
+        }
         $validationStage = 'private endpoint NIC and private DNS A-record convergence readback'
         $addressEvidence = Get-GatewaySqlPrivateEndpointReadyAddressEvidence `
             -Config $Config -Foundation $Foundation -SqlServerFqdn $SqlServerFqdn
@@ -5734,12 +6852,19 @@ function Test-GatewaySqlPrivateEndpointEvidence {
             'privateEndpointNetworkInterfaceId', 'privateEndpointIpv4Address',
             'privateDnsARecordSetId', 'privateDnsARecordName', 'privateDnsARecordIpv4Address'
         )) {
-            if (-not ([string]$addressEvidence[$propertyName]).Equals(
-                    [string]$Evidence[$propertyName], [StringComparison]::OrdinalIgnoreCase)) { throw 'mismatch' }
+                        if (-not ([string]$addressEvidence[$propertyName]).Equals( [string]$Evidence[$propertyName], [StringComparison]::OrdinalIgnoreCase)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName "addressEvidence.$propertyName")
+            }
         }
         return $true
     }
     catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                "SQL private endpoint, approval, subnet, and private-DNS evidence failed at the reviewed $validationStage boundary; refusing automatic replay.",
+                $_.Exception)
+        }
         throw "SQL private endpoint, approval, subnet, and private-DNS evidence failed at the reviewed $validationStage boundary; refusing automatic replay."
     }
 }
@@ -5763,9 +6888,19 @@ function Test-GatewayImmutableImageEvidence {
         @($Evidence.checkpointedComponents).Count -ne 4) { throw 'Immutable-image evidence is incomplete or belongs to different state/source; refusing automatic replay.' }
     try {
         $loginServer = Invoke-AzTsv -Arguments @('acr', 'show', '--name', [string]$Evidence.registry, '--query', 'loginServer')
-        if ([string]::IsNullOrWhiteSpace($loginServer)) { throw 'mismatch' }
+                if ([string]::IsNullOrWhiteSpace($loginServer)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'loginServer')
+        }
     }
-    catch { throw 'Immutable-image registry revalidation was unavailable or mismatched; refusing automatic rebuild. Review access/state and run gateway diagnose.' }
+    catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Immutable-image registry revalidation was unavailable or mismatched; refusing automatic rebuild. Review access/state and run gateway diagnose.',
+                $_.Exception)
+        }
+        throw 'Immutable-image registry revalidation was unavailable or mismatched; refusing automatic rebuild. Review access/state and run gateway diagnose.'
+    }
     $repositories = [ordered]@{
         api = 'gateway-api'
         worker = 'gateway-worker'
@@ -5803,17 +6938,47 @@ function Test-GatewayImmutableImageEvidence {
                 '--query', '{runId:runId,status:status,runType:runType,outputImages:outputImages}'
             )
             $runImages = @($run.outputImages)
-            if ([string]$run.runId -cne $runId -or [string]$run.status -cne 'Succeeded' -or
-                [string]$run.runType -cne 'QuickRun' -or $runImages.Count -ne 1 -or
-                [string]$runImages[0].repository -cne $repository -or
-                [string]$runImages[0].tag -cne $expectedTag -or
-                [string]$runImages[0].digest -cne $recordedDigest) { throw 'mismatch' }
+                        if ([string]$run.runId -cne $runId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'run.runId')
+            }
+            if ([string]$run.status -cne 'Succeeded') {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'run.status')
+            }
+            if ([string]$run.runType -cne 'QuickRun') {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'run.runType')
+            }
+            if ($runImages.Count -ne 1) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'runImages.Count')
+            }
+            if ([string]$runImages[0].repository -cne $repository) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'runImages.repository')
+            }
+            if ([string]$runImages[0].tag -cne $expectedTag) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'runImages.tag')
+            }
+            if ([string]$runImages[0].digest -cne $recordedDigest) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'runImages.digest')
+            }
             $digest = Invoke-AzTsv -Arguments @('acr', 'manifest', 'show-metadata', '--registry', [string]$Evidence.registry, '--name', "${repository}:$expectedTag", '--query', 'digest')
-            if ($digest -cnotmatch '^sha256:[0-9a-f]{64}$' -or
-                $recordedDigest -cne $digest -or
-                -not $image.EndsWith("@$digest", [StringComparison]::Ordinal)) { throw 'mismatch' }
+                        if ($digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'digest')
+            }
+            if ($recordedDigest -cne $digest) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'recordedDigest')
+            }
+            if (-not $image.EndsWith("@$digest", [StringComparison]::Ordinal)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName "evidence.$name")
+            }
         }
-        catch { throw 'Immutable-image revalidation was unavailable or mismatched; refusing automatic rebuild. Review access/state and run gateway diagnose.' }
+        catch {
+            if (-not [string]::IsNullOrWhiteSpace(
+                    (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+                throw [InvalidOperationException]::new(
+                    'Immutable-image revalidation was unavailable or mismatched; refusing automatic rebuild. Review access/state and run gateway diagnose.',
+                    $_.Exception)
+            }
+            throw 'Immutable-image revalidation was unavailable or mismatched; refusing automatic rebuild. Review access/state and run gateway diagnose.'
+        }
     }
     return $true
 }
@@ -5824,16 +6989,38 @@ function Test-GatewayAdminRedirectEvidence {
     try {
         $application = Invoke-AzJson -Arguments @('rest', '--method', 'GET', '--url', "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)?`$select=web,spa,publicClient,keyCredentials")
         $base = ([string]$AdminUi.adminUiUrl).TrimEnd('/')
-        if (@($application.web.redirectUris).Count -ne 1 -or
-            [string]$application.web.redirectUris[0] -cne "$base/signin-oidc" -or
-            [string]$application.web.logoutUrl -cne "$base/signout-callback-oidc" -or
-            -not [string]::IsNullOrWhiteSpace([string]$application.web.homePageUrl) -or
-            @($application.spa.redirectUris).Count -ne 0 -or
-            @($application.publicClient.redirectUris).Count -ne 0 -or
-            @($application.keyCredentials).Count -ne 0) { throw 'mismatch' }
+                if (@($application.web.redirectUris).Count -ne 1) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.web.redirectUris')
+        }
+        if ([string]$application.web.redirectUris[0] -cne "$base/signin-oidc") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.web.redirectUris')
+        }
+        if ([string]$application.web.logoutUrl -cne "$base/signout-callback-oidc") {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.web.logoutUrl')
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$application.web.homePageUrl)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.web.homePageUrl')
+        }
+        if (@($application.spa.redirectUris).Count -ne 0) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.spa.redirectUris')
+        }
+        if (@($application.publicClient.redirectUris).Count -ne 0) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.publicClient.redirectUris')
+        }
+        if (@($application.keyCredentials).Count -ne 0) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'application.keyCredentials')
+        }
         return $true
     }
-    catch { throw 'Admin redirect revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.' }
+    catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Admin redirect revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.',
+                $_.Exception)
+        }
+        throw 'Admin redirect revalidation was unavailable or mismatched; refusing automatic replay. Review access/state and run gateway diagnose.'
+    }
 }
 
 Export-ModuleMember -Function *

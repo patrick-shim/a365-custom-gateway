@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-09-04 (Asia/Seoul).
+Last updated: 2026-09-05 (Asia/Seoul).
 
 This is the concise source-of-truth checkpoint for contributors. Public setup starts
 at the repository [README](../README.md). Exact deployed development evidence is in
@@ -25,9 +25,10 @@ The repository implements an N:N Gateway with:
 - optional Prompt Shields and Purview runtime protection;
 - a resumable clean-subscription bootstrap with guided and terminal entry points.
 
-Agent 365 Registry and several Agent Identity surfaces remain preview dependencies.
-Development can explicitly enable continuous registration. Staging and production
-remain closed by default.
+Agent 365 Registry remains a beta dependency that Microsoft does not support for
+production use. Agent Identity creation uses documented Graph v1.0 surfaces, while
+tenant permission availability can still vary. Development can explicitly enable
+continuous registration. Staging and production remain closed by default.
 
 ## Bootstrap contract
 
@@ -56,6 +57,10 @@ identifiers only. The tool has no destroy mode. If a completed resource group wa
 deleted, do not replay its preserved state; use a new isolated deployment identity
 or an independently reviewed recovery procedure.
 
+The source identifies itself as prerelease `0.1.0-beta.1`. That version is a source
+contract, not a deployment claim; a tag can be called live-verified only after its
+exact committed source is provisioned and read back.
+
 A stopped step now names its own cause. `Invoke-BootstrapCommand` extracts a bounded
 signature from failed provider output — at most eight `code`/`errorCode` values and
 four correlation GUIDs — and attaches it to the thrown exception, so the safe failure
@@ -63,6 +68,11 @@ event, the Setup timeline, and the persisted checkpoint all carry those identifi
 The unfiltered provider text never crosses that boundary; it is written to an ignored
 `.bootstrap/diagnostics/` file restricted to the current account and referenced only
 by path. A failure with no provider signature keeps its curated message unchanged.
+Completed-step validators likewise attach only the exact property path and the fact
+that it disagreed. Curated validator context is preserved, while expected and actual
+resource IDs, endpoints, principal IDs, image digests, and provider text remain
+suppressed. The failed checkpoint and terminal error therefore identify the field an
+operator must investigate without disclosing either value.
 
 Long provider calls report movement. A registered progress sink receives only values
 the bootstrap produced — a command label built from leading lowercase verb tokens, a
@@ -154,14 +164,24 @@ emits at most one POST. HTTP 201 with a safe returned ID is persisted immediatel
 the planned ID is used only when a successful response omits an ID. An unknown POST
 outcome permits exact GET only and never another POST.
 
+The Registry adapter has no POST retry loop. Timeout, transport failure,
+502/503/504, conflict, and every non-201 2xx response are ambiguous and route to
+exact planned-ID GET recovery. Provider bodies remain suppressed.
+
 Final verification re-reads blueprint, principal, federation, child, observability
 role, and child-token mapping before setting `Active`.
+
+Active, non-null child Agent Identity object IDs and child client IDs are each
+database-unique. The ordered SQL migration rejects pre-existing active duplicates
+without rewriting registration data.
 
 ## Optional protection contract
 
 Prompt Shields is a pre-model call to Azure AI Content Safety using the API managed
 identity. An allow returns a short-lived, single-use receipt bound to the request;
 protected interaction ingestion requires and consumes it.
+The token provider uses `ManagedIdentityCredential` only; it has no developer,
+environment, CLI, workload, or client-secret credential-chain fallback.
 
 Purview runtime uses Graph v1.0 and honors activity-specific inline or offline
 processing. Policy authoring has two distinct scopes:
@@ -183,23 +203,23 @@ remain outstanding.
 
 | Verification project | Passed | Failed | Skipped |
 |---|---:|---:|---:|
-| Gateway.UnitTests | 655 | 0 | 0 |
+| Gateway.UnitTests | 661 | 0 | 0 |
 | Gateway.AdminUi.Tests | 169 | 0 | 0 |
 | Gateway.Setup.Tests | 317 | 0 | 0 |
-| Gateway.ObservabilityRuntime.Tests | 179 | 0 | 0 |
-| Gateway.ArchitectureTests | 115 | 0 | 0 |
-| Gateway.IntegrationTests | 85 | 0 | 0 |
+| Gateway.ObservabilityRuntime.Tests | 189 | 0 | 0 |
+| Gateway.ArchitectureTests | 117 | 0 | 0 |
+| Gateway.IntegrationTests | 86 | 0 | 0 |
 | Gateway.EndToEndTests | 102 | 0 | 0 |
 | Gateway.SecurityTests | 126 | 0 | 0 |
-| **.NET total** | **1,748** | **0** | **0** |
+| **.NET total** | **1,767** | **0** | **0** |
 
 Run these eight projects directly. `src/A365Gateway.slnx` contains no test project,
 so `dotnet test` against that solution reports success without executing a test.
 
 The PowerShell gate spans three Pester directories, not one: `tests/Bootstrap.Tests`
-contributes 740 passed with seven non-Windows cases intentionally skipped,
+contributes 747 passed with seven non-Windows cases intentionally skipped,
 `tests/Gateway.Purview.Tests` contributes 22, and `tests/Operations.Tests`
-contributes 32, for 794 passed and none failed out of 801 discovered. Run them
+contributes 32, for 801 passed and none failed out of 808 discovered. Run them
 through `tools/Test-BootstrapSource.ps1 -RunPester`, whose `$pesterPaths` array is
 the authoritative list, rather than naming directories individually. Adding
 `-CompileBicep` validates 18 PowerShell source files and two JSON contracts, then
@@ -238,7 +258,7 @@ PowerShell source gate above.
 The launcher, standalone source-compiler, Azure CLI boundary, Bicep prerequisite,
 and Entra credential and orphan-cleanup regressions that earlier revisions listed as
 a separate table are files inside `tests/Bootstrap.Tests` and are already counted in
-its 740. Do not restate a subset as though it were an independent gate.
+its 747. Do not restate a subset as though it were an independent gate.
 
 The explicit Windows Bicep compilation lane has run for this source generation and
 passed. Closing that lane required one contributor-tool correction.
@@ -297,6 +317,13 @@ and `.\gateway.cmd plan` — `./gateway plan` on macOS — is the discriminator.
 run authors tenant policy over an interactive sign-in, so it is Windows-only and
 cannot run unattended.
 
+For the `0.1.0-beta.1` candidate, the authorized live exercise is broader: create
+two registrations on one newly created blueprint and two on one existing blueprint,
+require all four to reach provider-verified `Active`, then validate Agent 365
+observability, Prompt Shields allow/block behavior, and the Purview DLP allow/block
+pair with approved synthetic input. The exact new resource group must be named and
+authorized before bootstrap starts.
+
 Two platform checks are still open and neither blocks that goal: the macOS root
 `gateway` launcher on the core path with Purview disabled, and fixture-backed local
 browser inspection of the Setup Resume journey at desktop and narrow widths over
@@ -304,9 +331,10 @@ representative preserved stopped state. The hosted Windows launcher check named 
 earlier revisions is closed; operator-run Windows bootstraps have provisioned
 complete gateways through `gateway.cmd`.
 
-The first unfinished source task is described in the
-[agent continuation checkpoint](agent-continuation.md): validators throw a bare
-`'mismatch'`, so a failed step names itself but never the field that disagreed.
+The validator-diagnostics source task in the
+[agent continuation checkpoint](agent-continuation.md) is complete and independently
+rereviewed. No further source task is selected; the remaining delivery goal is the
+operator-gated live Purview evidence above.
 
 For any authorized Azure, Entra, SQL, Graph, Purview, or deployment action, first
 read [the deployment status](operations/development-deployment-status.md) and the

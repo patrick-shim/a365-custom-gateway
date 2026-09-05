@@ -18,6 +18,58 @@ public sealed class PromptShieldClientTests
         null,
         "correlation-unattributed");
 
+    [Fact]
+    public void TokenProvider_UsesOnlyManagedIdentityCredential()
+    {
+        var credential = ManagedIdentityPromptShieldTokenProvider.CreateCredential(
+            new PromptShieldOptions());
+
+        credential.GetType().FullName.Should().Be("Azure.Identity.ManagedIdentityCredential");
+    }
+
+    [Fact]
+    public void TokenProvider_UsesOnlyUserAssignedManagedIdentityCredential()
+    {
+        var credential = ManagedIdentityPromptShieldTokenProvider.CreateCredential(
+            new PromptShieldOptions
+            {
+                ManagedIdentityClientId = "55555555-5555-4555-8555-555555555555"
+            });
+
+        credential.GetType().FullName.Should().Be("Azure.Identity.ManagedIdentityCredential");
+    }
+
+    [Fact]
+    public void TokenProvider_BindsCanonicalUserAssignedManagedIdentityClientId()
+    {
+        string? boundClientId = null;
+        var credential = ManagedIdentityPromptShieldTokenProvider.CreateCredential(
+            new PromptShieldOptions
+            {
+                ManagedIdentityClientId = "{AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE}"
+            },
+            clientId =>
+            {
+                boundClientId = clientId;
+                return new StubTokenCredential();
+            });
+
+        credential.Should().BeOfType<StubTokenCredential>();
+        boundClientId.Should().Be("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+    }
+
+    [Theory]
+    [InlineData("not-a-guid")]
+    [InlineData("00000000-0000-0000-0000-000000000000")]
+    public void TokenProvider_RejectsInvalidManagedIdentityClientId(string clientId)
+    {
+        var action = () => ManagedIdentityPromptShieldTokenProvider.CreateCredential(
+            new PromptShieldOptions { ManagedIdentityClientId = clientId });
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("PromptShield:ManagedIdentityClientId must be a non-empty GUID.");
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -217,5 +269,18 @@ public sealed class PromptShieldClientTests
     {
         public ValueTask<AccessToken> GetTokenAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(new AccessToken("test-token", DateTimeOffset.UtcNow.AddMinutes(5)));
+    }
+
+    private sealed class StubTokenCredential : TokenCredential
+    {
+        public override AccessToken GetToken(
+            TokenRequestContext requestContext,
+            CancellationToken cancellationToken) =>
+            new("test-token", DateTimeOffset.UtcNow.AddMinutes(5));
+
+        public override ValueTask<AccessToken> GetTokenAsync(
+            TokenRequestContext requestContext,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(GetToken(requestContext, cancellationToken));
     }
 }

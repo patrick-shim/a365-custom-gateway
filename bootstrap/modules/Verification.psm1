@@ -43,7 +43,9 @@ function Test-GatewayRecordedDatabaseAttestationBoundary {
         $isManualRepair = $Database -is [System.Collections.IDictionary] -and
             $Database.Contains('manualDatabaseRepairMode') -and
             [string]$Database.manualDatabaseRepairMode -ceq 'ResumeAfterSchemaCompleted'
-        if ($isRecovery -and $isManualRepair) { throw 'mismatch' }
+        if ($isRecovery -and $isManualRepair) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'database.manualDatabaseRepairMode')
+        }
         $isResumeAfterSchema = $isRecovery -or $isManualRepair
         $recoveryAttemptNumber = if ($isRecovery -and $Database.Contains('databaseRecoveryAttemptNumber')) { [int]$Database.databaseRecoveryAttemptNumber } else { 0 }
         $expectedJobName = if ($isRecovery) {
@@ -53,64 +55,75 @@ function Test-GatewayRecordedDatabaseAttestationBoundary {
         else { "job-$($Config.projectName)-db-init-$($Config.environment)" }
         $expectedJobId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.App/jobs/$expectedJobName"
         $intent = $Database.initializationIntent
-        if (-not $intent -or
-            [string]$Database.deploymentOwnershipId -cne $canonicalOwnershipId -or
-            [string]$Database.acceptedSourceFingerprint -cne $SourceFingerprint -or
-            [string]$Database.server -cne [string]$Runtime.sqlServerFqdn -or
-            [string]$Database.database -cne 'GatewayDb' -or
-            [string]$Database.networkMode -cne 'PrivateContainerAppsJob' -or
-            $Database.privateNetworkExecutionVerified -ne $true -or
-            $Database.legacyPublicBootstrapClientIpv4Unused -ne $true -or
-            $Database.originalSqlAdministratorRestored -ne $true -or
-            ($isRecovery -and $recoveryAttemptNumber -notin @(1, 2)) -or
-            [string]$Database.originalSqlAdministratorObjectId -cne ([guid][string]$Database.originalSqlAdministratorObjectId).ToString('D') -or
-            [string]::IsNullOrWhiteSpace([string]$Database.originalSqlAdministratorLogin) -or
-            [string]$Database.databaseBootstrapJobName -cne $expectedJobName -or
-            -not ([string]$Database.databaseBootstrapJobId).Equals($expectedJobId, [StringComparison]::OrdinalIgnoreCase) -or
-            [string]$Database.databaseBootstrapJobImage -cnotmatch "^$([regex]::Escape([string]$Runtime.acrLoginServer))/gateway-db-migrator@sha256:[0-9a-f]{64}$" -or
-            [string]$Database.databaseBootstrapJobPrincipalId -cne ([guid][string]$Database.databaseBootstrapJobPrincipalId).ToString('D') -or
-            [string]$Database.databaseBootstrapExecutionName -cnotmatch "^$([regex]::Escape($expectedJobName))-[a-z0-9]{5,16}$" -or
-            [string]$Database.databaseBootstrapExecutionIntentId -cne ([guid][string]$Database.databaseBootstrapExecutionIntentId).ToString('D') -or
-            [guid][string]$Database.databaseBootstrapExecutionIntentId -eq [guid]::Empty -or
-            [string]$Database.databaseBootstrapEvidenceFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
-            -not ([string]$Database.privateEndpointNetworkInterfaceId).StartsWith($expectedNicPrefix, [StringComparison]::Ordinal) -or
-            [string]$Database.privateEndpointNetworkInterfaceId -cnotmatch '\.nic\.[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' -or
-            [string]$Database.privateEndpointIpv4Address -cne [string]$Database.privateDnsARecordIpv4Address -or
-            [string]$Database.privateDnsARecordSetId -cne $expectedRecordSetId -or
-            [string]$Database.privateDnsARecordName -cne $serverName -or
-            [string]$Database.schemaFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
-            [string]$Database.apiPrincipalName -cne "ca-gateway-api-$($Config.environment)" -or
-            [string]$Database.workerPrincipalName -cne "ca-gateway-worker-$($Config.environment)-v3" -or
-            [string]$Database.apiPrincipalObjectId -cne ([guid][string]$Runtime.apiPrincipalId).ToString('D') -or
-            [string]$Database.workerPrincipalObjectId -cne ([guid][string]$Runtime.workerPrincipalId).ToString('D') -or
-            [string]$Database.apiPrincipalClientId -cne $apiClientId -or
-            [string]$Database.workerPrincipalClientId -cne $workerClientId -or
-            $apiClientId -ceq $workerClientId -or
-            (@($Database.apiDirectPermissions | ForEach-Object { [string]$_ } | Sort-Object) -join '|') -cne 'VIEW DEFINITION' -or
-            @($Database.workerDirectPermissions).Count -ne 0 -or
-            [string]$intent.markerName -cne 'A365GatewayBootstrapInitializationIntent' -or
-            [int]$intent.schemaVersion -ne 1 -or
-            [string]$intent.deploymentOwnershipId -cne $canonicalOwnershipId -or
-            [string]$intent.acceptedSourceFingerprint -cne $SourceFingerprint -or
-            ($isResumeAfterSchema -and [string]$intent.recoveryMode -cne 'ResumeAfterSchemaCompleted') -or
-            [string]$intent.server -cne [string]$Runtime.sqlServerFqdn -or
-            [string]$intent.database -cne 'GatewayDb' -or
-            [string]$intent.databaseCollation -cne 'SQL_Latin1_General_CP1_CI_AS' -or
-            [string]$intent.catalogCollation -cne 'SQL_Latin1_General_CP1_CI_AS' -or
-            [string]$intent.databaseOwnerSidSha256 -cnotmatch '^sha256:[0-9a-f]{64}$' -or
-            $intent.exactReadbackVerified -ne $true -or
-            $Runtime.databaseAttestationEnabled -ne $true -or
-            [string]$Runtime.databaseAttestationExpectedSchemaFingerprint -cne [string]$Database.schemaFingerprint -or
-            [string]$Runtime.databaseAttestationApiPrincipalName -cne [string]$Database.apiPrincipalName -or
-            [string]$Runtime.databaseAttestationApiPrincipalClientId -cne $apiClientId -or
-            [string]$Runtime.databaseAttestationWorkerPrincipalName -cne [string]$Database.workerPrincipalName -or
-            [string]$Runtime.databaseAttestationWorkerPrincipalClientId -cne $workerClientId -or
-            [string]$Runtime.databaseAttestationDatabaseName -cne 'GatewayDb') {
-            throw 'mismatch'
+        $mismatchChecks = @(
+            'database.initializationIntent'; { -not $intent }
+            'database.deploymentOwnershipId'; { [string]$Database.deploymentOwnershipId -cne $canonicalOwnershipId }
+            'database.acceptedSourceFingerprint'; { [string]$Database.acceptedSourceFingerprint -cne $SourceFingerprint }
+            'database.server'; { [string]$Database.server -cne [string]$Runtime.sqlServerFqdn }
+            'database.database'; { [string]$Database.database -cne 'GatewayDb' }
+            'database.networkMode'; { [string]$Database.networkMode -cne 'PrivateContainerAppsJob' }
+            'database.privateNetworkExecutionVerified'; { $Database.privateNetworkExecutionVerified -ne $true }
+            'database.legacyPublicBootstrapClientIpv4Unused'; { $Database.legacyPublicBootstrapClientIpv4Unused -ne $true }
+            'database.originalSqlAdministratorRestored'; { $Database.originalSqlAdministratorRestored -ne $true }
+            'database.databaseRecoveryAttemptNumber'; { $isRecovery -and $recoveryAttemptNumber -notin @(1, 2) }
+            'database.originalSqlAdministratorObjectId'; { [string]$Database.originalSqlAdministratorObjectId -cne ([guid][string]$Database.originalSqlAdministratorObjectId).ToString('D') }
+            'database.originalSqlAdministratorLogin'; { [string]::IsNullOrWhiteSpace([string]$Database.originalSqlAdministratorLogin) }
+            'database.databaseBootstrapJobName'; { [string]$Database.databaseBootstrapJobName -cne $expectedJobName }
+            'database.databaseBootstrapJobId'; { -not ([string]$Database.databaseBootstrapJobId).Equals($expectedJobId, [StringComparison]::OrdinalIgnoreCase) }
+            'database.databaseBootstrapJobImage'; { [string]$Database.databaseBootstrapJobImage -cnotmatch "^$([regex]::Escape([string]$Runtime.acrLoginServer))/gateway-db-migrator@sha256:[0-9a-f]{64}$" }
+            'database.databaseBootstrapJobPrincipalId'; { [string]$Database.databaseBootstrapJobPrincipalId -cne ([guid][string]$Database.databaseBootstrapJobPrincipalId).ToString('D') }
+            'database.databaseBootstrapExecutionName'; { [string]$Database.databaseBootstrapExecutionName -cnotmatch "^$([regex]::Escape($expectedJobName))-[a-z0-9]{5,16}$" }
+            'database.databaseBootstrapExecutionIntentId'; { [string]$Database.databaseBootstrapExecutionIntentId -cne ([guid][string]$Database.databaseBootstrapExecutionIntentId).ToString('D') }
+            'database.databaseBootstrapExecutionIntentId'; { [guid][string]$Database.databaseBootstrapExecutionIntentId -eq [guid]::Empty }
+            'database.databaseBootstrapEvidenceFingerprint'; { [string]$Database.databaseBootstrapEvidenceFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' }
+            'database.privateEndpointNetworkInterfaceId'; { -not ([string]$Database.privateEndpointNetworkInterfaceId).StartsWith($expectedNicPrefix, [StringComparison]::Ordinal) }
+            'database.privateEndpointNetworkInterfaceId'; { [string]$Database.privateEndpointNetworkInterfaceId -cnotmatch '\.nic\.[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' }
+            'database.privateEndpointIpv4Address'; { [string]$Database.privateEndpointIpv4Address -cne [string]$Database.privateDnsARecordIpv4Address }
+            'database.privateDnsARecordSetId'; { [string]$Database.privateDnsARecordSetId -cne $expectedRecordSetId }
+            'database.privateDnsARecordName'; { [string]$Database.privateDnsARecordName -cne $serverName }
+            'database.schemaFingerprint'; { [string]$Database.schemaFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' }
+            'database.apiPrincipalName'; { [string]$Database.apiPrincipalName -cne "ca-gateway-api-$($Config.environment)" }
+            'database.workerPrincipalName'; { [string]$Database.workerPrincipalName -cne "ca-gateway-worker-$($Config.environment)-v3" }
+            'database.apiPrincipalObjectId'; { [string]$Database.apiPrincipalObjectId -cne ([guid][string]$Runtime.apiPrincipalId).ToString('D') }
+            'database.workerPrincipalObjectId'; { [string]$Database.workerPrincipalObjectId -cne ([guid][string]$Runtime.workerPrincipalId).ToString('D') }
+            'database.apiPrincipalClientId'; { [string]$Database.apiPrincipalClientId -cne $apiClientId }
+            'database.workerPrincipalClientId'; { [string]$Database.workerPrincipalClientId -cne $workerClientId }
+            'database.workerPrincipalClientId'; { $apiClientId -ceq $workerClientId }
+            'database.apiDirectPermissions'; { (@($Database.apiDirectPermissions | ForEach-Object { [string]$_ } | Sort-Object) -join '|') -cne 'VIEW DEFINITION' }
+            'database.workerDirectPermissions'; { @($Database.workerDirectPermissions).Count -ne 0 }
+            'database.initializationIntent.markerName'; { [string]$intent.markerName -cne 'A365GatewayBootstrapInitializationIntent' }
+            'database.initializationIntent.schemaVersion'; { [int]$intent.schemaVersion -ne 1 }
+            'database.initializationIntent.deploymentOwnershipId'; { [string]$intent.deploymentOwnershipId -cne $canonicalOwnershipId }
+            'database.initializationIntent.acceptedSourceFingerprint'; { [string]$intent.acceptedSourceFingerprint -cne $SourceFingerprint }
+            'database.initializationIntent.recoveryMode'; { $isResumeAfterSchema -and [string]$intent.recoveryMode -cne 'ResumeAfterSchemaCompleted' }
+            'database.initializationIntent.server'; { [string]$intent.server -cne [string]$Runtime.sqlServerFqdn }
+            'database.initializationIntent.database'; { [string]$intent.database -cne 'GatewayDb' }
+            'database.initializationIntent.databaseCollation'; { [string]$intent.databaseCollation -cne 'SQL_Latin1_General_CP1_CI_AS' }
+            'database.initializationIntent.catalogCollation'; { [string]$intent.catalogCollation -cne 'SQL_Latin1_General_CP1_CI_AS' }
+            'database.initializationIntent.databaseOwnerSidSha256'; { [string]$intent.databaseOwnerSidSha256 -cnotmatch '^sha256:[0-9a-f]{64}$' }
+            'database.initializationIntent.exactReadbackVerified'; { $intent.exactReadbackVerified -ne $true }
+            'runtime.databaseAttestationEnabled'; { $Runtime.databaseAttestationEnabled -ne $true }
+            'runtime.databaseAttestationExpectedSchemaFingerprint'; { [string]$Runtime.databaseAttestationExpectedSchemaFingerprint -cne [string]$Database.schemaFingerprint }
+            'runtime.databaseAttestationApiPrincipalName'; { [string]$Runtime.databaseAttestationApiPrincipalName -cne [string]$Database.apiPrincipalName }
+            'runtime.databaseAttestationApiPrincipalClientId'; { [string]$Runtime.databaseAttestationApiPrincipalClientId -cne $apiClientId }
+            'runtime.databaseAttestationWorkerPrincipalName'; { [string]$Runtime.databaseAttestationWorkerPrincipalName -cne [string]$Database.workerPrincipalName }
+            'runtime.databaseAttestationWorkerPrincipalClientId'; { [string]$Runtime.databaseAttestationWorkerPrincipalClientId -cne $workerClientId }
+            'runtime.databaseAttestationDatabaseName'; { [string]$Runtime.databaseAttestationDatabaseName -cne 'GatewayDb' }
+        )
+        for ($index = 0; $index -lt $mismatchChecks.Count; $index += 2) {
+            if (& ([scriptblock]$mismatchChecks[$index + 1])) {
+                throw (New-BootstrapValidationMismatchException -PropertyName ([string]$mismatchChecks[$index]))
+            }
         }
         return $true
     }
     catch {
+        if (-not [string]::IsNullOrWhiteSpace(
+                (Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception))) {
+            throw [InvalidOperationException]::new(
+                'Recorded database attestation is incomplete or does not match the exact runtime ownership, source, schema, initialization-intent, and principal boundary.',
+                $_.Exception)
+        }
         throw 'Recorded database attestation is incomplete or does not match the exact runtime ownership, source, schema, initialization-intent, and principal boundary.'
     }
 }

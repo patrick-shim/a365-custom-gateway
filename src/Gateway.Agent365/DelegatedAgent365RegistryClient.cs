@@ -28,14 +28,6 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
         TimeSpan.FromSeconds(16)
     ];
 
-    private static readonly TimeSpan[] DefaultCreateRetryDelays =
-    [
-        TimeSpan.Zero,
-        TimeSpan.FromSeconds(2),
-        TimeSpan.FromSeconds(4),
-        TimeSpan.FromSeconds(8)
-    ];
-
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -47,7 +39,6 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
     private readonly string _originatingStore;
     private readonly Guid _managerApplicationId;
     private readonly IReadOnlyList<TimeSpan> _verificationDelays;
-    private readonly IReadOnlyList<TimeSpan> _createRetryDelays;
 
     public DelegatedAgent365RegistryClient(
         IHttpClientFactory httpClientFactory,
@@ -58,8 +49,7 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
             tokenProvider,
             options.Value.RegistryOriginatingStore,
             options.Value.RegistryManagerApplicationId,
-            verificationDelays: null,
-            createRetryDelays: null)
+            verificationDelays: null)
     {
     }
 
@@ -68,8 +58,7 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
         IAgent365DelegatedTokenProvider tokenProvider,
         string originatingStore,
         string managerApplicationId,
-        IReadOnlyList<TimeSpan>? verificationDelays = null,
-        IReadOnlyList<TimeSpan>? createRetryDelays = null)
+        IReadOnlyList<TimeSpan>? verificationDelays = null)
     {
         _httpClient = httpClient;
         _tokenProvider = tokenProvider;
@@ -77,7 +66,6 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
         if (!TryParseNonEmptyGuid(managerApplicationId, out _managerApplicationId))
             throw new InvalidOperationException("The Agent 365 Registry manager application ID is invalid.");
         _verificationDelays = verificationDelays?.ToArray() ?? DefaultVerificationDelays;
-        _createRetryDelays = createRetryDelays?.ToArray() ?? DefaultCreateRetryDelays;
     }
 
     public async Task<string> CreateAsync(
@@ -85,91 +73,68 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
         CancellationToken cancellationToken)
     {
         ValidateRequest(request);
-        for (var attemptIndex = 0; attemptIndex < _createRetryDelays.Count; attemptIndex++)
+        var token = await GetTokenAsync(cancellationToken);
+        using var httpRequest = CreateRequest(
+            HttpMethod.Post,
+            "beta/copilot/agentRegistrations",
+            token,
+            new
+            {
+                id = request.PlannedRegistrationId.ToString("D"),
+                displayName = request.DisplayName,
+                description = request.Description,
+                ownerIds = new[] { request.OwnerObjectId.ToString("D") },
+                sourceAgentId = request.SourceAgentId,
+                originatingStore = _originatingStore,
+                agentIdentityId = request.AgentIdentityObjectId.ToString("D"),
+                agentIdentityBlueprintId = request.BlueprintClientId.ToString("D"),
+                managedByAppId = _managerApplicationId.ToString("D"),
+                createdBy = request.CreatedByObjectId.ToString("D"),
+                sourceCreatedDateTime = request.SourceCreatedAtUtc,
+                sourceLastModifiedDateTime = request.SourceLastModifiedAtUtc
+            });
+
+        HttpResponseMessage response;
+        try
         {
-            var delay = _createRetryDelays[attemptIndex];
-            if (delay > TimeSpan.Zero)
-                await Task.Delay(delay, cancellationToken);
-
-            var token = await GetTokenAsync(cancellationToken);
-            using var httpRequest = CreateRequest(
-                HttpMethod.Post,
-                "beta/copilot/agentRegistrations",
-                token,
-                new
-                {
-                    id = request.PlannedRegistrationId.ToString("D"),
-                    displayName = request.DisplayName,
-                    description = request.Description,
-                    ownerIds = new[] { request.OwnerObjectId.ToString("D") },
-                    sourceAgentId = request.SourceAgentId,
-                    originatingStore = _originatingStore,
-                    agentIdentityId = request.AgentIdentityObjectId.ToString("D"),
-                    agentIdentityBlueprintId = request.BlueprintClientId.ToString("D"),
-                    managedByAppId = _managerApplicationId.ToString("D"),
-                    createdBy = request.CreatedByObjectId.ToString("D"),
-                    sourceCreatedDateTime = request.SourceCreatedAtUtc,
-                    sourceLastModifiedDateTime = request.SourceLastModifiedAtUtc
-                });
-
-            HttpResponseMessage response;
-            try
-            {
-                response = await _httpClient.SendAsync(
-                    httpRequest,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    cancellationToken);
-            }
-            catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
-            {
-                throw AmbiguousCreate(exception);
-            }
-            catch (TaskCanceledException exception)
-            {
-                if (attemptIndex + 1 < _createRetryDelays.Count)
-                    continue;
-                throw AmbiguousCreate(exception);
-            }
-            catch (HttpRequestException exception)
-            {
-                if (attemptIndex + 1 < _createRetryDelays.Count)
-                    continue;
-                throw AmbiguousCreate(exception);
-            }
-
-            using (response)
-            {
-                if (IsCliRetryable(response.StatusCode) &&
-                    attemptIndex + 1 < _createRetryDelays.Count)
-                    continue;
-
-                if (response.IsSuccessStatusCode)
-                {
-                    var returnedId = await ReadRegistrationIdAsync(response, cancellationToken);
-                    return returnedId ?? request.PlannedRegistrationId.ToString("D");
-                }
-
-                if (response.StatusCode == HttpStatusCode.Conflict)
-                {
-                    var existingId = await ReadRegistrationIdAsync(response, cancellationToken);
-                    if (IsSafeRegistrationId(existingId))
-                        return existingId!;
-
-                    throw Failure(
-                        ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT,
-                        "The Agent 365 Registry reported an existing source Agent ID without returning its Registry identifier.",
-                        mutationMayHaveOccurred: true);
-                }
-
-                throw Failure(
-                    MapCreateFailureCode(response.StatusCode),
-                    MapCreateFailureSummary(response.StatusCode),
-                    mutationMayHaveOccurred: IsAmbiguousCreateStatus(response.StatusCode),
-                    isTransient: IsTransient(response.StatusCode));
-            }
+            response = await _httpClient.SendAsync(
+                httpRequest,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+        }
+        catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
+        {
+            throw AmbiguousCreate(exception);
+        }
+        catch (TaskCanceledException exception)
+        {
+            throw AmbiguousCreate(exception);
+        }
+        catch (HttpRequestException exception)
+        {
+            throw AmbiguousCreate(exception);
         }
 
-        throw AmbiguousCreate();
+        using (response)
+        {
+            if (response.StatusCode == HttpStatusCode.Created)
+            {
+                var returnedId = await ReadRegistrationIdAsync(response, cancellationToken);
+                return returnedId ?? request.PlannedRegistrationId.ToString("D");
+            }
+
+            if (response.IsSuccessStatusCode)
+                throw AmbiguousCreate();
+
+            if (response.StatusCode == HttpStatusCode.Conflict)
+                throw AmbiguousCreate();
+
+            throw Failure(
+                MapCreateFailureCode(response.StatusCode),
+                MapCreateFailureSummary(response.StatusCode),
+                mutationMayHaveOccurred: true,
+                isTransient: IsTransient(response.StatusCode));
+        }
     }
 
     private static async Task<string?> ReadRegistrationIdAsync(
@@ -437,15 +402,6 @@ internal sealed class DelegatedAgent365RegistryClient : IAgent365DelegatedRegist
     private static bool IsTransient(HttpStatusCode statusCode) =>
         statusCode is HttpStatusCode.RequestTimeout or
             HttpStatusCode.TooManyRequests ||
-        (int)statusCode >= 500;
-
-    private static bool IsCliRetryable(HttpStatusCode statusCode) =>
-        statusCode is HttpStatusCode.BadGateway or
-            HttpStatusCode.ServiceUnavailable or
-            HttpStatusCode.GatewayTimeout;
-
-    private static bool IsAmbiguousCreateStatus(HttpStatusCode statusCode) =>
-        statusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests ||
         (int)statusCode >= 500;
 
     private static string MapCreateFailureCode(HttpStatusCode statusCode) =>

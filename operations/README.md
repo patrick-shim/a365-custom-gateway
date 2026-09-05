@@ -7,7 +7,10 @@ deployment, use `./gateway setup` and the [bootstrap guide](../bootstrap/README.
 Start every existing-environment action from current source, read the live
 [deployment checkpoint](../docs/operations/development-deployment-status.md), and
 run the smallest read-only preflight or verification that proves the intended
-target. A successful local command is not evidence that Azure changed.
+target. Obtain current user authority for that exact target before any Azure, Entra,
+SQL, Graph, Service Bus, Purview, deployment, cleanup, or incident action. A
+successful local command is not evidence that Azure changed, and an earlier
+authorization does not carry forward.
 
 ## Routine commands
 
@@ -16,7 +19,7 @@ Run these from the repository root:
 | Command | Purpose |
 |---|---|
 | `./gateway status` | Read local bootstrap checkpoint/readiness state without Azure calls. |
-| `./gateway verify` | Rerun the canonical read-only deployment verifier. |
+| `./gateway verify` | Rerun the canonical live, read-only deployment verifier. |
 | `./gateway diagnose` | Create a sanitized local diagnostic bundle. |
 | `./gateway open` | Open the recorded verified Admin UI. |
 | `./gateway resume` | Reconcile and continue an interrupted accepted bootstrap. |

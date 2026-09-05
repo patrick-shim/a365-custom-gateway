@@ -369,7 +369,29 @@ Describe 'Current private-runtime database attestation boundary' {
                 -Database $script:database `
                 -DeploymentOwnershipId $script:ownershipId `
                 -SourceFingerprint $script:sourceFingerprint } |
-                Should -Throw '*initialization-intent*'
+                Should -Throw 'Recorded database attestation is incomplete or does not match the exact runtime ownership, source, schema, initialization-intent, and principal boundary.'
+        }
+
+        It 'preserves only the exact database property cause across its curated catch' {
+            $script:database.database = 'Value-that-must-not-appear'
+            $caught = $null
+
+            try {
+                Test-GatewayRecordedDatabaseAttestationBoundary `
+                    -Config $script:config `
+                    -Runtime $script:runtime `
+                    -Database $script:database `
+                    -DeploymentOwnershipId $script:ownershipId `
+                    -SourceFingerprint $script:sourceFingerprint
+            }
+            catch {
+                $caught = $_
+            }
+
+            $caught | Should -Not -BeNullOrEmpty
+            Get-BootstrapExceptionValidationMismatchPropertyName -Exception $caught.Exception |
+                Should -BeExactly 'database.database'
+            $caught.Exception.Message | Should -Not -Match 'Value-that-must-not-appear|GatewayDb'
         }
 
         It 'accepts only the two-field v1 live attestation response' {

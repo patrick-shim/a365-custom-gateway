@@ -14,6 +14,14 @@ reconstruct current work from chat or troubleshooting history. Git transfers
 neither `.agent-runtime/` nor retained legacy `.agents/runtime/` state. The
 end-to-end gate is Plan, Build, OfflineValidate, Deploy, LiveValidate,
 UpdateCheckpoint, then Complete. Unit tests alone never complete this gate.
+A source change invalidates Build and every later gate; a documentation-only
+change invalidates UpdateCheckpoint and Complete.
+
+For delegated work, record one owner and an exact non-overlapping file or
+read-only boundary, validation, stopping condition, and starting checkpoint.
+The delegate records a structured handoff before reporting; the coordinator
+records a receipt before relying on it. Delegate events never replace the
+coordinator's current objective or gate.
 
 ## Product overview
 
@@ -32,7 +40,7 @@ flowchart LR
     Relay --> SB[Service Bus v3]
     SB --> Worker[Provisioning worker]
     Worker --> Graph[Microsoft Graph / Agent Identity]
-    API -->|delegated OBO| Registry[Agent 365 Registry preview]
+    API -->|delegated OBO| Registry[Agent 365 Registry beta]
 ```
 
 The API is the authorization and Registry boundary. The worker owns idempotent
@@ -64,6 +72,10 @@ provider mutations directly.
 4. Implement the smallest coherent change with focused tests.
 5. Run broader Release, source, formatting, and documentation checks.
 6. Update concise documentation when behavior or operator workflow changed.
+
+Local tests and source checkpoints are source evidence, not deployment evidence
+or live-readiness proof. Current authorized readback from the exact target is
+required for deployment and live-function claims.
 
 Do not copy volatile deployment IDs, digests, or queue counts into tracked public
 files. Keep exact live evidence in ignored or access-controlled operator storage;

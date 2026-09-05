@@ -102,12 +102,16 @@ public sealed class DelegatedAgent365RegistryClientTests
         handler.Requests.Should().ContainSingle();
     }
 
-    [Fact]
-    public async Task CreateAsync_RetriesCliTransientStatusesWithSameDurablePayloadWithoutLeak()
+    [Theory]
+    [InlineData(HttpStatusCode.BadGateway)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    [InlineData(HttpStatusCode.GatewayTimeout)]
+    public async Task CreateAsync_AmbiguousGatewayStatusDoesNotReplayOrExposeBody(
+        HttpStatusCode statusCode)
     {
         const string dependencyBody = "sensitive-dependency-body";
         var handler = new RecordingHandler((_, _) => new HttpResponseMessage(
-            HttpStatusCode.BadGateway)
+            statusCode)
         {
             Content = new StringContent(dependencyBody)
         });
@@ -119,12 +123,67 @@ public sealed class DelegatedAgent365RegistryClientTests
         exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
         exception.Which.MutationMayHaveOccurred.Should().BeTrue();
         exception.Which.Message.Should().NotContain(dependencyBody);
-        handler.Requests.Should().HaveCount(4);
-        handler.Requests.Select(request => request.Body).Distinct().Should().ContainSingle();
+        handler.Requests.Should().ContainSingle();
+        handler.Requests[0].Method.Should().Be(HttpMethod.Post);
     }
 
     [Fact]
-    public async Task CreateAsync_ReturnsExistingIdFromSourceIdentityConflict()
+    public async Task CreateAsync_HttpRequestFailureIsAmbiguousWithoutReplay()
+    {
+        var handler = new RecordingHandler((_, _) =>
+            throw new HttpRequestException("Synthetic network failure."));
+        var client = CreateClient(handler);
+
+        var action = () => client.CreateAsync(CreateRequest(), CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365DelegatedRegistryException>();
+        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
+        exception.Which.MutationMayHaveOccurred.Should().BeTrue();
+        handler.Requests.Should().ContainSingle();
+        handler.Requests[0].Method.Should().Be(HttpMethod.Post);
+    }
+
+    [Fact]
+    public async Task CreateAsync_TimeoutIsAmbiguousWithoutReplay()
+    {
+        var handler = new RecordingHandler((_, _) =>
+            throw new TaskCanceledException("Synthetic timeout."));
+        var client = CreateClient(handler);
+
+        var action = () => client.CreateAsync(CreateRequest(), CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365DelegatedRegistryException>();
+        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
+        exception.Which.MutationMayHaveOccurred.Should().BeTrue();
+        handler.Requests.Should().ContainSingle();
+        handler.Requests[0].Method.Should().Be(HttpMethod.Post);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.OK)]
+    [InlineData(HttpStatusCode.Accepted)]
+    [InlineData(HttpStatusCode.NoContent)]
+    public async Task CreateAsync_NonCreatedSuccessStatusIsAmbiguousWithoutReplayOrBodyLeak(
+        HttpStatusCode statusCode)
+    {
+        const string dependencyBody = "sensitive-dependency-body";
+        var handler = new RecordingHandler((_, _) => JsonResponse(
+            statusCode,
+            new { id = RegistrationId, detail = dependencyBody }));
+        var client = CreateClient(handler);
+
+        var action = () => client.CreateAsync(CreateRequest(), CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365DelegatedRegistryException>();
+        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
+        exception.Which.MutationMayHaveOccurred.Should().BeTrue();
+        exception.Which.Message.Should().NotContain(dependencyBody);
+        handler.Requests.Should().ContainSingle();
+        handler.Requests[0].Method.Should().Be(HttpMethod.Post);
+    }
+
+    [Fact]
+    public async Task CreateAsync_ConflictIsAmbiguousEvenWhenTheBodyReturnsAnId()
     {
         var existingId = Guid.Parse("07070707-0707-4707-8707-070707070707");
         var handler = new RecordingHandler((_, _) => JsonResponse(
@@ -132,9 +191,32 @@ public sealed class DelegatedAgent365RegistryClientTests
             new { id = existingId }));
         var client = CreateClient(handler);
 
-        var result = await client.CreateAsync(CreateRequest(), CancellationToken.None);
+        var action = () => client.CreateAsync(CreateRequest(), CancellationToken.None);
 
-        result.Should().Be(existingId.ToString("D"));
+        var exception = await action.Should().ThrowAsync<Agent365DelegatedRegistryException>();
+        exception.Which.ErrorCode.Should().Be(ErrorCodes.PROVISIONING_AMBIGUOUS_RESULT);
+        exception.Which.MutationMayHaveOccurred.Should().BeTrue();
+        exception.Which.Message.Should().NotContain(existingId.ToString("D"));
+        handler.Requests.Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task CreateAsync_DefinitiveHttpRejectionStillPreventsAnotherPost(
+        HttpStatusCode statusCode)
+    {
+        var handler = new RecordingHandler((_, _) => JsonResponse(
+            statusCode,
+            new { error = "provider-body-must-not-appear" }));
+        var client = CreateClient(handler);
+
+        var action = () => client.CreateAsync(CreateRequest(), CancellationToken.None);
+
+        var exception = await action.Should().ThrowAsync<Agent365DelegatedRegistryException>();
+        exception.Which.MutationMayHaveOccurred.Should().BeTrue();
+        exception.Which.Message.Should().NotContain("provider-body-must-not-appear");
         handler.Requests.Should().ContainSingle();
     }
 
@@ -170,8 +252,7 @@ public sealed class DelegatedAgent365RegistryClientTests
             tokenProvider,
             "A365CustomGateway",
             Agent365Options.OfficialAgentXManagerApplicationId,
-            delays ?? [TimeSpan.Zero],
-            [TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero]);
+            delays ?? [TimeSpan.Zero]);
     }
 
     private static Agent365DelegatedRegistryRequest CreateRequest() => new(

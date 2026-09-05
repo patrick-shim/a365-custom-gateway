@@ -15,7 +15,7 @@ public static class DependencyInjection
             .Bind(configuration.GetSection(PromptShieldOptions.SectionName))
             .ValidateOnStart();
         services.AddSingleton<IValidateOptions<PromptShieldOptions>, PromptShieldOptionsValidator>();
-        services.AddSingleton<IPromptShieldTokenProvider, DefaultAzurePromptShieldTokenProvider>();
+        services.AddSingleton<IPromptShieldTokenProvider, ManagedIdentityPromptShieldTokenProvider>();
         services.AddHttpClient(nameof(PromptShieldClient), (serviceProvider, client) =>
         {
             var options = serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>().Value;

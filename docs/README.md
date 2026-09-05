@@ -24,10 +24,13 @@ not setup instructions.
 
 Prompt Shields are configured by the bootstrap's `promptShield` section and then
 selected per registration. Purview policy authoring is optional, and bootstrap
-keeps its runtime adapter disabled until the post-bootstrap token-role and bounded
-verdict checks pass. Its policy locations are not interchangeable: Know Your Data
-uses the fixed tenant-wide enterprise-AI-apps `Group` location, while DLP uses each
-selected blueprint application ID as an `Individual` location.
+can make its runtime adapter reachable after exact policy readback. Readback is not
+token-role propagation or live verdict proof, so keep Purview off on ordinary
+registrations and use only an approved nonproduction registration for the bounded
+runtime check. Its policy locations are not
+interchangeable: Know Your Data uses the fixed tenant-wide enterprise-AI-apps
+`Group` location, while DLP uses each selected blueprint application ID as an
+`Individual` location.
 
 ## Operate and recover
 

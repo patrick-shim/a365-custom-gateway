@@ -1,6 +1,6 @@
 # Development deployment status
 
-Last updated: 2026-09-04 (Asia/Seoul).
+Last updated: 2026-09-05 (Asia/Seoul).
 
 This checkpoint separates deployed evidence from source claims. It intentionally
 contains no subscription, tenant, resource-group, application, principal,
@@ -229,20 +229,32 @@ Pending that batch, in commit order:
   policy objects pass exact typed readback;
 - the setup wizard defaulting to the recorded deployment identity, so accepting
   the defaults reconfigures that deployment instead of silently naming a new
-  one; and
+  one;
 - the Purview anti-replay guard scoping itself to a real prior authoring
-  attempt, so enabling Purview after a disabled no-op completion can proceed.
+  attempt, so enabling Purview after a disabled no-op completion can proceed; and
+- completed-step validator failures naming only the exact mismatched property path,
+  while expected and actual resource values remain suppressed;
+- Registry creation emitting one POST only and treating every result except
+  documented `201 Created` as failure or exact-ID-recoverable ambiguity;
+- Prompt Shields using managed identity only, without a default developer or
+  environment credential chain; and
+- active child Agent Identity object IDs being database-unique through an ordered,
+  fail-closed migration that does not rewrite registrations.
 
-That last item is the only one in the batch that changes the database schema, so
-the next provision will apply a new migration script and record a different
-schema fingerprint. That is expected, not drift.
+Two items in the pending batch change the database schema. Per-agent Prompt Shields
+identity attribution adds
+`infrastructure/sql/20260903_prompt_evaluation_agent_identity.sql`, and active child
+identity uniqueness adds
+`infrastructure/sql/20260905_active_agent_identity_uniqueness.sql`. The next
+provision applies both in order and records a different schema fingerprint. That is
+expected, not drift.
 
 ## Offline gate
 
-All eight .NET test projects pass 1,748 tests with zero failures, and the
+All eight .NET test projects pass 1,767 tests with zero failures, and the
 solution build completes with zero warnings and zero errors under
-`-warnaserror`. The PowerShell side is 794 passed, zero failed, and seven
-non-Windows cases skipped out of 801 discovered.
+`-warnaserror`. The PowerShell side is 801 passed, zero failed, and seven
+non-Windows cases skipped out of 808 discovered.
 
 Run the test projects individually. `src/A365Gateway.slnx` deliberately contains
 only shipping projects, so a solution-scoped `dotnet test` matches no test
@@ -314,9 +326,10 @@ only the non-sensitive outcome here:
 3. exact identity, role, federation, network, and database readbacks;
 4. API and Admin UI health;
 5. active/scheduled/dead-letter counts for every owned queue;
-6. one bounded registration through `Active` without duplicate Registry mutation;
+6. four bounded registrations through `Active` without duplicate Registry mutation:
+   two on one newly created blueprint and two on one existing blueprint;
 7. per-sink Agent 365 export acceptance, not merely an HTTP status;
-8. optional Prompt Shields and Purview results, clearly separated; and
+8. optional Prompt Shields and Purview allow/block results, clearly separated; and
 9. the next safe operator action.
 
 The durable deployment lessons are reflected in code and runbooks: private SQL

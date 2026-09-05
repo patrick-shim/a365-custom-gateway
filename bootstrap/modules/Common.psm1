@@ -652,6 +652,37 @@ function Get-BootstrapExceptionProviderErrorCodes {
     return @()
 }
 
+function New-BootstrapValidationMismatchException {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateLength(1, 128)]
+        [ValidatePattern('^[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)*$')]
+        [string]$PropertyName
+    )
+
+    $exception = [InvalidOperationException]::new('Bootstrap validation property disagreed.')
+    $exception.Data['GatewayValidationMismatchPropertyName'] = $PropertyName
+    return $exception
+}
+
+function Get-BootstrapExceptionValidationMismatchPropertyName {
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][Exception]$Exception)
+
+    $current = $Exception
+    for ($depth = 0; $depth -lt 8 -and $null -ne $current; $depth++) {
+        $propertyName = $current.Data['GatewayValidationMismatchPropertyName']
+        if ($propertyName -is [string] -and
+            $propertyName.Length -le 128 -and
+            $propertyName -cmatch '^[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)*$') {
+            return $propertyName
+        }
+        $current = $current.InnerException
+    }
+    return ''
+}
+
 function Set-BootstrapProgressSink {
     <#
         .SYNOPSIS
@@ -4041,6 +4072,13 @@ function Invoke-BootstrapStateStep {
             $validationSucceeded = [bool]$validationResult[0]
         }
         catch {
+            $mismatchPropertyName = Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception
+            $mismatchCause = if ([string]::IsNullOrWhiteSpace($mismatchPropertyName)) {
+                ''
+            }
+            else {
+                " because property '$mismatchPropertyName' disagreed"
+            }
             $State.steps[$Name] = [ordered]@{
                 status = 'Failed'
                 startedAtUtc = if ($existing.Contains('startedAtUtc')) { [string]$existing.startedAtUtc } else { '' }
@@ -4048,11 +4086,11 @@ function Invoke-BootstrapStateStep {
                 failedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
                 sourceFingerprint = $stepSourceFingerprint
                 evidence = $existing.evidence
-                message = "Bootstrap step '$Name' failed independent revalidation. Prior evidence was preserved for exact reconciliation."
+                message = "Bootstrap step '$Name' failed independent revalidation$mismatchCause. Prior evidence was preserved for exact reconciliation."
             }
             Save-BootstrapState -State $State -Path $StatePath
             Write-BootstrapEvent -Status Failed -StepName $Name
-            throw "Completed bootstrap step '$Name' could not be independently revalidated. State was preserved; correct the validation prerequisite before resuming."
+            throw "Completed bootstrap step '$Name' could not be independently revalidated$mismatchCause. State was preserved; correct the validation prerequisite before resuming."
         }
         if ($validationSucceeded) {
             Write-BootstrapSuccess "$Name already complete and revalidated"

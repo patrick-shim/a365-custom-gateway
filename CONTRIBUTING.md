@@ -29,7 +29,6 @@ not require or authorize a live tenant mutation.
 
 ```bash
 dotnet restore src/A365Gateway.slnx
-dotnet format src/A365Gateway.slnx --verify-no-changes
 dotnet build src/A365Gateway.slnx -c Release --no-restore
 ```
 
@@ -46,11 +45,26 @@ dotnet test tests/Gateway.ArchitectureTests -c Release
 dotnet test tests/Gateway.SecurityTests -c Release
 ```
 
+Formatting is a separate nine-target gate because the shipping solution contains no
+test projects:
+
+```bash
+dotnet format src/A365Gateway.slnx --verify-no-changes
+dotnet format tests/Gateway.UnitTests/Gateway.UnitTests.csproj --verify-no-changes
+dotnet format tests/Gateway.AdminUi.Tests/Gateway.AdminUi.Tests.csproj --verify-no-changes
+dotnet format tests/Gateway.Setup.Tests/Gateway.Setup.Tests.csproj --verify-no-changes
+dotnet format tests/Gateway.ObservabilityRuntime.Tests/Gateway.ObservabilityRuntime.Tests.csproj --verify-no-changes
+dotnet format tests/Gateway.IntegrationTests/Gateway.IntegrationTests.csproj --verify-no-changes
+dotnet format tests/Gateway.EndToEndTests/Gateway.EndToEndTests.csproj --verify-no-changes
+dotnet format tests/Gateway.ArchitectureTests/Gateway.ArchitectureTests.csproj --verify-no-changes
+dotnet format tests/Gateway.SecurityTests/Gateway.SecurityTests.csproj --verify-no-changes
+```
+
 Bootstrap, Purview policy, and operations tests use Pester 5.6.1. The repository
 source gate runs the appropriate suites:
 
 ```powershell
-./tools/Test-BootstrapSource.ps1 -RunPester
+pwsh -NoProfile -File tools/Test-BootstrapSource.ps1 -RunPester -CompileBicep
 ```
 
 Never point an automated test at a live tenant. A local green result is not

@@ -54,6 +54,10 @@ internal sealed class AgentRegistrationConfiguration : IEntityTypeConfiguration<
             .IsUnique()
             .HasFilter("[ExternalClientId] IS NOT NULL AND [IsDeleted] = 0");
 
+        builder.HasIndex(e => e.AgentIdentityObjectId)
+            .IsUnique()
+            .HasFilter("[AgentIdentityObjectId] IS NOT NULL AND [IsDeleted] = 0");
+
         builder.HasIndex(e => e.Status);
         builder.HasIndex(e => new { e.Environment, e.Status });
         builder.HasIndex(e => e.OwnerObjectId);

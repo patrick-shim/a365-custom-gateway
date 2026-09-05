@@ -7,6 +7,7 @@ WORKDIR /src
 
 COPY ["global.json", "./"]
 COPY ["nuget.config", "./"]
+COPY ["Directory.Build.props", "./"]
 COPY ["src/Gateway.AdminUi/Gateway.AdminUi.csproj", "src/Gateway.AdminUi/"]
 COPY ["src/Gateway.Contracts/Gateway.Contracts.csproj", "src/Gateway.Contracts/"]
 RUN dotnet restore "src/Gateway.AdminUi/Gateway.AdminUi.csproj" --configfile nuget.config

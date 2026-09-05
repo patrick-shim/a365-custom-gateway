@@ -43,7 +43,9 @@ workflow formats are compatibility material, not supported deployment releases.
 - Unknown, unsupported, unauthorized, or unverifiable provider behavior fails
   closed and must not be reported as `Completed`, `Active`, or synchronized.
 
-Agent 365 Registry and some Agent Identity surfaces are preview dependencies.
+Agent 365 Registry is a beta dependency that Microsoft does not support for
+production use. Agent Identity creation uses documented Graph v1.0 surfaces, while
+tenant permission availability can still vary.
 Prompt Shields and Purview are optional runtime features. Purview keeps Microsoft's
 fixed Know Your Data Group scope separate from blueprint Individual DLP; policy
 readback alone is not propagation or runtime-verdict proof.

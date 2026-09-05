@@ -25,7 +25,7 @@ info:
     microsoft.a365.agent.blueprint.id. It omits gen_ai.agent.type and
     microsoft.a365.agent.platform.id. Agent 365 OTLP HTTP 200 proves endpoint
     acceptance only, not downstream CloudAppEvents landing.
-  version: 1.0.0
+  version: 0.1.0-beta.1
   contact:
     name: Gateway Admin
   license:

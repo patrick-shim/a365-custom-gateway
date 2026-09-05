@@ -830,6 +830,61 @@ Describe 'Bootstrap state compatibility and atomic persistence' {
         $state.steps['Noisy validation'].evidence.resourceId | Should -Be 'safe-resource-id'
     }
 
+    It 'reports only the bounded property name from a trusted validation mismatch' {
+        $config = New-TestBootstrapConfig
+        $state = New-BootstrapState -Config $config
+        $state.steps['Diagnosable validation'] = [ordered]@{
+            status = 'Completed'
+            evidence = [ordered]@{ resourceId = 'safe-resource-id' }
+        }
+        $path = Join-Path $TestDrive 'diagnosable-validator.json'
+        Save-BootstrapState -State $state -Path $path
+
+        $caught = $null
+        try {
+            Invoke-BootstrapStateStep -Name 'Diagnosable validation' -State $state -StatePath $path -Validate {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'runtime.apiPrincipalId')
+            } -Action {
+                throw 'Action must not run after failed validation.'
+            }
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.Exception.Message | Should -Be "Completed bootstrap step 'Diagnosable validation' could not be independently revalidated because property 'runtime.apiPrincipalId' disagreed. State was preserved; correct the validation prerequisite before resuming."
+        $state.steps['Diagnosable validation'].message | Should -Be "Bootstrap step 'Diagnosable validation' failed independent revalidation because property 'runtime.apiPrincipalId' disagreed. Prior evidence was preserved for exact reconciliation."
+        $state.steps['Diagnosable validation'].message | Should -Not -Match 'expected-value|actual-value'
+    }
+
+    It 'does not propagate untrusted validator exception text' {
+        $config = New-TestBootstrapConfig
+        $state = New-BootstrapState -Config $config
+        $state.steps['Untrusted validation'] = [ordered]@{
+            status = 'Completed'
+            evidence = [ordered]@{ resourceId = 'safe-resource-id' }
+        }
+        $path = Join-Path $TestDrive 'untrusted-validator.json'
+        Save-BootstrapState -State $state -Path $path
+
+        $caught = $null
+        try {
+            Invoke-BootstrapStateStep -Name 'Untrusted validation' -State $state -StatePath $path -Validate {
+                throw 'resourceId expected-value actual-value'
+            } -Action {
+                throw 'Action must not run after failed validation.'
+            }
+        }
+        catch {
+            $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.Exception.Message | Should -Be "Completed bootstrap step 'Untrusted validation' could not be independently revalidated. State was preserved; correct the validation prerequisite before resuming."
+        $state.steps['Untrusted validation'].message | Should -Not -Match 'resourceId|expected-value|actual-value'
+    }
+
     It 'reconciles a previously started non-replayable step without invoking its action' {
         $config = New-TestBootstrapConfig
         $state = New-BootstrapState -Config $config

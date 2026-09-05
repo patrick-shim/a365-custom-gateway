@@ -1,11 +1,12 @@
 # Microsoft Purview setup
 
 Purview is an optional Gateway runtime feature, not a prerequisite for deploying or
-using the core Gateway. Configure and validate it after the base deployment is
-healthy. Leave Purview disabled in the bootstrap configuration until every runtime
-prerequisite below is verified; bootstrap derives `Purview__Enabled` from that
-configuration once the policy objects pass exact typed readback, so the flag is
-never set by hand.
+using the core Gateway. Select it before Plan only when the tenant, target, and
+operator authority are ready for policy authoring. After exact typed policy readback,
+bootstrap deploys the API with `Purview__Enabled=true`; never set that flag by hand.
+This makes the adapter reachable but does not prove managed-identity token-role
+propagation or a live DLP verdict. Keep Purview off on ordinary registrations; use
+one approved nonproduction registration for the bounded runtime checks below.
 
 ## Scope model
 
@@ -61,99 +62,32 @@ the commands permitted by the signed-in account's RBAC. Setup therefore tests th
 real command and inventory and stops if authorization cannot be proven; do not grant
 a broader role merely to bypass that check.
 
-## Enable Purview on an existing deployment
+## Case B — deploy a fresh Gateway with Purview enabled
 
-Purview is reconcilable input rather than deployment identity, so enabling it is
-a configuration change and not a teardown. Whether that change can be applied to
-an existing deployment depends on a second, independent condition: bootstrap
-refuses to mix source generations inside one deployment state. Establish which
-case you are in before doing anything, because the two paths differ completely.
+Bootstrap does not re-plan a deployment after it has persisted checkpoints. A
+configuration fingerprint change can be recorded for diagnosis, but it does not
+authorize Apply or Resume with changed settings. Therefore a completed core
+deployment with Purview disabled cannot be enabled in place through bootstrap.
+Preserve its configuration and `.bootstrap/` evidence.
 
-```powershell
-.\gateway.cmd plan
-```
+Use a fresh deployment identity and enable Purview before its first Plan:
 
-If `plan` refuses with *"Bootstrap source changed after durable state evidence was
-recorded"*, the working tree no longer matches the source that provisioned the
-deployment, and no in-place path exists. Use case B.
-
-Run either case on Windows. The Purview authoring step cannot run on macOS or
-Linux for the reason given above, and it cannot run unattended.
-
-### Case A — the source is unchanged
-
-Deployment identity is exactly `subscriptionId`, `tenantId`, `environment`,
-`location`, `projectName`, and `resourceGroupName`. Keep all six as recorded, or
-bootstrap treats the run as a different deployment and provisions a separate one
-beside the existing gateway. Both initializers offer the recorded project name and
-resource group back as defaults whenever the subscription, tenant, and environment
-already match, and state which deployment they are reconfiguring; accepting those
-defaults is the reconciling path.
-
-1. Rewrite the configuration with Purview enabled, selecting the sensitive
-   information type through the tenant-backed picker described in
-   [Select a sensitive information type](#select-a-sensitive-information-type):
-
-   ```powershell
-   .\gateway.cmd init
-   ```
-
-   Guided Setup (`.\gateway.cmd setup`) presents the identical contract in the
-   browser. Either is acceptable; do not hand-edit `bootstrap/config.json` to
-   insert a sensitive-information-type GUID, because an unverified GUID fails
-   closed mid-run after the deployment steps have already restarted.
-
-2. Apply the change:
-
-   ```powershell
-   .\gateway.cmd up --config bootstrap/config.json
-   ```
-
-   Bootstrap reopens `Purview policies` and `Gateway runtime deployment`. The
-   first authors the collection, DLP policy, and DLP rule over an interactive
-   `Connect-IPPSSession` sign-in and verifies them by exact typed readback; the
-   second redeploys the API and worker with the adapter enabled. Stay at the
-   terminal: the compliance sign-in is a browser handoff that the run waits on,
-   and `--non-interactive` makes the run fail closed at the Purview step rather
-   than authoring policy without a signed-in operator.
-
-   Reopening is safe here only because the recorded completion was a no-op. A
-   step that completed while Purview was disabled records `configured: false`,
-   which is written before any tenant object is created, so there is nothing to
-   repeat and bootstrap simply runs it. Evidence from a run that *did* author
-   policy is treated differently: it fails closed rather than replaying a
-   mutation, and the run stops with the step preserved for exact reconciliation.
-   If that happens, review the tenant policies named in the configuration before
-   resuming; do not delete `.bootstrap/` state to clear it.
-
-Then continue with the registration and runtime checks below.
-
-### Case B — the source has changed
-
-This is the normal case whenever pending source corrections are waiting to ship,
-and it is the only supported path then. There is no in-place application upgrade,
-and none should be added: mixing source generations inside one deployment state is
-exactly what the guard prevents. Do not delete `.bootstrap/` state to force the
-in-place path, and do not point fresh state at an existing resource group.
-
-Provision a new deployment with Purview enabled from the start, which also lands
-every pending correction in the same cycle:
-
-1. Run `.\gateway.cmd init` (or `.\gateway.cmd setup`) and enter a **new** project
-   name rather than accepting the recorded one. The wizard states which
-   deployment the defaults would reconfigure, so read that line before pressing
-   Enter. Enable Purview and select the sensitive information type through the
-   tenant-backed picker described in
+1. On Windows, run `.\gateway.cmd init` or `.\gateway.cmd setup`, choose a new
+   project name and resource group, and select the sensitive information type
+   through the tenant-backed picker described in
    [Select a sensitive information type](#select-a-sensitive-information-type).
+   Do not hand-edit a classifier GUID into `bootstrap/config.json`.
+2. Review the exact target and authenticated What-If with `.\gateway.cmd plan`,
+   then run `.\gateway.cmd apply --open` only with current authority for that
+   tenant, subscription, resource group, Entra boundary, and Purview policy change.
+   Stay at the terminal for the interactive `Connect-IPPSSession` handoff;
+   `--non-interactive` fails closed before policy authoring.
+3. Preserve the prior deployment until the new one passes bootstrap Verify and the
+   registration/runtime checks below. Retiring it is a separate destructive action
+   requiring fresh authorization for that exact resource group.
 
-2. Run `.\gateway.cmd up --config bootstrap/config.json` and stay at the terminal
-   for the interactive compliance sign-in. Purview is authored during the run
-   rather than reopened afterwards, so no replay boundary is involved.
-
-3. Retire the superseded deployment only after the new one is verified, and only
-   under a fresh explicit authorization for that specific resource group.
-
-Then continue with the registration and runtime checks below.
+Never delete `.bootstrap/` or point fresh state at an existing resource group to
+bypass the immutable plan, source, configuration, or ownership bindings.
 
 ### Register and verify
 

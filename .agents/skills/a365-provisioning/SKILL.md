@@ -42,10 +42,10 @@ registration. Purview policy automation keeps the fixed tenant-wide enterprise-A
 apps Group for Know Your Data separate from blueprint Individual DLP locations; both
 use the Application plane.
 
-Use `bootstrap/bootstrap.ps1` through the root `.\gateway.cmd` launcher on Windows
-or `./gateway` on macOS/Linux for a fresh subscription. Preserve ignored
-`.bootstrap/` state and never place credentials, tokens, keys, prompts, responses,
-or certificate material in configuration, logs, tests, or chat.
+Use `bootstrap/bootstrap.ps1` through the root `.\gateway.cmd setup` launcher on
+Windows or `./gateway setup` on macOS/Linux for a fresh subscription. Preserve
+ignored `.bootstrap/` state and never place credentials, tokens, keys, prompts,
+responses, or certificate material in configuration, logs, tests, or chat.
 
 Run focused tests first, then full relevant .NET, Pester, Release, source, Bicep,
 formatting, and documentation gates. Local success is not deployment evidence.

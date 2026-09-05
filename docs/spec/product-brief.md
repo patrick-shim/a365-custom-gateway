@@ -30,7 +30,8 @@ and safe correlation evidence without seeing secrets or content.
 - Gateway owns its ingress credential model; a Gateway key is not a Microsoft
   identity credential.
 - Every registration maps to one reusable blueprint and one distinct child Agent ID.
-- Agent 365 Registry is a preview dependency and remains closed by default outside
+- Agent 365 Registry is a beta dependency that Microsoft does not support for
+  production use and remains closed by default outside
   explicitly acknowledged development use.
 - Bootstrap deploys and verifies the core Gateway. Registrations and optional
   protections are post-deployment tasks.

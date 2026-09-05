@@ -3208,7 +3208,8 @@ static string[] GetPrepareScriptNames() =>
     "20260825_ingress_rate_limit_buckets.sql",
     "20260829_purview_policy_profiles.sql",
     "20260829_prompt_protection.sql",
-    "20260903_prompt_evaluation_agent_identity.sql"
+    "20260903_prompt_evaluation_agent_identity.sql",
+    "20260905_active_agent_identity_uniqueness.sql"
 ];
 
 static string Required(IReadOnlyDictionary<string, string> options, string key) =>
