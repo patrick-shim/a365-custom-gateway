@@ -471,6 +471,7 @@ else if (evidenceStdoutRequested)
 
 Console.WriteLine(
     $"Schema verification passed (current-ef-model={finalVerification.CurrentEfModelReady}, workflow-v2={finalVerification.WorkflowV2Ready}, " +
+    $"protection-governance-v1={finalVerification.ProtectionGovernanceV1Ready}, " +
     $"legacy-global-indexes={finalVerification.LegacyGlobalIdempotencyUniqueIndexCount}).");
 
 if (stayAliveRequested)
@@ -664,6 +665,7 @@ static void AssertVerificationReachedRequiredState(
     var verificationFailed = phase == "baseline"
         ? verification.WorkflowV2Ready || verification.LegacyGlobalIdempotencyUniqueIndexCount != 1
         : !verification.WorkflowV2Ready ||
+          !verification.ProtectionGovernanceV1Ready ||
           (phase is "initialize" or "bootstrap" or "principal" or "finalize" or "verify") && !verification.CurrentEfModelReady ||
           (phase == "finalize" && verification.LegacyGlobalIdempotencyUniqueIndexCount != 0);
     if (verificationFailed)
@@ -3076,6 +3078,31 @@ static async Task<SchemaVerification> VerifyAsync(
                            AND has_filter = 1
                      )
                     THEN 1 ELSE 0 END AS bit) AS WorkflowV2Ready,
+          CAST(CASE WHEN OBJECT_ID(N'dbo.ProtectionCapabilities', N'U') IS NOT NULL
+                     AND OBJECT_ID(N'dbo.PurviewTenantConnections', N'U') IS NOT NULL
+                     AND OBJECT_ID(N'dbo.PurviewSensitiveInformationTypeSnapshotGenerations', N'U') IS NOT NULL
+                     AND OBJECT_ID(N'dbo.PurviewSensitiveInformationTypeSnapshots', N'U') IS NOT NULL
+                     AND OBJECT_ID(N'dbo.PurviewKnowYourDataConfigurations', N'U') IS NOT NULL
+                     AND OBJECT_ID(N'dbo.PurviewDlpProfiles', N'U') IS NOT NULL
+                     AND OBJECT_ID(N'dbo.LegacyProtectionPolicyCandidates', N'U') IS NOT NULL
+                     AND OBJECT_ID(N'dbo.ProtectionAdminOperations', N'U') IS NOT NULL
+                     AND OBJECT_ID(N'dbo.ProtectionAdminOperationSteps', N'U') IS NOT NULL
+                     AND COL_LENGTH(N'dbo.OutboxMessages', N'Destination') IS NOT NULL
+                     AND EXISTS
+                     (
+                         SELECT 1 FROM sys.indexes
+                         WHERE object_id = OBJECT_ID(N'dbo.PurviewDlpProfiles', N'U')
+                           AND name = N'IX_PurviewDlpProfiles_BlueprintApplicationId'
+                           AND is_unique = 1
+                     )
+                     AND EXISTS
+                     (
+                         SELECT 1 FROM sys.indexes
+                         WHERE object_id = OBJECT_ID(N'dbo.ProtectionAdminOperations', N'U')
+                           AND name = N'IX_ProtectionAdminOperations_TenantId_IdempotencyKey'
+                           AND is_unique = 1
+                     )
+                    THEN 1 ELSE 0 END AS bit) AS ProtectionGovernanceV1Ready,
           CAST
           (
               (
@@ -3116,7 +3143,8 @@ static async Task<SchemaVerification> VerifyAsync(
         throw new InvalidOperationException("Database schema verification returned no result.");
 
     var workflowV2Ready = reader.GetBoolean(0);
-    var legacyGlobalIndexCount = reader.GetInt32(1);
+    var protectionGovernanceV1Ready = reader.GetBoolean(1);
+    var legacyGlobalIndexCount = reader.GetInt32(2);
     await reader.DisposeAsync();
 
     var publishableOutboxMessageCount = -1;
@@ -3173,6 +3201,7 @@ static async Task<SchemaVerification> VerifyAsync(
         currentEfModelReady,
         currentSchemaFingerprint,
         workflowV2Ready,
+        protectionGovernanceV1Ready,
         legacyGlobalIndexCount,
         publishableOutboxMessageCount,
         activeWorkflowV2JobCount,
@@ -3209,7 +3238,8 @@ static string[] GetPrepareScriptNames() =>
     "20260829_purview_policy_profiles.sql",
     "20260829_prompt_protection.sql",
     "20260903_prompt_evaluation_agent_identity.sql",
-    "20260905_active_agent_identity_uniqueness.sql"
+    "20260905_active_agent_identity_uniqueness.sql",
+    "20260905_protection_governance_v1.sql"
 ];
 
 static string Required(IReadOnlyDictionary<string, string> options, string key) =>
@@ -3289,6 +3319,7 @@ internal sealed record SchemaVerification(
     bool CurrentEfModelReady,
     string CurrentSchemaFingerprint,
     bool WorkflowV2Ready,
+    bool ProtectionGovernanceV1Ready,
     int LegacyGlobalIdempotencyUniqueIndexCount,
     int PublishableOutboxMessageCount,
     int ActiveWorkflowV2JobCount,

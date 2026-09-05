@@ -1414,6 +1414,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 }
                 promptShield = [pscustomobject]@{ enabled = $false; skuName = 'S0' }
                 purview = [pscustomobject]@{
+                    enabled = $false
                     policyProvisioningEnabled = $false
                     policyProvisioningOrganization = ''
                     policyProvisioningApplicationId = ''
@@ -1422,6 +1423,21 @@ Describe 'Gateway core initial and runtime identity bindings' {
                     sensitiveInformationType = ''
                 }
                 sql = [pscustomobject]@{ skuName = 'Basic'; skuTier = 'Basic' }
+            }
+            $script:corePurviewAutomation = [ordered]@{
+                status = 'Installed'
+                organization = 'contoso.onmicrosoft.com'
+                gatewayApiManagedIdentityPrincipalObjectId = '66666666-6666-4666-8666-666666666666'
+                purviewRuntimeManagedIdentityPrincipalObjectId = 'abababab-abab-4bab-8bab-abababababab'
+                automationApplicationId = '33333333-3333-4333-8333-333333333333'
+                automationServicePrincipalObjectId = '44444444-4444-4444-8444-444444444444'
+                keyVaultResourceId = '/subscriptions/10101010-1010-4010-8010-101010101010/resourceGroups/rg-safe-dev/providers/Microsoft.KeyVault/vaults/kv-safe-dev'
+                certificateName = 'purview-automation-certificate'
+                certificateSecretUri = 'https://kv-safe-dev.vault.azure.net/secrets/purview-automation-certificate'
+                deploymentOwnershipId = $script:coreOwnershipId
+                sourceFingerprint = $script:coreSourceFingerprint
+                policyConfiguration = 'NotPerformed'
+                policyReadiness = 'NotClaimed'
             }
             $script:coreFoundation = [pscustomobject]@{
                 deploymentOwnershipId = $script:coreOwnershipId
@@ -1455,6 +1471,33 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 workerPrincipalName = 'ca-gateway-worker-dev-v3'
                 workerPrincipalClientId = '55555555-5555-4555-8555-555555555555'
                 workerPrincipalObjectId = $script:coreWorkerPrincipalId
+            }
+            $script:coreCapabilityEvidence = [ordered]@{
+                enabled = $true
+                readbackAtUtc = '2026-09-05T00:00:00.0000000+00:00'
+                deploymentOwnershipId = $script:coreOwnershipId
+                sourceFingerprint = $script:coreSourceFingerprint
+                agent365RegistrationBeta = [ordered]@{
+                    status = 'NotInstalled'
+                    registryApiApplicationId = ''
+                }
+                promptShields = [ordered]@{
+                    status = 'NotInstalled'
+                    contentSafetyAccountResourceId = ''
+                    contentSafetyEndpoint = ''
+                    gatewayApiManagedIdentityPrincipalObjectId = ''
+                }
+                purview = [ordered]@{
+                    status = 'NotInstalled'
+                    gatewayApiManagedIdentityPrincipalObjectId = ''
+                    purviewRuntimeManagedIdentityPrincipalObjectId = ''
+                    automationApplicationId = ''
+                    automationServicePrincipalObjectId = ''
+                    keyVaultResourceId = ''
+                    keyVaultHost = ''
+                    certificateName = ''
+                    certificateSecretUri = ''
+                }
             }
             $script:coreApiImage = "acrsafe.azurecr.io/gateway-api@sha256:$('1' * 64)"
             $script:coreWorkerImage = "acrsafe.azurecr.io/gateway-worker@sha256:$('2' * 64)"
@@ -1711,6 +1754,13 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 @($Parameters.agent365ManagerApplicationIds).Count -eq 0 -and
                 [bool]$Parameters.agent365ManagerApplicationsPreflightConfirmed -eq $false -and
                 [bool]$Parameters.allowLegacySystemAssignedImagePull -eq $false -and
+                $Parameters.bootstrapCapabilities.enabled -eq $false -and
+                [string]$Parameters.bootstrapCapabilities.deploymentOwnershipId -ceq '' -and
+                [string]$Parameters.bootstrapCapabilities.sourceFingerprint -ceq '' -and
+                [string]$Parameters.bootstrapCapabilities.agent365RegistrationBeta.status -ceq '' -and
+                [string]$Parameters.bootstrapCapabilities.promptShields.status -ceq '' -and
+                [string]$Parameters.bootstrapCapabilities.purview.status -ceq '' -and
+                [string]$Parameters.bootstrapCapabilities.purview.automationApplicationId -ceq '' -and
                 [string]$Parameters.entraIdAudience -ceq [string]$script:coreIdentity.gatewayApiTokenAudience
             }
         }
@@ -1758,7 +1808,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
             $compiledNames = @($compiled.parameters.PSObject.Properties.Name | Sort-Object -CaseSensitive)
             $capturedNames = @($script:capturedCompiledParityParameters.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
 
-            $capturedNames.Count | Should -Be 69
+            $capturedNames.Count | Should -Be 71
             ($capturedNames -join '|') | Should -BeExactly ($compiledNames -join '|')
             $script:capturedCompiledParityParameters.allowLegacySystemAssignedImagePull | Should -BeFalse
 
@@ -1938,18 +1988,39 @@ Describe 'Gateway core initial and runtime identity bindings' {
                     -ManagerApplicationIds @($script:coreManagerApplicationId) `
                     -DeploymentOwnershipId $script:coreOwnershipId `
                     -SourceFingerprint $script:coreSourceFingerprint `
-                    -Database $script:coreDatabase } |
+                    -Database $script:coreDatabase `
+                    -CapabilityEvidence $script:coreCapabilityEvidence } |
                 Should -Throw '*core-deployment-reached*'
 
             Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
                 [string]$Parameters.agent365ProvisioningManagedIdentityPrincipalId -ceq $script:coreWorkerPrincipalId -and
-                [string]$Parameters.databaseAttestationWorkerPrincipalClientId -ceq [string]$script:coreDatabase.workerPrincipalClientId
+                [string]$Parameters.databaseAttestationWorkerPrincipalClientId -ceq [string]$script:coreDatabase.workerPrincipalClientId -and
+                $Parameters.bootstrapCapabilities.enabled -eq $true -and
+                [string]$Parameters.bootstrapCapabilities.deploymentOwnershipId -ceq $script:coreOwnershipId -and
+                [string]$Parameters.bootstrapCapabilities.promptShields.status -ceq 'NotInstalled' -and
+                [string]$Parameters.bootstrapCapabilities.purview.status -ceq 'NotInstalled'
             }
         }
 
-        It 'passes the selected SIT GUID and exact Name as distinct runtime parameters' {
+        It 'keeps Settings-owned SIT runtime parameters empty during bootstrap' {
+            $script:coreConfig.purview.enabled = $true
             $script:coreConfig.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
             $script:coreConfig.purview.sensitiveInformationType = '신용 카드 번호'
+            $purviewCapabilityEvidence = $script:coreCapabilityEvidence |
+                ConvertTo-Json -Depth 10 |
+                ConvertFrom-Json -AsHashtable -Depth 10
+            $purviewCapabilityEvidence.readbackAtUtc = '2026-09-05T00:00:00.0000000+00:00'
+            $purviewCapabilityEvidence.purview = [ordered]@{
+                status = 'Installed'
+                gatewayApiManagedIdentityPrincipalObjectId = [string]$script:corePurviewAutomation.gatewayApiManagedIdentityPrincipalObjectId
+                purviewRuntimeManagedIdentityPrincipalObjectId = [string]$script:corePurviewAutomation.purviewRuntimeManagedIdentityPrincipalObjectId
+                automationApplicationId = [string]$script:corePurviewAutomation.automationApplicationId
+                automationServicePrincipalObjectId = [string]$script:corePurviewAutomation.automationServicePrincipalObjectId
+                keyVaultResourceId = [string]$script:corePurviewAutomation.keyVaultResourceId
+                keyVaultHost = 'kv-safe-dev.vault.azure.net'
+                certificateName = [string]$script:corePurviewAutomation.certificateName
+                certificateSecretUri = [string]$script:corePurviewAutomation.certificateSecretUri
+            }
 
             { Deploy-GatewayCore `
                     -Config $script:coreConfig `
@@ -1962,12 +2033,17 @@ Describe 'Gateway core initial and runtime identity bindings' {
                     -DeploymentOwnershipId $script:coreOwnershipId `
                     -SourceFingerprint $script:coreSourceFingerprint `
                     -Database $script:coreDatabase `
-                    -EnablePurview } |
+                    -EnablePurview `
+                    -PurviewAutomation $script:corePurviewAutomation `
+                    -CapabilityEvidence $purviewCapabilityEvidence } |
                 Should -Throw '*core-deployment-reached*'
 
             Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
-                [string]$Parameters.purviewDefaultSensitiveInformationTypeId -ceq '50842eb7-edc8-4019-85dd-5a5c1f2bb085' -and
-                [string]$Parameters.purviewDefaultSensitiveInformationType -ceq '신용 카드 번호'
+                [string]$Parameters.purviewDefaultSensitiveInformationTypeId -ceq '' -and
+                [string]$Parameters.purviewDefaultSensitiveInformationType -ceq '' -and
+                [string]$Parameters.bootstrapCapabilities.purview.status -ceq 'Installed' -and
+                [string]$Parameters.bootstrapCapabilities.purview.certificateName -ceq 'purview-automation-certificate' -and
+                [string]$Parameters.bootstrapCapabilities.purview.purviewRuntimeManagedIdentityPrincipalObjectId -ceq $script:coreFoundation.runtimeImagePullIdentityPrincipalId
             }
         }
 

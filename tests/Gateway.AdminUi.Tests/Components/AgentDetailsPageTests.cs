@@ -85,6 +85,10 @@ public sealed class AgentDetailsPageTests : BunitContext
                 agentId,
                 Arg.Any<AuditEventQuery>(),
                 Arg.Any<CancellationToken>());
+        _api.Received(isAdministrator ? 1 : 0)
+            .GetProtectionCapabilitiesAsync(Arg.Any<CancellationToken>());
+        _api.Received(isAdministrator ? 1 : 0)
+            .GetPurviewDlpProfilesAsync(Arg.Any<CancellationToken>());
     }
 
     [Theory]
@@ -697,6 +701,227 @@ public sealed class AgentDetailsPageTests : BunitContext
         });
     }
 
+    [Fact]
+    public async Task Administrator_CanSelectOnlyReadyProfileForResolvedBlueprint()
+    {
+        var auth = AddAuthorization();
+        auth.SetAuthorized("Admin user");
+        auth.SetRoles(GatewayRoles.Administrator);
+        var agentId = Guid.NewGuid();
+        var blueprintId = Guid.NewGuid();
+        var readyProfile = CreateDlpProfile(
+            blueprintId,
+            "Ready research profile",
+            "Ready",
+            ready: true);
+        var pendingProfile = CreateDlpProfile(
+            blueprintId,
+            "Still propagating",
+            "PendingPropagation",
+            ready: false);
+        var agent = CreateAgent(
+            agentId,
+            features: new AgentFeaturesDto(
+                "Agent365",
+                false,
+                null,
+                true,
+                false,
+                false),
+            agent365: new Agent365InfoDto(
+                Guid.NewGuid().ToString("D"),
+                blueprintId.ToString("D"),
+                Guid.NewGuid().ToString("D")),
+            status: "Active");
+        _api.GetAgentAsync(agentId, Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<AgentDetailDto>(
+                agent,
+                "\"version-1\"",
+                "detail-correlation"));
+        _api.GetProvisioningHistoryAsync(agentId, Arg.Any<CancellationToken>())
+            .Returns(new ProvisioningHistoryResponse(agentId, []));
+        _api.GetAgentAuditEventsAsync(
+                agentId,
+                Arg.Any<AuditEventQuery>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new AuditEventListResponse([], null));
+        _api.GetAgentIngressCredentialsAsync(agentId, Arg.Any<CancellationToken>())
+            .Returns(new AgentIngressCredentialListResponse(agentId, []));
+        _api.GetProtectionCapabilitiesAsync(Arg.Any<CancellationToken>())
+            .Returns(InstalledPromptShieldCapabilities());
+        _api.GetPurviewDlpProfilesAsync(Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<PurviewDlpProfileListResponse>(
+                new PurviewDlpProfileListResponse([readyProfile, pendingProfile]),
+                "\"profiles\"",
+                "profiles-correlation"));
+        _api.UpdateAgentFeaturesAsync(
+                agentId,
+                Arg.Any<UpdateFeaturesRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new UpdateFeaturesResponse(
+                agentId,
+                agent.Features! with
+                {
+                    PurviewEnabled = true,
+                    PurviewMode = readyProfile.Mode,
+                    PurviewDlpProfile = new PurviewDlpProfileSelectionDto(
+                        readyProfile.Id,
+                        blueprintId,
+                        readyProfile.RowVersion)
+                },
+                DateTime.UtcNow));
+        var cut = Render<AgentDetails>(parameters => parameters
+            .Add(component => component.AgentId, agentId));
+        cut.WaitForElement("#feature-purview-profile");
+
+        var profileSelect = cut.Find("#feature-purview-profile");
+        profileSelect.TextContent.Should().Contain("Ready research profile");
+        profileSelect.TextContent.Should().NotContain("Still propagating");
+        profileSelect.Change("0");
+        await cut.FindAll("fluent-button")
+            .Single(button => button.TextContent.Trim() == "Save features")
+            .ClickAsync(new MouseEventArgs());
+
+        _ = _api.Received(1).UpdateAgentFeaturesAsync(
+            agentId,
+            Arg.Is<UpdateFeaturesRequest>(request =>
+                request.PurviewEnabled == true &&
+                request.PurviewDlpProfile != null &&
+                request.PurviewDlpProfile.ProfileId == readyProfile.Id &&
+                request.PurviewDlpProfile.BlueprintApplicationId == blueprintId &&
+                request.PurviewDlpProfile.ExpectedProfileRowVersion == readyProfile.RowVersion &&
+                request.IdempotencyKey != null &&
+                request.ExpectedRowVersion == "\"version-1\""),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void Administrator_CannotEnablePurviewWithoutExactReadyProfile()
+    {
+        var auth = AddAuthorization();
+        auth.SetAuthorized("Admin user");
+        auth.SetRoles(GatewayRoles.Administrator);
+        var agentId = Guid.NewGuid();
+        var blueprintId = Guid.NewGuid();
+        ArrangeAgent(agentId);
+        _api.GetAgentAsync(agentId, Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<AgentDetailDto>(
+                CreateAgent(
+                    agentId,
+                    agent365: new Agent365InfoDto(
+                        Guid.NewGuid().ToString("D"),
+                        blueprintId.ToString("D"),
+                        Guid.NewGuid().ToString("D")),
+                    status: "Active"),
+                "\"version-1\"",
+                "detail-correlation"));
+        _api.GetProtectionCapabilitiesAsync(Arg.Any<CancellationToken>())
+            .Returns(InstalledPromptShieldCapabilities());
+        _api.GetPurviewDlpProfilesAsync(Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<PurviewDlpProfileListResponse>(
+                new PurviewDlpProfileListResponse(
+                [CreateDlpProfile(blueprintId, "Pending", "PendingPropagation", ready: false)]),
+                "\"profiles\"",
+                "profiles-correlation"));
+
+        var cut = Render<AgentDetails>(parameters => parameters
+            .Add(component => component.AgentId, agentId));
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain("No Ready DLP profile");
+            cut.Find("#feature-purview-enabled").HasAttribute("disabled").Should().BeTrue();
+        });
+    }
+
+    [Fact]
+    public void Administrator_SeesIneffectiveRuntimeDespiteReadySelectedProfile()
+    {
+        var auth = AddAuthorization();
+        auth.SetAuthorized("Admin user");
+        auth.SetRoles(GatewayRoles.Administrator);
+        var agentId = Guid.NewGuid();
+        var blueprintId = Guid.NewGuid();
+        ArrangeAgent(agentId);
+        var profile = CreateDlpProfile(blueprintId, "Ready profile", "Ready", ready: true);
+        _api.GetAgentAsync(agentId, Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<AgentDetailDto>(
+                CreateAgent(
+                    agentId,
+                    features: new AgentFeaturesDto(
+                        "Agent365", true, "Enforce",
+                        PurviewDlpProfile: new PurviewDlpProfileSelectionDto(
+                            profile.Id, blueprintId, profile.RowVersion),
+                        PurviewEffectivelyEnabled: false),
+                    agent365: new Agent365InfoDto(
+                        Guid.NewGuid().ToString("D"), blueprintId.ToString("D"),
+                        Guid.NewGuid().ToString("D")),
+                    status: "Active"),
+                "\"version-1\"", "detail-correlation"));
+        _api.GetProtectionCapabilitiesAsync(Arg.Any<CancellationToken>())
+            .Returns(InstalledPromptShieldCapabilities());
+        _api.GetPurviewDlpProfilesAsync(Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<PurviewDlpProfileListResponse>(
+                new PurviewDlpProfileListResponse([profile]),
+                "\"profiles\"", "profiles-correlation"));
+
+        var cut = Render<AgentDetails>(parameters => parameters
+            .Add(component => component.AgentId, agentId));
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.Find("#feature-purview-profile").TextContent.Should().Contain("Ready profile");
+            cut.Find("#agent-purview-effective").TextContent.Should()
+                .Contain("Effective for this agent: Not ready.");
+            cut.Markup.Should().Contain("Selected profile readiness");
+        });
+    }
+
+    [Fact]
+    public void ReadOnlyRole_SeesRequestedAndEffectiveProtectionState()
+    {
+        var auth = AddAuthorization();
+        auth.SetAuthorized("Support user");
+        auth.SetRoles(GatewayRoles.SupportReader);
+        var agentId = Guid.NewGuid();
+        var readiness = new ProtectionReadinessDto(
+            "Installed",
+            "Ready",
+            "Pending",
+            "NotChecked",
+            "NotChecked",
+            false,
+            ["PropagationPending"],
+            DateTime.UtcNow);
+        _api.GetAgentAsync(agentId, Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<AgentDetailDto>(
+                CreateAgent(
+                    agentId,
+                    features: new AgentFeaturesDto(
+                        "Agent365",
+                        true,
+                        "Enforce",
+                        true,
+                        false,
+                        true,
+                        PurviewReadiness: readiness,
+                        PurviewEffectivelyEnabled: false,
+                        PromptShieldEffectivelyEnabled: true,
+                        PromptShieldCapabilityStatus: "Installed")),
+                "\"version-1\"",
+                "detail-correlation"));
+
+        var cut = Render<AgentDetails>(parameters => parameters
+            .Add(component => component.AgentId, agentId));
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain("Requested: On. Effective: Ready.");
+            cut.Markup.Should().Contain("Requested: On. Effective: Not ready.");
+            cut.Markup.Should().Contain("Pending propagation");
+            cut.FindAll("#feature-purview-enabled").Should().BeEmpty();
+        });
+    }
+
     private void ArrangeAgent(Guid agentId, params ProvisioningJobDto[] jobs)
     {
         _api.GetAgentAsync(agentId, Arg.Any<CancellationToken>())
@@ -714,6 +939,76 @@ public sealed class AgentDetailsPageTests : BunitContext
         _api.GetAgentIngressCredentialsAsync(agentId, Arg.Any<CancellationToken>())
             .Returns(new AgentIngressCredentialListResponse(agentId, []));
     }
+
+    private static GatewayApiResource<ProtectionCapabilitiesResponse>
+        InstalledPromptShieldCapabilities() => new(
+            new ProtectionCapabilitiesResponse(
+            [
+                new ProtectionCapabilityDto(
+                    Guid.NewGuid(),
+                    "PromptShields",
+                    "Installed",
+                    new ProtectionCapabilityResourceIdentifiersDto(
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null),
+                    DateTime.UtcNow,
+                    null,
+                    "capability-row"),
+                new ProtectionCapabilityDto(
+                    Guid.NewGuid(),
+                    "Purview",
+                    "Installed",
+                    new ProtectionCapabilityResourceIdentifiersDto(
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null),
+                    DateTime.UtcNow,
+                    null,
+                    "capability-row")
+            ]),
+            "\"capabilities\"",
+            "capability-correlation");
+
+    private static PurviewDlpProfileDto CreateDlpProfile(
+        Guid blueprintId,
+        string name,
+        string status,
+        bool ready) => new(
+        Guid.NewGuid(),
+        blueprintId,
+        name,
+        Guid.NewGuid(),
+        "EU Passport Number",
+        "AuditOnly",
+        ["UploadText"],
+        [new PurviewDlpRuleActionDto("UploadText", "Audit")],
+        status,
+        new ProtectionReadinessDto(
+            "Installed",
+            "Ready",
+            ready ? "Ready" : "Pending",
+            ready ? "Ready" : "NotChecked",
+            ready ? "Ready" : "NotChecked",
+            ready,
+            ready ? [] : ["PropagationPending"],
+            DateTime.UtcNow),
+        null,
+        null,
+        DateTime.UtcNow,
+        Convert.ToBase64String([1, 2, 3, 4, 5, 6, 7, 8]));
 
     private static ProvisioningJobDto WaitingOperation(
         Guid operationId,

@@ -6,6 +6,13 @@ using Azure.Core;
 using FluentAssertions;
 using Gateway.ContentSafety;
 using Gateway.Domain.Models;
+using Gateway.Domain.Entities;
+using Gateway.Domain.Enums;
+using Gateway.Domain.ValueObjects;
+using Gateway.Domain.Interfaces;
+using Gateway.Application.Protection;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace Gateway.UnitTests.ContentSafety;
@@ -17,6 +24,18 @@ public sealed class PromptShieldClientTests
         null,
         null,
         "correlation-unattributed");
+    private static readonly Guid ApiPrincipalObjectId =
+        Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    private const string ContentSafetyResourceId =
+        "/subscriptions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/resourceGroups/gateway-rg/providers/Microsoft.CognitiveServices/accounts/content-safety";
+    private const string ContentSafetyEndpoint =
+        "https://content-safety.cognitiveservices.azure.com/";
+    private const string SourceFingerprint =
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    private static readonly Guid DeploymentOwnershipId =
+        Guid.Parse("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+    private static readonly DateTime AttestedAtUtc =
+        new(2026, 9, 5, 10, 0, 0, DateTimeKind.Utc);
 
     [Fact]
     public void TokenProvider_UsesOnlyManagedIdentityCredential()
@@ -84,13 +103,14 @@ public sealed class PromptShieldClientTests
         });
         var tokenProvider = new StubTokenProvider();
         var client = new PromptShieldClient(
-            new HttpClient(handler) { BaseAddress = new Uri("https://content-safety.example/") },
+            new HttpClient(handler) { BaseAddress = new Uri(ContentSafetyEndpoint) },
             tokenProvider,
             Options.Create(new PromptShieldOptions
             {
                 Enabled = true,
-                Endpoint = "https://content-safety.example/"
-            }));
+                Endpoint = ContentSafetyEndpoint
+            }),
+            CreateBinding());
 
         var result = await client.EvaluateAsync("test prompt", UnattributedSubject, CancellationToken.None);
 
@@ -109,13 +129,14 @@ public sealed class PromptShieldClientTests
         });
         var tokenProvider = new StubTokenProvider();
         var client = new PromptShieldClient(
-            new HttpClient(handler) { BaseAddress = new Uri("https://content-safety.example/") },
+            new HttpClient(handler) { BaseAddress = new Uri(ContentSafetyEndpoint) },
             tokenProvider,
             Options.Create(new PromptShieldOptions
             {
                 Enabled = true,
-                Endpoint = "https://content-safety.example/"
-            }));
+                Endpoint = ContentSafetyEndpoint
+            }),
+            CreateBinding());
 
         var action = () => client.EvaluateAsync("test prompt", UnattributedSubject, CancellationToken.None);
 
@@ -128,13 +149,14 @@ public sealed class PromptShieldClientTests
     {
         var handler = new StubHandler(_ => throw new HttpRequestException("sensitive transport detail"));
         var client = new PromptShieldClient(
-            new HttpClient(handler) { BaseAddress = new Uri("https://content-safety.example/") },
+            new HttpClient(handler) { BaseAddress = new Uri(ContentSafetyEndpoint) },
             new StubTokenProvider(),
             Options.Create(new PromptShieldOptions
             {
                 Enabled = true,
-                Endpoint = "https://content-safety.example/"
-            }));
+                Endpoint = ContentSafetyEndpoint
+            }),
+            CreateBinding());
 
         var action = () => client.EvaluateAsync("test prompt", UnattributedSubject, CancellationToken.None);
 
@@ -211,6 +233,128 @@ public sealed class PromptShieldClientTests
         await action.Should().ThrowAsync<ArgumentNullException>();
     }
 
+    [Fact]
+    public async Task EvaluateAsync_FailsClosedBeforeProviderWhenEndpointDriftsFromAttestation()
+    {
+        var handler = AllowingHandler();
+        var client = new PromptShieldClient(
+            new HttpClient(handler)
+            {
+                BaseAddress = new Uri("https://different.cognitiveservices.azure.com/")
+            },
+            new StubTokenProvider(),
+            Options.Create(new PromptShieldOptions
+            {
+                Enabled = true,
+                Endpoint = "https://different.cognitiveservices.azure.com/"
+            }),
+            CreateBinding());
+
+        var action = () => client.EvaluateAsync(
+            "test prompt",
+            UnattributedSubject,
+            CancellationToken.None);
+
+        var exception = (await action.Should().ThrowAsync<PromptShieldException>()).Which;
+        exception.FailureCode.Should().Be("PROMPT_SHIELD_CAPABILITY_BINDING_INVALID");
+        exception.Message.Should().NotContain("different");
+        handler.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task EvaluateAsync_FailsClosedBeforeProviderWhenTokenIdentityDoesNotMatchAttestation()
+    {
+        var handler = AllowingHandler();
+        var client = new PromptShieldClient(
+            new HttpClient(handler) { BaseAddress = new Uri(ContentSafetyEndpoint) },
+            new StubTokenProvider(Guid.Parse("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")),
+            Options.Create(new PromptShieldOptions
+            {
+                Enabled = true,
+                Endpoint = ContentSafetyEndpoint
+            }),
+            CreateBinding());
+
+        var action = () => client.EvaluateAsync(
+            "test prompt",
+            UnattributedSubject,
+            CancellationToken.None);
+
+        var exception = (await action.Should().ThrowAsync<PromptShieldException>()).Which;
+        exception.FailureCode.Should().Be("PROMPT_SHIELD_CAPABILITY_BINDING_INVALID");
+        exception.Message.Should().NotContain("eeeeeeee");
+        handler.LastRequest.Should().BeNull();
+    }
+
+    [Fact]
+    public void RuntimeBinding_MatchesOnlyTheExactMaterializedCapability()
+    {
+        var binding = CreateBinding();
+        var capability = CreateCapability();
+
+        binding.IsExact(capability).Should().BeTrue();
+
+        capability.ResourceIdentifiers = capability.ResourceIdentifiers with
+        {
+            GatewayApiManagedIdentityPrincipalObjectId =
+                new ServicePrincipalObjectId(Guid.NewGuid())
+        };
+
+        binding.IsExact(capability).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ActualDependencyInjection_UsesTheValidatedRuntimeOptionsWithoutCycle(bool enabled)
+    {
+        var configuration = CreateConfiguration();
+        configuration["PromptShield:Enabled"] = enabled.ToString();
+        configuration["PromptShield:Endpoint"] = ContentSafetyEndpoint;
+        var services = new ServiceCollection();
+        services.AddSingleton<IConfiguration>(configuration);
+        services.AddPromptShieldServices(configuration);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+
+        var options = provider.GetRequiredService<IOptions<PromptShieldOptions>>().Value;
+        var client = provider.GetRequiredService<IPromptShieldClient>();
+        var binding = provider.GetRequiredService<IBootstrapPromptShieldRuntimeBinding>();
+
+        client.IsEnabled.Should().Be(enabled);
+        binding.IsExact(CreateCapability()).Should().Be(enabled);
+        if (enabled)
+        {
+            options.Endpoint = "https://different.cognitiveservices.azure.com/";
+            binding.IsExact(CreateCapability()).Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public void ActualDependencyInjection_RejectsMismatchedRuntimeEndpointDuringOptionsValidation()
+    {
+        var configuration = CreateConfiguration();
+        configuration["PromptShield:Enabled"] = "true";
+        configuration["PromptShield:Endpoint"] = "https://different.cognitiveservices.azure.com/";
+        var services = new ServiceCollection();
+        services.AddSingleton<IConfiguration>(configuration);
+        services.AddPromptShieldServices(configuration);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true });
+
+        var action = () => provider.GetRequiredService<IOptions<PromptShieldOptions>>().Value;
+
+        action.Should().Throw<OptionsValidationException>();
+    }
+
+    [Fact]
+    public void RuntimeBinding_AcceptsMatchingManagedIdentityOidClaim()
+    {
+        var token = new AccessToken(
+            CreateToken(ApiPrincipalObjectId),
+            DateTimeOffset.UtcNow.AddMinutes(5));
+
+        CreateBinding().IsTokenIdentityExact(token).Should().BeTrue();
+    }
+
     private static StubHandler AllowingHandler() =>
         new(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -222,13 +366,53 @@ public sealed class PromptShieldClientTests
 
     private static PromptShieldClient CreateClient(StubHandler handler) =>
         new(
-            new HttpClient(handler) { BaseAddress = new Uri("https://content-safety.example/") },
+            new HttpClient(handler) { BaseAddress = new Uri(ContentSafetyEndpoint) },
             new StubTokenProvider(),
             Options.Create(new PromptShieldOptions
             {
                 Enabled = true,
-                Endpoint = "https://content-safety.example/"
-            }));
+                Endpoint = ContentSafetyEndpoint
+            }),
+            CreateBinding());
+
+    private static BootstrapPromptShieldRuntimeBinding CreateBinding() =>
+        new(CreateConfiguration(), () => new PromptShieldOptions { Enabled = true, Endpoint = ContentSafetyEndpoint });
+
+    private static IConfigurationRoot CreateConfiguration() =>
+        new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["BootstrapCapabilities:Enabled"] = "true",
+                ["BootstrapCapabilities:DeploymentOwnershipId"] =
+                    DeploymentOwnershipId.ToString("D"),
+                ["BootstrapCapabilities:AcceptedSourceFingerprint"] =
+                    SourceFingerprint,
+                ["BootstrapCapabilities:AttestedAtUtc"] =
+                    new DateTimeOffset(AttestedAtUtc).ToString("O"),
+                ["BootstrapCapabilities:PromptShields:Status"] = "Installed",
+                ["BootstrapCapabilities:PromptShields:ContentSafetyAccountResourceId"] =
+                    ContentSafetyResourceId,
+                ["BootstrapCapabilities:PromptShields:ContentSafetyEndpoint"] =
+                    ContentSafetyEndpoint,
+                ["BootstrapCapabilities:PromptShields:GatewayApiManagedIdentityPrincipalObjectId"] =
+                    ApiPrincipalObjectId.ToString("D")
+            })
+            .Build();
+
+    private static ProtectionCapability CreateCapability() => new()
+    {
+        Id = Guid.NewGuid(),
+        Kind = ProtectionCapabilityKind.PromptShields,
+        Status = ProtectionCapabilityStatus.Installed,
+        ResourceIdentifiers = new ProtectionCapabilityResourceIdentifiers(
+            ContentSafetyAccountResourceId: ContentSafetyResourceId,
+            ContentSafetyEndpoint: ContentSafetyEndpoint,
+            GatewayApiManagedIdentityPrincipalObjectId:
+                new ServicePrincipalObjectId(ApiPrincipalObjectId),
+            BootstrapDeploymentOwnershipId: DeploymentOwnershipId,
+            BootstrapSourceFingerprint: SourceFingerprint),
+        LastReadbackAtUtc = AttestedAtUtc
+    };
 
     // Scoped to one test-local source, because activity listeners are registered
     // process-wide and this project runs its classes in parallel.
@@ -265,10 +449,29 @@ public sealed class PromptShieldClientTests
         }
     }
 
-    private sealed class StubTokenProvider : IPromptShieldTokenProvider
+    private sealed class StubTokenProvider(
+        Guid? principalObjectId = null) : IPromptShieldTokenProvider
     {
         public ValueTask<AccessToken> GetTokenAsync(CancellationToken cancellationToken) =>
-            ValueTask.FromResult(new AccessToken("test-token", DateTimeOffset.UtcNow.AddMinutes(5)));
+            ValueTask.FromResult(new AccessToken(
+                CreateToken(principalObjectId ?? ApiPrincipalObjectId),
+                DateTimeOffset.UtcNow.AddMinutes(5)));
+    }
+
+    private static string CreateToken(Guid principalObjectId)
+    {
+        static string Encode(byte[] bytes) =>
+            Convert.ToBase64String(bytes)
+                .TrimEnd('=')
+                .Replace('+', '-')
+                .Replace('/', '_');
+
+        return string.Join(
+            '.',
+            Encode(JsonSerializer.SerializeToUtf8Bytes(new { alg = "none" })),
+            Encode(JsonSerializer.SerializeToUtf8Bytes(
+                new { oid = principalObjectId.ToString("D") })),
+            "signature");
     }
 
     private sealed class StubTokenCredential : TokenCredential

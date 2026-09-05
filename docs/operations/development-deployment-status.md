@@ -1,6 +1,6 @@
 # Development deployment status
 
-Last updated: 2026-09-05 (Asia/Seoul).
+Last updated: 2026-09-06 (Asia/Seoul).
 
 This checkpoint separates deployed evidence from source claims. It intentionally
 contains no subscription, tenant, resource-group, application, principal,
@@ -100,6 +100,14 @@ prove that later source changes are deployed.
 ## What is not yet proven
 
 Fail closed on each of these; none may be reported as met.
+
+The source direction has changed since this deployment. Bootstrap now prepares
+Agent 365, Prompt Shields, and Purview capabilities, while role-aware Gateway Admin
+Settings owns mutable protection configuration and readiness. Phases 1–4 of the
+[protection settings plan](../architecture/protection-settings-plan.md) passed
+offline acceptance after fresh independent review. Existing deployed evidence below
+does not prove that experience. Its clean-deployment E2E remains postponed until
+exact-commit hosted CI is green and an exact unused target is freshly authorized.
 
 - **Purview DLP at blueprint level.** No blueprint-scoped DLP verdict has been
   observed, so this remains unmet. Two coupled constants previously pinned
@@ -241,6 +249,17 @@ Pending that batch, in commit order:
 - active child Agent Identity object IDs being database-unique through an ordered,
   fail-closed migration that does not rewrite registrations.
 
+The protection-settings implementation is now part of the undeployed source batch:
+capability presets/bootstrap, Admin UI, API, governance SQL, provider adapters,
+packaged Windows companion, dedicated queue/worker, effective readiness, and tests.
+The current deployed Gateway contains none of it.
+
+The combined beta.2 source passed integrated offline acceptance and fresh
+independent security/UI source review, followed by a clean export containing all
+intended new files. The exact counts and validation boundary are below. This
+replaces the earlier failed review and concurrent focused evidence as the source
+acceptance record. None of it is deployment or live-readiness evidence.
+
 Two items in the pending batch change the database schema. Per-agent Prompt Shields
 identity attribution adds
 `infrastructure/sql/20260903_prompt_evaluation_agent_identity.sql`, and active child
@@ -251,31 +270,57 @@ expected, not drift.
 
 ## Offline gate
 
-All eight .NET test projects pass 1,767 tests with zero failures, and the
-solution build completes with zero warnings and zero errors under
-`-warnaserror`. The PowerShell side is 802 passed, zero failed, and seven
-non-Windows cases skipped out of 809 discovered.
+| Gate | Final result |
+|---|---:|
+| Release build | 0 warnings, 0 errors |
+| Gateway.UnitTests | 805 passed |
+| Gateway.AdminUi.Tests | 217 passed |
+| Gateway.Setup.Tests | 255 passed |
+| Gateway.ObservabilityRuntime.Tests | 232 passed |
+| Gateway.ArchitectureTests | 131 passed |
+| Gateway.IntegrationTests | 107 passed |
+| Gateway.EndToEndTests | 116 passed |
+| Gateway.SecurityTests | 141 passed |
+| **.NET total** | **2,004 passed, 0 failed** |
+| Pester | 846 passed, 0 failed, 7 skipped |
+| Format | All nine targets passed |
+| Independent security and UI source review | Passed; no remaining actionable findings |
+| Clean export | Release, all eight test projects, canonical bootstrap gate, layout and launcher smoke passed |
 
-Run the test projects individually. `src/A365Gateway.slnx` deliberately contains
-only shipping projects, so a solution-scoped `dotnet test` matches no test
-project, produces no output, and exits successfully without running anything.
-Treat an empty test run as a failure to execute, never as a pass.
+Canonical source gate: 20 PowerShell files and 2 JSON files, with 28 Bicep templates and 3 parameter files compiled, with Pester behavior tests.
 
-The Pester tests are spread across three directories — `tests/Bootstrap.Tests`,
-`tests/Gateway.Purview.Tests`, and `tests/Operations.Tests` — so run them through
-`tools/Test-BootstrapSource.ps1 -RunPester`, whose `$pesterPaths` array is the
-authoritative list, rather than naming a directory directly.
+The fresh independent review passed the combined source after explicitly
+rechecking all four original findings: shared API/worker runtime identity and
+token subject, exact capability/runtime binding, cancellation-owned process
+termination, and provider-ID-bound KYD/DLP updates with exact readback and
+ambiguous-outcome recovery. It also rechecked the exact 19-key
+`BootstrapCapabilities` startup materialization and subsequent integration
+corrections to bootstrap identity attestation, API credential guards, current
+tenant/SIT readiness, and Settings action compatibility. No earlier review was
+reused as acceptance.
 
-`dotnet format --verify-no-changes` is wired into no local script and must be run
-by hand over the solution and each test project. Continuous integration formatted
-only `src/A365Gateway.slnx`, which contains no test project, so nothing under
-`tests/` was checked; two whitespace violations reached `main` through that gap and
-are now corrected, and the CI job covers all nine targets.
+UI acceptance uses the full bUnit suite and fresh independent source review.
+The user explicitly accepted that evidence after automatic browser policy blocked
+local inspection. Desktop and narrow-width browser inspection was waived, not
+reported as executed. AgentDetails distinguishes effective protection from
+selected-profile readiness. Settings uses the supported UploadText Block rule
+for both policy modes, and only Enforce can request runtime allow/block proof.
 
-On Windows, a POSIX shell harness may strip the NuGet and `PATHEXT` environment
-variables that `dotnet`, `git`, and `az` require; re-export them before invoking
-any gate. Invoke PowerShell as `pwsh -NoProfile -File <path>` rather than with an
-inline `-Command` string.
+
+Run each of the eight test projects individually: the shipping solution contains
+no tests, so a solution-scoped test command can succeed without executing any.
+Use `tools/Test-BootstrapSource.ps1 -RunPester -CompileBicep` for the canonical
+PowerShell/Pester/Bicep coverage, and verify formatting for the solution plus all
+eight test projects. Check hosted CI against the exact release commit before any
+separately authorized live task.
+Source remains undeployed, and live E2E is postponed. No live authority transfers
+through Git, documentation, local evidence, or earlier deployments. A future
+deployment or live E2E requires fresh authorization naming an exact unused
+resource group and the allowed provider actions. Azure, Entra, SQL, Graph,
+Service Bus, Purview, and cleanup actions are outside this source task; retiring
+an earlier environment needs separate exact-target authority. Do not reuse an
+older deployment state with this source.
+
 
 ## Optional protection evidence
 
@@ -326,11 +371,13 @@ only the non-sensitive outcome here:
 3. exact identity, role, federation, network, and database readbacks;
 4. API and Admin UI health;
 5. active/scheduled/dead-letter counts for every owned queue;
-6. four bounded registrations through `Active` without duplicate Registry mutation:
-   two on one newly created blueprint and two on one existing blueprint;
-7. per-sink Agent 365 export acceptance, not merely an HTTP status;
-8. optional Prompt Shields and Purview allow/block results, clearly separated; and
-9. the next safe operator action.
+6. two bounded registrations through `Active` without duplicate Registry mutation,
+   each creating a new blueprint;
+7. one external agent connected to each blueprint;
+8. per-agent Agent 365 export acceptance, not merely an HTTP status;
+9. Prompt Shields allow/block and Purview DLP allow/block results for both
+   blueprints, clearly separated; and
+10. the next safe operator action.
 
 The durable deployment lessons are reflected in code and runbooks: private SQL
 requires private execution reachability, ACR pull identity must exist before first

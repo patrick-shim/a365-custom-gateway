@@ -87,6 +87,15 @@ public class SealedClassConventionTests
 
         foreach (var type in valueObjectTypes)
         {
+            if (type == typeof(Gateway.Domain.ValueObjects.ProtectionConfirmationVerifier))
+            {
+                type.IsValueType.Should().BeFalse(
+                    "the one-time confirmation verifier owns mutable consumption state");
+                type.IsSealed.Should().BeTrue(
+                    "the one-time confirmation verifier must not allow persistence behavior to be extended");
+                continue;
+            }
+
             // Must be a struct (value type)
             type.IsValueType.Should().BeTrue(
                 $"{type.Name} should be a value type (struct)");

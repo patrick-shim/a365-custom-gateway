@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Gateway.Application.Common;
 using Gateway.Application.Prompts.Commands;
+using Gateway.Application.Protection;
 using Gateway.Contracts;
 using Gateway.Contracts.Dtos;
 using Gateway.Domain.Entities;
@@ -23,11 +24,29 @@ public sealed class EvaluatePromptHandlerTests
     private readonly IIdempotencyScopeLease _lease = Substitute.For<IIdempotencyScopeLease>();
     private readonly IAuditEventRepository _audit = Substitute.For<IAuditEventRepository>();
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
+    private readonly IProtectionCapabilityRepository _capabilities =
+        Substitute.For<IProtectionCapabilityRepository>();
+    private readonly IPurviewDlpProfileRepository _profiles =
+        Substitute.For<IPurviewDlpProfileRepository>();
+    private readonly IBootstrapPromptShieldRuntimeBinding _promptShieldBinding =
+        Substitute.For<IBootstrapPromptShieldRuntimeBinding>();
 
     public EvaluatePromptHandlerTests()
     {
         _promptShield.IsEnabled.Returns(true);
         _promptShield.ReceiptLifetime.Returns(TimeSpan.FromMinutes(5));
+        _promptShieldBinding.IsExact(Arg.Any<ProtectionCapability>())
+            .Returns(true);
+        _capabilities.GetByKindAsync(
+                ProtectionCapabilityKind.PromptShields,
+                Arg.Any<CancellationToken>())
+            .Returns(new ProtectionCapability
+            {
+                Id = Guid.NewGuid(),
+                Kind = ProtectionCapabilityKind.PromptShields,
+                Status = ProtectionCapabilityStatus.Installed,
+                LastReadbackAtUtc = DateTime.UtcNow
+            });
         _idempotency.AcquireScopeAsync(
                 Arg.Any<Guid>(),
                 Arg.Any<string>(),
@@ -160,7 +179,12 @@ public sealed class EvaluatePromptHandlerTests
         _audit,
         _unitOfWork,
         TimeProvider.System,
-        NullLogger<EvaluatePromptHandler>.Instance);
+        NullLogger<EvaluatePromptHandler>.Instance,
+        new ProtectionEffectiveFeatureEvaluator(
+            _capabilities,
+            _profiles,
+            TimeProvider.System,
+            _promptShieldBinding));
 
     private static AgentRegistration CreateAgent(bool promptShieldEnabled)
     {

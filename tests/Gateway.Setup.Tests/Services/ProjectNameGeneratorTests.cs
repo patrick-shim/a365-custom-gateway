@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Gateway.Setup.Models;
 using Gateway.Setup.Services;
 
 namespace Gateway.Setup.Tests.Services;
@@ -32,9 +33,7 @@ public sealed class ProjectNameGeneratorTests
         state.Form.ProjectName.Should().Be("gwfixed");
         state.Form.ResourceGroupName.Should().Be("rg-gwfixed-dev");
         state.Form.SeedBlueprintName.Should().Be("A365 Gateway gwfixed dev");
-        state.Form.PurviewCollectionPolicyName.Should().Be("A365 Gateway gwfixed AI collection");
-        state.Form.PurviewDlpPolicyName.Should().Be("A365 Gateway gwfixed inline DLP");
-        state.Form.PurviewDlpRuleName.Should().Be("A365 Gateway gwfixed inline DLP rule");
+        state.Form.CapabilityPreset.Should().Be(CapabilityPreset.FullEvaluation);
     }
 
     private sealed class FixedProjectNameGenerator : IProjectNameGenerator

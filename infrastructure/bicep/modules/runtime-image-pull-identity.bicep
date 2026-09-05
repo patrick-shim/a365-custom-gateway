@@ -1,9 +1,9 @@
 // ============================================================================
 // Module: Runtime image-pull identity
-// Purpose: Establish ACR pull authorization before runtime Container Apps exist
+// Purpose: Establish the shared runtime UAMI and ACR pull authorization before workloads exist
 // ============================================================================
 
-@description('Name of the dedicated user-assigned identity used only for runtime ACR image pulls.')
+@description('Name of the shared runtime user-assigned identity used for ACR pulls and optional API Purview runtime tokens.')
 @minLength(3)
 @maxLength(128)
 param identityName string
@@ -51,10 +51,10 @@ resource acrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-@description('Resource ID of the dedicated runtime image-pull identity.')
+@description('Resource ID of the shared runtime workload identity.')
 output runtimeImagePullIdentityId string = imagePullIdentity.id
 
-@description('Principal ID of the dedicated runtime image-pull identity.')
+@description('Principal ID of the shared runtime workload identity.')
 output runtimeImagePullIdentityPrincipalId string = imagePullIdentity.properties.principalId
 
 @description('Resource ID of the exact AcrPull role assignment.')

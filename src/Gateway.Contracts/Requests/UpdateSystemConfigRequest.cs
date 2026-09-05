@@ -24,4 +24,6 @@ public record UpdateSystemConfigRequest(
     bool? UseCliProvisioningFallback,
     bool? DefaultAgent365ObservabilityEnabled = null,
     bool? DefaultAzureMonitorExportEnabled = null,
-    bool? DefaultPromptShieldEnabled = null);
+    bool? DefaultPromptShieldEnabled = null,
+    Guid? IdempotencyKey = null,
+    string? ExpectedRowVersion = null);

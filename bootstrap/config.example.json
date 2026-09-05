@@ -7,31 +7,26 @@
   "projectName": "a365gw",
   "resourceGroupName": "rg-a365gw-dev",
   "alertEmail": "operator@example.com",
+  "capabilityPreset": "fullEvaluation",
   "sql": {
     "skuName": "Basic",
     "skuTier": "Basic"
   },
   "agent365": {
     "seedBlueprintName": "A365 Gateway Seed dev",
-    "allowDevelopmentRegistryPreview": false,
+    "allowDevelopmentRegistryPreview": true,
+    "registryBetaAcknowledged": true,
     "reviewedManagerApplicationIds": [
       "33333333-3333-4333-8333-333333333333"
     ]
   },
   "promptShield": {
-    "enabled": false,
-    "skuName": "F0"
+    "enabled": true,
+    "skuName": "F0",
+    "costAndQuotaAcknowledged": true
   },
   "purview": {
-    "enabled": false,
-    "collectionPolicyName": "A365 Gateway AI collection",
-    "dlpPolicyName": "A365 Gateway inline DLP",
-    "dlpRuleName": "A365 Gateway inline DLP rule",
-    "sensitiveInformationTypeId": "",
-    "sensitiveInformationType": "",
-    "policyProvisioningEnabled": false,
-    "policyProvisioningOrganization": "",
-    "policyProvisioningApplicationId": "",
-    "policyProvisioningCertificateSecretUri": ""
+    "enabled": true,
+    "authorityRequirementsAcknowledged": true
   }
 }

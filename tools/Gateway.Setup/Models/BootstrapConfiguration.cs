@@ -21,6 +21,8 @@ internal sealed record BootstrapConfiguration
 
     public required string AlertEmail { get; init; }
 
+    public string? CapabilityPreset { get; init; }
+
     public required BootstrapSqlConfiguration Sql { get; init; }
 
     public required BootstrapAgent365Configuration Agent365 { get; init; }
@@ -42,24 +44,16 @@ internal sealed record BootstrapConfiguration
         Agent365 = new BootstrapAgent365Configuration(
             form.SeedBlueprintName,
             form.AllowDevelopmentRegistryPreview,
+            form.RegistryBetaAcknowledged,
             form.GetReviewedManagerApplicationIds()),
         PromptShield = new BootstrapPromptShieldConfiguration(
             form.PromptShieldEnabled,
-            form.PromptShieldSkuName),
+            form.PromptShieldSkuName,
+            form.PromptShieldCostAndQuotaAcknowledged),
         Purview = new BootstrapPurviewConfiguration(
             form.PurviewEnabled,
-            form.PurviewCollectionPolicyName,
-            form.PurviewDlpPolicyName,
-            form.PurviewDlpRuleName,
-            form.PurviewSensitiveInformationTypeId == Guid.Empty
-                ? string.Empty
-                : form.PurviewSensitiveInformationTypeId.ToString("D"),
-            form.PurviewSensitiveInformationType,
-            false,
-            false,
-            string.Empty,
-            string.Empty,
-            string.Empty)
+            form.PurviewAuthorityRequirementsAcknowledged),
+        CapabilityPreset = form.CapabilityPreset.ConfigurationValue()
     };
 }
 
@@ -68,20 +62,48 @@ internal sealed record BootstrapSqlConfiguration(string SkuName, string SkuTier)
 internal sealed record BootstrapAgent365Configuration(
     string SeedBlueprintName,
     bool AllowDevelopmentRegistryPreview,
+    bool RegistryBetaAcknowledged,
     Guid[] ReviewedManagerApplicationIds);
 
-internal sealed record BootstrapPromptShieldConfiguration(bool Enabled, string SkuName);
+internal sealed record BootstrapPromptShieldConfiguration(
+    bool Enabled,
+    string SkuName,
+    bool CostAndQuotaAcknowledged);
 
 internal sealed record BootstrapPurviewConfiguration(
     bool Enabled,
-    string CollectionPolicyName,
-    string DlpPolicyName,
-    string DlpRuleName,
-    string SensitiveInformationTypeId,
-    string SensitiveInformationType,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    bool ActivateGatewayAdapterAfterPolicyReadback,
-    bool PolicyProvisioningEnabled,
-    string PolicyProvisioningOrganization,
-    string PolicyProvisioningApplicationId,
-    string PolicyProvisioningCertificateSecretUri);
+    bool AuthorityRequirementsAcknowledged,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? CollectionPolicyName = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? DlpPolicyName = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? DlpRuleName = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? SensitiveInformationTypeId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? SensitiveInformationType = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? ActivateGatewayAdapterAfterPolicyReadback = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    bool? PolicyProvisioningEnabled = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PolicyProvisioningOrganization = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PolicyProvisioningApplicationId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PolicyProvisioningCertificateSecretUri = null)
+{
+    [JsonIgnore]
+    public bool HasLegacyPolicyConfiguration =>
+        CollectionPolicyName is not null ||
+        DlpPolicyName is not null ||
+        DlpRuleName is not null ||
+        SensitiveInformationTypeId is not null ||
+        SensitiveInformationType is not null ||
+        ActivateGatewayAdapterAfterPolicyReadback is not null ||
+        PolicyProvisioningEnabled is not null ||
+        PolicyProvisioningOrganization is not null ||
+        PolicyProvisioningApplicationId is not null ||
+        PolicyProvisioningCertificateSecretUri is not null;
+}

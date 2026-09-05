@@ -29,6 +29,32 @@ public sealed class ProblemDetailsMiddleware
         try
         {
             await _next(context);
+            if (!context.Response.HasStarted &&
+                context.Response.ContentLength is null &&
+                context.Response.StatusCode is
+                    StatusCodes.Status401Unauthorized or
+                    StatusCodes.Status403Forbidden)
+            {
+                var forbidden =
+                    context.Response.StatusCode ==
+                    StatusCodes.Status403Forbidden;
+                await WriteProblemDetailsAsync(context, new ProblemDetails
+                {
+                    Status = context.Response.StatusCode,
+                    Title = forbidden
+                        ? "Forbidden"
+                        : "Authentication Required",
+                    Type = "https://tools.ietf.org/html/rfc9457",
+                    Detail = forbidden
+                        ? "The authenticated caller is not authorized to perform this action."
+                        : "Authentication is required to perform this action.",
+                    Extensions =
+                    {
+                        ["errorCode"] =
+                            ErrorCodes.AUTHENTICATION_REQUIRED
+                    }
+                });
+            }
         }
         catch (ValidationException ex)
         {
@@ -47,12 +73,16 @@ public sealed class ProblemDetailsMiddleware
         }
         catch (Application.Exceptions.NotFoundException ex)
         {
-            var errorCode = string.Equals(
-                ex.Entity,
-                "AgentIngressCredential",
-                StringComparison.Ordinal)
-                ? ErrorCodes.AGENT_INGRESS_CREDENTIAL_NOT_FOUND
-                : ErrorCodes.AGENT_NOT_FOUND;
+            var errorCode = ex.Entity switch
+            {
+                "AgentIngressCredential" =>
+                    ErrorCodes.AGENT_INGRESS_CREDENTIAL_NOT_FOUND,
+                "ProtectionAdminOperation" =>
+                    ErrorCodes.OPERATION_NOT_FOUND,
+                "PurviewDlpProfile" =>
+                    ErrorCodes.OPERATION_NOT_FOUND,
+                _ => ErrorCodes.AGENT_NOT_FOUND
+            };
 
             await WriteProblemDetailsAsync(context, new ProblemDetails
             {
@@ -68,10 +98,18 @@ public sealed class ProblemDetailsMiddleware
         }
         catch (Application.Exceptions.ConflictException ex)
         {
+            var statusCode = string.Equals(
+                ex.ErrorCode,
+                ErrorCodes.CONCURRENCY_CONFLICT,
+                StringComparison.Ordinal)
+                ? StatusCodes.Status412PreconditionFailed
+                : StatusCodes.Status409Conflict;
             var problemDetails = new ProblemDetails
             {
-                Status = StatusCodes.Status409Conflict,
-                Title = "Conflict",
+                Status = statusCode,
+                Title = statusCode == StatusCodes.Status412PreconditionFailed
+                    ? "Precondition Failed"
+                    : "Conflict",
                 Type = "https://tools.ietf.org/html/rfc9457",
                 Detail = ex.Message
             };
@@ -82,6 +120,34 @@ public sealed class ProblemDetailsMiddleware
             }
 
             await WriteProblemDetailsAsync(context, problemDetails);
+        }
+        catch (Application.Exceptions.PreconditionFailedException ex)
+        {
+            await WriteProblemDetailsAsync(context, new ProblemDetails
+            {
+                Status = StatusCodes.Status412PreconditionFailed,
+                Title = "Precondition Failed",
+                Type = "https://tools.ietf.org/html/rfc9457",
+                Detail = ex.Message,
+                Extensions =
+                {
+                    ["errorCode"] = ex.ErrorCode
+                }
+            });
+        }
+        catch (Application.Exceptions.ProtectionAccessDeniedException ex)
+        {
+            await WriteProblemDetailsAsync(context, new ProblemDetails
+            {
+                Status = StatusCodes.Status403Forbidden,
+                Title = "Forbidden",
+                Type = "https://tools.ietf.org/html/rfc9457",
+                Detail = ex.Message,
+                Extensions =
+                {
+                    ["errorCode"] = ErrorCodes.AUTHENTICATION_REQUIRED
+                }
+            });
         }
         catch (Application.Exceptions.InvalidStateTransitionException ex)
         {
@@ -111,6 +177,12 @@ public sealed class ProblemDetailsMiddleware
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_CATALOG_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_CATALOG_INVALID_RESPONSE => StatusCodes.Status502BadGateway,
                 ErrorCodes.PURVIEW_DEPENDENCY_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
+                ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
+                ErrorCodes.PURVIEW_TENANT_NOT_CONNECTED => StatusCodes.Status409Conflict,
+                ErrorCodes.PURVIEW_INVENTORY_STALE => StatusCodes.Status409Conflict,
+                ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY => StatusCodes.Status409Conflict,
+                ErrorCodes.PROTECTION_REVIEW_EXPIRED => StatusCodes.Status410Gone,
+                ErrorCodes.PROTECTION_CONFIRMATION_INVALID => StatusCodes.Status403Forbidden,
                 ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
                 ErrorCodes.PROMPT_EVALUATION_REQUIRED => StatusCodes.Status403Forbidden,
                 ErrorCodes.PROMPT_EVALUATION_INVALID => StatusCodes.Status403Forbidden,
@@ -126,6 +198,12 @@ public sealed class ProblemDetailsMiddleware
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_CATALOG_INVALID_RESPONSE => "Blueprint Catalog Invalid Response",
                 ErrorCodes.AGENT_IDENTITY_BLUEPRINT_INCOMPATIBLE => "Blueprint Not Compatible",
                 ErrorCodes.PURVIEW_DEPENDENCY_UNAVAILABLE => "Purview Unavailable",
+                ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE => "Protection Capability Unavailable",
+                ErrorCodes.PURVIEW_TENANT_NOT_CONNECTED => "Purview Tenant Not Connected",
+                ErrorCodes.PURVIEW_INVENTORY_STALE => "Purview Inventory Stale",
+                ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY => "Purview DLP Profile Not Ready",
+                ErrorCodes.PROTECTION_REVIEW_EXPIRED => "Protection Review Expired",
+                ErrorCodes.PROTECTION_CONFIRMATION_INVALID => "Protection Confirmation Invalid",
                 ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE => "Prompt Evaluation Unavailable",
                 ErrorCodes.PROMPT_EVALUATION_REQUIRED => "Prompt Evaluation Required",
                 ErrorCodes.PROMPT_EVALUATION_INVALID => "Prompt Evaluation Invalid",

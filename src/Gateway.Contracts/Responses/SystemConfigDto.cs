@@ -29,7 +29,8 @@ public record SystemConfigDto(
     bool ProvisioningExecutionEnabled = false,
     bool PurviewPolicyProvisioningEnabled = false,
     bool DefaultPromptShieldEnabled = false,
-    bool PromptShieldAvailable = false);
+    bool PromptShieldAvailable = false,
+    string? RowVersion = null);
 
 public record UpdateFeaturesResponse(
     Guid AgentId,

@@ -55,7 +55,7 @@
         <p>Deploy / continue starts a new deployment or safely continues checkpoints already owned by this exact plan. Setup supplies the reviewed fingerprint, and bootstrap stops before mutation if source, configuration, or What-If predictions changed.</p>
         <label class="confirm-check">
             <InputCheckbox @bind-Value="mutationConfirmed" />
-            <span><strong>I authorize Azure, Entra, Agent 365, SQL, and optional policy changes bound to this Plan fingerprint.</strong><small>I understand interactive administrator handoffs may appear and no production support claim is created.</small></span>
+            <span><strong>I authorize Azure, Entra, Agent 365, SQL, and selected capability-prerequisite changes bound to this Plan fingerprint.</strong><small>Bootstrap does not authorize or perform Purview policy changes, and no production support or protection-readiness claim is created.</small></span>
         </label>
         <div class="inline-actions">
             <FluentButton Appearance="Appearance.Accent" Disabled="@(!mutationConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Apply)">Deploy / continue</FluentButton>
@@ -73,7 +73,7 @@ else if (StoppedDeploymentAwaitsReview)
 {
     <section class="setup-card confirmation-card">
         <h2>@(StoppedRunObserved ? "Review the stopped deployment" : "Review the preserved deployment state")</h2>
-        <p>Do not delete <code>.bootstrap</code> state. Setup first runs a read-only resume review in its own process. That review reads the canonical checkpoints, installs nothing, changes no Azure, Entra, Agent 365, SQL, or policy resource, and returns the accepted plan fingerprint plus a single-use authorization. Resume stays unavailable until it does, and the review reports honestly when there is no remaining step to continue.</p>
+        <p>Do not delete <code>.bootstrap</code> state. Setup first runs a read-only resume review in its own process. That review reads the canonical checkpoints, installs nothing, changes no Azure, Entra, Agent 365, SQL, capability, or policy resource, and returns the accepted plan fingerprint plus a single-use authorization. Resume stays unavailable until it does, and the review reports honestly when there is no remaining step to continue.</p>
         <div class="inline-actions">
             <FluentButton Appearance="Appearance.Accent" OnClick="StartResumeReview">Run the read-only review</FluentButton>
             <FluentAnchor Appearance="Appearance.Neutral" Href="/setup/permissions">Review a fresh Plan</FluentAnchor>
@@ -95,7 +95,7 @@ else if (snapshot.ResumeAuthorizationReady)
         <p>The read-only review returned one accepted plan fingerprint and one authorization for the checkpoint it validated. Setup supplies both to the canonical bootstrap, which stops before mutation if source, configuration, or checkpoint state no longer matches. The authorization is spent by this single confirmation and is never replayed.</p>
         <label class="confirm-check">
             <InputCheckbox @bind-Value="resumeConfirmed" />
-            <span><strong>I authorize Azure, Entra, Agent 365, SQL, and optional policy changes for the remaining steps bound to this reviewed authorization.</strong><small>I understand interactive administrator handoffs may appear, and the bootstrap remains responsible for deciding which checkpoint can safely continue.</small></span>
+            <span><strong>I authorize Azure, Entra, Agent 365, SQL, and selected capability-prerequisite changes for the remaining steps bound to this reviewed authorization.</strong><small>Bootstrap does not authorize or perform Purview policy changes, and remains responsible for deciding which checkpoint can safely continue.</small></span>
         </label>
         <div class="inline-actions">
             <FluentButton Appearance="Appearance.Accent" Disabled="@(!resumeConfirmed)" OnClick="() => StartMutation(BootstrapCommand.Resume)">Resume with the reviewed authorization</FluentButton>

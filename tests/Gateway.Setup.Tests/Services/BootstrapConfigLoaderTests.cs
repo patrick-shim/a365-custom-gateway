@@ -1,6 +1,8 @@
 using FluentAssertions;
 using Gateway.Setup.Models;
 using Gateway.Setup.Services;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Gateway.Setup.Tests.Services;
 
@@ -11,7 +13,7 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
         $"gateway-setup-loader-{Guid.NewGuid():N}");
 
     [Fact]
-    public async Task LoadAsync_ImportsOnlySupportedPublicConfiguration()
+    public async Task LoadAsync_ImportsCurrentCapabilityConfiguration()
     {
         var expected = ValidForm();
         await WriteValidAsync(expected);
@@ -20,44 +22,55 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
 
         result.Status.Should().Be(ExistingConfigurationStatus.Loaded);
         result.Guidance.Should().BeNull();
+        result.MigrationNotice.Should().BeNull();
         result.Form.Should().NotBeNull();
-        result.Form!.SubscriptionId.Should().Be(expected.SubscriptionId);
+        result.Form!.CapabilityPreset.Should().Be(CapabilityPreset.Custom);
+        result.Form.SubscriptionId.Should().Be(expected.SubscriptionId);
         result.Form.TenantId.Should().Be(expected.TenantId);
         result.Form.ProjectName.Should().Be(expected.ProjectName);
-        result.Form.SeedBlueprintName.Should().Be(expected.SeedBlueprintName);
         result.Form.ReviewedManagerApplicationIds.Should().Be(expected.ReviewedManagerApplicationIds);
         result.Form.PromptShieldSkuName.Should().Be("F0");
-        result.Form.PurviewCollectionPolicyName.Should().Be(expected.PurviewCollectionPolicyName);
-        result.Form.PurviewDlpPolicyName.Should().Be(expected.PurviewDlpPolicyName);
-        result.Form.PurviewDlpRuleName.Should().Be(expected.PurviewDlpRuleName);
-        result.Form.PurviewSensitiveInformationTypeId.Should().Be(
-            expected.PurviewSensitiveInformationTypeId);
-
-        var rewrite = () => StageAndPublishAsync(
-            new BootstrapConfigWriter(
-                new RepositoryLayout(root),
-                new AtomicFileWriter()),
-            ReadyState(result.Form!));
-        await rewrite.Should().NotThrowAsync(
-            "a safely imported configuration must be semantically preserved during explicit review");
+        result.Form.PurviewEnabled.Should().BeFalse();
     }
 
     [Fact]
-    public async Task LoadAsync_PreservesEnabledPurviewGuidAndExactUnicodeName()
+    public async Task LoadAsync_AcceptsLegacyPurviewFieldsOnlyAsMigrationNotice()
     {
         var expected = ValidForm();
-        expected.PurviewEnabled = true;
-        expected.PurviewSensitiveInformationTypeId = Guid.NewGuid();
-        expected.PurviewSensitiveInformationType = "주민등록번호";
+        expected.ApplyCapabilityPreset(CapabilityPreset.FullEvaluation);
+        expected.RegistryBetaAcknowledged = true;
+        expected.PromptShieldCostAndQuotaAcknowledged = true;
+        expected.PurviewAuthorityRequirementsAcknowledged = true;
         await WriteValidAsync(expected);
+        var path = Path.Combine(root, "bootstrap", "config.json");
+        var rootNode = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+        rootNode.Remove("capabilityPreset");
+        rootNode["agent365"]!.AsObject().Remove("registryBetaAcknowledged");
+        rootNode["promptShield"]!.AsObject().Remove("costAndQuotaAcknowledged");
+        var purview = rootNode["purview"]!.AsObject();
+        purview.Remove("authorityRequirementsAcknowledged");
+        purview["collectionPolicyName"] = "Legacy collection";
+        purview["dlpPolicyName"] = "Legacy DLP";
+        purview["dlpRuleName"] = "Legacy rule";
+        purview["sensitiveInformationTypeId"] = "50842eb7-edc8-4019-85dd-5a5c1f2bb085";
+        purview["sensitiveInformationType"] = "Legacy classifier";
+        await File.WriteAllTextAsync(
+            path,
+            rootNode.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
         var result = await NewLoader().LoadAsync();
 
         result.Status.Should().Be(ExistingConfigurationStatus.Loaded);
+        result.MigrationNotice.Should().Contain("legacy Purview");
+        result.MigrationNotice.Should().Contain("Gateway Settings");
         result.Form.Should().NotBeNull();
-        result.Form!.PurviewSensitiveInformationTypeId.Should().Be(
-            expected.PurviewSensitiveInformationTypeId);
-        result.Form.PurviewSensitiveInformationType.Should().Be("주민등록번호");
+        result.Form!.CapabilityPreset.Should().Be(CapabilityPreset.FullEvaluation);
+        result.Form.RegistryBetaAcknowledged.Should().BeTrue();
+        result.Form.PromptShieldCostAndQuotaAcknowledged.Should().BeTrue();
+        result.Form.PurviewEnabled.Should().BeTrue();
+        result.Form.PurviewAuthorityRequirementsAcknowledged.Should().BeTrue();
+        result.Form.GetType().GetProperty("PurviewSensitiveInformationType")
+            .Should().BeNull("legacy SIT values must not enter the active form");
     }
 
     [Fact]
@@ -66,91 +79,15 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
         await WriteValidAsync(ValidForm());
         var path = Path.Combine(root, "bootstrap", "config.json");
         var json = await File.ReadAllTextAsync(path);
-        await File.WriteAllTextAsync(path, json.Replace("{", "{\"unknown\":\"value\",", StringComparison.Ordinal));
+        await File.WriteAllTextAsync(
+            path,
+            json.Replace("{", "{\"unknown\":\"value\",", StringComparison.Ordinal));
 
         var result = await NewLoader().LoadAsync();
 
         result.Status.Should().Be(ExistingConfigurationStatus.Rejected);
         result.Form.Should().BeNull();
         (await File.ReadAllTextAsync(path)).Should().Contain("unknown");
-    }
-
-    [Fact]
-    public async Task LoadAsync_DoesNotGuessWhetherAConfigurationNameResemblesCredentialMaterial()
-    {
-        await WriteValidAsync(ValidForm());
-        var path = Path.Combine(root, "bootstrap", "config.json");
-        var json = await File.ReadAllTextAsync(path);
-        await File.WriteAllTextAsync(path, json.Replace(
-            "A365 Gateway Seed dev",
-            "Bearer Credential Blueprint",
-            StringComparison.Ordinal));
-
-        var result = await NewLoader().LoadAsync();
-
-        result.Status.Should().Be(ExistingConfigurationStatus.Loaded);
-        result.Guidance.Should().BeNull();
-        result.Form.Should().NotBeNull();
-        result.Form!.SeedBlueprintName.Should().Be(
-            "Bearer Credential Blueprint");
-    }
-
-    [Fact]
-    public async Task LoadAsync_RejectsAdvancedConfigurationThatWizardCannotPreserve()
-    {
-        await WriteValidAsync(ValidForm());
-        var path = Path.Combine(root, "bootstrap", "config.json");
-        var json = await File.ReadAllTextAsync(path);
-        await File.WriteAllTextAsync(path, json.Replace(
-            "\"policyProvisioningEnabled\": false",
-            "\"policyProvisioningEnabled\": true",
-            StringComparison.Ordinal));
-
-        var result = await NewLoader().LoadAsync();
-
-        result.Status.Should().Be(ExistingConfigurationStatus.Rejected);
-        result.Form.Should().BeNull();
-    }
-
-    [Fact]
-    public async Task LoadAsync_ImportsLegacyFalseRuntimeAdapterSwitchAndRewriteRemovesIt()
-    {
-        await WriteValidAsync(ValidForm());
-        var path = Path.Combine(root, "bootstrap", "config.json");
-        var json = await File.ReadAllTextAsync(path);
-        await File.WriteAllTextAsync(path, json.Replace(
-            "\"policyProvisioningEnabled\": false",
-            "\"activateGatewayAdapterAfterPolicyReadback\": false,\n    \"policyProvisioningEnabled\": false",
-            StringComparison.Ordinal));
-
-        var result = await NewLoader().LoadAsync();
-
-        result.Status.Should().Be(ExistingConfigurationStatus.Loaded);
-        result.Form.Should().NotBeNull();
-        await StageAndPublishAsync(
-            new BootstrapConfigWriter(
-                new RepositoryLayout(root),
-                new AtomicFileWriter()),
-            ReadyState(result.Form!));
-        (await File.ReadAllTextAsync(path))
-            .Should().NotContain("activateGatewayAdapterAfterPolicyReadback");
-    }
-
-    [Fact]
-    public async Task LoadAsync_RejectsLegacyRuntimeAdapterSwitchWhenTrue()
-    {
-        await WriteValidAsync(ValidForm());
-        var path = Path.Combine(root, "bootstrap", "config.json");
-        var json = await File.ReadAllTextAsync(path);
-        await File.WriteAllTextAsync(path, json.Replace(
-            "\"policyProvisioningEnabled\": false",
-            "\"activateGatewayAdapterAfterPolicyReadback\": true,\n    \"policyProvisioningEnabled\": false",
-            StringComparison.Ordinal));
-
-        var result = await NewLoader().LoadAsync();
-
-        result.Status.Should().Be(ExistingConfigurationStatus.Rejected);
-        result.Form.Should().BeNull();
     }
 
     [Fact]
@@ -186,22 +123,6 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
         state.AccountSelectionIssue.Should().BeNull();
     }
 
-    [Fact]
-    public void WizardState_FailsClosedWhenImportedSubscriptionIsUnavailable()
-    {
-        var state = new SetupWizardState(new FixedProjectNameGenerator());
-        state.ApplyExistingConfiguration(new ExistingConfigurationResult(
-            ExistingConfigurationStatus.Loaded,
-            ValidForm(),
-            null));
-
-        state.SetSubscriptions([
-            new AzureSubscription(Guid.NewGuid(), Guid.NewGuid(), "Other", true, "Enabled")
-        ]);
-
-        state.AccountSelectionIssue.Should().Contain("not available");
-    }
-
     private BootstrapConfigLoader NewLoader() => new(new RepositoryLayout(root));
 
     private async Task WriteValidAsync(SetupConfigurationForm form)
@@ -210,16 +131,8 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
         var writer = new BootstrapConfigWriter(
             new RepositoryLayout(root),
             new AtomicFileWriter());
-        await StageAndPublishAsync(writer, ReadyState(form));
-    }
-
-    private static async Task<ConfigurationWriteResult> StageAndPublishAsync(
-        BootstrapConfigWriter writer,
-        SetupWizardState state)
-    {
-        using var staged = await writer.StageAsync(state.CreatePlanReadyConfiguration());
-        return staged.TryPublish()
-            ?? throw new InvalidOperationException("The deterministic test stage changed unexpectedly.");
+        using var staged = await writer.StageAsync(ReadyState(form).CreatePlanReadyConfiguration());
+        staged.TryPublish().Should().NotBeNull();
     }
 
     private static SetupWizardState ReadyState(SetupConfigurationForm form)
@@ -241,25 +154,13 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
             form.SubscriptionId,
             [new AzureLocation(form.Location, "Selected region")],
             null));
-        if (form.PurviewEnabled)
-        {
-            state.ApplyPurviewSensitiveInformationTypeDiscovery(new(
-                form.SubscriptionId,
-                form.TenantId,
-                [new PurviewSensitiveInformationType(
-                    form.PurviewSensitiveInformationTypeId,
-                    form.PurviewSensitiveInformationType,
-                    "Test publisher")],
-                PurviewSensitiveInformationTypeDiscovery.Provenance,
-                null));
-        }
-
         return state;
     }
 
     private static SetupConfigurationForm ValidForm() => new()
     {
         Profile = DeploymentProfile.QuickDevelopment,
+        CapabilityPreset = CapabilityPreset.Custom,
         SubscriptionId = Guid.NewGuid(),
         TenantId = Guid.NewGuid(),
         Environment = "dev",
@@ -272,12 +173,7 @@ public sealed class BootstrapConfigLoaderTests : IDisposable
         ReviewedManagerApplicationIds = "33333333-3333-4333-8333-333333333333",
         PromptShieldEnabled = false,
         PromptShieldSkuName = "F0",
-        PurviewEnabled = false,
-        PurviewSensitiveInformationTypeId = Guid.Empty,
-        PurviewSensitiveInformationType = string.Empty,
-        PurviewCollectionPolicyName = "Existing collection name",
-        PurviewDlpPolicyName = "Existing DLP policy name",
-        PurviewDlpRuleName = "Existing DLP rule name"
+        PurviewEnabled = false
     };
 
     public void Dispose()

@@ -1,6 +1,8 @@
 using Bunit;
 using FluentAssertions;
 using Gateway.AdminUi.Components.Shared;
+using Gateway.Contracts.Dtos;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.FluentUI.AspNetCore.Components;
 
@@ -73,8 +75,133 @@ public sealed class SharedComponentTests : BunitContext
 
         var pill = cut.Find(".status-pill");
         pill.ClassList.Should().Contain(expectedClass);
-        pill.GetAttribute("aria-label").Should().Be($"Status: {value}");
+        pill.GetAttribute("aria-label").Should().Be($"Status: {expectedText}");
         pill.TextContent.Trim().Should().Be(expectedText);
+    }
+
+    [Theory]
+    [InlineData("NotConnected", "status-neutral", "Not connected")]
+    [InlineData("AwaitingAdministrator", "status-progress", "Awaiting admin")]
+    [InlineData("PendingPropagation", "status-progress", "Pending propagation")]
+    [InlineData("PendingVerification", "status-progress", "Pending verification")]
+    [InlineData("VerificationFailed", "status-negative", "Failed")]
+    [InlineData("Installed", "status-positive", "Installed")]
+    public void StatusPill_FormatsProtectionStatesWithoutRelyingOnColor(
+        string value,
+        string expectedClass,
+        string expectedText)
+    {
+        var cut = Render<StatusPill>(parameters => parameters
+            .Add(component => component.Value, value));
+
+        var pill = cut.Find(".status-pill");
+        pill.ClassList.Should().Contain(expectedClass);
+        pill.TextContent.Trim().Should().Be(expectedText);
+        pill.GetAttribute("aria-label").Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public void ProtectionReadinessPanel_ExplainsPendingStateWithoutRawUnknownBlockers()
+    {
+        var cut = Render<ProtectionReadinessPanel>(parameters => parameters
+            .Add(component => component.Label, "Research profile")
+            .Add(component => component.Readiness, new ProtectionReadinessDto(
+                "Installed",
+                "Ready",
+                "Pending",
+                "NotChecked",
+                "NotChecked",
+                false,
+                ["PropagationPending", "provider-secret-detail"],
+                DateTime.UtcNow)));
+
+        cut.Find("[aria-label='Research profile readiness']").Should().NotBeNull();
+        cut.Markup.Should().Contain("Pending propagation");
+        cut.Markup.Should().Contain("has not made the reviewed change available");
+        cut.Markup.Should().Contain("needs administrator attention");
+        cut.Markup.Should().NotContain("provider-secret-detail");
+    }
+
+    [Fact]
+    public void ProtectionOperationTimeline_ShowsSafeProgressAndCorrelationOnly()
+    {
+        var operation = new ProtectionAdminOperationDto(
+            Guid.NewGuid(),
+            1,
+            "ReconcileDlpProfile",
+            "WaitingForPropagation",
+            Guid.NewGuid(),
+            "actor-object-id",
+            "PurviewDlpProfile",
+            "provider-target-id",
+            "payload-hash",
+            Guid.NewGuid(),
+            "row-version",
+            "Scheduled",
+            1,
+            5,
+            DateTime.UtcNow.AddMinutes(5),
+            false,
+            false,
+            Guid.Parse("2eeb83c2-8a23-407c-9057-c410e5514387"),
+            null,
+            "provider-failure-code",
+            "WaitForPropagation",
+            ["PropagationPending"],
+            DateTime.UtcNow.AddMinutes(-2),
+            DateTime.UtcNow.AddMinutes(-1),
+            null,
+            DateTime.UtcNow,
+            [
+                new ProtectionAdminOperationStepDto(
+                    Guid.NewGuid(),
+                    0,
+                    "DiscoverProviderState",
+                    "Completed",
+                    1,
+                    "None",
+                    null,
+                    false,
+                    false,
+                    null,
+                    null,
+                    DateTime.UtcNow.AddMinutes(-1),
+                    DateTime.UtcNow)
+            ],
+            "operation-row");
+
+        var cut = Render<ProtectionOperationTimeline>(parameters => parameters
+            .Add(component => component.Operation, operation));
+
+        cut.Find(".operation-panel").GetAttribute("aria-live").Should().Be("polite");
+        cut.Markup.Should().Contain("Pending propagation");
+        cut.Markup.Should().Contain("Discover Provider State");
+        cut.Markup.Should().Contain(operation.CorrelationId.ToString());
+        cut.Markup.Should().NotContain("provider-target-id");
+        cut.Markup.Should().NotContain("payload-hash");
+        cut.Markup.Should().NotContain("provider-failure-code");
+        cut.Markup.Should().NotContain("actor-object-id");
+    }
+
+    [Fact]
+    public async Task CopyableCommand_IsReadonlyLabelledAndReportsCopy()
+    {
+        const string command =
+            "pwsh -NoLogo -NoProfile -File '.\\Connect-PurviewTenant.ps1' -OperationId '00000000-0000-4000-8000-000000000001'";
+        var cut = Render<CopyableCommand>(parameters => parameters
+            .Add(component => component.Command, command));
+
+        var field = cut.Find("textarea");
+        field.HasAttribute("readonly").Should().BeTrue();
+        field.GetAttribute("aria-describedby").Should().NotBeNullOrWhiteSpace();
+        field.TextContent.Should().Be(command);
+        cut.Find("label").GetAttribute("for").Should().Be(field.Id);
+
+        await cut.Find("fluent-button").ClickAsync(new MouseEventArgs());
+
+        cut.Find("[role='status']").TextContent.Should().Contain("Command copied");
+        JSInterop.Invocations.Should().ContainSingle(invocation =>
+            invocation.Identifier == "A365Gateway.copyTextFrom");
     }
 
     [Fact]

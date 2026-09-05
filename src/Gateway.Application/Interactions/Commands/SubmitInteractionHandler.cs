@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Gateway.Application.Common;
 using Gateway.Application.Exceptions;
+using Gateway.Application.Protection;
 using Gateway.Contracts;
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Responses;
@@ -26,6 +27,7 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
     private readonly IPromptEvaluationRepository _promptEvaluationRepository;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<SubmitInteractionHandler> _logger;
+    private readonly ProtectionEffectiveFeatureEvaluator? _protectionFeatures;
 
     public SubmitInteractionHandler(
         IAgentRepository agentRepository,
@@ -37,7 +39,8 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
         IAuditEventRepository auditEventRepository,
         IPromptEvaluationRepository promptEvaluationRepository,
         IUnitOfWork unitOfWork,
-        ILogger<SubmitInteractionHandler> logger)
+        ILogger<SubmitInteractionHandler> logger,
+        ProtectionEffectiveFeatureEvaluator? protectionFeatures = null)
     {
         _agentRepository = agentRepository;
         _aiInteractionRepository = aiInteractionRepository;
@@ -49,6 +52,7 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
         _promptEvaluationRepository = promptEvaluationRepository;
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _protectionFeatures = protectionFeatures;
     }
 
     public async Task<InteractionReceiptDto> Handle(SubmitInteractionCommand request, CancellationToken ct)
@@ -74,6 +78,16 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
 
         if (agent.FeatureConfiguration.PurviewEnabled)
         {
+            if (_protectionFeatures is null)
+            {
+                throw new DomainException(
+                    "Purview capability and profile readiness cannot be verified.",
+                    ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE);
+            }
+            await _protectionFeatures.EnsureRuntimeReadyAsync(
+                agent,
+                ct);
+
             if (!_purviewPolicyClient.IsEnabled)
             {
                 throw new DomainException(

@@ -1,4 +1,8 @@
 interface:
   display_name: "A365 Admin UI"
   short_description: "Build and verify the A365 Blazor portal"
-  default_prompt: "Use $a365-admin-ui to implement the next verified Admin UI slice."
+  default_prompt: >-
+    Use $a365-admin-ui for the implemented Settings-owned protection contract.
+    Preserve capability-only bootstrap, delegated-Administrator registration,
+    gateway-protection-admin-v1 isolation, non-authoritative companion evidence,
+    exact Ready dimensions, and the source-not-deployed live-authority boundary.

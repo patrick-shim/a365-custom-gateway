@@ -12,6 +12,7 @@
     "projectName",
     "resourceGroupName",
     "alertEmail",
+    "capabilityPreset",
     "sql",
     "agent365",
     "promptShield",
@@ -39,6 +40,9 @@
       "pattern": "^(?=.{1,90}$)[A-Za-z0-9._()\\-]*[A-Za-z0-9_()\\-]$"
     },
     "alertEmail": { "type": "string", "format": "email" },
+    "capabilityPreset": {
+      "enum": ["fullEvaluation", "coreGateway", "custom"]
+    },
     "sql": {
       "type": "object",
       "additionalProperties": false,
@@ -77,10 +81,11 @@
     "agent365": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["seedBlueprintName", "allowDevelopmentRegistryPreview", "reviewedManagerApplicationIds"],
+      "required": ["seedBlueprintName", "allowDevelopmentRegistryPreview", "registryBetaAcknowledged", "reviewedManagerApplicationIds"],
       "properties": {
         "seedBlueprintName": { "type": "string", "minLength": 1, "maxLength": 100 },
         "allowDevelopmentRegistryPreview": { "type": "boolean" },
+        "registryBetaAcknowledged": { "type": "boolean" },
         "reviewedManagerApplicationIds": {
           "type": "array",
           "minItems": 1,
@@ -96,36 +101,34 @@
     "promptShield": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "skuName"],
+      "required": ["enabled", "skuName", "costAndQuotaAcknowledged"],
       "properties": {
         "enabled": { "type": "boolean" },
-        "skuName": { "enum": ["F0", "S0"] }
+        "skuName": { "enum": ["F0", "S0"] },
+        "costAndQuotaAcknowledged": { "type": "boolean" }
       }
     },
     "purview": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "enabled",
-        "collectionPolicyName",
-        "dlpPolicyName",
-        "dlpRuleName",
-        "sensitiveInformationType"
-      ],
+      "required": ["enabled", "authorityRequirementsAcknowledged"],
       "properties": {
         "enabled": { "type": "boolean" },
-        "collectionPolicyName": { "type": "string", "minLength": 1 },
-        "dlpPolicyName": { "type": "string", "minLength": 1 },
-        "dlpRuleName": { "type": "string", "minLength": 1 },
+        "authorityRequirementsAcknowledged": { "type": "boolean" },
+        "collectionPolicyName": { "type": "string", "minLength": 1, "deprecated": true },
+        "dlpPolicyName": { "type": "string", "minLength": 1, "deprecated": true },
+        "dlpRuleName": { "type": "string", "minLength": 1, "deprecated": true },
         "sensitiveInformationTypeId": {
           "type": "string",
-          "pattern": "^(?:|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})$"
+          "pattern": "^(?:|[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})$",
+          "deprecated": true
         },
-        "sensitiveInformationType": { "type": "string", "maxLength": 255 },
-        "policyProvisioningEnabled": { "type": "boolean" },
-        "policyProvisioningOrganization": { "type": "string" },
-        "policyProvisioningApplicationId": { "type": "string" },
-        "policyProvisioningCertificateSecretUri": { "type": "string" }
+        "sensitiveInformationType": { "type": "string", "maxLength": 255, "deprecated": true },
+        "activateGatewayAdapterAfterPolicyReadback": { "type": "boolean", "deprecated": true },
+        "policyProvisioningEnabled": { "type": "boolean", "deprecated": true },
+        "policyProvisioningOrganization": { "type": "string", "deprecated": true },
+        "policyProvisioningApplicationId": { "type": "string", "deprecated": true },
+        "policyProvisioningCertificateSecretUri": { "type": "string", "deprecated": true }
       }
     }
   },
@@ -144,7 +147,36 @@
       },
       "then": {
         "properties": {
-          "environment": { "const": "dev" }
+          "environment": { "const": "dev" },
+          "agent365": {
+            "properties": {
+              "registryBetaAcknowledged": { "const": true }
+            },
+            "required": ["registryBetaAcknowledged"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "promptShield": {
+            "properties": {
+              "enabled": { "const": true }
+            },
+            "required": ["enabled"]
+          }
+        },
+        "required": ["promptShield"]
+      },
+      "then": {
+        "properties": {
+          "promptShield": {
+            "properties": {
+              "costAndQuotaAcknowledged": { "const": true }
+            },
+            "required": ["costAndQuotaAcknowledged"]
+          }
         }
       }
     },
@@ -164,13 +196,51 @@
         "properties": {
           "purview": {
             "properties": {
-              "sensitiveInformationTypeId": {
-                "format": "uuid",
-                "not": { "const": "00000000-0000-0000-0000-000000000000" }
-              },
+              "authorityRequirementsAcknowledged": { "const": true }
+            },
+            "required": ["authorityRequirementsAcknowledged"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "purview": {
+            "properties": {
               "sensitiveInformationType": { "minLength": 1 }
             },
-            "required": ["sensitiveInformationTypeId", "sensitiveInformationType"]
+            "required": ["sensitiveInformationType"]
+          }
+        },
+        "required": ["purview"]
+      },
+      "then": {
+        "properties": {
+          "purview": {
+            "properties": {
+              "sensitiveInformationTypeId": {
+                "pattern": "^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$"
+              }
+            },
+            "required": ["sensitiveInformationTypeId"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "purview": {
+            "required": ["sensitiveInformationTypeId"]
+          }
+        },
+        "required": ["purview"]
+      },
+      "then": {
+        "properties": {
+          "purview": {
+            "required": ["sensitiveInformationType"]
           }
         }
       }

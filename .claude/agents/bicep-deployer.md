@@ -35,3 +35,17 @@ retained evidence unless a reviewed runbook authorizes disposition.
 Consume `.secret` or `.secrets` only through the approved non-echoing path; never
 render, alter, copy, transmit, or commit either. Return exact safe validation,
 deployment/readback, and rollback evidence.
+
+## Implemented protection source invariants
+
+The redesign is offline-validated in source, not deployed. Bootstrap Full/Core/Custom
+presets prepare capabilities only and never select a SIT or author policy. Every
+registration creation requires a signed-in delegated `Gateway.Administrator`;
+Registry completion stays user-only OBO. Settings owns SIT/KYD/DLP and
+per-registration controls on `gateway-protection-admin-v1`. The immutable Admin UI
+image supplies the downloadable companion; its evidence is non-authoritative until
+exact capability-bound provider verification. `Ready` requires capability,
+readback, propagation, token roles, runtime allow/block, current SIT generation,
+exact blueprint/provider IDs, and timestamps. Keep KYD Group and blueprint
+Individual DLP on the Application plane. Live claims require fresh exact-target
+authority.

@@ -744,7 +744,6 @@ function Invoke-ExactPurviewProfile {
     $resolvedSensitiveInformationType = Get-ExactSensitiveInformationType `
         -Id ([string]$InputObject.sensitiveInformationTypeId) `
         -ExpectedName ([string]$InputObject.sensitiveInformationType)
-
     $scenarioConfig = @{
         Activities = @('UploadText', 'DownloadText')
         EnforcementPlanes = @('Application')
@@ -756,7 +755,6 @@ function Invoke-ExactPurviewProfile {
     $rule = Get-ExactDlpRule -Name ([string]$InputObject.dlpRuleName)
     $existingCount = @(@($collection, $policy, $rule) |
         Where-Object { $null -ne $_ }).Count
-
     if ($existingCount -notin @(0, 3)) {
         throw 'The Purview managed profile is only partially present and cannot be adopted or mutated.'
     }
@@ -767,7 +765,6 @@ function Invoke-ExactPurviewProfile {
             [string]::IsNullOrWhiteSpace([string]$InputObject.expectedDlpRuleId)) {
             throw 'Existing Purview resources lack persisted provider-ID authority and cannot be adopted.'
         }
-
         Assert-ExactCollectionLocation -Value $collection.Locations `
             -ResourceName ([string]$InputObject.collectionPolicyName) | Out-Null
         $policyScope = @(Assert-DlpApplicationLocations -Value $policy.Locations `
@@ -787,7 +784,6 @@ function Invoke-ExactPurviewProfile {
         Assert-ExactReadback -Collection $collection -Policy $policy -Rule $rule `
             -InputObject $InputObject -ExpectedDlpMode $ExpectedDlpMode `
             -ExpectedDlpApplicationIds $policyScope | Out-Null
-
         if (-not $VerifyOnly -and -not $policyAtExpected) {
             $displayName = [string]$InputObject.blueprintDisplayName
             $policyLocations = @(Convert-ToStructuredArray -Value $policy.Locations `
@@ -810,7 +806,6 @@ function Invoke-ExactPurviewProfile {
             -not [string]::IsNullOrWhiteSpace([string]$InputObject.expectedDlpRuleId)) {
             throw 'Persisted Purview authority refers to provider resources that are absent.'
         }
-
         $collectionLocationsJson = @((New-CollectionLocation)) |
             ConvertTo-Json -Depth 10 -Compress
         $dlpLocationsJson = @((New-DlpApplicationLocation -ApplicationId $applicationIdText `
@@ -829,15 +824,12 @@ function Invoke-ExactPurviewProfile {
             -Confirm:$false | Out-Null
     }
 
-    # Always perform fresh exact readback after any mutation. Provider lookup
-    # failures remain terminating and can never be interpreted as absence.
     $collection = Get-ExactCollectionPolicy -Name ([string]$InputObject.collectionPolicyName)
     $policy = Get-ExactDlpPolicy -Name ([string]$InputObject.dlpPolicyName)
     $rule = Get-ExactDlpRule -Name ([string]$InputObject.dlpRuleName)
     if ($null -eq $collection -or $null -eq $policy -or $null -eq $rule) {
         throw 'Purview exact readback did not return the complete managed profile.'
     }
-
     return Assert-ExactReadback -Collection $collection -Policy $policy -Rule $rule `
         -InputObject $InputObject -ExpectedDlpMode $ExpectedDlpMode `
         -ExpectedDlpApplicationIds $expectedDlpApplicationIds
@@ -853,6 +845,9 @@ $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]:
     [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
 
 try {
+    if (-not $VerifyOnly) {
+        throw 'New Purview policy authoring is available only through reviewed Gateway Settings operations.'
+    }
     $input = Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -Depth 20
     $applicationId = [Guid]::Empty
     if (-not [Guid]::TryParse([string]$input.blueprintApplicationId, [ref]$applicationId) -or

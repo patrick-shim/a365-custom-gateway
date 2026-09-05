@@ -36,9 +36,24 @@ The supported outcome is: a public user clones `a365-custom-gateway`, runs the r
 
 - `gateway verify` passes
 - Admin UI sign-in and primary routes pass in a real browser
-- one authorized registration reaches the truthful supported state
-- enabled Prompt Shields and Purview behaviors are tested with approved synthetic input
+- the implemented protection source is deployed cleanly and creates exactly two new
+  blueprints and one delegated-Administrator-created external registration for each
+- actual Registry completion remains a signed-in `Gateway.Administrator` user-only
+  OBO action for each registration
+- observability, enabled per-agent Prompt Shields, and blueprint-scoped DLP are
+  validated with approved synthetic input
 - queue, outbox, health, and immutable image evidence are recorded
+
+The implemented source cannot satisfy Deploy or LiveValidate until a fresh,
+exactly authorized deployment proves it. Bootstrap presets prepare capabilities
+only and never select a SIT or author policy. Gateway Settings owns
+SIT/KYD/DLP/readiness and per-registration controls on dedicated
+`gateway-protection-admin-v1`. Companion evidence remains non-authoritative until
+exact capability-bound provider verification; the immutable Admin UI image supplies
+the downloadable Windows companion without executing it. `Ready` requires capability,
+readback, propagation, token roles, and runtime allow/block evidence. Purview remains
+fail closed with fixed KYD Group versus blueprint Individual DLP scopes on the
+Application plane. Live validation requires fresh exact-target authority.
 
 ### UpdateCheckpoint
 

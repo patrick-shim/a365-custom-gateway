@@ -129,11 +129,7 @@ function Assert-GatewayPlanPrerequisites {
 
 function Assert-BootstrapPrerequisites {
     [CmdletBinding()]
-    param([switch]$Install, [switch]$RequirePurview)
-
-    if ($RequirePurview -and -not $IsWindows) {
-        throw 'Microsoft does not support Security & Compliance PowerShell in PowerShell 7 on macOS or Linux. Run Purview-enabled setup from Windows, or keep Purview policy authoring off on this computer.'
-    }
+    param([switch]$Install)
 
     Assert-GatewayPlanPrerequisites -Install:$Install | Out-Null
     if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 or later is required. On Windows, run .\\gateway.cmd from the repository root.' }
@@ -184,13 +180,6 @@ function Assert-BootstrapPrerequisites {
         -ArgumentList @('--version') `
         -CaptureStdoutOnly).Trim()
 
-    if ($RequirePurview) {
-        if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
-            if (-not $Install) { throw 'ExchangeOnlineManagement is required for Purview configuration.' }
-            Install-Module ExchangeOnlineManagement -Scope CurrentUser -Force -AllowClobber -Repository PSGallery | Out-Null
-        }
-    }
-
     return [ordered]@{
         powerShell = $PSVersionTable.PSVersion.ToString()
         azureCli = $azureCliVersion
@@ -198,7 +187,6 @@ function Assert-BootstrapPrerequisites {
         git = $gitVersion
         bicep = $bicepVersion
         agent365BlueprintProvider = 'MicrosoftGraphV1DirectNoCredential'
-        exchangeOnlineManagementInstalled = [bool](Get-Module -ListAvailable -Name ExchangeOnlineManagement)
     }
 }
 

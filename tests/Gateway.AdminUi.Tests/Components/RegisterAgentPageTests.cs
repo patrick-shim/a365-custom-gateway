@@ -4,6 +4,7 @@ using Bunit.TestDoubles;
 using FluentAssertions;
 using Gateway.AdminUi.Authentication;
 using Gateway.AdminUi.Components.Pages;
+using Gateway.AdminUi.Models;
 using Gateway.AdminUi.Services;
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Requests;
@@ -39,18 +40,27 @@ public sealed class RegisterAgentPageTests : BunitContext
             .Returns(CreateConfig("Agent365", agent365Enabled: true, azureMonitorEnabled: false));
         _api.GetAgentIdentityBlueprintsAsync(Arg.Any<CancellationToken>())
             .Returns(CreateBlueprintInventory());
-        _api.GetPurviewPolicyProfilesAsync(Arg.Any<CancellationToken>())
-            .Returns(new PurviewPolicyProfileListResponse(
-            [
-                new PurviewPolicyProfileSummaryDto(
-                    Guid.Parse("cfe7a481-8295-4f6a-a54b-434b1e9cb66c"),
-                    "Enterprise AI protection",
-                    "AllSensitiveInformation",
-                    "AuditOnly",
-                    "Ready",
-                    2,
-                    DateTime.UtcNow)
-            ]));
+        _api.GetProtectionCapabilitiesAsync(Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<ProtectionCapabilitiesResponse>(
+                new ProtectionCapabilitiesResponse(
+                [
+                    CreateCapability("PromptShields", "Installed"),
+                    CreateCapability("Purview", "Installed")
+                ]),
+                "\"capabilities\"",
+                "capability-correlation"));
+        _api.GetPurviewDlpProfilesAsync(Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<PurviewDlpProfileListResponse>(
+                new PurviewDlpProfileListResponse(
+                [
+                    CreateDlpProfile(
+                        ExistingBlueprintClientId,
+                        "Enterprise AI protection",
+                        "Ready",
+                        ready: true)
+                ]),
+                "\"profiles\"",
+                "profile-correlation"));
 
         _authorization = AddAuthorization();
         _authorization.SetAuthorized("Admin user");
@@ -89,21 +99,155 @@ public sealed class RegisterAgentPageTests : BunitContext
     }
 
     [Fact]
-    public void NewProtectedBlueprint_OffersExistingOrNewPurviewProfile()
+    public void NewBlueprint_StaysCoreFirstAndDoesNotOfferHiddenPolicyAuthoring()
     {
         _authorization.SetClaims(new Claim("oid", "02ed1e89-4ad1-4073-8e90-4aa865784896"));
         var cut = Render<RegisterAgent>();
 
         cut.Find("#blueprint-mode").Change("CreateNew");
-        cut.Find("#purview-enabled").Change(true);
 
-        cut.Find("#purview-profile-mode").Should().NotBeNull();
-        cut.Find("#purview-profile").TextContent.Should().Contain("Enterprise AI protection");
-        cut.Find("#purview-profile").TextContent.Should().Contain("2 blueprints");
+        cut.Find("#purview-enabled").HasAttribute("disabled").Should().BeTrue();
+        cut.Markup.Should().Contain("register core identity first");
+        cut.Markup.Should().Contain("does not author hidden policy");
+        cut.FindAll("#purview-profile-mode").Should().BeEmpty();
+        cut.FindAll("#new-purview-profile-name").Should().BeEmpty();
+    }
 
-        cut.Find("#purview-profile-mode").Change("CreateNew");
-        cut.Find("#new-purview-profile-name").Should().NotBeNull();
-        cut.Markup.Should().Contain("preserves every existing DLP location");
+    [Fact]
+    public void ExistingBlueprint_OffersOnlyItsExactReadyDlpProfile()
+    {
+        _authorization.SetClaims(new Claim("oid", "02ed1e89-4ad1-4073-8e90-4aa865784896"));
+        var nonReadyProfileId = Guid.NewGuid();
+        _api.GetPurviewDlpProfilesAsync(Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<PurviewDlpProfileListResponse>(
+                new PurviewDlpProfileListResponse(
+                [
+                    CreateDlpProfile(
+                        ExistingBlueprintClientId,
+                        "Ready research profile",
+                        "Ready",
+                        ready: true),
+                    CreateDlpProfile(
+                        ExistingBlueprintClientId,
+                        "Still propagating",
+                        "PendingPropagation",
+                        ready: false,
+                        profileId: nonReadyProfileId),
+                    CreateDlpProfile(
+                        AnalyticsBlueprintClientId,
+                        "Different blueprint",
+                        "Ready",
+                        ready: true)
+                ]),
+                "\"profiles\"",
+                "profile-correlation"));
+        var cut = Render<RegisterAgent>();
+
+        cut.Find("#existing-blueprint").Change(ExistingBlueprintObjectId.ToString("D"));
+
+        var profileSelect = cut.Find("#purview-dlp-profile");
+        profileSelect.TextContent.Should().Contain("Ready research profile");
+        profileSelect.TextContent.Should().NotContain("Still propagating");
+        profileSelect.TextContent.Should().NotContain("Different blueprint");
+        cut.Markup.Should().NotContain(nonReadyProfileId.ToString("D"));
+    }
+
+    [Fact]
+    public async Task ExistingBlueprint_SubmitsExactReadyDlpProfileWithoutLegacyPolicyAuthoring()
+    {
+        const string ownerObjectId = "02ed1e89-4ad1-4073-8e90-4aa865784896";
+        _authorization.SetClaims(new Claim("oid", ownerObjectId));
+        var profile = CreateDlpProfile(
+            ExistingBlueprintClientId,
+            "Ready research profile",
+            "Ready",
+            ready: true);
+        _api.GetPurviewDlpProfilesAsync(Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<PurviewDlpProfileListResponse>(
+                new PurviewDlpProfileListResponse([profile]),
+                "\"profiles\"",
+                "profile-correlation"));
+        _api.RegisterAgentAsync(
+                Arg.Any<RegisterAgentRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new RegisterAgentResponse(
+                Guid.NewGuid(),
+                "agent-response",
+                "Research agent",
+                "Provisioning",
+                Guid.NewGuid(),
+                DateTime.UtcNow,
+                Links: null));
+        var cut = Render<RegisterAgent>();
+
+        cut.Find("#agent-name").Change("Research agent");
+        cut.Find("#existing-blueprint").Change(ExistingBlueprintObjectId.ToString("D"));
+        cut.Find("#purview-dlp-profile").Change("0");
+        await cut.Find("form").SubmitAsync(EventArgs.Empty);
+
+        _ = _api.Received(1).RegisterAgentAsync(
+            Arg.Is<RegisterAgentRequest>(request =>
+                request.PurviewPolicyProfile == null &&
+                request.PurviewDlpProfile != null &&
+                request.PurviewDlpProfile.ProfileId == profile.Id &&
+                request.PurviewDlpProfile.BlueprintApplicationId == ExistingBlueprintClientId &&
+                request.PurviewDlpProfile.ExpectedProfileRowVersion == profile.RowVersion &&
+                request.Features != null &&
+                request.Features.PurviewEnabled == true &&
+                request.Features.PurviewDlpProfile == request.PurviewDlpProfile),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ConfiguredPurviewDefault_IsInheritedForExactReadyBlueprintProfile()
+    {
+        const string ownerObjectId = "02ed1e89-4ad1-4073-8e90-4aa865784896";
+        _authorization.SetClaims(new Claim("oid", ownerObjectId));
+        var profile = CreateDlpProfile(
+            ExistingBlueprintClientId,
+            "Ready inherited profile",
+            "Ready",
+            ready: true);
+        _api.GetSystemConfigAsync(Arg.Any<CancellationToken>())
+            .Returns(CreateConfig(
+                "Agent365",
+                agent365Enabled: true,
+                azureMonitorEnabled: false) with
+            {
+                DefaultPurviewEnabled = true,
+                DefaultPurviewMode = "AuditOnly"
+            });
+        _api.GetPurviewDlpProfilesAsync(Arg.Any<CancellationToken>())
+            .Returns(new GatewayApiResource<PurviewDlpProfileListResponse>(
+                new PurviewDlpProfileListResponse([profile]),
+                null,
+                "profile-correlation"));
+        _api.RegisterAgentAsync(
+                Arg.Any<RegisterAgentRequest>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new RegisterAgentResponse(
+                Guid.NewGuid(),
+                "agent-response",
+                "Research agent",
+                "Provisioning",
+                Guid.NewGuid(),
+                DateTime.UtcNow,
+                Links: null));
+        var cut = Render<RegisterAgent>();
+
+        cut.Find("#existing-blueprint").Change(ExistingBlueprintObjectId.ToString("D"));
+
+        cut.Find("#purview-enabled").HasAttribute("checked").Should().BeTrue();
+        cut.Find("#purview-dlp-profile").GetAttribute("value").Should().Be("0");
+        cut.Find("#agent-name").Change("Research agent");
+        await cut.Find("form").SubmitAsync(EventArgs.Empty);
+        _ = _api.Received(1).RegisterAgentAsync(
+            Arg.Is<RegisterAgentRequest>(request =>
+                request.Features != null &&
+                request.Features.PurviewEnabled == true &&
+                request.PurviewDlpProfile != null &&
+                request.PurviewDlpProfile.ProfileId == profile.Id),
+            Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -900,6 +1044,53 @@ public sealed class RegisterAgentPageTests : BunitContext
             IsAgent365Compatible: true,
             Agent365CompatibilityIssue: null)
     ]);
+
+    private static ProtectionCapabilityDto CreateCapability(string capability, string status) => new(
+        Guid.NewGuid(),
+        capability,
+        status,
+        new ProtectionCapabilityResourceIdentifiersDto(
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null),
+        DateTime.UtcNow,
+        null,
+        "capability-row-version");
+
+    private static PurviewDlpProfileDto CreateDlpProfile(
+        Guid blueprintApplicationId,
+        string displayName,
+        string status,
+        bool ready,
+        Guid? profileId = null) => new(
+        profileId ?? Guid.NewGuid(),
+        blueprintApplicationId,
+        displayName,
+        Guid.NewGuid(),
+        "EU Passport Number",
+        "AuditOnly",
+        ["UploadText"],
+        [new PurviewDlpRuleActionDto("UploadText", "Audit")],
+        status,
+        new ProtectionReadinessDto(
+            "Installed",
+            "Ready",
+            ready ? "Ready" : "Pending",
+            ready ? "Ready" : "NotChecked",
+            ready ? "Ready" : "NotChecked",
+            ready,
+            ready ? [] : ["PropagationPending"],
+            DateTime.UtcNow),
+        null,
+        null,
+        DateTime.UtcNow,
+        Convert.ToBase64String([1, 2, 3, 4, 5, 6, 7, 8]));
 
     private static Guid LargeInventoryObjectId(int index) =>
         Guid.Parse($"0000{index:D4}-0000-4000-8000-000000000000");

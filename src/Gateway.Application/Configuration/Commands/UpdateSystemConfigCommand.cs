@@ -23,4 +23,8 @@ public record UpdateSystemConfigCommand(
     string CallerObjectId,
     bool? DefaultAgent365ObservabilityEnabled = null,
     bool? DefaultAzureMonitorExportEnabled = null,
-    bool? DefaultPromptShieldEnabled = null) : IRequest<SystemConfigDto>;
+    bool? DefaultPromptShieldEnabled = null,
+    Guid? IdempotencyKey = null,
+    string? ExpectedRowVersion = null,
+    Guid? CallerTenantId = null,
+    Guid? CorrelationId = null) : IRequest<SystemConfigDto>;

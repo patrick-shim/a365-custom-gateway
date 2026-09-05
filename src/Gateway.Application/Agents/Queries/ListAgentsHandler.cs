@@ -1,5 +1,6 @@
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Responses;
+using Gateway.Application.Protection;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
 using Gateway.Domain.Models;
@@ -12,15 +13,18 @@ internal sealed class ListAgentsHandler : IRequestHandler<ListAgentsQuery, Agent
     private readonly IAgentRepository _agentRepository;
     private readonly IAiInteractionRepository _interactionRepository;
     private readonly IActivityReceiptRepository _activityReceiptRepository;
+    private readonly ProtectionEffectiveFeatureEvaluator? _protectionFeatures;
 
     public ListAgentsHandler(
         IAgentRepository agentRepository,
         IAiInteractionRepository interactionRepository,
-        IActivityReceiptRepository activityReceiptRepository)
+        IActivityReceiptRepository activityReceiptRepository,
+        ProtectionEffectiveFeatureEvaluator? protectionFeatures = null)
     {
         _agentRepository = agentRepository;
         _interactionRepository = interactionRepository;
         _activityReceiptRepository = activityReceiptRepository;
+        _protectionFeatures = protectionFeatures;
     }
 
     public async Task<AgentListResponse> Handle(ListAgentsQuery request, CancellationToken cancellationToken)
@@ -42,12 +46,22 @@ internal sealed class ListAgentsHandler : IRequestHandler<ListAgentsQuery, Agent
             agents.Select(agent => agent.Id).ToList(),
             cancellationToken);
 
-        var items = agents
-            .Select(agent =>
-            {
-                var destinations = agent.FeatureConfiguration.ObservabilityMode.ToDestinations();
-
-                return new AgentSummaryDto(
+        var items = new List<AgentSummaryDto>(agents.Count);
+        foreach (var agent in agents)
+        {
+            var destinations = agent.FeatureConfiguration.ObservabilityMode.ToDestinations();
+            var features = _protectionFeatures is null
+                ? new AgentFeaturesDto(
+                    agent.FeatureConfiguration.ObservabilityMode.ToString(),
+                    agent.FeatureConfiguration.PurviewEnabled,
+                    agent.FeatureConfiguration.PurviewMode?.ToString(),
+                    destinations.Agent365ObservabilityEnabled,
+                    destinations.AzureMonitorExportEnabled,
+                    agent.FeatureConfiguration.PromptShieldEnabled)
+                : await _protectionFeatures.ToDtoAsync(
+                    agent,
+                    cancellationToken);
+            items.Add(new AgentSummaryDto(
                     agent.Id,
                     agent.ExternalAgentId.Value,
                     agent.Name,
@@ -60,18 +74,11 @@ internal sealed class ListAgentsHandler : IRequestHandler<ListAgentsQuery, Agent
                         agent.Agent365InstanceId,
                         agent.AgentIdentityObjectId,
                         agent.BlueprintObjectId),
-                    new AgentFeaturesDto(
-                        agent.FeatureConfiguration.ObservabilityMode.ToString(),
-                        agent.FeatureConfiguration.PurviewEnabled,
-                        agent.FeatureConfiguration.PurviewMode?.ToString(),
-                        destinations.Agent365ObservabilityEnabled,
-                        destinations.AzureMonitorExportEnabled,
-                        agent.FeatureConfiguration.PromptShieldEnabled),
+                    features,
                     AgentLastActivity.For(lastActivity, agent.Id),
                     agent.CreatedAtUtc,
-                    agent.UpdatedAtUtc);
-            })
-            .ToList();
+                    agent.UpdatedAtUtc));
+        }
 
         var nextCursor = items.Count == limit
             ? agents[^1].Id.ToString()

@@ -418,9 +418,14 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
             "20260829_purview_policy_profiles.sql",
             "20260829_prompt_protection.sql",
             "20260903_prompt_evaluation_agent_identity.sql",
-            "20260905_active_agent_identity_uniqueness.sql");
+            "20260905_active_agent_identity_uniqueness.sql",
+            "20260905_protection_governance_v1.sql");
         source.Should().Contain("\"prepare\" or \"bootstrap\" => GetPrepareScriptNames()");
         source.Should().Contain("OBJECT_ID(N'dbo.IngressRateLimitBuckets', N'U') IS NOT NULL");
+        source.Should().Contain("ProtectionGovernanceV1Ready");
+        source.Should().Contain(
+            "OBJECT_ID(N'dbo.LegacyProtectionPolicyCandidates', N'U') IS NOT NULL");
+        source.Should().Contain("OBJECT_ID(N'dbo.ProtectionAdminOperations', N'U') IS NOT NULL");
 
         var bootstrapBody = Regex.Match(
             source,

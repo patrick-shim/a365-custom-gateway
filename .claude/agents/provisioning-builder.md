@@ -33,9 +33,24 @@ closed.
 
 Purview is optional. Keep Know Your Data on fixed Group
 `ee1680d0-702f-4090-b26c-c49091e86531`, DLP on blueprint Individual locations, and
-both on the Application plane. Require separate exact readback before child
-creation and preserve reviewed DLP locations.
+both on the Application plane. Complete core registration before Settings authors
+policy; require exact profile readiness before enabling Purview, and preserve
+reviewed DLP locations.
 
 Never access or expose `.secret` or `.secrets`, certificate material, credentials,
 tokens, prompts, responses, or provider bodies. Run focused tests before broader
 gates.
+
+## Implemented protection source invariants
+
+The redesign is offline-validated in source, not deployed. Bootstrap Full/Core/Custom
+presets prepare capabilities only and never select a SIT or author policy. Every
+registration creation requires a signed-in delegated `Gateway.Administrator`;
+Registry completion stays user-only OBO. Settings owns SIT/KYD/DLP and
+per-registration controls on `gateway-protection-admin-v1`. The immutable Admin UI
+image supplies the downloadable companion; its evidence is non-authoritative until
+exact capability-bound provider verification. `Ready` requires capability,
+readback, propagation, token roles, runtime allow/block, current SIT generation,
+exact blueprint/provider IDs, and timestamps. Keep KYD Group and blueprint
+Individual DLP on the Application plane. Live claims require fresh exact-target
+authority.

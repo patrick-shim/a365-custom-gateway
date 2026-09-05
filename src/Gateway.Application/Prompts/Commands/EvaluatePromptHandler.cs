@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Gateway.Application.Common;
 using Gateway.Application.Exceptions;
+using Gateway.Application.Protection;
 using Gateway.Contracts;
 using Gateway.Contracts.Responses;
 using Gateway.Domain.Entities;
@@ -23,6 +24,7 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
     private readonly IUnitOfWork _unitOfWork;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<EvaluatePromptHandler> _logger;
+    private readonly ProtectionEffectiveFeatureEvaluator? _protectionFeatures;
 
     public EvaluatePromptHandler(
         IAgentRepository agentRepository,
@@ -33,7 +35,8 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         IAuditEventRepository auditEventRepository,
         IUnitOfWork unitOfWork,
         TimeProvider timeProvider,
-        ILogger<EvaluatePromptHandler> logger)
+        ILogger<EvaluatePromptHandler> logger,
+        ProtectionEffectiveFeatureEvaluator? protectionFeatures = null)
     {
         _agentRepository = agentRepository;
         _promptEvaluationRepository = promptEvaluationRepository;
@@ -44,6 +47,7 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         _unitOfWork = unitOfWork;
         _timeProvider = timeProvider;
         _logger = logger;
+        _protectionFeatures = protectionFeatures;
     }
 
     public async Task<PromptEvaluationResultDto> Handle(EvaluatePromptCommand request, CancellationToken cancellationToken)
@@ -62,8 +66,33 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
 
         if (agent.FeatureConfiguration.PromptShieldEnabled && !_promptShieldClient.IsEnabled)
             throw new DomainException("Prompt Shields is not configured for this Gateway deployment.", ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE);
+        if (agent.FeatureConfiguration.PromptShieldEnabled &&
+            _protectionFeatures is null)
+        {
+            throw new DomainException(
+                "Prompt Shields capability readiness cannot be verified.",
+                ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE);
+        }
+        if (agent.FeatureConfiguration.PromptShieldEnabled)
+        {
+            await _protectionFeatures!.EnsurePromptShieldReadyAsync(
+                cancellationToken);
+        }
         if (agent.FeatureConfiguration.PurviewEnabled && !_purviewPolicyClient.IsEnabled)
             throw new DomainException("Purview is not configured for this Gateway deployment.", ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE);
+        if (agent.FeatureConfiguration.PurviewEnabled &&
+            _protectionFeatures is null)
+        {
+            throw new DomainException(
+                "Purview capability and profile readiness cannot be verified.",
+                ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE);
+        }
+        if (agent.FeatureConfiguration.PurviewEnabled)
+        {
+            await _protectionFeatures!.EnsureRuntimeReadyAsync(
+                agent,
+                cancellationToken);
+        }
 
         var tenantUserObjectId = request.UserContext?.TenantUserObjectId;
         if (agent.FeatureConfiguration.PurviewEnabled

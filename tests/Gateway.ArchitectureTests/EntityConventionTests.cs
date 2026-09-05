@@ -101,11 +101,11 @@ public class EntityConventionTests
     }
 
     // ---------------------------------------------------------------
-    // 4. Entity Id properties are of type Guid
+    // 4. Entity Id properties are Guid or a strongly typed Guid value
     // ---------------------------------------------------------------
 
     [Fact]
-    public void AllEntities_Should_HaveGuidIdProperty()
+    public void AllEntities_Should_HaveGuidBackedIdProperty()
     {
         var entityTypes = Types.InAssembly(DomainAssembly)
             .That()
@@ -123,8 +123,8 @@ public class EntityConventionTests
             idProperty.Should().NotBeNull(
                 $"Entity {type.Name} must have a public Id property");
 
-            idProperty!.PropertyType.Should().Be(typeof(Guid),
-                $"Entity {type.Name}.Id should be of type Guid");
+            IsGuidBackedId(idProperty!.PropertyType).Should().BeTrue(
+                $"Entity {type.Name}.Id should be Guid or a strong ID exposing one Guid Value");
         }
     }
 
@@ -165,4 +165,10 @@ public class EntityConventionTests
             ? string.Join(", ", failingNames)
             : "(none)";
     }
+
+    private static bool IsGuidBackedId(Type type) =>
+        type == typeof(Guid) ||
+        type.IsValueType &&
+        type.GetProperty("Value", BindingFlags.Public | BindingFlags.Instance)?.PropertyType ==
+        typeof(Guid);
 }

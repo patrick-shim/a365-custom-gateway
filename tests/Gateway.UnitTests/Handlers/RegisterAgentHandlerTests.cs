@@ -3,6 +3,7 @@ using FluentAssertions;
 using Gateway.Application.Agents.Commands;
 using Gateway.Application.Configuration;
 using Gateway.Application.Exceptions;
+using Gateway.Application.Protection;
 using Gateway.Contracts;
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Messages;
@@ -29,6 +30,8 @@ public class RegisterAgentHandlerTests
     private readonly IPurviewPolicyProvisioningClient _purviewPolicyProvisioningClient;
     private readonly IPromptShieldClient _promptShieldClient;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IProtectionCapabilityRepository _protectionCapabilities;
+    private readonly IPurviewDlpProfileRepository _dlpProfiles;
     private readonly RegisterAgentHandler _handler;
 
     public RegisterAgentHandlerTests()
@@ -58,6 +61,13 @@ public class RegisterAgentHandlerTests
         _promptShieldClient = Substitute.For<IPromptShieldClient>();
         _promptShieldClient.IsEnabled.Returns(true);
         _unitOfWork = Substitute.For<IUnitOfWork>();
+        _protectionCapabilities =
+            Substitute.For<IProtectionCapabilityRepository>();
+        _dlpProfiles = Substitute.For<IPurviewDlpProfileRepository>();
+        var protectionFeatures = new ProtectionEffectiveFeatureEvaluator(
+            _protectionCapabilities,
+            _dlpProfiles,
+            TimeProvider.System);
 
         var credential = new AgentIngressCredential
         {
@@ -77,10 +87,9 @@ public class RegisterAgentHandlerTests
             _blueprintCatalog,
             _agentIngressCredentialService,
             _purviewPolicyClient,
-            _purviewPolicyProfileRepository,
-            _purviewPolicyProvisioningClient,
             _promptShieldClient,
-            _unitOfWork);
+            _unitOfWork,
+            protectionFeatures);
     }
 
     private static RegisterAgentCommand CreateValidCommand() =>
@@ -492,16 +501,10 @@ public class RegisterAgentHandlerTests
     }
 
     [Fact]
-    public async Task Handle_ShouldCreatePendingPurviewProfileForNewProtectedBlueprint()
+    public async Task Handle_ShouldRejectPurviewForUnresolvedNewBlueprint()
     {
-        AgentRegistration? createdAgent = null;
-        PurviewPolicyProfile? createdProfile = null;
         _agentRepository.AddAsync(
-                Arg.Do<AgentRegistration>(agent => createdAgent = agent),
-                Arg.Any<CancellationToken>())
-            .Returns(Task.CompletedTask);
-        _purviewPolicyProfileRepository.AddAsync(
-                Arg.Do<PurviewPolicyProfile>(profile => createdProfile = profile),
+                Arg.Any<AgentRegistration>(),
                 Arg.Any<CancellationToken>())
             .Returns(Task.CompletedTask);
 
@@ -516,13 +519,15 @@ public class RegisterAgentHandlerTests
                 "AllSensitiveInformation")
         };
 
-        await _handler.Handle(command, CancellationToken.None);
+        var action = () => _handler.Handle(
+            command,
+            CancellationToken.None);
 
-        createdProfile.Should().NotBeNull();
-        createdProfile!.Status.Should().Be("Pending");
-        createdProfile.Mode.Should().Be("Enforce");
-        createdProfile.CollectionPolicyName.Should().Contain("Protected production agents");
-        createdAgent!.PurviewPolicyProfileId.Should().Be(createdProfile.Id);
-        createdAgent.PurviewPolicySelectionMode.Should().Be("CreateNew");
+        (await action.Should().ThrowAsync<DomainException>())
+            .Which.ErrorCode.Should().Be(
+                ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY);
+        await _agentRepository.DidNotReceive().AddAsync(
+            Arg.Any<AgentRegistration>(),
+            Arg.Any<CancellationToken>());
     }
 }

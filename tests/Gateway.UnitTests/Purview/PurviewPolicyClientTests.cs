@@ -31,6 +31,7 @@ public sealed class PurviewPolicyClientTests
             .Build();
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton<IConfiguration>(configuration);
         services.AddPurviewServices(configuration);
 
         using var provider = services.BuildServiceProvider();
@@ -39,6 +40,10 @@ public sealed class PurviewPolicyClientTests
             .IsEnabled.Should().BeFalse();
         provider.GetRequiredService<Gateway.Domain.Interfaces.IPurviewPolicyProvisioningClient>()
             .IsEnabled.Should().BeFalse();
+        provider.GetRequiredService<IPurviewSettingsProvider>().Should().NotBeNull();
+        provider.GetRequiredService<IPurviewTokenRoleAttestor>().Should().NotBeNull();
+        provider.GetRequiredService<PurviewTenantConnectionEvidenceValidator>()
+            .Should().NotBeNull();
     }
 
     [Fact]
@@ -93,10 +98,9 @@ public sealed class PurviewPolicyClientTests
     }
 
     [Theory]
-    [InlineData("")]
     [InlineData("not-a-guid")]
     [InlineData("00000000-0000-0000-0000-000000000000")]
-    public void Options_ShouldRequireCanonicalNonEmptySensitiveInformationTypeId(string invalidId)
+    public void Options_ShouldRejectInvalidLegacySensitiveInformationTypeId(string invalidId)
     {
         var validator = new PurviewOptionsValidator();
         var result = validator.Validate(null, new PurviewOptions
@@ -112,6 +116,23 @@ public sealed class PurviewPolicyClientTests
 
         result.Failed.Should().BeTrue();
         result.FailureMessage.Should().Contain("DefaultSensitiveInformationTypeId");
+    }
+
+    [Fact]
+    public void Options_ShouldAllowSettingsOwnedSensitiveInformationTypeSelection()
+    {
+        var validator = new PurviewOptionsValidator();
+        var result = validator.Validate(null, new PurviewOptions
+        {
+            Enabled = false,
+            PolicyProvisioningEnabled = true,
+            PolicyProvisioningOrganization = "tenant.onmicrosoft.com",
+            PolicyProvisioningApplicationId = Guid.NewGuid().ToString("D"),
+            PolicyProvisioningCertificateSecretUri =
+                "https://gateway.vault.azure.net/secrets/certificate"
+        });
+
+        result.Succeeded.Should().BeTrue();
     }
 
     [Fact]

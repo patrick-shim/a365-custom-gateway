@@ -355,45 +355,97 @@ else if (agentResource is not null)
 
                             <fieldset class="feature-group" aria-describedby="agent-prompt-shield-help">
                                 <legend>Prompt Shields</legend>
-                                <p id="agent-prompt-shield-help">Evaluate prompts for injection and jailbreak attacks before model invocation.</p>
+                                <p id="agent-prompt-shield-help">Evaluate prompts before the external agent calls its model. Allowed evaluations return a short-lived, single-use receipt for the matching interaction.</p>
                                 <div class="form-grid">
                                     <div class="form-field checkbox-field">
                                         <label class="checkbox-label" for="feature-prompt-shield-enabled">
                                             <input id="feature-prompt-shield-enabled"
                                                    type="checkbox"
                                                    @bind="featurePromptShieldEnabled"
-                                                   disabled="@(!CanEditFeatures(agent.Status) || featureSaving)" />
-                                            <span><strong>Enable Azure AI Prompt Shields</strong><small>Protected clients must obtain an allowed prompt-evaluation receipt before submitting the interaction.</small></span>
+                                                   disabled="@(!CanChangePromptShield(agent.Status))" />
+                                            <span><strong>Enable Azure AI Prompt Shields</strong><small>Blocked prompts stop before the model call. Protected clients send the allowed receipt with the interaction.</small></span>
                                         </label>
+                                        <span class="field-help">Shared capability: @FriendlyCapabilityStatus(agent.Features?.PromptShieldCapabilityStatus ?? PromptShieldCapability?.Status). Effective for this agent: @(agent.Features?.PromptShieldEffectivelyEnabled == true ? "Ready" : "Not ready").</span>
                                     </div>
                                 </div>
                             </fieldset>
 
                             <fieldset class="feature-group" aria-describedby="agent-purview-help">
                                 <legend>Microsoft Purview</legend>
-                                <p id="agent-purview-help">Purview policy evaluation is independent of both observability destinations.</p>
+                                <p id="agent-purview-help">Purview is optional and independent of both observability destinations. This agent can enable it only with the exact Ready DLP profile for its resolved blueprint.</p>
                                 <div class="form-grid">
                                     <div class="form-field checkbox-field">
                                         <label class="checkbox-label" for="feature-purview-enabled">
                                             <input id="feature-purview-enabled"
                                                    type="checkbox"
                                                    @bind="featurePurviewEnabled"
-                                                   disabled="@(!CanEditFeatures(agent.Status) || featureSaving)" />
-                                            <span><strong>Enable Microsoft Purview</strong><small>Apply the selected audit or enforcement mode.</small></span>
+                                                   disabled="@(!CanChangePurview(agent.Status))" />
+                                            <span><strong>Enable Microsoft Purview</strong><small>The Gateway rechecks profile readiness and blueprint matching before saving.</small></span>
                                         </label>
+                                        <span id="agent-purview-effective" class="field-help">Effective for this agent: @(agent.Features?.PurviewEffectivelyEnabled == true ? "Ready" : "Not ready").</span>
                                     </div>
-                                    <div class="form-field">
-                                        <FluentSelect TOption="string"
-                                                      Label="Purview mode"
-                                                      @bind-Value="featurePurviewMode"
-                                                      Disabled="@(!featurePurviewEnabled || !CanEditFeatures(agent.Status) || featureSaving)">
-                                            @foreach (var option in PurviewModes)
-                                            {
-                                                <FluentOption TOption="string" Value="@option">@FormatPascalCase(option)</FluentOption>
-                                            }
-                                        </FluentSelect>
-                                        <span class="field-help">Audit only evaluates and records policy outcomes without blocking. Enforce blocks disallowed interactions.</span>
-                                    </div>
+                                    @if (protectionStateLoading)
+                                    {
+                                        <div class="form-field full"><LoadingState Label="Loading protection readiness…" /></div>
+                                    }
+                                    else if (protectionStateError is not null)
+                                    {
+                                        <div class="form-field full">
+                                            <ErrorState Title="Protection readiness could not be loaded"
+                                                        Message="@protectionStateError.Message"
+                                                        CorrelationId="@protectionStateError.CorrelationId"
+                                                        OnRetry="LoadAgentProtectionStateAsync" />
+                                        </div>
+                                    }
+                                    else if (ReadyProfilesForAgentBlueprint.Count == 0)
+                                    {
+                                        <div class="form-field full">
+                                            <div class="subtle-note">
+                                                <strong>No Ready DLP profile for this agent's blueprint.</strong>
+                                                Keep Purview off. A Gateway Administrator can review the blueprint profile, reconcile it, and complete runtime validation in <a href="/settings">Settings</a>.
+                                            </div>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div class="form-field full">
+                                            <label for="feature-purview-profile">Ready DLP profile</label>
+                                            <select id="feature-purview-profile"
+                                                    class="form-control"
+                                                    value="@selectedAgentProfileIndex"
+                                                    @onchange="SelectAgentPurviewProfile"
+                                                    disabled="@(!CanEditFeatures(agent.Status) || featureSaving)">
+                                                <option value="">Choose the Ready profile for this blueprint</option>
+                                                @for (var index = 0; index < ReadyProfilesForAgentBlueprint.Count; index++)
+                                                {
+                                                    var profile = ReadyProfilesForAgentBlueprint[index];
+                                                    <option value="@index">@SafeProfileName(profile) — @FormatPascalCase(profile.Mode)</option>
+                                                }
+                                            </select>
+                                            <span class="field-help">Only profiles with exact readback, propagation, runtime permissions, and approved allow/block checks marked Ready are offered.</span>
+                                        </div>
+                                    }
+                                    @if (SelectedReadyAgentProfile is { } selectedProfile)
+                                    {
+                                        <div class="form-field">
+                                            <span class="detail-label">Profile mode</span>
+                                            <span class="detail-value">@FormatPascalCase(selectedProfile.Mode)</span>
+                                        </div>
+                                        <div class="form-field">
+                                            <span class="detail-label">Selected profile readiness</span>
+                                            <StatusPill Value="Ready" />
+                                        </div>
+                                    }
+                                    else if (agent.Features?.PurviewReadiness is { } readiness)
+                                    {
+                                        <div class="form-field full">
+                                            <ProtectionReadinessPanel Readiness="readiness" Label="Current agent protection" />
+                                        </div>
+                                    }
+                                    @if (featurePurviewEnabled && SelectedReadyAgentProfile is null)
+                                    {
+                                        <p class="inline-validation full" role="alert">Choose the exact Ready profile, or turn Purview off, before saving.</p>
+                                    }
                                 </div>
                             </fieldset>
                         </div>
@@ -405,7 +457,7 @@ else if (agentResource is not null)
                         }
                         <FluentButton Appearance="Appearance.Accent"
                                       OnClick="SaveFeaturesAsync"
-                                      Disabled="@(!CanEditFeatures(agent.Status) || featureSaving || actionBusy)">
+                                      Disabled="@(!CanEditFeatures(agent.Status) || featureSaving || actionBusy || !FeatureSelectionsValid)">
                             @(featureSaving ? "Saving…" : "Save features")
                         </FluentButton>
                     </div>
@@ -423,17 +475,23 @@ else if (agentResource is not null)
                         </div>
                         <div class="detail-item">
                             <span class="detail-label">Prompt Shields</span>
-                            <span class="detail-value">@(agent.Features?.PromptShieldEnabled == true ? "Enabled" : "Disabled")</span>
+                            <span class="detail-value">Requested: @(agent.Features?.PromptShieldEnabled == true ? "On" : "Off"). Effective: @(agent.Features?.PromptShieldEffectivelyEnabled == true ? "Ready" : "Not ready").</span>
                         </div>
                         <div class="detail-item">
                             <span class="detail-label">Purview evaluation</span>
-                            <span class="detail-value">@(agent.Features?.PurviewEnabled == true ? "Enabled" : "Disabled")</span>
+                            <span class="detail-value">Requested: @(agent.Features?.PurviewEnabled == true ? "On" : "Off"). Effective: @(agent.Features?.PurviewEffectivelyEnabled == true ? "Ready" : "Not ready").</span>
                         </div>
                         <div class="detail-item">
                             <span class="detail-label">Purview mode</span>
                             <span class="detail-value">@(agent.Features?.PurviewEnabled == true ? FormatPascalCase(agent.Features.PurviewMode ?? "Not configured") : "Not applicable")</span>
                         </div>
                     </div>
+                    @if (agent.Features?.PurviewReadiness is { } readOnlyReadiness)
+                    {
+                        <div class="card-body">
+                            <ProtectionReadinessPanel Readiness="readOnlyReadiness" Label="Purview for this agent" />
+                        </div>
+                    }
                 }
             </section>
         </div>
@@ -701,10 +759,10 @@ else if (agentResource is not null)
 }
 
 @code {
-    private static readonly string[] PurviewModes = ["AuditOnly", "Enforce"];
-
     private readonly CancellationTokenSource disposeCts = new();
     private GatewayApiResource<AgentDetailDto>? agentResource;
+    private GatewayApiResource<ProtectionCapabilitiesResponse>? protectionCapabilities;
+    private GatewayApiResource<PurviewDlpProfileListResponse>? protectionProfiles;
     private AgentIngressCredentialListResponse? ingressCredentials;
     private AgentGatewayCredentialDto? issuedGatewayCredential;
     private ProvisioningHistoryResponse? provisioningHistory;
@@ -714,9 +772,10 @@ else if (agentResource is not null)
     private UiErrorInfo? auditError;
     private UiErrorInfo? credentialError;
     private UiErrorInfo? featureError;
+    private UiErrorInfo? protectionStateError;
     private UiErrorInfo? actionError;
     private Guid loadedAgentId;
-    private string? featurePurviewMode;
+    private string selectedAgentProfileIndex = string.Empty;
     private string? announcement;
     private bool featureAgent365ObservabilityEnabled;
     private bool featureAzureMonitorExportEnabled;
@@ -731,9 +790,60 @@ else if (agentResource is not null)
     private bool auditLoading;
     private bool credentialsLoading;
     private bool featureSaving;
+    private bool protectionStateLoading;
     private bool actionBusy;
     private Guid? pendingCredentialId;
     private ConfirmationAction confirmationAction;
+
+    private ProtectionCapabilityDto? PromptShieldCapability =>
+        protectionCapabilities?.Value.Items.FirstOrDefault(item =>
+            string.Equals(item.Capability, "PromptShields", StringComparison.OrdinalIgnoreCase));
+
+    private ProtectionCapabilityDto? PurviewCapability =>
+        protectionCapabilities?.Value.Items.FirstOrDefault(item =>
+            string.Equals(item.Capability, "Purview", StringComparison.OrdinalIgnoreCase));
+
+    private IReadOnlyList<PurviewDlpProfileDto> ReadyProfilesForAgentBlueprint
+    {
+        get
+        {
+            if (agentResource?.Value.Agent365?.BlueprintId is not { } blueprintValue ||
+                !Guid.TryParse(blueprintValue, out var blueprintId))
+            {
+                return [];
+            }
+
+            return protectionProfiles?.Value.Items
+                .Where(profile =>
+                    profile.BlueprintApplicationId == blueprintId &&
+                    profile.Status == "Ready" &&
+                    profile.Readiness.IsReady)
+                .OrderBy(profile => profile.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToArray() ?? [];
+        }
+    }
+
+    private PurviewDlpProfileDto? SelectedReadyAgentProfile =>
+        int.TryParse(selectedAgentProfileIndex, out var profileIndex) &&
+        profileIndex >= 0 &&
+        profileIndex < ReadyProfilesForAgentBlueprint.Count
+            ? ReadyProfilesForAgentBlueprint[profileIndex]
+            : null;
+
+    private bool PromptShieldCapabilityReady =>
+        string.Equals(
+            PromptShieldCapability?.Status ??
+            agentResource?.Value.Features?.PromptShieldCapabilityStatus,
+            "Installed",
+            StringComparison.OrdinalIgnoreCase);
+
+    private bool PurviewCapabilityReady =>
+        string.Equals(PurviewCapability?.Status, "Installed", StringComparison.OrdinalIgnoreCase);
+
+    private bool FeatureSelectionsValid =>
+        (!featurePromptShieldEnabled || PromptShieldCapabilityReady) &&
+        (!featurePurviewEnabled ||
+            PurviewCapabilityReady && SelectedReadyAgentProfile is not null);
 
     [Parameter]
     public Guid AgentId { get; set; }
@@ -793,7 +903,11 @@ else if (agentResource is not null)
             agentResource = await Api.GetAgentAsync(AgentId, disposeCts.Token);
             CopyFeatureValues(agentResource.Value.Features);
 
-            var relatedLoads = new List<Task>(3);
+            var relatedLoads = new List<Task>(4);
+            if (isAdministrator)
+            {
+                relatedLoads.Add(LoadAgentProtectionStateAsync());
+            }
             if (canViewProvisioning)
             {
                 relatedLoads.Add(LoadProvisioningAsync());
@@ -824,6 +938,40 @@ else if (agentResource is not null)
         finally
         {
             loading = false;
+        }
+    }
+
+    private async Task LoadAgentProtectionStateAsync()
+    {
+        if (protectionStateLoading)
+        {
+            return;
+        }
+
+        protectionStateLoading = true;
+        protectionStateError = null;
+        try
+        {
+            var capabilitiesTask = Api.GetProtectionCapabilitiesAsync(disposeCts.Token);
+            var profilesTask = Api.GetPurviewDlpProfilesAsync(disposeCts.Token);
+            await Task.WhenAll(capabilitiesTask, profilesTask);
+            protectionCapabilities = await capabilitiesTask;
+            protectionProfiles = await profilesTask;
+            SelectCurrentAgentProfile();
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            protectionCapabilities = null;
+            protectionProfiles = null;
+            selectedAgentProfileIndex = string.Empty;
+            protectionStateError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            protectionStateLoading = false;
         }
     }
 
@@ -913,7 +1061,8 @@ else if (agentResource is not null)
     private async Task SaveFeaturesAsync()
     {
         if (!isAdministrator || agentResource is null || featureSaving ||
-            !CanEditFeatures(agentResource.Value.Status))
+            !CanEditFeatures(agentResource.Value.Status) ||
+            !FeatureSelectionsValid)
         {
             return;
         }
@@ -925,13 +1074,24 @@ else if (agentResource is not null)
 
         try
         {
+            var selectedProfile = SelectedReadyAgentProfile;
+            var profileSelection = featurePurviewEnabled && selectedProfile is not null
+                ? new PurviewDlpProfileSelectionDto(
+                    selectedProfile.Id,
+                    selectedProfile.BlueprintApplicationId,
+                    selectedProfile.RowVersion)
+                : null;
+            var hasRowVersion = !string.IsNullOrWhiteSpace(agentResource.ETag);
             var request = new UpdateFeaturesRequest(
                 ToLegacyObservabilityMode(featureAgent365ObservabilityEnabled, featureAzureMonitorExportEnabled),
                 featurePurviewEnabled,
-                featurePurviewMode,
+                featurePurviewEnabled ? selectedProfile?.Mode : null,
                 featureAgent365ObservabilityEnabled,
                 featureAzureMonitorExportEnabled,
-                featurePromptShieldEnabled);
+                featurePromptShieldEnabled,
+                PurviewDlpProfile: profileSelection,
+                IdempotencyKey: hasRowVersion ? Guid.NewGuid() : null,
+                ExpectedRowVersion: hasRowVersion ? agentResource.ETag : null);
 
             await Api.UpdateAgentFeaturesAsync(
                 AgentId,
@@ -1117,9 +1277,59 @@ else if (agentResource is not null)
         featureAgent365ObservabilityEnabled = ResolveAgent365Observability(features);
         featureAzureMonitorExportEnabled = ResolveAzureMonitorExport(features);
         featurePurviewEnabled = features?.PurviewEnabled ?? false;
-        featurePurviewMode = features?.PurviewMode ?? "AuditOnly";
         featurePromptShieldEnabled = features?.PromptShieldEnabled ?? false;
+        SelectCurrentAgentProfile();
     }
+
+    private void SelectCurrentAgentProfile()
+    {
+        selectedAgentProfileIndex = string.Empty;
+        var selectedProfileId = agentResource?.Value.Features?.PurviewDlpProfile?.ProfileId;
+        if (selectedProfileId is null)
+        {
+            return;
+        }
+
+        for (var index = 0; index < ReadyProfilesForAgentBlueprint.Count; index++)
+        {
+            if (ReadyProfilesForAgentBlueprint[index].Id == selectedProfileId)
+            {
+                selectedAgentProfileIndex = index.ToString();
+                return;
+            }
+        }
+    }
+
+    private void SelectAgentPurviewProfile(ChangeEventArgs eventArgs)
+    {
+        selectedAgentProfileIndex = eventArgs.Value?.ToString() ?? string.Empty;
+        var profile = SelectedReadyAgentProfile;
+        featurePurviewEnabled = profile is not null;
+        featureError = null;
+    }
+
+    private bool CanChangePromptShield(string status) =>
+        CanEditFeatures(status) &&
+        !featureSaving &&
+        (PromptShieldCapabilityReady || featurePromptShieldEnabled);
+
+    private bool CanChangePurview(string status) =>
+        CanEditFeatures(status) &&
+        !featureSaving &&
+        (PurviewCapabilityReady && ReadyProfilesForAgentBlueprint.Count > 0 ||
+         featurePurviewEnabled);
+
+    private static string FriendlyCapabilityStatus(string? status) => status switch
+    {
+        "Installed" => "Installed",
+        "PendingPropagation" => "Pending propagation",
+        _ => "Unavailable"
+    };
+
+    private static string SafeProfileName(PurviewDlpProfileDto profile) =>
+        string.IsNullOrWhiteSpace(profile.DisplayName)
+            ? "Unnamed DLP profile"
+            : profile.DisplayName.Trim();
 
     private static bool ResolveAgent365Observability(AgentFeaturesDto? features) =>
         features?.Agent365ObservabilityEnabled

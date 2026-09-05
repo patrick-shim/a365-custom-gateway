@@ -42,6 +42,20 @@ registration. Purview policy automation keeps the fixed tenant-wide enterprise-A
 apps Group for Know Your Data separate from blueprint Individual DLP locations; both
 use the Application plane.
 
+The protection redesign is implemented and offline-validated in source, not
+deployed. Bootstrap's Full/Core/Custom presets prepare capabilities only and never
+select a SIT or author KYD/DLP. Every registration creation requires a signed-in
+delegated `Gateway.Administrator`; actual Registry completion remains user-only
+OBO. Gateway Settings owns SIT/KYD/DLP, defaults, and per-registration controls on
+dedicated `gateway-protection-admin-v1`, never the registration queue. The immutable
+Admin UI image supplies the downloadable Windows companion. Its submission is
+non-authoritative until exact capability-bound provider verification of the
+automation identity, vault, and certificate. `Ready`
+requires capability Installed, exact readback, propagation, token roles, runtime
+allow/block evidence, current SIT generation, exact blueprint/provider IDs, and
+timestamps. Preserve fixed KYD Group versus blueprint Individual DLP on the
+Application plane. Live claims require fresh exact-target authority.
+
 Use `bootstrap/bootstrap.ps1` through the root `.\gateway.cmd setup` launcher on
 Windows or `./gateway setup` on macOS/Linux for a fresh subscription. Preserve
 ignored `.bootstrap/` state and never place credentials, tokens, keys, prompts,

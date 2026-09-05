@@ -1,4 +1,5 @@
 using Gateway.Domain.Enums;
+using Gateway.Domain.Models;
 using Microsoft.Extensions.Options;
 
 namespace Gateway.Purview;
@@ -29,7 +30,11 @@ internal sealed class PurviewOptionsValidator : IValidateOptions<PurviewOptions>
 
         if (!string.IsNullOrWhiteSpace(options.ManagedIdentityClientId)
             && (!Guid.TryParse(options.ManagedIdentityClientId, out var clientId)
-                || clientId == Guid.Empty))
+                || clientId == Guid.Empty
+                || !string.Equals(
+                    options.ManagedIdentityClientId,
+                    clientId.ToString("D"),
+                    StringComparison.Ordinal)))
         {
             return ValidateOptionsResult.Fail(
                 "Purview:ManagedIdentityClientId must be a non-empty GUID when configured.");
@@ -46,37 +51,49 @@ internal sealed class PurviewOptionsValidator : IValidateOptions<PurviewOptions>
                 return ValidateOptionsResult.Fail(
                     "Purview:PolicyProvisioningOrganization is required when policy provisioning is enabled.");
 
-            if (!Guid.TryParse(options.PolicyProvisioningApplicationId, out var appId) || appId == Guid.Empty)
+            if (!Guid.TryParse(options.PolicyProvisioningApplicationId, out var appId) ||
+                appId == Guid.Empty ||
+                !string.Equals(
+                    options.PolicyProvisioningApplicationId,
+                    appId.ToString("D"),
+                    StringComparison.Ordinal))
                 return ValidateOptionsResult.Fail(
                     "Purview:PolicyProvisioningApplicationId must be a non-empty GUID when policy provisioning is enabled.");
 
-            if (!Uri.TryCreate(options.PolicyProvisioningCertificateSecretUri, UriKind.Absolute, out var secretUri) ||
-                !string.Equals(secretUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
-                !secretUri.IsDefaultPort ||
-                !secretUri.Host.EndsWith(".vault.azure.net", StringComparison.OrdinalIgnoreCase) ||
-                secretUri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries) is not ["secrets", _] ||
-                !string.IsNullOrEmpty(secretUri.Query) ||
-                !string.IsNullOrEmpty(secretUri.Fragment))
+            try
+            {
+                _ = PowerShellPurviewSettingsAutomation.ParseApprovedCertificateSecretUri(
+                    options.PolicyProvisioningCertificateSecretUri);
+            }
+            catch (PurviewPolicyException)
+            {
                 return ValidateOptionsResult.Fail(
                     "Purview:PolicyProvisioningCertificateSecretUri must be a versionless HTTPS Azure Key Vault secret URI.");
+            }
 
             if (string.IsNullOrWhiteSpace(options.PolicyProvisioningPowerShellPath))
                 return ValidateOptionsResult.Fail(
                     "Purview:PolicyProvisioningPowerShellPath is required when policy provisioning is enabled.");
 
-            if (!Guid.TryParse(options.DefaultSensitiveInformationTypeId, out var classifierId) ||
-                classifierId == Guid.Empty ||
-                !string.Equals(
-                    options.DefaultSensitiveInformationTypeId,
-                    classifierId.ToString("D"),
-                    StringComparison.Ordinal))
-                return ValidateOptionsResult.Fail(
-                    "Purview:DefaultSensitiveInformationTypeId must be a canonical non-empty GUID when policy provisioning is enabled.");
+            var hasLegacySensitiveInformationType =
+                !string.IsNullOrWhiteSpace(options.DefaultSensitiveInformationTypeId) ||
+                !string.IsNullOrWhiteSpace(options.DefaultSensitiveInformationType);
+            if (hasLegacySensitiveInformationType)
+            {
+                if (!Guid.TryParse(options.DefaultSensitiveInformationTypeId, out var classifierId) ||
+                    classifierId == Guid.Empty ||
+                    !string.Equals(
+                        options.DefaultSensitiveInformationTypeId,
+                        classifierId.ToString("D"),
+                        StringComparison.Ordinal))
+                    return ValidateOptionsResult.Fail(
+                        "Purview:DefaultSensitiveInformationTypeId must be a canonical non-empty GUID when legacy policy verification is configured.");
 
-            if (!PurviewSensitiveInformationTypeContract.IsValidName(
-                    options.DefaultSensitiveInformationType))
-                return ValidateOptionsResult.Fail(
-                    "Purview:DefaultSensitiveInformationType must be between 1 and 255 characters and contain no ASCII control characters.");
+                if (!PurviewSensitiveInformationTypeContract.IsValidName(
+                        options.DefaultSensitiveInformationType))
+                    return ValidateOptionsResult.Fail(
+                        "Purview:DefaultSensitiveInformationType must be between 1 and 255 characters and contain no ASCII control characters when legacy policy verification is configured.");
+            }
         }
 
         return ValidateOptionsResult.Success;

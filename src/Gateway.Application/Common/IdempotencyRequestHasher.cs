@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using Gateway.Application.Agents.Commands;
 using Gateway.Application.Activities.Commands;
 using Gateway.Application.Interactions.Commands;
 using Gateway.Application.Prompts.Commands;
@@ -130,6 +131,24 @@ internal static class IdempotencyRequestHasher
             })
         };
 
+        return Compute(canonicalPayload);
+    }
+
+    public static string Compute(UpdateFeaturesCommand request)
+    {
+        var canonicalPayload = new
+        {
+            request.AgentId,
+            request.ObservabilityMode,
+            request.PurviewEnabled,
+            request.PurviewMode,
+            request.Agent365ObservabilityEnabled,
+            request.AzureMonitorExportEnabled,
+            request.PromptShieldEnabled,
+            request.PurviewDlpProfile,
+            request.CallerObjectId,
+            request.ExpectedRowVersion
+        };
         return Compute(canonicalPayload);
     }
 

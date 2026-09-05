@@ -1,8 +1,11 @@
 using System.Data;
 using System.Data.Common;
+using System.Text.Json;
+using Gateway.Contracts.Messages;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
+using Gateway.Infrastructure.Outbox;
 using Microsoft.EntityFrameworkCore;
 
 namespace Gateway.Infrastructure.Persistence.Repositories;
@@ -10,6 +13,9 @@ namespace Gateway.Infrastructure.Persistence.Repositories;
 internal sealed class OutboxRepository : IOutboxRepository
 {
     private const string SqlServerProviderName = "Microsoft.EntityFrameworkCore.SqlServer";
+    private const string ProtectionPublishFailureCode =
+        "PROTECTION_ADMIN_OUTBOX_PUBLISH_FAILED";
+    private const string ProtectionPublishFailureAction = "ReviewOperationFailure";
 
     // EF's in-memory provider cannot execute the SQL Server claim statement. This
     // lock preserves the same single-process semantics for local tests only. The
@@ -25,6 +31,8 @@ internal sealed class OutboxRepository : IOutboxRepository
 
     public async Task AddAsync(OutboxMessage message, CancellationToken ct)
     {
+        _dbContext.Entry(message).Property<string>("Destination").CurrentValue =
+            OutboxRouting.ResolveDestination(message.MessageType);
         await _dbContext.OutboxMessages.AddAsync(message, ct);
     }
 
@@ -114,6 +122,18 @@ internal sealed class OutboxRepository : IOutboxRepository
             : OutboxMessageStatus.Pending;
         var retryAtUtc = terminal ? null : nextRetryAtUtc;
 
+        if (terminal &&
+            string.Equals(
+                _dbContext.Database.ProviderName,
+                SqlServerProviderName,
+                StringComparison.Ordinal))
+        {
+            return await MarkTerminalFailedSqlServerAsync(
+                id,
+                claimExpiresAtUtc,
+                ct);
+        }
+
         if (_dbContext.Database.IsRelational())
         {
             var affected = await _dbContext.OutboxMessages
@@ -144,6 +164,12 @@ internal sealed class OutboxRepository : IOutboxRepository
                 return false;
             }
 
+            if (terminal &&
+                !await TryApplyProtectionTerminalFailureAsync(message!, ct))
+            {
+                return false;
+            }
+
             message!.Status = status;
             if (message.RetryCount < int.MaxValue)
             {
@@ -159,6 +185,205 @@ internal sealed class OutboxRepository : IOutboxRepository
         }
     }
 
+    private async Task<bool> MarkTerminalFailedSqlServerAsync(
+                Guid id,
+                DateTime claimExpiresAtUtc,
+                CancellationToken ct)
+    {
+        if (_dbContext.Database.CurrentTransaction is not null)
+        {
+            throw new InvalidOperationException(
+                "Terminal outbox failure propagation must own its atomic SQL transaction.");
+        }
+
+        const string commandText = """
+                    SET XACT_ABORT ON;
+                    BEGIN TRANSACTION;
+
+                    DECLARE @messageType nvarchar(256);
+                    DECLARE @payload nvarchar(max);
+                    DECLARE @destination nvarchar(128);
+
+                    SELECT
+                        @messageType = [MessageType],
+                        @payload = [Payload],
+                        @destination = [Destination]
+                    FROM [dbo].[OutboxMessages] WITH (UPDLOCK, HOLDLOCK)
+                    WHERE [Id] = @id
+                      AND [Status] = N'Processing'
+                      AND [NextRetryAtUtc] = @claimExpiresAtUtc;
+
+                    IF @messageType IS NULL
+                    BEGIN
+                        ROLLBACK TRANSACTION;
+                        SELECT CAST(0 AS bit);
+                        RETURN;
+                    END;
+
+                    IF @messageType = N'ProtectionAdminOperationMessage'
+                       AND @destination = N'gateway-protection-admin-v1'
+                    BEGIN
+                        DECLARE @operationId uniqueidentifier =
+                            TRY_CONVERT(
+                                uniqueidentifier,
+                                COALESCE(
+                                    JSON_VALUE(@payload, N'$.OperationId'),
+                                    JSON_VALUE(@payload, N'$.operationId')));
+                        DECLARE @workflowVersion int =
+                            TRY_CONVERT(
+                                int,
+                                COALESCE(
+                                    JSON_VALUE(@payload, N'$.WorkflowVersion'),
+                                    JSON_VALUE(@payload, N'$.workflowVersion')));
+                        DECLARE @correlationId uniqueidentifier =
+                            TRY_CONVERT(
+                                uniqueidentifier,
+                                COALESCE(
+                                    JSON_VALUE(@payload, N'$.CorrelationId'),
+                                    JSON_VALUE(@payload, N'$.correlationId')));
+
+                        IF @operationId IS NULL
+                           OR @workflowVersion <> 1
+                           OR @correlationId IS NULL
+                           OR NOT EXISTS
+                           (
+                               SELECT 1
+                               FROM [dbo].[ProtectionAdminOperations] WITH (UPDLOCK, HOLDLOCK)
+                               WHERE [Id] = @operationId
+                                 AND [WorkflowVersion] = @workflowVersion
+                                 AND [CorrelationId] = @correlationId
+                           )
+                        BEGIN
+                            ROLLBACK TRANSACTION;
+                            SELECT CAST(0 AS bit);
+                            RETURN;
+                        END;
+
+                        UPDATE [dbo].[ProtectionAdminOperations]
+                        SET [Status] = N'Failed',
+                            [RetryDisposition] = N'Exhausted',
+                            [LastFailureCode] = N'PROTECTION_ADMIN_OUTBOX_PUBLISH_FAILED',
+                            [RequiredAction] = N'ReviewOperationFailure',
+                            [NextAttemptAtUtc] = NULL,
+                            [UpdatedAtUtc] = SYSUTCDATETIME()
+                        WHERE [Id] = @operationId
+                          AND [Status] IN (N'Pending', N'Running', N'PendingPropagation');
+                    END;
+
+                    UPDATE [dbo].[OutboxMessages]
+                    SET [Status] = N'Failed',
+                        [RetryCount] =
+                            CASE WHEN [RetryCount] = 2147483647
+                                 THEN 2147483647 ELSE [RetryCount] + 1 END,
+                        [NextRetryAtUtc] = NULL
+                    WHERE [Id] = @id
+                      AND [Status] = N'Processing'
+                      AND [NextRetryAtUtc] = @claimExpiresAtUtc;
+
+                    IF @@ROWCOUNT <> 1
+                    BEGIN
+                        ROLLBACK TRANSACTION;
+                        SELECT CAST(0 AS bit);
+                        RETURN;
+                    END;
+
+                    COMMIT TRANSACTION;
+                    SELECT CAST(1 AS bit);
+                    """;
+
+        var connection = _dbContext.Database.GetDbConnection();
+        var shouldCloseConnection = connection.State != ConnectionState.Open;
+        if (shouldCloseConnection)
+            await connection.OpenAsync(ct);
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = commandText;
+            AddParameter(command, "@id", DbType.Guid, id);
+            AddParameter(
+                command,
+                "@claimExpiresAtUtc",
+                DbType.DateTime2,
+                claimExpiresAtUtc);
+            var result = await command.ExecuteScalarAsync(ct);
+            return result is bool updated && updated;
+        }
+        finally
+        {
+            if (shouldCloseConnection)
+                await connection.CloseAsync();
+        }
+    }
+
+    private async Task<bool> TryApplyProtectionTerminalFailureAsync(
+        OutboxMessage message,
+        CancellationToken ct)
+    {
+        var destination = _dbContext.Entry(message)
+            .Property<string>("Destination")
+            .CurrentValue;
+        if (!string.Equals(
+                message.MessageType,
+                OutboxRouting.ProtectionAdminMessageType,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                destination,
+                OutboxRouting.ProtectionAdminDestination,
+                StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (!TryReadProtectionMessage(message.Payload, out var coordinates))
+            return false;
+
+        var operation = await _dbContext.ProtectionAdminOperations.FindAsync(
+            [coordinates!.OperationId],
+            ct);
+        if (operation is null ||
+            operation.WorkflowVersion != coordinates.WorkflowVersion ||
+            operation.CorrelationId != coordinates.CorrelationId)
+        {
+            return false;
+        }
+
+        if (operation.Status is
+            ProtectionAdminOperationStatus.Pending or
+            ProtectionAdminOperationStatus.Running or
+            ProtectionAdminOperationStatus.PendingPropagation)
+        {
+            operation.Status = ProtectionAdminOperationStatus.Failed;
+            operation.RetryDisposition = ProtectionRetryDisposition.Exhausted;
+            operation.LastFailureCode = ProtectionPublishFailureCode;
+            operation.RequiredAction = ProtectionPublishFailureAction;
+            operation.NextAttemptAtUtc = null;
+            operation.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        return true;
+    }
+
+    private static bool TryReadProtectionMessage(
+        string payload,
+        out ProtectionAdminOperationMessage? message)
+    {
+        try
+        {
+            message = JsonSerializer.Deserialize<ProtectionAdminOperationMessage>(
+                payload,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            return message is not null &&
+                message.OperationId != Guid.Empty &&
+                message.CorrelationId != Guid.Empty &&
+                message.WorkflowVersion == ProtectionAdminQueueContract.WorkflowVersion;
+        }
+        catch (JsonException)
+        {
+            message = null;
+            return false;
+        }
+    }
     private async Task<IReadOnlyList<OutboxMessage>> ClaimPendingSqlServerAsync(
         int batchSize,
         DateTime utcNow,
@@ -171,9 +396,23 @@ internal sealed class OutboxRepository : IOutboxRepository
                 SELECT TOP (@batchSize) *
                 FROM [OutboxMessages] WITH (UPDLOCK, READPAST, READCOMMITTEDLOCK)
                 WHERE
-                    ([Status] = N'Pending' AND ([NextRetryAtUtc] IS NULL OR [NextRetryAtUtc] <= @utcNow))
-                    OR
-                    ([Status] = N'Processing' AND [NextRetryAtUtc] <= @utcNow)
+                    (
+                        ([Status] = N'Pending' AND ([NextRetryAtUtc] IS NULL OR [NextRetryAtUtc] <= @utcNow))
+                        OR
+                        ([Status] = N'Processing' AND [NextRetryAtUtc] <= @utcNow)
+                    )
+                    AND
+                    (
+                        (
+                            [MessageType] = N'ProtectionAdminOperationMessage'
+                            AND [Destination] = N'gateway-protection-admin-v1'
+                        )
+                        OR
+                        (
+                            [MessageType] NOT LIKE N'%ProtectionAdmin%'
+                            AND [Destination] = N'gateway-provisioning-v3'
+                        )
+                    )
                 ORDER BY [CreatedAtUtc], [Id]
             )
             UPDATE [Candidates]

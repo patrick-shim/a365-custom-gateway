@@ -3,10 +3,13 @@ using Gateway.Api.Extensions;
 using Gateway.Api.Options;
 using Gateway.Application.Configuration.Commands;
 using Gateway.Application.Configuration.Queries;
+using Gateway.Application.Protection;
 using Gateway.Contracts.Requests;
 using Gateway.Contracts.Responses;
 using MediatR;
 using Gateway.Domain.Interfaces;
+using Gateway.Domain.ValueObjects;
+using Gateway.Infrastructure.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -20,17 +23,20 @@ public class SystemController : ControllerBase
     private readonly ProvisioningAdmissionGate _provisioningAdmissionGate;
     private readonly IPurviewPolicyProvisioningClient _purviewPolicyProvisioningClient;
     private readonly IPromptShieldClient _promptShieldClient;
+    private readonly IProtectionAdminOperationLockProvider _protectionLocks;
 
     public SystemController(
         ISender sender,
         ProvisioningAdmissionGate provisioningAdmissionGate,
         IPurviewPolicyProvisioningClient purviewPolicyProvisioningClient,
-        IPromptShieldClient promptShieldClient)
+        IPromptShieldClient promptShieldClient,
+        IProtectionAdminOperationLockProvider protectionLocks)
     {
         _sender = sender;
         _provisioningAdmissionGate = provisioningAdmissionGate;
         _purviewPolicyProvisioningClient = purviewPolicyProvisioningClient;
         _promptShieldClient = promptShieldClient;
+        _protectionLocks = protectionLocks;
     }
 
     [HttpGet("config")]
@@ -40,6 +46,8 @@ public class SystemController : ControllerBase
     {
         var query = new GetSystemConfigQuery();
         var result = await _sender.Send(query, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(result.RowVersion))
+            Response.Headers.ETag = result.RowVersion;
 
         return Ok(WithDeploymentCapabilities(result));
     }
@@ -52,6 +60,33 @@ public class SystemController : ControllerBase
         [FromBody] UpdateSystemConfigRequest request,
         CancellationToken cancellationToken)
     {
+        var isProtectionMutation =
+            request.DefaultPurviewEnabled is not null ||
+            request.DefaultPurviewMode is not null ||
+            request.DefaultPromptShieldEnabled is not null ||
+            request.IdempotencyKey is not null ||
+            request.ExpectedRowVersion is not null;
+        ProtectionActor? protectionActor = null;
+        if (isProtectionMutation)
+        {
+            protectionActor = User.GetProtectionActor();
+            if (request.IdempotencyKey is null ||
+                request.ExpectedRowVersion is null)
+            {
+                throw new Gateway.Application.Exceptions.ValidationException(
+                    new Dictionary<string, string[]>
+                    {
+                        ["Idempotency-Key"] =
+                        ["Protection default mutations require Idempotency-Key and If-Match."]
+                    });
+            }
+
+            ProtectionRequestHeaderValidation.RequireMutationHeaders(
+                Request,
+                request.IdempotencyKey.Value,
+                request.ExpectedRowVersion);
+        }
+
         // Forward compatibility-only members so application validation rejects any
         // non-null write explicitly instead of silently accepting a false control.
         var command = new UpdateSystemConfigCommand(
@@ -74,9 +109,30 @@ public class SystemController : ControllerBase
             User.GetObjectId(),
             request.DefaultAgent365ObservabilityEnabled,
             request.DefaultAzureMonitorExportEnabled,
-            request.DefaultPromptShieldEnabled);
+            request.DefaultPromptShieldEnabled,
+            request.IdempotencyKey,
+            request.ExpectedRowVersion,
+            protectionActor?.TenantId,
+            GetOperationCorrelationId());
 
-        var result = await _sender.Send(command, cancellationToken);
+        SystemConfigDto result;
+        if (protectionActor is not null)
+        {
+            await using var idempotencyLease =
+                await _protectionLocks.AcquireIdempotencyAsync(
+                    new EntraTenantId(protectionActor.TenantId),
+                    new ProtectionIdempotencyKey(
+                        request.IdempotencyKey!.Value),
+                    cancellationToken);
+            result = await _sender.Send(command, cancellationToken);
+            await idempotencyLease.CompleteAsync(cancellationToken);
+        }
+        else
+        {
+            result = await _sender.Send(command, cancellationToken);
+        }
+        if (!string.IsNullOrWhiteSpace(result.RowVersion))
+            Response.Headers.ETag = result.RowVersion;
 
         return Ok(WithDeploymentCapabilities(result));
     }
@@ -88,4 +144,13 @@ public class SystemController : ControllerBase
             PurviewPolicyProvisioningEnabled = _purviewPolicyProvisioningClient.IsEnabled,
             PromptShieldAvailable = _promptShieldClient.IsEnabled
         };
+
+    private Guid GetOperationCorrelationId()
+    {
+        var correlation = HttpContext.Items["CorrelationId"] as string;
+        return Guid.TryParse(correlation, out var parsed) &&
+            parsed != Guid.Empty
+            ? parsed
+            : Guid.NewGuid();
+    }
 }

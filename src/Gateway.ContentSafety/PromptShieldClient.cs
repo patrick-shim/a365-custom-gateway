@@ -14,15 +14,18 @@ public sealed class PromptShieldClient : IPromptShieldClient
     private readonly HttpClient _httpClient;
     private readonly IPromptShieldTokenProvider _tokenProvider;
     private readonly PromptShieldOptions _options;
+    private readonly BootstrapPromptShieldRuntimeBinding _runtimeBinding;
 
     internal PromptShieldClient(
         HttpClient httpClient,
         IPromptShieldTokenProvider tokenProvider,
-        IOptions<PromptShieldOptions> options)
+        IOptions<PromptShieldOptions> options,
+        BootstrapPromptShieldRuntimeBinding runtimeBinding)
     {
         _httpClient = httpClient;
         _tokenProvider = tokenProvider;
         _options = options.Value;
+        _runtimeBinding = runtimeBinding;
     }
 
     public bool IsEnabled => _options.Enabled;
@@ -57,7 +60,11 @@ public sealed class PromptShieldClient : IPromptShieldClient
 
         try
         {
+            _runtimeBinding.EnsureConfigurationExact(
+                _options,
+                _httpClient.BaseAddress);
             var token = await _tokenProvider.GetTokenAsync(cancellationToken);
+            _runtimeBinding.EnsureTokenIdentity(token);
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,
                 $"contentsafety/text:shieldPrompt?api-version={Uri.EscapeDataString(_options.ApiVersion)}")

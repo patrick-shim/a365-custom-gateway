@@ -80,15 +80,16 @@ by the returned GUID, retains its exact Unicode `Name` because the documented
 re-resolves the GUID before use. Exact GUID filtering is mandatory: Microsoft warns
 that a null or nonexistent `-Identity` can return the full inventory. Microsoft does
 not document a Graph endpoint for enumerating this catalog or a cmdlet-specific
-least-privilege role mapping, so Setup probes authorization and fails closed instead
-of guessing either contract.
+least-privilege role mapping, so the approved flow probes authorization and fails
+closed instead of guessing either contract.
 
-The core bootstrap remains supported on Windows, macOS, and Linux. The optional SIT
-inventory and policy-authoring path is Windows-only because Microsoft's current
-Exchange Online module documentation says `Connect-IPPSSession`, and therefore
-Security & Compliance PowerShell, is unavailable in PowerShell 7 on macOS and
-Linux. The Gateway does not substitute a static catalog or an unvalidated REST
-endpoint on those platforms.
+Core bootstrap and capability preparation stay supported on Windows, macOS, and
+Linux. SIT inventory and policy authoring are owned by Gateway Settings, with the
+packaged bounded Windows companion wherever Microsoft's current Exchange
+Online module requires interactive `Connect-IPPSSession`. The Gateway does not
+substitute a static catalog or an unvalidated REST endpoint on other platforms.
+The companion verifies one exact owned session, tenant, operation Administrator,
+cmdlet surface, and bounded SIT inventory before returning one typed result line.
 
 - [Configure Purview for custom AI applications](https://learn.microsoft.com/purview/developer/configurepurview)
 - [Use the Purview data-security APIs](https://learn.microsoft.com/purview/developer/use-the-api)

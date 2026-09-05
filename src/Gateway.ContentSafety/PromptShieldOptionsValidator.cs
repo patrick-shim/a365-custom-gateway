@@ -4,6 +4,14 @@ namespace Gateway.ContentSafety;
 
 internal sealed class PromptShieldOptionsValidator : IValidateOptions<PromptShieldOptions>
 {
+    private readonly BootstrapPromptShieldRuntimeBinding _runtimeBinding;
+
+    public PromptShieldOptionsValidator(
+        BootstrapPromptShieldRuntimeBinding runtimeBinding)
+    {
+        _runtimeBinding = runtimeBinding;
+    }
+
     public ValidateOptionsResult Validate(string? name, PromptShieldOptions options)
     {
         if (options.RequestTimeoutSeconds is < 1 or > 30)
@@ -26,6 +34,11 @@ internal sealed class PromptShieldOptionsValidator : IValidateOptions<PromptShie
             || !string.IsNullOrEmpty(endpoint.Fragment))
         {
             return ValidateOptionsResult.Fail("PromptShield:Endpoint must be a plain HTTPS Azure AI Content Safety endpoint.");
+        }
+        if (!_runtimeBinding.IsConfigurationExact(options))
+        {
+            return ValidateOptionsResult.Fail(
+                "Prompt Shields capability binding is unavailable.");
         }
 
         return ValidateOptionsResult.Success;

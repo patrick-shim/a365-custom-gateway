@@ -18,7 +18,7 @@ param containerImage string
 @description('Login server URL of the Azure Container Registry.')
 param acrLoginServer string
 
-@description('Resource ID of the dedicated user-assigned identity authorized to pull runtime images from the exact ACR. Empty is retained only for the guarded historical system-identity deployment path.')
+@description('Resource ID of the foundation workload identity authorized for the exact ACR and, when Purview is selected, API Purview tokens. Empty is retained only for the guarded historical system-identity deployment path.')
 param imagePullIdentityResourceId string = ''
 
 @description('CPU cores allocated to the container (e.g., 0.25, 0.5, 1.0).')
@@ -65,6 +65,9 @@ param agent365DelegatedRegistryContinuousDevelopmentAccess bool = false
 @description('URI of the Azure Key Vault.')
 param keyVaultUri string
 
+@description('Strict non-secret bootstrap capability evidence. Enabled=false is allowed only for the inert identity deployment.')
+param bootstrapCapabilities object
+
 @description('Connection string for Application Insights.')
 param appInsightsConnectionString string
 
@@ -89,6 +92,15 @@ param agent365ManagerApplicationIds array = []
 
 @description('Enable the Microsoft Purview Graph adapter only after tenant permissions, policy, licensing, token roles, and runtime prerequisites are verified.')
 param purviewEnabled bool = false
+
+@description('Resource ID of the API-owned user-assigned identity used for Purview protected traffic and worker readiness.')
+param purviewRuntimeIdentityResourceId string = ''
+
+@description('Client ID of the API-owned user-assigned identity used for Purview Graph tokens.')
+param purviewRuntimeIdentityClientId string = ''
+
+@description('Principal ID expected in every Purview Graph token acquired by this host.')
+param purviewRuntimeIdentityPrincipalId string = ''
 
 @description('Enable Azure AI Content Safety Prompt Shields for registration-level prompt evaluation.')
 param promptShieldEnabled bool = false
@@ -137,6 +149,18 @@ var managerApplicationEnvironmentVariables = [for (managerApplicationId, index) 
   name: 'Agent365__ManagerApplicationIds__${index}'
   value: string(managerApplicationId)
 }]
+var userAssignedIdentities = union(
+  empty(imagePullIdentityResourceId)
+    ? {}
+    : {
+        '${imagePullIdentityResourceId}': {}
+      },
+  empty(purviewRuntimeIdentityResourceId)
+    ? {}
+    : {
+        '${purviewRuntimeIdentityResourceId}': {}
+      })
+var hasUserAssignedIdentity = !empty(imagePullIdentityResourceId) || !empty(purviewRuntimeIdentityResourceId)
 
 // ============================================================================
 // Resources
@@ -148,15 +172,13 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   tags: tags
   // The empty branch preserves only the guarded historical system-identity
   // deployment path. Clean bootstrap always supplies the pre-authorized UAMI.
-  identity: empty(imagePullIdentityResourceId)
+  identity: !hasUserAssignedIdentity
     ? {
         type: 'SystemAssigned'
       }
     : {
         type: 'SystemAssigned, UserAssigned'
-        userAssignedIdentities: {
-          '${imagePullIdentityResourceId}': {}
-        }
+        userAssignedIdentities: userAssignedIdentities
       }
   properties: {
     managedEnvironmentId: environmentId
@@ -246,6 +268,82 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: keyVaultUri
             }
             {
+              name: 'BootstrapCapabilities__Enabled'
+              value: string(bootstrapCapabilities.enabled)
+            }
+            {
+              name: 'BootstrapCapabilities__AttestedAtUtc'
+              value: bootstrapCapabilities.readbackAtUtc
+            }
+            {
+              name: 'BootstrapCapabilities__DeploymentOwnershipId'
+              value: bootstrapCapabilities.deploymentOwnershipId
+            }
+            {
+              name: 'BootstrapCapabilities__AcceptedSourceFingerprint'
+              value: bootstrapCapabilities.sourceFingerprint
+            }
+            {
+              name: 'BootstrapCapabilities__Agent365RegistrationBeta__Status'
+              value: bootstrapCapabilities.agent365RegistrationBeta.status
+            }
+            {
+              name: 'BootstrapCapabilities__Agent365RegistrationBeta__Agent365RegistryApiApplicationId'
+              value: bootstrapCapabilities.agent365RegistrationBeta.registryApiApplicationId
+            }
+            {
+              name: 'BootstrapCapabilities__PromptShields__Status'
+              value: bootstrapCapabilities.promptShields.status
+            }
+            {
+              name: 'BootstrapCapabilities__PromptShields__ContentSafetyAccountResourceId'
+              value: bootstrapCapabilities.promptShields.contentSafetyAccountResourceId
+            }
+            {
+              name: 'BootstrapCapabilities__PromptShields__ContentSafetyEndpoint'
+              value: bootstrapCapabilities.promptShields.contentSafetyEndpoint
+            }
+            {
+              name: 'BootstrapCapabilities__PromptShields__GatewayApiManagedIdentityPrincipalObjectId'
+              value: bootstrapCapabilities.promptShields.gatewayApiManagedIdentityPrincipalObjectId
+            }
+            {
+              name: 'BootstrapCapabilities__Purview__Status'
+              value: bootstrapCapabilities.purview.status
+            }
+            {
+              name: 'BootstrapCapabilities__Purview__GatewayApiManagedIdentityPrincipalObjectId'
+              value: bootstrapCapabilities.purview.gatewayApiManagedIdentityPrincipalObjectId
+            }
+            {
+              name: 'BootstrapCapabilities__Purview__PurviewRuntimeManagedIdentityPrincipalObjectId'
+              value: bootstrapCapabilities.purview.purviewRuntimeManagedIdentityPrincipalObjectId
+            }
+            {
+              name: 'BootstrapCapabilities__Purview__PurviewAutomationApplicationId'
+              value: bootstrapCapabilities.purview.automationApplicationId
+            }
+            {
+              name: 'BootstrapCapabilities__Purview__PurviewAutomationServicePrincipalObjectId'
+              value: bootstrapCapabilities.purview.automationServicePrincipalObjectId
+            }
+            {
+              name: 'BootstrapCapabilities__Purview__KeyVaultResourceId'
+              value: bootstrapCapabilities.purview.keyVaultResourceId
+            }
+            {
+              name: 'BootstrapCapabilities__Purview__KeyVaultHost'
+              value: bootstrapCapabilities.purview.keyVaultHost
+            }
+            {
+              name: 'BootstrapCapabilities__Purview__CertificateName'
+              value: bootstrapCapabilities.purview.certificateName
+            }
+            {
+              name: 'BootstrapCapabilities__Purview__CertificateSecretUri'
+              value: bootstrapCapabilities.purview.certificateSecretUri
+            }
+            {
               name: 'Agent365__TenantId'
               value: entraIdTenantId
             }
@@ -268,6 +366,14 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'Purview__Enabled'
               value: string(purviewEnabled)
+            }
+            {
+              name: 'PurviewRuntimeIdentity__ManagedIdentityClientId'
+              value: purviewRuntimeIdentityClientId
+            }
+            {
+              name: 'PurviewRuntimeIdentity__ManagedIdentityPrincipalObjectId'
+              value: purviewRuntimeIdentityPrincipalId
             }
             {
               name: 'PromptShield__Enabled'

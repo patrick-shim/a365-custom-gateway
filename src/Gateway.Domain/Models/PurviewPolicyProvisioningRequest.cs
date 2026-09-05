@@ -20,6 +20,8 @@ public static class PurviewPolicyLocationContract
 {
     public const string EnterpriseAiAppsCollectionLocationId =
         "ee1680d0-702f-4090-b26c-c49091e86531";
+    public static readonly Guid EnterpriseAiAppsGroupId =
+        Guid.Parse(EnterpriseAiAppsCollectionLocationId);
     public const string ApplicationWorkload = "Applications";
     public const string EntraLocationSource = "Entra";
     public const string CollectionLocationType = "Group";

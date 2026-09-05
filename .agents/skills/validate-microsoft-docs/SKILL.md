@@ -72,3 +72,18 @@ Every Microsoft-specific production code path must be traceable to current offic
 evidence. Quote sparingly, cite the exact source, and distinguish documented fact
 from project inference. Never access or copy `.secret` or `.secrets` while
 validating docs.
+
+## Implemented protection source boundary
+
+The protection redesign is implemented and offline-validated in source, not
+deployed. Bootstrap Full/Core/Custom presets prepare capabilities only and never
+select a SIT or author policy. Every registration creation requires a signed-in
+delegated `Gateway.Administrator`. Gateway Settings owns SIT/KYD/DLP and
+per-registration controls on dedicated `gateway-protection-admin-v1`. The immutable
+Admin UI image supplies the downloadable Windows companion. Companion evidence remains
+non-authoritative until exact capability-bound provider verification. `Ready`
+independently requires capability Installed, exact readback, propagation, token
+roles, and runtime allow/block evidence, with current SIT generation, exact
+blueprint/provider IDs, and timestamps. Preserve KYD Group versus blueprint
+Individual DLP on the Application plane. Any live claim still requires fresh
+exact-target authority and exact readback.

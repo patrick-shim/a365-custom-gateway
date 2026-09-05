@@ -1,242 +1,276 @@
-# Microsoft Purview setup
+# Microsoft Purview setup and readiness
 
-Purview is an optional Gateway runtime feature, not a prerequisite for deploying or
-using the core Gateway. Select it before Plan only when the tenant, target, and
-operator authority are ready for policy authoring. After exact typed policy readback,
-bootstrap deploys the API with `Purview__Enabled=true`; never set that flag by hand.
-This makes the adapter reachable but does not prove managed-identity token-role
-propagation or a live DLP verdict. Keep Purview off on ordinary registrations; use
-one approved nonproduction registration for the bounded runtime checks below.
+Status: beta.2 source accepted offline; not deployed or live-ready.
+
+Last updated: 2026-09-06 (Asia/Seoul).
+
+Purview is optional. Bootstrap prepares capability prerequisites; role-aware
+Gateway Settings owns tenant connection, SIT selection, policy configuration,
+propagation, readiness, defaults, and ongoing changes. The source passed integrated
+tests, fresh independent review, and clean-export validation. Exact results are in
+the [implementation checkpoint](../implementation-status.md).
+
+Source remains undeployed, and live E2E is postponed. No live authority transfers
+through Git, documentation, local evidence, or earlier deployments. A future
+deployment or live E2E requires fresh authorization naming an exact unused
+resource group and the allowed provider actions. Azure, Entra, SQL, Graph,
+Service Bus, Purview, and cleanup actions are outside this source task; retiring
+an earlier environment needs separate exact-target authority. Do not reuse an
+older deployment state with this source.
+
+Settings authors the supported UploadText Block restriction in either policy mode.
+AuditOnly uses TestWithoutNotifications and takes no enforcement actions. Only an
+Enforce profile can satisfy the independent runtime allow/block readiness gate.
+See the [architecture plan](../architecture/protection-settings-plan.md).
 
 ## Scope model
 
 ```mermaid
 flowchart TD
-    Tenant[Microsoft 365 tenant] --> KYD[Know Your Data collection]
-    KYD --> Group[Fixed enterprise-AI-apps Group<br/>ee1680d0-702f-4090-b26c-c49091e86531]
-    Blueprint[Reusable blueprint app ID] --> DLP[DLP policy and rule<br/>Individual location]
-    Gateway[Gateway API managed identity] --> Runtime[Graph processContent and contentActivities]
-    Child[Child Agent ID] --> Attribution[aiAgentInfo attribution]
-    Blueprint --> Attribution
+    Bootstrap[Bootstrap capability preparation] --> Identity[Identities, RBAC, certificate, Key Vault, runtime]
+    Admin[Gateway Administrator in Settings] --> Connection[Exact tenant authority connection]
+    Connection --> Inventory[Live tenant SIT inventory]
+    Admin --> KYD[Know Your Data configuration]
+    Admin --> DLP[One DLP profile per blueprint]
+    KYD --> Group[Fixed enterprise-AI-apps Group]
+    DLP --> Individual[Exact blueprint application ID]
+    Identity --> Runtime[Purview Graph runtime]
+    KYD --> Ready[Independent readiness]
+    DLP --> Ready
 ```
 
-The policy locations are not interchangeable:
+The policy locations are independent:
 
 | Purpose | Location | Source | Type | Enforcement plane |
 |---|---|---|---|---|
 | Know Your Data | `ee1680d0-702f-4090-b26c-c49091e86531` | Entra | Group | Application |
-| DLP | reusable blueprint application/client ID | Entra | Individual | Application |
+| DLP | one reusable blueprint application/client ID | Entra | Individual | Application |
 
-The Gateway API managed identity is the integrated caller. Child and blueprint IDs
-are carried as `aiAgentInfo` attribution; the child is not the DLP policy location.
+Never add a blueprint ID to the Know Your Data Group. Child and blueprint IDs are
+carried separately as `aiAgentInfo` attribution; a child ID is not a policy
+location.
 
-## Prerequisites
+## Authority boundary
 
-- tenant licensing and availability for the selected Purview capabilities;
-- Security & Compliance PowerShell access;
-- a Windows workstation for optional SIT inventory and policy authoring;
-- a certificate-authenticated automation application **only** when the Gateway
-  itself must author policy for a newly created protected blueprint; registering
-  an agent against an existing blueprint never uses it;
-- certificate PFX stored in the reviewed Key Vault secret path;
-- the narrow compliance RBAC required for FeatureConfiguration and DLP cmdlets;
-- API managed-identity Graph application roles for runtime processing;
-- an allowed sensitive-information type and policy mode approved for the tenant.
+Before any Microsoft 365, Purview, Graph, Azure, Entra, Key Vault, policy, or
+deployment action:
 
-The FeatureConfiguration cmdlets are Public Preview and may be unavailable in some
-organizations.
+1. read the current
+   [deployment checkpoint](development-deployment-status.md);
+2. verify the exact tenant, subscription, Gateway deployment, and requested action;
+3. obtain current user authority for that exact target and action; and
+4. preserve `.bootstrap/`, existing policies, provider identifiers, and retained
+   evidence.
 
-The core Gateway bootstrap runs on Windows, macOS, and Linux. This optional Purview
-path is Windows-only: Microsoft currently documents `Connect-IPPSSession`, and
-therefore Security & Compliance PowerShell, as unavailable in PowerShell 7 on
+Deployment approval does not authorize policy authoring. Policy creation does not
+authorize replacement or deletion. Read-only inventory does not authorize a write.
+Cleanup, certificate rotation, and scope broadening each require separate explicit
+authority.
+
+## Bootstrap capability preparation
+
+Bootstrap may prepare:
+
+- the API managed identity and the narrow Graph application roles required for
+  protection-scope computation, content processing, and activity submission;
+- the policy-automation application and narrow Security & Compliance RBAC;
+- certificate metadata and its private Key Vault storage/reference;
+- runtime and worker configuration needed to reach the supported provider
+  boundaries; and
+- exact non-secret readback showing whether those prerequisites are installed,
+  unavailable, or pending propagation.
+
+Ordinary bootstrap does **not**:
+
+- connect a user's Security & Compliance session;
+- enumerate or select a SIT;
+- create, update, replace, or delete Know Your Data configuration;
+- create, update, replace, or delete a DLP policy/rule;
+- attach a policy profile to a blueprint or registration; or
+- claim propagation, token-role readiness, or a runtime verdict.
+
+Core bootstrap and capability preparation remain supported on Windows, macOS, and
+Linux. Later provider operations that require `Connect-IPPSSession` remain
+interactive and Windows-only.
+
+## Gateway Settings workflow
+
+Only a signed-in `Gateway.Administrator` may perform the mutating steps below. UI
+role checks are advisory; every API call rechecks the user, tenant, delegated scope,
+role, operation, target, and reviewed payload.
+
+### 1. Inspect prerequisites
+
+Open **Settings → Protection capabilities** and distinguish:
+
+- bootstrap capability installation;
+- tenant connection and authorization;
+- provider configuration readback;
+- propagation and managed-identity token roles; and
+- bounded runtime verdict readiness.
+
+One green state never implies another. In particular, Azure resource existence,
+directory role assignment, and platform `Running` do not prove Purview runtime
+readiness.
+
+### 2. Connect tenant authority
+
+Start a bounded connection operation for the exact tenant. Where Microsoft requires
+Security & Compliance PowerShell:
+
+1. use the exact Windows companion command shown by Settings;
+2. complete the official interactive sign-in as the same work account and tenant
+   shown in Settings;
+3. require Microsoft Graph `/me` to report the expected member account;
+4. reject a guest, wrong tenant, wrong account, unavailable cmdlet, or missing role;
+   and
+5. return only typed, bounded identity, authorization, inventory, and readback facts
+   to the Gateway.
+
+The companion is an execution bridge, not a second settings authority. Settings
+offers the canonical script as an explicit download from the immutable Admin UI
+image and displays an exact short-lived local command. The browser never auto-runs
+it. The user uploads a text file containing only its single
+`A365GW_CONNECTION_RESULT:` line. The companion never returns a token,
+authorization header, certificate, provider body, prompt, response, or credential
+to the UI or ledger. Restart, timeout, account change, or tenant change invalidates
+the connection operation.
+
+Microsoft currently documents Security & Compliance PowerShell as unavailable in
+PowerShell 7 on
 [macOS and Linux](https://learn.microsoft.com/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps#supported-operating-systems-for-the-exchange-online-powershell-module).
-On macOS or Linux, leave Purview disabled or run Purview selection and bootstrap
-from Windows. Setup and the terminal initializer reject Purview selection before
-Microsoft Graph, Security & Compliance, or sensitive-information-type inventory
-calls. Purview-enabled Up, Apply, Resume, and Verify also stop before Azure, Graph,
-or compliance-provider access; the installer never substitutes a static list.
+Do not substitute a static catalog or an unvalidated REST endpoint.
 
-Microsoft does not publish a cmdlet-specific least-privilege role mapping for
-`Get-DlpSensitiveInformationType`. Security & Compliance PowerShell imports only
-the commands permitted by the signed-in account's RBAC. Setup therefore tests the
-real command and inventory and stops if authorization cannot be proven; do not grant
-a broader role merely to bypass that check.
+### 3. Load and select a SIT
 
-## Case B — deploy a fresh Gateway with Purview enabled
+The connected Windows operation:
 
-Bootstrap does not re-plan a deployment after it has persisted checkpoints. A
-configuration fingerprint change can be recorded for diagnosis, but it does not
-authorize Apply or Resume with changed settings. Therefore a completed core
-deployment with Purview disabled cannot be enabled in place through bootstrap.
-Preserve its configuration and `.bootstrap/` evidence.
+1. calls no-argument `Get-DlpSensitiveInformationType`;
+2. projects only bounded `Id`, exact Unicode `Name`, and `Publisher` values;
+3. binds the inventory to the exact tenant, administrator, operation, generation,
+   and expiry; and
+4. displays no default selection.
 
-Use a fresh deployment identity and enable Purview before its first Plan:
+The Administrator explicitly chooses an organizationally approved item keyed by
+its canonical GUID. Preserve its exact current name without trimming, case folding,
+translation, or Unicode normalization. Re-resolve the GUID before policy mutation
+because Microsoft documents that a null or nonexistent `-Identity` can return the
+entire inventory. A missing, renamed, duplicated, malformed, unauthorized, stale,
+or oversized result invalidates the choice.
 
-1. On Windows, run `.\gateway.cmd init` or `.\gateway.cmd setup`, choose a new
-   project name and resource group, and select the sensitive information type
-   through the tenant-backed picker described in
-   [Select a sensitive information type](#select-a-sensitive-information-type).
-   Do not hand-edit a classifier GUID into `bootstrap/config.json`.
-2. Review the exact target and authenticated What-If with `.\gateway.cmd plan`,
-   then run `.\gateway.cmd apply --open` only with current authority for that
-   tenant, subscription, resource group, Entra boundary, and Purview policy change.
-   Stay at the terminal for the interactive `Connect-IPPSSession` handoff;
-   `--non-interactive` fails closed before policy authoring.
-3. Preserve the prior deployment until the new one passes bootstrap Verify and the
-   registration/runtime checks below. Retiring it is a separate destructive action
-   requiring fresh authorization for that exact resource group.
+### 4. Configure Know Your Data
 
-Never delete `.bootstrap/` or point fresh state at an existing resource group to
-bypass the immutable plan, source, configuration, or ownership bindings.
+Review and confirm the tenant-wide operation separately from any blueprint profile.
+The confirmation must show:
 
-### Register and verify
+- the exact tenant;
+- the fixed enterprise-AI-apps location;
+- `LocationSource=Entra`;
+- `LocationType=Group`;
+- `EnforcementPlanes=Application`;
+- selected activities and SIT; and
+- whether the action creates, updates, or only reads back configuration.
 
-1. Enable Purview on exactly one registration. In the Admin UI, register an agent
-   against an **existing** blueprint and select **Enable Microsoft Purview**. That
-   path requires no protection profile and no automation application; profile
-   provisioning is reached only when creating a *new* protected blueprint, where
-   the worker must author policy unattended.
+Persist intent before mutation. Discover exact state, make at most the reviewed
+change, and require exact typed readback. Existing reviewed locations are preserved;
+an unexpected location or duplicate fails closed.
 
-2. Exercise the runtime with the sample external agent, which carries the Entra
-   user object ID that Purview evaluation requires:
+### 5. Configure a blueprint DLP profile
 
-   ```powershell
-   dotnet run --project src/ExternalAgent.Sample -- `
-     --api-base-url https://YOUR-GATEWAY-API `
-     --external-agent-id YOUR-EXTERNAL-AGENT-ID `
-     --tenant-user-object-id YOUR-ENTRA-USER-OBJECT-ID `
-     --message "benign text"
-   ```
+Select one resolved reusable blueprint from the typed catalog. Review and confirm:
 
-   The sample accepts only those four arguments and rejects any other. It reads
-   the Gateway key from stdin or a non-echoing prompt by design; never pass the
-   key as an argument, where it would land in shell history and process listings.
+- the exact blueprint application/client ID and display name;
+- `LocationSource=Entra`;
+- `LocationType=Individual`;
+- `EnforcementPlanes=Application`;
+- the selected SIT GUID and exact name;
+- mode, activities, and actions; and
+- the intended create, update, or read-only reconciliation.
 
-   Repeat with organization-approved synthetic sensitive content matching the
-   selected type. Both outcomes are required: the benign call must return the
-   exact nonblocking decision, and the sensitive call must return the expected
-   block. A block on its own does not distinguish enforcement from a
-   misconfigured deny.
+One profile belongs to one blueprint. A new blueprint first completes the core
+registration lifecycle; policy authoring is not a hidden registration stage. After
+the blueprint exists, create and verify its profile in Settings, then enable Purview
+for the registration only when that exact profile is Ready.
 
-Until both outcomes are observed on the deployed build, the feature is enabled but
-unproven. Bootstrap records `propagationStatus = PendingLiveVerification` for
-precisely this reason: exact typed readback proves the policy objects exist, never
-that the managed identity's token carries the Graph roles or that the policy has
-propagated. See [Exact readback](#exact-readback) and
-[Managed-identity token readiness](#managed-identity-token-readiness) below.
+### 6. Prove readiness
 
-## Select a sensitive information type
+Exact policy readback proves configuration only. Before reporting Ready:
 
-On Windows, Guided Setup and terminal `init` use the same tenant-backed contract:
+1. verify the independent KYD and DLP readbacks;
+2. attest the API managed-identity token audience, tenant, subject, and required
+   roles in memory without printing or persisting the token;
+3. wait for provider propagation when the current token or policy is stale;
+4. submit approved synthetic benign `uploadText` and require the exact nonblocking
+   result;
+5. submit approved synthetic sensitive `uploadText` and require the expected block;
+6. preserve the provider's inline or offline execution mode per activity;
+7. confirm child and blueprint attribution plus sanitized observability; and
+8. mark only that exact profile Ready.
 
-1. verify the exact Azure subscription and tenant selected for deployment;
-2. resolve the signed-in work account through Azure CLI and Microsoft Graph `/me`,
-   require Graph `userType=Member`, then open the official `Connect-IPPSSession`
-   browser sign-in for that same account in the selected tenant; a `Guest` result
-   or mismatched Security & Compliance session is rejected;
-3. call no-argument `Get-DlpSensitiveInformationType` and project only the exact
-   `Id`, Unicode `Name`, and `Publisher` fields within a bounded inventory;
-4. require the administrator to choose an organizationally approved type through
-   an explicit no-default selection keyed by `Id`; and
-5. store the GUID together with its exact current name.
+A block alone does not prove correct enforcement; it can also indicate a
+misconfigured deny. `downloadText` may be offline, so never claim response-side
+inline blocking.
 
-There is no bundled list and no free-text fallback. Before configuration publication
-or policy mutation, the selected GUID is queried again, filtered to exactly one
-matching `Id`, and required to retain the exact stored name. This extra filtering is
-required because Microsoft's cmdlet documents that null or nonexistent `-Identity`
-values can return every object. A rename, removal, duplicate, malformed response,
-authorization failure, timeout, or target change invalidates the selection and
-requires a fresh load.
+### 7. Apply defaults and per-registration settings
 
-## Author policies
+Settings may enable the Purview default only when its dependency rules can be
+satisfied for a registration's selected blueprint. A registration without a Ready
+profile remains usable on the core path but cannot use Purview. Prompt Shields is
+independent and follows its own installed-capability and per-agent setting.
 
-Use the bootstrap's optional Purview configuration or the reviewed automation script
-in `src/Gateway.Purview/Automation`. Never put the certificate, password, token, or
-Gateway key in command arguments, environment variables, state, or logs.
+Existing registration feature fields remain compatible. Changing a default does
+not silently reconfigure existing registrations. Every ongoing mutation is audited.
 
-The intended PowerShell shapes are:
+## Runtime check
+
+After the exact profile is Ready, use a nonproduction registration and
+organization-approved synthetic input:
 
 ```powershell
-$enterpriseAiAppsGroup = 'ee1680d0-702f-4090-b26c-c49091e86531'
-$collectionLocations = @"
-[{"Workload":"Applications","Location":"$enterpriseAiAppsGroup","LocationSource":"Entra","LocationType":"Group","Inclusions":[{"Type":"Tenant","Identity":"All"}]}]
-"@
-
-New-FeatureConfiguration `
-  -FeatureScenario KnowYourData `
-  -Name 'A365 Gateway enterprise AI apps collection' `
-  -Mode Enable `
-  -ScenarioConfig $reviewedCollectionScenario `
-  -Locations $collectionLocations
-
-$blueprintApplicationId = 'YOUR-BLUEPRINT-APPLICATION-ID'
-$dlpLocations = @"
-[{"Workload":"Applications","Location":"$blueprintApplicationId","LocationSource":"Entra","LocationType":"Individual","Inclusions":[{"Type":"Tenant","Identity":"All"}]}]
-"@
-
-New-DlpCompliancePolicy `
-  -Name 'A365 Gateway DLP' `
-  -Mode Enable `
-  -Locations $dlpLocations `
-  -EnforcementPlanes @('Application')
+dotnet run --project src/ExternalAgent.Sample -- `
+  --api-base-url https://YOUR-GATEWAY-API `
+  --external-agent-id YOUR-EXTERNAL-AGENT-ID `
+  --tenant-user-object-id YOUR-ENTRA-USER-OBJECT-ID `
+  --message "benign text"
 ```
 
-Create the DLP rule with the selected tenant-returned sensitive-information-type
-GUID/name pair, activities, and actions. The documented rule syntax uses the exact
-current name, while typed readback must also match the selected classifier GUID. Do
-not copy an example identifier into a real policy without tenant inventory review.
+The sample reads the Gateway key from standard input or a non-echoing prompt. Never
+pass it as an argument, where it would enter shell history and process listings.
+Repeat with the approved synthetic sensitive input and require both the expected
+allow and block.
 
-## Exact readback
+## Recovery
 
-Before runtime enablement, verify:
+- A stopped operation remains durable. Reload Settings and inspect its exact safe
+  next action; do not create a second operation against the same scope.
+- After timeout or an unknown outcome, read back the persisted provider identifiers
+  before any retry. Never blindly repeat a create.
+- A restarted browser cannot reuse an interactive sign-in or confirmation. Reconnect
+  or reconfirm as directed.
+- A changed tenant, inventory generation, SIT name, blueprint, mode, activities,
+  actions, capability readback, or row version invalidates pending confirmation.
+- A mismatched provider object remains blocked for manual review. Do not overwrite
+  or delete it to make a check pass.
+- Preserve `.bootstrap/`, database operation state, provider objects, and safe
+  evidence. The absence of transferable deployment state after Git transfer means
+  the deployment cannot be resumed from source alone.
+- On 401/403, verify exact principal, role values, consent, audience, and
+  propagation; never add broad permissions as a shortcut.
+- On an ambiguous Graph or compliance-provider response, keep the affected profile
+  non-Ready and suppress the provider body.
 
-1. exactly one intended KYD collection, with the fixed Group and Application plane;
-2. exactly one intended DLP policy/rule set, with the blueprint Individual location
-   and Application plane;
-3. no unintended location replacement or broadening;
-4. exact sensitive-information-type GUID and name pairs, activities, actions, mode,
-   and distribution status;
-5. exact automation application, certificate metadata, Key Vault scope, and
-   compliance RBAC;
-6. exact API managed-identity principal and required Graph app-role assignments.
+## Postponed end-to-end gate
 
-Readback proves configuration, not propagation or a runtime verdict.
+The required clean-deployment E2E uses two newly created blueprints and one external
+agent per blueprint. Both must reach provider-verified `Active`, then independently
+prove Agent 365 observability, Prompt Shields allow/block behavior, and Purview DLP
+allow/block behavior with the exact scope and attribution.
 
-## Managed-identity token readiness
+That exercise is postponed until final offline gates and release-candidate security
+and UI acceptance pass. It then requires fresh authority for the exact tenant,
+subscription, resource group, provider changes, and approved synthetic content.
+Earlier authorization for another or stopped target does not carry. The full definition is in the
+[Protection capability and Gateway Settings plan](../architecture/protection-settings-plan.md).
 
-Microsoft documents caching of managed-identity access tokens by resource URI.
-After adding Graph roles, directory assignments can be correct while the current
-token still lacks them. Do not print or persist the token. Use a safe claim-only
-attestation that checks audience, tenant, subject, and required role names in memory.
-If roles are absent, leave the adapter disabled and wait for propagation.
-
-## Runtime verification
-
-Use a nonproduction registration and organization-approved synthetic content:
-
-1. verify the core Gateway with `./gateway verify`;
-2. confirm the API token-role attestation contains the required Purview roles;
-3. enable Purview on the API and one registration only;
-4. submit benign `uploadText` and require the exact nonblocking decision;
-5. submit approved synthetic sensitive `uploadText` and require the expected block;
-6. submit `downloadText` and honor the provider's returned offline mode;
-7. confirm sanitized audit/observability metadata and absence of raw content in logs;
-8. disable the feature again if any transport, auth, schema, execution-mode, or
-   policy result is ambiguous.
-
-Do not claim response-side inline enforcement when the policy returns offline
-processing. The completed interaction route is not a pre-model response gate.
-
-## Failure handling
-
-- HTTP 401/403: verify principal, role values, consent, token audience, and
-  propagation; do not add broad permissions.
-- HTTP 500/unknown Graph error: keep the adapter disabled, preserve correlation
-  evidence, and verify token roles before changing policy.
-- Policy mismatch: fail before child creation for profile-backed registrations;
-  never silently substitute the blueprint into the KYD collection.
-- Offline decision: submit the activity without waiting for a synchronous body.
-- Ambiguous provider result: fail closed and suppress provider bodies.
-
-Official contracts are summarized in
+Official contracts and links are maintained in
 [Microsoft capability validation](../architecture/microsoft-capabilities.md).

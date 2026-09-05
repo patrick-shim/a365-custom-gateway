@@ -15,7 +15,8 @@ internal enum ExistingConfigurationStatus
 internal sealed record ExistingConfigurationResult(
     ExistingConfigurationStatus Status,
     SetupConfigurationForm? Form,
-    string? Guidance);
+    string? Guidance,
+    string? MigrationNotice = null);
 
 internal interface IBootstrapConfigLoader
 {
@@ -97,7 +98,16 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
                 return Rejected("The existing configuration failed safe public-field validation.");
             }
 
-            return new ExistingConfigurationResult(ExistingConfigurationStatus.Loaded, form, null);
+            var migrationNotice = configuration.Purview.HasLegacyPolicyConfiguration
+                ? "This configuration contains legacy Purview policy or sensitive-information-type fields. " +
+                  "Bootstrap will preserve the file for recovery but treats those values only as migration information. " +
+                  "After deployment, review Purview authority, sensitive information types, policies, and readiness in Gateway Settings."
+                : null;
+            return new ExistingConfigurationResult(
+                ExistingConfigurationStatus.Loaded,
+                form,
+                null,
+                migrationNotice);
         }
         catch (Exception exception) when (
             exception is JsonException or IOException or UnauthorizedAccessException or ValidationException)
@@ -118,15 +128,7 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
             configuration.Agent365 is null ||
             configuration.Agent365.ReviewedManagerApplicationIds is null ||
             configuration.PromptShield is null ||
-            configuration.Purview is null ||
-            configuration.Purview.ActivateGatewayAdapterAfterPolicyReadback ||
-            configuration.Purview.PolicyProvisioningEnabled ||
-            configuration.Purview.PolicyProvisioningOrganization != string.Empty ||
-            configuration.Purview.PolicyProvisioningApplicationId != string.Empty ||
-            configuration.Purview.PolicyProvisioningCertificateSecretUri != string.Empty ||
-            string.IsNullOrWhiteSpace(configuration.Purview.CollectionPolicyName) ||
-            string.IsNullOrWhiteSpace(configuration.Purview.DlpPolicyName) ||
-            string.IsNullOrWhiteSpace(configuration.Purview.DlpRuleName))
+            configuration.Purview is null)
         {
             throw new ValidationException("Advanced or unsupported bootstrap configuration cannot be imported by Setup.");
         }
@@ -139,9 +141,15 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
             _ => throw new ValidationException("Unknown environment.")
         };
 
+        var capabilityPreset = string.IsNullOrEmpty(configuration.CapabilityPreset)
+            ? InferLegacyCapabilityPreset(configuration)
+            : CapabilityPresetExtensions.ParseConfigurationValue(configuration.CapabilityPreset);
+        var legacyConfiguration = configuration.Purview.HasLegacyPolicyConfiguration;
+
         return new SetupConfigurationForm
         {
             Profile = profile,
+            CapabilityPreset = capabilityPreset,
             SubscriptionId = configuration.SubscriptionId,
             TenantId = configuration.TenantId,
             Environment = configuration.Environment,
@@ -151,6 +159,9 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
             AlertEmail = configuration.AlertEmail,
             SeedBlueprintName = configuration.Agent365.SeedBlueprintName,
             AllowDevelopmentRegistryPreview = configuration.Agent365.AllowDevelopmentRegistryPreview,
+            RegistryBetaAcknowledged =
+                configuration.Agent365.RegistryBetaAcknowledged ||
+                (legacyConfiguration && configuration.Agent365.AllowDevelopmentRegistryPreview),
             ReviewedManagerApplicationIds = string.Join(
                 Environment.NewLine,
                 configuration.Agent365.ReviewedManagerApplicationIds
@@ -158,39 +169,40 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
                     .Select(id => id.ToString("D"))),
             PromptShieldEnabled = configuration.PromptShield.Enabled,
             PromptShieldSkuName = configuration.PromptShield.SkuName,
+            PromptShieldCostAndQuotaAcknowledged =
+                configuration.PromptShield.CostAndQuotaAcknowledged ||
+                (legacyConfiguration && configuration.PromptShield.Enabled),
             PurviewEnabled = configuration.Purview.Enabled,
-            PurviewSensitiveInformationTypeId = ParseSensitiveInformationTypeId(
-                configuration.Purview.SensitiveInformationTypeId),
-            PurviewSensitiveInformationType = configuration.Purview.SensitiveInformationType,
-            PurviewCollectionPolicyName = configuration.Purview.CollectionPolicyName,
-            PurviewDlpPolicyName = configuration.Purview.DlpPolicyName,
-            PurviewDlpRuleName = configuration.Purview.DlpRuleName
+            PurviewAuthorityRequirementsAcknowledged =
+                configuration.Purview.AuthorityRequirementsAcknowledged ||
+                (legacyConfiguration && configuration.Purview.Enabled)
         };
+    }
+
+    private static CapabilityPreset InferLegacyCapabilityPreset(
+        BootstrapConfiguration configuration)
+    {
+        if (configuration.Environment == "dev" &&
+            configuration.Agent365.AllowDevelopmentRegistryPreview &&
+            configuration.PromptShield.Enabled &&
+            configuration.Purview.Enabled)
+        {
+            return CapabilityPreset.FullEvaluation;
+        }
+
+        if (!configuration.PromptShield.Enabled &&
+            !configuration.Purview.Enabled)
+        {
+            return CapabilityPreset.CoreGateway;
+        }
+
+        return CapabilityPreset.Custom;
     }
 
     private static ExistingConfigurationResult Rejected(string guidance) => new(
         ExistingConfigurationStatus.Rejected,
         null,
         guidance);
-
-    private static Guid ParseSensitiveInformationTypeId(string? value)
-    {
-        if (value == string.Empty)
-        {
-            return Guid.Empty;
-        }
-
-        if (value is null ||
-            !Guid.TryParseExact(value, "D", out var id) ||
-            id == Guid.Empty ||
-            !string.Equals(value, id.ToString("D"), StringComparison.Ordinal))
-        {
-            throw new ValidationException(
-                "The Purview sensitive information type ID is not an empty or canonical GUID value.");
-        }
-
-        return id;
-    }
 
     private static StringComparison PathComparison =>
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;

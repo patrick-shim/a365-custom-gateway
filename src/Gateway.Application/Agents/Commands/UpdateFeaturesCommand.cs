@@ -1,3 +1,4 @@
+using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Responses;
 using MediatR;
 
@@ -11,4 +12,8 @@ public record UpdateFeaturesCommand(
     string CallerObjectId,
     bool? Agent365ObservabilityEnabled = null,
     bool? AzureMonitorExportEnabled = null,
-    bool? PromptShieldEnabled = null) : IRequest<UpdateFeaturesResponse>;
+    bool? PromptShieldEnabled = null,
+    PurviewDlpProfileSelectionDto? PurviewDlpProfile = null,
+    Guid? IdempotencyKey = null,
+    string? ExpectedRowVersion = null)
+    : IRequest<UpdateFeaturesResponse>;

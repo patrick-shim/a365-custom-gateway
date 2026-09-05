@@ -10,6 +10,13 @@ for production use. The repository therefore
 defaults non-development deployments to closed registration admission and never
 presents Gateway state as independent Microsoft-side proof.
 
+The source implements the architecture in the
+[protection settings plan](protection-settings-plan.md): bootstrap prepares
+capabilities only, while role-aware Gateway Admin Settings owns mutable Prompt
+Shields and Purview governance. Final backend acceptance found four release
+blockers, so the candidate and its final gates are reopened. This source is not
+deployed.
+
 ## System context
 
 ```mermaid
@@ -26,7 +33,7 @@ flowchart LR
     Api -->|delegated OBO| Registry[Agent 365 Registry beta]
     Api -->|managed identity| Shield[Azure AI Content Safety]
     Api -->|managed identity| Purview[Microsoft Purview Graph APIs]
-    Worker -->|optional certificate auth| Compliance[Security & Compliance PowerShell]
+    ProtectionWorker[Protection administration worker] -->|certificate auth| Compliance[Security & Compliance PowerShell]
 ```
 
 ## Identity and ownership
@@ -43,7 +50,7 @@ External callers never submit a managed-identity identifier or Entra access toke
 | Worker to Graph | Managed identity | Eight reviewed Agent Identity/application roles |
 | External agent | Gateway key plus generated external ID | One registration only |
 | API to optional providers | API managed identity | Content Safety and Purview data-plane roles |
-| Worker to policy authoring | Certificate stored in Key Vault | Reviewed Security & Compliance application/RBAC |
+| Protection administration worker to policy authoring | Certificate stored in Key Vault | Reviewed Security & Compliance application/RBAC after explicit Administrator confirmation |
 
 Gateway keys are ingress credentials, not Microsoft secrets. The clear value is
 returned once; only a salted verifier and lifecycle metadata are stored.
@@ -66,8 +73,9 @@ flowchart TD
     Active --> Use[External agent sends activities and interactions]
 ```
 
-Bootstrap owns deployment through verified readback. Creating an Active
-registration is a post-deployment use task, not a bootstrap prerequisite.
+Bootstrap owns deployment capabilities through verified readback. Creating an
+Active registration is a post-deployment use task, not a bootstrap prerequisite.
+Tenant policy connection and authoring are post-deployment Admin Settings tasks.
 
 ## Provisioning workflow
 
@@ -129,7 +137,8 @@ hash. The subsequent protected interaction must consume that receipt.
 
 ## Optional runtime protections
 
-The minimal deployment does not require Prompt Shields or Purview.
+The minimal deployment does not require Prompt Shields or Purview. Capability
+installation and runtime readiness are separate states.
 
 ```mermaid
 flowchart LR
@@ -148,12 +157,21 @@ flowchart LR
   location. Child and blueprint identifiers are supplied separately for attribution.
 - Both policy types use the `Application` enforcement plane.
 
+Bootstrap installs Content Safety or Purview prerequisites, while Settings owns
+defaults, per-registration use, tenant
+connection, SIT selection, independent KYD and blueprint DLP operations,
+propagation, and readiness. Provider work is persisted through the separate
+`gateway-protection-admin-v1` queue and eight-step v1 administration workflow; it
+never changes the seven registration stages or uses `gateway-provisioning-v3`.
+
 ## Persistence and messaging
 
 Azure SQL is the source of Gateway state. Writes that must publish work use a
-transactional outbox. Current workflow messages use `gateway-provisioning-v3` only;
-older queues must never receive a v3 worker. SQL job locks prevent concurrent work
-on one operation, while idempotent provider discovery protects redelivery across
+transactional outbox. Registration messages use `gateway-provisioning-v3`;
+protection administration messages use `gateway-protection-admin-v1`. The worker
+has queue-scoped receiver authority for each boundary, and the API/outbox path has
+queue-scoped sender authority. SQL operation and target locks prevent concurrent
+work, while idempotency and exact provider discovery protect redelivery across
 process failures.
 
 ## Security invariants

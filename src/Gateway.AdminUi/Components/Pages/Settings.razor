@@ -1,207 +1,2160 @@
 @page "/settings"
 @rendermode InteractiveServer
-@attribute [Authorize(Roles = "Gateway.Administrator")]
+@attribute [Authorize(Policy = "AllControlPlane")]
 @implements IAsyncDisposable
 @using System.ComponentModel.DataAnnotations
+@using System.Security.Claims
+@using System.Text
+@using System.Text.Json
+@using System.Text.Json.Serialization
 @inject IGatewayApiClient Api
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject NavigationManager Navigation
 
 <PageTitle>System settings · A365 Gateway</PageTitle>
 
-<PageHeader Eyebrow="Administration" Title="System settings" Description="Manage implemented registration defaults, idempotency lifetime, and ingress throttling.">
+<PageHeader Eyebrow="Administration"
+            Title="System settings"
+            Description="See what this Gateway can protect, complete the Microsoft Purview readiness journey, and manage registration defaults.">
     <Actions>
-        <FluentButton Appearance="Appearance.Neutral" OnClick="LoadAsync" Disabled="@(loading || saving)">Reload</FluentButton>
+        <FluentButton Appearance="Appearance.Neutral"
+                      OnClick="ReloadAllAsync"
+                      Disabled="@(reloading || saving || protectionActionBusy)">
+            @(reloading ? "Refreshing…" : "Refresh")
+        </FluentButton>
     </Actions>
 </PageHeader>
 
-@if (loading && form is null)
+@if (roleLoaded && !isAdministrator)
 {
-    <LoadingState Label="Loading system settings…" Detail="Reading the deployed control-plane configuration." />
+    <div class="subtle-note role-notice" role="status">
+        <strong>Read-only protection view.</strong>
+        Your @roleLabel role can see the safe state returned by the Gateway. Only a Gateway Administrator can connect Microsoft Purview, confirm policy changes, run readiness checks, or change defaults.
+    </div>
 }
-else if (loadError is not null && form is null)
-{
-    <ErrorState Message="@loadError.Message" CorrelationId="@loadError.CorrelationId" OnRetry="LoadAsync" />
-}
-else if (form is not null)
-{
-    <EditForm Model="form" OnValidSubmit="RequestSave" class="card form-card settings-form">
-        <DataAnnotationsValidator />
-        <ValidationSummary />
 
-        @if (saveError is not null)
-        {
-            <div class="form-section"><ErrorState Message="@saveError.Message" CorrelationId="@saveError.CorrelationId" /></div>
-        }
-        @if (saved)
-        {
-            <div class="success-banner" role="status"><strong>Settings saved.</strong> The control plane accepted the updated configuration.</div>
-        }
+<section class="protection-section" aria-labelledby="protection-capabilities-heading">
+    <div class="protection-section-heading">
+        <div>
+            <h2 id="protection-capabilities-heading">Protection capabilities</h2>
+            <p>An installed shared capability is not the same as protection being enabled for an agent or ready at runtime. Each card keeps those facts separate.</p>
+        </div>
+    </div>
 
-        <section class="form-section" aria-labelledby="defaults-heading">
-            <h2 id="defaults-heading">Registration defaults</h2>
-            <p>Applied to new agent registrations unless the registration supplies an explicit supported choice.</p>
-            <div class="form-grid">
-                <fieldset class="feature-group full" aria-describedby="default-observability-help">
-                    <legend>Activity observability defaults</legend>
-                    <p id="default-observability-help">New agents use these independent destinations. Gateway platform health, security, and operational diagnostics remain configured separately.</p>
-                    <div class="form-grid">
-                        <div class="form-field checkbox-field">
-                            <label class="checkbox-label" for="default-agent365-observability-enabled">
-                                <InputCheckbox id="default-agent365-observability-enabled" @bind-Value="form.DefaultAgent365ObservabilityEnabled" />
-                                <span><strong>Agent 365 observability by default</strong><small>Send supported sanitized activity telemetry to Microsoft Agent 365.</small></span>
-                            </label>
+    @if (capabilitiesLoading && capabilitiesResource is null)
+    {
+        <div class="card">
+            <LoadingState Label="Loading protection capabilities…" Detail="Reading deployment facts from the Gateway." />
+        </div>
+    }
+    else if (capabilitiesError is not null && capabilitiesResource is null)
+    {
+        <ErrorState Title="Protection capabilities could not be loaded"
+                    Message="@capabilitiesError.Message"
+                    CorrelationId="@capabilitiesError.CorrelationId"
+                    OnRetry="LoadCapabilitiesAsync" />
+    }
+    else
+    {
+        <div class="capability-grid">
+            <article class="card capability-card" aria-labelledby="agent365-capability-heading">
+                <div class="card-header">
+                    <div>
+                        <h2 id="agent365-capability-heading">Agent 365 registration beta</h2>
+                        <span class="section-caption">Deployment-wide preview boundary</span>
+                    </div>
+                    <StatusPill Value="@CapabilityDisplayStatus(Agent365Capability)" />
+                </div>
+                <div class="card-body">
+                    <p>This beta choice was fixed when the Gateway was deployed. It cannot be turned on or off from Settings.</p>
+                    <dl class="capability-facts">
+                        <div>
+                            <dt>Installed capability</dt>
+                            <dd>@CapabilityExplanation(Agent365Capability)</dd>
                         </div>
-                        <div class="form-field checkbox-field">
-                            <label class="checkbox-label" for="default-azure-monitor-export-enabled">
-                                <InputCheckbox id="default-azure-monitor-export-enabled" @bind-Value="form.DefaultAzureMonitorExportEnabled" />
-                                <span><strong>Also mirror sanitized activity telemetry to Azure Monitor</strong><small>Use Azure Monitor as an optional second destination for new agents.</small></span>
-                            </label>
+                        <div>
+                            <dt>Per-agent use</dt>
+                            <dd>Each registration still pauses for a signed-in Gateway Administrator to complete its own Agent 365 step.</dd>
+                        </div>
+                        <div>
+                            <dt>Runtime state</dt>
+                            <dd>The agent's provisioning page is authoritative. This card does not prove that a Microsoft resource exists.</dd>
+                        </div>
+                    </dl>
+                </div>
+            </article>
+
+            <article class="card capability-card" aria-labelledby="prompt-capability-heading">
+                <div class="card-header">
+                    <div>
+                        <h2 id="prompt-capability-heading">Prompt Shields</h2>
+                        <span class="section-caption">Pre-model prompt protection</span>
+                    </div>
+                    <StatusPill Value="@PromptShieldRuntimeStatus" />
+                </div>
+                <div class="card-body">
+                    <p>Prompt Shields checks a prompt before the external agent calls its model. An allowed check creates a short-lived, single-use receipt for the matching interaction.</p>
+                    <dl class="capability-facts">
+                        <div>
+                            <dt>Installed capability</dt>
+                            <dd><StatusPill Value="@CapabilityDisplayStatus(PromptShieldCapability)" /></dd>
+                        </div>
+                        <div>
+                            <dt>Ready for agent use</dt>
+                            <dd>@PromptShieldReadinessExplanation</dd>
+                        </div>
+                        <div>
+                            <dt>Default</dt>
+                            <dd>@PromptShieldDefaultExplanation</dd>
+                        </div>
+                    </dl>
+                    <div class="capability-actions">
+                        <FluentAnchor Appearance="Appearance.Stealth" Href="/agents">Open per-agent controls</FluentAnchor>
+                    </div>
+                </div>
+            </article>
+
+            <article class="card capability-card" aria-labelledby="purview-capability-heading">
+                <div class="card-header">
+                    <div>
+                        <h2 id="purview-capability-heading">Microsoft Purview</h2>
+                        <span class="section-caption">Tenant setup and blueprint-specific runtime protection</span>
+                    </div>
+                    <StatusPill Value="@PurviewJourneyStatus" />
+                </div>
+                <div class="card-body">
+                    <p>Bootstrap can prepare Purview prerequisites. Settings must still connect the tenant, review separate policy scopes, wait for propagation, and prove runtime readiness.</p>
+                    <dl class="capability-facts">
+                        <div>
+                            <dt>Installed prerequisites</dt>
+                            <dd><StatusPill Value="@CapabilityDisplayStatus(PurviewCapability)" /></dd>
+                        </div>
+                        <div>
+                            <dt>Tenant connection</dt>
+                            <dd><StatusPill Value="@(canReadProtectionGovernance ? ConnectionDisplayStatus : "Restricted")" /></dd>
+                        </div>
+                        <div>
+                            <dt>Ready DLP profiles</dt>
+                            <dd>@(canReadProtectionGovernance ? $"{ReadyProfileCount} profile{(ReadyProfileCount == 1 ? string.Empty : "s")}" : "Restricted for this role")</dd>
+                        </div>
+                    </dl>
+                    <p class="subtle-note">Know Your Data uses one fixed tenant-wide Group. DLP uses one Individual location for each blueprint. The Gateway never merges those scopes.</p>
+                </div>
+            </article>
+        </div>
+    }
+</section>
+
+<section class="card protection-section" aria-labelledby="purview-journey-heading">
+    <div class="card-header">
+        <div>
+            <h2 id="purview-journey-heading">Microsoft Purview readiness journey</h2>
+            <span class="section-caption">Complete each explicit step. Nothing on this page silently authors or broadens policy.</span>
+        </div>
+    </div>
+
+    @if (!canReadProtectionGovernance)
+    {
+        <div class="card-body">
+            <div class="subtle-note restricted-state" role="status">
+                <strong>Governance details are restricted for this role.</strong>
+                The Gateway exposes shared capability state here, but tenant connection, sensitive information inventory, Know Your Data, and blueprint DLP profile details are available only to Gateway Administrators and Operators. This does not mean they are absent or not connected.
+            </div>
+            @if (operationLoading && ActiveOperation is null)
+            {
+                <LoadingState Label="Loading the requested protection operation…" />
+            }
+            else if (operationError is not null)
+            {
+                <ErrorState Title="Protection operation progress could not be loaded"
+                            Message="@operationError.Message"
+                            CorrelationId="@operationError.CorrelationId"
+                            OnRetry="LoadActiveOperationAsync" />
+            }
+            else if (ActiveOperation is not null)
+            {
+                <ProtectionOperationTimeline Operation="ActiveOperation" />
+            }
+        </div>
+    }
+    else if (connectionLoading && connectionResource is null)
+    {
+        <LoadingState Label="Loading the Microsoft Purview journey…" Detail="Checking the persisted Gateway connection and configuration." />
+    }
+    else if (connectionError is not null && connectionResource is null)
+    {
+        <div class="card-body">
+            <ErrorState Title="Microsoft Purview connection state could not be loaded"
+                        Message="@connectionError.Message"
+                        CorrelationId="@connectionError.CorrelationId"
+                        OnRetry="LoadProtectionJourneyAsync" />
+        </div>
+    }
+    else
+    {
+        <div class="card-body stack">
+            @if (protectionActionError is not null)
+            {
+                <ErrorState Title="The protection action was not completed"
+                            Message="@protectionActionError.Message"
+                            CorrelationId="@protectionActionError.CorrelationId" />
+            }
+            @if (!string.IsNullOrWhiteSpace(protectionAnnouncement))
+            {
+                <div class="success-banner" role="status" aria-live="polite">@protectionAnnouncement</div>
+            }
+
+            <div class="journey-grid">
+                <article class="journey-card" aria-labelledby="purview-prerequisites-heading">
+                    <span class="journey-step" aria-hidden="true">1</span>
+                    <h3 id="purview-prerequisites-heading">Check shared prerequisites</h3>
+                    <p>The Gateway reports whether the deployment prepared the shared Purview identities, permissions, and secure certificate path. Installed does not mean a tenant policy or runtime check is Ready.</p>
+                    <StatusPill Value="@CapabilityDisplayStatus(PurviewCapability)" />
+                </article>
+
+                <article class="journey-card" aria-labelledby="purview-connection-heading">
+                    <span class="journey-step" aria-hidden="true">2</span>
+                    <h3 id="purview-connection-heading">Connect the tenant</h3>
+                    <p>A Gateway Administrator starts a short-lived operation for the signed-in tenant. On Windows, the Gateway-provided companion opens the official Microsoft sign-in and returns only bounded facts—never tokens or provider output.</p>
+                    <StatusPill Value="@ConnectionDisplayStatus" />
+                    @if (Connection is { } connection)
+                    {
+                        <div class="inventory-meta">
+                            @if (connection.LastVerifiedAtUtc is { } verified)
+                            {
+                                <span>Last checked <time datetime="@AsUtc(verified).ToString("O")">@FormatLocal(verified)</time></span>
+                            }
+                            @if (connection.ExpiresAtUtc is { } expires)
+                            {
+                                <span>Connection review expires <time datetime="@AsUtc(expires).ToString("O")">@FormatLocal(expires)</time></span>
+                            }
+                        </div>
+                    }
+                    <div class="journey-actions">
+                        @if (isAdministrator)
+                        {
+                            <FluentButton Appearance="Appearance.Neutral"
+                                          OnClick="ReviewConnectionAsync"
+                                          Disabled="@(!CanReviewConnection)">
+                                @(Connection is null ? "Review tenant connection" : "Review connection refresh")
+                            </FluentButton>
+                        }
+                    </div>
+                    @if (Connection?.Status == "AwaitingAdministrator" ||
+                        RequiresCompanionCompletion)
+                    {
+                        <div class="deployment-callout connection-guidance" role="status">
+                            <strong>Finish on Windows.</strong>
+                            <span>Use the exact Gateway companion command for this operation. Its result starts independent Gateway verification; it does not make the connection Ready.</span>
+                        </div>
+                        @if (companionLaunch is { } launch && CompanionCommand is { } command)
+                        {
+                            <div class="companion-download">
+                                <a class="text-link"
+                                   href="@CompanionDownloadHref"
+                                   download="@CompanionDownloadName">
+                                    Download the Windows Purview companion
+                                </a>
+                                <p>This exact script comes from the immutable deployed Admin UI image. Downloading it never runs it. Keep the shown filename so the command below uses the local file you downloaded.</p>
+                            </div>
+                            <ol class="windows-companion-steps">
+                                <li>On a Windows computer, download the companion above. Do not open or auto-run it from the browser.</li>
+                                <li>Open PowerShell 7 in the folder where <code>@CompanionDownloadName</code> was saved.</li>
+                                <li>Copy and run the command below before <time datetime="@launch.ExpiresAtUtc.ToString("O")">@FormatLocal(launch.ExpiresAtUtc)</time>.</li>
+                                <li>Complete the official Microsoft sign-in with the intended tenant administrator.</li>
+                                <li>Save only the single line beginning <code>A365GW_CONNECTION_RESULT:</code> to a text file, then choose that file below.</li>
+                            </ol>
+                            <CopyableCommand Command="@command" />
+                        }
+                        else
+                        {
+                            <div class="subtle-note connection-guidance">
+                                <strong>A fresh launch command is not available in this browser.</strong>
+                                Review and start a new tenant connection operation to receive an exact, short-lived command from the Gateway.
+                            </div>
+                        }
+                        @if (isAdministrator && activeOperationId is not null)
+                        {
+                            <div class="form-field connection-guidance">
+                                <label for="purview-companion-evidence">Gateway companion output</label>
+                                <InputFile id="purview-companion-evidence"
+                                           OnChange="ReadCompanionEvidenceAsync"
+                                           accept=".txt,text/plain"
+                                           aria-describedby="purview-companion-evidence-help" />
+                                <span id="purview-companion-evidence-help" class="field-help">Choose the fresh text output saved from the Gateway-provided companion for this exact tenant and operation. It must contain only the companion's single prefixed result line. The portal never accepts handcrafted JSON and never stores the file.</span>
+                                @if (!string.IsNullOrWhiteSpace(companionEvidenceError))
+                                {
+                                    <span class="inline-validation" role="alert">@companionEvidenceError</span>
+                                }
+                                else if (companionEvidence is not null)
+                                {
+                                    <span class="field-help" role="status">Evidence checked for this tenant. @companionEvidence.SensitiveInformationTypes.Count current sensitive information type@(companionEvidence.SensitiveInformationTypes.Count == 1 ? string.Empty : "s") will be reviewed.</span>
+                                }
+                            </div>
+                            <div class="journey-actions">
+                                <FluentButton Appearance="Appearance.Accent"
+                                              OnClick="ReviewCompanionCompletionAsync"
+                                              Disabled="@(!CanReviewCompanionCompletion)">
+                                    Review companion completion
+                                </FluentButton>
+                            </div>
+                        }
+                    }
+                </article>
+
+                <article class="journey-card" aria-labelledby="purview-inventory-heading">
+                    <span class="journey-step" aria-hidden="true">3</span>
+                    <h3 id="purview-inventory-heading">Choose current sensitive information</h3>
+                    <p>The list comes from the connected tenant. There is deliberately no default. Choose the exact named item for the operation you are reviewing.</p>
+                    @if (!ConnectionIsReady)
+                    {
+                        <div class="subtle-note">Connect the tenant before loading its sensitive information types.</div>
+                    }
+                    else if (inventoryLoading)
+                    {
+                        <LoadingState Label="Loading sensitive information types…" />
+                    }
+                    else if (inventoryError is not null)
+                    {
+                        <ErrorState Title="The current tenant inventory could not be loaded"
+                                    Message="@inventoryError.Message"
+                                    CorrelationId="@inventoryError.CorrelationId"
+                                    OnRetry="LoadInventoryAsync" />
+                    }
+                    else if (inventoryResource?.Value.Items.Count is 0)
+                    {
+                        <EmptyState Icon="◇"
+                                    Title="No sensitive information types returned"
+                                    Description="The Gateway received an empty current inventory. Refresh the tenant connection or ask a Purview administrator to check the tenant." />
+                    }
+                    else if (!isAdministrator)
+                    {
+                        <div class="subtle-note restricted-state" role="status">
+                            <strong>Inventory selection is restricted.</strong>
+                            Operators can monitor safe governance status, but only a Gateway Administrator can load or select the current tenant inventory.
+                        </div>
+                    }
+                    else if (inventoryResource is not null)
+                    {
+                        <div class="form-field">
+                            <label for="purview-sensitive-information-type">Sensitive information type</label>
+                            <select id="purview-sensitive-information-type"
+                                    class="form-control"
+                                    value="@selectedSitIndex"
+                                    @onchange="SelectSensitiveInformationType"
+                                    disabled="@inventoryResource.Value.IsExpired"
+                                    aria-describedby="purview-sensitive-information-type-help">
+                                <option value="">Choose a current tenant item</option>
+                                @for (var index = 0; index < inventoryResource.Value.Items.Count; index++)
+                                {
+                                    var item = inventoryResource.Value.Items[index];
+                                    <option value="@index">@item.ExactName — @item.Publisher</option>
+                                }
+                            </select>
+                            <span id="purview-sensitive-information-type-help" class="field-help">The Gateway keeps the selected tenant identity internally and shows only its exact name and publisher here.</span>
+                        </div>
+                        <div class="inventory-meta">
+                            <span>Loaded <time datetime="@AsUtc(inventoryResource.Value.RetrievedAtUtc).ToString("O")">@FormatLocal(inventoryResource.Value.RetrievedAtUtc)</time></span>
+                            <span>Expires <time datetime="@AsUtc(inventoryResource.Value.ExpiresAtUtc).ToString("O")">@FormatLocal(inventoryResource.Value.ExpiresAtUtc)</time></span>
+                            <StatusPill Value="@(inventoryResource.Value.IsExpired ? "Failed" : "Ready")" />
+                        </div>
+                        <div class="journey-actions">
+                            <FluentButton Appearance="Appearance.Stealth"
+                                          OnClick="LoadInventoryAsync"
+                                          Disabled="@inventoryLoading">Reload inventory</FluentButton>
+                        </div>
+                    }
+                </article>
+
+                <article class="journey-card" aria-labelledby="purview-kyd-heading">
+                    <span class="journey-step" aria-hidden="true">4</span>
+                    <h3 id="purview-kyd-heading">Review tenant-wide Know Your Data</h3>
+                    <p>This is one separate, fixed enterprise AI applications Group for the tenant. It is not a blueprint list and is not the DLP profile below.</p>
+                    <StatusPill Value="@KnowYourDataDisplayStatus" />
+                    @if (knowYourDataError is not null)
+                    {
+                        <ErrorState Title="Know Your Data state could not be loaded"
+                                    Message="@knowYourDataError.Message"
+                                    CorrelationId="@knowYourDataError.CorrelationId"
+                                    OnRetry="LoadKnowYourDataAsync" />
+                    }
+                    else if (KnowYourData is { } knowYourData)
+                    {
+                        <p class="profile-summary">Current reviewed item: @knowYourData.SensitiveInformationTypeName. Mode: @FormatMode(knowYourData.Mode). Exact readback: @FriendlyState(knowYourData.ReadbackStatus).</p>
+                    }
+                    @if (isAdministrator)
+                    {
+                        <div class="form-field">
+                            <label for="kyd-mode">Collection mode</label>
+                            <select id="kyd-mode" class="form-control" @bind="kydMode">
+                                <option value="AuditOnly">Audit only</option>
+                                <option value="Enforce">Enforce</option>
+                            </select>
+                            <span class="field-help">The review covers text sent to and returned from agents. Returned text may be processed after the interaction and is not claimed as response-side blocking.</span>
+                        </div>
+                        <div class="journey-actions">
+                            <FluentButton Appearance="Appearance.Neutral"
+                                          OnClick="ReviewKnowYourDataAsync"
+                                          Disabled="@(!CanReviewKnowYourData)">
+                                Review fixed Know Your Data change
+                            </FluentButton>
+                        </div>
+                    }
+                </article>
+            </div>
+
+            <section aria-labelledby="dlp-profile-form-heading">
+                <div class="protection-section-heading">
+                    <div>
+                        <h2 id="dlp-profile-form-heading">Blueprint DLP profiles</h2>
+                        <p>Each profile belongs to exactly one resolved blueprint and its Individual scope. New blueprints finish core registration first; policy setup happens here afterward.</p>
+                    </div>
+                </div>
+
+                @if (profilesLoading && profilesResource is null)
+                {
+                    <LoadingState Label="Loading blueprint DLP profiles…" />
+                }
+                else if (profilesError is not null && profilesResource is null)
+                {
+                    <ErrorState Title="Blueprint DLP profiles could not be loaded"
+                                Message="@profilesError.Message"
+                                CorrelationId="@profilesError.CorrelationId"
+                                OnRetry="LoadProfilesAsync" />
+                }
+                else
+                {
+                    @if (profilesResource?.Value.Items.Count is 0)
+                    {
+                        <EmptyState Icon="◇"
+                                    Title="No blueprint DLP profiles yet"
+                                    Description="Core registration remains available. After a blueprint resolves, a Gateway Administrator can review its first DLP profile here." />
+                    }
+                    else if (profilesResource is not null)
+                    {
+                        <div class="profile-grid">
+                            @foreach (var profile in profilesResource.Value.Items.OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase))
+                            {
+                                <article class="profile-card">
+                                    <div class="profile-card-header">
+                                        <div>
+                                            <h3>@SafeProfileName(profile)</h3>
+                                            <span class="section-caption">@BlueprintName(profile.BlueprintApplicationId) · @FormatMode(profile.Mode)</span>
+                                        </div>
+                                        <StatusPill Value="@ProfileDisplayStatus(profile)" />
+                                    </div>
+                                    <p class="profile-summary">Sensitive information: @profile.SensitiveInformationTypeName. This profile is separate from the tenant-wide Know Your Data Group.</p>
+                                    <ProtectionReadinessPanel Readiness="profile.Readiness" Label="@SafeProfileName(profile)" />
+                                    @if (profile.Mode == "AuditOnly")
+                                    {
+                                        <p class="profile-summary">Audit-only profiles cannot complete the allow and block runtime check. Review settings and choose Enforce uploads before checking runtime readiness.</p>
+                                    }
+                                    @if (isAdministrator)
+                                    {
+                                        <div class="journey-actions">
+                                            <FluentButton Appearance="Appearance.Stealth"
+                                                          OnClick="@(() => EditProfile(profile))"
+                                                          Disabled="@protectionActionBusy">Review settings</FluentButton>
+                                            <FluentButton Appearance="Appearance.Stealth"
+                                                          OnClick="@(() => ReviewExistingProfileActionAsync(profile, ProtectionAction.ReconcileProfile))"
+                                                          Disabled="@(!CanReconcile(profile))">Review reconcile</FluentButton>
+                                            <FluentButton Appearance="Appearance.Neutral"
+                                                          OnClick="@(() => ReviewExistingProfileActionAsync(profile, ProtectionAction.ValidateRuntime))"
+                                                          Disabled="@(!CanValidateRuntime(profile))">Review runtime check</FluentButton>
+                                        </div>
+                                    }
+                                </article>
+                            }
+                        </div>
+                    }
+
+                    @if (isAdministrator)
+                    {
+                        <section class="journey-card settings-block" aria-labelledby="dlp-review-form-heading">
+                            <h3 id="dlp-review-form-heading">@(editingProfile is null ? "Review a new blueprint profile" : $"Review changes to {SafeProfileName(editingProfile)}")</h3>
+                            <p>Choose one resolved blueprint and the current tenant item. The confirmation panel will show the high-level scope, activities, and outcome before anything is queued.</p>
+                            @if (blueprintsLoading)
+                            {
+                                <LoadingState Label="Loading resolved blueprints…" />
+                            }
+                            else if (blueprintsError is not null)
+                            {
+                                <ErrorState Title="Resolved blueprints could not be loaded"
+                                            Message="@blueprintsError.Message"
+                                            CorrelationId="@blueprintsError.CorrelationId"
+                                            OnRetry="LoadBlueprintsAsync" />
+                            }
+                            else
+                            {
+                                <div class="form-grid">
+                                    <div class="form-field">
+                                        <label for="dlp-blueprint">Resolved blueprint</label>
+                                        <select id="dlp-blueprint"
+                                                class="form-control"
+                                                value="@selectedBlueprintIndex"
+                                                @onchange="SelectBlueprint"
+                                                disabled="@(editingProfile is not null)">
+                                            <option value="">Choose one blueprint</option>
+                                            @for (var index = 0; index < blueprints.Count; index++)
+                                            {
+                                                <option value="@index">@SafeBlueprintName(blueprints[index])</option>
+                                            }
+                                        </select>
+                                    </div>
+                                    <div class="form-field">
+                                        <label for="dlp-display-name">Profile name</label>
+                                        <input id="dlp-display-name"
+                                               class="form-control"
+                                               maxlength="120"
+                                               autocomplete="off"
+                                               @bind="dlpDisplayName" />
+                                    </div>
+                                    <div class="form-field">
+                                        <label for="dlp-mode">Policy mode</label>
+                                        <select id="dlp-mode" class="form-control" @bind="dlpMode">
+                                            <option value="AuditOnly">Audit only</option>
+                                            <option value="Enforce">Enforce uploads</option>
+                                        </select>
+                                        <small>Audit only evaluates the upload rule without enforcement. Enforce uploads is required for the allow and block runtime check.</small>
+                                    </div>
+                                    <div class="form-field">
+                                        <span class="detail-label">Sensitive information</span>
+                                        <span class="detail-value">@(SelectedSensitiveInformationType?.ExactName ?? "Choose a current tenant item above")</span>
+                                    </div>
+                                </div>
+                                <div class="journey-actions">
+                                    @if (editingProfile is not null)
+                                    {
+                                        <FluentButton Appearance="Appearance.Stealth" OnClick="ClearProfileEditor">Cancel edit</FluentButton>
+                                    }
+                                    <FluentButton Appearance="Appearance.Accent"
+                                                  OnClick="ReviewDlpProfileAsync"
+                                                  Disabled="@(!CanReviewDlpProfile)">
+                                        @(editingProfile is null ? "Review new profile" : "Review profile update")
+                                    </FluentButton>
+                                </div>
+                            }
+                        </section>
+                    }
+                }
+            </section>
+
+            @if (operationLoading && ActiveOperation is null)
+            {
+                <LoadingState Label="Loading protection operation…" />
+            }
+            else if (operationError is not null)
+            {
+                <ErrorState Title="Protection operation progress could not be loaded"
+                            Message="@operationError.Message"
+                            CorrelationId="@operationError.CorrelationId"
+                            OnRetry="LoadActiveOperationAsync" />
+            }
+            else if (ActiveOperation is not null)
+            {
+                <ProtectionOperationTimeline Operation="ActiveOperation" />
+                <div class="journey-actions">
+                    <FluentButton Appearance="Appearance.Neutral"
+                                  OnClick="LoadActiveOperationAsync"
+                                  Disabled="@operationLoading">Refresh operation</FluentButton>
+                </div>
+            }
+        </div>
+    }
+</section>
+
+@if (isAdministrator)
+{
+    @if (settingsLoading && form is null)
+    {
+        <div class="card settings-block">
+            <LoadingState Label="Loading system defaults…" Detail="Reading registration defaults and operational limits." />
+        </div>
+    }
+    else if (settingsLoadError is not null && form is null)
+    {
+        <div class="settings-block">
+            <ErrorState Title="System defaults could not be loaded"
+                        Message="@settingsLoadError.Message"
+                        CorrelationId="@settingsLoadError.CorrelationId"
+                        OnRetry="LoadSettingsAsync" />
+        </div>
+    }
+    else if (form is not null)
+    {
+        <EditForm Model="form" OnValidSubmit="RequestSettingsSave" class="card form-card settings-form settings-block">
+            <DataAnnotationsValidator />
+            <ValidationSummary />
+
+            @if (settingsSaveError is not null)
+            {
+                <div class="form-section">
+                    <ErrorState Message="@settingsSaveError.Message" CorrelationId="@settingsSaveError.CorrelationId" />
+                </div>
+            }
+            @if (settingsSaveOutcomeUnknown)
+            {
+                <div class="form-section">
+                    <div class="deployment-callout ambiguous-save-recovery" role="alert">
+                        <strong>The save result is not yet known.</strong>
+                        <span>The Gateway may already have accepted this exact change. Do not create a new save. Retry the same protected request, or reload the current server settings before making another change.</span>
+                        <div class="journey-actions">
+                            <FluentButton Appearance="Appearance.Accent"
+                                          OnClick="RetryAmbiguousSettingsSaveAsync"
+                                          Disabled="@(saving || settingsLoading)">
+                                Retry the same save
+                            </FluentButton>
+                            <FluentButton Appearance="Appearance.Neutral"
+                                          OnClick="LoadSettingsAsync"
+                                          Disabled="@(saving || settingsLoading)">
+                                Reload current settings
+                            </FluentButton>
                         </div>
                     </div>
-                </fieldset>
+                </div>
+            }
+            @if (settingsLoadError is not null)
+            {
+                <div class="form-section">
+                    <ErrorState Title="The latest system defaults could not be loaded"
+                                Message="@settingsLoadError.Message"
+                                CorrelationId="@settingsLoadError.CorrelationId"
+                                OnRetry="LoadSettingsAsync" />
+                </div>
+            }
+            @if (settingsSaved)
+            {
+                <div class="success-banner" role="status"><strong>Settings saved.</strong> The control plane accepted the updated configuration.</div>
+            }
 
-                <fieldset class="feature-group full" aria-describedby="default-prompt-shield-help">
-                    <legend>Prompt Shields default</legend>
-                    <p id="default-prompt-shield-help">New registrations can evaluate prompts for injection and jailbreak attacks before model invocation.</p>
-                    <div class="form-grid">
+            <section class="form-section" aria-labelledby="defaults-heading">
+                <h2 id="defaults-heading">Registration defaults</h2>
+                <p>Applied to new agent registrations unless the registration supplies an explicit supported choice. A protection default can be enabled only while the server reports its required readiness.</p>
+                <div class="form-grid">
+                    <fieldset class="feature-group full" aria-describedby="default-observability-help">
+                        <legend>Activity observability defaults</legend>
+                        <p id="default-observability-help">New agents use these independent destinations. Gateway platform health, security, and operational diagnostics remain configured separately.</p>
+                        <div class="form-grid">
+                            <div class="form-field checkbox-field">
+                                <label class="checkbox-label" for="default-agent365-observability-enabled">
+                                    <InputCheckbox id="default-agent365-observability-enabled" @bind-Value="form.DefaultAgent365ObservabilityEnabled" />
+                                    <span><strong>Agent 365 observability by default</strong><small>Send supported sanitized activity telemetry to Microsoft Agent 365.</small></span>
+                                </label>
+                            </div>
+                            <div class="form-field checkbox-field">
+                                <label class="checkbox-label" for="default-azure-monitor-export-enabled">
+                                    <InputCheckbox id="default-azure-monitor-export-enabled" @bind-Value="form.DefaultAzureMonitorExportEnabled" />
+                                    <span><strong>Also mirror sanitized activity telemetry to Azure Monitor</strong><small>Use Azure Monitor as an optional second destination for new agents.</small></span>
+                                </label>
+                            </div>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="feature-group full" aria-describedby="default-prompt-shield-help">
+                        <legend>Prompt Shields default</legend>
+                        <p id="default-prompt-shield-help">New registrations can evaluate prompts before model invocation only when the shared capability is installed and the Gateway reports it available.</p>
                         <div class="form-field checkbox-field">
                             <label class="checkbox-label" for="default-prompt-shield-enabled">
                                 <InputCheckbox id="default-prompt-shield-enabled"
                                                @bind-Value="form.DefaultPromptShieldEnabled"
-                                               disabled="@(!form.PromptShieldAvailable)" />
-                                <span><strong>Enable Prompt Shields by default</strong><small>New agents inherit this setting. The deployment must have Azure AI Content Safety configured.</small></span>
+                                               disabled="@(!CanChangePromptShieldDefault)" />
+                                <span><strong>Enable Prompt Shields by default</strong><small>Each agent can still be changed separately. Protected clients must use the allowed single-use receipt.</small></span>
                             </label>
-                            @if (!form.PromptShieldAvailable)
+                            @if (!PromptShieldReady)
                             {
-                                <span class="field-help">Unavailable until Azure AI Content Safety is provisioned for this Gateway.</span>
+                                <span class="field-help">Unavailable for a new default until both the installed capability and server readiness check pass. A stored enabled value can be turned off.</span>
                             }
                         </div>
-                    </div>
-                </fieldset>
+                    </fieldset>
 
-                <fieldset class="feature-group full" aria-describedby="default-purview-help">
-                    <legend>Microsoft Purview defaults</legend>
-                    <p id="default-purview-help">Purview policy evaluation is independent of both observability destinations.</p>
-                    <div class="form-grid">
-                        <div class="form-field checkbox-field">
-                            <label class="checkbox-label" for="default-purview-enabled"><InputCheckbox id="default-purview-enabled" @bind-Value="form.DefaultPurviewEnabled" /><span><strong>Enable Purview by default</strong><small>New agents inherit this setting.</small></span></label>
+                    <fieldset class="feature-group full" aria-describedby="default-purview-help">
+                        <legend>Microsoft Purview defaults</legend>
+                        <p id="default-purview-help">A default never creates policy. A registration can use Purview only when its exact blueprint has a Ready DLP profile.</p>
+                        <div class="form-grid">
+                            <div class="form-field checkbox-field">
+                                <label class="checkbox-label" for="default-purview-enabled">
+                                    <InputCheckbox id="default-purview-enabled"
+                                                   @bind-Value="form.DefaultPurviewEnabled"
+                                                   disabled="@(!CanChangePurviewDefault)" />
+                                    <span><strong>Offer Purview by default</strong><small>The registration page still requires an exact Ready profile for the selected blueprint.</small></span>
+                                </label>
+                                @if (!HasReadyProfile)
+                                {
+                                    <span class="field-help">Unavailable for a new default until at least one blueprint profile is Ready. A stored enabled value can be turned off.</span>
+                                }
+                            </div>
+                            <div class="form-field">
+                                <label for="default-purview-mode">Default Purview mode</label>
+                                <InputSelect id="default-purview-mode"
+                                             class="form-control"
+                                             @bind-Value="form.DefaultPurviewMode"
+                                             disabled="@(!form.DefaultPurviewEnabled || !HasReadyProfile)">
+                                    <option value="AuditOnly">Audit only</option>
+                                    <option value="Enforce">Enforce</option>
+                                </InputSelect>
+                            </div>
                         </div>
-                        <div class="form-field">
-                            <label for="default-purview-mode">Default Purview mode</label>
-                            <InputSelect id="default-purview-mode" class="form-control" @bind-Value="form.DefaultPurviewMode" disabled="@(!form.DefaultPurviewEnabled)">
-                                <option value="AuditOnly">Audit only</option>
-                                <option value="Enforce">Enforce</option>
-                            </InputSelect>
-                        </div>
-                    </div>
-                </fieldset>
-            </div>
-        </section>
+                    </fieldset>
+                </div>
+            </section>
 
-        <section class="form-section" aria-labelledby="retention-heading">
-            <h2 id="retention-heading">Idempotency lifetime</h2>
-            <p>The Gateway applies this lifetime when it creates an idempotency record. Other persisted compatibility retention values do not have a cleanup worker and are not editable.</p>
-            <div class="form-grid">
-                <NumberField Id="retention-idempotency" Label="Idempotency records (days)" @bind-Value="form.RetentionDaysIdempotencyRecords" />
-            </div>
-        </section>
+            <section class="form-section" aria-labelledby="retention-heading">
+                <h2 id="retention-heading">Idempotency lifetime</h2>
+                <p>The Gateway applies this lifetime when it creates an idempotency record. Other persisted compatibility retention values do not have a cleanup worker and are not editable.</p>
+                <div class="form-grid">
+                    <NumberField Id="retention-idempotency" Label="Idempotency records (days)" @bind-Value="form.RetentionDaysIdempotencyRecords" />
+                </div>
+            </section>
 
-        <section class="form-section" aria-labelledby="limits-heading">
-            <h2 id="limits-heading">Ingress rate limits <span class="optional-label">Requests per minute</span></h2>
-            <p>The Gateway enforces fixed one-minute limits in SQL across every API replica. Credential limits isolate a single key, registration limits aggregate rotated keys for one agent, and the global limit protects shared capacity.</p>
-            <div class="form-grid form-grid-three">
-                <NumberField Id="limit-client" Label="Per credential" @bind-Value="form.RateLimitPerClient" />
-                <NumberField Id="limit-agent" Label="Per registration" @bind-Value="form.RateLimitPerAgent" />
-                <NumberField Id="limit-global" Label="Global" @bind-Value="form.RateLimitGlobal" />
-            </div>
-            @if (!LimitsAreOrdered)
-            {
-                <p class="inline-validation" role="alert">The global limit must be at least as large as each scoped limit.</p>
-            }
-        </section>
+            <section class="form-section" aria-labelledby="limits-heading">
+                <h2 id="limits-heading">Ingress rate limits <span class="optional-label">Requests per minute</span></h2>
+                <p>The Gateway enforces fixed one-minute limits in SQL across every API replica. Credential limits isolate a single key, registration limits aggregate rotated keys for one agent, and the global limit protects shared capacity.</p>
+                <div class="form-grid form-grid-three">
+                    <NumberField Id="limit-client" Label="Per credential" @bind-Value="form.RateLimitPerClient" />
+                    <NumberField Id="limit-agent" Label="Per registration" @bind-Value="form.RateLimitPerAgent" />
+                    <NumberField Id="limit-global" Label="Global" @bind-Value="form.RateLimitGlobal" />
+                </div>
+                @if (!LimitsAreOrdered)
+                {
+                    <p class="inline-validation" role="alert">The global limit must be at least as large as each scoped limit.</p>
+                }
+                @if (!ProtectionDefaultsAreReady)
+                {
+                    <p class="inline-validation" role="alert">Turn off any unavailable protection default, or finish its readiness steps, before saving.</p>
+                }
+            </section>
 
-        <div class="form-actions">
-            <FluentButton Appearance="Appearance.Neutral" OnClick="LoadAsync" Disabled="@(loading || saving)">Discard changes</FluentButton>
-            <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent" Disabled="@(saving || !LimitsAreOrdered)">Review and save</FluentButton>
-        </div>
-    </EditForm>
+            <div class="form-actions">
+                <FluentButton Appearance="Appearance.Neutral"
+                              OnClick="LoadSettingsAsync"
+                              Disabled="@(settingsLoading || saving || settingsSaveOutcomeUnknown)">Discard changes</FluentButton>
+                <FluentButton Type="ButtonType.Submit"
+                              Appearance="Appearance.Accent"
+                              Disabled="@(saving || settingsSaveOutcomeUnknown || !LimitsAreOrdered || !ProtectionDefaultsAreReady)">Review and save</FluentButton>
+            </div>
+        </EditForm>
+    }
 }
 
-<ConfirmPanel Visible="confirmSave" Busy="saving" Title="Save system settings?" Message="These values affect new registration defaults, new idempotency records, and subsequent ingress enforcement." ConfirmLabel="Save settings" OnConfirm="SaveAsync" OnCancel="CancelSave">
-    <AdditionalContent><div class="subtle-note">The update is audited by the control plane. Existing registrations and in-flight operations are not reconfigured or restarted by this page.</div></AdditionalContent>
+<ConfirmPanel Visible="@(dialogKind != ConfirmationDialogKind.None)"
+              Busy="@(saving || protectionActionBusy)"
+              Title="@ConfirmationTitle"
+              Message="@ConfirmationMessage"
+              ConfirmLabel="@ConfirmationButtonLabel"
+              OnConfirm="ConfirmDialogAsync"
+              OnCancel="CancelDialog">
+    <AdditionalContent>
+        @if (dialogKind == ConfirmationDialogKind.SystemSettings)
+        {
+            <div class="subtle-note">The update is audited by the control plane. Existing registrations and in-flight operations are not reconfigured or restarted by this page.</div>
+        }
+        else if (protectionReview is { } review)
+        {
+            <dl class="review-summary">
+                <div><dt>Action</dt><dd>@FriendlyOperation(review.Review.OperationType)</dd></div>
+                <div><dt>Tenant ID</dt><dd><code>@review.Review.TenantId.ToString("D")</code></dd></div>
+                <div><dt>Target</dt><dd>@PendingTargetLabel</dd></div>
+                <div><dt>Target binding</dt><dd>@review.Review.TargetType <code>@review.Review.TargetIdentifier</code></dd></div>
+                <div><dt>Scope</dt><dd>@FriendlyScope(review.Review.ScopeType)</dd></div>
+                @if (review.Review.BlueprintApplicationId is { } blueprintApplicationId)
+                {
+                    <div><dt>Blueprint application ID</dt><dd><code>@blueprintApplicationId.ToString("D")</code></dd></div>
+                }
+                @if (!string.IsNullOrWhiteSpace(review.Review.SensitiveInformationTypeName))
+                {
+                    <div><dt>Sensitive information</dt><dd>@review.Review.SensitiveInformationTypeName</dd></div>
+                }
+                @if (review.Review.SensitiveInformationTypeId is { } sensitiveInformationTypeId)
+                {
+                    <div><dt>Sensitive information type ID</dt><dd><code>@sensitiveInformationTypeId.ToString("D")</code></dd></div>
+                }
+                @if (review.Review.SourceOperationId is { } sourceOperationId)
+                {
+                    <div><dt>Source operation ID</dt><dd><code>@sourceOperationId.ToString("D")</code></dd></div>
+                }
+                @if (review.Review.InventoryGenerationId is { } inventoryGenerationId)
+                {
+                    <div><dt>Inventory generation ID</dt><dd><code>@inventoryGenerationId.ToString("D")</code></dd></div>
+                }
+                @if (!string.IsNullOrWhiteSpace(review.Review.EvidenceDigest))
+                {
+                    <div><dt>Evidence digest</dt><dd><code>@review.Review.EvidenceDigest</code></dd></div>
+                }
+                @if (!string.IsNullOrWhiteSpace(review.Review.Mode))
+                {
+                    <div><dt>Mode</dt><dd>@FormatMode(review.Review.Mode)</dd></div>
+                }
+                @if (review.Review.Activities.Count > 0)
+                {
+                    <div><dt>Activities</dt><dd>@FormatActivities(review.Review.Activities)</dd></div>
+                }
+                @if (review.Review.Actions.Count > 0)
+                {
+                    <div><dt>Outcomes</dt><dd>@FormatActions(review.Review.Actions)</dd></div>
+                }
+            </dl>
+            <div class="subtle-note">@review.Review.ReadinessDisclaimer</div>
+            <p class="field-help">This short review expires at <time datetime="@AsUtc(review.ExpiresAtUtc).ToString("O")">@FormatLocal(review.ExpiresAtUtc)</time>. Confirmation queues only this reviewed action.</p>
+        }
+    </AdditionalContent>
 </ConfirmPanel>
 
 @code {
-    private readonly CancellationTokenSource disposeCts = new();
-    private SettingsForm? form;
-    private UiErrorInfo? loadError;
-    private UiErrorInfo? saveError;
-    private bool loading;
-    private bool saving;
-    private bool saved;
-    private bool confirmSave;
-    private bool LimitsAreOrdered => form is null || form.RateLimitGlobal >= Math.Max(form.RateLimitPerClient, form.RateLimitPerAgent);
-
-    protected override Task OnInitializedAsync() => LoadAsync();
-
-    private async Task LoadAsync()
+    private static readonly string[] PurviewActivities = ["UploadText", "DownloadText"];
+    private static readonly string[] RequiredCompanionCapabilities =
+    [
+        "DlpPolicy.ReadWrite",
+        "DlpRule.ReadWrite",
+        "KnowYourData.ReadWrite",
+        "SensitiveInformationTypes.Read"
+    ];
+    private static readonly JsonSerializerOptions CompanionJsonOptions = new()
     {
-        loading = true;
-        loadError = null;
-        saveError = null;
-        saved = false;
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = false,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+    };
+    private static readonly UTF8Encoding StrictUtf8 = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
+    private const long MaximumCompanionEvidenceBytes = 512 * 1024;
+    private const int MaximumCompanionPayloadBytes = 384 * 1024;
+    private const string CompanionResultPrefix = "A365GW_CONNECTION_RESULT:";
+    private const string CompanionDownloadName = "Connect-PurviewTenant.ps1";
+    private const string CompanionDownloadHref =
+        "/downloads/Connect-PurviewTenant.ps1";
+    private const string CompanionLaunchScriptRelativePath =
+        "Automation/Connect-PurviewTenant.ps1";
+    private const string LocalCompanionScriptPath =
+        @".\Connect-PurviewTenant.ps1";
+    private const string CompletePurviewTenantConnectionAction =
+        "CompletePurviewTenantConnection";
+    private readonly CancellationTokenSource disposeCts = new();
+
+    private GatewayApiResource<ProtectionCapabilitiesResponse>? capabilitiesResource;
+    private GatewayApiResource<PurviewTenantConnectionResponse>? connectionResource;
+    private GatewayApiResource<PurviewSensitiveInformationTypeListResponse>? inventoryResource;
+    private GatewayApiResource<PurviewKnowYourDataResponse>? knowYourDataResource;
+    private GatewayApiResource<PurviewDlpProfileListResponse>? profilesResource;
+    private IReadOnlyList<AgentIdentityBlueprintSummaryDto> blueprints = [];
+    private GatewayApiResource<ProtectionAdminOperationResponse>? operationResource;
+    private SettingsForm? form;
+    private UpdateSystemConfigRequest? pendingSettingsSaveRequest;
+
+    private UiErrorInfo? capabilitiesError;
+    private UiErrorInfo? connectionError;
+    private UiErrorInfo? inventoryError;
+    private UiErrorInfo? knowYourDataError;
+    private UiErrorInfo? profilesError;
+    private UiErrorInfo? blueprintsError;
+    private UiErrorInfo? operationError;
+    private UiErrorInfo? settingsLoadError;
+    private UiErrorInfo? settingsSaveError;
+    private UiErrorInfo? protectionActionError;
+
+    private ProtectionOperationReviewTicket? protectionReview;
+    private PurviewTenantConnectionEvidenceDto? companionEvidence;
+    private PurviewCompanionLaunchDto? companionLaunch;
+    private PurviewDlpProfileDto? editingProfile;
+    private Guid? activeOperationId;
+    private Guid? companionInventoryGenerationId;
+    private Guid? pendingProfileId;
+    private Guid signedInTenantId;
+    private Guid signedInObjectId;
+    private string selectedSitIndex = string.Empty;
+    private string selectedBlueprintIndex = string.Empty;
+    private string dlpDisplayName = string.Empty;
+    private string dlpMode = "AuditOnly";
+    private string kydMode = "AuditOnly";
+    private string? protectionAnnouncement;
+    private string? companionEvidenceError;
+    private string? companionEvidenceDigest;
+    private string pendingTargetLabel = "Protection settings";
+    private bool roleLoaded;
+    private bool isAdministrator;
+    private bool canReadProtectionGovernance;
+    private string roleLabel = "Gateway";
+    private bool reloading;
+    private bool capabilitiesLoading;
+    private bool connectionLoading;
+    private bool inventoryLoading;
+    private bool knowYourDataLoading;
+    private bool profilesLoading;
+    private bool blueprintsLoading;
+    private bool operationLoading;
+    private bool settingsLoading;
+    private bool saving;
+    private bool settingsSaved;
+    private bool settingsSaveOutcomeUnknown;
+    private bool protectionActionBusy;
+    private ProtectionAction pendingProtectionAction;
+    private ConfirmationDialogKind dialogKind;
+
+    private ProtectionCapabilityDto? Agent365Capability => FindCapability("Agent365RegistrationBeta");
+    private ProtectionCapabilityDto? PromptShieldCapability => FindCapability("PromptShields", "PromptShield");
+    private ProtectionCapabilityDto? PurviewCapability => FindCapability("Purview");
+    private PurviewTenantConnectionDto? Connection => connectionResource?.Value.Connection;
+    private PurviewKnowYourDataConfigurationDto? KnowYourData => knowYourDataResource?.Value.Configuration;
+    private ProtectionAdminOperationDto? ActiveOperation => operationResource?.Value.Operation;
+    private string PendingTargetLabel => pendingTargetLabel;
+    private int ReadyProfileCount => profilesResource?.Value.Items.Count(ProfileIsReady) ?? 0;
+    private bool HasReadyProfile => ReadyProfileCount > 0;
+    private bool PromptShieldReady =>
+        string.Equals(PromptShieldCapability?.Status, "Installed", StringComparison.OrdinalIgnoreCase) &&
+        form?.PromptShieldAvailable == true;
+    private bool ConnectionIsReady =>
+        string.Equals(Connection?.Status, "Connected", StringComparison.OrdinalIgnoreCase);
+    private bool LimitsAreOrdered =>
+        form is null || form.RateLimitGlobal >= Math.Max(form.RateLimitPerClient, form.RateLimitPerAgent);
+    private bool ProtectionDefaultsAreReady =>
+        form is null ||
+        (!form.DefaultPromptShieldEnabled || PromptShieldReady) &&
+        (!form.DefaultPurviewEnabled || HasReadyProfile);
+    private bool CanChangePromptShieldDefault =>
+        form is not null && (PromptShieldReady || form.DefaultPromptShieldEnabled);
+    private bool CanChangePurviewDefault =>
+        form is not null && (HasReadyProfile || form.DefaultPurviewEnabled);
+    private bool CanReviewConnection =>
+        isAdministrator &&
+        !protectionActionBusy &&
+        CapabilityIsInstalled(PurviewCapability) &&
+        signedInTenantId != Guid.Empty &&
+        TryGetExpectedRowVersion(
+            connectionResource is not null,
+            Connection?.RowVersion,
+            out _);
+    private bool CanReviewCompanionCompletion =>
+        isAdministrator &&
+        !protectionActionBusy &&
+        RequiresCompanionCompletion &&
+        activeOperationId is not null &&
+        companionEvidence is not null &&
+        companionInventoryGenerationId is not null &&
+        !string.IsNullOrWhiteSpace(companionEvidenceDigest) &&
+        Connection?.Status == "AwaitingAdministrator" &&
+        TryGetExpectedRowVersion(
+            connectionResource is not null,
+            Connection?.RowVersion,
+            out _);
+
+    private string? CompanionCommand =>
+        TryBuildCompanionCommand(companionLaunch, out var command)
+            ? command
+            : null;
+    private bool CanReviewKnowYourData =>
+        isAdministrator &&
+        !protectionActionBusy &&
+        ConnectionIsReady &&
+        SelectedSensitiveInformationType is not null &&
+        inventoryResource?.Value.IsExpired == false &&
+        TryGetExpectedRowVersion(
+            knowYourDataResource is not null,
+            KnowYourData?.RowVersion,
+            out _);
+    private bool CanReviewDlpProfile =>
+        isAdministrator &&
+        !protectionActionBusy &&
+        ConnectionIsReady &&
+        SelectedSensitiveInformationType is not null &&
+        SelectedBlueprint is not null &&
+        !string.IsNullOrWhiteSpace(dlpDisplayName) &&
+        (editingProfile is not null || !BlueprintAlreadyHasProfile(SelectedBlueprint.BlueprintClientId)) &&
+        TryGetExpectedRowVersion(
+            profilesResource is not null,
+            editingProfile?.RowVersion,
+            out _);
+
+    private bool RequiresCompanionCompletion =>
+        string.Equals(
+            ActiveOperation?.RequiredAction,
+            CompletePurviewTenantConnectionAction,
+            StringComparison.Ordinal) ||
+        ActiveOperation is
+        {
+            Type: "ConnectPurviewTenant",
+            Status: "AwaitingAdministrator"
+        };
+
+    private PurviewSensitiveInformationTypeDto? SelectedSensitiveInformationType =>
+        TryGetSelectedIndex(selectedSitIndex, inventoryResource?.Value.Items, out var index)
+            ? inventoryResource!.Value.Items[index]
+            : null;
+
+    private AgentIdentityBlueprintSummaryDto? SelectedBlueprint =>
+        TryGetSelectedIndex(selectedBlueprintIndex, blueprints, out var index)
+            ? blueprints[index]
+            : null;
+
+    private string PromptShieldRuntimeStatus => PromptShieldReady
+        ? "Ready"
+        : CapabilityDisplayStatus(PromptShieldCapability);
+
+    private string PromptShieldReadinessExplanation => PromptShieldReady
+        ? "The Gateway reports the shared capability ready for registrations that enable it."
+        : CapabilityIsInstalled(PromptShieldCapability)
+            ? "The shared resource is installed, but the Gateway has not reported it ready for agent use."
+            : "Prompt Shields cannot be enabled for an agent in the current deployment state.";
+
+    private string PromptShieldDefaultExplanation => form is null
+        ? isAdministrator ? "Loading the current default." : "Only administrators can view and change the deployment default."
+        : form.DefaultPromptShieldEnabled ? "On for new registrations." : "Off for new registrations.";
+
+    private string PurviewJourneyStatus
+    {
+        get
+        {
+            if (!canReadProtectionGovernance)
+            {
+                return "Restricted";
+            }
+
+            if (!CapabilityIsInstalled(PurviewCapability))
+            {
+                return CapabilityDisplayStatus(PurviewCapability);
+            }
+
+            if (Connection is null || Connection.Status is "NotConnected" or "Expired" or "Revoked")
+            {
+                return "Not connected";
+            }
+
+            if (Connection.Status == "AwaitingAdministrator")
+            {
+                return "Awaiting admin";
+            }
+
+            if (Connection.Status == "PendingVerification")
+            {
+                return "Pending propagation";
+            }
+
+            if (Connection.Status == "VerificationFailed" ||
+                profilesResource?.Value.Items.Any(ProfileHasFailed) == true)
+            {
+                return "Failed";
+            }
+
+            if (profilesResource?.Value.Items.Any(ProfileIsPending) == true)
+            {
+                return "Pending propagation";
+            }
+
+            return HasReadyProfile ? "Ready" : "Awaiting admin";
+        }
+    }
+
+    private string ConnectionDisplayStatus => Connection?.Status switch
+    {
+        null or "NotConnected" or "Expired" or "Revoked" => "Not connected",
+        "AwaitingAdministrator" => "Awaiting admin",
+        "PendingVerification" => "Pending propagation",
+        "VerificationFailed" => "Failed",
+        "Connected" => "Ready",
+        _ => "Awaiting admin"
+    };
+
+    private string KnowYourDataDisplayStatus => KnowYourData?.Status switch
+    {
+        null or "NotConfigured" => ConnectionIsReady ? "Awaiting admin" : "Not connected",
+        "ReviewRequired" => "Awaiting admin",
+        "Pending" => "Pending propagation",
+        "VerificationFailed" => "Failed",
+        "Ready" => "Ready",
+        _ => "Awaiting admin"
+    };
+
+    private string ConfirmationTitle => dialogKind switch
+    {
+        ConfirmationDialogKind.SystemSettings => "Save system settings?",
+        ConfirmationDialogKind.ProtectionReview
+            when pendingProtectionAction == ProtectionAction.CompleteTenantConnection =>
+                "Submit companion evidence for verification?",
+        ConfirmationDialogKind.ProtectionReview
+            when pendingProtectionAction == ProtectionAction.ReconcileProfile =>
+                "Reconcile this DLP profile?",
+        ConfirmationDialogKind.ProtectionReview
+            when pendingProtectionAction == ProtectionAction.ValidateRuntime =>
+                "Run the runtime readiness check?",
+        ConfirmationDialogKind.ProtectionReview => $"Confirm {FriendlyOperation(protectionReview?.Review.OperationType)}?",
+        _ => "Confirm action"
+    };
+
+    private string ConfirmationMessage => dialogKind switch
+    {
+        ConfirmationDialogKind.SystemSettings =>
+            "These values affect new registration defaults, new idempotency records, and subsequent ingress enforcement.",
+        ConfirmationDialogKind.ProtectionReview
+            when pendingProtectionAction == ProtectionAction.CompleteTenantConnection =>
+                "Confirm the exact tenant connection binding below. The Gateway will independently verify the bounded companion submission before reporting the connection Ready.",
+        ConfirmationDialogKind.ProtectionReview
+            when pendingProtectionAction == ProtectionAction.ReconcileProfile =>
+                "Re-read the exact Microsoft Purview state for this profile. Reconciliation does not silently rewrite policy or make runtime readiness Ready.",
+        ConfirmationDialogKind.ProtectionReview
+            when pendingProtectionAction == ProtectionAction.ValidateRuntime =>
+                "Start the approved bounded synthetic allow and block check. This is a runtime readiness operation, not a policy update.",
+        ConfirmationDialogKind.ProtectionReview =>
+            "Check this Gateway-reviewed summary before queuing the operation. The API will recheck your role, tenant, target, choices, and current version.",
+        _ => string.Empty
+    };
+
+    private string ConfirmationButtonLabel => dialogKind switch
+    {
+        ConfirmationDialogKind.SystemSettings => "Save settings",
+        ConfirmationDialogKind.ProtectionReview
+            when pendingProtectionAction == ProtectionAction.CompleteTenantConnection =>
+                "Submit for verification",
+        ConfirmationDialogKind.ProtectionReview
+            when pendingProtectionAction == ProtectionAction.ReconcileProfile =>
+                "Start reconciliation",
+        ConfirmationDialogKind.ProtectionReview
+            when pendingProtectionAction == ProtectionAction.ValidateRuntime =>
+                "Start runtime check",
+        ConfirmationDialogKind.ProtectionReview => "Confirm and start",
+        _ => "Confirm"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authenticationState = await AuthenticationStateProvider
+            .GetAuthenticationStateAsync()
+            .WaitAsync(disposeCts.Token);
+        SetRole(authenticationState.User);
+        ReadOperationFromLocation();
+        roleLoaded = true;
+        await ReloadAllAsync();
+    }
+
+    private async Task ReloadAllAsync()
+    {
+        if (reloading)
+        {
+            return;
+        }
+
+        reloading = true;
+        settingsSaved = false;
+        protectionAnnouncement = null;
         try
         {
-            form = SettingsForm.From(await Api.GetSystemConfigAsync(disposeCts.Token));
-        }
-        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested) { }
-        catch (Exception ex)
-        {
-            loadError = UiErrorInfo.FromException(ex);
+            var protectionTask = LoadProtectionJourneyAsync();
+            var operationTask = LoadActiveOperationAsync();
+            if (isAdministrator)
+            {
+                await Task.WhenAll(
+                    protectionTask,
+                    operationTask,
+                    LoadSettingsAsync());
+            }
+            else
+            {
+                await Task.WhenAll(protectionTask, operationTask);
+            }
         }
         finally
         {
-            loading = false;
+            reloading = false;
         }
     }
 
-    private void RequestSave()
+    private async Task LoadProtectionJourneyAsync()
     {
-        if (saving || confirmSave)
+        if (!canReadProtectionGovernance)
+        {
+            await LoadCapabilitiesAsync();
+            connectionResource = null;
+            inventoryResource = null;
+            knowYourDataResource = null;
+            profilesResource = null;
+            blueprints = [];
+            return;
+        }
+
+        await Task.WhenAll(LoadCapabilitiesAsync(), LoadConnectionAsync());
+
+        if (!ConnectionIsReady)
+        {
+            inventoryResource = null;
+            knowYourDataResource = null;
+            profilesResource = null;
+            blueprints = [];
+            return;
+        }
+
+        var tasks = new List<Task>
+        {
+            LoadKnowYourDataAsync(),
+            LoadProfilesAsync()
+        };
+        if (isAdministrator)
+        {
+            tasks.Add(LoadInventoryAsync());
+            tasks.Add(LoadBlueprintsAsync());
+        }
+
+        await Task.WhenAll(tasks);
+    }
+
+    private async Task LoadCapabilitiesAsync()
+    {
+        if (capabilitiesLoading)
         {
             return;
         }
 
-        saved = false;
-        saveError = null;
-        if (LimitsAreOrdered)
-        {
-            confirmSave = true;
-        }
-    }
-
-    private void CancelSave() => confirmSave = false;
-
-    private async Task SaveAsync()
-    {
-        if (form is null || !LimitsAreOrdered || saving)
-        {
-            return;
-        }
-
-        saving = true;
-        saveError = null;
+        capabilitiesLoading = true;
+        capabilitiesError = null;
         try
         {
-            var request = form.ToRequest();
-            form = SettingsForm.From(await Api.UpdateSystemConfigAsync(request, cancellationToken: disposeCts.Token));
-            saved = true;
-            confirmSave = false;
+            capabilitiesResource = await Api.GetProtectionCapabilitiesAsync(disposeCts.Token);
         }
-        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested) { }
-        catch (Exception ex)
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
         {
-            saveError = UiErrorInfo.FromException(ex);
-            confirmSave = false;
+        }
+        catch (Exception exception)
+        {
+            capabilitiesResource = null;
+            capabilitiesError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            capabilitiesLoading = false;
+        }
+    }
+
+    private async Task LoadConnectionAsync()
+    {
+        if (!canReadProtectionGovernance || connectionLoading)
+        {
+            return;
+        }
+
+        connectionLoading = true;
+        connectionError = null;
+        try
+        {
+            connectionResource = await Api.GetPurviewTenantConnectionAsync(disposeCts.Token);
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            connectionResource = null;
+            connectionError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            connectionLoading = false;
+        }
+    }
+
+    private async Task LoadInventoryAsync()
+    {
+        if (!isAdministrator || !ConnectionIsReady || inventoryLoading)
+        {
+            return;
+        }
+
+        inventoryLoading = true;
+        inventoryError = null;
+        var previousSelection = SelectedSensitiveInformationType;
+        try
+        {
+            inventoryResource = await Api.GetPurviewSensitiveInformationTypesAsync(disposeCts.Token);
+            selectedSitIndex = string.Empty;
+            if (previousSelection is not null)
+            {
+                protectionAnnouncement = "The tenant inventory was refreshed. Choose the sensitive information type again before reviewing another change.";
+            }
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            inventoryResource = null;
+            selectedSitIndex = string.Empty;
+            inventoryError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            inventoryLoading = false;
+        }
+    }
+
+    private async Task LoadKnowYourDataAsync()
+    {
+        if (!canReadProtectionGovernance || !ConnectionIsReady || knowYourDataLoading)
+        {
+            return;
+        }
+
+        knowYourDataLoading = true;
+        knowYourDataError = null;
+        try
+        {
+            knowYourDataResource = await Api.GetPurviewKnowYourDataAsync(disposeCts.Token);
+            if (KnowYourData?.Mode is "AuditOnly" or "Enforce")
+            {
+                kydMode = KnowYourData.Mode;
+            }
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            knowYourDataResource = null;
+            knowYourDataError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            knowYourDataLoading = false;
+        }
+    }
+
+    private async Task LoadProfilesAsync()
+    {
+        if (!canReadProtectionGovernance || !ConnectionIsReady || profilesLoading)
+        {
+            return;
+        }
+
+        profilesLoading = true;
+        profilesError = null;
+        try
+        {
+            profilesResource = await Api.GetPurviewDlpProfilesAsync(disposeCts.Token);
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            profilesResource = null;
+            profilesError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            profilesLoading = false;
+        }
+    }
+
+    private async Task LoadBlueprintsAsync()
+    {
+        if (!isAdministrator || blueprintsLoading)
+        {
+            return;
+        }
+
+        blueprintsLoading = true;
+        blueprintsError = null;
+        try
+        {
+            var response = await Api.GetAgentIdentityBlueprintsAsync(disposeCts.Token);
+            blueprints = response.Items
+                .Where(item => item.IsAgent365Compatible)
+                .OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            blueprints = [];
+            blueprintsError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            blueprintsLoading = false;
+        }
+    }
+
+    private async Task LoadSettingsAsync()
+    {
+        if (!isAdministrator || settingsLoading)
+        {
+            return;
+        }
+
+        settingsLoading = true;
+        settingsLoadError = null;
+        settingsSaveError = null;
+        settingsSaved = false;
+        try
+        {
+            form = SettingsForm.From(await Api.GetSystemConfigAsync(disposeCts.Token));
+            pendingSettingsSaveRequest = null;
+            settingsSaveOutcomeUnknown = false;
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            settingsLoadError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            settingsLoading = false;
+        }
+    }
+
+    private async Task ReviewConnectionAsync()
+    {
+        if (!CanReviewConnection ||
+            !TryGetExpectedRowVersion(
+                connectionResource is not null,
+                Connection?.RowVersion,
+                out var rowVersion))
+        {
+            return;
+        }
+
+        await RunReviewAsync(
+            ProtectionAction.ConnectTenant,
+            Connection is null ? "Signed-in tenant connection" : "Signed-in tenant connection refresh",
+            () => Api.ReviewPurviewTenantConnectionAsync(
+                new ReviewPurviewTenantConnectionRequest(signedInTenantId, rowVersion),
+                disposeCts.Token));
+    }
+
+    private async Task ReviewCompanionCompletionAsync()
+    {
+        if (!CanReviewCompanionCompletion ||
+            !TryGetExpectedRowVersion(
+                connectionResource is not null,
+                Connection?.RowVersion,
+                out var rowVersion))
+        {
+            return;
+        }
+
+        await RunReviewAsync(
+            ProtectionAction.CompleteTenantConnection,
+            "Windows companion evidence for this tenant connection",
+            () => Api.ReviewPurviewTenantConnectionCompletionAsync(
+                activeOperationId!.Value,
+                companionInventoryGenerationId!.Value,
+                companionEvidence!,
+                rowVersion,
+                disposeCts.Token));
+    }
+
+    private async Task ReviewKnowYourDataAsync()
+    {
+        var selected = SelectedSensitiveInformationType;
+        if (!CanReviewKnowYourData ||
+            selected is null ||
+            Connection is null ||
+            inventoryResource is null ||
+            !TryGetExpectedRowVersion(
+                knowYourDataResource is not null,
+                KnowYourData?.RowVersion,
+                out var rowVersion))
+        {
+            return;
+        }
+
+        var request = new ReviewPurviewKnowYourDataOperationRequest(
+            Connection.Id,
+            new PurviewSensitiveInformationTypeSelectionDto(
+                inventoryResource.Value.GenerationId,
+                selected.Id,
+                selected.ExactName),
+            kydMode,
+            PurviewActivities,
+            IngestionEnabled: true,
+            ExpectedRowVersion: rowVersion);
+
+        await RunReviewAsync(
+            ProtectionAction.ConfigureKnowYourData,
+            "Fixed tenant-wide Know Your Data Group",
+            () => Api.ReviewPurviewKnowYourDataOperationAsync(request, disposeCts.Token));
+    }
+
+    private async Task ReviewDlpProfileAsync()
+    {
+        var selectedSit = SelectedSensitiveInformationType;
+        var selectedBlueprint = SelectedBlueprint;
+        if (!CanReviewDlpProfile ||
+            selectedSit is null ||
+            selectedBlueprint is null ||
+            Connection is null ||
+            inventoryResource is null ||
+            !TryGetExpectedRowVersion(
+                profilesResource is not null,
+                editingProfile?.RowVersion,
+                out var rowVersion))
+        {
+            return;
+        }
+
+        var action = editingProfile is null
+            ? ProtectionAction.CreateProfile
+            : ProtectionAction.UpdateProfile;
+        var request = CreateDlpReviewRequest(
+            editingProfile?.Id,
+            Connection.Id,
+            selectedBlueprint.BlueprintClientId,
+            dlpDisplayName.Trim(),
+            selectedSit,
+            inventoryResource.Value.GenerationId,
+            dlpMode,
+            rowVersion);
+
+        await RunReviewAsync(
+            action,
+            $"{SafeBlueprintName(selectedBlueprint)} Individual DLP profile",
+            () => Api.ReviewPurviewDlpProfileOperationAsync(request, disposeCts.Token));
+    }
+
+    private async Task ReviewExistingProfileActionAsync(
+        PurviewDlpProfileDto profile,
+        ProtectionAction action)
+    {
+        if (!isAdministrator ||
+            protectionActionBusy ||
+            action is not (
+                ProtectionAction.ReconcileProfile or
+                ProtectionAction.ValidateRuntime) ||
+            action == ProtectionAction.ValidateRuntime && !CanValidateRuntime(profile))
+        {
+            return;
+        }
+
+        pendingProfileId = profile.Id;
+        await RunReviewAsync(
+            action,
+            $"{SafeProfileName(profile)} for {BlueprintName(profile.BlueprintApplicationId)}",
+            () => action == ProtectionAction.ReconcileProfile
+                ? Api.ReviewReconcilePurviewDlpProfileAsync(
+                    profile.Id,
+                    profile.RowVersion,
+                    disposeCts.Token)
+                : Api.ReviewValidatePurviewDlpRuntimeAsync(
+                    profile.Id,
+                    profile.RowVersion,
+                    disposeCts.Token));
+    }
+
+    private static ReviewPurviewDlpProfileOperationRequest CreateDlpReviewRequest(
+        Guid? profileId,
+        Guid connectionId,
+        Guid blueprintApplicationId,
+        string displayName,
+        PurviewSensitiveInformationTypeDto sit,
+        Guid inventoryGenerationId,
+        string mode,
+        string rowVersion)
+    {
+        return new ReviewPurviewDlpProfileOperationRequest(
+            profileId,
+            connectionId,
+            blueprintApplicationId,
+            displayName,
+            new PurviewSensitiveInformationTypeSelectionDto(
+                inventoryGenerationId,
+                sit.Id,
+                sit.ExactName),
+            mode,
+            PurviewActivities,
+            [new PurviewDlpRuleActionDto("UploadText", "Block")],
+            rowVersion);
+    }
+
+    private async Task RunReviewAsync(
+        ProtectionAction action,
+        string targetLabel,
+        Func<Task<GatewayApiResource<ProtectionOperationReviewTicket>>> reviewAction)
+    {
+        protectionActionBusy = true;
+        protectionActionError = null;
+        protectionAnnouncement = null;
+        protectionReview?.Discard();
+        protectionReview = null;
+        try
+        {
+            var response = await reviewAction();
+            if (!ReviewMatchesAction(response.Value.Review.OperationType, action))
+            {
+                response.Value.Discard();
+                protectionActionError = new UiErrorInfo(
+                    "The Gateway did not return a review for the requested action. Refresh the page and try again.");
+                return;
+            }
+            if (!ReviewBindingMatchesAction(response.Value.Review, action))
+            {
+                response.Value.Discard();
+                protectionActionError = new UiErrorInfo(
+                    "The Gateway review did not match the exact operation or evidence binding. Refresh the page and start the review again.");
+                return;
+            }
+
+            protectionReview = response.Value;
+            pendingProtectionAction = action;
+            pendingTargetLabel = targetLabel;
+            dialogKind = ConfirmationDialogKind.ProtectionReview;
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            protectionActionError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            protectionActionBusy = false;
+        }
+    }
+
+    private async Task ConfirmDialogAsync()
+    {
+        if (dialogKind == ConfirmationDialogKind.SystemSettings)
+        {
+            await SaveSettingsAsync();
+            return;
+        }
+
+        if (dialogKind == ConfirmationDialogKind.ProtectionReview)
+        {
+            await ConfirmProtectionReviewAsync();
+        }
+    }
+
+    private async Task ConfirmProtectionReviewAsync()
+    {
+        if (protectionReview is null || protectionActionBusy)
+        {
+            return;
+        }
+
+        protectionActionBusy = true;
+        protectionActionError = null;
+        var review = protectionReview;
+        var acceptedAction = pendingProtectionAction;
+        try
+        {
+            var confirmation = await Api.ConfirmProtectionOperationReviewAsync(
+                review,
+                disposeCts.Token);
+            var rowVersion = confirmation.Value.ExpectedRowVersion;
+            var idempotencyKey = Guid.NewGuid();
+            GatewayApiResource<ProtectionOperationAcceptedResponse> accepted =
+                pendingProtectionAction switch
+                {
+                    ProtectionAction.ConnectTenant =>
+                        await Api.StartPurviewTenantConnectionOperationAsync(
+                            confirmation.Value,
+                            idempotencyKey,
+                            rowVersion,
+                            disposeCts.Token),
+                    ProtectionAction.CompleteTenantConnection
+                        when activeOperationId is { } operationId &&
+                             companionEvidence is not null =>
+                        await Api.CompletePurviewTenantConnectionOperationAsync(
+                            operationId,
+                            companionEvidence,
+                            confirmation.Value,
+                            idempotencyKey,
+                            rowVersion,
+                            disposeCts.Token),
+                    ProtectionAction.ConfigureKnowYourData =>
+                        await Api.StartPurviewKnowYourDataOperationAsync(
+                            confirmation.Value,
+                            idempotencyKey,
+                            rowVersion,
+                            disposeCts.Token),
+                    ProtectionAction.CreateProfile or ProtectionAction.UpdateProfile =>
+                        await Api.StartPurviewDlpProfileOperationAsync(
+                            confirmation.Value,
+                            idempotencyKey,
+                            rowVersion,
+                            disposeCts.Token),
+                    ProtectionAction.ReconcileProfile when pendingProfileId is { } profileId =>
+                        await Api.ReconcilePurviewDlpProfileAsync(
+                            profileId,
+                            confirmation.Value,
+                            idempotencyKey,
+                            rowVersion,
+                            disposeCts.Token),
+                    ProtectionAction.ValidateRuntime when pendingProfileId is { } profileId =>
+                        await Api.ValidatePurviewDlpProfileRuntimeAsync(
+                            profileId,
+                            confirmation.Value,
+                            idempotencyKey,
+                            rowVersion,
+                            disposeCts.Token),
+                    _ => throw new InvalidOperationException("The reviewed protection action is no longer available.")
+                };
+
+            activeOperationId = accepted.Value.OperationId;
+            if (acceptedAction == ProtectionAction.ConnectTenant)
+            {
+                var launch = accepted.Value.CompanionLaunch;
+                if (launch is null ||
+                    launch.OperationId != accepted.Value.OperationId ||
+                    !TryBuildCompanionCommand(launch, out _))
+                {
+                    companionLaunch = null;
+                    protectionActionError = new UiErrorInfo(
+                        "The Gateway accepted the connection operation but did not return a valid companion launch command. Refresh the connection state, then review and start a fresh connection operation.");
+                }
+                else
+                {
+                    companionLaunch = launch;
+                }
+            }
+
+            PersistActiveOperationInLocation(accepted.Value.OperationId);
+            protectionAnnouncement = "The Gateway accepted the reviewed operation. Follow its persisted progress below.";
+            dialogKind = ConfirmationDialogKind.None;
+            protectionReview = null;
+            pendingProfileId = null;
+            if (acceptedAction == ProtectionAction.CompleteTenantConnection)
+            {
+                companionLaunch = null;
+                companionEvidence = null;
+                companionInventoryGenerationId = null;
+                companionEvidenceDigest = null;
+                companionEvidenceError = null;
+            }
+            await LoadActiveOperationAsync();
+            await LoadConnectionAsync();
+            if (acceptedAction == ProtectionAction.CompleteTenantConnection &&
+                ConnectionIsReady)
+            {
+                await LoadProtectionJourneyAsync();
+            }
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            protectionActionError = UiErrorInfo.FromException(exception);
+            dialogKind = ConfirmationDialogKind.None;
+            protectionReview?.Discard();
+            protectionReview = null;
+            pendingProfileId = null;
+        }
+        finally
+        {
+            protectionActionBusy = false;
+        }
+    }
+
+    private async Task LoadActiveOperationAsync()
+    {
+        if (activeOperationId is not { } operationId || operationLoading)
+        {
+            return;
+        }
+
+        operationLoading = true;
+        operationError = null;
+        try
+        {
+            operationResource = await Api.GetProtectionAdminOperationAsync(
+                operationId,
+                disposeCts.Token);
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            operationError = UiErrorInfo.FromException(exception);
+        }
+        finally
+        {
+            operationLoading = false;
+        }
+    }
+
+    private void EditProfile(PurviewDlpProfileDto profile)
+    {
+        editingProfile = profile;
+        dlpDisplayName = profile.DisplayName;
+        dlpMode = profile.Mode is "AuditOnly" or "Enforce" ? profile.Mode : "AuditOnly";
+        selectedBlueprintIndex = IndexOfBlueprint(profile.BlueprintApplicationId);
+        selectedSitIndex = IndexOfSensitiveInformationType(
+            profile.SensitiveInformationTypeId,
+            profile.SensitiveInformationTypeName);
+        protectionActionError = null;
+    }
+
+    private void ClearProfileEditor()
+    {
+        editingProfile = null;
+        dlpDisplayName = string.Empty;
+        dlpMode = "AuditOnly";
+        selectedBlueprintIndex = string.Empty;
+    }
+
+    private void SelectSensitiveInformationType(ChangeEventArgs args)
+    {
+        selectedSitIndex = args.Value?.ToString() ?? string.Empty;
+        protectionActionError = null;
+    }
+
+    private void SelectBlueprint(ChangeEventArgs args)
+    {
+        selectedBlueprintIndex = args.Value?.ToString() ?? string.Empty;
+        protectionActionError = null;
+    }
+
+    private async Task ReadCompanionEvidenceAsync(InputFileChangeEventArgs args)
+    {
+        companionEvidence = null;
+        companionInventoryGenerationId = null;
+        companionEvidenceDigest = null;
+        companionEvidenceError = null;
+        protectionActionError = null;
+
+        if (args.FileCount != 1)
+        {
+            companionEvidenceError = "Choose exactly one fresh Gateway companion evidence file.";
+            return;
+        }
+
+        var file = args.File;
+        if (file.Size is < 1 or > MaximumCompanionEvidenceBytes)
+        {
+            companionEvidenceError = "The companion evidence file is empty or larger than the supported 512 KB limit.";
+            return;
+        }
+
+        try
+        {
+            await using var stream = file.OpenReadStream(
+                MaximumCompanionEvidenceBytes,
+                disposeCts.Token);
+            using var reader = new StreamReader(
+                stream,
+                StrictUtf8,
+                detectEncodingFromByteOrderMarks: false,
+                leaveOpen: false);
+            var output = await reader.ReadToEndAsync(disposeCts.Token);
+            if (!TryDecodeCompanionOutput(output, out var decodedOutput) ||
+                !ValidateCompanionOutput(decodedOutput))
+            {
+                companionEvidenceError =
+                    "This file is not the single fresh result produced for the signed-in tenant, administrator, and operation. Run the Gateway companion again and save only its result line.";
+                return;
+            }
+
+            companionEvidence = new PurviewTenantConnectionEvidenceDto(
+                decodedOutput.TenantId,
+                decodedOutput.AdministratorObjectId,
+                decodedOutput.AuthorizedCapabilities,
+                decodedOutput.ObservedAtUtc,
+                decodedOutput.InventoryExpiresAtUtc,
+                decodedOutput.SensitiveInformationTypes);
+            companionInventoryGenerationId =
+                decodedOutput.InventoryGenerationId;
+            companionEvidenceDigest =
+                PurviewTenantConnectionEvidenceDigest.Compute(
+                    decodedOutput.OperationId,
+                    decodedOutput.InventoryGenerationId,
+                    companionEvidence);
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception)
+        {
+            companionEvidenceError =
+                "The Gateway could not read this companion output. Run the companion again and save only its unmodified prefixed result line.";
+        }
+    }
+
+    private static bool TryDecodeCompanionOutput(
+        string output,
+        out PurviewCompanionOutput decodedOutput)
+    {
+        decodedOutput = default!;
+        var line = RemoveOneTerminalLineEnding(output);
+        if (line.Length <= CompanionResultPrefix.Length ||
+            line.Contains('\r') ||
+            line.Contains('\n') ||
+            !line.StartsWith(CompanionResultPrefix, StringComparison.Ordinal) ||
+            line.IndexOf(
+                CompanionResultPrefix,
+                CompanionResultPrefix.Length,
+                StringComparison.Ordinal) >= 0)
+        {
+            return false;
+        }
+
+        var encodedPayload = line[CompanionResultPrefix.Length..];
+        if (encodedPayload.Length % 4 != 0 ||
+            encodedPayload.Any(character => !IsBase64Character(character)))
+        {
+            return false;
+        }
+
+        byte[] payload;
+        try
+        {
+            payload = Convert.FromBase64String(encodedPayload);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+
+        if (payload.Length is < 1 or > MaximumCompanionPayloadBytes ||
+            !string.Equals(
+                Convert.ToBase64String(payload),
+                encodedPayload,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            decodedOutput =
+                JsonSerializer.Deserialize<PurviewCompanionOutput>(
+                    payload,
+                    CompanionJsonOptions)!;
+            return decodedOutput is not null;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static string RemoveOneTerminalLineEnding(string output)
+    {
+        if (output.EndsWith("\r\n", StringComparison.Ordinal))
+        {
+            return output[..^2];
+        }
+
+        return output.EndsWith('\n') ? output[..^1] : output;
+    }
+
+    private static bool IsBase64Character(char character) =>
+        character is >= 'A' and <= 'Z' or
+        >= 'a' and <= 'z' or
+        >= '0' and <= '9' or
+        '+' or
+        '/' or
+        '=';
+
+    private bool ValidateCompanionOutput(PurviewCompanionOutput? output)
+    {
+        if (output is null ||
+            output.OperationId != activeOperationId ||
+            output.InventoryGenerationId == Guid.Empty ||
+            companionLaunch is not null &&
+            (output.OperationId != companionLaunch.OperationId ||
+             output.InventoryGenerationId !=
+                 companionLaunch.InventoryGenerationId ||
+             output.InventoryExpiresAtUtc !=
+                 companionLaunch.ExpiresAtUtc) ||
+            output.TenantId != signedInTenantId ||
+            output.AdministratorObjectId != signedInObjectId ||
+            output.ObservedAtUtc.Offset != TimeSpan.Zero ||
+            output.InventoryExpiresAtUtc.Offset != TimeSpan.Zero ||
+            output.InventoryExpiresAtUtc <= DateTimeOffset.UtcNow ||
+            output.InventoryExpiresAtUtc <= output.ObservedAtUtc ||
+            output.InventoryExpiresAtUtc > output.ObservedAtUtc.AddMinutes(15) ||
+            output.AuthorizedCapabilities is null ||
+            !output.AuthorizedCapabilities.SequenceEqual(RequiredCompanionCapabilities) ||
+            output.SensitiveInformationTypes is null ||
+            output.SensitiveInformationTypes.Count is < 1 or > 2048)
+        {
+            return false;
+        }
+
+        var ids = new HashSet<Guid>();
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        return output.SensitiveInformationTypes.All(item =>
+            item is not null &&
+            item.Id != Guid.Empty &&
+            ids.Add(item.Id) &&
+            IsBoundedCompanionText(item.ExactName, 255) &&
+            names.Add(item.ExactName) &&
+            IsBoundedCompanionText(item.Publisher, 200));
+    }
+
+    private static bool TryBuildCompanionCommand(
+        PurviewCompanionLaunchDto? launch,
+        out string command)
+    {
+        command = string.Empty;
+        if (launch is null ||
+            launch.OperationId == Guid.Empty ||
+            launch.InventoryGenerationId == Guid.Empty ||
+            launch.ExpiresAtUtc.Offset != TimeSpan.Zero ||
+            launch.ExpiresAtUtc <= DateTimeOffset.UtcNow ||
+            !string.Equals(
+                launch.ScriptRelativePath,
+                CompanionLaunchScriptRelativePath,
+                StringComparison.Ordinal) ||
+            launch.Arguments is null ||
+            launch.Arguments.Count == 0 ||
+            launch.Arguments.Any(argument =>
+                !IsBoundedCompanionText(argument, 1_024)) ||
+            !ContainsExactFileBinding(
+                launch.Arguments,
+                launch.ScriptRelativePath) ||
+            !ContainsExactArgumentBinding(
+                launch.Arguments,
+                "-OperationId",
+                launch.OperationId.ToString("D")) ||
+            !ContainsExactArgumentBinding(
+                launch.Arguments,
+                "-InventoryGenerationId",
+                launch.InventoryGenerationId.ToString("D")) ||
+            !ContainsExactArgumentBinding(
+                launch.Arguments,
+                "-ExpiresAtUtc",
+                launch.ExpiresAtUtc.ToString("O")))
+        {
+            return false;
+        }
+
+        var localArguments = launch.Arguments.ToArray();
+        for (var index = 0; index + 1 < localArguments.Length; index++)
+        {
+            if (string.Equals(
+                    localArguments[index],
+                    "-File",
+                    StringComparison.Ordinal))
+            {
+                localArguments[index + 1] = LocalCompanionScriptPath;
+                break;
+            }
+        }
+
+        command = "pwsh " + string.Join(
+            " ",
+            localArguments.Select(QuotePowerShellArgument));
+        return command.Length <= 16_384;
+    }
+
+    private static bool ContainsExactFileBinding(
+        IReadOnlyList<string> arguments,
+        string scriptRelativePath)
+    {
+        var matchingFileBindings = 0;
+        for (var index = 0; index + 1 < arguments.Count; index++)
+        {
+            if (string.Equals(
+                    arguments[index],
+                    "-File",
+                    StringComparison.Ordinal))
+            {
+                matchingFileBindings++;
+                if (!string.Equals(
+                        arguments[index + 1],
+                        scriptRelativePath,
+                        StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return matchingFileBindings == 1;
+    }
+
+    private static bool ContainsExactArgumentBinding(
+        IReadOnlyList<string> arguments,
+        string name,
+        string value)
+    {
+        var matches = 0;
+        for (var index = 0; index + 1 < arguments.Count; index++)
+        {
+            if (string.Equals(arguments[index], name, StringComparison.Ordinal))
+            {
+                matches++;
+                if (!string.Equals(
+                        arguments[index + 1],
+                        value,
+                        StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return matches == 1;
+    }
+
+    private static string QuotePowerShellArgument(string value) =>
+        $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
+
+    private static bool IsBoundedCompanionText(string? value, int maximumLength) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Length <= maximumLength &&
+        value.All(character => character > '\u001f' && character != '\u007f');
+
+    private void RequestSettingsSave()
+    {
+        if (saving || settingsSaveOutcomeUnknown ||
+            dialogKind != ConfirmationDialogKind.None ||
+            !LimitsAreOrdered || !ProtectionDefaultsAreReady)
+        {
+            return;
+        }
+
+        settingsSaved = false;
+        settingsSaveError = null;
+        pendingSettingsSaveRequest = form?.ToRequest(Guid.NewGuid());
+        dialogKind = ConfirmationDialogKind.SystemSettings;
+    }
+
+    private async Task SaveSettingsAsync()
+    {
+        if (form is null ||
+            pendingSettingsSaveRequest is null ||
+            !LimitsAreOrdered ||
+            !ProtectionDefaultsAreReady ||
+            saving)
+        {
+            return;
+        }
+
+        var request = pendingSettingsSaveRequest;
+        saving = true;
+        settingsSaveError = null;
+        try
+        {
+            form = SettingsForm.From(
+                await Api.UpdateSystemConfigAsync(
+                    request,
+                    cancellationToken: disposeCts.Token));
+            settingsSaved = true;
+            pendingSettingsSaveRequest = null;
+            settingsSaveOutcomeUnknown = false;
+            dialogKind = ConfirmationDialogKind.None;
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            settingsSaveError = UiErrorInfo.FromException(exception);
+            if (request.IdempotencyKey is not null &&
+                IsAmbiguousSettingsSaveFailure(exception))
+            {
+                settingsSaveOutcomeUnknown = true;
+            }
+            else
+            {
+                pendingSettingsSaveRequest = null;
+                settingsSaveOutcomeUnknown = false;
+            }
+            dialogKind = ConfirmationDialogKind.None;
         }
         finally
         {
@@ -209,12 +2162,346 @@ else if (form is not null)
         }
     }
 
+    private Task RetryAmbiguousSettingsSaveAsync() =>
+        settingsSaveOutcomeUnknown
+            ? SaveSettingsAsync()
+            : Task.CompletedTask;
+
+    private static bool IsAmbiguousSettingsSaveFailure(Exception exception) =>
+        exception is GatewayApiTransportException or GatewayApiProtocolException ||
+        exception is GatewayApiException { IsTransient: true };
+
+    private void CancelDialog()
+    {
+        if (dialogKind == ConfirmationDialogKind.SystemSettings &&
+            !settingsSaveOutcomeUnknown)
+        {
+            pendingSettingsSaveRequest = null;
+        }
+
+        protectionReview?.Discard();
+        protectionReview = null;
+        pendingProfileId = null;
+        dialogKind = ConfirmationDialogKind.None;
+        pendingProtectionAction = ProtectionAction.None;
+    }
+
+    private void SetRole(ClaimsPrincipal user)
+    {
+        isAdministrator = user.IsInRole("Gateway.Administrator");
+        var isOperator = user.IsInRole("Gateway.Operator");
+        canReadProtectionGovernance = isAdministrator || isOperator;
+        roleLabel = isOperator
+            ? "Operator"
+            : user.IsInRole("Gateway.Auditor")
+                ? "Auditor"
+                : user.IsInRole("Gateway.SupportReader")
+                    ? "Support Reader"
+                    : isAdministrator ? "Administrator" : "Gateway";
+
+        var tenantClaim = user.FindFirst("tid")?.Value ??
+            user.FindFirst("http://schemas.microsoft.com/identity/claims/tenantid")?.Value;
+        _ = Guid.TryParse(tenantClaim, out signedInTenantId);
+        var objectIdClaim = user.FindFirst("oid")?.Value ??
+            user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value;
+        _ = Guid.TryParse(objectIdClaim, out signedInObjectId);
+    }
+
+    private ProtectionCapabilityDto? FindCapability(params string[] names) =>
+        capabilitiesResource?.Value.Items.FirstOrDefault(item =>
+            names.Any(name => string.Equals(item.Capability, name, StringComparison.OrdinalIgnoreCase)));
+
+    private static bool CapabilityIsInstalled(ProtectionCapabilityDto? capability) =>
+        string.Equals(capability?.Status, "Installed", StringComparison.OrdinalIgnoreCase);
+
+    private static string CapabilityDisplayStatus(ProtectionCapabilityDto? capability) =>
+        capability?.Status switch
+        {
+            "Installed" => "Installed",
+            "PendingPropagation" => "Pending propagation",
+            "Unavailable" or "NotInstalled" or null => "Unavailable",
+            _ => "Unavailable"
+        };
+
+    private static string CapabilityExplanation(ProtectionCapabilityDto? capability) =>
+        capability?.Status switch
+        {
+            "Installed" => "The Gateway reports that the shared deployment capability is installed.",
+            "PendingPropagation" => "The deployment is waiting for Microsoft-side changes to become available.",
+            _ => "The deployment does not currently offer this capability."
+        };
+
+    private string ProfileDisplayStatus(PurviewDlpProfileDto profile) =>
+        profile.Readiness.IsReady ? "Ready" : profile.Status switch
+        {
+            "Pending" or "PendingPropagation" => "Pending propagation",
+            "VerificationFailed" => "Failed",
+            "Draft" or "ReviewRequired" => "Awaiting admin",
+            _ => "Awaiting admin"
+        };
+
+    private static bool ProfileIsReady(PurviewDlpProfileDto profile) =>
+        profile.Readiness.IsReady &&
+        string.Equals(profile.Status, "Ready", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ProfileIsPending(PurviewDlpProfileDto profile) =>
+        profile.Status is "Pending" or "PendingPropagation" ||
+        profile.Readiness.Propagation is "Pending" ||
+        profile.Readiness.TokenRoles is "PendingRefresh" ||
+        profile.Readiness.RuntimeVerdict is "Pending";
+
+    private static bool ProfileHasFailed(PurviewDlpProfileDto profile) =>
+        profile.Status == "VerificationFailed" ||
+        profile.Readiness.Readback is "Mismatch" or "Failed" or "Stale" ||
+        profile.Readiness.Propagation == "Failed" ||
+        profile.Readiness.TokenRoles is "MissingRequiredRoles" or "Failed" ||
+        profile.Readiness.RuntimeVerdict == "Failed";
+
+    private bool CanReconcile(PurviewDlpProfileDto profile) =>
+        isAdministrator &&
+        !protectionActionBusy &&
+        ConnectionIsReady &&
+        !string.IsNullOrWhiteSpace(profile.RowVersion);
+
+    private bool CanValidateRuntime(PurviewDlpProfileDto profile) =>
+        CanReconcile(profile) &&
+        profile.Mode == "Enforce" &&
+        profile.Readiness.Capability == "Installed" &&
+        profile.Readiness.Readback == "Ready" &&
+        profile.Readiness.Propagation == "Ready" &&
+        profile.Readiness.TokenRoles == "Ready" &&
+        !profile.Readiness.IsReady;
+
+    private bool BlueprintAlreadyHasProfile(Guid blueprintApplicationId) =>
+        profilesResource?.Value.Items.Any(profile =>
+            profile.BlueprintApplicationId == blueprintApplicationId) == true;
+
+    private string BlueprintName(Guid blueprintApplicationId)
+    {
+        var match = blueprints.FirstOrDefault(item =>
+            item.BlueprintClientId == blueprintApplicationId);
+        return match is null ? "Resolved blueprint" : SafeBlueprintName(match);
+    }
+
+    private static string SafeBlueprintName(AgentIdentityBlueprintSummaryDto blueprint) =>
+        string.IsNullOrWhiteSpace(blueprint.DisplayName) ? "Unnamed blueprint" : blueprint.DisplayName.Trim();
+
+    private static string SafeProfileName(PurviewDlpProfileDto profile) =>
+        string.IsNullOrWhiteSpace(profile.DisplayName) ? "Unnamed DLP profile" : profile.DisplayName.Trim();
+
+    private string IndexOfBlueprint(Guid blueprintApplicationId)
+    {
+        for (var index = 0; index < blueprints.Count; index++)
+        {
+            if (blueprints[index].BlueprintClientId == blueprintApplicationId)
+            {
+                return index.ToString();
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private string IndexOfSensitiveInformationType(Guid id, string exactName)
+    {
+        if (inventoryResource is null)
+        {
+            return string.Empty;
+        }
+
+        for (var index = 0; index < inventoryResource.Value.Items.Count; index++)
+        {
+            var item = inventoryResource.Value.Items[index];
+            if (item.Id == id && string.Equals(item.ExactName, exactName, StringComparison.Ordinal))
+            {
+                return index.ToString();
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static bool TryGetSelectedIndex<T>(
+        string value,
+        IReadOnlyList<T>? items,
+        out int index)
+    {
+        if (items is not null &&
+            int.TryParse(value, out index) &&
+            index >= 0 &&
+            index < items.Count)
+        {
+            return true;
+        }
+
+        index = -1;
+        return false;
+    }
+
+    private static bool TryGetExpectedRowVersion(
+        bool resourceWasLoaded,
+        string? entityRowVersion,
+        out string version)
+    {
+        if (!resourceWasLoaded)
+        {
+            version = string.Empty;
+            return false;
+        }
+
+        version = string.IsNullOrWhiteSpace(entityRowVersion)
+            ? "*"
+            : entityRowVersion;
+        return true;
+    }
+
+    private static bool ReviewMatchesAction(string operationType, ProtectionAction action) =>
+        action switch
+        {
+            ProtectionAction.ConnectTenant or ProtectionAction.CompleteTenantConnection =>
+                operationType == (
+                    action == ProtectionAction.CompleteTenantConnection
+                        ? "CompletePurviewTenantConnection"
+                        : "ConnectPurviewTenant"),
+            ProtectionAction.ConfigureKnowYourData =>
+                operationType == "CreateOrUpdateKnowYourData",
+            ProtectionAction.CreateProfile or ProtectionAction.UpdateProfile =>
+                operationType == "CreateOrUpdateDlpProfile",
+            ProtectionAction.ReconcileProfile =>
+                operationType == "ReconcileDlpProfile",
+            ProtectionAction.ValidateRuntime =>
+                operationType == "ValidateDlpRuntime",
+            _ => false
+        };
+
+    private bool ReviewBindingMatchesAction(
+        ProtectionOperationReviewSummaryDto review,
+        ProtectionAction action) =>
+        action != ProtectionAction.CompleteTenantConnection ||
+        review.SourceOperationId == activeOperationId &&
+        review.InventoryGenerationId == companionInventoryGenerationId &&
+        string.Equals(
+            review.EvidenceDigest,
+            companionEvidenceDigest,
+            StringComparison.Ordinal);
+
+    private static string FriendlyOperation(string? operationType) => operationType switch
+    {
+        "ConnectPurviewTenant" => "connect the Microsoft Purview tenant",
+        "CompletePurviewTenantConnection" => "submit this exact companion result for verification",
+        "CreateOrUpdateKnowYourData" => "create or update the fixed Know Your Data Group",
+        "CreateOrUpdateDlpProfile" => "create or update the blueprint DLP profile",
+        "ReconcileDlpProfile" => "reconcile the blueprint DLP profile",
+        "ValidateDlpRuntime" => "run the approved runtime readiness check",
+        _ => "this protection action"
+    };
+
+    private void ReadOperationFromLocation()
+    {
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(
+            Navigation.ToAbsoluteUri(Navigation.Uri).Query);
+        if (query.TryGetValue("operation", out var values) &&
+            values.Count == 1 &&
+            Guid.TryParse(values[0], out var operationId) &&
+            operationId != Guid.Empty)
+        {
+            activeOperationId = operationId;
+        }
+    }
+
+    private void PersistActiveOperationInLocation(Guid operationId)
+    {
+        var uri = Navigation.GetUriWithQueryParameter(
+            "operation",
+            operationId.ToString("D"));
+        Navigation.NavigateTo(uri, replace: true);
+    }
+
+    private static string FriendlyScope(string scope) => scope switch
+    {
+        "Group" => "Fixed tenant-wide Group for Know Your Data",
+        "Individual" => "One blueprint Individual location for DLP",
+        _ => "Gateway-reviewed scope"
+    };
+
+    private static string FriendlyState(string value) => value switch
+    {
+        "Ready" => "Ready",
+        "Pending" => "Pending propagation",
+        "NotChecked" => "Awaiting admin",
+        "VerificationFailed" or "Failed" or "Mismatch" or "Stale" => "Failed",
+        _ => "Not connected"
+    };
+
+    private static string FormatMode(string? value) => value switch
+    {
+        "AuditOnly" => "Audit only",
+        "Enforce" => "Enforce",
+        _ => "Not configured"
+    };
+
+    private static string FormatActivities(IEnumerable<string> activities) =>
+        string.Join(", ", activities.Select(activity => activity switch
+        {
+            "UploadText" or "uploadText" => "text sent to an agent",
+            "DownloadText" or "downloadText" => "text returned from an agent",
+            _ => "supported text activity"
+        }).Distinct());
+
+    private static string FormatActions(IEnumerable<PurviewDlpRuleActionDto> actions) =>
+        string.Join(", ", actions.Select(action =>
+            $"{(action.Activity is "DownloadText" or "downloadText" ? "Returned text" : "Sent text")}: " +
+            (action.Action is "Block" or "block" ? "block when disallowed" : "audit")).Distinct());
+
+    private static DateTime AsUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+    };
+
+    private static string FormatLocal(DateTime value) =>
+        AsUtc(value).ToLocalTime().ToString("MMM d, yyyy h:mm tt");
+
+    private static string FormatLocal(DateTimeOffset value) =>
+        value.ToLocalTime().ToString("MMM d, yyyy h:mm tt");
+
     public ValueTask DisposeAsync()
     {
+        protectionReview?.Discard();
         disposeCts.Cancel();
         disposeCts.Dispose();
         return ValueTask.CompletedTask;
     }
+
+    private enum ConfirmationDialogKind
+    {
+        None,
+        SystemSettings,
+        ProtectionReview
+    }
+
+    private enum ProtectionAction
+    {
+        None,
+        ConnectTenant,
+        CompleteTenantConnection,
+        ConfigureKnowYourData,
+        CreateProfile,
+        UpdateProfile,
+        ReconcileProfile,
+        ValidateRuntime
+    }
+
+    private sealed record PurviewCompanionOutput(
+        Guid OperationId,
+        Guid TenantId,
+        Guid AdministratorObjectId,
+        Guid InventoryGenerationId,
+        DateTimeOffset ObservedAtUtc,
+        DateTimeOffset InventoryExpiresAtUtc,
+        IReadOnlyList<string> AuthorizedCapabilities,
+        IReadOnlyList<PurviewSensitiveInformationTypeDto> SensitiveInformationTypes);
 
     private sealed class SettingsForm
     {
@@ -228,6 +2515,8 @@ else if (form is not null)
         [Range(1, 10_000_000)] public int RateLimitPerClient { get; set; }
         [Range(1, 10_000_000)] public int RateLimitPerAgent { get; set; }
         [Range(1, 10_000_000)] public int RateLimitGlobal { get; set; }
+        public string? RowVersion { get; set; }
+
         public static SettingsForm From(SystemConfigDto config) => new()
         {
             DefaultAgent365ObservabilityEnabled = config.DefaultAgent365ObservabilityEnabled
@@ -236,34 +2525,43 @@ else if (form is not null)
                 ?? LegacyAzureMonitorExportEnabled(config.DefaultObservabilityMode),
             DefaultPurviewEnabled = config.DefaultPurviewEnabled,
             DefaultPurviewMode = config.DefaultPurviewMode ?? "AuditOnly",
-            DefaultPromptShieldEnabled = config.PromptShieldAvailable && config.DefaultPromptShieldEnabled,
+            DefaultPromptShieldEnabled = config.DefaultPromptShieldEnabled,
             PromptShieldAvailable = config.PromptShieldAvailable,
             RetentionDaysIdempotencyRecords = config.RetentionDaysIdempotencyRecords,
             RateLimitPerClient = config.RateLimitPerClient,
             RateLimitPerAgent = config.RateLimitPerAgent,
-            RateLimitGlobal = config.RateLimitGlobal
+            RateLimitGlobal = config.RateLimitGlobal,
+            RowVersion = config.RowVersion
         };
 
-        public UpdateSystemConfigRequest ToRequest() => new(
-            ProvisioningMode: null,
-            DefaultObservabilityMode: ToLegacyObservabilityMode(DefaultAgent365ObservabilityEnabled, DefaultAzureMonitorExportEnabled),
-            DefaultPurviewEnabled: DefaultPurviewEnabled,
-            DefaultPurviewMode: DefaultPurviewMode,
-            RetentionDaysActivityReceipts: null,
-            RetentionDaysAuditEvents: null,
-            RetentionDaysIdempotencyRecords: RetentionDaysIdempotencyRecords,
-            RetentionDaysOutboxMessages: null,
-            RateLimitPerClient: RateLimitPerClient,
-            RateLimitPerAgent: RateLimitPerAgent,
-            RateLimitGlobal: RateLimitGlobal,
-            ReconciliationEnabled: null,
-            ReconciliationIntervalHours: null,
-            StuckTransitionTimeoutDays: null,
-            UseGraphAgentRegistration: null,
-            UseCliProvisioningFallback: null,
-            DefaultAgent365ObservabilityEnabled: DefaultAgent365ObservabilityEnabled,
-            DefaultAzureMonitorExportEnabled: DefaultAzureMonitorExportEnabled,
-            DefaultPromptShieldEnabled: DefaultPromptShieldEnabled);
+        public UpdateSystemConfigRequest ToRequest(Guid idempotencyKey)
+        {
+            var hasRowVersion = !string.IsNullOrWhiteSpace(RowVersion);
+            return new UpdateSystemConfigRequest(
+                ProvisioningMode: null,
+                DefaultObservabilityMode: ToLegacyObservabilityMode(
+                    DefaultAgent365ObservabilityEnabled,
+                    DefaultAzureMonitorExportEnabled),
+                DefaultPurviewEnabled: DefaultPurviewEnabled,
+                DefaultPurviewMode: DefaultPurviewMode,
+                RetentionDaysActivityReceipts: null,
+                RetentionDaysAuditEvents: null,
+                RetentionDaysIdempotencyRecords: RetentionDaysIdempotencyRecords,
+                RetentionDaysOutboxMessages: null,
+                RateLimitPerClient: RateLimitPerClient,
+                RateLimitPerAgent: RateLimitPerAgent,
+                RateLimitGlobal: RateLimitGlobal,
+                ReconciliationEnabled: null,
+                ReconciliationIntervalHours: null,
+                StuckTransitionTimeoutDays: null,
+                UseGraphAgentRegistration: null,
+                UseCliProvisioningFallback: null,
+                DefaultAgent365ObservabilityEnabled: DefaultAgent365ObservabilityEnabled,
+                DefaultAzureMonitorExportEnabled: DefaultAzureMonitorExportEnabled,
+                DefaultPromptShieldEnabled: DefaultPromptShieldEnabled,
+                IdempotencyKey: hasRowVersion ? idempotencyKey : null,
+                ExpectedRowVersion: hasRowVersion ? RowVersion : null);
+        }
 
         private static string ToLegacyObservabilityMode(bool agent365Enabled, bool azureMonitorEnabled) =>
             (agent365Enabled, azureMonitorEnabled) switch

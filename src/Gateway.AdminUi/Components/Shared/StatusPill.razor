@@ -1,4 +1,4 @@
-<span class="status-pill @CssClass" aria-label="Status: @Value">
+<span class="status-pill @CssClass" aria-label="Status: @Format(Value)">
     <span aria-hidden="true"></span>
     @Format(Value)
 </span>
@@ -6,13 +6,19 @@
 @code {
     [Parameter, EditorRequired] public string Value { get; set; } = string.Empty;
 
-    private string CssClass => Value.ToLowerInvariant() switch
+    private string CssClass => Normalize(Value) switch
     {
-        "active" or "healthy" or "ready" or "completed" or "succeeded" => "status-positive",
-        "failed" or "unavailable" or "requiresmanualintervention" => "status-negative",
-        "disabled" or "deleted" or "cancelled" => "status-neutral",
+        "active" or "healthy" or "ready" or "completed" or "succeeded" or
+            "connected" or "installed" => "status-positive",
+        "failed" or "unavailable" or "verificationfailed" or
+            "requiresmanualintervention" => "status-negative",
+        "disabled" or "deleted" or "cancelled" or "notconnected" or
+            "notinstalled" or "notready" => "status-neutral",
         "provisioning" or "running" or "pending" or "deleting" or
-            "awaitingadminapproval" or "awaitingadministratoraction" => "status-progress",
+            "awaitingadmin" or "awaitingadminapproval" or "awaitingadministrator" or
+            "awaitingadministratoraction" or "pendingpropagation" or "pendingverification" or
+            "waitingforpropagation" =>
+                "status-progress",
         _ => "status-neutral"
     };
 
@@ -21,6 +27,16 @@
         "RequiresManualIntervention" => "Manual intervention",
         "AwaitingAdminApproval" => "Awaiting approval",
         "AwaitingAdministratorAction" => "Administrator action required",
+        "AwaitingAdministrator" => "Awaiting admin",
+        "NotConnected" => "Not connected",
+        "NotInstalled" => "Unavailable",
+        "PendingPropagation" => "Pending propagation",
+        "PendingVerification" => "Pending verification",
+        "WaitingForPropagation" => "Pending propagation",
+        "VerificationFailed" => "Failed",
         _ => value
     };
+
+    private static string Normalize(string value) =>
+        new(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
 }

@@ -1,4 +1,8 @@
 interface:
   display_name: "A365 Provisioning"
   short_description: "Build and verify truthful Agent 365 provisioning"
-  default_prompt: "Use $a365-provisioning to resume from the documented provisioning checkpoint."
+  default_prompt: >-
+    Use $a365-provisioning to resume from the documented provisioning checkpoint.
+    Preserve implemented capability-only bootstrap and Settings-owned SIT/KYD/DLP,
+    dedicated gateway-protection-admin-v1, delegated-Administrator registration,
+    capability-bound verification, exact Ready dimensions, and undeployed status.

@@ -11,7 +11,8 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddPurviewServices(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        bool requireRuntimeIdentityBinding = false)
     {
         services.AddOptions<PurviewOptions>()
             .Bind(configuration.GetSection(PurviewOptions.SectionName))
@@ -20,7 +21,22 @@ public static class DependencyInjection
             new PurviewOptionsValidator());
 
         services.AddMemoryCache();
-        services.AddSingleton<IPurviewTokenProvider, DefaultAzurePurviewTokenProvider>();
+        services.AddSingleton<IPurviewTokenProvider>(serviceProvider =>
+            new ManagedIdentityPurviewTokenProvider(
+                serviceProvider.GetRequiredService<IOptions<PurviewOptions>>(),
+                configuration,
+                requireRuntimeIdentityBinding
+                    ? serviceProvider.GetRequiredService<IPurviewRuntimeIdentityBinding>()
+                    : serviceProvider.GetService<IPurviewRuntimeIdentityBinding>()));
+        services.AddSingleton<IPurviewTokenRoleSource, ManagedIdentityPurviewTokenRoleSource>();
+        services.AddSingleton<IPurviewTokenRoleAttestor>(serviceProvider =>
+            new PurviewTokenRoleAttestor(
+                serviceProvider.GetRequiredService<IPurviewTokenRoleSource>()));
+        services.AddSingleton<PurviewTenantConnectionEvidenceValidator>();
+        services.AddSingleton<IPurviewSettingsAutomation, PowerShellPurviewSettingsAutomation>();
+        services.AddSingleton<IPurviewSettingsProvider>(serviceProvider =>
+            new PurviewSettingsProvider(
+                serviceProvider.GetRequiredService<IPurviewSettingsAutomation>()));
         services.AddHttpClient(nameof(PurviewGraphClient), (serviceProvider, client) =>
         {
             var options = serviceProvider.GetRequiredService<IOptions<PurviewOptions>>().Value;

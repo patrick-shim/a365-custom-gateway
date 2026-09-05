@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
+using Gateway.Application.Protection;
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Requests;
 using Gateway.Contracts.Responses;
@@ -14,6 +15,9 @@ using Gateway.Domain.ValueObjects;
 using Gateway.EndToEndTests.Fixtures;
 using Gateway.Infrastructure.Persistence;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using NSubstitute;
 
 namespace Gateway.EndToEndTests;
@@ -31,9 +35,9 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
     private readonly GatewayWebApplicationFactory _factory;
     private readonly List<HttpClient> _clients = [];
 
-    public ConcurrentIdempotencyTests(GatewayWebApplicationFactory factory)
+    public ConcurrentIdempotencyTests()
     {
-        _factory = factory;
+        _factory = new ConcurrentGatewayWebApplicationFactory();
     }
 
     public void Dispose()
@@ -42,6 +46,7 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
             client.Dispose();
 
         TestAuthHandler.Reset();
+        _factory.Dispose();
     }
 
     [Fact]
@@ -367,6 +372,7 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
     {
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<GatewayDbContext>();
+        var blueprintApplicationId = Guid.NewGuid();
         var agent = new AgentRegistration
         {
             Id = Guid.NewGuid(),
@@ -377,7 +383,7 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
             Environment = AgentEnvironment.Development,
             Status = AgentStatus.Active,
             Agent365AgentId = Guid.NewGuid().ToString("D"),
-            BlueprintId = Guid.NewGuid().ToString("D"),
+            BlueprintId = blueprintApplicationId.ToString("D"),
             CreatedAtUtc = DateTime.UtcNow,
             UpdatedAtUtc = DateTime.UtcNow,
             CreatedByObjectId = TestAuthHandler.DefaultObjectId,
@@ -392,6 +398,90 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
             PurviewMode = purviewEnabled ? PurviewMode.AuditOnly : null,
             UpdatedAtUtc = DateTime.UtcNow
         };
+
+        if (purviewEnabled)
+        {
+            var capability = dbContext.ProtectionCapabilities
+                .SingleOrDefault(item =>
+                    item.Kind == ProtectionCapabilityKind.Purview);
+            if (capability is null)
+            {
+                dbContext.ProtectionCapabilities.Add(
+                    new ProtectionCapability
+                    {
+                        Id = Guid.NewGuid(),
+                        Kind = ProtectionCapabilityKind.Purview,
+                        Status = ProtectionCapabilityStatus.Installed,
+                        ResourceIdentifiers =
+                            new ProtectionCapabilityResourceIdentifiers(),
+                        LastReadbackAtUtc = DateTime.UtcNow,
+                        CreatedAtUtc = DateTime.UtcNow,
+                        UpdatedAtUtc = DateTime.UtcNow
+                    });
+            }
+            else
+            {
+                capability.Status = ProtectionCapabilityStatus.Installed;
+                capability.LastReadbackAtUtc = DateTime.UtcNow;
+                capability.UpdatedAtUtc = DateTime.UtcNow;
+            }
+
+            var now = DateTime.UtcNow;
+            var connectionId = Guid.NewGuid();
+            var generationId = new SensitiveInformationTypeSnapshotGenerationId(Guid.NewGuid());
+            var sitId = new SensitiveInformationTypeId(Guid.NewGuid());
+            var tenantId = new EntraTenantId(Guid.NewGuid());
+            dbContext.PurviewTenantConnections.Add(new PurviewTenantConnection
+            {
+                Id = connectionId,
+                TenantId = tenantId,
+                Status = PurviewTenantConnectionStatus.Connected,
+                ActiveInventoryGenerationId = generationId,
+                LastVerifiedAtUtc = now
+            });
+            dbContext.PurviewSensitiveInformationTypeSnapshotGenerations.Add(new PurviewSensitiveInformationTypeSnapshotGeneration
+            {
+                Id = generationId,
+                PurviewTenantConnectionId = connectionId,
+                TenantId = tenantId,
+                RetrievedAtUtc = now,
+                ExpiresAtUtc = now.AddHours(1),
+                ItemCount = 1,
+                Items =
+                [
+                    new()
+                    {
+                        Id = Guid.NewGuid(), GenerationId = generationId,
+                        SensitiveInformationTypeId = sitId, ExactName = "Synthetic identifier"
+                    }
+                ]
+            });
+            dbContext.PurviewDlpProfiles.Add(new PurviewDlpProfile
+            {
+                Id = new PurviewDlpProfileId(Guid.NewGuid()),
+                PurviewTenantConnectionId = connectionId,
+                BlueprintApplicationId =
+                    new BlueprintApplicationId(blueprintApplicationId),
+                DisplayName = $"Concurrent {externalAgentId}",
+                InventoryGenerationId = generationId,
+                SensitiveInformationTypeSnapshotExpiresAtUtc =
+                    now.AddHours(1),
+                SensitiveInformationTypeId = sitId,
+                SensitiveInformationTypeName = "Synthetic identifier",
+                Mode = PurviewMode.AuditOnly,
+                Status = PurviewDlpProfileStatus.Ready,
+                Readiness = ProtectionReadiness.Ready,
+                DlpPolicyProviderId = "policy-id",
+                DlpRuleProviderId = "rule-id",
+                LastReadbackAtUtc = now,
+                PropagationVerifiedAtUtc = now,
+                TokenRolesVerifiedAtUtc = now,
+                RuntimeAllowVerifiedAtUtc = now,
+                RuntimeBlockVerifiedAtUtc = now,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+        }
 
         dbContext.AgentRegistrations.Add(agent);
         var credentialService = scope.ServiceProvider
@@ -426,4 +516,19 @@ public sealed class ConcurrentIdempotencyTests : IDisposable
         Guid AgentRegistrationId,
         string ExternalAgentId,
         string ApiKey);
+
+    private sealed class ConcurrentGatewayWebApplicationFactory : GatewayWebApplicationFactory
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+            builder.ConfigureTestServices(services =>
+            {
+                var binding = Substitute.For<IBootstrapPurviewRuntimeBinding>();
+                binding.IsExact(Arg.Any<ProtectionCapability>()).Returns(true);
+                services.RemoveAll<IBootstrapPurviewRuntimeBinding>();
+                services.AddSingleton(binding);
+            });
+        }
+    }
 }

@@ -425,8 +425,8 @@ function Invoke-GatewayPlanWorkflow {
         }) -OutputFormat Json
         $registryFlag = if ($descriptor.features.developmentRegistryPreview) { 'enabled for acknowledged development' } else { 'closed' }
         $shieldFlag = if ($descriptor.features.promptShields) { "enabled ($($descriptor.features.promptShieldSku))" } else { 'disabled' }
-        $purviewFlag = if ($descriptor.features.purview) { 'policy authoring requested; runtime disabled' } else { 'not requested' }
-        Write-GatewayExperienceEvent -Type Info -Message "Features: Registry preview $registryFlag; Content Safety shields $shieldFlag; Purview $purviewFlag." -Data ([ordered]@{
+        $purviewFlag = if ($descriptor.features.purviewPrerequisites) { 'capability prerequisites requested; policy and readiness not configured' } else { 'not requested' }
+        Write-GatewayExperienceEvent -Type Info -Message "Capabilities: Registry beta $registryFlag; Prompt Shields infrastructure $shieldFlag; Purview $purviewFlag." -Data ([ordered]@{
             step = $planEventBase.step; index = $planEventBase.index; total = $planEventBase.total
             category = 'features'; features = $descriptor.features
         }) -OutputFormat Json
@@ -672,9 +672,7 @@ function Invoke-GatewayResumePreflight {
     $checkpoint = $checkpointResults[0]
 
     & $invokeStage -Code 'RP02_LOCAL_PREREQUISITES' -Label 'current local prerequisite boundary' -Action {
-        Assert-BootstrapPrerequisites `
-            -Install:$InstallLocalPrerequisites `
-            -RequirePurview:($Configuration.purview.enabled -eq $true) | Out-Null
+        Assert-BootstrapPrerequisites -Install:$InstallLocalPrerequisites | Out-Null
     } | Out-Null
 
     [object[]]$azureIdentityResults = @(& $invokeStage `
@@ -698,7 +696,10 @@ function Invoke-GatewayResumePreflight {
     $database = if ($completed.Contains('Gateway database')) { $State.steps['Gateway database'].evidence } else { $null }
     $adminIdentity = if ($completed.Contains('Admin UI identity')) { $State.steps['Admin UI identity'].evidence } else { $null }
     $adminCredential = if ($completed.Contains('Admin UI Key Vault credential')) { $State.steps['Admin UI Key Vault credential'].evidence } else { $null }
-    $purview = if ($completed.Contains('Purview policies')) { $State.steps['Purview policies'].evidence } else { $null }
+    $purviewCapability = if ($completed.Contains('Purview capability prerequisites')) {
+        $State.steps['Purview capability prerequisites'].evidence
+    }
+    else { $null }
     $runtime = if ($completed.Contains('Gateway runtime deployment')) { $State.steps['Gateway runtime deployment'].evidence } else { $null }
     $adminUi = if ($completed.Contains('Admin UI deployment')) { $State.steps['Admin UI deployment'].evidence } else { $null }
     $databaseValidationPlans = Get-BootstrapCompletedDatabaseValidationPlans -State $State
@@ -802,10 +803,27 @@ function Invoke-GatewayResumePreflight {
                         -SourceFingerprint ([string]$binding.deploymentSourceFingerprint)
                 }
             }
-            'Purview policies' {
-                & $invokeBooleanStage -Code 'RP16_PURVIEW_POLICIES' -Label 'optional Purview policy evidence' -Action {
-                    Test-GatewayPurviewEvidence -Config $Configuration -Blueprint $blueprint -Evidence $purview `
-                        -UserPrincipalName ([string]$azureIdentity.userPrincipalName) -NonInteractive:$NonInteractive
+            'Purview capability prerequisites' {
+                & $invokeBooleanStage -Code 'RP16_PURVIEW_CAPABILITY' -Label 'optional Purview capability evidence' -Action {
+                    $purviewAutomation = if ($Configuration.purview.enabled -eq $true) {
+                        Get-BootstrapPurviewAutomationIdentityEvidence `
+                            -Config $Configuration `
+                            -AzureIdentity $azureIdentity `
+                            -KeyVaultUri ([string]$inert.keyVaultUri) `
+                            -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                            -SourceFingerprint ([string]$binding.deploymentSourceFingerprint)
+                    }
+                    else { $null }
+                    $purviewComponent = Get-GatewayPurviewCapabilityEvidence `
+                        -Config $Configuration `
+                        -WorkloadIdentity $State.steps['Workflow v3 Entra configuration'].evidence `
+                        -Automation $purviewAutomation
+                    Test-GatewayBootstrapCapabilityEvidence `
+                        -Config $Configuration `
+                        -Identity $identity `
+                        -RuntimeReadback $inert `
+                        -PurviewCapability $purviewComponent `
+                        -Evidence $purviewCapability
                 }
             }
             'Gateway runtime deployment' {
@@ -813,7 +831,9 @@ function Invoke-GatewayResumePreflight {
                     Test-GatewayGroupDeploymentEvidence -Config $Configuration -Foundation $foundation -Identity $identity `
                         -Evidence $runtime -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
                         -SourceFingerprint ([string]$binding.deploymentSourceFingerprint) `
-                        -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database
+                        -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database `
+                        -PurviewAutomation $purviewCapability.purview `
+                        -CapabilityEvidence $purviewCapability
                 }
             }
             'Admin UI deployment' {
@@ -1085,6 +1105,9 @@ if ($Mode -eq 'Diagnose') {
             try {
                 $statePath = Get-BootstrapStatePath -Config $configuration
                 $state = Read-BootstrapState -Path $statePath -Config $configuration
+                $null = Convert-GatewayLegacyPurviewPolicyStep `
+                    -State $state `
+                    -Config $configuration
                 $status = Get-GatewayBootstrapStatus -Config $configuration -State $state -StatePath $statePath
             }
             catch {
@@ -1124,17 +1147,17 @@ $configuration = if ($expectedConfigurationFileFingerprintSupplied) {
 else {
     Read-BootstrapConfig -Path $Config
 }
-if ($configuration.purview.enabled -eq $true -and
-    $Mode -in @('Apply', 'Resume', 'Up', 'Verify') -and
-    -not (Test-BootstrapSecurityCompliancePlatformSupported)) {
-    throw 'Purview-enabled deployment and verification require Windows because Microsoft does not support Security & Compliance PowerShell for this workflow on macOS or Linux. Run this command from Windows, or keep Purview policy authoring off on this computer.'
-}
-
 $script:GatewayFailureStage = 'Bootstrap state'
 $script:GatewayFailureCode = 'state'
 $statePath = Get-BootstrapStatePath -Config $configuration
 Set-BootstrapDiagnosticsDirectory -Path (Join-Path (Get-RepositoryRoot) '.bootstrap/diagnostics')
 $state = Read-BootstrapState -Path $statePath -Config $configuration
+$legacyPurviewStateMigrated = Convert-GatewayLegacyPurviewPolicyStep `
+    -State $state `
+    -Config $configuration
+if ($legacyPurviewStateMigrated) {
+    Write-GatewayExperienceEvent -Type Warning -Message 'Legacy Purview policy checkpoint detected. Its evidence is preserved for Gateway Settings migration; bootstrap will not reconnect, author, update, or verify policy.' -OutputFormat $OutputFormat
+}
 
 if ($Mode -eq 'Status') {
     $script:GatewayFailureStage = 'Status'
@@ -1951,7 +1974,7 @@ try {
     }
 
     $prerequisites = Invoke-GatewayStateStep -Name 'Prerequisites' -AlwaysRun -Action {
-        Assert-BootstrapPrerequisites -Install:$InstallPrerequisites -RequirePurview:($configuration.purview.enabled -eq $true)
+        Assert-BootstrapPrerequisites -Install:$InstallPrerequisites
     }
     $azureIdentity = Invoke-GatewayStateStep -Name 'Azure authentication' -AlwaysRun -Action {
         if (-not $NonInteractive) {
@@ -2155,45 +2178,65 @@ try {
             -SourceFingerprint $activeDeploymentSourceFingerprint
     }
 
-    if ($configuration.purview.enabled -eq $true -and -not $NonInteractive) {
-        Write-GatewayExperienceEvent -Type Info -Message 'Administrator handoff: Purview policy review or setup requires an interactive compliance sign-in.' -Data ([ordered]@{
-            step = 'Purview policies'; index = 14; total = $stepNames.Count
-        }) -OutputFormat $OutputFormat
-    }
-    # The anti-replay guard exists to protect a prior policy-authoring attempt. A
-    # step that completed through the disabled early return authored nothing, so
-    # treating it as unsafe to replay would strand the deployment the moment
-    # Purview is turned on: the completed branch fails the step, and the
-    # reconciler then has no tenant object to recover from.
-    $purviewPreviouslyAuthored = ($state.steps -is [System.Collections.IDictionary]) -and
-        $state.steps.Contains('Purview policies') -and
-        ($state.steps['Purview policies'] -is [System.Collections.IDictionary]) -and
-        ($state.steps['Purview policies'].evidence -is [System.Collections.IDictionary]) -and
-        $state.steps['Purview policies'].evidence.configured -eq $true
-    $purview = Invoke-GatewayStateStep -Name 'Purview policies' -Validate {
-        Test-GatewayPurviewEvidence -Config $configuration -Blueprint $blueprint -Evidence $state.steps['Purview policies'].evidence -UserPrincipalName ([string]$azureIdentity.userPrincipalName) -NonInteractive:$NonInteractive
+    $purviewCapability = Invoke-GatewayStateStep -Name 'Purview capability prerequisites' -Validate {
+        $purviewAutomation = if ($configuration.purview.enabled -eq $true) {
+            Get-BootstrapPurviewAutomationIdentityEvidence `
+                -Config $configuration `
+                -AzureIdentity $azureIdentity `
+                -KeyVaultUri ([string]$inert.keyVaultUri) `
+                -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+                -SourceFingerprint $activeDeploymentSourceFingerprint
+        }
+        else { $null }
+        $purviewComponent = Get-GatewayPurviewCapabilityEvidence `
+            -Config $configuration `
+            -WorkloadIdentity $workloadIdentity `
+            -Automation $purviewAutomation
+        Test-GatewayBootstrapCapabilityEvidence `
+            -Config $configuration `
+            -Identity $identity `
+            -RuntimeReadback $inert `
+            -PurviewCapability $purviewComponent `
+            -Evidence $state.steps['Purview capability prerequisites'].evidence
     } -Reconcile {
-        Invoke-GatewayExactReconciliation -Readback {
-            if ($NonInteractive) {
-                throw 'Purview exact reconciliation requires interactive Security & Compliance authentication.'
-            }
-            $connectionId = ''
-            try {
-                $connectionId = Connect-BootstrapPurview -UserPrincipalName ([string]$azureIdentity.userPrincipalName) -TenantId ([string]$configuration.tenantId)
-                Get-BootstrapPurviewPolicyEvidence -Config $configuration -Blueprint $blueprint -MaximumAttempts 1
-            }
-            finally {
-                if (-not [string]::IsNullOrWhiteSpace($connectionId)) { Disconnect-BootstrapPurview -ConnectionId $connectionId }
-            }
+        $purviewAutomation = if ($configuration.purview.enabled -eq $true) {
+            Ensure-BootstrapPurviewAutomationIdentity `
+                -Config $configuration `
+                -AzureIdentity $azureIdentity `
+                -KeyVaultUri ([string]$inert.keyVaultUri) `
+                -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+                -SourceFingerprint $activeDeploymentSourceFingerprint `
+                -ReconcileOnly
         }
-    } -NoAutomaticReplayAfterStart:($configuration.purview.enabled -eq $true -and $purviewPreviouslyAuthored) -Action {
-        # Interactive compliance connection setup can emit module objects. The
-        # state contract stores only the provider's final non-secret evidence map.
-        $created = @(Ensure-BootstrapPurviewPolicies -Config $configuration -Blueprint $blueprint -UserPrincipalName ([string]$azureIdentity.userPrincipalName) -NonInteractive:$NonInteractive)
-        if ($created.Count -eq 0 -or $created[-1] -isnot [System.Collections.IDictionary]) {
-            throw 'Purview policy setup did not return the required safe evidence shape.'
+        else { $null }
+        $purviewComponent = Get-GatewayPurviewCapabilityEvidence `
+            -Config $configuration `
+            -WorkloadIdentity $workloadIdentity `
+            -Automation $purviewAutomation
+        Get-GatewayBootstrapCapabilityEvidence `
+            -Config $configuration `
+            -Identity $identity `
+            -RuntimeReadback $inert `
+            -PurviewCapability $purviewComponent
+    } -NoAutomaticReplayAfterStart -Action {
+        $purviewAutomation = if ($configuration.purview.enabled -eq $true) {
+            Ensure-BootstrapPurviewAutomationIdentity `
+                -Config $configuration `
+                -AzureIdentity $azureIdentity `
+                -KeyVaultUri ([string]$inert.keyVaultUri) `
+                -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+                -SourceFingerprint $activeDeploymentSourceFingerprint
         }
-        return $created[-1]
+        else { $null }
+        $purviewComponent = Get-GatewayPurviewCapabilityEvidence `
+            -Config $configuration `
+            -WorkloadIdentity $workloadIdentity `
+            -Automation $purviewAutomation
+        Get-GatewayBootstrapCapabilityEvidence `
+            -Config $configuration `
+            -Identity $identity `
+            -RuntimeReadback $inert `
+            -PurviewCapability $purviewComponent
     }
 
     $developmentPreviewRequested = [string]$configuration.environment -eq 'dev' -and $configuration.agent365.allowDevelopmentRegistryPreview -eq $true
@@ -2201,10 +2244,10 @@ try {
     # independent authority/readback boundary must not close ordinary registration.
     $enableProvisioning = $developmentPreviewRequested
     $runtime = Invoke-GatewayStateStep -Name 'Gateway runtime deployment' -Validate {
-        Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $state.steps['Gateway runtime deployment'].evidence -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database
+        Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $state.steps['Gateway runtime deployment'].evidence -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database -PurviewAutomation $purviewCapability.purview -CapabilityEvidence $purviewCapability
     } -Action {
-        $created = Deploy-GatewayCore -Config $configuration -Foundation $foundation -Identity $identity -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -WorkerPrincipalId ([string]$inert.workerPrincipalId) -ManagerApplicationIds @($blueprint.managerApplicationIds) -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ExecutionSourceFingerprint $activeAcceptedSourceFingerprint -Database $database -EnableWorkerProcessing -EnableProvisioning:$enableProvisioning -EnablePurview:($purview.enabled -eq $true)
-        $null = Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $created -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database
+        $created = Deploy-GatewayCore -Config $configuration -Foundation $foundation -Identity $identity -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -WorkerPrincipalId ([string]$inert.workerPrincipalId) -ManagerApplicationIds @($blueprint.managerApplicationIds) -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ExecutionSourceFingerprint $activeAcceptedSourceFingerprint -Database $database -EnableWorkerProcessing -EnableProvisioning:$enableProvisioning -EnablePurview:($configuration.purview.enabled -eq $true) -PurviewAutomation $purviewCapability.purview -CapabilityEvidence $purviewCapability
+        $null = Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $created -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database -PurviewAutomation $purviewCapability.purview -CapabilityEvidence $purviewCapability
         return $created
     }
 

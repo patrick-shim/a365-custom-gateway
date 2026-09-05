@@ -82,6 +82,34 @@ public class RegisterAgentValidator : AbstractValidator<RegisterAgentCommand>
             .WithMessage("PurviewPolicyProfile is only valid when Purview is enabled for a new blueprint.")
             .When(x => x.Blueprint?.Mode != "CreateNew" || x.Features?.PurviewEnabled != true);
 
+        RuleFor(x => x.PurviewDlpProfile!.ProfileId)
+            .NotEmpty()
+            .When(x => x.PurviewDlpProfile is not null);
+        RuleFor(x => x.PurviewDlpProfile!.BlueprintApplicationId)
+            .NotEmpty()
+            .When(x => x.PurviewDlpProfile is not null);
+        RuleFor(x => x.PurviewDlpProfile!.ExpectedProfileRowVersion)
+            .Must(BeExpectedRowVersion)
+            .When(x =>
+                x.PurviewDlpProfile?.ExpectedProfileRowVersion is not null);
+        RuleFor(x => x.Features!.PurviewDlpProfile!.ProfileId)
+            .NotEmpty()
+            .When(x => x.Features?.PurviewDlpProfile is not null);
+        RuleFor(x => x.Features!.PurviewDlpProfile!.BlueprintApplicationId)
+            .NotEmpty()
+            .When(x => x.Features?.PurviewDlpProfile is not null);
+        RuleFor(x => x.Features!.PurviewDlpProfile!.ExpectedProfileRowVersion)
+            .Must(BeExpectedRowVersion)
+            .When(x =>
+                x.Features?.PurviewDlpProfile?.ExpectedProfileRowVersion is not null);
+        RuleFor(x => x)
+            .Must(HaveMatchingDlpSelections)
+            .WithMessage("Top-level and feature DLP profile selections must match.");
+        RuleFor(x => x.PurviewDlpProfile)
+            .Null()
+            .When(x => x.Features?.PurviewEnabled == false)
+            .WithMessage("PurviewDlpProfile cannot be selected while Purview is disabled.");
+
         When(
             x => x.Blueprint?.Mode == "CreateNew" && x.Features?.PurviewEnabled == true,
             () =>
@@ -149,5 +177,30 @@ public class RegisterAgentValidator : AbstractValidator<RegisterAgentCommand>
             features.AzureMonitorExportEnabled,
             ObservabilityMode.Agent365,
             out _);
+    }
+
+    private static bool HaveMatchingDlpSelections(RegisterAgentCommand command) =>
+        command.PurviewDlpProfile is null ||
+        command.Features?.PurviewDlpProfile is null ||
+        command.PurviewDlpProfile ==
+        command.Features.PurviewDlpProfile;
+
+    private static bool BeExpectedRowVersion(string? value)
+    {
+        if (value is null)
+            return true;
+        try
+        {
+            var decoded = Convert.FromBase64String(value);
+            return decoded.Length == 8 &&
+                string.Equals(
+                    Convert.ToBase64String(decoded),
+                    value,
+                    StringComparison.Ordinal);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
     }
 }

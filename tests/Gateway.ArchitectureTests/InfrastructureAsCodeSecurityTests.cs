@@ -892,7 +892,7 @@ public class InfrastructureAsCodeSecurityTests
         entry.Should().Contain("Get-GatewayWorkloadIdentityEvidence");
         entry.Should().Contain("Resolve-AdminUiCredentialAfterStartedOutcome");
         entra.Should().Contain("Get-AdminUiCredentialEvidenceFromMetadata");
-        entry.Should().Contain("Get-BootstrapPurviewPolicyEvidence");
+        entry.Should().Contain("Test-GatewayBootstrapCapabilityEvidence");
         Regex.Matches(entry, "-ReconcileOnly", RegexOptions.CultureInvariant)
             .Count.Should().BeGreaterThanOrEqualTo(3);
         Regex.Matches(entry, "-NoAutomaticReplayAfterStart", RegexOptions.CultureInvariant)
@@ -998,7 +998,7 @@ public class InfrastructureAsCodeSecurityTests
     }
 
     [Fact]
-    public void Bootstrap_ShouldNamespaceTenantObjectsAndKeepOptionalPaidPreviewFeaturesOff()
+    public void Bootstrap_ShouldNamespaceTenantObjectsAndDefaultFullEvaluationCapabilitiesOn()
     {
         var azure = ReadRepositoryFile("bootstrap", "modules", "Azure.psm1");
         var entra = ReadRepositoryFile("bootstrap", "modules", "Entra.psm1");
@@ -1025,10 +1025,22 @@ public class InfrastructureAsCodeSecurityTests
             "kv-$($Config.projectName)-$($Config.environment).vault.azure.net");
 
         using var document = JsonDocument.Parse(example);
+        document.RootElement.GetProperty("capabilityPreset")
+            .GetString().Should().Be("fullEvaluation");
         document.RootElement.GetProperty("agent365")
-            .GetProperty("allowDevelopmentRegistryPreview").GetBoolean().Should().BeFalse();
+            .GetProperty("allowDevelopmentRegistryPreview").GetBoolean().Should().BeTrue();
+        document.RootElement.GetProperty("agent365")
+            .GetProperty("registryBetaAcknowledged").GetBoolean().Should().BeTrue();
         document.RootElement.GetProperty("promptShield")
-            .GetProperty("enabled").GetBoolean().Should().BeFalse();
+            .GetProperty("enabled").GetBoolean().Should().BeTrue();
+        document.RootElement.GetProperty("promptShield")
+            .GetProperty("costAndQuotaAcknowledged").GetBoolean().Should().BeTrue();
+        document.RootElement.GetProperty("purview")
+            .GetProperty("enabled").GetBoolean().Should().BeTrue();
+        document.RootElement.GetProperty("purview")
+            .GetProperty("authorityRequirementsAcknowledged").GetBoolean().Should().BeTrue();
+        document.RootElement.GetProperty("purview")
+            .TryGetProperty("sensitiveInformationTypeId", out _).Should().BeFalse();
     }
 
     [Fact]

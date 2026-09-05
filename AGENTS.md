@@ -123,6 +123,42 @@ optional runtime features and are not required for ordinary registration.
   independent readback is Ready; optional profile readiness must not close the core
   registration path.
 
+### Implemented protection source invariants
+
+These invariants are implemented and offline-validated in source. They are not
+deployed or live-readiness claims:
+
+- Bootstrap is capability-only. **Full evaluation** is the Quick-development
+  default and prepares acknowledged Registry beta admission, Prompt Shields
+  infrastructure/RBAC, and Purview authority prerequisites. **Core Gateway** omits
+  optional protection dependencies; **Custom** chooses Prompt Shields and Purview
+  prerequisites independently. Staging and production keep Registry beta closed.
+  Bootstrap never selects a SIT or authors KYD/DLP policy.
+- Every registration creation requires a signed-in delegated
+  `Gateway.Administrator`. Actual Registry completion remains that Administrator's
+  user-only OBO action.
+- Role-aware Gateway Settings owns tenant SIT inventory and explicit selection,
+  fixed-scope KYD, blueprint-specific DLP authoring/readback/readiness, protection
+  defaults, and per-registration Prompt Shields/Purview controls.
+- Protection administration uses only `gateway-protection-admin-v1`; never attach it
+  to registration queue `gateway-provisioning-v3` or extend the seven registration
+  stages.
+- The downloadable Windows companion is packaged by the immutable Admin UI image.
+  Downloading does not execute it. Its bounded typed submission remains
+  non-authoritative and `PendingVerification` until the worker performs exact
+  capability-bound provider verification of the Purview automation identity, Key
+  Vault, and certificate.
+- DLP `Ready` requires five independent dimensions: capability `Installed`, exact
+  policy readback, propagation, managed-identity token roles, and a bounded runtime
+  verdict proving both allow and block. Current SIT generation, exact blueprint,
+  provider IDs, and evidence timestamps must also match.
+- Purview remains fail closed with fixed scopes: KYD uses enterprise-AI-apps
+  `ee1680d0-702f-4090-b26c-c49091e86531` as `Group`; DLP uses the selected
+  blueprint application ID as `Individual`; both use the `Application` plane.
+- The source is not deployed. Live E2E still requires fresh exact-target authority,
+  a clean deployment, two new blueprints with one external registration each, and
+  independent observability, Prompt Shields, and DLP validation.
+
 ## Bootstrap
 
 - `bootstrap/bootstrap.ps1` is the supported resumable engine. Public users run the

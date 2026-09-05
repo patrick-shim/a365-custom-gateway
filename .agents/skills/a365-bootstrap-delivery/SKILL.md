@@ -6,6 +6,8 @@ description: Continue or release the A365 Gateway public bootstrap as one eviden
 # A365 bootstrap delivery
 
 Treat bootstrap as one public product journey, not independent scripts.
+Follow the complete Required reading sequence in the binding `AGENTS.md` before
+acting; this skill supplements and never replaces that repository contract.
 
 ## Start or resume
 
@@ -59,6 +61,28 @@ Read [references/release-gate.md](references/release-gate.md) when changing or r
 7. Complete
 
 Do not call a bootstrap change complete from unit tests alone. The release candidate must prove the supported public commands from a clean checkout on Windows, then prove the authorized Azure deployment and live Admin UI/functionality. If a live mutation is not authorized, stop at the gate that requires it and record the exact unmet authority; never imply later gates passed.
+
+## Implemented protection source boundary
+
+The redesign is implemented and offline-validated in source, not deployed.
+Bootstrap's Full evaluation, Core Gateway, and Custom presets prepare shared
+capabilities only; they never select a SIT or author KYD/DLP policy, and
+staging/production keep Registry beta closed. Every registration creation requires
+a signed-in delegated `Gateway.Administrator`; actual Registry completion remains
+that Administrator's user-only OBO action.
+
+Gateway Settings owns SIT/KYD/DLP and per-registration protection controls on
+dedicated `gateway-protection-admin-v1`. The immutable Admin UI image supplies the
+downloadable Windows companion; downloading does not run it, and its evidence is
+non-authoritative until exact capability-bound provider verification. DLP `Ready`
+requires capability Installed, exact policy readback, propagation, token roles,
+runtime allow/block evidence, current SIT generation, exact blueprint/provider
+IDs, and timestamps. Preserve fixed KYD Group versus blueprint Individual DLP on
+the Application plane.
+
+The live release journey remains unproved. It requires fresh exact-target authority,
+a clean deployment, exactly two new blueprints with one external registration each,
+then independent observability, Prompt Shields, and DLP validation.
 
 ## Failure handling
 

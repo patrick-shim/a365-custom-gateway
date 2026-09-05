@@ -1,5 +1,6 @@
 using Gateway.Application.Agents;
 using Gateway.Application.Exceptions;
+using Gateway.Application.Protection;
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Responses;
 using Gateway.Domain.Enums;
@@ -14,17 +15,20 @@ internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDeta
     private readonly IProvisioningJobRepository _provisioningJobRepository;
     private readonly IAiInteractionRepository _interactionRepository;
     private readonly IActivityReceiptRepository _activityReceiptRepository;
+    private readonly ProtectionEffectiveFeatureEvaluator? _protectionFeatures;
 
     public GetAgentHandler(
         IAgentRepository agentRepository,
         IProvisioningJobRepository provisioningJobRepository,
         IAiInteractionRepository interactionRepository,
-        IActivityReceiptRepository activityReceiptRepository)
+        IActivityReceiptRepository activityReceiptRepository,
+        ProtectionEffectiveFeatureEvaluator? protectionFeatures = null)
     {
         _agentRepository = agentRepository;
         _provisioningJobRepository = provisioningJobRepository;
         _interactionRepository = interactionRepository;
         _activityReceiptRepository = activityReceiptRepository;
+        _protectionFeatures = protectionFeatures;
     }
 
     public async Task<AgentDetailDto> Handle(GetAgentQuery request, CancellationToken cancellationToken)
@@ -52,6 +56,17 @@ internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDeta
         }
 
         var observabilityDestinations = agent.FeatureConfiguration.ObservabilityMode.ToDestinations();
+        var features = _protectionFeatures is null
+            ? new AgentFeaturesDto(
+                agent.FeatureConfiguration.ObservabilityMode.ToString(),
+                agent.FeatureConfiguration.PurviewEnabled,
+                agent.FeatureConfiguration.PurviewMode?.ToString(),
+                observabilityDestinations.Agent365ObservabilityEnabled,
+                observabilityDestinations.AzureMonitorExportEnabled,
+                agent.FeatureConfiguration.PromptShieldEnabled)
+            : await _protectionFeatures.ToDtoAsync(
+                agent,
+                cancellationToken);
 
         var lastActivity = await AgentLastActivity.ResolveAsync(
             _interactionRepository,
@@ -72,13 +87,7 @@ internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDeta
                 agent.Agent365InstanceId,
                 agent.AgentIdentityObjectId,
                 agent.BlueprintObjectId),
-            new AgentFeaturesDto(
-                agent.FeatureConfiguration.ObservabilityMode.ToString(),
-                agent.FeatureConfiguration.PurviewEnabled,
-                agent.FeatureConfiguration.PurviewMode?.ToString(),
-                observabilityDestinations.Agent365ObservabilityEnabled,
-                observabilityDestinations.AzureMonitorExportEnabled,
-                agent.FeatureConfiguration.PromptShieldEnabled),
+            features,
             AgentLastActivity.For(lastActivity, agent.Id),
             agent.CreatedAtUtc,
             agent.UpdatedAtUtc,

@@ -16,7 +16,12 @@ erDiagram
     AGENT_REGISTRATIONS ||--o{ ACTIVITY_RECEIPTS : records
     AGENT_REGISTRATIONS ||--o{ IDEMPOTENCY_RECORDS : scopes
     AGENT_REGISTRATIONS ||--o{ PROMPT_EVALUATION_RECORDS : protects
-    AGENT_REGISTRATIONS }o--|| PURVIEW_POLICY_PROFILES : optionally_uses
+    AGENT_REGISTRATIONS }o--o| PURVIEW_DLP_PROFILES : optionally_uses
+    PURVIEW_TENANT_CONNECTIONS ||--o{ SIT_SNAPSHOT_GENERATIONS : owns
+    SIT_SNAPSHOT_GENERATIONS ||--o{ SIT_SNAPSHOTS : contains
+    PURVIEW_TENANT_CONNECTIONS ||--o| PURVIEW_KYD_CONFIGURATIONS : configures
+    PURVIEW_TENANT_CONNECTIONS ||--o{ PURVIEW_DLP_PROFILES : configures
+    PROTECTION_ADMIN_OPERATIONS ||--o{ PROTECTION_ADMIN_OPERATION_STEPS : contains
 ```
 
 `OutboxMessages` is a transactionally written dispatch table whose payload carries
@@ -95,17 +100,41 @@ with documented retention. SQL activity receipts contain sanitized identifiers,
 processing decisions, timestamps, and correlation data. Prompt-evaluation receipts
 store a salted content binding and consumption state, never the prompt.
 
-## Purview profiles
+## Protection governance
 
-`PurviewPolicyProfiles` represents reusable Gateway-managed policy configuration.
-Its effective scopes are deliberately different:
+The protection-governance v1 migration implements the
+[protection settings plan](protection-settings-plan.md):
 
-- Know Your Data: one tenant-wide fixed enterprise-AI-apps Group location;
-- DLP: one or more reviewed blueprint application IDs as Individual locations.
+- `ProtectionCapabilities` stores bootstrap-owned capability kind, status,
+  non-secret resource identifiers, and exact-readback time.
+- `PurviewTenantConnections` stores one exact tenant authority connection and its
+  active expiring inventory generation.
+- `PurviewSensitiveInformationTypeSnapshotGenerations` and
+  `PurviewSensitiveInformationTypeSnapshots` store bounded tenant inventory by
+  canonical GUID, exact Unicode name, publisher, order, and expiry.
+- `PurviewKnowYourDataConfigurations` enforces one fixed
+  `ee1680d0-702f-4090-b26c-c49091e86531` Group on the Application plane.
+- `PurviewDlpProfiles` enforces one Individual/Application profile per blueprint
+  application ID and stores policy/rule readback plus independent capability,
+  propagation, token-role, allow, and block evidence.
+- `ProtectionAdminOperations` and their ordered steps persist reviewed intent,
+  accepted-request hash, confirmation verifier, idempotency key, actor, target,
+  retry/manual-intervention state, safe failure code, and readback references.
 
-Profile assignment is optional. A registration without a profile follows the core
-path. A registration that selects one fails closed unless the profile and its
-independent provider readback are Ready.
+Legacy combined `PurviewPolicyProfiles` are preserved. The migration projects them
+into review-required `LegacyProtectionPolicyCandidates`, splitting blueprint
+bindings without declaring them Ready or mutating provider state.
+
+At verified runtime startup, the API validates bootstrap's complete exact 19-key
+capability attestation and synchronizes all three capability rows under a SQL
+application lock and transaction. The upsert is deterministic,
+restart-idempotent, rowversion-preserving for unchanged rows, clears stale
+NotInstalled identifiers, and rejects partial or drifted state. Inert startup does
+not materialize rows.
+
+Profile assignment remains optional. A registration without a profile follows the
+core path. Purview use fails closed unless the exact profile and inventory remain
+Ready for that registration's resolved blueprint.
 
 ## Retention and deletion
 

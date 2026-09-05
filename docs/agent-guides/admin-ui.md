@@ -27,6 +27,7 @@ access-denied route, not the application not-found page.
 |---|---|---|
 | Setup Center | `/setup`, `/getting-started` | Deployment checks and first-use guidance |
 | Overview | `/` | Health, inventory, and safe operational summary |
+| Settings | `/settings` | Registration defaults and role-aware protection administration |
 | Agents | `/agents` | Registration inventory and filtering |
 | Registration | `/agents/register` | Blueprint, observability, and optional-protection choices |
 | Agent detail | `/agents/{id}` | Lifecycle, credentials, operations, safe evidence |
@@ -61,11 +62,26 @@ event. `Active` is Gateway-reported state after final verification.
 
 - Prompt Shields is pre-model. Explain that the external client must evaluate before
   calling its model and send the single-use receipt with the interaction.
-- Purview is per registration. The UI chooses a profile/mode; it does not author
-  policies directly.
+- Prompt Shields capability comes from bootstrap; its default and per-registration
+  enablement belong in Settings.
+- Purview is per registration at runtime. Settings
+  initiates API-owned tenant connection, SIT selection, KYD, and blueprint DLP
+  operations. The browser never invokes providers directly.
 - Know Your Data collection is tenant-wide fixed Group scope; DLP is blueprint
   Individual scope. Do not describe them as one blueprint-scoped pair.
 - Offline `downloadText` is not response-side inline blocking.
+
+The implemented protection experience is specified in the
+[protection settings plan](../architecture/protection-settings-plan.md).
+Only `Gateway.Administrator` may connect authority, select a SIT, confirm policy
+mutation, change defaults, or enable a registration. Operators can read bounded
+governance state. Auditor and SupportReader views are more restricted; the API
+remains authoritative.
+Provider steps that require Security & Compliance PowerShell remain interactive and
+Windows-only through a Gateway-provided companion; the Settings UI owns the
+operation and explicit choices. The Admin UI packages the canonical companion as a
+download from its immutable image, never auto-runs it, and accepts only the fresh
+single prefixed result line for the exact operation.
 
 ## Error and empty states
 

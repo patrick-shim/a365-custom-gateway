@@ -95,9 +95,10 @@ The API OBO client uses a managed-identity signed assertion and the sole
 ## Purview profiles
 
 Profile assignment is optional. Ordinary unprotected registration remains available
-when the core admission path is open. A profile-backed registration calls policy
-automation only after blueprint resolution and fails before child creation unless
-exact policy readback succeeds.
+when the core admission path is open. Registration never authors policy. A newly
+created blueprint completes its core registration first; an Administrator then
+creates and verifies that blueprint's DLP profile in Settings and enables Purview
+only after the exact profile is Ready.
 
 The automation must keep scopes separate:
 
@@ -109,6 +110,13 @@ The automation must keep scopes separate:
 Preserve existing reviewed DLP locations. Never merge blueprint IDs into the KYD
 Group. Certificate/PFX material is loaded through the approved private path and may
 not appear in environment output, command arguments, logs, state, or tests.
+
+The protection administration workflow uses `gateway-protection-admin-v1` and eight
+persisted v1 steps, independently of the seven registration stages and
+`gateway-provisioning-v3`. It validates reviewed intent, discovers provider state,
+applies only the reviewed mutation, records exact readback, verifies propagation,
+attests token roles, validates runtime verdicts, and completes. Duplicate delivery,
+unknown outcomes, and retry exhaustion fail closed.
 
 ## Final verification
 

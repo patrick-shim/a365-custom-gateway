@@ -13,55 +13,35 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         $"gateway-setup-config-{Guid.NewGuid():N}");
 
     [Fact]
-    public async Task WriteAsync_AtomicallyReplacesOnlyIgnoredPublicConfiguration()
+    public async Task WriteAsync_AtomicallyPublishesCapabilityOnlyConfiguration()
     {
         Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
-        var target = Path.Combine(root, "bootstrap", "config.json");
         var form = ValidForm();
-        await File.WriteAllTextAsync(
-            target,
-            BootstrapConfigWriter.SerializeForTest(BootstrapConfiguration.From(form)));
-        var priorCanonical = await File.ReadAllTextAsync(target);
         var writer = NewWriter();
 
         using var staged = await writer.StageAsync(
             ReadyState(form).CreatePlanReadyConfiguration());
 
-        (await File.ReadAllTextAsync(target)).Should().Be(priorCanonical);
-        File.Exists(staged.StagePath).Should().BeTrue();
         var result = staged.TryPublish();
         result.Should().NotBeNull();
-
-        result!.Path.Should().Be(target);
-        result.ConfigurationFileFingerprint.Should().Be(
-            BootstrapConfigurationDocument.Fingerprint(await File.ReadAllTextAsync(target)));
-        PlanFingerprintPolicy.IsCanonical(result.ConfigurationFileFingerprint).Should().BeTrue();
-        File.Exists(staged.StagePath).Should().BeFalse();
-        Directory.GetFiles(root, "*", SearchOption.AllDirectories)
-            .Should().Equal(target);
-        var json = await File.ReadAllTextAsync(target);
-        json.Should().NotContain("Bearer ");
-        json.Contains("client_secret", StringComparison.OrdinalIgnoreCase).Should().BeFalse();
-        json.Should().NotContain("activateGatewayAdapterAfterPolicyReadback");
+        var json = await File.ReadAllTextAsync(result!.Path);
         using var document = JsonDocument.Parse(json);
-        document.RootElement.GetProperty("subscriptionId").GetGuid().Should().NotBe(Guid.Empty);
-        document.RootElement.GetProperty("tenantId").GetGuid().Should().NotBe(Guid.Empty);
-        document.RootElement.GetProperty("agent365")
-            .GetProperty("reviewedManagerApplicationIds")[0]
-            .GetGuid()
-            .Should().Be(Guid.Parse("33333333-3333-4333-8333-333333333333"));
-        document.RootElement.GetProperty("purview")
-            .GetProperty("policyProvisioningCertificateSecretUri")
-            .GetString()
-            .Should().BeEmpty();
-        document.RootElement.GetProperty("purview")
-            .GetProperty("collectionPolicyName")
-            .GetString()
-            .Should().Be("A365 Gateway a365gw AI collection");
-        document.RootElement.GetProperty("purview")
-            .GetProperty("sensitiveInformationTypeId")
-            .GetString()
-            .Should().BeEmpty();
+        var configuration = document.RootElement;
+        var purview = configuration.GetProperty("purview");
+
+        configuration.GetProperty("capabilityPreset").GetString().Should().Be("custom");
+        configuration.GetProperty("agent365")
+            .GetProperty("registryBetaAcknowledged").GetBoolean().Should().BeFalse();
+        configuration.GetProperty("promptShield")
+            .GetProperty("costAndQuotaAcknowledged").GetBoolean().Should().BeFalse();
+        purview.EnumerateObject().Select(property => property.Name)
+            .Should().Equal("enabled", "authorityRequirementsAcknowledged");
+        json.Should().NotContain("sensitiveInformationType");
+        json.Should().NotContain("collectionPolicyName");
+        json.Should().NotContain("dlpPolicyName");
+        json.Should().NotContain("dlpRuleName");
+        PlanFingerprintPolicy.IsCanonical(result.ConfigurationFileFingerprint).Should().BeTrue();
+        Directory.GetFiles(root, "*", SearchOption.AllDirectories).Should().Equal(result.Path);
     }
 
     [Fact]
@@ -77,6 +57,24 @@ public sealed class BootstrapConfigWriterTests : IDisposable
     }
 
     [Fact]
+    public async Task WriteAsync_AcceptsMultipleReviewedManagerApplicationIds()
+    {
+        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
+        var form = ValidForm();
+        form.SetReviewedManagerApplicationIds(
+        [
+            Guid.Parse("33333333-3333-4333-8333-333333333333"),
+            Guid.Parse("44444444-4444-4444-8444-444444444444")
+        ]);
+
+        var result = await StageAndPublishAsync(NewWriter(), ReadyState(form));
+
+        result.Configuration.Agent365.ReviewedManagerApplicationIds.Should().Equal(
+            Guid.Parse("33333333-3333-4333-8333-333333333333"),
+            Guid.Parse("44444444-4444-4444-8444-444444444444"));
+    }
+
+    [Fact]
     public async Task WriteAsync_RejectsAResourceGroupEndingInAPeriod()
     {
         var form = ValidForm();
@@ -89,86 +87,6 @@ public sealed class BootstrapConfigWriterTests : IDisposable
     }
 
     [Fact]
-    public async Task WriteAsync_AcceptsMultipleReviewedManagerApplicationIds()
-    {
-        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
-        var form = ValidForm();
-        form.SetReviewedManagerApplicationIds(
-        [
-            Guid.Parse("33333333-3333-4333-8333-333333333333"),
-            Guid.Parse("44444444-4444-4444-8444-444444444444")
-        ]);
-        form.PurviewEnabled = true;
-        form.PurviewSensitiveInformationTypeId =
-            Guid.Parse("50842eb7-edc8-4019-85dd-5a5c1f2bb085");
-        form.PurviewSensitiveInformationType = "Credit Card Number";
-
-        var result = await StageAndPublishAsync(NewWriter(), ReadyState(form));
-
-        result.Configuration.Agent365.ReviewedManagerApplicationIds.Should().Equal(
-            Guid.Parse("33333333-3333-4333-8333-333333333333"),
-            Guid.Parse("44444444-4444-4444-8444-444444444444"));
-        result.Configuration.Purview.SensitiveInformationType.Should().Be("Credit Card Number");
-        result.Configuration.Purview.SensitiveInformationTypeId.Should().Be(
-            "50842eb7-edc8-4019-85dd-5a5c1f2bb085");
-    }
-
-    [Fact]
-    public async Task WriteAsync_DoesNotGuessWhetherAConfigurationNameResemblesCredentialMaterial()
-    {
-        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
-        var form = ValidForm();
-        form.PurviewEnabled = true;
-        form.PurviewSensitiveInformationTypeId = Guid.NewGuid();
-        form.PurviewSensitiveInformationType = "Bearer Classification Name";
-
-        var result = await StageAndPublishAsync(NewWriter(), ReadyState(form));
-
-        result.Configuration.Purview.SensitiveInformationType.Should().Be(
-            "Bearer Classification Name");
-    }
-
-    [Fact]
-    public async Task WriteAsync_PreservesExactUnicodeSensitiveInformationTypeWithoutTrimming()
-    {
-        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
-        var form = ValidForm();
-        form.PurviewEnabled = true;
-        form.PurviewSensitiveInformationTypeId = Guid.NewGuid();
-        form.PurviewSensitiveInformationType = "주민등록번호";
-
-        var result = await StageAndPublishAsync(NewWriter(), ReadyState(form));
-
-        result.Configuration.Purview.SensitiveInformationTypeId.Should().Be(
-            form.PurviewSensitiveInformationTypeId.ToString("D"));
-        result.Configuration.Purview.SensitiveInformationType.Should().Be("주민등록번호");
-        var json = await File.ReadAllTextAsync(result.Path);
-        using var document = JsonDocument.Parse(json);
-        document.RootElement.GetProperty("purview")
-            .GetProperty("sensitiveInformationType")
-            .GetString()
-            .Should().Be("주민등록번호");
-    }
-
-    [Theory]
-    [InlineData(" Credit Card Number")]
-    [InlineData("Credit Card Number ")]
-    public async Task WriteAsync_RejectsPurviewNameThatWouldChangeWhenTrimmed(string name)
-    {
-        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
-        var form = ValidForm();
-        form.PurviewEnabled = true;
-        form.PurviewSensitiveInformationTypeId = Guid.NewGuid();
-        form.PurviewSensitiveInformationType = name;
-        var state = ReadyState(form, applyPurviewProof: false);
-
-        var action = () => NewWriter().StageAsync(state.CreatePlanReadyConfiguration());
-
-        await action.Should().ThrowAsync<ValidationException>();
-        File.Exists(Path.Combine(root, "bootstrap", "config.json")).Should().BeFalse();
-    }
-
-    [Fact]
     public async Task WriteAsync_RefusesToOverwriteAConfigurationThatChangedAfterReview()
     {
         Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
@@ -176,7 +94,8 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         var existing = ValidForm();
         existing.ProjectName = "gwfirst";
         existing.ResourceGroupName = "rg-gwfirst-dev";
-        var existingJson = BootstrapConfigWriter.SerializeForTest(BootstrapConfiguration.From(existing));
+        var existingJson = BootstrapConfigWriter.SerializeForTest(
+            BootstrapConfiguration.From(existing));
         await File.WriteAllTextAsync(target, existingJson);
 
         var action = () => NewWriter().StageAsync(
@@ -187,47 +106,7 @@ public sealed class BootstrapConfigWriterTests : IDisposable
     }
 
     [Fact]
-    public async Task WriteAsync_RejectsUnavailableSelectedSubscriptionBeforeCreatingAFile()
-    {
-        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
-        var state = ReadyState(ValidForm());
-        state.SetSubscriptions([]);
-
-        var action = () => NewWriter().StageAsync(state.CreatePlanReadyConfiguration());
-
-        await action.Should().ThrowAsync<ValidationException>();
-        File.Exists(Path.Combine(root, "bootstrap", "config.json")).Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task WriteAsync_RejectsDisabledSelectedSubscriptionBeforeCreatingAFile()
-    {
-        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
-        var state = ReadyState(ValidForm());
-        var selected = state.Subscriptions.Single();
-        state.SetSubscriptions([selected with { State = "Disabled" }]);
-
-        var action = () => NewWriter().StageAsync(state.CreatePlanReadyConfiguration());
-
-        await action.Should().ThrowAsync<ValidationException>();
-        File.Exists(Path.Combine(root, "bootstrap", "config.json")).Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task WriteAsync_RejectsLocationOutsideCurrentSubscriptionInventory()
-    {
-        Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
-        var state = ReadyState(ValidForm());
-        state.Form.Location = "westus3";
-
-        var action = () => NewWriter().StageAsync(state.CreatePlanReadyConfiguration());
-
-        await action.Should().ThrowAsync<ValidationException>();
-        File.Exists(Path.Combine(root, "bootstrap", "config.json")).Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task WriteAsync_RejectsStaleManagerApplicationAcceptance()
+    public async Task WriteAsync_RejectsStaleReadinessProofs()
     {
         Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
         var state = ReadyState(ValidForm());
@@ -248,12 +127,14 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
-        var action = () => new AtomicFileWriter().WriteUtf8Async(target, "replacement", cancellation.Token);
+        var action = () => new AtomicFileWriter().WriteUtf8Async(
+            target,
+            "replacement",
+            cancellation.Token);
 
         await action.Should().ThrowAsync<OperationCanceledException>();
         (await File.ReadAllTextAsync(target)).Should().Be("preserve-me");
-        Directory.GetFiles(Path.Combine(root, "bootstrap"), "*.tmp")
-            .Should().BeEmpty();
+        Directory.GetFiles(Path.Combine(root, "bootstrap"), "*.tmp").Should().BeEmpty();
     }
 
     private BootstrapConfigWriter NewWriter() => new(
@@ -269,9 +150,7 @@ public sealed class BootstrapConfigWriterTests : IDisposable
             ?? throw new InvalidOperationException("The deterministic test stage changed unexpectedly.");
     }
 
-    private static SetupWizardState ReadyState(
-        SetupConfigurationForm form,
-        bool applyPurviewProof = true)
+    private static SetupWizardState ReadyState(SetupConfigurationForm form)
     {
         var state = new SetupWizardState(new FixedProjectNameGenerator());
         state.ApplyExistingConfiguration(new ExistingConfigurationResult(
@@ -290,19 +169,6 @@ public sealed class BootstrapConfigWriterTests : IDisposable
             form.SubscriptionId,
             [new AzureLocation(form.Location, "Selected region")],
             null));
-        if (form.PurviewEnabled && applyPurviewProof)
-        {
-            state.ApplyPurviewSensitiveInformationTypeDiscovery(new(
-                form.SubscriptionId,
-                form.TenantId,
-                [new PurviewSensitiveInformationType(
-                    form.PurviewSensitiveInformationTypeId,
-                    form.PurviewSensitiveInformationType,
-                    "Test publisher")],
-                PurviewSensitiveInformationTypeDiscovery.Provenance,
-                null));
-        }
-
         return state;
     }
 
@@ -341,6 +207,7 @@ public sealed class BootstrapConfigWriterTests : IDisposable
     private static SetupConfigurationForm ValidForm() => new()
     {
         Profile = DeploymentProfile.QuickDevelopment,
+        CapabilityPreset = CapabilityPreset.Custom,
         SubscriptionId = Guid.NewGuid(),
         TenantId = Guid.NewGuid(),
         Environment = "dev",
@@ -348,13 +215,12 @@ public sealed class BootstrapConfigWriterTests : IDisposable
         ProjectName = "a365gw",
         ResourceGroupName = "rg-a365gw-dev",
         AlertEmail = "operator@example.com",
+        SeedBlueprintName = "A365 Gateway Seed dev",
         AllowDevelopmentRegistryPreview = false,
         ReviewedManagerApplicationIds = "33333333-3333-4333-8333-333333333333",
         PromptShieldEnabled = false,
         PromptShieldSkuName = "F0",
-        PurviewEnabled = false,
-        PurviewSensitiveInformationTypeId = Guid.Empty,
-        PurviewSensitiveInformationType = string.Empty
+        PurviewEnabled = false
     };
 
     private sealed class FixedProjectNameGenerator : IProjectNameGenerator

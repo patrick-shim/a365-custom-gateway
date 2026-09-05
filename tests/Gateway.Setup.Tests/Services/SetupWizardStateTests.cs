@@ -340,227 +340,18 @@ public sealed class SetupWizardStateTests
     }
 
     [Fact]
-    public void PurviewDisabled_DoesNotBlockOtherwiseReadyCorePlan()
+    public void CapabilityAcknowledgements_ArePartOfPlanReadiness()
     {
         var state = ReadyState();
+        state.Form.ApplyCapabilityPreset(CapabilityPreset.FullEvaluation);
 
-        state.Form.PurviewEnabled.Should().BeFalse();
-        state.HasValidPurviewSensitiveInformationTypeSelection.Should().BeFalse();
+        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
+
+        state.Form.RegistryBetaAcknowledged = true;
+        state.Form.PromptShieldCostAndQuotaAcknowledged = true;
+        state.Form.PurviewAuthorityRequirementsAcknowledged = true;
+
         state.CanWriteConfigurationAndRunPlan.Should().BeTrue();
-    }
-
-    [Fact]
-    public void EnablingPurview_HasNoImplicitSensitiveInformationTypeSelection()
-    {
-        var state = ReadyState();
-
-        state.SetPurviewEnabled(true).Should().BeTrue();
-
-        state.Form.PurviewSensitiveInformationTypeId.Should().Be(Guid.Empty);
-        state.Form.PurviewSensitiveInformationType.Should().BeEmpty();
-        state.PurviewSensitiveInformationTypes.Should().BeEmpty();
-        state.HasValidPurviewSensitiveInformationTypeSelection.Should().BeFalse();
-        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
-    }
-
-    [Fact]
-    public void SelectPurviewSensitiveInformationType_StoresExactGuidAndUnicodeName()
-    {
-        var state = ReadyState();
-        state.SetPurviewEnabled(true).Should().BeTrue();
-        var type = SensitiveInformationType("주민등록번호", "Contoso");
-        state.ApplyPurviewSensitiveInformationTypeDiscovery(PurviewResult(state, [type]));
-
-        state.SelectPurviewSensitiveInformationType(type.Id).Should().BeTrue();
-
-        state.Form.PurviewSensitiveInformationTypeId.Should().Be(type.Id);
-        state.Form.PurviewSensitiveInformationType.Should().Be("주민등록번호");
-        state.HasValidPurviewSensitiveInformationTypeSelection.Should().BeTrue();
-        state.CanWriteConfigurationAndRunPlan.Should().BeTrue();
-    }
-
-    [Fact]
-    public void PurviewSelection_IsKeyedByGuidAndRequiresExactCurrentName()
-    {
-        var state = ReadyState();
-        state.SetPurviewEnabled(true).Should().BeTrue();
-        var first = SensitiveInformationType("Duplicate name", "Microsoft");
-        var second = SensitiveInformationType("duplicate name", "Contoso");
-        state.ApplyPurviewSensitiveInformationTypeDiscovery(PurviewResult(state, [first, second]));
-        state.SelectPurviewSensitiveInformationType(second.Id).Should().BeTrue();
-
-        state.Form.PurviewSensitiveInformationType = "Duplicate name";
-
-        state.HasValidPurviewSensitiveInformationTypeSelection.Should().BeFalse();
-        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
-    }
-
-    [Fact]
-    public void DuplicateExactPurviewNamesInvalidateInventoryProof()
-    {
-        var state = ReadyState();
-        state.SetPurviewEnabled(true).Should().BeTrue();
-        var first = SensitiveInformationType("Credit Card Number", "Microsoft");
-        var second = SensitiveInformationType("Credit Card Number", "Contoso");
-
-        state.ApplyPurviewSensitiveInformationTypeDiscovery(PurviewResult(state, [first, second]));
-
-        state.PurviewSensitiveInformationTypes.Should().BeEmpty();
-        state.PurviewSensitiveInformationTypeDiscoveryGuidance.Should().Contain("unexpected");
-        state.HasValidPurviewSensitiveInformationTypeSelection.Should().BeFalse();
-        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
-    }
-
-    [Fact]
-    public void FailedPurviewRefresh_InvalidatesProofAndClearsFreshSelection()
-    {
-        var state = ReadyState();
-        state.SetPurviewEnabled(true).Should().BeTrue();
-        var type = SensitiveInformationType("Credit Card Number", "Microsoft Corporation");
-        state.ApplyPurviewSensitiveInformationTypeDiscovery(PurviewResult(state, [type]));
-        state.SelectPurviewSensitiveInformationType(type.Id).Should().BeTrue();
-
-        state.BeginPurviewSensitiveInformationTypeDiscovery();
-        state.ApplyPurviewSensitiveInformationTypeDiscovery(new(
-            state.Form.SubscriptionId,
-            state.Form.TenantId,
-            [],
-            PurviewSensitiveInformationTypeDiscovery.Provenance,
-            "Purview inventory could not be read."));
-
-        state.PurviewSensitiveInformationTypes.Should().BeEmpty();
-        state.Form.PurviewSensitiveInformationTypeId.Should().Be(Guid.Empty);
-        state.Form.PurviewSensitiveInformationType.Should().BeEmpty();
-        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
-    }
-
-    [Fact]
-    public void DisablingPurview_InvalidatesInventoryAndClearsFreshSelectionWithoutBlockingCore()
-    {
-        var state = ReadyState();
-        state.SetPurviewEnabled(true).Should().BeTrue();
-        var type = SensitiveInformationType("Credit Card Number", "Microsoft Corporation");
-        state.ApplyPurviewSensitiveInformationTypeDiscovery(PurviewResult(state, [type]));
-        state.SelectPurviewSensitiveInformationType(type.Id).Should().BeTrue();
-
-        state.SetPurviewEnabled(false).Should().BeTrue();
-
-        state.PurviewSensitiveInformationTypes.Should().BeEmpty();
-        state.Form.PurviewSensitiveInformationTypeId.Should().Be(Guid.Empty);
-        state.Form.PurviewSensitiveInformationType.Should().BeEmpty();
-        state.CanWriteConfigurationAndRunPlan.Should().BeTrue();
-    }
-
-    [Fact]
-    public void PurviewDiscoveryForWrongTarget_IsRejectedAndClearsFreshSelection()
-    {
-        var state = ReadyState();
-        state.SetPurviewEnabled(true).Should().BeTrue();
-        var type = SensitiveInformationType("Credit Card Number", "Microsoft Corporation");
-        state.ApplyPurviewSensitiveInformationTypeDiscovery(PurviewResult(state, [type]));
-        state.SelectPurviewSensitiveInformationType(type.Id).Should().BeTrue();
-
-        state.ApplyPurviewSensitiveInformationTypeDiscovery(new(
-            Guid.NewGuid(),
-            Guid.NewGuid(),
-            [type],
-            PurviewSensitiveInformationTypeDiscovery.Provenance,
-            null));
-
-        state.PurviewSensitiveInformationTypes.Should().BeEmpty();
-        state.Form.PurviewSensitiveInformationTypeId.Should().Be(Guid.Empty);
-        state.Form.PurviewSensitiveInformationType.Should().BeEmpty();
-        state.PurviewSensitiveInformationTypeDiscoveryGuidance.Should().Contain("changed");
-        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
-    }
-
-    [Fact]
-    public void ChangingSubscription_InvalidatesPurviewInventoryAndFreshSelection()
-    {
-        var state = ReadyState();
-        state.SetPurviewEnabled(true).Should().BeTrue();
-        var type = SensitiveInformationType("Credit Card Number", "Microsoft Corporation");
-        state.ApplyPurviewSensitiveInformationTypeDiscovery(PurviewResult(state, [type]));
-        state.SelectPurviewSensitiveInformationType(type.Id).Should().BeTrue();
-        var current = state.Subscriptions.Single();
-        var replacement = Subscription("Replacement", isDefault: false, state: "Enabled");
-        state.SetSubscriptions([current, replacement]);
-
-        state.SelectSubscription(replacement.SubscriptionId).Should().BeTrue();
-
-        state.PurviewSensitiveInformationTypes.Should().BeEmpty();
-        state.Form.PurviewSensitiveInformationTypeId.Should().Be(Guid.Empty);
-        state.Form.PurviewSensitiveInformationType.Should().BeEmpty();
-        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
-    }
-
-    [Fact]
-    public void ImportedEnabledPurview_RemainsLockedButNeedsFreshExactProof()
-    {
-        var state = NewState();
-        var form = ValidForm();
-        form.Location = "koreacentral";
-        form.PurviewEnabled = true;
-        var type = SensitiveInformationType("주민등록번호", "Contoso");
-        form.PurviewSensitiveInformationTypeId = type.Id;
-        form.PurviewSensitiveInformationType = type.Name;
-        state.ApplyExistingConfiguration(new ExistingConfigurationResult(
-            ExistingConfigurationStatus.Loaded,
-            form,
-            null));
-        state.SetSubscriptions([
-            new AzureSubscription(
-                form.SubscriptionId,
-                form.TenantId,
-                "Imported target",
-                true,
-                "Enabled")
-        ]);
-        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
-            form.SubscriptionId,
-            [new AzureLocation(form.Location, "Korea Central")],
-            null));
-
-        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
-        state.ApplyPurviewSensitiveInformationTypeDiscovery(PurviewResult(state, [type]));
-
-        state.Form.PurviewSensitiveInformationTypeId.Should().Be(type.Id);
-        state.Form.PurviewSensitiveInformationType.Should().Be(type.Name);
-        state.HasValidPurviewSensitiveInformationTypeSelection.Should().BeTrue();
-        state.CanWriteConfigurationAndRunPlan.Should().BeTrue();
-        state.SelectPurviewSensitiveInformationType(Guid.NewGuid()).Should().BeFalse();
-    }
-
-    [Fact]
-    public void ImportedEnabledPurview_NameDriftPreservesLockedValuesAndBlocksPlan()
-    {
-        var state = NewState();
-        var form = ValidForm();
-        form.Location = "koreacentral";
-        form.PurviewEnabled = true;
-        var imported = SensitiveInformationType("Original exact name", "Contoso");
-        form.PurviewSensitiveInformationTypeId = imported.Id;
-        form.PurviewSensitiveInformationType = imported.Name;
-        state.ApplyExistingConfiguration(new ExistingConfigurationResult(
-            ExistingConfigurationStatus.Loaded,
-            form,
-            null));
-        state.SetSubscriptions([
-            new AzureSubscription(form.SubscriptionId, form.TenantId, "Imported", true, "Enabled")
-        ]);
-        state.ApplyLocationDiscovery(new AzureLocationDiscoveryResult(
-            form.SubscriptionId,
-            [new AzureLocation(form.Location, "Korea Central")],
-            null));
-
-        state.ApplyPurviewSensitiveInformationTypeDiscovery(PurviewResult(
-            state,
-            [imported with { Name = "Renamed in tenant" }]));
-
-        state.Form.PurviewSensitiveInformationTypeId.Should().Be(imported.Id);
-        state.Form.PurviewSensitiveInformationType.Should().Be("Original exact name");
-        state.PurviewSensitiveInformationTypeSelectionIssue.Should().Contain("exact name");
-        state.CanWriteConfigurationAndRunPlan.Should().BeFalse();
     }
 
     [Fact]
@@ -603,7 +394,7 @@ public sealed class SetupWizardStateTests
     }
 
     [Fact]
-    public void QuickDevelopmentProfile_NeverSilentlyEnablesRegistryPreview()
+    public void QuickDevelopmentProfile_DefaultsToFullEvaluationButRequiresFreshAcknowledgement()
     {
         var form = ValidForm();
         form.AllowDevelopmentRegistryPreview = true;
@@ -611,7 +402,9 @@ public sealed class SetupWizardStateTests
         form.ApplyProfile(DeploymentProfile.StagingFoundation);
         form.ApplyProfile(DeploymentProfile.QuickDevelopment);
 
-        form.AllowDevelopmentRegistryPreview.Should().BeFalse();
+        form.CapabilityPreset.Should().Be(CapabilityPreset.FullEvaluation);
+        form.AllowDevelopmentRegistryPreview.Should().BeTrue();
+        form.RegistryBetaAcknowledged.Should().BeFalse();
         form.Environment.Should().Be("dev");
     }
 
@@ -651,25 +444,15 @@ public sealed class SetupWizardStateTests
         1,
         ["Existing blueprint"]);
 
-    private static PurviewSensitiveInformationType SensitiveInformationType(
-        string name,
-        string publisher) => new(Guid.NewGuid(), name, publisher);
-
-    private static PurviewSensitiveInformationTypeDiscoveryResult PurviewResult(
-        SetupWizardState state,
-        IReadOnlyList<PurviewSensitiveInformationType> types) => new(
-            state.Form.SubscriptionId,
-            state.Form.TenantId,
-            types,
-            PurviewSensitiveInformationTypeDiscovery.Provenance,
-            null);
-
     private static SetupConfigurationForm ValidForm() => new()
     {
         SubscriptionId = Guid.NewGuid(),
         TenantId = Guid.NewGuid(),
         AlertEmail = "operator@example.com",
-        ReviewedManagerApplicationIds = "33333333-3333-4333-8333-333333333333"
+        ReviewedManagerApplicationIds = "33333333-3333-4333-8333-333333333333",
+        RegistryBetaAcknowledged = true,
+        PromptShieldCostAndQuotaAcknowledged = true,
+        PurviewAuthorityRequirementsAcknowledged = true
     };
 
     private sealed class FixedProjectNameGenerator : IProjectNameGenerator

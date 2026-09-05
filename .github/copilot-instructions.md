@@ -73,6 +73,28 @@ Purview policy scopes remain independent:
 Never merge blueprint IDs into the Know Your Data Group. Policy readback does not
 prove propagation or a runtime verdict.
 
+### Implemented protection source invariants
+
+The redesign is implemented and offline-validated in source, not deployed.
+Bootstrap's Full evaluation, Core Gateway, and Custom presets prepare shared
+capabilities only; bootstrap never selects a SIT or authors KYD/DLP policy, and
+staging/production keep Registry beta closed. Every registration creation requires
+a signed-in delegated `Gateway.Administrator`; actual Registry completion remains
+that Administrator's user-only OBO action.
+
+Gateway Settings owns SIT inventory/selection, fixed KYD Group and
+blueprint-Individual DLP operations/readiness, defaults, and per-registration
+protections. Protection administration is isolated on
+`gateway-protection-admin-v1`. The immutable Admin UI image packages a downloadable
+Windows companion; download does not execute it, and companion evidence stays
+non-authoritative until exact capability-bound provider verification.
+
+`Ready` requires capability Installed, exact policy readback, propagation, token
+roles, and bounded runtime allow-and-block verdicts, plus current SIT generation,
+exact blueprint/provider IDs, and timestamps. Live E2E requires fresh exact-target
+authority, a clean deployment, two new blueprints with one external registration
+each, then independent observability, Prompt Shields, and DLP validation.
+
 ## Bootstrap and security
 
 The root `gateway` and `gateway.cmd` launchers call the supported resumable

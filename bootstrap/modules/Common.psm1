@@ -280,9 +280,35 @@ function Get-NormalizedBootstrapConfiguration {
         }
     }
 
+    $legacyPurviewPolicyConfiguration = $false
     if ($normalized.Contains('purview') -and $normalized['purview'] -is [System.Collections.IDictionary]) {
+        if ($normalized['purview'].Contains('legacyPolicyMigrationRequired')) {
+            $normalized['purview'].Remove('legacyPolicyMigrationRequired')
+        }
+        $legacyPurviewFieldNames = @(
+            'collectionPolicyName',
+            'dlpPolicyName',
+            'dlpRuleName',
+            'sensitiveInformationTypeId',
+            'sensitiveInformationType',
+            'activateGatewayAdapterAfterPolicyReadback',
+            'policyProvisioningEnabled',
+            'policyProvisioningOrganization',
+            'policyProvisioningApplicationId',
+            'policyProvisioningCertificateSecretUri'
+        )
+        $legacyPurviewPolicyConfiguration = @(
+            $legacyPurviewFieldNames |
+                Where-Object { $normalized['purview'].Contains([string]$_) }
+        ).Count -gt 0
+        if ($normalized['purview'].Contains('activateGatewayAdapterAfterPolicyReadback')) {
+            $normalized['purview'].Remove('activateGatewayAdapterAfterPolicyReadback')
+        }
         foreach ($entry in ([ordered]@{
+            authorityRequirementsAcknowledged =
+                [bool]($legacyPurviewPolicyConfiguration -and $normalized['purview']['enabled'] -eq $true)
             sensitiveInformationTypeId = ''
+            sensitiveInformationType = ''
             policyProvisioningEnabled = $false
             policyProvisioningOrganization = ''
             policyProvisioningApplicationId = ''
@@ -300,12 +326,12 @@ function Get-NormalizedBootstrapConfiguration {
                 $normalized['purview']['policyProvisioningApplicationId'] = $parsed.ToString('D')
             }
         }
-
         $sensitiveInformationTypeId = [string]$normalized['purview']['sensitiveInformationTypeId']
         if (-not [string]::IsNullOrWhiteSpace($sensitiveInformationTypeId)) {
             $parsedSensitiveInformationTypeId = [guid]::Empty
             if ([guid]::TryParse($sensitiveInformationTypeId, [ref]$parsedSensitiveInformationTypeId)) {
-                $normalized['purview']['sensitiveInformationTypeId'] = $parsedSensitiveInformationTypeId.ToString('D')
+                $normalized['purview']['sensitiveInformationTypeId'] =
+                    $parsedSensitiveInformationTypeId.ToString('D')
             }
         }
 
@@ -317,6 +343,11 @@ function Get-NormalizedBootstrapConfiguration {
         if (-not $normalized['agent365'].Contains('reviewedManagerApplicationIds')) {
             $normalized['agent365']['reviewedManagerApplicationIds'] = @()
         }
+        if (-not $normalized['agent365'].Contains('registryBetaAcknowledged')) {
+            $normalized['agent365']['registryBetaAcknowledged'] =
+                [bool]($legacyPurviewPolicyConfiguration -and
+                    $normalized['agent365']['allowDevelopmentRegistryPreview'] -eq $true)
+        }
         $normalized['agent365']['reviewedManagerApplicationIds'] = @(
             $normalized['agent365']['reviewedManagerApplicationIds'] |
                 ForEach-Object {
@@ -327,6 +358,39 @@ function Get-NormalizedBootstrapConfiguration {
                 Sort-Object -Unique
         )
         $normalized['agent365'] = ConvertTo-BootstrapCanonicalValue -Value $normalized['agent365']
+    }
+    if ($normalized.Contains('promptShield') -and
+        $normalized['promptShield'] -is [System.Collections.IDictionary] -and
+        -not $normalized['promptShield'].Contains('costAndQuotaAcknowledged')) {
+        $normalized['promptShield']['costAndQuotaAcknowledged'] =
+            [bool]($legacyPurviewPolicyConfiguration -and
+                $normalized['promptShield']['enabled'] -eq $true)
+        $normalized['promptShield'] = ConvertTo-BootstrapCanonicalValue -Value $normalized['promptShield']
+    }
+    if (-not $normalized.Contains('capabilityPreset')) {
+        $hasCapabilityObjects =
+            $normalized.Contains('environment') -and
+            $normalized.Contains('agent365') -and
+            $normalized['agent365'] -is [System.Collections.IDictionary] -and
+            $normalized.Contains('promptShield') -and
+            $normalized['promptShield'] -is [System.Collections.IDictionary] -and
+            $normalized.Contains('purview') -and
+            $normalized['purview'] -is [System.Collections.IDictionary]
+        $normalized['capabilityPreset'] = if (
+            $hasCapabilityObjects -and
+            $legacyPurviewPolicyConfiguration -and
+            [string]$normalized['environment'] -ceq 'dev' -and
+            $normalized['agent365']['allowDevelopmentRegistryPreview'] -eq $true -and
+            $normalized['promptShield']['enabled'] -eq $true -and
+            $normalized['purview']['enabled'] -eq $true) {
+            'fullEvaluation'
+        }
+        elseif ($hasCapabilityObjects -and
+            -not $normalized['promptShield']['enabled'] -and
+            -not $normalized['purview']['enabled']) {
+            'coreGateway'
+        }
+        else { 'custom' }
     }
 
     return ConvertTo-BootstrapCanonicalValue -Value $normalized -IsRoot
@@ -2595,22 +2659,61 @@ function Read-BootstrapConfig {
         throw "Bootstrap configuration '$resolved' is not valid JSON."
     }
 
-    # Setup briefly emitted this property with the only supported value, false.
-    # Accept that exact legacy output long enough to migrate it in memory, while
-    # continuing to reject true, non-boolean values, casing variants, and every
-    # other undeclared property through the current schema.
     $schemaInput = $raw
+    $legacyPurviewPolicyFields = @(
+        'collectionPolicyName',
+        'dlpPolicyName',
+        'dlpRuleName',
+        'sensitiveInformationTypeId',
+        'sensitiveInformationType',
+        'activateGatewayAdapterAfterPolicyReadback',
+        'policyProvisioningEnabled',
+        'policyProvisioningOrganization',
+        'policyProvisioningApplicationId',
+        'policyProvisioningCertificateSecretUri'
+    )
+    $hasLegacyPurviewPolicyConfiguration = $false
     $purviewProperties = @($config.PSObject.Properties | Where-Object { $_.Name -ceq 'purview' })
     if ($purviewProperties.Count -eq 1 -and $null -ne $purviewProperties[0].Value) {
         $purview = $purviewProperties[0].Value
-        $legacyProperties = @($purview.PSObject.Properties | Where-Object {
-            $_.Name -ceq 'activateGatewayAdapterAfterPolicyReadback'
-        })
-        if ($legacyProperties.Count -eq 1) {
-            if ($legacyProperties[0].Value -isnot [bool] -or [bool]$legacyProperties[0].Value) {
-                throw 'Bootstrap configuration failed JSON Schema validation. Review property names, types, formats, and allowed values against bootstrap/config.schema.json; rejected input values were suppressed.'
+        $hasLegacyPurviewPolicyConfiguration = @(
+            $purview.PSObject.Properties |
+                Where-Object { $legacyPurviewPolicyFields -ccontains $_.Name }
+        ).Count -gt 0
+        if ($hasLegacyPurviewPolicyConfiguration) {
+            $legacyAdapter = @($purview.PSObject.Properties | Where-Object {
+                $_.Name -ceq 'activateGatewayAdapterAfterPolicyReadback'
+            })
+            if ($legacyAdapter.Count -eq 1) {
+                if ($legacyAdapter[0].Value -isnot [bool] -or [bool]$legacyAdapter[0].Value) {
+                    throw 'Bootstrap configuration failed JSON Schema validation. Review property names, types, formats, and allowed values against bootstrap/config.schema.json; rejected input values were suppressed.'
+                }
+                $purview.PSObject.Properties.Remove('activateGatewayAdapterAfterPolicyReadback')
             }
-            $purview.PSObject.Properties.Remove('activateGatewayAdapterAfterPolicyReadback')
+            if ($config.PSObject.Properties.Name -notcontains 'capabilityPreset') {
+                $promptEnabled = $config.promptShield.enabled -eq $true
+                $purviewEnabled = $purview.enabled -eq $true
+                $registryEnabled = $config.agent365.allowDevelopmentRegistryPreview -eq $true
+                $legacyPreset = if ([string]$config.environment -ceq 'dev' -and
+                    $registryEnabled -and $promptEnabled -and $purviewEnabled) {
+                    'fullEvaluation'
+                }
+                elseif (-not $promptEnabled -and -not $purviewEnabled) { 'coreGateway' }
+                else { 'custom' }
+                $config | Add-Member -MemberType NoteProperty -Name capabilityPreset -Value $legacyPreset
+            }
+            if ($config.agent365.PSObject.Properties.Name -notcontains 'registryBetaAcknowledged') {
+                $config.agent365 | Add-Member -MemberType NoteProperty -Name registryBetaAcknowledged `
+                    -Value ([bool]$config.agent365.allowDevelopmentRegistryPreview)
+            }
+            if ($config.promptShield.PSObject.Properties.Name -notcontains 'costAndQuotaAcknowledged') {
+                $config.promptShield | Add-Member -MemberType NoteProperty -Name costAndQuotaAcknowledged `
+                    -Value ([bool]$config.promptShield.enabled)
+            }
+            if ($purview.PSObject.Properties.Name -notcontains 'authorityRequirementsAcknowledged') {
+                $purview | Add-Member -MemberType NoteProperty -Name authorityRequirementsAcknowledged `
+                    -Value ([bool]$purview.enabled)
+            }
             $schemaInput = $config | ConvertTo-Json -Depth 30 -Compress
         }
     }
@@ -2626,8 +2729,20 @@ function Read-BootstrapConfig {
         throw 'Bootstrap configuration failed JSON Schema validation. Review property names, types, formats, and allowed values against bootstrap/config.schema.json; rejected input values were suppressed.'
     }
 
+    if ($hasLegacyPurviewPolicyConfiguration) {
+        $config.purview | Add-Member -MemberType NoteProperty `
+            -Name legacyPolicyMigrationRequired -Value $true -Force
+        Write-Warning 'Legacy Purview SIT or policy configuration was detected. Those fields are migration information only; bootstrap will not inventory a SIT or author, update, or verify policy. Complete protection configuration later in Gateway Settings.'
+    }
     foreach ($entry in ([ordered]@{
         sensitiveInformationTypeId = ''
+        sensitiveInformationType = ''
+    }).GetEnumerator()) {
+        if ($config.purview.PSObject.Properties.Name -notcontains $entry.Key) {
+            $config.purview | Add-Member -MemberType NoteProperty -Name $entry.Key -Value $entry.Value
+        }
+    }
+    foreach ($entry in ([ordered]@{
         policyProvisioningEnabled = $false
         policyProvisioningOrganization = ''
         policyProvisioningApplicationId = ''
@@ -2636,9 +2751,6 @@ function Read-BootstrapConfig {
         if ($config.purview.PSObject.Properties.Name -notcontains $entry.Key) {
             $config.purview | Add-Member -MemberType NoteProperty -Name $entry.Key -Value $entry.Value
         }
-    }
-    if ($config.agent365.PSObject.Properties.Name -notcontains 'reviewedManagerApplicationIds') {
-        $config.agent365 | Add-Member -MemberType NoteProperty -Name reviewedManagerApplicationIds -Value @()
     }
     foreach ($name in @('subscriptionId', 'tenantId', 'environment', 'location', 'projectName', 'resourceGroupName', 'alertEmail')) {
         if ([string]::IsNullOrWhiteSpace([string]$config.$name)) { throw "Config property '$name' is required." }
@@ -2686,49 +2798,48 @@ function Read-BootstrapConfig {
     }
     $config.agent365.reviewedManagerApplicationIds = @($reviewedManagerIds | Sort-Object)
     if ($config.environment -ne 'dev' -and $config.agent365.allowDevelopmentRegistryPreview -eq $true) {
-        throw 'Agent Registration preview can be enabled only for the dev environment.'
+        throw 'Agent 365 Registry beta cannot be enabled for staging or production.'
+    }
+    if ($config.agent365.allowDevelopmentRegistryPreview -eq $true -and
+        $config.agent365.registryBetaAcknowledged -ne $true) {
+        throw 'Agent 365 Registry beta requires explicit acknowledgement that it is unsupported for production.'
+    }
+    if ($config.promptShield.enabled -eq $true -and
+        $config.promptShield.costAndQuotaAcknowledged -ne $true) {
+        throw 'Prompt Shields requires explicit review of quota and Azure cost.'
+    }
+    if ($config.purview.enabled -eq $true -and
+        $config.purview.authorityRequirementsAcknowledged -ne $true) {
+        throw 'Microsoft Purview prerequisites require explicit review of tenant authority and post-deployment administration requirements.'
     }
     $sensitiveInformationTypeId = [string]$config.purview.sensitiveInformationTypeId
     $sensitiveInformationTypeName = [string]$config.purview.sensitiveInformationType
     $hasSensitiveInformationTypeId = -not [string]::IsNullOrWhiteSpace($sensitiveInformationTypeId)
     $hasSensitiveInformationTypeName = -not [string]::IsNullOrWhiteSpace($sensitiveInformationTypeName)
     if ($hasSensitiveInformationTypeId -ne $hasSensitiveInformationTypeName) {
-        throw 'purview.sensitiveInformationTypeId and purview.sensitiveInformationType must be supplied together from the same tenant inventory selection.'
+        throw 'Legacy purview.sensitiveInformationTypeId and purview.sensitiveInformationType must be supplied together; both values are migration information only.'
     }
     if ($hasSensitiveInformationTypeId) {
-        Assert-GuidValue -Value $sensitiveInformationTypeId -Label 'purview.sensitiveInformationTypeId'
+        Assert-GuidValue -Value $sensitiveInformationTypeId -Label 'legacy purview.sensitiveInformationTypeId'
         $config.purview.sensitiveInformationTypeId = ([guid]$sensitiveInformationTypeId).ToString('D')
-        if ($sensitiveInformationTypeName.Length -gt 255 -or $sensitiveInformationTypeName -match '[\x00-\x1f\x7f]') {
-            throw 'purview.sensitiveInformationType must be the exact bounded Unicode Name returned by the tenant inventory.'
-        }
-    }
-    if ($config.purview.enabled -eq $true -and -not $hasSensitiveInformationTypeId) {
-        throw 'Purview requires a tenant-selected sensitive-information-type GUID plus exact Name; the bootstrap never invents a tenant DLP classifier.'
-    }
-    if ($config.purview.enabled -eq $true) {
-        foreach ($name in @('collectionPolicyName', 'dlpPolicyName', 'dlpRuleName')) {
-            if ([string]::IsNullOrWhiteSpace([string]$config.purview.$name)) { throw "purview.$name is required when Purview is enabled." }
-        }
     }
     if ($config.purview.policyProvisioningEnabled -eq $true) {
-        if ($config.purview.enabled -ne $true) {
-            throw 'Purview policy-profile automation requires purview.enabled=true.'
-        }
         if ([string]$config.purview.policyProvisioningOrganization -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$') {
             throw 'purview.policyProvisioningOrganization must be the verified Microsoft 365 organization domain.'
         }
         Assert-GuidValue -Value ([string]$config.purview.policyProvisioningApplicationId) -Label 'purview.policyProvisioningApplicationId'
         $config.purview.policyProvisioningApplicationId = ([guid][string]$config.purview.policyProvisioningApplicationId).ToString('D')
-        $certificateSecretUri = $null
-        if (-not [Uri]::TryCreate([string]$config.purview.policyProvisioningCertificateSecretUri, [UriKind]::Absolute, [ref]$certificateSecretUri) -or
-            $certificateSecretUri.Scheme -ne 'https' -or
-            -not $certificateSecretUri.IsDefaultPort -or
-            $certificateSecretUri.Host -notlike '*.vault.azure.net' -or
-            $certificateSecretUri.AbsolutePath -notmatch '^/secrets/[A-Za-z0-9-]{1,127}$' -or
-            -not [string]::IsNullOrEmpty($certificateSecretUri.Query) -or
-            -not [string]::IsNullOrEmpty($certificateSecretUri.Fragment)) {
-            throw 'purview.policyProvisioningCertificateSecretUri must be a versionless HTTPS Azure Key Vault secret URI.'
-        }
+    }
+    if ([string]$config.capabilityPreset -ceq 'fullEvaluation' -and
+        ([string]$config.environment -cne 'dev' -or
+         $config.agent365.allowDevelopmentRegistryPreview -ne $true -or
+         $config.promptShield.enabled -ne $true -or
+         $config.purview.enabled -ne $true)) {
+        throw 'The Full evaluation capability preset requires Quick development with Registry beta, Prompt Shields, and Purview prerequisites selected.'
+    }
+    if ([string]$config.capabilityPreset -ceq 'coreGateway' -and
+        ($config.promptShield.enabled -eq $true -or $config.purview.enabled -eq $true)) {
+        throw 'The Core Gateway capability preset cannot include Prompt Shields or Purview prerequisites.'
     }
     return $config
 }

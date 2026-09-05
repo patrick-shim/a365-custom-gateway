@@ -16,7 +16,7 @@ internal static class IdempotencyKeyValidation
         }
 
         normalized = parsed.ToString("D");
-        return true;
+        return string.Equals(value, normalized, StringComparison.Ordinal);
     }
 
     private static bool IsRfc4122Variant(char value) =>

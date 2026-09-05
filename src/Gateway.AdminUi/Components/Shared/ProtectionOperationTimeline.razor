@@ -1,0 +1,154 @@
+@using System.Text
+@using Gateway.Contracts.Dtos
+
+<section class="operation-panel" aria-labelledby="protection-operation-heading" aria-live="polite">
+    <div class="operation-heading">
+        <div>
+            <h3 id="protection-operation-heading">Latest protection operation</h3>
+            <span class="section-caption">Persisted Gateway progress. A completed policy check is not by itself runtime proof.</span>
+        </div>
+        <StatusPill Value="@DisplayStatus(Operation.Status)" />
+    </div>
+
+    @if (Operation.Blockers.Count > 0)
+    {
+        <div class="deployment-callout" role="status">
+            <strong>@(Operation.RequiresManualIntervention ? "Administrator attention is required." : "The operation is waiting.")</strong>
+            <ul>
+                @foreach (var blocker in Operation.Blockers.Select(ExplainBlocker).Distinct())
+                {
+                    <li>@blocker</li>
+                }
+            </ul>
+        </div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(Operation.RequiredAction))
+    {
+        <p class="operation-next-action"><strong>Next step:</strong> @ExplainRequiredAction(Operation)</p>
+    }
+
+    <ol class="timeline operation-timeline" aria-label="Protection operation steps">
+        @foreach (var step in Operation.Steps.OrderBy(item => item.OrderIndex))
+        {
+            <li class="timeline-item">
+                <span class="timeline-dot" aria-hidden="true"></span>
+                <div class="timeline-title">
+                    @SplitWords(step.Step)
+                    <StatusPill Value="@DisplayStatus(step.Status)" />
+                </div>
+                <div class="timeline-meta">
+                    @if (step.CompletedAtUtc is { } completed)
+                    {
+                        <span>Finished <time datetime="@AsUtc(completed).ToString("O")">@FormatLocal(completed)</time></span>
+                    }
+                    else if (step.StartedAtUtc is { } started)
+                    {
+                        <span>Started <time datetime="@AsUtc(started).ToString("O")">@FormatLocal(started)</time></span>
+                    }
+                    else
+                    {
+                        <span>Not started</span>
+                    }
+                    @if (step.AttemptCount > 1)
+                    {
+                        <span> · Attempt @step.AttemptCount</span>
+                    }
+                </div>
+            </li>
+        }
+    </ol>
+
+    <div class="operation-meta">
+        <span>Updated <time datetime="@AsUtc(Operation.UpdatedAtUtc).ToString("O")">@FormatLocal(Operation.UpdatedAtUtc)</time></span>
+        <span>Correlation ID: <code>@Operation.CorrelationId</code></span>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public ProtectionAdminOperationDto Operation { get; set; } = default!;
+
+    private static string DisplayStatus(string status) => status switch
+    {
+        "AwaitingAdministrator" or "AwaitingAdministratorAction" => "Awaiting admin",
+        "WaitingForPropagation" or "PendingPropagation" => "Pending propagation",
+        "VerificationFailed" or "RequiresManualIntervention" => "Failed",
+        "Succeeded" or "Completed" => "Ready",
+        _ => SplitWords(status)
+    };
+
+    private static string ExplainRequiredAction(ProtectionAdminOperationDto operation)
+    {
+        if (operation.RequiredAction == "CompletePurviewTenantConnection" ||
+            operation is
+            {
+                Type: "ConnectPurviewTenant",
+                Status: "AwaitingAdministrator"
+            })
+        {
+            return "On a Windows computer, complete the Gateway-provided Microsoft Purview sign-in companion, then return here and refresh.";
+        }
+
+        return operation.RequiredAction switch
+        {
+            "WaitForPropagation" =>
+                "Wait for Microsoft Purview propagation, then refresh or reconcile.",
+            "Reconcile" =>
+                "Ask a Gateway Administrator to run a fresh exact-state check.",
+            "ValidateRuntime" =>
+                "Ask a Gateway Administrator to run the approved synthetic runtime check.",
+            "Retry" =>
+                "Retry only when the Gateway enables the reviewed action.",
+            _ => "Follow the safe guidance shown by the Gateway or contact a Gateway Administrator."
+        };
+    }
+
+    private static string ExplainBlocker(string blocker) => blocker switch
+    {
+        "AwaitingAdministrator" or "AdministratorActionRequired" =>
+            "A Gateway Administrator must complete the next reviewed step.",
+        "PropagationPending" =>
+            "Microsoft Purview has not made the reviewed change available everywhere yet.",
+        "TokenRefreshPending" or "TokenRolesPending" =>
+            "The Gateway runtime is waiting for updated permissions.",
+        "RuntimeValidationRequired" =>
+            "The approved runtime allow and block check has not completed.",
+        "InventoryExpired" =>
+            "The sensitive information type inventory has expired.",
+        _ => "The Gateway reports a blocker that requires administrator review."
+    };
+
+    private static string SplitWords(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "Not reported";
+        }
+
+        var builder = new StringBuilder(value.Length + 8);
+        for (var index = 0; index < value.Length; index++)
+        {
+            var character = value[index];
+            if (index > 0 && char.IsUpper(character) &&
+                (char.IsLower(value[index - 1]) ||
+                 index + 1 < value.Length && char.IsLower(value[index + 1])))
+            {
+                builder.Append(' ');
+            }
+
+            builder.Append(character);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string FormatLocal(DateTime value) =>
+        AsUtc(value).ToLocalTime().ToString("MMM d, yyyy h:mm tt");
+
+    private static DateTime AsUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+    };
+}

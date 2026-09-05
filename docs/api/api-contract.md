@@ -15,6 +15,12 @@ miss when reading individual operations.
 Control-plane routes are rooted at `/api/v1`. The Admin UI is a client of these
 routes; page-level role checks never replace API authorization.
 
+The source implements the additive
+[protection settings](../architecture/protection-settings-plan.md) control plane
+for capabilities, tenant connection, SIT inventory, KYD, blueprint DLP profiles,
+and durable administration operations. The checked-in OpenAPI document describes
+the exact routes.
+
 ## Control-plane authorization
 
 The API validates tenant, audience, issuer, user object ID, delegated
@@ -24,6 +30,44 @@ The API validates tenant, audience, issuer, user object ID, delegated
 Mutating registration and Registry-completion actions require
 `Gateway.Administrator`. The Registry action is user-only and acquires downstream
 Graph access through OBO. No app-only Registry fallback exists.
+
+Protection capability reads are available to every Gateway control-plane role.
+Operators can also read tenant connection, KYD, and DLP state. SIT inventory and
+all protection reviews, confirmations, and mutations require
+`Gateway.Administrator`. Every protection request rechecks exact delegated user and
+tenant semantics.
+
+Capability records originate only from bootstrap's exact 19-key, ownership/source/
+time-bound attestation. Inert startup materializes nothing. Verified runtime startup
+strictly validates the full Installed/NotInstalled set and synchronizes it under a
+SQL application lock in one deterministic transaction. Partial, drifted, or
+identifier-bearing NotInstalled facts fail startup; capability synchronization is
+not policy or runtime-readiness evidence.
+
+## Protection administration
+
+Protection mutations use an explicit two-step boundary:
+
+1. a `:review` or `:review-*` route validates the current ETag/row version and
+   returns a short-lived, one-time review value plus the exact safe summary;
+2. `POST /protection/operation-reviews:confirm` exchanges that value once for a
+   short-lived confirmation value; and
+3. the matching mutation route requires the confirmation, canonical UUIDv4
+   `Idempotency-Key` in both header and body, and matching `If-Match`/row version.
+
+Accepted work returns HTTP 202 and is persisted through the transactional outbox to
+`gateway-protection-admin-v1`. Its eight version-1 stages are separate from
+registration workflow v3. Reads return ETags where the resource has a row version.
+Per-user and per-IP protection-administration rate limits apply before the
+controller.
+
+Tenant connection completion also follows review and confirmation. Settings
+downloads the canonical Windows companion from the immutable Admin UI image. The
+companion opens official interactive Security & Compliance sign-in and emits one
+bounded prefixed result. The UI accepts a file containing only that fresh line; the
+API validates its digest, operation, inventory generation, tenant, Administrator,
+expiry, capabilities, and SIT inventory before independently verifying connection
+state.
 
 ## Registration
 
@@ -113,3 +157,11 @@ The public prefix remains `/api/v1`. Additive response fields are permitted; cli
 must ignore fields they do not understand. Breaking route or schema changes require
 a new API version. Persisted stage numbers and recovery-state fields are separate
 storage compatibility contracts.
+
+Protection administration is additive to the registration contract. Existing
+`promptShieldEnabled`, `purviewEnabled`, and `purviewMode` members remain
+compatible. Registration and feature-update requests can bind a typed DLP profile
+to the resolved blueprint. The API rejects Purview unless that exact profile has
+installed capability, exact readback, propagation, token roles, runtime allow and
+block evidence, and a current SIT snapshot. Registration never authors policy as a
+side effect.

@@ -14,8 +14,15 @@ internal sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outb
 
         builder.Property(e => e.MessageType).HasMaxLength(256).IsRequired();
         builder.Property(e => e.Status).HasConversion<string>().HasMaxLength(20);
+        builder.Property<string>("Destination")
+            .HasMaxLength(128)
+            .HasDefaultValue(Outbox.OutboxRouting.ProvisioningDestination)
+            .IsRequired();
 
         builder.HasIndex(e => new { e.Status, e.NextRetryAtUtc })
             .HasFilter("[Status] = 'Pending'");
+        builder.HasIndex("Destination", nameof(OutboxMessage.Status), nameof(OutboxMessage.NextRetryAtUtc))
+            .HasDatabaseName("IX_OutboxMessages_Destination_Status_NextRetryAtUtc")
+            .HasFilter("[Status] IN ('Pending', 'Processing')");
     }
 }

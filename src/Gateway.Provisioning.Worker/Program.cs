@@ -20,6 +20,7 @@ builder.Services.Configure<ProvisioningWorkerOptions>(
 
 builder.Services.AddScoped<ProvisioningMessageHandler>();
 builder.Services.AddHostedService<ProvisioningWorkerService>();
+builder.Services.AddProtectionAdministrationWorker(builder.Configuration);
 
 var host = builder.Build();
 host.Run();

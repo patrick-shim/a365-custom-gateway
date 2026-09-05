@@ -90,6 +90,7 @@ public sealed class AgentIdentityBlueprintCatalogTests : IDisposable
     [Fact]
     public async Task Register_ShouldRejectIncompatibleExistingBlueprintBeforeAcceptance()
     {
+        HttpClientExtensions.SetRole("Gateway.Administrator");
         var selectedObjectId = Guid.Parse(TestRequestData.ValidBlueprint.BlueprintObjectId!);
         _factory.MockBlueprintCatalog.ListAsync(Arg.Any<CancellationToken>())
             .Returns([

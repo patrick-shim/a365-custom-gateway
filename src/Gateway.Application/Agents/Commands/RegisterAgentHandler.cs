@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Gateway.Application.Configuration;
 using Gateway.Application.Exceptions;
+using Gateway.Application.Protection;
 using Gateway.Contracts;
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Messages;
@@ -24,10 +25,9 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
     private readonly IAgentIdentityBlueprintCatalog _blueprintCatalog;
     private readonly IAgentIngressCredentialService _agentIngressCredentialService;
     private readonly IPurviewPolicyClient _purviewPolicyClient;
-    private readonly IPurviewPolicyProfileRepository _purviewPolicyProfileRepository;
-    private readonly IPurviewPolicyProvisioningClient _purviewPolicyProvisioningClient;
     private readonly IPromptShieldClient _promptShieldClient;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly ProtectionEffectiveFeatureEvaluator _protectionFeatures;
 
     public RegisterAgentHandler(
         IAgentRepository agentRepository,
@@ -38,10 +38,9 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
         IAgentIdentityBlueprintCatalog blueprintCatalog,
         IAgentIngressCredentialService agentIngressCredentialService,
         IPurviewPolicyClient purviewPolicyClient,
-        IPurviewPolicyProfileRepository purviewPolicyProfileRepository,
-        IPurviewPolicyProvisioningClient purviewPolicyProvisioningClient,
         IPromptShieldClient promptShieldClient,
-        IUnitOfWork unitOfWork)
+        IUnitOfWork unitOfWork,
+        ProtectionEffectiveFeatureEvaluator protectionFeatures)
     {
         _agentRepository = agentRepository;
         _provisioningJobRepository = provisioningJobRepository;
@@ -51,10 +50,9 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
         _blueprintCatalog = blueprintCatalog;
         _agentIngressCredentialService = agentIngressCredentialService;
         _purviewPolicyClient = purviewPolicyClient;
-        _purviewPolicyProfileRepository = purviewPolicyProfileRepository;
-        _purviewPolicyProvisioningClient = purviewPolicyProvisioningClient;
         _promptShieldClient = promptShieldClient;
         _unitOfWork = unitOfWork;
+        _protectionFeatures = protectionFeatures;
     }
 
     public async Task<RegisterAgentResponse> Handle(RegisterAgentCommand request, CancellationToken cancellationToken)
@@ -69,9 +67,10 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
                 ErrorCodes.DUPLICATE_EXTERNAL_AGENT_ID);
         }
 
+        AgentIdentityBlueprintCatalogItem? selectedBlueprint = null;
         if (string.Equals(blueprint.Mode, "UseExisting", StringComparison.Ordinal))
         {
-            await EnsureSelectedBlueprintIsCompatibleAsync(
+            selectedBlueprint = await EnsureSelectedBlueprintIsCompatibleAsync(
                 blueprint.BlueprintObjectId,
                 cancellationToken);
         }
@@ -142,28 +141,37 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
                 "Prompt Shields cannot be enabled because Azure AI Content Safety is not configured for this Gateway deployment.",
                 ErrorCodes.UNSUPPORTED_FEATURE_CONFIGURATION);
         }
-
-        PurviewPolicyProfile? purviewProfile = null;
-        if (purviewEnabled && string.Equals(blueprint.Mode, "CreateNew", StringComparison.Ordinal))
+        if (promptShieldEnabled)
         {
-            if (!_purviewPolicyProvisioningClient.IsEnabled)
+            await _protectionFeatures.EnsurePromptShieldReadyAsync(
+                cancellationToken);
+        }
+
+        if (purviewEnabled)
+        {
+            if (selectedBlueprint is null)
             {
                 throw new DomainException(
-                    "Automated Purview profile assignment is not configured for this Gateway deployment.",
-                    ErrorCodes.UNSUPPORTED_FEATURE_CONFIGURATION);
+                    "Purview can be enabled after the new blueprint is resolved and its exact DLP profile is Ready.",
+                    ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY);
             }
 
-            purviewProfile = await ResolvePurviewProfileAsync(
-                request.PurviewPolicyProfile,
-                purviewMode!.Value,
-                request.CallerObjectId,
-                cancellationToken);
-            agent.PurviewPolicySelectionMode = request.PurviewPolicyProfile!.Mode;
-            agent.RequestedPurviewPolicyProfileId = request.PurviewPolicyProfile.ProfileId;
-            agent.RequestedPurviewPolicyDisplayName = request.PurviewPolicyProfile.DisplayName;
-            agent.RequestedPurviewPolicyTemplate = request.PurviewPolicyProfile.Template;
-            agent.PurviewPolicyProfileId = purviewProfile.Id;
-            agent.PurviewPolicyProfile = purviewProfile;
+            var selection = request.PurviewDlpProfile ??
+                request.Features?.PurviewDlpProfile;
+            var dlpProfile =
+                await _protectionFeatures.RequireReadyProfileAsync(
+                    selectedBlueprint.BlueprintClientId,
+                    selection,
+                    cancellationToken);
+            if (purviewMode is not null &&
+                dlpProfile.Mode != purviewMode.Value)
+            {
+                throw new DomainException(
+                    "The selected DLP profile mode does not match the requested registration mode.",
+                    ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY);
+            }
+
+            agent.RequestedPurviewPolicyProfileId = dlpProfile.Id.Value;
         }
 
         var features = new AgentFeatureConfiguration
@@ -268,67 +276,6 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
                 issuedCredential.Credential.ExpiresAtUtc));
     }
 
-    private async Task<PurviewPolicyProfile> ResolvePurviewProfileAsync(
-        PurviewPolicyProfileSelectionDto? selection,
-        PurviewMode mode,
-        string callerObjectId,
-        CancellationToken cancellationToken)
-    {
-        if (selection is null)
-        {
-            throw new ValidationException(new Dictionary<string, string[]>
-            {
-                ["PurviewPolicyProfile"] = ["Select an existing Purview profile or create a new one."]
-            });
-        }
-
-        if (string.Equals(selection.Mode, "UseExisting", StringComparison.Ordinal))
-        {
-            var existing = selection.ProfileId is { } existingProfileId
-                ? await _purviewPolicyProfileRepository.GetByIdAsync(existingProfileId, cancellationToken)
-                : null;
-            if (existing is null ||
-                !string.Equals(existing.Status, "Ready", StringComparison.Ordinal) ||
-                !string.Equals(existing.Mode, mode.ToString(), StringComparison.Ordinal))
-            {
-                throw new ValidationException(new Dictionary<string, string[]>
-                {
-                    ["PurviewPolicyProfile.ProfileId"] = ["Select a ready Purview policy profile with the requested audit or enforcement mode."]
-                });
-            }
-
-            return existing;
-        }
-
-        var displayName = selection.DisplayName?.Trim();
-        if (string.IsNullOrWhiteSpace(displayName) ||
-            await _purviewPolicyProfileRepository.DisplayNameExistsAsync(displayName, cancellationToken))
-        {
-            throw new ConflictException(
-                "A Purview policy profile with that display name already exists.",
-                ErrorCodes.PURVIEW_POLICY_PROFILE_CONFLICT);
-        }
-
-        var profileId = Guid.NewGuid();
-        var providerName = $"A365 Gateway - {displayName} - {profileId:N}";
-        var profile = new PurviewPolicyProfile
-        {
-            Id = profileId,
-            DisplayName = displayName,
-            Template = "AllSensitiveInformation",
-            Mode = mode.ToString(),
-            Status = "Pending",
-            CollectionPolicyName = $"{providerName} Collection",
-            DlpPolicyName = $"{providerName} DLP",
-            DlpRuleName = $"{providerName} Rule",
-            CreatedAtUtc = DateTime.UtcNow,
-            UpdatedAtUtc = DateTime.UtcNow,
-            CreatedByObjectId = callerObjectId
-        };
-        await _purviewPolicyProfileRepository.AddAsync(profile, cancellationToken);
-        return profile;
-    }
-
     private static ObservabilityMode GetDefaultObservabilityMode(SystemConfiguration? config)
     {
         return config is not null &&
@@ -347,7 +294,8 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
             ? mode
             : null;
 
-    private async Task EnsureSelectedBlueprintIsCompatibleAsync(
+    private async Task<AgentIdentityBlueprintCatalogItem>
+        EnsureSelectedBlueprintIsCompatibleAsync(
         string? blueprintObjectId,
         CancellationToken cancellationToken)
     {
@@ -394,6 +342,8 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
         {
             throw IncompatibleBlueprint();
         }
+
+        return matches[0];
     }
 
     private static DomainException IncompatibleBlueprint() => new(

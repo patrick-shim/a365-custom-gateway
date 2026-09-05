@@ -17,6 +17,25 @@ BeforeAll {
         return $Config | ConvertTo-Json -Depth 30 | ConvertFrom-Json -Depth 30
     }
 
+    function Add-TestLegacyPurviewPolicyFields {
+        param([Parameter(Mandatory)]$Config)
+
+        foreach ($entry in ([ordered]@{
+            sensitiveInformationTypeId = ''
+            sensitiveInformationType = ''
+            policyProvisioningEnabled = $false
+            policyProvisioningOrganization = ''
+            policyProvisioningApplicationId = ''
+            policyProvisioningCertificateSecretUri = ''
+        }).GetEnumerator()) {
+            if ($Config.purview.PSObject.Properties.Name -notcontains $entry.Key) {
+                $Config.purview | Add-Member -MemberType NoteProperty `
+                    -Name $entry.Key -Value $entry.Value
+            }
+        }
+        return $Config
+    }
+
     function Write-TestBootstrapConfig {
         param(
             [Parameter(Mandatory)]$Config,
@@ -133,6 +152,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
 
     It 'requires complete policy-provisioning fields when that feature is enabled' {
         $config = New-TestBootstrapConfig
+        $config = Add-TestLegacyPurviewPolicyFields -Config $config
         $config.purview.enabled = $true
         $config.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
         $config.purview.sensitiveInformationType = 'Credit Card Number'
@@ -145,6 +165,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
 
     It 'accepts a complete versionless Key Vault policy-provisioning contract' {
         $config = New-TestBootstrapConfig
+        $config = Add-TestLegacyPurviewPolicyFields -Config $config
         $config.purview.enabled = $true
         $config.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
         $config.purview.sensitiveInformationType = 'Credit Card Number'
@@ -163,6 +184,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
 
     It 'rejects an obsolete bootstrap runtime-adapter switch' {
         $config = New-TestBootstrapConfig
+        $config = Add-TestLegacyPurviewPolicyFields -Config $config
         $config.purview.enabled = $true
         $config.purview | Add-Member -NotePropertyName activateGatewayAdapterAfterPolicyReadback -NotePropertyValue $true
         $config.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
@@ -223,6 +245,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
 
     It 'requires the tenant-selected SIT GUID and exact Name as one pair' {
         $missingId = New-TestBootstrapConfig
+        $missingId = Add-TestLegacyPurviewPolicyFields -Config $missingId
         $missingId.purview.enabled = $true
         $missingId.purview.PSObject.Properties.Remove('sensitiveInformationTypeId')
         $missingId.purview.sensitiveInformationType = 'Credit Card Number'
@@ -232,6 +255,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
         { Read-BootstrapConfig -Path $missingIdPath } | Should -Throw '*JSON Schema validation*'
 
         $missingName = New-TestBootstrapConfig
+        $missingName = Add-TestLegacyPurviewPolicyFields -Config $missingName
         $missingName.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
         $missingNamePath = Join-Path $TestDrive 'missing-sit-name.json'
         Write-TestBootstrapConfig -Config $missingName -Path $missingNamePath
@@ -241,6 +265,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
 
     It 'canonicalizes the selected SIT GUID without changing its exact Unicode Name' {
         $config = New-TestBootstrapConfig
+        $config = Add-TestLegacyPurviewPolicyFields -Config $config
         $config.purview.enabled = $true
         $config.purview.sensitiveInformationTypeId = '50842EB7-EDC8-4019-85DD-5A5C1F2BB085'
         $config.purview.sensitiveInformationType = '신용 카드 번호'
@@ -255,6 +280,7 @@ Describe 'Bootstrap JSON Schema configuration validation' {
 
     It 'accepts an exact 255-character SIT Name and rejects 256 characters' {
         $accepted = New-TestBootstrapConfig
+        $accepted = Add-TestLegacyPurviewPolicyFields -Config $accepted
         $accepted.purview.enabled = $true
         $accepted.purview.sensitiveInformationTypeId = '50842eb7-edc8-4019-85dd-5a5c1f2bb085'
         $accepted.purview.sensitiveInformationType = '類' * 255
@@ -573,7 +599,7 @@ Describe 'Bootstrap state compatibility and atomic persistence' {
         $path = Join-Path $TestDrive 'reconcile.json'
         Save-BootstrapState -State $state -Path $path
         $changed = Copy-TestBootstrapConfig -Config $config
-        $changed.agent365.allowDevelopmentRegistryPreview = $true
+        $changed.promptShield.skuName = 'S0'
 
         $loaded = Read-BootstrapState -Path $path -Config $changed
 
@@ -614,7 +640,7 @@ Describe 'Bootstrap state compatibility and atomic persistence' {
         $raw.Remove('configuration')
         $raw | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $path -Encoding utf8NoBOM
         $changed = Copy-TestBootstrapConfig -Config $config
-        $changed.agent365.allowDevelopmentRegistryPreview = $true
+        $changed.promptShield.skuName = 'S0'
 
         { Read-BootstrapState -Path $path -Config $changed } |
             Should -Throw '*no recorded deployment identity*'

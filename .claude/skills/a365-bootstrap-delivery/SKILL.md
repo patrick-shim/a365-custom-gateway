@@ -16,3 +16,16 @@ runtime checkpoint is absent after a Git transfer, use
 `docs/agent-continuation.md` as the tracked source-continuation fallback and follow
 the canonical skill's initialization procedure. Do not infer deployable state or
 live authority from source history.
+
+Honor the canonical skill's implemented protection source boundary. The redesign is
+implemented and offline-validated in source, not deployed: bootstrap Full/Core/Custom presets prepare
+capabilities only and never select a SIT or author policy; Gateway Settings owns
+SIT/KYD/DLP and per-registration controls on `gateway-protection-admin-v1`; every
+registration creation requires a signed-in delegated `Gateway.Administrator`; and
+Registry completion remains user-only OBO. The immutable Admin UI image provides
+the downloadable companion, but its evidence is non-authoritative until exact
+capability-bound provider verification. `Ready` requires independent capability
+Installed, readback, propagation, token roles, runtime allow/block evidence,
+current SIT generation, exact blueprint/provider IDs, and timestamps. Never convert
+source state into a live claim. Preserve fixed KYD Group versus blueprint
+Individual DLP on the Application plane, and require fresh exact-target authority.

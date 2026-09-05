@@ -25,7 +25,12 @@ info:
     microsoft.a365.agent.blueprint.id. It omits gen_ai.agent.type and
     microsoft.a365.agent.platform.id. Agent 365 OTLP HTTP 200 proves endpoint
     acceptance only, not downstream CloudAppEvents landing.
-  version: 0.1.0-beta.1
+
+    Protection capability rows are materialized only at verified runtime startup
+    from bootstrap's complete exact 19-key, ownership/source/time-bound attestation.
+    Synchronization is SQL application-locked and transactional. It does not imply
+    policy, propagation, token-role, or runtime-verdict readiness.
+  version: 0.1.0-beta.2
   contact:
     name: Gateway Admin
   license:
@@ -52,6 +57,8 @@ tags:
     description: Audit events and provisioning history
   - name: Prompt protection
     description: Registration-bound pre-model Prompt Shields and Purview evaluation
+  - name: Protection administration
+    description: Role-aware capability, Purview policy, and readiness control plane
   - name: System
     description: System configuration and health
   - name: Activities
@@ -232,13 +239,12 @@ paths:
   /purview-policy-profiles:
     get:
       operationId: listPurviewPolicyProfiles
-      summary: List verified Gateway-managed Purview protection profiles
+      deprecated: true
+      summary: List legacy verified combined Purview profiles
       description: |
-        Returns durable, non-secret metadata for protection profiles that bind the
-        fixed tenant-wide Know Your Data Group location to blueprint-specific DLP
-        Individual locations. Only profiles with exact independent readback are
-        returned as Ready. Certificate material and arbitrary tenant policies are
-        never exposed.
+        Compatibility-only inventory for older clients. New clients use
+        /protection/purview/dlp-profiles and the independent Know Your Data route.
+        Registration never authors policy as a side effect.
       tags: [Configuration]
       security:
         - entraBearer: [Gateway.Administrator]
@@ -253,6 +259,528 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+
+  /protection/capabilities:
+    get:
+      operationId: getProtectionCapabilities
+      summary: Read installed protection capability facts
+      description: |
+        Returns bootstrap-owned capability records. Installed means exact capability
+        configuration readback; it does not prove policy, propagation, token roles,
+        or runtime verdict readiness.
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
+      responses:
+        '200':
+          description: Bounded non-secret capability facts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionCapabilitiesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /protection/purview/connection:
+    get:
+      operationId: getPurviewTenantConnection
+      summary: Read the current tenant Purview connection
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+      responses:
+        '200':
+          description: Current tenant connection or null
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurviewTenantConnectionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /protection/purview/connection-operations:review:
+    post:
+      operationId: reviewPurviewTenantConnection
+      summary: Review an exact-tenant connection operation
+      description: Returns a short-lived one-time review value and performs no provider mutation.
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewPurviewTenantConnectionRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/ProtectionOperationReviewed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/operation-reviews:confirm:
+    post:
+      operationId: confirmProtectionOperationReview
+      summary: Explicitly confirm one protection-operation review
+      description: |
+        Exchanges one fresh review value once for a short-lived confirmation value.
+        Neither value is a provider token or credential.
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmProtectionOperationReviewRequest'
+      responses:
+        '200':
+          description: One-time confirmation issued
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Always `no-store`.
+            Pragma:
+              schema:
+                type: string
+              description: Always `no-cache`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionOperationConfirmationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/connection-operations:
+    post:
+      operationId: startPurviewTenantConnection
+      summary: Start a confirmed Purview tenant-connection operation
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIdempotencyKey'
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartPurviewTenantConnectionOperationRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/ProtectionOperationAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/connection-operations/{operationId}:review-completion:
+    parameters:
+      - $ref: '#/components/parameters/ProtectionOperationId'
+    post:
+      operationId: reviewPurviewTenantConnectionCompletion
+      summary: Review bounded Windows companion evidence
+      description: Performs no provider mutation and grants no completion by itself.
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewPurviewTenantConnectionCompletionRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/ProtectionOperationReviewed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/connection-operations/{operationId}:complete:
+    parameters:
+      - $ref: '#/components/parameters/ProtectionOperationId'
+    post:
+      operationId: completePurviewTenantConnection
+      summary: Submit confirmed companion evidence for independent verification
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIdempotencyKey'
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompletePurviewTenantConnectionOperationRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/ProtectionOperationAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/sensitive-information-types:
+    get:
+      operationId: getPurviewSensitiveInformationTypes
+      summary: Read the current connected-tenant SIT inventory
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      responses:
+        '200':
+          description: Expiring bounded tenant inventory
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurviewSensitiveInformationTypeListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /protection/purview/know-your-data:
+    get:
+      operationId: getPurviewKnowYourData
+      summary: Read independent tenant-wide Know Your Data state
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+      responses:
+        '200':
+          description: Fixed-Group configuration or null
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurviewKnowYourDataResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /protection/purview/know-your-data-operations:review:
+    post:
+      operationId: reviewPurviewKnowYourData
+      summary: Review a fixed-Group Know Your Data operation
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewPurviewKnowYourDataOperationRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/ProtectionOperationReviewed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/know-your-data-operations:
+    post:
+      operationId: startPurviewKnowYourData
+      summary: Start a confirmed fixed-Group Know Your Data operation
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIdempotencyKey'
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmProtectionAdminOperationRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/ProtectionOperationAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/dlp-profiles:
+    get:
+      operationId: listPurviewDlpProfiles
+      summary: List current-tenant blueprint DLP profiles and readiness
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+      responses:
+        '200':
+          description: Authorized profiles, including non-Ready states
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurviewDlpProfileListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /protection/purview/dlp-profile-operations:review:
+    post:
+      operationId: reviewPurviewDlpProfile
+      summary: Review one blueprint-Individual DLP operation
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewPurviewDlpProfileOperationRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/ProtectionOperationReviewed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/dlp-profile-operations:
+    post:
+      operationId: startPurviewDlpProfile
+      summary: Start a confirmed blueprint-Individual DLP operation
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIdempotencyKey'
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmProtectionAdminOperationRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/ProtectionOperationAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/dlp-profiles/{profileId}:review-reconcile:
+    parameters:
+      - $ref: '#/components/parameters/PurviewDlpProfileId'
+    post:
+      operationId: reviewReconcilePurviewDlpProfile
+      summary: Review exact DLP profile reconciliation
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewReconcilePurviewDlpProfileRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/ProtectionOperationReviewed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/dlp-profiles/{profileId}:reconcile:
+    parameters:
+      - $ref: '#/components/parameters/PurviewDlpProfileId'
+    post:
+      operationId: reconcilePurviewDlpProfile
+      summary: Re-read exact DLP profile provider state
+      description: Does not silently rewrite mismatched provider policy.
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIdempotencyKey'
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmProtectionAdminOperationRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/ProtectionOperationAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/dlp-profiles/{profileId}:review-runtime-validation:
+    parameters:
+      - $ref: '#/components/parameters/PurviewDlpProfileId'
+    post:
+      operationId: reviewValidatePurviewDlpProfileRuntime
+      summary: Review a bounded synthetic runtime readiness check
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewValidatePurviewDlpRuntimeRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/ProtectionOperationReviewed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/dlp-profiles/{profileId}:validate-runtime:
+    parameters:
+      - $ref: '#/components/parameters/PurviewDlpProfileId'
+    post:
+      operationId: validatePurviewDlpProfileRuntime
+      summary: Start a confirmed bounded runtime readiness check
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIdempotencyKey'
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmProtectionAdminOperationRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/ProtectionOperationAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/operations/{operationId}:
+    parameters:
+      - $ref: '#/components/parameters/ProtectionOperationId'
+    get:
+      operationId: getProtectionAdminOperation
+      summary: Read durable protection administration progress
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
+      responses:
+        '200':
+          description: Tenant-bound operation and its ordered version-1 steps
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectionAdminOperationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /agents/{agentId}:
     parameters:
@@ -313,6 +841,11 @@ paths:
     patch:
       operationId: updateFeatures
       summary: Update agent feature configuration
+      description: |
+        Protection changes are idempotent and concurrency-bound: idempotencyKey and
+        expectedRowVersion must be present and match canonical Idempotency-Key and
+        If-Match headers. Purview enablement additionally requires the exact Ready,
+        current DLP profile for the registration blueprint.
       tags: [Agents]
       security:
         - entraBearer: [Gateway.Administrator]
@@ -711,6 +1244,10 @@ paths:
       responses:
         '200':
           description: System configuration
+          headers:
+            ETag:
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -727,7 +1264,9 @@ paths:
         Updates implemented registration defaults, idempotency-record lifetime,
         and SQL-backed ingress rate limits. Persisted compatibility properties must
         be omitted or null; a non-null write is rejected rather than accepted as a
-        control with no runtime effect.
+        control with no runtime effect. A change to a Prompt Shields or Purview
+        default additionally requires matching Idempotency-Key/idempotencyKey and
+        If-Match/expectedRowVersion values.
       tags: [System]
       security:
         - entraBearer: [Gateway.Administrator]
@@ -740,6 +1279,10 @@ paths:
       responses:
         '200':
           description: Configuration updated
+          headers:
+            ETag:
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -1154,6 +1697,41 @@ components:
         type: string
         format: uuid
 
+    ProtectionIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Canonical UUIDv4 that must exactly match the body idempotencyKey. It is
+        scoped to the exact tenant, reviewed protection operation, and endpoint.
+      schema:
+        type: string
+        format: uuid
+
+    ProtectionIfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Must exactly match the opaque expectedRowVersion in the body.
+      schema:
+        type: string
+
+    ProtectionOperationId:
+      name: operationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    PurviewDlpProfileId:
+      name: profileId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
   schemas:
     AgentStatus:
       type: string
@@ -1361,6 +1939,24 @@ components:
         promptShieldEnabled:
           type: boolean
           description: Runs Azure AI Content Safety Prompt Shields before model execution.
+        purviewDlpProfile:
+          $ref: '#/components/schemas/PurviewDlpProfileSelection'
+        purviewEffectivelyEnabled:
+          type: boolean
+          readOnly: true
+          description: True only while the selected exact-blueprint profile is fully Ready and current.
+        purviewReadiness:
+          readOnly: true
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ProtectionReadiness'
+        promptShieldEffectivelyEnabled:
+          type: boolean
+          readOnly: true
+        promptShieldCapabilityStatus:
+          type: string
+          readOnly: true
+          nullable: true
 
     Agent365Info:
       type: object
@@ -1501,9 +2097,10 @@ components:
 
     PurviewPolicyProfileSelection:
       type: object
+      deprecated: true
       description: |
-        Required only when Purview is enabled while creating a new blueprint.
-        Selects a verified Gateway-managed profile or requests a new reviewed profile.
+        Compatibility-only combined profile selection. New clients use
+        PurviewDlpProfileSelection after Settings has established a Ready profile.
       required: [mode]
       oneOf:
         - title: Use an existing profile
@@ -1564,12 +2161,846 @@ components:
 
     PurviewPolicyProfileListResponse:
       type: object
+      deprecated: true
+      description: Compatibility-only combined profile inventory.
       required: [items]
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/PurviewPolicyProfileSummary'
+
+    ProtectionCapabilityResourceIdentifiers:
+      type: object
+      properties:
+        agent365RegistryApiApplicationId:
+          type: string
+          format: uuid
+          nullable: true
+        contentSafetyAccountResourceId:
+          type: string
+          nullable: true
+        contentSafetyEndpoint:
+          type: string
+          format: uri
+          nullable: true
+        gatewayApiManagedIdentityPrincipalObjectId:
+          type: string
+          format: uuid
+          nullable: true
+        purviewRuntimeManagedIdentityPrincipalObjectId:
+          type: string
+          format: uuid
+          nullable: true
+        purviewAutomationApplicationId:
+          type: string
+          format: uuid
+          nullable: true
+        purviewAutomationServicePrincipalObjectId:
+          type: string
+          format: uuid
+          nullable: true
+        keyVaultResourceId:
+          type: string
+          nullable: true
+        certificateName:
+          type: string
+          nullable: true
+
+    ProtectionCapability:
+      type: object
+      required: [id, capability, status, resourceIdentifiers, rowVersion]
+      properties:
+        id:
+          type: string
+          format: uuid
+        capability:
+          type: string
+          enum: [Agent365RegistrationBeta, PromptShields, Purview]
+        status:
+          type: string
+          enum: [NotInstalled, Installed, PendingPropagation, Unavailable]
+        resourceIdentifiers:
+          $ref: '#/components/schemas/ProtectionCapabilityResourceIdentifiers'
+        lastReadbackAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        lastFailureCode:
+          type: string
+          nullable: true
+        rowVersion:
+          type: string
+
+    ProtectionCapabilitiesResponse:
+      type: object
+      description: |
+        Complete persisted capability facts synchronized from exact bootstrap
+        readback. An Installed row is capability evidence only, never policy or
+        runtime-readiness proof.
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProtectionCapability'
+
+    PurviewTenantConnection:
+      type: object
+      required: [id, tenantId, status, rowVersion]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenantId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [NotConnected, AwaitingAdministrator, PendingVerification, Connected, VerificationFailed, Expired, Revoked]
+        authorityKind:
+          type: string
+          nullable: true
+        authorityApplicationId:
+          type: string
+          format: uuid
+          nullable: true
+        authorityServicePrincipalObjectId:
+          type: string
+          format: uuid
+          nullable: true
+        activeInventoryGenerationId:
+          type: string
+          format: uuid
+          nullable: true
+        authorizedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        expiresAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        lastVerifiedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        lastFailureCode:
+          type: string
+          nullable: true
+        rowVersion:
+          type: string
+
+    PurviewTenantConnectionResponse:
+      type: object
+      required: [connection]
+      properties:
+        connection:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewTenantConnection'
+
+    PurviewSensitiveInformationType:
+      type: object
+      required: [id, exactName, publisher]
+      properties:
+        id:
+          type: string
+          format: uuid
+        exactName:
+          type: string
+          minLength: 1
+          maxLength: 255
+        publisher:
+          type: string
+          minLength: 1
+          maxLength: 200
+
+    PurviewSensitiveInformationTypeSelection:
+      type: object
+      required: [inventoryGenerationId, sensitiveInformationTypeId, exactName]
+      properties:
+        inventoryGenerationId:
+          type: string
+          format: uuid
+        sensitiveInformationTypeId:
+          type: string
+          format: uuid
+        exactName:
+          type: string
+          minLength: 1
+          maxLength: 255
+
+    PurviewSensitiveInformationTypeListResponse:
+      type: object
+      required: [generationId, tenantId, retrievedAtUtc, expiresAtUtc, isExpired, items]
+      properties:
+        generationId:
+          type: string
+          format: uuid
+        tenantId:
+          type: string
+          format: uuid
+        retrievedAtUtc:
+          type: string
+          format: date-time
+        expiresAtUtc:
+          type: string
+          format: date-time
+        isExpired:
+          type: boolean
+        items:
+          type: array
+          maxItems: 2048
+          items:
+            $ref: '#/components/schemas/PurviewSensitiveInformationType'
+
+    PurviewTenantConnectionEvidence:
+      type: object
+      description: Bounded companion evidence; never a token, credential, or provider body.
+      required: [tenantId, administratorObjectId, authorizedCapabilities, observedAtUtc, inventoryExpiresAtUtc, sensitiveInformationTypes]
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        administratorObjectId:
+          type: string
+          format: uuid
+        authorizedCapabilities:
+          type: array
+          items:
+            type: string
+        observedAtUtc:
+          type: string
+          format: date-time
+        inventoryExpiresAtUtc:
+          type: string
+          format: date-time
+        sensitiveInformationTypes:
+          type: array
+          maxItems: 2048
+          items:
+            $ref: '#/components/schemas/PurviewSensitiveInformationType'
+
+    PurviewCompanionLaunch:
+      type: object
+      required: [operationId, inventoryGenerationId, expiresAtUtc, scriptRelativePath, arguments]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        inventoryGenerationId:
+          type: string
+          format: uuid
+        expiresAtUtc:
+          type: string
+          format: date-time
+        scriptRelativePath:
+          type: string
+        arguments:
+          type: array
+          items:
+            type: string
+
+    PurviewKnowYourDataConfiguration:
+      type: object
+      required: [id, tenantConnectionId, groupId, scopeType, enforcementPlane, inventoryGenerationId, sensitiveInformationTypeId, sensitiveInformationTypeName, mode, activities, ingestionEnabled, status, readbackStatus, rowVersion]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenantConnectionId:
+          type: string
+          format: uuid
+        groupId:
+          type: string
+          format: uuid
+          enum: [ee1680d0-702f-4090-b26c-c49091e86531]
+        scopeType:
+          type: string
+          enum: [Group]
+        enforcementPlane:
+          type: string
+          enum: [Application]
+        inventoryGenerationId:
+          type: string
+          format: uuid
+        sensitiveInformationTypeId:
+          type: string
+          format: uuid
+        sensitiveInformationTypeName:
+          type: string
+        mode:
+          $ref: '#/components/schemas/PurviewMode'
+        activities:
+          type: array
+          items:
+            type: string
+        ingestionEnabled:
+          type: boolean
+        status:
+          type: string
+        readbackStatus:
+          type: string
+        collectionPolicyProviderId:
+          type: string
+          nullable: true
+        lastReadbackAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        lastFailureCode:
+          type: string
+          nullable: true
+        rowVersion:
+          type: string
+
+    PurviewKnowYourDataResponse:
+      type: object
+      required: [configuration]
+      properties:
+        configuration:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewKnowYourDataConfiguration'
+
+    PurviewDlpRuleAction:
+      type: object
+      required: [activity, action]
+      properties:
+        activity:
+          type: string
+        action:
+          type: string
+
+    ProtectionReadiness:
+      type: object
+      required: [capability, readback, propagation, tokenRoles, runtimeVerdict, isReady, blockers]
+      properties:
+        capability:
+          type: string
+          enum: [NotInstalled, Installed, PendingPropagation, Unavailable]
+        readback:
+          type: string
+          enum: [NotChecked, Pending, Ready, Mismatch, Failed, Stale]
+        propagation:
+          type: string
+          enum: [NotChecked, Pending, Ready, Failed]
+        tokenRoles:
+          type: string
+          enum: [NotChecked, PendingRefresh, Ready, MissingRequiredRoles, Failed]
+        runtimeVerdict:
+          type: string
+          enum: [NotChecked, Pending, Ready, Failed, Unsupported]
+        isReady:
+          type: boolean
+        blockers:
+          type: array
+          items:
+            type: string
+        evaluatedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        capabilityReadbackAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        policyReadbackAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        propagationVerifiedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        tokenRolesVerifiedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        runtimeAllowVerifiedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        runtimeBlockVerifiedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+
+    PurviewDlpProfile:
+      type: object
+      required: [id, blueprintApplicationId, displayName, sensitiveInformationTypeId, sensitiveInformationTypeName, mode, activities, actions, status, readiness, rowVersion]
+      properties:
+        id:
+          type: string
+          format: uuid
+        blueprintApplicationId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        sensitiveInformationTypeId:
+          type: string
+          format: uuid
+        sensitiveInformationTypeName:
+          type: string
+        mode:
+          $ref: '#/components/schemas/PurviewMode'
+        activities:
+          type: array
+          items:
+            type: string
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurviewDlpRuleAction'
+        status:
+          type: string
+          enum: [Draft, ReviewRequired, Pending, PendingPropagation, VerificationFailed, Ready]
+        readiness:
+          $ref: '#/components/schemas/ProtectionReadiness'
+        dlpPolicyProviderId:
+          type: string
+          nullable: true
+        dlpRuleProviderId:
+          type: string
+          nullable: true
+        lastReadbackAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        rowVersion:
+          type: string
+
+    PurviewDlpProfileListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurviewDlpProfile'
+
+    PurviewDlpProfileSelection:
+      type: object
+      required: [profileId, blueprintApplicationId]
+      properties:
+        profileId:
+          type: string
+          format: uuid
+        blueprintApplicationId:
+          type: string
+          format: uuid
+        expectedProfileRowVersion:
+          type: string
+          nullable: true
+
+    ProtectionOperationReviewSummary:
+      type: object
+      required: [tenantId, operationType, targetType, targetIdentifier, activities, actions, scopeType, enforcementPlane, readinessDisclaimer]
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        operationType:
+          type: string
+        targetType:
+          type: string
+        targetIdentifier:
+          type: string
+        blueprintApplicationId:
+          type: string
+          format: uuid
+          nullable: true
+        sensitiveInformationTypeId:
+          type: string
+          format: uuid
+          nullable: true
+        sensitiveInformationTypeName:
+          type: string
+          nullable: true
+        mode:
+          type: string
+          nullable: true
+        activities:
+          type: array
+          items:
+            type: string
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurviewDlpRuleAction'
+        scopeType:
+          type: string
+        enforcementPlane:
+          type: string
+        readinessDisclaimer:
+          type: string
+        sourceOperationId:
+          type: string
+          format: uuid
+          nullable: true
+        inventoryGenerationId:
+          type: string
+          format: uuid
+          nullable: true
+        evidenceDigest:
+          type: string
+          nullable: true
+
+    ProtectionOperationReviewResponse:
+      type: object
+      required: [reviewTokenId, reviewToken, reviewedPayloadHash, expiresAtUtc, review]
+      properties:
+        reviewTokenId:
+          type: string
+          format: uuid
+        reviewToken:
+          type: string
+          writeOnly: true
+        reviewedPayloadHash:
+          type: string
+        expiresAtUtc:
+          type: string
+          format: date-time
+        review:
+          $ref: '#/components/schemas/ProtectionOperationReviewSummary'
+
+    ProtectionOperationConfirmationResponse:
+      type: object
+      required: [reviewTokenId, confirmationTokenId, confirmationToken, expiresAtUtc]
+      properties:
+        reviewTokenId:
+          type: string
+          format: uuid
+        confirmationTokenId:
+          type: string
+          format: uuid
+        confirmationToken:
+          type: string
+          writeOnly: true
+        expiresAtUtc:
+          type: string
+          format: date-time
+
+    ProtectionOperationAcceptedResponse:
+      type: object
+      required: [operationId, status, correlationId]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [Pending, AwaitingConfirmation, AwaitingAdministrator, Submitted, Running, PendingPropagation, Completed, Failed, RequiresManualIntervention, Cancelled]
+        correlationId:
+          type: string
+          format: uuid
+        companionLaunch:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewCompanionLaunch'
+
+    ProtectionAdminOperationStep:
+      type: object
+      required: [id, orderIndex, step, status, attemptCount, retryDisposition, canRetry, requiresManualIntervention]
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderIndex:
+          type: integer
+          minimum: 0
+          maximum: 7
+        step:
+          type: string
+          enum: [ValidateReviewedIntent, DiscoverProviderState, ApplyReviewedMutation, RecordExactReadback, VerifyPropagation, AttestTokenRoles, ValidateRuntimeVerdict, Complete]
+        status:
+          type: string
+        attemptCount:
+          type: integer
+          minimum: 0
+        retryDisposition:
+          type: string
+        nextAttemptAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        canRetry:
+          type: boolean
+        requiresManualIntervention:
+          type: boolean
+        readbackReferenceId:
+          type: string
+          format: uuid
+          nullable: true
+        failureCode:
+          type: string
+          nullable: true
+        startedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        completedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+
+    ProtectionAdminOperation:
+      type: object
+      required: [id, workflowVersion, type, status, tenantId, actorObjectId, targetType, targetIdentifier, reviewedPayloadHash, idempotencyKey, expectedRowVersion, retryDisposition, attemptCount, maximumAttempts, canRetry, requiresManualIntervention, correlationId, blockers, createdAtUtc, updatedAtUtc, steps, rowVersion]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workflowVersion:
+          type: integer
+          enum: [1]
+        type:
+          type: string
+        status:
+          type: string
+          enum: [Pending, AwaitingConfirmation, AwaitingAdministrator, Submitted, Running, PendingPropagation, Completed, Failed, RequiresManualIntervention, Cancelled]
+        tenantId:
+          type: string
+          format: uuid
+        actorObjectId:
+          type: string
+        targetType:
+          type: string
+        targetIdentifier:
+          type: string
+        reviewedPayloadHash:
+          type: string
+        idempotencyKey:
+          type: string
+          format: uuid
+        expectedRowVersion:
+          type: string
+        retryDisposition:
+          type: string
+        attemptCount:
+          type: integer
+        maximumAttempts:
+          type: integer
+        nextAttemptAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        canRetry:
+          type: boolean
+        requiresManualIntervention:
+          type: boolean
+        correlationId:
+          type: string
+          format: uuid
+        readbackReferenceId:
+          type: string
+          format: uuid
+          nullable: true
+        failureCode:
+          type: string
+          nullable: true
+        requiredAction:
+          type: string
+          nullable: true
+        blockers:
+          type: array
+          items:
+            type: string
+        createdAtUtc:
+          type: string
+          format: date-time
+        startedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        completedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        updatedAtUtc:
+          type: string
+          format: date-time
+        steps:
+          type: array
+          minItems: 8
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/ProtectionAdminOperationStep'
+        rowVersion:
+          type: string
+
+    ProtectionAdminOperationResponse:
+      type: object
+      required: [operation]
+      properties:
+        operation:
+          $ref: '#/components/schemas/ProtectionAdminOperation'
+
+    ReviewPurviewTenantConnectionRequest:
+      type: object
+      required: [tenantId, expectedRowVersion]
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        expectedRowVersion:
+          type: string
+
+    ConfirmProtectionOperationReviewRequest:
+      type: object
+      required: [reviewTokenId, reviewToken]
+      properties:
+        reviewTokenId:
+          type: string
+          format: uuid
+        reviewToken:
+          type: string
+          writeOnly: true
+
+    ConfirmProtectionAdminOperationRequest:
+      type: object
+      required: [confirmationTokenId, confirmationToken, idempotencyKey, expectedRowVersion]
+      properties:
+        confirmationTokenId:
+          type: string
+          format: uuid
+        confirmationToken:
+          type: string
+          writeOnly: true
+        idempotencyKey:
+          type: string
+          format: uuid
+        expectedRowVersion:
+          type: string
+
+    StartPurviewTenantConnectionOperationRequest:
+      allOf:
+        - $ref: '#/components/schemas/ConfirmProtectionAdminOperationRequest'
+        - type: object
+          required: [tenantId]
+          properties:
+            tenantId:
+              type: string
+              format: uuid
+
+    ReviewPurviewTenantConnectionCompletionRequest:
+      type: object
+      required: [operationId, inventoryGenerationId, evidenceDigest, expectedRowVersion, evidence]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        inventoryGenerationId:
+          type: string
+          format: uuid
+        evidenceDigest:
+          type: string
+        expectedRowVersion:
+          type: string
+        evidence:
+          $ref: '#/components/schemas/PurviewTenantConnectionEvidence'
+
+    CompletePurviewTenantConnectionOperationRequest:
+      allOf:
+        - $ref: '#/components/schemas/ConfirmProtectionAdminOperationRequest'
+        - type: object
+          required: [inventoryGenerationId, evidenceDigest, evidence]
+          properties:
+            inventoryGenerationId:
+              type: string
+              format: uuid
+            evidenceDigest:
+              type: string
+            evidence:
+              $ref: '#/components/schemas/PurviewTenantConnectionEvidence'
+
+    ReviewPurviewKnowYourDataOperationRequest:
+      type: object
+      required: [tenantConnectionId, sensitiveInformationType, mode, activities, ingestionEnabled, expectedRowVersion]
+      properties:
+        tenantConnectionId:
+          type: string
+          format: uuid
+        sensitiveInformationType:
+          $ref: '#/components/schemas/PurviewSensitiveInformationTypeSelection'
+        mode:
+          $ref: '#/components/schemas/PurviewMode'
+        activities:
+          type: array
+          items:
+            type: string
+        ingestionEnabled:
+          type: boolean
+        expectedRowVersion:
+          type: string
+
+    ReviewPurviewDlpProfileOperationRequest:
+      type: object
+      description: >-
+        DLP actions must contain exactly one UploadText Block rule, and activities
+        must include UploadText. AuditOnly uses policy mode to evaluate without
+        enforcing the rule; only Enforce supports runtime allow/block validation.
+      required: [tenantConnectionId, blueprintApplicationId, displayName, sensitiveInformationType, mode, activities, actions, expectedRowVersion]
+      properties:
+        profileId:
+          type: string
+          format: uuid
+          nullable: true
+        tenantConnectionId:
+          type: string
+          format: uuid
+        blueprintApplicationId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        sensitiveInformationType:
+          $ref: '#/components/schemas/PurviewSensitiveInformationTypeSelection'
+        mode:
+          $ref: '#/components/schemas/PurviewMode'
+        activities:
+          type: array
+          items:
+            type: string
+        actions:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            allOf:
+              - $ref: '#/components/schemas/PurviewDlpRuleAction'
+              - type: object
+                properties:
+                  activity:
+                    enum: [UploadText]
+                  action:
+                    enum: [Block]
+        expectedRowVersion:
+          type: string
+
+    ReviewReconcilePurviewDlpProfileRequest:
+      type: object
+      required: [profileId, expectedRowVersion]
+      properties:
+        profileId:
+          type: string
+          format: uuid
+        expectedRowVersion:
+          type: string
+
+    ReviewValidatePurviewDlpRuntimeRequest:
+      type: object
+      required: [profileId, expectedRowVersion]
+      properties:
+        profileId:
+          type: string
+          format: uuid
+        expectedRowVersion:
+          type: string
 
     AgentGatewayCredential:
       type: object
@@ -1674,6 +3105,8 @@ components:
           $ref: '#/components/schemas/AgentBlueprintSelection'
         purviewPolicyProfile:
           $ref: '#/components/schemas/PurviewPolicyProfileSelection'
+        purviewDlpProfile:
+          $ref: '#/components/schemas/PurviewDlpProfileSelection'
 
     RegisterAgentResponse:
       type: object
@@ -1826,6 +3259,15 @@ components:
           $ref: '#/components/schemas/PurviewMode'
         promptShieldEnabled:
           type: boolean
+        purviewDlpProfile:
+          $ref: '#/components/schemas/PurviewDlpProfileSelection'
+        idempotencyKey:
+          type: string
+          format: uuid
+          description: Required with expectedRowVersion for a protection feature mutation and must match the Idempotency-Key header.
+        expectedRowVersion:
+          type: string
+          description: Required with idempotencyKey for a protection feature mutation and must match If-Match.
 
     UpdateFeaturesResponse:
       type: object
@@ -2102,6 +3544,10 @@ components:
           type: boolean
           readOnly: true
           description: True when this deployment has a configured Prompt Shields provider.
+        rowVersion:
+          type: string
+          nullable: true
+          description: Opaque concurrency value returned as ETag.
 
     UpdateSystemConfigRequest:
       type: object
@@ -2136,6 +3582,15 @@ components:
           $ref: '#/components/schemas/PurviewMode'
         defaultPromptShieldEnabled:
           type: boolean
+        idempotencyKey:
+          type: string
+          format: uuid
+          nullable: true
+          description: Required for a protection-default mutation and must match Idempotency-Key.
+        expectedRowVersion:
+          type: string
+          nullable: true
+          description: Required for a protection-default mutation and must match If-Match.
         retentionDaysActivityReceipts:
           type: integer
           nullable: true
@@ -2564,6 +4019,41 @@ components:
         type: string
 
   responses:
+    ProtectionOperationReviewed:
+      description: Review created; no provider mutation has been authorized or performed
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+          description: Always `no-store`.
+        Pragma:
+          schema:
+            type: string
+          description: Always `no-cache`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProtectionOperationReviewResponse'
+
+    ProtectionOperationAccepted:
+      description: Confirmed protection administration operation accepted
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProtectionOperationAcceptedResponse'
+
+    TooManyRequests:
+      description: Protection-administration per-user or per-IP limit reached
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
     ValidationError:
       description: Validation error
       content:

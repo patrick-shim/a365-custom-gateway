@@ -12,7 +12,7 @@ namespace Gateway.Infrastructure.Persistence;
 /// </summary>
 public static class DatabaseSchemaFingerprintReader
 {
-    public const int ContractVersion = 1;
+    public const int ContractVersion = 2;
 
     private static readonly string[] ContractQueries =
     [

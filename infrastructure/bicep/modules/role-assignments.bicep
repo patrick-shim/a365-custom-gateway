@@ -12,7 +12,7 @@ param workerPrincipalId string
 @description('Name of the Azure Key Vault.')
 param keyVaultName string
 
-@description('Grant the worker read-only secret access to the shared Key Vault for certificate-based Purview policy automation.')
+@description('Grant the worker read-only access to the exact certificate secret for Settings-owned Purview administration.')
 param enableWorkerKeyVaultSecretsUser bool = false
 
 @description('Exact shared-vault secret name containing the Purview automation certificate. Required only when worker certificate access is enabled.')
@@ -26,6 +26,12 @@ param serviceBusNamespaceName string
 
 @description('Name of the isolated provisioning queue. Data-plane roles are scoped to this queue, not the namespace.')
 param serviceBusQueueName string
+
+@description('Create exact data-plane roles for the dedicated protection administration queue.')
+param protectionAdminQueueEnabled bool = false
+
+@description('Name of the dedicated protection administration queue.')
+param protectionAdminQueueName string = 'gateway-protection-admin-v1'
 
 @description('Name of the Azure Container Registry. Used only by the guarded historical system-identity image-pull path.')
 param containerRegistryName string
@@ -70,6 +76,11 @@ resource serviceBusQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-prev
   name: serviceBusQueueName
 }
 
+resource protectionAdminQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' existing = if (protectionAdminQueueEnabled) {
+  parent: serviceBusNamespace
+  name: protectionAdminQueueName
+}
+
 resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' existing = {
   name: containerRegistryName
 }
@@ -93,6 +104,16 @@ resource apiStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022
 resource apiServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(subscription().id, apiPrincipalId, serviceBusQueue.id, serviceBusDataSenderRoleId)
   scope: serviceBusQueue
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', serviceBusDataSenderRoleId)
+    principalId: apiPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource apiProtectionAdminServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (protectionAdminQueueEnabled) {
+  name: guid(subscription().id, apiPrincipalId, protectionAdminQueue!.id, serviceBusDataSenderRoleId)
+  scope: protectionAdminQueue
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', serviceBusDataSenderRoleId)
     principalId: apiPrincipalId
@@ -144,6 +165,16 @@ resource workerStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2
 resource workerServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(subscription().id, workerPrincipalId, serviceBusQueue.id, serviceBusDataReceiverRoleId)
   scope: serviceBusQueue
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', serviceBusDataReceiverRoleId)
+    principalId: workerPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource workerProtectionAdminServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (protectionAdminQueueEnabled) {
+  name: guid(subscription().id, workerPrincipalId, protectionAdminQueue!.id, serviceBusDataReceiverRoleId)
+  scope: protectionAdminQueue
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', serviceBusDataReceiverRoleId)
     principalId: workerPrincipalId

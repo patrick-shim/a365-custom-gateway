@@ -65,36 +65,25 @@ Describe 'Final verification strict-mode delegated-scope cardinality' {
         $script:finalVerificationSource | Should -Not -Match 'Get-BootstrapExecutionSourceRoot'
     }
 
-    It 'rejects unsupported Purview deployment and verification before provider access' {
-        $orchestratorGuard = $script:bootstrapSource.IndexOf(
-            'if ($configuration.purview.enabled -eq $true -and',
-            [StringComparison]::Ordinal)
-        $planWorkflow = $script:bootstrapSource.IndexOf(
-            "if (`$Mode -in @('Plan', 'Up'))",
-            [StringComparison]::Ordinal)
-        $verifyWorkflow = $script:bootstrapSource.IndexOf(
-            "if (`$Mode -eq 'Verify')",
-            [StringComparison]::Ordinal)
-        $orchestratorGuard | Should -BeGreaterOrEqual 0
-        $script:bootstrapSource.Substring($orchestratorGuard, $planWorkflow - $orchestratorGuard) |
-            Should -Match '\$Mode -in @\(''Apply'', ''Resume'', ''Up'', ''Verify''\)'
-        $script:bootstrapSource.Substring($orchestratorGuard, $planWorkflow - $orchestratorGuard) |
-            Should -Match 'Test-BootstrapSecurityCompliancePlatformSupported'
-        $orchestratorGuard | Should -BeLessThan $planWorkflow
-        $orchestratorGuard | Should -BeLessThan $verifyWorkflow
+    It 'keeps Purview capability deployment cross-platform and policy-free' {
+        $script:bootstrapSource | Should -Not -Match 'Purview-enabled deployment and verification require Windows'
+        $script:bootstrapSource | Should -Not -Match 'Ensure-BootstrapPurviewPolicies'
+        $script:bootstrapSource | Should -Not -Match 'Get-BootstrapPurviewPolicyEvidence'
+        $script:finalVerificationSource | Should -Not -Match 'Test-BootstrapSecurityCompliancePlatformSupported'
+        $script:finalVerificationSource | Should -Not -Match 'Connect-BootstrapPurview'
+        $script:finalVerificationSource | Should -Not -Match 'Get-BootstrapPurviewPolicyEvidence'
+        $script:finalVerificationSource | Should -Match "purviewPolicyReadiness = 'NotClaimed'"
+    }
 
-        $verificationGuard = $script:finalVerificationSource.IndexOf(
-            'Test-BootstrapSecurityCompliancePlatformSupported',
-            [StringComparison]::Ordinal)
-        $firstAzureReadback = $script:finalVerificationSource.IndexOf(
-            'Assert-GatewayRuntimeDeploymentOwnership',
-            [StringComparison]::Ordinal)
-        $firstGraphReadback = $script:finalVerificationSource.IndexOf(
-            'Get-BoundedGraphCollection',
-            [StringComparison]::Ordinal)
-        $verificationGuard | Should -BeGreaterOrEqual 0
-        $verificationGuard | Should -BeLessThan $firstAzureReadback
-        $verificationGuard | Should -BeLessThan $firstGraphReadback
+    It 'requires the complete bootstrap capability checkpoint and revalidates it before runtime verification' {
+        $script:finalVerificationSource |
+            Should -Match "steps\['Purview capability prerequisites'\]\.evidence"
+        $script:finalVerificationSource |
+            Should -Match '\$purviewAutomation = if[\s\S]{0,180}\$capabilityEvidence\.purview'
+        $script:finalVerificationSource |
+            Should -Match 'Test-GatewayBootstrapCapabilityEvidence[\s\S]{0,500}-RuntimeReadback \$Runtime'
+        $script:finalVerificationSource |
+            Should -Match 'CapabilityEvidence = \$capabilityEvidence'
     }
 }
 
@@ -566,7 +555,7 @@ Describe 'Dedicated runtime image-pull identity least-privilege boundary' {
                 projectName = 'safe'
                 environment = 'dev'
                 promptShield = [pscustomobject]@{ enabled = $false }
-                purview = [pscustomobject]@{ policyProvisioningEnabled = $false }
+                purview = [pscustomobject]@{ enabled = $false; policyProvisioningEnabled = $false }
             }
             $script:pullRuntime = [pscustomobject]@{
                 acrLoginServer = 'acrsafe.azurecr.io'
@@ -1208,13 +1197,18 @@ Describe 'Purview worker deployment truth' {
             $script:workerPrincipalId = '44444444-4444-4444-8444-444444444444'
             $script:apiPrincipalId = '77777777-7777-4777-8777-777777777777'
             $script:vaultScope = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.KeyVault/vaults/kv-safe-dev'
-            $script:certificateScope = "$script:vaultScope/secrets/automation-certificate"
+            $script:certificateScope = "$script:vaultScope/secrets/purview-automation-certificate"
             $script:environment = @(
-                [pscustomobject]@{ name = 'Purview__Enabled'; value = 'False' },
+                [pscustomobject]@{ name = 'Purview__Enabled'; value = 'True' },
                 [pscustomobject]@{ name = 'Purview__PolicyProvisioningEnabled'; value = 'True' },
                 [pscustomobject]@{ name = 'Purview__PolicyProvisioningOrganization'; value = 'contoso.onmicrosoft.com' },
                 [pscustomobject]@{ name = 'Purview__PolicyProvisioningApplicationId'; value = '33333333-3333-4333-8333-333333333333' },
-                [pscustomobject]@{ name = 'Purview__PolicyProvisioningCertificateSecretUri'; value = 'https://kv-safe-dev.vault.azure.net/secrets/automation-certificate' }
+                [pscustomobject]@{ name = 'Purview__PolicyProvisioningCertificateSecretUri'; value = 'https://kv-safe-dev.vault.azure.net/secrets/purview-automation-certificate' },
+                [pscustomobject]@{ name = 'ProtectionAdminWorker__ProcessingEnabled'; value = 'True' },
+                [pscustomobject]@{ name = 'ProtectionAdminWorker__MaxConcurrentCalls'; value = '2' },
+                [pscustomobject]@{ name = 'ProtectionAdminWorker__MaxDeliveryCount'; value = '10' },
+                [pscustomobject]@{ name = 'ProtectionAdminWorker__MaximumPropagationAttempts'; value = '5' },
+                [pscustomobject]@{ name = 'ProtectionAdminWorker__PropagationRetryDelaySeconds'; value = '30' }
             )
             $script:roleAssignments = @([pscustomobject]@{
                 id = "$script:certificateScope/providers/Microsoft.Authorization/roleAssignments/55555555-5555-4555-8555-555555555555"
@@ -1229,6 +1223,7 @@ Describe 'Purview worker deployment truth' {
                 environment = 'dev'
                 projectName = 'safe'
                 purview = [pscustomobject]@{
+                    enabled = $true
                     policyProvisioningEnabled = $true
                     policyProvisioningOrganization = 'contoso.onmicrosoft.com'
                     policyProvisioningApplicationId = '33333333-3333-4333-8333-333333333333'
@@ -1238,6 +1233,12 @@ Describe 'Purview worker deployment truth' {
             $script:runtime = [pscustomobject]@{
                 workerPrincipalId = $script:workerPrincipalId
                 apiPrincipalId = $script:apiPrincipalId
+            }
+            $script:purviewAutomation = [ordered]@{
+                organization = 'contoso.onmicrosoft.com'
+                automationApplicationId = '33333333-3333-4333-8333-333333333333'
+                certificateSecretResourceId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.KeyVault/vaults/kv-safe-dev/secrets/purview-automation-certificate'
+                certificateSecretUri = 'https://kv-safe-dev.vault.azure.net/secrets/purview-automation-certificate'
             }
             Mock Invoke-AzJson {
                 param([string[]]$Arguments)
@@ -1259,8 +1260,8 @@ Describe 'Purview worker deployment truth' {
                 }
                 if ($Arguments[0] -eq 'resource') {
                     return [pscustomobject]@{
-                        id = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.KeyVault/vaults/kv-safe-dev/secrets/automation-certificate'
-                        name = 'automation-certificate'
+                        id = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.KeyVault/vaults/kv-safe-dev/secrets/purview-automation-certificate'
+                        name = 'purview-automation-certificate'
                         enabled = $true
                     }
                 }
@@ -1277,21 +1278,21 @@ Describe 'Purview worker deployment truth' {
         }
 
         It 'accepts exact worker settings and one exact shared-vault read role' {
-            Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime |
+            Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime -PurviewAutomation $script:purviewAutomation |
                 Should -BeTrue
         }
 
         It 'rejects a policy feature silently deployed disabled' {
             ($script:environment | Where-Object name -eq 'Purview__PolicyProvisioningEnabled').value = 'False'
 
-            { Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime } |
+            { Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime -PurviewAutomation $script:purviewAutomation } |
                 Should -Throw "*Purview__PolicyProvisioningEnabled*"
         }
 
         It 'rejects inherited or over-broad certificate access in place of the exact vault role' {
             $script:roleAssignments[0].scope = '/subscriptions/11111111-1111-4111-8111-111111111111'
 
-            { Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime } |
+            { Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime -PurviewAutomation $script:purviewAutomation } |
                 Should -Throw '*exact certificate-secret scope*'
         }
 
@@ -1303,7 +1304,7 @@ Describe 'Purview worker deployment truth' {
                 roleDefinitionId = '/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.Authorization/roleDefinitions/8e3af657-a8ff-443c-a75c-2fe8c4bcb635'
             }
 
-            { Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime } |
+            { Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime -PurviewAutomation $script:purviewAutomation } |
                 Should -Throw '*unreviewed direct or inherited role*'
         }
 
@@ -1315,11 +1316,12 @@ Describe 'Purview worker deployment truth' {
                 roleDefinitionId = '/subscriptions/11111111-1111-4111-8111-111111111111/providers/Microsoft.Authorization/roleDefinitions/4633458b-17de-408a-b874-0445c86b69e6'
             })
 
-            { Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime } |
+            { Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime -PurviewAutomation $script:purviewAutomation } |
                 Should -Throw '*API identity must have no direct or inherited*'
         }
 
         It 'requires the certificate role to be absent when policy provisioning is disabled' {
+            $script:config.purview.enabled = $false
             $script:config.purview.policyProvisioningEnabled = $false
             $script:config.purview.policyProvisioningOrganization = ''
             $script:config.purview.policyProvisioningApplicationId = ''
@@ -1331,6 +1333,7 @@ Describe 'Purview worker deployment truth' {
                     'Purview__PolicyProvisioningOrganization' { $entry.value = '' }
                     'Purview__PolicyProvisioningApplicationId' { $entry.value = '' }
                     'Purview__PolicyProvisioningCertificateSecretUri' { $entry.value = '' }
+                    'ProtectionAdminWorker__ProcessingEnabled' { $entry.value = 'False' }
                 }
             }
             $script:roleAssignments = @()
@@ -1339,17 +1342,17 @@ Describe 'Purview worker deployment truth' {
                 Should -BeTrue
         }
 
-        It 'reads only exact enabled certificate metadata and keeps external Microsoft 365 authority NotChecked' {
-            $evidence = Get-GatewayPurviewCertificateMetadataEvidence -Config $script:config
+        It 'reads only exact enabled certificate metadata without claiming propagation readiness' {
+            $evidence = Get-GatewayPurviewCertificateMetadataEvidence -Config $script:config -PurviewAutomation $script:purviewAutomation
 
-            $evidence.status | Should -Be 'MetadataPassed'
+            $evidence.status | Should -Be 'Installed'
             $evidence.secretEnabled | Should -BeTrue
-            $evidence.automationApplicationCertificateAndComplianceRbac | Should -Be 'NotChecked'
+            $evidence.automationApplicationCertificateAndComplianceRbac | Should -Be 'Passed'
             $evidence.profileProvisioningReady | Should -BeFalse
         }
 
         It 'does not report profile provisioning ready when policy automation is not configured' {
-            $script:config.purview.policyProvisioningEnabled = $false
+            $script:config.purview.enabled = $false
 
             $evidence = Get-GatewayPurviewCertificateMetadataEvidence -Config $script:config
 

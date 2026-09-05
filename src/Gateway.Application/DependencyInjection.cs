@@ -1,5 +1,6 @@
 using FluentValidation;
 using Gateway.Application.Behaviors;
+using Gateway.Application.Protection;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -16,6 +17,8 @@ public static class DependencyInjection
 
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
+        services.AddSingleton<ProtectionOperationTokenService>();
+        services.AddScoped<ProtectionEffectiveFeatureEvaluator>();
 
         return services;
     }

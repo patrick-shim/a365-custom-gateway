@@ -6,7 +6,6 @@ using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
-using Azure.Identity;
 using Azure.Security.KeyVault.Secrets;
 using Gateway.Domain.Interfaces;
 using Gateway.Domain.Models;
@@ -31,26 +30,36 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         _logger = logger;
     }
 
-    public bool IsEnabled => _options.Enabled && _options.PolicyProvisioningEnabled;
+    // Retained only so older deployments can perform explicit read-only
+    // verification. Registration provisioning is no longer a policy author.
+    public bool IsEnabled => false;
 
     public async Task<PurviewPolicyProvisioningResult> EnsureProfileAssignmentAsync(
         PurviewPolicyProvisioningRequest request,
-        CancellationToken ct) => await ExecuteAsync(request, verifyOnly: false, ct);
+        CancellationToken ct)
+    {
+        ValidatePersistedProviderIds(request);
+        return await ExecuteAsync(request, verifyOnly: true, ct);
+    }
 
     public async Task<PurviewPolicyProvisioningResult> VerifyProfileAssignmentAsync(
         PurviewPolicyProvisioningRequest request,
         CancellationToken ct)
+    {
+        ValidatePersistedProviderIds(request);
+        return await ExecuteAsync(request, verifyOnly: true, ct);
+    }
+
+    private static void ValidatePersistedProviderIds(PurviewPolicyProvisioningRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.ExpectedCollectionPolicyId) ||
             string.IsNullOrWhiteSpace(request.ExpectedDlpPolicyId) ||
             string.IsNullOrWhiteSpace(request.ExpectedDlpRuleId))
         {
             throw Failure(
-                "PURVIEW_POLICY_EXPECTED_IDS_MISSING",
-                "Read-only Purview verification requires every persisted profile identifier.");
+                "PURVIEW_SETTINGS_OWNS_POLICY_AUTHORING",
+                "New Purview policy authoring is available only through reviewed Gateway Settings operations.");
         }
-
-        return await ExecuteAsync(request, verifyOnly: true, ct);
     }
 
     private async Task<PurviewPolicyProvisioningResult> ExecuteAsync(
@@ -58,7 +67,7 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         bool verifyOnly,
         CancellationToken ct)
     {
-        if (!IsEnabled)
+        if (!_options.PolicyProvisioningEnabled)
         {
             throw Failure("PURVIEW_POLICY_PROVISIONING_DISABLED", "Purview policy provisioning is not configured.");
         }
@@ -273,17 +282,16 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
 
     private async Task<byte[]> DownloadCertificateAsync(CancellationToken ct)
     {
-        var secretUri = new Uri(_options.PolicyProvisioningCertificateSecretUri!);
+        var secretUri = PowerShellPurviewSettingsAutomation
+            .ParseApprovedCertificateSecretUri(
+                _options.PolicyProvisioningCertificateSecretUri);
         var segments = secretUri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length != 2 || !string.Equals(segments[0], "secrets", StringComparison.Ordinal))
-            throw Failure("PURVIEW_POLICY_CERTIFICATE_URI_INVALID", "The Purview automation certificate reference is invalid.");
 
-        var credentialOptions = new DefaultAzureCredentialOptions();
-        if (!string.IsNullOrWhiteSpace(_options.ManagedIdentityClientId))
-            credentialOptions.ManagedIdentityClientId = _options.ManagedIdentityClientId;
+        var credential = PowerShellPurviewSettingsAutomation
+            .CreateManagedIdentityCredential(_options.ManagedIdentityClientId);
         var client = new SecretClient(
             new Uri($"{secretUri.Scheme}://{secretUri.Host}"),
-            new DefaultAzureCredential(credentialOptions));
+            credential);
         var secret = await client.GetSecretAsync(segments[1], cancellationToken: ct);
 
         try
@@ -558,7 +566,7 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
     }
 
     [SupportedOSPlatform("windows")]
-    private static void ApplyCurrentUserOnlyDirectoryAcl(string path)
+    internal static void ApplyCurrentUserOnlyDirectoryAcl(string path)
     {
         using var identity = WindowsIdentity.GetCurrent();
         var user = identity.User ?? throw Failure(
@@ -576,7 +584,7 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
     }
 
     [SupportedOSPlatform("windows")]
-    private static void ApplyCurrentUserOnlyFileAcl(string path)
+    internal static void ApplyCurrentUserOnlyFileAcl(string path)
     {
         using var identity = WindowsIdentity.GetCurrent();
         var user = identity.User ?? throw Failure(

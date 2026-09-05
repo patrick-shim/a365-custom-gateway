@@ -3,6 +3,9 @@ $ErrorActionPreference = 'Stop'
 
 $script:GraphAppId = '00000003-0000-0000-c000-000000000000'
 $script:KeyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
+$script:PurviewExchangeOnlineProtectionAppId = '00000007-0000-0ff1-ce00-000000000000'
+$script:PurviewExchangeManageAsAppRoleId = '455e5cd2-84e8-4751-8344-5672145dfa17'
+$script:PurviewComplianceAdministratorRoleDefinitionId = '17315797-102d-40b4-93e0-432062caca18'
 
 function Get-ExactApplicationByDisplayName {
     param([Parameter(Mandatory)][string]$DisplayName)
@@ -599,6 +602,501 @@ function Ensure-ServicePrincipal {
     return $principal
 }
 
+function Get-BootstrapInitialTenantDomain {
+    $domains = @(Get-BoundedGraphCollection -InitialUrl (
+        'https://graph.microsoft.com/v1.0/domains?' +
+        '$filter=isInitial%20eq%20true&$select=id,isInitial,isVerified'))
+    if ($domains.Count -ne 1 -or
+        $domains[0].isInitial -ne $true -or
+        $domains[0].isVerified -ne $true -or
+        [string]$domains[0].id -cnotmatch '^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?[.][A-Za-z]{2,}$') {
+        throw 'The tenant initial verified domain required for Purview app-only authentication was not unique.'
+    }
+    return ([string]$domains[0].id).ToLowerInvariant()
+}
+
+function Get-BootstrapPurviewExchangeRole {
+    $exchange = Get-ServicePrincipalByAppId -AppId $script:PurviewExchangeOnlineProtectionAppId
+    if (-not $exchange) {
+        throw 'Microsoft Exchange Online Protection service principal was not found in the tenant.'
+    }
+    $roles = @($exchange.appRoles | Where-Object {
+        [string]$_.id -ceq $script:PurviewExchangeManageAsAppRoleId -and
+        [string]$_.value -ceq 'Exchange.ManageAsApp' -and
+        $_.isEnabled -eq $true -and
+        @($_.allowedMemberTypes) -contains 'Application'
+    })
+    if ($roles.Count -ne 1) {
+        throw 'Microsoft Exchange Online Protection Exchange.ManageAsApp was not uniquely available.'
+    }
+    return [ordered]@{
+        servicePrincipalId = ([guid][string]$exchange.id).ToString('D')
+        roleId = $script:PurviewExchangeManageAsAppRoleId
+    }
+}
+
+function Get-BootstrapPurviewDirectoryRoleAssignments {
+    param([Parameter(Mandatory)][string]$PrincipalId)
+
+    return @(Get-BoundedGraphCollection -InitialUrl (
+        "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?" +
+        "`$filter=principalId%20eq%20'$PrincipalId'&" +
+        '`$select=id,principalId,roleDefinitionId,directoryScopeId'))
+}
+
+function Assert-BootstrapPurviewAutomationApplication {
+    param(
+        [Parameter(Mandatory)]$Application,
+        [Parameter(Mandatory)][string]$DisplayName,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$OwnerObjectId,
+        [Parameter(Mandatory)]$ExchangeRole,
+        [switch]$AllowMissingCertificate
+    )
+
+    Assert-ExactApplicationAuthenticationSurface `
+        -Application $Application `
+        -ApplicationLabel 'Purview automation application' | Out-Null
+    if ([string]$Application.displayName -cne $DisplayName -or
+        [string]$Application.signInAudience -cne 'AzureADMyOrg' -or
+        @($Application.identifierUris).Count -ne 0 -or
+        @($Application.passwordCredentials).Count -ne 0 -or
+        @($Application.appRoles).Count -ne 0 -or
+        @($Application.api.oauth2PermissionScopes).Count -ne 0 -or
+        @($Application.web.redirectUris).Count -ne 0 -or
+        @($Application.spa.redirectUris).Count -ne 0 -or
+        @($Application.publicClient.redirectUris).Count -ne 0) {
+        throw 'Purview automation application authentication and local permission surfaces are not exact.'
+    }
+    $requirements = @($Application.requiredResourceAccess)
+    $access = if ($requirements.Count -eq 1) { @($requirements[0].resourceAccess) } else { @() }
+    if ($requirements.Count -ne 1 -or
+        [string]$requirements[0].resourceAppId -cne $script:PurviewExchangeOnlineProtectionAppId -or
+        $access.Count -ne 1 -or
+        [string]$access[0].id -cne [string]$ExchangeRole.roleId -or
+        [string]$access[0].type -cne 'Role') {
+        throw 'Purview automation application requiredResourceAccess is not the exact Security and Compliance app-only permission.'
+    }
+    if (-not $AllowMissingCertificate -and @($Application.keyCredentials).Count -ne 1) {
+        throw 'Purview automation application must contain exactly one certificate credential.'
+    }
+    if ($AllowMissingCertificate -and @($Application.keyCredentials).Count -gt 1) {
+        throw 'Purview automation application contains more than one certificate credential.'
+    }
+    Assert-BootstrapApplicationOwnership `
+        -Application $Application `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -OwnerObjectId $OwnerObjectId | Out-Null
+    return $true
+}
+
+function Assert-BootstrapPurviewAutomationServicePrincipal {
+    param(
+        [Parameter(Mandatory)]$Principal,
+        [Parameter(Mandatory)][string]$ApplicationId,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)]$ExchangeRole,
+        [switch]$AllowMissingAssignments
+    )
+
+    $expectedTags = @(Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId)
+    if ([string]$Principal.appId -cne $ApplicationId -or
+        $Principal.accountEnabled -ne $true -or
+        [string]$Principal.servicePrincipalType -cne 'Application' -or
+        $Principal.appRoleAssignmentRequired -ne $false -or
+        @($Principal.passwordCredentials).Count -ne 0 -or
+        @($Principal.keyCredentials).Count -ne 0 -or
+        @($Principal.appRoles).Count -ne 0 -or
+        @($Principal.oauth2PermissionScopes).Count -ne 0 -or
+        -not (Test-ExactStringSet -Actual @($Principal.servicePrincipalNames) -Expected @($ApplicationId)) -or
+        -not (Test-ExactStringSet -Actual @($Principal.tags) -Expected $expectedTags)) {
+        throw 'Purview automation service principal is outside the exact credential-free ownership boundary.'
+    }
+    $principalId = ([guid][string]$Principal.id).ToString('D')
+    $owners = @(Get-BoundedGraphCollection -InitialUrl (
+        "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/owners?`$select=id"))
+    $groups = @(Get-BoundedGraphCollection -InitialUrl (
+        "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/" +
+        'transitiveMemberOf/microsoft.graph.group?$select=id'))
+    $resourceAssignments = @(Get-BoundedGraphCollection -InitialUrl (
+        "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/" +
+        'appRoleAssignedTo?$select=id,principalId,resourceId,appRoleId'))
+    if ($owners.Count -ne 0 -or $groups.Count -ne 0 -or $resourceAssignments.Count -ne 0) {
+        throw 'Purview automation service principal has an unreviewed owner, group membership, or local role assignee.'
+    }
+    $assignments = @(Get-BoundedGraphCollection -InitialUrl (
+        "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/" +
+        'appRoleAssignments?$select=id,resourceId,appRoleId'))
+    $matchingExchange = @($assignments | Where-Object {
+        [string]$_.resourceId -ceq [string]$ExchangeRole.servicePrincipalId -and
+        [string]$_.appRoleId -ceq [string]$ExchangeRole.roleId
+    })
+    $directoryAssignments = @(Get-BootstrapPurviewDirectoryRoleAssignments -PrincipalId $principalId)
+    $matchingCompliance = @($directoryAssignments | Where-Object {
+        [string]$_.principalId -ceq $principalId -and
+        [string]$_.roleDefinitionId -ceq $script:PurviewComplianceAdministratorRoleDefinitionId -and
+        [string]$_.directoryScopeId -ceq '/'
+    })
+    $minimum = if ($AllowMissingAssignments) { 0 } else { 1 }
+    if ($assignments.Count -gt 1 -or $assignments.Count -lt $minimum -or
+        $matchingExchange.Count -ne $assignments.Count -or
+        $directoryAssignments.Count -gt 1 -or
+        $directoryAssignments.Count -lt $minimum -or
+        $matchingCompliance.Count -ne $directoryAssignments.Count) {
+        throw 'Purview automation principal app-only or Compliance Administrator assignments are outside the exact reviewed boundary.'
+    }
+    return [ordered]@{
+        exchangeAssignments = @($assignments)
+        complianceAssignments = @($directoryAssignments)
+    }
+}
+
+function Get-BootstrapPurviewAutomationApplication {
+    param([Parameter(Mandatory)][string]$ApplicationObjectId)
+
+    return Invoke-AzJson -Arguments @(
+        'rest', '--method', 'GET', '--url',
+        "https://graph.microsoft.com/v1.0/applications/${ApplicationObjectId}?`$select=id,appId,displayName,signInAudience,identifierUris,tags,api,appRoles,requiredResourceAccess,passwordCredentials,keyCredentials,web,spa,publicClient,isFallbackPublicClient"
+    )
+}
+
+function New-BootstrapPurviewCertificateRsa {
+    if ($IsWindows) {
+        $csp = [Security.Cryptography.CspParameters]::new(24)
+        $csp.KeyContainerName = "a365gw-purview-$([guid]::NewGuid().ToString('N'))"
+        $csp.KeyNumber = [Security.Cryptography.KeyNumber]::Exchange
+        $csp.Flags = [Security.Cryptography.CspProviderFlags]::NoPrompt
+        $rsa = [Security.Cryptography.RSACryptoServiceProvider]::new(2048, $csp)
+        $rsa.PersistKeyInCsp = $false
+        return $rsa
+    }
+    return [Security.Cryptography.RSA]::Create(2048)
+}
+
+function Get-BootstrapPurviewAutomationIdentityEvidence {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$AzureIdentity,
+        [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    $displayName = "A365 Gateway Purview Automation - $($Config.projectName)-$($Config.environment)"
+    $application = Get-ExactApplicationByDisplayName -DisplayName $displayName
+    if (-not $application) { throw 'The bootstrap-owned Purview automation application was not found.' }
+    $application = Get-BootstrapPurviewAutomationApplication -ApplicationObjectId ([string]$application.id)
+    $exchangeRole = Get-BootstrapPurviewExchangeRole
+    Assert-BootstrapPurviewAutomationApplication `
+        -Application $application `
+        -DisplayName $displayName `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -OwnerObjectId ([string]$AzureIdentity.userObjectId) `
+        -ExchangeRole $exchangeRole | Out-Null
+    $principal = Get-ServicePrincipalByAppId -AppId ([string]$application.appId)
+    if (-not $principal) { throw 'The bootstrap-owned Purview automation service principal was not found.' }
+    $null = Assert-BootstrapPurviewAutomationServicePrincipal `
+        -Principal $principal `
+        -ApplicationId ([string]$application.appId) `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -ExchangeRole $exchangeRole
+    $certificate = Get-GatewayPurviewAutomationCertificateSecretArmMetadata `
+        -Config $Config `
+        -KeyVaultUri $KeyVaultUri `
+        -AutomationApplicationId ([string]$application.appId) `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -SourceFingerprint $SourceFingerprint
+    $keys = @($application.keyCredentials)
+    $customIdentifierBytes = $null
+    $customIdentifierThumbprint = ''
+    $keyExpiresAt = [DateTimeOffset]::MinValue
+    if ($keys.Count -eq 1) {
+        try {
+            $customIdentifierBytes = [Convert]::FromBase64String([string]$keys[0].customKeyIdentifier)
+            $customIdentifierThumbprint = [Convert]::ToHexString($customIdentifierBytes).ToLowerInvariant()
+        }
+        catch {
+            $customIdentifierThumbprint = ''
+        }
+        finally {
+            if ($customIdentifierBytes) {
+                [Security.Cryptography.CryptographicOperations]::ZeroMemory($customIdentifierBytes)
+            }
+        }
+    }
+    if ([string]$certificate.status -cne 'Present' -or $keys.Count -ne 1 -or
+        [string]$keys[0].keyId -cne [string]$certificate.keyCredentialId -or
+        [string]$keys[0].displayName -cne 'a365gw-purview-automation-certificate' -or
+        [string]$keys[0].type -cne 'AsymmetricX509Cert' -or
+        [string]$keys[0].usage -cne 'Verify' -or
+        $customIdentifierThumbprint -cne [string]$certificate.certificateThumbprint -or
+        -not [DateTimeOffset]::TryParse(
+            [string]$keys[0].endDateTime,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$keyExpiresAt) -or
+        $keyExpiresAt.ToUniversalTime() -le [DateTimeOffset]::UtcNow) {
+        throw 'Purview automation certificate and Key Vault metadata do not match exactly.'
+    }
+    return [ordered]@{
+        enabled = $true
+        status = 'Installed'
+        organization = Get-BootstrapInitialTenantDomain
+        automationApplicationObjectId = ([guid][string]$application.id).ToString('D')
+        automationApplicationId = ([guid][string]$application.appId).ToString('D')
+        automationServicePrincipalId = ([guid][string]$principal.id).ToString('D')
+        exchangeOnlineProtectionApplicationId = $script:PurviewExchangeOnlineProtectionAppId
+        exchangeManageAsAppRoleId = $script:PurviewExchangeManageAsAppRoleId
+        complianceAdministratorRoleDefinitionId = $script:PurviewComplianceAdministratorRoleDefinitionId
+        keyCredentialId = [string]$certificate.keyCredentialId
+        certificateThumbprint = [string]$certificate.certificateThumbprint
+        certificateSecretResourceId = [string]$certificate.secretResourceId
+        certificateSecretUri = [string]$certificate.secretUri
+        deploymentOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+        sourceFingerprint = $SourceFingerprint
+        policyConfiguration = 'NotPerformed'
+        policyReadiness = 'NotClaimed'
+    }
+}
+
+function Test-BootstrapPurviewAutomationIdentityEvidence {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$AzureIdentity,
+        [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter(Mandatory)]$Evidence
+    )
+
+    $readback = Get-BootstrapPurviewAutomationIdentityEvidence `
+        -Config $Config `
+        -AzureIdentity $AzureIdentity `
+        -KeyVaultUri $KeyVaultUri `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -SourceFingerprint $SourceFingerprint
+    $projection = [ordered]@{}
+    foreach ($name in @($readback.Keys | ForEach-Object { [string]$_ })) {
+        $value = Get-OptionalObjectPropertyValue -InputObject $Evidence -PropertyName $name
+        $projection[$name] = $value
+    }
+    if ((Get-BootstrapObjectFingerprint -InputObject $projection) -cne
+        (Get-BootstrapObjectFingerprint -InputObject $readback)) {
+        throw 'Purview automation identity evidence no longer matches exact provider readback.'
+    }
+    return $true
+}
+
+function Ensure-BootstrapPurviewAutomationIdentity {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$AzureIdentity,
+        [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [switch]$ReconcileOnly
+    )
+
+    $displayName = "A365 Gateway Purview Automation - $($Config.projectName)-$($Config.environment)"
+    $exchangeRole = Get-BootstrapPurviewExchangeRole
+    $application = Get-ExactApplicationByDisplayName -DisplayName $displayName
+    if (-not $application) {
+        if ($ReconcileOnly) { throw 'The bootstrap-owned Purview automation application was not observable during read-only reconciliation.' }
+        $application = Invoke-GraphJsonBody -Method 'POST' -Url 'https://graph.microsoft.com/v1.0/applications' -Body @{
+            displayName = $displayName
+            signInAudience = 'AzureADMyOrg'
+            tags = Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId
+            isFallbackPublicClient = $false
+            web = @{ implicitGrantSettings = @{ enableAccessTokenIssuance = $false; enableIdTokenIssuance = $false } }
+            api = @{ acceptMappedClaims = $false; preAuthorizedApplications = @(); knownClientApplications = @(); oauth2PermissionScopes = @() }
+            appRoles = @()
+            requiredResourceAccess = @(@{
+                resourceAppId = $script:PurviewExchangeOnlineProtectionAppId
+                resourceAccess = @(@{
+                    id = $script:PurviewExchangeManageAsAppRoleId
+                    type = 'Role'
+                })
+            })
+            keyCredentials = @()
+        }
+    }
+    $application = Get-BootstrapPurviewAutomationApplication -ApplicationObjectId ([string]$application.id)
+    Assert-BootstrapApplicationOwnership `
+        -Application $application `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -OwnerObjectId ([string]$AzureIdentity.userObjectId) `
+        -AllowAddMissingOwner:(!$ReconcileOnly) | Out-Null
+    $application = Get-BootstrapPurviewAutomationApplication -ApplicationObjectId ([string]$application.id)
+    Assert-BootstrapPurviewAutomationApplication `
+        -Application $application `
+        -DisplayName $displayName `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -OwnerObjectId ([string]$AzureIdentity.userObjectId) `
+        -ExchangeRole $exchangeRole `
+        -AllowMissingCertificate | Out-Null
+
+    $principal = Get-ServicePrincipalByAppId -AppId ([string]$application.appId)
+    if (-not $principal) {
+        if ($ReconcileOnly) { throw 'The Purview automation service principal was not observable during read-only reconciliation.' }
+        $principal = Ensure-ServicePrincipal `
+            -AppId ([string]$application.appId) `
+            -ServicePrincipalNames @([string]$application.appId) `
+            -Tags @(Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId)
+    }
+    $assignmentBoundary = Assert-BootstrapPurviewAutomationServicePrincipal `
+        -Principal $principal `
+        -ApplicationId ([string]$application.appId) `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -ExchangeRole $exchangeRole `
+        -AllowMissingAssignments
+    if ($assignmentBoundary.exchangeAssignments.Count -eq 0) {
+        if ($ReconcileOnly) { throw 'Purview Exchange.ManageAsApp consent is missing during read-only reconciliation.' }
+        Invoke-GraphJsonBody -Method 'POST' -Url (
+            "https://graph.microsoft.com/v1.0/servicePrincipals/$($principal.id)/appRoleAssignments") -Body @{
+            principalId = [string]$principal.id
+            resourceId = [string]$exchangeRole.servicePrincipalId
+            appRoleId = [string]$exchangeRole.roleId
+        } | Out-Null
+    }
+    if ($assignmentBoundary.complianceAssignments.Count -eq 0) {
+        if ($ReconcileOnly) { throw 'Purview Compliance Administrator assignment is missing during read-only reconciliation.' }
+        $definition = Invoke-AzJson -Arguments @(
+            'rest', '--method', 'GET', '--url',
+            "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions/$($script:PurviewComplianceAdministratorRoleDefinitionId)?`$select=id,templateId,isBuiltIn,isEnabled"
+        )
+        if ([string]$definition.id -cne $script:PurviewComplianceAdministratorRoleDefinitionId -or
+            [string]$definition.templateId -cne $script:PurviewComplianceAdministratorRoleDefinitionId -or
+            $definition.isBuiltIn -ne $true -or $definition.isEnabled -ne $true) {
+            throw 'The supported Compliance Administrator role definition was not available exactly.'
+        }
+        Invoke-GraphJsonBody -Method 'POST' -Url (
+            'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments') -Body @{
+            principalId = [string]$principal.id
+            roleDefinitionId = $script:PurviewComplianceAdministratorRoleDefinitionId
+            directoryScopeId = '/'
+        } | Out-Null
+    }
+    $assignmentVerified = $false
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        try {
+            $principal = Get-ServicePrincipalByAppId -AppId ([string]$application.appId)
+            $null = Assert-BootstrapPurviewAutomationServicePrincipal `
+                -Principal $principal `
+                -ApplicationId ([string]$application.appId) `
+                -DeploymentOwnershipId $DeploymentOwnershipId `
+                -ExchangeRole $exchangeRole
+            $assignmentVerified = $true
+            break
+        }
+        catch {
+            if ($attempt -lt 12) { Start-Sleep -Seconds 5 }
+        }
+    }
+    if (-not $assignmentVerified) {
+        throw 'Purview automation app-only and Compliance Administrator assignments were not observed exactly.'
+    }
+
+    $certificate = Get-GatewayPurviewAutomationCertificateSecretArmMetadata `
+        -Config $Config `
+        -KeyVaultUri $KeyVaultUri `
+        -AutomationApplicationId ([string]$application.appId) `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -SourceFingerprint $SourceFingerprint
+    $keys = @($application.keyCredentials)
+    if (($keys.Count -eq 0) -ne ([string]$certificate.status -ceq 'Absent')) {
+        throw 'Purview automation certificate state is partial across Entra and Key Vault; no automatic replacement was attempted.'
+    }
+    if ($keys.Count -eq 0) {
+        if ($ReconcileOnly) { throw 'Purview automation certificate is missing during read-only reconciliation.' }
+        $rsa = $null
+        $certificateObject = $null
+        $pfxBytes = $null
+        $publicBytes = $null
+        $certificateSecretText = $null
+        try {
+            $rsa = New-BootstrapPurviewCertificateRsa
+            $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
+                "CN=a365gw-$($Config.projectName)-$($Config.environment)-purview",
+                $rsa,
+                [Security.Cryptography.HashAlgorithmName]::SHA256,
+                [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+            $request.CertificateExtensions.Add(
+                [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $true))
+            $request.CertificateExtensions.Add(
+                [Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+                    [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
+                    $true))
+            $notBefore = [DateTimeOffset]::UtcNow.AddMinutes(-5)
+            $notAfter = [DateTimeOffset]::UtcNow.AddYears(1)
+            $certificateObject = $request.CreateSelfSigned($notBefore, $notAfter)
+            $pfxBytes = $certificateObject.Export(
+                [Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12)
+            $publicBytes = $certificateObject.Export(
+                [Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+            $certificateSecretText = [Convert]::ToBase64String($pfxBytes)
+            $thumbprint = ([string]$certificateObject.Thumbprint).ToLowerInvariant()
+            $keyCredentialId = [guid]::NewGuid().ToString('D')
+            $null = Deploy-GatewayPurviewAutomationCertificateSecret `
+                -Config $Config `
+                -KeyVaultUri $KeyVaultUri `
+                -AutomationApplicationId ([string]$application.appId) `
+                -KeyCredentialId $keyCredentialId `
+                -CertificateThumbprint $thumbprint `
+                -CertificateSecretText $certificateSecretText `
+                -DeploymentOwnershipId $DeploymentOwnershipId `
+                -SourceFingerprint $SourceFingerprint
+            try {
+                Invoke-GraphJsonBody -Method 'PATCH' -Url (
+                    "https://graph.microsoft.com/v1.0/applications/$($application.id)") -Body @{
+                    keyCredentials = @(@{
+                        keyId = $keyCredentialId
+                        displayName = 'a365gw-purview-automation-certificate'
+                        type = 'AsymmetricX509Cert'
+                        usage = 'Verify'
+                        key = [Convert]::ToBase64String($publicBytes)
+                        customKeyIdentifier = [Convert]::ToBase64String(
+                            [Convert]::FromHexString($thumbprint))
+                        startDateTime = $notBefore.ToString('O')
+                        endDateTime = $notAfter.ToString('O')
+                    })
+                } | Out-Null
+            }
+            catch {
+                $application = Get-BootstrapPurviewAutomationApplication `
+                    -ApplicationObjectId ([string]$application.id)
+                if (@($application.keyCredentials | Where-Object {
+                    [string]$_.keyId -ceq $keyCredentialId
+                }).Count -ne 1) {
+                    throw 'Microsoft Graph returned an unknown Purview certificate outcome and exact readback did not prove success.'
+                }
+            }
+        }
+        finally {
+            if ($pfxBytes) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($pfxBytes) }
+            if ($publicBytes) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($publicBytes) }
+            if ($certificateObject) { $certificateObject.Dispose() }
+            if ($rsa) { $rsa.Dispose() }
+            $certificateSecretText = $null
+            $request = $null
+        }
+    }
+
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        try {
+            return Get-BootstrapPurviewAutomationIdentityEvidence `
+                -Config $Config `
+                -AzureIdentity $AzureIdentity `
+                -KeyVaultUri $KeyVaultUri `
+                -DeploymentOwnershipId $DeploymentOwnershipId `
+                -SourceFingerprint $SourceFingerprint
+        }
+        catch {
+            if ($attempt -eq 12) { throw }
+            Start-Sleep -Seconds 5
+        }
+    }
+}
+
 function Ensure-GatewayApiApplication {
     param(
         [Parameter(Mandatory)]$Config,
@@ -763,6 +1261,54 @@ function Ensure-GraphApplicationRoleAssignment {
     return [string]$role[0].id
 }
 
+function Get-GatewayPurviewRuntimeManagedIdentity {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Identity
+    )
+
+    if ($Config.purview.enabled -ne $true) {
+        throw 'Purview runtime managed-identity readback requires the Purview capability.'
+    }
+
+    $name = "id-gateway-runtime-pull-$($Config.environment)"
+    $resource = Invoke-AzJson -Arguments @(
+        'identity', 'show',
+        '--subscription', [string]$Config.subscriptionId,
+        '--resource-group', [string]$Config.resourceGroupName,
+        '--name', $name
+    )
+    $expectedId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$name"
+    $clientId = [guid]::Empty
+    $principalId = [guid]::Empty
+    if ([string]$resource.id -ine $expectedId -or
+        [string]$resource.name -cne $name -or
+        [string]$resource.type -ine 'Microsoft.ManagedIdentity/userAssignedIdentities' -or
+        [string]$resource.location -ine [string]$Config.location -or
+        [string]$resource.tenantId -ine [string]$Config.tenantId -or
+        -not [guid]::TryParse([string]$resource.clientId, [ref]$clientId) -or
+        $clientId -eq [guid]::Empty -or
+        [string]$resource.clientId -cne $clientId.ToString('D') -or
+        -not [guid]::TryParse([string]$resource.principalId, [ref]$principalId) -or
+        $principalId -eq [guid]::Empty -or
+        [string]$resource.principalId -cne $principalId.ToString('D') -or
+        [string]$resource.tags.application -cne 'a365-custom-gateway' -or
+        [string]$resource.tags.environment -cne [string]$Config.environment -or
+        [string]$resource.tags.managedBy -cne 'bootstrap' -or
+        [string]$resource.tags.projectName -cne [string]$Config.projectName -or
+        [string]$resource.tags.deploymentId -cne "$($Config.projectName)-$($Config.environment)" -or
+        [string]$resource.tags.bootstrapOwnershipId -cne [string]$Identity.deploymentOwnershipId -or
+        [string]$resource.tags.workload -cne 'runtime-image-pull') {
+        throw 'The API Purview runtime managed identity does not match the exact bootstrap-owned deployment boundary.'
+    }
+
+    return [ordered]@{
+        resourceId = $expectedId
+        clientId = $clientId.ToString('D')
+        principalId = $principalId.ToString('D')
+    }
+}
+
 function Configure-GatewayWorkloadIdentity {
     param(
         [Parameter(Mandatory)]$Config,
@@ -785,8 +1331,16 @@ function Configure-GatewayWorkloadIdentity {
     )
     $apiRoles = [Collections.Generic.List[string]]::new()
     $apiRoles.Add('AgentIdentityBlueprint.Read.All')
+    $purviewRuntimeRoles = @(
+        'ProtectionScopes.Compute.User',
+        'Content.Process.User',
+        'ContentActivity.Write'
+    )
+    $purviewRuntimeIdentity = $null
     if ($EnablePurview) {
-        foreach ($role in @('ProtectionScopes.Compute.User', 'Content.Process.User', 'ContentActivity.Write')) { $apiRoles.Add($role) }
+        $purviewRuntimeIdentity = Get-GatewayPurviewRuntimeManagedIdentity `
+            -Config $Config `
+            -Identity $Identity
     }
     # Reject unknown requested permissions or grants before making any Entra
     # mutation. Missing members of the reviewed sets may be added below, but an
@@ -795,6 +1349,11 @@ function Configure-GatewayWorkloadIdentity {
     Assert-GatewayFederatedCredentialBoundary -Config $Config -Identity $Identity -ApiPrincipalId $ApiPrincipalId -AllowMissing | Out-Null
     Assert-GraphApplicationRoleAssignmentBoundary -PrincipalId $WorkerPrincipalId -ExpectedRoleValues $workerRoles | Out-Null
     Assert-GraphApplicationRoleAssignmentBoundary -PrincipalId $ApiPrincipalId -ExpectedRoleValues @($apiRoles) | Out-Null
+    if ($EnablePurview) {
+        Assert-GraphApplicationRoleAssignmentBoundary `
+            -PrincipalId $purviewRuntimeIdentity.principalId `
+            -ExpectedRoleValues $purviewRuntimeRoles | Out-Null
+    }
     & (Join-Path $root 'tools/configure-workflow-v3-entra.ps1') `
         -ExpectedSubscriptionId ([guid]$Config.subscriptionId) `
         -ExpectedTenantId ([guid]$Config.tenantId) `
@@ -809,9 +1368,19 @@ function Configure-GatewayWorkloadIdentity {
     foreach ($role in $workerRoles) { $workerRoleIds[$role] = Ensure-GraphApplicationRoleAssignment -PrincipalId $WorkerPrincipalId -RoleValue $role }
     $apiRoleIds = [ordered]@{}
     foreach ($role in $apiRoles) { $apiRoleIds[$role] = Ensure-GraphApplicationRoleAssignment -PrincipalId $ApiPrincipalId -RoleValue $role }
+    if ($EnablePurview) {
+        foreach ($role in $purviewRuntimeRoles) {
+            $null = Ensure-GraphApplicationRoleAssignment `
+                -PrincipalId $purviewRuntimeIdentity.principalId `
+                -RoleValue $role
+        }
+    }
     Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -RequireComplete | Out-Null
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId $WorkerPrincipalId -ExpectedRoleValues $workerRoles | Out-Null
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId $ApiPrincipalId -ExpectedRoleValues @($apiRoles) | Out-Null
+    if ($EnablePurview) {
+        Assert-ExactGraphApplicationRoleAssignments -PrincipalId $purviewRuntimeIdentity.principalId -ExpectedRoleValues $purviewRuntimeRoles | Out-Null
+    }
     Assert-GatewayFederatedCredentialBoundary -Config $Config -Identity $Identity -ApiPrincipalId $ApiPrincipalId | Out-Null
     return Get-GatewayWorkloadIdentityEvidence -Config $Config -Identity $Identity -ApiPrincipalId $ApiPrincipalId -WorkerPrincipalId $WorkerPrincipalId -EnablePurview:$EnablePurview
 }
@@ -832,26 +1401,119 @@ function Get-GatewayWorkloadIdentityEvidence {
     )
     $apiRoles = [Collections.Generic.List[string]]::new()
     $apiRoles.Add('AgentIdentityBlueprint.Read.All')
+    $purviewRuntimeRoles = @(
+        'ProtectionScopes.Compute.User',
+        'Content.Process.User',
+        'ContentActivity.Write'
+    )
+    $purviewRuntimeIdentity = $null
     if ($EnablePurview) {
-        foreach ($role in @('ProtectionScopes.Compute.User', 'Content.Process.User', 'ContentActivity.Write')) { $apiRoles.Add($role) }
+        $purviewRuntimeIdentity = Get-GatewayPurviewRuntimeManagedIdentity `
+            -Config $Config `
+            -Identity $Identity
     }
     Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -RequireComplete | Out-Null
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId $WorkerPrincipalId -ExpectedRoleValues $workerRoles | Out-Null
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId $ApiPrincipalId -ExpectedRoleValues @($apiRoles) | Out-Null
+    if ($EnablePurview) {
+        Assert-ExactGraphApplicationRoleAssignments -PrincipalId $purviewRuntimeIdentity.principalId -ExpectedRoleValues $purviewRuntimeRoles | Out-Null
+    }
 
     $ficName = "a365gw-$($Config.projectName)-api-obo-$($Config.environment)"
     Assert-GatewayFederatedCredentialBoundary -Config $Config -Identity $Identity -ApiPrincipalId $ApiPrincipalId | Out-Null
     $graph = (Get-GraphPermissionCatalog).servicePrincipal
     $workerRoleIds = [ordered]@{}
     foreach ($role in $workerRoles) { $workerRoleIds[$role] = Get-UniqueGraphPermissionId -Graph $graph -Value $role -Type Role }
-    $apiRoleIds = [ordered]@{}
-    foreach ($role in $apiRoles) { $apiRoleIds[$role] = Get-UniqueGraphPermissionId -Graph $graph -Value $role -Type Role }
+    $apiHostRoleIds = [ordered]@{}
+    foreach ($role in $apiRoles) { $apiHostRoleIds[$role] = Get-UniqueGraphPermissionId -Graph $graph -Value $role -Type Role }
+    $purviewRuntimeRoleIds = [ordered]@{}
+    if ($EnablePurview) {
+        foreach ($role in $purviewRuntimeRoles) {
+            $purviewRuntimeRoleIds[$role] =
+                Get-UniqueGraphPermissionId -Graph $graph -Value $role -Type Role
+        }
+    }
+    $apiCapabilityRoleIds = [ordered]@{}
+    foreach ($entry in $apiHostRoleIds.GetEnumerator()) {
+        $apiCapabilityRoleIds[[string]$entry.Key] = [string]$entry.Value
+    }
+    foreach ($entry in $purviewRuntimeRoleIds.GetEnumerator()) {
+        $apiCapabilityRoleIds[[string]$entry.Key] = [string]$entry.Value
+    }
     return [ordered]@{
         federatedCredentialName = $ficName
         workerApplicationRoles = $workerRoleIds
-        apiApplicationRoles = $apiRoleIds
+        # Retain the established capability-level role map while binding its
+        # Purview members to the dedicated runtime identity below.
+        apiApplicationRoles = $apiCapabilityRoleIds
+        apiHostApplicationRoles = $apiHostRoleIds
+        purviewRuntimeIdentityResourceId = if ($EnablePurview) { [string]$purviewRuntimeIdentity.resourceId } else { '' }
+        purviewRuntimeManagedIdentityClientId = if ($EnablePurview) { [string]$purviewRuntimeIdentity.clientId } else { '' }
+        purviewRuntimeManagedIdentityPrincipalId = if ($EnablePurview) { [string]$purviewRuntimeIdentity.principalId } else { '' }
+        purviewRuntimeApplicationRoles = $purviewRuntimeRoleIds
         delegatedRegistryScopes = @('AgentRegistration.Read.All', 'AgentRegistration.ReadWrite.All')
     }
+}
+
+function Test-GatewayWorkflowIdentityEvidence {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)]$Inert,
+        [Parameter(Mandatory)]$Evidence
+    )
+
+    if ($Config.purview.enabled -ne $true) {
+        return Experience\Test-GatewayWorkflowIdentityEvidence `
+            -Config $Config `
+            -Identity $Identity `
+            -Inert $Inert `
+            -Evidence $Evidence
+    }
+
+    if ($Evidence.apiHostApplicationRoles -isnot [System.Collections.IDictionary] -or
+        $Evidence.purviewRuntimeApplicationRoles -isnot [System.Collections.IDictionary]) {
+        throw 'Workflow identity evidence has no exact API Purview runtime identity binding.'
+    }
+
+    $baseConfig = $Config | Select-Object *
+    $baseConfig.purview = $Config.purview | Select-Object *
+    $baseConfig.purview.enabled = $false
+    $baseEvidence = [ordered]@{}
+    foreach ($entry in $Evidence.GetEnumerator()) {
+        $baseEvidence[[string]$entry.Key] = $entry.Value
+    }
+    $baseEvidence.apiApplicationRoles = $Evidence.apiHostApplicationRoles
+    $null = Experience\Test-GatewayWorkflowIdentityEvidence `
+        -Config $baseConfig `
+        -Identity $Identity `
+        -Inert $Inert `
+        -Evidence $baseEvidence
+
+    $runtimeIdentity = Get-GatewayPurviewRuntimeManagedIdentity `
+        -Config $Config `
+        -Identity $Identity
+    $requiredRoles = @(
+        'ProtectionScopes.Compute.User',
+        'Content.Process.User',
+        'ContentActivity.Write'
+    )
+    Assert-ExactGraphApplicationRoleAssignments `
+        -PrincipalId $runtimeIdentity.principalId `
+        -ExpectedRoleValues $requiredRoles | Out-Null
+    $evidenceRoles = @(
+        $Evidence.purviewRuntimeApplicationRoles.Keys |
+            ForEach-Object { [string]$_ } |
+            Sort-Object
+    )
+    if ([string]$Evidence.purviewRuntimeIdentityResourceId -ine [string]$runtimeIdentity.resourceId -or
+        [string]$Evidence.purviewRuntimeManagedIdentityClientId -cne [string]$runtimeIdentity.clientId -or
+        [string]$Evidence.purviewRuntimeManagedIdentityPrincipalId -cne [string]$runtimeIdentity.principalId -or
+        ($evidenceRoles -join '|') -cne (($requiredRoles | Sort-Object) -join '|')) {
+        throw 'Workflow identity evidence no longer matches the exact API Purview runtime identity.'
+    }
+
+    return $true
 }
 
 function Ensure-AdminUiApplication {

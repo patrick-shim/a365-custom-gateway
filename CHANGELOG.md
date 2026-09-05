@@ -2,6 +2,39 @@
 
 All notable changes to A365 Custom Gateway are recorded here.
 
+## [0.1.0-beta.2] - 2026-09-06
+
+Protection governance source release candidate.
+
+### Changed
+
+- Bootstrap installs shared Agent 365, Prompt Shields, and Purview capabilities
+  without selecting a SIT or authoring tenant policy.
+- Gateway Settings owns tenant connection, SIT selection, KYD and blueprint DLP
+  administration, readiness, recovery, defaults, and per-registration controls.
+- Protection operations use `gateway-protection-admin-v1`, confirmation-bound
+  mutations, durable recovery, and an immutable-image Windows companion.
+- Exact startup capability attestation binds API/worker runtime identity, token
+  subject, provider resources, and current tenant/SIT readiness; drift fails closed.
+- Purview automation terminates owned processes on cancellation and uses exact
+  provider-ID-bound updates/readback. Settings submits supported DLP actions and
+  limits runtime validation to enforcement mode.
+
+### Validation boundary
+
+- Release: zero warnings/errors; all eight .NET projects: 2,004 passed;
+  canonical Pester: 846 passed, zero failed, 7 skipped. All nine format
+  targets, source/Bicep, metadata/parity, and full-ledger checks passed.
+- Fresh independent security and UI source review passed with no remaining
+  actionable findings. Desktop/narrow browser inspection was explicitly waived
+  in favor of bUnit and independent source review after browser policy blocked it.
+- Clean export passed Release, all eight test projects, canonical bootstrap
+  source/Pester/Bicep, layout, and launcher smoke with all intended new files.
+- Source remains undeployed; live E2E is postponed. Hosted CI must be green for
+  the exact commit, followed by fresh authorization naming an exact unused
+  resource group. Git and documentation transfer no live authority.
+
+
 ## [0.1.0-beta.1] - 2026-09-05
 
 First public beta release candidate.

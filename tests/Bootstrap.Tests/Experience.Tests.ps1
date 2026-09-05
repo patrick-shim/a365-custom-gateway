@@ -73,10 +73,11 @@ Describe 'Experience Purview runtime adapter boundary' {
         # A constant expectation here silently pins Purview__Enabled to one value
         # and makes the opposite deployment unverifiable, not merely unverified.
         $runner = [scriptblock]::Create(
-            "param(`$Config); Set-StrictMode -Version Latest; $script:purviewAssignment; return `$expectedPurviewEnabled")
+            "param(`$Config, `$isRuntime); Set-StrictMode -Version Latest; $script:purviewAssignment; return `$expectedPurviewEnabled")
 
-        & $runner ([pscustomobject]@{ purview = [pscustomobject]@{ enabled = $true } }) | Should -BeTrue
-        & $runner ([pscustomobject]@{ purview = [pscustomobject]@{ enabled = $false } }) | Should -BeFalse
+        & $runner ([pscustomobject]@{ purview = [pscustomobject]@{ enabled = $true } }) $true | Should -BeTrue
+        & $runner ([pscustomobject]@{ purview = [pscustomobject]@{ enabled = $false } }) $true | Should -BeFalse
+        & $runner ([pscustomobject]@{ purview = [pscustomobject]@{ enabled = $true } }) $false | Should -BeFalse
     }
 }
 
@@ -662,16 +663,13 @@ Describe 'Experience CLI Azure region choice boundary' {
             $source | Should -Match 'Read-GatewayAzureLocation'
             $source | Should -Not -Match "Read-GatewayText\s+-Prompt\s+'Azure region"
             $source | Should -Not -Match 'eastus2'
-            $source | Should -Match 'Get-BootstrapPurviewSensitiveInformationTypes'
-            $source | Should -Match 'Resolve-BootstrapPurviewSensitiveInformationType'
-            $source | Should -Match 'Connect-GatewayPurviewSelectedTenantMember'
-            $source.IndexOf('Connect-GatewayPurviewSelectedTenantMember', [StringComparison]::Ordinal) |
-                Should -BeLessThan $source.IndexOf('Get-BootstrapPurviewSensitiveInformationTypes', [StringComparison]::Ordinal)
-            $source | Should -Match "Read-GatewayChoice(?s:.){0,500}-DefaultIndex\s+-1"
-            $source | Should -Not -Match "Read-GatewayText\s+-Prompt\s+'Exact Purview sensitive information type name'"
-            $source | Should -Not -Match "Read-GatewayText(?s:.){0,200}Purview Security & Compliance user principal name"
-            $source | Should -Match 'sensitiveInformationTypeId\s*=\s*\$sensitiveInformationTypeId'
-            $source | Should -Match 'sensitiveInformationType\s*=\s*\$sensitiveInformationType'
+            $source | Should -Not -Match 'Get-BootstrapPurviewSensitiveInformationTypes'
+            $source | Should -Not -Match 'Resolve-BootstrapPurviewSensitiveInformationType'
+            $source | Should -Not -Match 'Connect-GatewayPurviewSelectedTenantMember'
+            $source | Should -Not -Match 'sensitiveInformationType'
+            $source | Should -Match 'Full evaluation'
+            $source | Should -Match 'Core Gateway'
+            $source | Should -Match 'Custom'
         }
     }
 }
@@ -726,7 +724,7 @@ Describe 'Experience selected-tenant Microsoft Graph Member boundary' {
                 Connect-GatewayPurviewSelectedTenantMember `
                     -SubscriptionId $script:selectedSubscriptionId `
                     -TenantId $script:selectedTenantId
-            } | Should -Throw '*Windows workstation*Connect-IPPSSession*macOS or Linux*Purview disabled*'
+            } | Should -Throw '*post-deployment*Windows workstation*Connect-IPPSSession*macOS or Linux*Capability bootstrap remains available*'
 
             Should -Invoke Invoke-GatewayAzJson -Times 0 -Exactly
             Should -Invoke Connect-BootstrapPurview -Times 0 -Exactly
@@ -850,7 +848,120 @@ Describe 'Experience selected-tenant Microsoft Graph Member boundary' {
 }
 
 Describe 'Experience Purview runtime environment binding' {
-    It 'requires the selected SIT GUID and exact Name as distinct worker settings' {
+    InModuleScope Experience {
+        BeforeEach {
+            $script:runtimeBinding = [ordered]@{
+                resourceId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-runtime-pull-dev'
+                clientId = '22222222-2222-4222-8222-222222222222'
+                principalId = '33333333-3333-4333-8333-333333333333'
+            }
+            $script:runtimeEvidence = [ordered]@{
+                deploymentOwnershipId = '44444444-4444-4444-8444-444444444444'
+                runtimeImagePullIdentityId = $script:runtimeBinding.resourceId
+                runtimeImagePullIdentityPrincipalId = $script:runtimeBinding.principalId
+                purviewRuntimeIdentityResourceId = $script:runtimeBinding.resourceId
+                purviewRuntimeIdentityClientId = $script:runtimeBinding.clientId
+                purviewRuntimeIdentityPrincipalId = $script:runtimeBinding.principalId
+            }
+            $script:runtimeOutputs = [ordered]@{}
+            foreach ($name in @('purviewRuntimeIdentityResourceId', 'purviewRuntimeIdentityClientId', 'purviewRuntimeIdentityPrincipalId')) {
+                $script:runtimeOutputs[$name] = @{ value = $script:runtimeEvidence[$name] }
+            }
+            $script:runtimeCapability = @{ purview = @{ purviewRuntimeManagedIdentityPrincipalObjectId = $script:runtimeBinding.principalId } }
+            $script:runtimeApps = @{}
+            foreach ($role in @('Api', 'Worker')) {
+                $script:runtimeApps[$role] = @{
+                    identity = @{
+                        principalId = '55555555-5555-4555-8555-555555555555'
+                        userAssignedIdentities = @{ $script:runtimeBinding.resourceId = @{
+                            principalId = $script:runtimeBinding.principalId
+                            clientId = $script:runtimeBinding.clientId
+                        } }
+                    }
+                    properties = @{ template = @{ containers = @(@{ env = @(
+                        @{ name = 'PurviewRuntimeIdentity__ManagedIdentityClientId'; value = $script:runtimeBinding.clientId }
+                        @{ name = 'PurviewRuntimeIdentity__ManagedIdentityPrincipalObjectId'; value = $script:runtimeBinding.principalId }
+                    ) }) } }
+                }
+            }
+            Mock Get-GatewayPurviewRuntimeManagedIdentity { return $script:runtimeBinding }
+            $script:runtimeBindingArguments = @{
+                Config = @{ purview = @{ enabled = $true } }
+                Evidence = $script:runtimeEvidence
+                Outputs = $script:runtimeOutputs
+                CapabilityEvidence = $script:runtimeCapability
+                Api = $script:runtimeApps.Api
+                Worker = $script:runtimeApps.Worker
+                Enabled = $true
+            }
+        }
+
+        It 'independently reads the shared UAMI and binds both app selectors and attestation' {
+            $actual = Get-GatewayVerifiedPurviewRuntimeDeploymentIdentity @script:runtimeBindingArguments
+            $actual.clientId | Should -BeExactly $script:runtimeBinding.clientId
+            $actual.principalId | Should -BeExactly $script:runtimeBinding.principalId
+            Should -Invoke Get-GatewayPurviewRuntimeManagedIdentity -Times 1 -Exactly -ParameterFilter {
+                [string]$Identity.deploymentOwnershipId -ceq $script:runtimeEvidence.deploymentOwnershipId
+            }
+        }
+
+        It 'rejects changed <Role> runtime <Field> even when attestation is unchanged' -ForEach @(
+            @{ Role = 'Api'; Field = 'clientId'; Index = 0 }
+            @{ Role = 'Api'; Field = 'principalId'; Index = 1 }
+            @{ Role = 'Worker'; Field = 'clientId'; Index = 0 }
+            @{ Role = 'Worker'; Field = 'principalId'; Index = 1 }
+        ) {
+            $script:runtimeApps[$Role].properties.template.containers[0].env[$Index].value = '66666666-6666-4666-8666-666666666666'
+            { Get-GatewayVerifiedPurviewRuntimeDeploymentIdentity @script:runtimeBindingArguments } | Should -Throw
+        }
+
+        It 'rejects a worker system principal in capability evidence' {
+            $script:runtimeCapability.purview.purviewRuntimeManagedIdentityPrincipalObjectId = $script:runtimeApps.Worker.identity.principalId
+            { Get-GatewayVerifiedPurviewRuntimeDeploymentIdentity @script:runtimeBindingArguments } | Should -Throw
+        }
+
+        It 'requires explicit empty selectors and outputs for Core without reading Purview identity' {
+            $script:runtimeBindingArguments.Enabled = $false
+            $script:runtimeCapability.purview.purviewRuntimeManagedIdentityPrincipalObjectId = ''
+            foreach ($name in @('purviewRuntimeIdentityResourceId', 'purviewRuntimeIdentityClientId', 'purviewRuntimeIdentityPrincipalId')) {
+                $script:runtimeEvidence[$name] = ''
+                $script:runtimeOutputs[$name].value = ''
+            }
+            foreach ($role in @('Api', 'Worker')) {
+                foreach ($entry in $script:runtimeApps[$role].properties.template.containers[0].env) { $entry.value = '' }
+            }
+            $actual = Get-GatewayVerifiedPurviewRuntimeDeploymentIdentity @script:runtimeBindingArguments
+            $actual.clientId | Should -BeExactly ''
+            $actual.principalId | Should -BeExactly ''
+            Should -Invoke Get-GatewayPurviewRuntimeManagedIdentity -Times 0 -Exactly
+            $script:runtimeApps.Worker.properties.template.containers[0].env[0].value = $script:runtimeBinding.clientId
+            { Get-GatewayVerifiedPurviewRuntimeDeploymentIdentity @script:runtimeBindingArguments } | Should -Throw
+        }
+
+        It 'rejects duplicate selectors and secret references' {
+            $script:runtimeApps.Api.properties.template.containers[0].env += $script:runtimeApps.Api.properties.template.containers[0].env[0]
+            { Get-GatewayVerifiedPurviewRuntimeDeploymentIdentity @script:runtimeBindingArguments } | Should -Throw
+            $script:runtimeApps.Api.properties.template.containers[0].env = @($script:runtimeApps.Api.properties.template.containers[0].env | Select-Object -First 2)
+            $script:runtimeApps.Api.properties.template.containers[0].env[0].secretRef = 'unexpected'
+            { Get-GatewayVerifiedPurviewRuntimeDeploymentIdentity @script:runtimeBindingArguments } | Should -Throw
+        }
+
+        It 'rejects mutually matching output and evidence drift from independent UAMI readback' {
+            $script:runtimeEvidence.purviewRuntimeIdentityClientId = '66666666-6666-4666-8666-666666666666'
+            $script:runtimeOutputs.purviewRuntimeIdentityClientId.value = $script:runtimeEvidence.purviewRuntimeIdentityClientId
+            { Get-GatewayVerifiedPurviewRuntimeDeploymentIdentity @script:runtimeBindingArguments } | Should -Throw
+        }
+
+        It 'rejects <Role> identity attachment drift even when selectors are correct' -ForEach @(
+            @{ Role = 'Api' }
+            @{ Role = 'Worker' }
+        ) {
+            $script:runtimeApps[$Role].identity.userAssignedIdentities[$script:runtimeBinding.resourceId].clientId = '66666666-6666-4666-8666-666666666666'
+            { Get-GatewayVerifiedPurviewRuntimeDeploymentIdentity @script:runtimeBindingArguments } | Should -Throw
+        }
+    }
+
+    It 'keeps bootstrap-time SIT defaults empty for Settings-owned configuration' {
         $tokens = $null
         $parseErrors = $null
         $ast = [Management.Automation.Language.Parser]::ParseFile(
@@ -863,8 +974,8 @@ Describe 'Experience Purview runtime environment binding' {
         }, $true)
         $source = $function.Extent.Text
 
-        $source | Should -Match "'Purview__DefaultSensitiveInformationTypeId'\s*=\s*\[string\]\`$Config\.purview\.sensitiveInformationTypeId"
-        $source | Should -Match "'Purview__DefaultSensitiveInformationType'\s*=\s*\[string\]\`$Config\.purview\.sensitiveInformationType"
+        $source | Should -Match "'Purview__DefaultSensitiveInformationTypeId'\s*=\s*''"
+        $source | Should -Match "'Purview__DefaultSensitiveInformationType'\s*=\s*''"
     }
 }
 
@@ -4867,15 +4978,4 @@ Describe 'Experience Purview no-op completion replay boundary' {
         $result | Should -BeTrue
     }
 
-    It 'scopes the anti-replay guard to a prior authoring attempt' {
-        # Returning $false is not enough on its own: while
-        # -NoAutomaticReplayAfterStart stays pinned to the configuration flag, the
-        # completed branch fails the step instead of running the action.
-        $bootstrapPath = Join-Path (Split-Path -Parent (Split-Path -Parent (Get-Module Experience).Path)) 'bootstrap.ps1'
-        $bootstrapText = Get-Content -Raw -Path $bootstrapPath
-
-        $bootstrapText | Should -Match '\$purviewPreviouslyAuthored\s*='
-        $bootstrapText | Should -Match '\$purviewPreviouslyAuthored[\s\S]{0,400}?evidence\.configured -eq \$true'
-        $bootstrapText | Should -Match 'NoAutomaticReplayAfterStart:\(\$configuration\.purview\.enabled -eq \$true -and \$purviewPreviouslyAuthored\)'
-    }
 }

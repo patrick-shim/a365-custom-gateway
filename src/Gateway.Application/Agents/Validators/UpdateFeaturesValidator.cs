@@ -22,6 +22,26 @@ public class UpdateFeaturesValidator : AbstractValidator<UpdateFeaturesCommand>
             .Must(HaveCompatibleObservabilitySettings)
             .WithMessage("Legacy and destination-specific observability settings must describe the same destinations.")
             .OverridePropertyName(nameof(UpdateFeaturesCommand.ObservabilityMode));
+
+        RuleFor(x => x.PurviewDlpProfile!.ProfileId)
+            .NotEmpty()
+            .When(x => x.PurviewDlpProfile is not null);
+        RuleFor(x => x.PurviewDlpProfile!.BlueprintApplicationId)
+            .NotEmpty()
+            .When(x => x.PurviewDlpProfile is not null);
+        RuleFor(x => x.PurviewDlpProfile!.ExpectedProfileRowVersion)
+            .Must(BeExpectedRowVersion)
+            .When(x =>
+                x.PurviewDlpProfile?.ExpectedProfileRowVersion is not null);
+        RuleFor(x => x.PurviewDlpProfile)
+            .Null()
+            .When(x => x.PurviewEnabled == false)
+            .WithMessage("PurviewDlpProfile cannot be selected while Purview is disabled.");
+        RuleFor(x => x)
+            .Must(command =>
+                (command.IdempotencyKey is null) ==
+                (command.ExpectedRowVersion is null))
+            .WithMessage("IdempotencyKey and ExpectedRowVersion must be supplied together.");
     }
 
     private static bool BeValidObservabilityMode(string? mode) =>
@@ -44,5 +64,24 @@ public class UpdateFeaturesValidator : AbstractValidator<UpdateFeaturesCommand>
             command.AzureMonitorExportEnabled,
             ObservabilityMode.Agent365,
             out _);
+    }
+
+    private static bool BeExpectedRowVersion(string? value)
+    {
+        if (value is null)
+            return true;
+        try
+        {
+            var decoded = Convert.FromBase64String(value);
+            return decoded.Length == 8 &&
+                string.Equals(
+                    Convert.ToBase64String(decoded),
+                    value,
+                    StringComparison.Ordinal);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
     }
 }

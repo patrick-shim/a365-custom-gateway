@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-09-05 (Asia/Seoul).
+Last updated: 2026-09-06 (Asia/Seoul).
 
 This is the concise source-of-truth checkpoint for contributors. Public setup starts
 at the repository [README](../README.md). Exact deployed development evidence is in
@@ -30,6 +30,68 @@ production use. Agent Identity creation uses documented Graph v1.0 surfaces, whi
 tenant permission availability can still vary. Development can explicitly enable
 continuous registration. Staging and production remain closed by default.
 
+## Protection Settings implementation — beta.2 offline acceptance passed
+
+The `0.1.0-beta.2` protection-governance source is implemented and accepted offline.
+Bootstrap installs shared capabilities; role-aware Gateway Settings owns tenant
+connection, SIT selection, independent KYD Group and blueprint Individual DLP,
+readiness, defaults, and per-registration controls. Full evaluation is the Quick
+development default with explicit acknowledgements; Core Gateway omits optional
+dependencies, and Custom selects them independently. Staging and production keep
+Registry beta closed.
+
+Registration retains seven stages on `gateway-provisioning-v3`. Protection
+administration uses only `gateway-protection-admin-v1`. Registry remains user-only
+delegated OBO with at most one POST and exact-ID recovery; Active still requires
+final provider verification. Capability installation never substitutes for policy,
+propagation, token-role, or allow/block evidence.
+
+| Gate | Final result |
+|---|---:|
+| Release build | 0 warnings, 0 errors |
+| Gateway.UnitTests | 805 passed |
+| Gateway.AdminUi.Tests | 217 passed |
+| Gateway.Setup.Tests | 255 passed |
+| Gateway.ObservabilityRuntime.Tests | 232 passed |
+| Gateway.ArchitectureTests | 131 passed |
+| Gateway.IntegrationTests | 107 passed |
+| Gateway.EndToEndTests | 116 passed |
+| Gateway.SecurityTests | 141 passed |
+| **.NET total** | **2,004 passed, 0 failed** |
+| Pester | 846 passed, 0 failed, 7 skipped |
+| Format | All nine targets passed |
+| Independent security and UI source review | Passed; no remaining actionable findings |
+| Clean export | Release, all eight test projects, canonical bootstrap gate, layout and launcher smoke passed |
+
+Canonical source gate: 20 PowerShell files and 2 JSON files, with 28 Bicep templates and 3 parameter files compiled, with Pester behavior tests.
+
+The fresh independent review passed the combined source after explicitly
+rechecking all four original findings: shared API/worker runtime identity and
+token subject, exact capability/runtime binding, cancellation-owned process
+termination, and provider-ID-bound KYD/DLP updates with exact readback and
+ambiguous-outcome recovery. It also rechecked the exact 19-key
+`BootstrapCapabilities` startup materialization and subsequent integration
+corrections to bootstrap identity attestation, API credential guards, current
+tenant/SIT readiness, and Settings action compatibility. No earlier review was
+reused as acceptance.
+
+UI acceptance uses the full bUnit suite and fresh independent source review.
+The user explicitly accepted that evidence after automatic browser policy blocked
+local inspection. Desktop and narrow-width browser inspection was waived, not
+reported as executed. AgentDetails distinguishes effective protection from
+selected-profile readiness. Settings uses the supported UploadText Block rule
+for both policy modes, and only Enforce can request runtime allow/block proof.
+
+
+Source remains undeployed, and live E2E is postponed. No live authority transfers
+through Git, documentation, local evidence, or earlier deployments. A future
+deployment or live E2E requires fresh authorization naming an exact unused
+resource group and the allowed provider actions. Azure, Entra, SQL, Graph,
+Service Bus, Purview, and cleanup actions are outside this source task; retiring
+an earlier environment needs separate exact-target authority. Do not reuse an
+older deployment state with this source.
+
+
 ## Bootstrap contract
 
 `bootstrap/bootstrap.ps1` is the only supported clean-subscription engine. The root
@@ -57,7 +119,7 @@ identifiers only. The tool has no destroy mode. If a completed resource group wa
 deleted, do not replay its preserved state; use a new isolated deployment identity
 or an independently reviewed recovery procedure.
 
-The source identifies itself as prerelease `0.1.0-beta.1`. That version is a source
+The source identifies itself as prerelease `0.1.0-beta.2`. That version is a source
 contract, not a deployment claim; a tag can be called live-verified only after its
 exact committed source is provisioned and read back.
 
@@ -137,19 +199,22 @@ service-availability claim. Doctor, Plan, and the pre-mutation Apply revalidatio
 fail closed unless the exact configured Azure SQL tier, objective, 2 GiB size, and
 LRS storage path are currently reported Available or Default.
 
-On Windows, enabling Purview policy authoring makes Setup load the signed-in
-tenant's real sensitive-information-type inventory through Security & Compliance
-PowerShell. The user must explicitly load and select one item from a native
-dropdown; there is no typed value, static fallback, or default selection in Setup,
-Bicep, or runtime options. The configuration stores the type's canonical GUID and
-exact current Unicode Name as a pair. Setup verifies the selected Azure tenant and
-the signed-in Microsoft Graph user before discovery. Plan validates the persisted
-pair without claiming a live tenant-inventory read. Policy authoring and readback
-re-enumerate the tenant inventory and reject a missing, duplicate, or renamed
-selection. Core bootstrap remains available on macOS and Linux with Purview off;
-Microsoft currently documents Security & Compliance PowerShell as unavailable in
-PowerShell 7 on those clients. Purview-enabled Up, Apply, Resume, and Verify stop
-on a non-Windows workstation before Azure, Graph, or compliance-provider access.
+Setup no longer loads or selects a SIT and bootstrap no longer authors Purview
+policy. When Purview prerequisites are selected, bootstrap prepares and exactly
+reads back the automation app/service principal, reviewed Graph and compliance
+roles, CSP-compatible certificate and private Key Vault metadata, runtime wiring,
+and `gateway-protection-admin-v1` queue with scoped sender/receiver RBAC and worker
+settings. Core and Purview-off Custom omit those dependencies.
+
+After deployment, a signed-in Administrator uses Settings. The immutable Admin UI
+image publishes the canonical Windows companion at
+`/downloads/Connect-PurviewTenant.ps1`; the browser never auto-runs it. The companion
+opens the official interactive Security & Compliance session, proves the exact
+tenant and user, inventories bounded SIT GUID/name/publisher facts, and emits one
+prefixed typed result. The API independently validates and verifies that evidence.
+Security & Compliance PowerShell remains unavailable in PowerShell 7 on macOS and
+Linux, so the companion handoff is Windows-only while bootstrap remains
+cross-platform.
 
 ## Provisioning contract
 
@@ -195,105 +260,42 @@ Policy readback is configuration evidence only. Directory app-role assignments d
 not prove the current managed-identity token contains those roles. Keep the runtime
 adapter disabled until safe token-role and bounded data-plane verification pass.
 
+Protection administration is API-owned and `Gateway.Administrator`-only for
+mutation. A one-time review is separately confirmed before mutation. Matching
+`If-Match`/row version and canonical idempotency are required; per-user and per-IP
+rate limits apply. Operators can read bounded governance state, while Auditor and
+SupportReader views are restricted.
+
+The dedicated version-1 workflow persists eight stages: validate reviewed intent,
+discover provider state, apply only the reviewed mutation, record exact readback,
+verify propagation, attest token roles, validate runtime verdict, and complete.
+Registration still uses only its seven v3 stages.
+
 ## Source verification
 
-Every result below was measured on Windows at the current checkpoint unless it
-states otherwise. Hosted Windows launcher, browser, and live deployment evidence
-remain outstanding.
+The final beta.2 counts and fresh review result above supersede earlier concurrent
+and pre-fix evidence. Both the working candidate and a clean export passed the
+Release build, all eight test projects with nonzero execution, and the canonical
+PowerShell/Pester/Bicep gate. All nine format targets passed on the final source.
 
-| Verification project | Passed | Failed | Skipped |
-|---|---:|---:|---:|
-| Gateway.UnitTests | 661 | 0 | 0 |
-| Gateway.AdminUi.Tests | 169 | 0 | 0 |
-| Gateway.Setup.Tests | 317 | 0 | 0 |
-| Gateway.ObservabilityRuntime.Tests | 189 | 0 | 0 |
-| Gateway.ArchitectureTests | 117 | 0 | 0 |
-| Gateway.IntegrationTests | 86 | 0 | 0 |
-| Gateway.EndToEndTests | 102 | 0 | 0 |
-| Gateway.SecurityTests | 126 | 0 | 0 |
-| **.NET total** | **1,767** | **0** | **0** |
+OpenAPI YAML and internal references, Markdown links/anchors/fences, Claude
+frontmatter, Codex TOML, skill YAML, cross-tool behavioral parity, ignored private
+paths, whitespace, launcher smoke, and the full local delivery-ledger audit passed.
+The export included every intended tracked and new file and matched the source
+fingerprint independently verified by the final security/UI reviewer.
 
-Run these eight projects directly. `src/A365Gateway.slnx` contains no test project,
-so `dotnet test` against that solution reports success without executing a test.
+Setup coverage includes capability presets and acknowledgements, reviewed config
+bytes bound to Plan, stopped-state Resume, exact reusable-prefix validation, and
+Windows-safe native command discovery. Registration tests preserve the seven-stage
+queue, delegated Registry boundary, one-POST recovery, and final verification.
+Protection tests cover capability/runtime drift, current tenant/SIT readiness,
+provider-ID-bound updates, cancellation cleanup, and truthful UI effective state.
 
-The PowerShell gate spans three Pester directories, not one: `tests/Bootstrap.Tests`
-contributes 748 passed with seven non-Windows cases intentionally skipped,
-`tests/Gateway.Purview.Tests` contributes 22, and `tests/Operations.Tests`
-contributes 32, for 802 passed and none failed out of 809 discovered. Run them
-through `tools/Test-BootstrapSource.ps1 -RunPester`, whose `$pesterPaths` array is
-the authoritative list, rather than naming directories individually. Adding
-`-CompileBicep` validates 18 PowerShell source files and two JSON contracts, then
-compiles 27 Bicep templates and three Bicep parameter files. Release build completes
-with zero warnings and zero errors.
-
-`dotnet format --verify-no-changes` is not invoked by that script or by any other
-local script, so run it by hand over the solution and each test project.
-Continuous integration formatted only `src/A365Gateway.slnx`, which by design
-contains no test project, so nothing under `tests/` was checked; two whitespace
-violations reached `main` through that gap and are now corrected, and the CI job
-covers all nine targets. Whitespace, launcher syntax, OpenAPI YAML parsing, local
-documentation links, and ignored secret/state path checks pass.
-
-Setup regression coverage now includes Windows-safe Azure CLI/Bicep invocation,
-one circuit-scoped wizard under a single interactive router, explicit subscription
-selection, and a subscription-backed native region dropdown that stores canonical
-Azure names. It also covers the tenant-backed Purview sensitive-information-type
-dropdown, exact GUID-plus-Name persistence, selected-account binding, and rejection
-of malformed identity or inventory data before policy commands. Plan verifies the
-exact selected regional SQL contract, and Setup
-binds the reviewed configuration bytes to the Plan process before PowerShell parses
-them. A failed Plan returns to reviewed preparation; it cannot invoke a direct retry
-with stale configuration. Configuration readers normalize the previously emitted
-false-only field while continuing to reject enabled or unknown fields; new writes
-omit it. The progress timeline marks its newest stage as working while a run is
-live and as stopped once a run ends without succeeding, and it keeps a static ring
-under `prefers-reduced-motion` so the cue survives the animation reset.
-
-Recovery coverage includes exact source-continuation provenance, rejection of
-unexpected changed paths and a third generation, tamper detection for preserved
-history and completed-prefix evidence, and the deterministic governance-NSG
-What-If extension on later Resume. These cases are included in the consolidated
-PowerShell source gate above.
-
-The launcher, standalone source-compiler, Azure CLI boundary, Bicep prerequisite,
-and Entra credential and orphan-cleanup regressions that earlier revisions listed as
-a separate table are files inside `tests/Bootstrap.Tests` and are already counted in
-its 748. Do not restate a subset as though it were an independent gate.
-
-The explicit Windows Bicep compilation lane has run for this source generation and
-passed. Closing that lane required one contributor-tool correction.
-`tools/Test-BootstrapSource.ps1`
-resolved the Azure CLI with an unbounded `Get-Command az -CommandType Application`.
-The Azure CLI MSI installs both `az.cmd` and an extensionless shim in the same
-directory, so that call returned two matches whose `Source` cast to a single
-space-joined path, and the lane then failed closed on an unusable boundary. The
-resolver now binds exactly one command source and deterministically promotes an
-extensionless shim to its sibling Windows launcher before the existing bundled-Python
-mapping. Anything else still fails closed. The shipped bootstrap engine resolves the
-Azure CLI through a different, single-match call and was not affected.
-
-The first hosted beta-candidate run exposed the same multi-match shape for `chmod`
-on Ubuntu: both `/bin/chmod` and `/usr/bin/chmod` were returned, and PowerShell
-collapsed their `Source` values into one invalid command path. Restricted diagnostic
-files and temporary ARM parameter files now use one shared deterministic
-application-command resolver. The focused Linux-shaped regression and the complete
-Windows Pester gate pass; the corrected commit still requires its own hosted CI run.
-
-The secure credential path uses one ARM child-resource
-deployment against the exact configured subscription, emits no secret value, and
-requires only value-free management-plane metadata readback. The obsolete Key
-Vault data-plane credential helpers and their direct tests were removed.
-
-The current source is ahead of the deployed build, so the results above are source
-evidence and not a release claim. Earlier revisions of this file were written before
-any live deployment existed; that is no longer the situation. A gateway has been
-provisioned and verified on Azure, and
-[the deployment status](operations/development-deployment-status.md) is the
-authoritative record of exactly which revision that evidence belongs to. Anything
-committed after that checkpoint is undeployed until the next clean provision records
-its own readbacks. A final hash-scoped security rereview of the backend Resume and
-private-vault boundaries passed with no remaining blocker; those cases are included
-in the .NET total above.
+Run tests per project: the shipping solution contains no tests. Use the canonical
+`tools/Test-BootstrapSource.ps1 -RunPester -CompileBicep` command and explicitly
+verify formatting over the solution plus each test project. Hosted CI must be
+checked against the exact commit. These are source results; older live evidence
+belongs only to the revision recorded in the deployment checkpoint.
 
 ## Known external limitations
 
@@ -303,50 +305,36 @@ in the .NET total above.
 - Purview FeatureConfiguration cmdlets are Public Preview and are not available in
   every organization.
 - Security & Compliance PowerShell is unavailable in PowerShell 7 on macOS and
-  Linux, so optional bootstrap SIT inventory and policy authoring require Windows.
+  Linux, so the Settings-owned interactive SIT inventory and policy
+  authority bridge remains Windows-only where those cmdlets are required.
 - `downloadText` may be offline; do not claim response-side inline enforcement.
 - Local tests and policy readback are not live deployment or provider-verdict proof.
 
 ## Safe resume point
 
-The offline gate is green for this source generation, and the Setup two-step Resume
-review and confirmation integration is implemented, tested, and independently
-rereviewed. A source revision is not deployed evidence, and the current source is
-ahead of the deployed build.
+Beta.2 integrated offline acceptance, independent security/UI source review, and
+clean export are complete. Commit and push the accepted source on main, then verify
+hosted CI for that exact commit. A receiving checkout verifies its actual HEAD and
+associated CI before acting; see the bounded
+[continuation checkpoint](agent-continuation.md).
 
-The remaining goal is live: a blueprint-scoped Purview DLP allow and block pair
-observed on a deployed build. It cannot be reached by changing the existing
-deployment, because bootstrap refuses to mix source generations inside one
-deployment state; the supported path is a fresh provision under a new unused
-deployment identity with Purview enabled from the start. The
-[Purview runbook](operations/purview-setup-runbook.md) states that as its case B,
-and `.\gateway.cmd plan` — `./gateway plan` on macOS — is the discriminator. That
-run authors tenant policy over an interactive sign-in, so it is Windows-only and
-cannot run unattended.
+Source remains undeployed, and live E2E is postponed. No live authority transfers
+through Git, documentation, local evidence, or earlier deployments. A future
+deployment or live E2E requires fresh authorization naming an exact unused
+resource group and the allowed provider actions. Azure, Entra, SQL, Graph,
+Service Bus, Purview, and cleanup actions are outside this source task; retiring
+an earlier environment needs separate exact-target authority. Do not reuse an
+older deployment state with this source.
 
-For the `0.1.0-beta.1` candidate, the authorized live exercise is broader: create
-two registrations on one newly created blueprint and two on one existing blueprint,
-require all four to reach provider-verified `Active`, then validate Agent 365
-observability, Prompt Shields allow/block behavior, and the Purview DLP allow/block
-pair with approved synthetic input. The exact new resource group must be named and
-authorized before bootstrap starts.
+The future authorized E2E uses a clean bootstrap, two new blueprints and one external
+registration per blueprint. Both must reach provider-verified Active and independently
+prove Agent 365 observability, Prompt Shields allow/block, and Purview DLP allow/block.
 
-Two platform checks are still open and neither blocks that goal: the macOS root
-`gateway` launcher on the core path with Purview disabled, and fixture-backed local
-browser inspection of the Setup Resume journey at desktop and narrow widths over
-representative preserved stopped state. The hosted Windows launcher check named in
-earlier revisions is closed; operator-run Windows bootstraps have provisioned
-complete gateways through `gateway.cmd`.
+The previously identified macOS interactive core-launcher check and fixture-backed
+Setup Resume browser journey remain separate platform checks. The explicit browser
+waiver above applies to the changed protection UI acceptance; it is not live or
+Setup browser evidence.
 
-The validator-diagnostics source task in the
-[agent continuation checkpoint](agent-continuation.md) is complete and independently
-rereviewed. No further source task is selected; the remaining delivery goal is the
-operator-gated live Purview evidence above.
-
-For any authorized Azure, Entra, SQL, Graph, Purview, or deployment action, first
-read [the deployment status](operations/development-deployment-status.md) and the
-relevant runbook. Preserve ignored bootstrap state and never read or print
-`.secret`/`.secrets` values. Live authorization does not travel with Git: a grant
-recorded in chat history, in a previous session, or for a previous deployment is not
-a grant for the next one, and creating or retiring a resource group each require a
-fresh explicit authorization naming that specific group.
+Before any separately authorized live action, read the
+[deployment status](operations/development-deployment-status.md) and relevant runbook.
+Preserve ignored bootstrap state and never read or expose `.secret`/`.secrets` values.

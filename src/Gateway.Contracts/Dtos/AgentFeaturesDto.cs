@@ -6,4 +6,9 @@ public record AgentFeaturesDto(
     string? PurviewMode,
     bool? Agent365ObservabilityEnabled = null,
     bool? AzureMonitorExportEnabled = null,
-    bool? PromptShieldEnabled = null);
+    bool? PromptShieldEnabled = null,
+    PurviewDlpProfileSelectionDto? PurviewDlpProfile = null,
+    bool PurviewEffectivelyEnabled = false,
+    ProtectionReadinessDto? PurviewReadiness = null,
+    bool PromptShieldEffectivelyEnabled = false,
+    string? PromptShieldCapabilityStatus = null);

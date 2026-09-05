@@ -1,6 +1,8 @@
 using Azure.Messaging.ServiceBus;
 using FluentAssertions;
+using Gateway.Domain.Interfaces;
 using Gateway.Infrastructure;
+using Gateway.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -46,6 +48,32 @@ public sealed class ServiceBusRegistrationTests
             .WithMessage("*ServiceBus:ConnectionString*ServiceBus:FullyQualifiedNamespace*");
     }
 
+    [Fact]
+    public async Task ProtectionPersistenceServices_AreRegisteredWithScopedLifetimes()
+    {
+        await using var provider = BuildServiceProvider(
+            connectionString: "Endpoint=sb://connection-path.servicebus.windows.net/;SharedAccessKeyName=test;SharedAccessKey=dGVzdA==",
+            fullyQualifiedNamespace: "");
+        using var scope = provider.CreateScope();
+
+        scope.ServiceProvider.GetRequiredService<IProtectionCapabilityRepository>()
+            .Should().NotBeNull();
+        scope.ServiceProvider.GetRequiredService<IPurviewTenantConnectionRepository>()
+            .Should().NotBeNull();
+        scope.ServiceProvider
+            .GetRequiredService<IPurviewSensitiveInformationTypeSnapshotRepository>()
+            .Should().NotBeNull();
+        scope.ServiceProvider
+            .GetRequiredService<IPurviewKnowYourDataConfigurationRepository>()
+            .Should().NotBeNull();
+        scope.ServiceProvider.GetRequiredService<IPurviewDlpProfileRepository>()
+            .Should().NotBeNull();
+        scope.ServiceProvider.GetRequiredService<IProtectionAdminOperationRepository>()
+            .Should().NotBeNull();
+        scope.ServiceProvider.GetRequiredService<IProtectionAdminOperationLockProvider>()
+            .Should().NotBeNull();
+    }
+
     private static ServiceProvider BuildServiceProvider(
         string? connectionString,
         string? fullyQualifiedNamespace)
@@ -57,7 +85,7 @@ public sealed class ServiceBusRegistrationTests
                 ["BlobStorage:ConnectionString"] = "UseDevelopmentStorage=true",
                 ["ServiceBus:ConnectionString"] = connectionString,
                 ["ServiceBus:FullyQualifiedNamespace"] = fullyQualifiedNamespace,
-                ["ServiceBus:QueueName"] = "gateway-registration-tests"
+                ["ServiceBus:QueueName"] = "gateway-provisioning-v3"
             })
             .Build();
 

@@ -91,9 +91,37 @@ Windows users run `.\gateway.cmd setup`; macOS and Linux users run
 scripts are not alternate public installers. Bootstrap state is ignored, contains
 safe identifiers only, and must not be deleted to force progress.
 
-The recommended minimal profile deploys the core Gateway. Optional Prompt Shields
-and Purview can be configured after base verification. Their unavailable authority
-must not close ordinary registration; choosing an unavailable profile fails closed.
+Full evaluation is the Quick-development default and prepares optional protection
+capabilities with explicit acknowledgements. Core Gateway omits those dependencies.
+Settings configures protection governance after bootstrap verification. Unavailable
+optional authority must not close ordinary registration; choosing an unavailable
+profile fails closed.
+
+The protection redesign is implemented and offline-validated in source, but is not
+deployed. Bootstrap now offers capability-only Full evaluation, Core Gateway, and
+Custom presets; it prepares shared admission/infrastructure/authority and never
+selects a SIT or authors KYD/DLP policy. Staging and production keep Registry beta
+closed. Every registration creation requires a signed-in delegated
+`Gateway.Administrator`, and actual Registry completion remains that
+Administrator's user-only OBO action.
+
+Role-aware Gateway Settings owns SIT inventory/selection, fixed KYD Group and
+blueprint Individual DLP authoring/readback, defaults, and per-registration
+protections. Its operations use dedicated `gateway-protection-admin-v1`, never the
+registration queue. The immutable Admin UI image packages the downloadable Windows
+companion; downloading it does not run it, and companion evidence is
+non-authoritative until exact capability-bound provider verification of the
+Purview automation identity, Key Vault, and certificate.
+
+DLP `Ready` independently requires capability Installed, exact policy readback,
+propagation, token roles, and runtime allow-and-block verdict evidence, plus current
+SIT generation, exact blueprint/provider IDs, and timestamps. KYD remains fixed
+enterprise-AI-apps Group, DLP remains blueprint Individual, and both remain on the
+Application plane and fail closed.
+
+Live E2E still requires fresh exact-target authority, a clean deployment, exactly
+two new blueprints with one delegated-Administrator-created external registration
+each, then independent observability, Prompt Shields, and DLP validation.
 
 ## Sensitive data
 

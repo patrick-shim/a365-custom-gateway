@@ -1,0 +1,136 @@
+@using Gateway.Contracts.Dtos
+
+<div class="readiness-panel" aria-label="@($"{Label} readiness")">
+    <div class="readiness-summary">
+        <strong>@Label</strong>
+        <StatusPill Value="@OverallStatus" />
+    </div>
+    <dl class="readiness-list">
+        <div>
+            <dt>Shared capability</dt>
+            <dd><StatusPill Value="@CapabilityStatus" /></dd>
+        </div>
+        <div>
+            <dt>Exact policy check</dt>
+            <dd><StatusPill Value="@ReadbackStatus" /></dd>
+        </div>
+        <div>
+            <dt>Changes available in Microsoft Purview</dt>
+            <dd><StatusPill Value="@PropagationStatus" /></dd>
+        </div>
+        <div>
+            <dt>Gateway runtime permissions</dt>
+            <dd><StatusPill Value="@TokenRoleStatus" /></dd>
+        </div>
+        <div>
+            <dt>Runtime allow and block check</dt>
+            <dd><StatusPill Value="@RuntimeStatus" /></dd>
+        </div>
+    </dl>
+    @if (!Readiness.IsReady && Readiness.Blockers.Count > 0)
+    {
+        <div class="readiness-blockers" role="status">
+            <strong>What still needs attention</strong>
+            <ul>
+                @foreach (var blocker in Readiness.Blockers.Select(ExplainBlocker).Distinct())
+                {
+                    <li>@blocker</li>
+                }
+            </ul>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ProtectionReadinessDto Readiness { get; set; } = default!;
+    [Parameter] public string Label { get; set; } = "Profile";
+
+    private string OverallStatus => Readiness.IsReady
+        ? "Ready"
+        : IsUnavailable(Readiness.Capability)
+            ? "Unavailable"
+            : IsFailed(Readiness)
+                ? "Failed"
+                : IsPending(Readiness)
+                    ? "Pending propagation"
+                    : "Awaiting admin";
+
+    private string CapabilityStatus => Readiness.Capability switch
+    {
+        "Installed" => "Installed",
+        "PendingPropagation" => "Pending propagation",
+        _ => "Unavailable"
+    };
+
+    private string ReadbackStatus => Readiness.Readback switch
+    {
+        "Ready" => "Ready",
+        "Pending" => "Pending",
+        "NotChecked" => "Awaiting admin",
+        _ => "Failed"
+    };
+
+    private string PropagationStatus => Readiness.Propagation switch
+    {
+        "Ready" => "Ready",
+        "Pending" => "Pending propagation",
+        "NotChecked" => "Awaiting admin",
+        _ => "Failed"
+    };
+
+    private string TokenRoleStatus => Readiness.TokenRoles switch
+    {
+        "Ready" => "Ready",
+        "PendingRefresh" => "Pending propagation",
+        "NotChecked" => "Awaiting admin",
+        _ => "Failed"
+    };
+
+    private string RuntimeStatus => Readiness.RuntimeVerdict switch
+    {
+        "Ready" => "Ready",
+        "Pending" => "Pending",
+        "NotChecked" => "Awaiting admin",
+        "Unsupported" => "Unavailable",
+        _ => "Failed"
+    };
+
+    private static bool IsUnavailable(string status) =>
+        status is "NotInstalled" or "Unavailable";
+
+    private static bool IsPending(ProtectionReadinessDto readiness) =>
+        readiness.Capability == "PendingPropagation" ||
+        readiness.Readback == "Pending" ||
+        readiness.Propagation == "Pending" ||
+        readiness.TokenRoles == "PendingRefresh" ||
+        readiness.RuntimeVerdict == "Pending";
+
+    private static bool IsFailed(ProtectionReadinessDto readiness) =>
+        readiness.Readback is "Mismatch" or "Failed" or "Stale" ||
+        readiness.Propagation == "Failed" ||
+        readiness.TokenRoles is "MissingRequiredRoles" or "Failed" ||
+        readiness.RuntimeVerdict == "Failed";
+
+    private static string ExplainBlocker(string blocker) => blocker switch
+    {
+        "CapabilityNotInstalled" or "CapabilityUnavailable" =>
+            "The shared Purview capability is not available in this deployment.",
+        "PolicyReadbackPending" =>
+            "The Gateway has not finished checking the exact policy.",
+        "PolicyReadbackMismatch" or "PolicyMismatch" =>
+            "The exact policy no longer matches the reviewed settings.",
+        "PropagationPending" =>
+            "Microsoft Purview has not made the reviewed change available everywhere yet.",
+        "TokenRolesPending" or "TokenRefreshPending" =>
+            "The Gateway runtime is waiting for its updated permissions.",
+        "MissingRequiredRoles" =>
+            "The Gateway runtime does not currently have all required permissions.",
+        "RuntimeValidationRequired" or "RuntimeNotTested" =>
+            "An approved runtime allow and block check has not completed.",
+        "RuntimeValidationFailed" =>
+            "The latest approved runtime check did not pass.",
+        "InventoryExpired" or "SensitiveInformationTypeStale" =>
+            "The sensitive information type inventory must be refreshed and reviewed again.",
+        _ => "The Gateway reports that this profile still needs administrator attention."
+    };
+}

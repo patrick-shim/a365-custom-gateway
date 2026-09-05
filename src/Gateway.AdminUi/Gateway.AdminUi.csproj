@@ -11,6 +11,13 @@
     <InternalsVisibleTo Include="Gateway.AdminUi.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\Gateway.Purview\Automation\Connect-PurviewTenant.ps1"
+             Link="wwwroot\downloads\Connect-PurviewTenant.ps1"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>

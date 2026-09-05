@@ -6,6 +6,8 @@ internal sealed class SetupConfigurationForm : IValidatableObject
 {
     public DeploymentProfile Profile { get; set; } = DeploymentProfile.QuickDevelopment;
 
+    public CapabilityPreset CapabilityPreset { get; set; } = CapabilityPreset.FullEvaluation;
+
     public Guid SubscriptionId { get; set; }
 
     public Guid TenantId { get; set; }
@@ -25,7 +27,9 @@ internal sealed class SetupConfigurationForm : IValidatableObject
     [Required, EmailAddress, StringLength(254)]
     public string AlertEmail { get; set; } = string.Empty;
 
-    public bool AllowDevelopmentRegistryPreview { get; set; }
+    public bool AllowDevelopmentRegistryPreview { get; set; } = true;
+
+    public bool RegistryBetaAcknowledged { get; set; }
 
     [Required, StringLength(100, MinimumLength = 1)]
     public string SeedBlueprintName { get; set; } = "A365 Gateway a365gw dev";
@@ -33,35 +37,22 @@ internal sealed class SetupConfigurationForm : IValidatableObject
     [Required, StringLength(500, MinimumLength = 36)]
     public string ReviewedManagerApplicationIds { get; set; } = string.Empty;
 
-    public bool PromptShieldEnabled { get; set; }
+    public bool PromptShieldEnabled { get; set; } = true;
+
+    public bool PromptShieldCostAndQuotaAcknowledged { get; set; }
 
     [Required, RegularExpression("^(F0|S0)$")]
     public string PromptShieldSkuName { get; set; } = "F0";
 
-    public bool PurviewEnabled { get; set; }
+    public bool PurviewEnabled { get; set; } = true;
 
-    public Guid PurviewSensitiveInformationTypeId { get; set; }
-
-    [Required(AllowEmptyStrings = true), StringLength(255)]
-    public string PurviewSensitiveInformationType { get; set; } = string.Empty;
-
-    [Required, StringLength(200, MinimumLength = 1)]
-    public string PurviewCollectionPolicyName { get; set; } = "A365 Gateway a365gw AI collection";
-
-    [Required, StringLength(200, MinimumLength = 1)]
-    public string PurviewDlpPolicyName { get; set; } = "A365 Gateway a365gw inline DLP";
-
-    [Required, StringLength(200, MinimumLength = 1)]
-    public string PurviewDlpRuleName { get; set; } = "A365 Gateway a365gw inline DLP rule";
+    public bool PurviewAuthorityRequirementsAcknowledged { get; set; }
 
     public void ApplyProjectName(string projectName)
     {
         ProjectName = projectName;
         ResourceGroupName = $"rg-{ProjectName}-{Environment}";
         SeedBlueprintName = $"A365 Gateway {ProjectName} {Environment}";
-        PurviewCollectionPolicyName = $"A365 Gateway {ProjectName} AI collection";
-        PurviewDlpPolicyName = $"A365 Gateway {ProjectName} inline DLP";
-        PurviewDlpRuleName = $"A365 Gateway {ProjectName} inline DLP rule";
     }
 
     public void ApplyProfile(DeploymentProfile profile)
@@ -75,13 +66,66 @@ internal sealed class SetupConfigurationForm : IValidatableObject
             _ => throw new ArgumentOutOfRangeException(nameof(profile), profile, null)
         };
 
-        if (profile != DeploymentProfile.QuickDevelopment)
+        if (profile == DeploymentProfile.QuickDevelopment)
         {
+            ApplyCapabilityPreset(CapabilityPreset.FullEvaluation);
+        }
+        else
+        {
+            ApplyCapabilityPreset(CapabilityPreset.CoreGateway);
             AllowDevelopmentRegistryPreview = false;
+            RegistryBetaAcknowledged = false;
         }
 
         ResourceGroupName = $"rg-{ProjectName}-{Environment}";
         SeedBlueprintName = $"A365 Gateway {ProjectName} {Environment}";
+    }
+
+    public void ApplyCapabilityPreset(CapabilityPreset preset)
+    {
+        if (preset == CapabilityPreset.FullEvaluation &&
+            Profile != DeploymentProfile.QuickDevelopment)
+        {
+            throw new ValidationException(
+                "Full evaluation is available only for Quick development.");
+        }
+
+        CapabilityPreset = preset;
+        switch (preset)
+        {
+            case CapabilityPreset.FullEvaluation:
+                AllowDevelopmentRegistryPreview = true;
+                PromptShieldEnabled = true;
+                PurviewEnabled = true;
+                break;
+            case CapabilityPreset.CoreGateway:
+                AllowDevelopmentRegistryPreview =
+                    Profile == DeploymentProfile.QuickDevelopment;
+                PromptShieldEnabled = false;
+                PurviewEnabled = false;
+                break;
+            case CapabilityPreset.Custom:
+                if (Profile != DeploymentProfile.QuickDevelopment)
+                {
+                    AllowDevelopmentRegistryPreview = false;
+                }
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(preset), preset, null);
+        }
+
+        if (!AllowDevelopmentRegistryPreview)
+        {
+            RegistryBetaAcknowledged = false;
+        }
+        if (!PromptShieldEnabled)
+        {
+            PromptShieldCostAndQuotaAcknowledged = false;
+        }
+        if (!PurviewEnabled)
+        {
+            PurviewAuthorityRequirementsAcknowledged = false;
+        }
     }
 
     public void SelectSubscription(AzureSubscription subscription)
@@ -125,12 +169,6 @@ internal sealed class SetupConfigurationForm : IValidatableObject
 
     public void ClearReviewedManagerApplicationIds() => ReviewedManagerApplicationIds = string.Empty;
 
-    public void ClearPurviewSensitiveInformationType()
-    {
-        PurviewSensitiveInformationTypeId = Guid.Empty;
-        PurviewSensitiveInformationType = string.Empty;
-    }
-
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (SubscriptionId == Guid.Empty)
@@ -150,8 +188,48 @@ internal sealed class SetupConfigurationForm : IValidatableObject
         if (AllowDevelopmentRegistryPreview && !string.Equals(Environment, "dev", StringComparison.Ordinal))
         {
             yield return new ValidationResult(
-                "The Agent 365 Registry preview can be enabled only for a development deployment.",
+                "The Agent 365 Registry beta cannot be enabled for staging or production.",
                 [nameof(AllowDevelopmentRegistryPreview)]);
+        }
+
+        if (AllowDevelopmentRegistryPreview && !RegistryBetaAcknowledged)
+        {
+            yield return new ValidationResult(
+                "Acknowledge that Agent 365 Registry beta is unsupported for production.",
+                [nameof(RegistryBetaAcknowledged)]);
+        }
+
+        if (PromptShieldEnabled && !PromptShieldCostAndQuotaAcknowledged)
+        {
+            yield return new ValidationResult(
+                "Review and acknowledge Prompt Shields quota and Azure cost requirements.",
+                [nameof(PromptShieldCostAndQuotaAcknowledged)]);
+        }
+
+        if (PurviewEnabled && !PurviewAuthorityRequirementsAcknowledged)
+        {
+            yield return new ValidationResult(
+                "Review and acknowledge the Microsoft Purview tenant authority requirements.",
+                [nameof(PurviewAuthorityRequirementsAcknowledged)]);
+        }
+
+        if (CapabilityPreset == CapabilityPreset.FullEvaluation &&
+            (Profile != DeploymentProfile.QuickDevelopment ||
+             !AllowDevelopmentRegistryPreview ||
+             !PromptShieldEnabled ||
+             !PurviewEnabled))
+        {
+            yield return new ValidationResult(
+                "Full evaluation requires Quick development with all three capabilities selected.",
+                [nameof(CapabilityPreset)]);
+        }
+
+        if (CapabilityPreset == CapabilityPreset.CoreGateway &&
+            (PromptShieldEnabled || PurviewEnabled))
+        {
+            yield return new ValidationResult(
+                "Core Gateway does not include Prompt Shields or Purview prerequisites.",
+                [nameof(CapabilityPreset)]);
         }
 
         if (!TryParseReviewedManagerApplicationIds(ReviewedManagerApplicationIds, out _))
@@ -161,41 +239,12 @@ internal sealed class SetupConfigurationForm : IValidatableObject
                 [nameof(ReviewedManagerApplicationIds)]);
         }
 
-        var purviewNameIsEmpty = string.IsNullOrEmpty(PurviewSensitiveInformationType);
-        if ((PurviewSensitiveInformationTypeId == Guid.Empty) != purviewNameIsEmpty)
-        {
-            yield return new ValidationResult(
-                "The Purview sensitive information type GUID and exact Name must be selected together.",
-                [nameof(PurviewSensitiveInformationTypeId), nameof(PurviewSensitiveInformationType)]);
-        }
-
-        if (!purviewNameIsEmpty &&
-            (!string.Equals(
-                PurviewSensitiveInformationType,
-                PurviewSensitiveInformationType.Trim(),
-                StringComparison.Ordinal) ||
-             PurviewSensitiveInformationType.Any(char.IsControl)))
-        {
-            yield return new ValidationResult(
-                "The Purview sensitive information type Name must match the tenant inventory exactly without trimming or control characters.",
-                [nameof(PurviewSensitiveInformationType)]);
-        }
-
-        if (PurviewEnabled && PurviewSensitiveInformationTypeId == Guid.Empty)
-        {
-            yield return new ValidationResult(
-                "Select a Purview sensitive information type GUID from the current tenant inventory.",
-                [nameof(PurviewSensitiveInformationTypeId)]);
-        }
-
-        if (PurviewEnabled && purviewNameIsEmpty)
-        {
-            yield return new ValidationResult(
-                "Select the exact Purview sensitive information type Name from the current tenant inventory.",
-                [nameof(PurviewSensitiveInformationType)]);
-        }
-
     }
+
+    public bool HasRequiredCapabilityAcknowledgements =>
+        (!AllowDevelopmentRegistryPreview || RegistryBetaAcknowledged) &&
+        (!PromptShieldEnabled || PromptShieldCostAndQuotaAcknowledged) &&
+        (!PurviewEnabled || PurviewAuthorityRequirementsAcknowledged);
 
     public Guid[] GetReviewedManagerApplicationIds()
     {

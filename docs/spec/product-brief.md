@@ -34,12 +34,15 @@ and safe correlation evidence without seeing secrets or content.
   production use and remains closed by default outside
   explicitly acknowledged development use.
 - Bootstrap deploys and verifies the core Gateway. Registrations and optional
-  protections are post-deployment tasks.
+  protection configuration are post-deployment Gateway Settings tasks; bootstrap
+  may install their deployment capabilities.
 - Agent 365 observability is the default telemetry destination; Azure Monitor
   mirroring is optional.
 - Prompt Shields and Purview are independent optional controls.
 - Purview DLP protects a reusable blueprint; Know Your Data collection is a
   separate tenant-wide fixed Group contract.
+- Agent 365 beta admission is deployment-wide. Quick development may default it on
+  only with explicit acknowledgement; staging and production remain closed.
 - The Gateway does not proxy the external model call or claim response blocking
   when Microsoft returns offline processing.
 

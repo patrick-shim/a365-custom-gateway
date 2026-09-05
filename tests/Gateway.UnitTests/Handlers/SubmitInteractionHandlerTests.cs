@@ -4,6 +4,7 @@ using Gateway.Application.Common;
 using Gateway.Application.Exceptions;
 using Gateway.Application.Interactions.Commands;
 using Gateway.Application.Prompts;
+using Gateway.Application.Protection;
 using Gateway.Contracts;
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Responses;
@@ -12,6 +13,7 @@ using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
 using Gateway.Domain.Models;
 using Gateway.Domain.ValueObjects;
+using Gateway.UnitTests.ProtectionApi;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
@@ -31,7 +33,10 @@ public class SubmitInteractionHandlerTests
     private readonly IAuditEventRepository _auditEventRepository;
     private readonly IPromptEvaluationRepository _promptEvaluationRepository;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IProtectionCapabilityRepository _capabilities;
+    private readonly IPurviewDlpProfileRepository _profiles;
     private readonly SubmitInteractionHandler _handler;
+    private readonly PurviewReadinessFixture _runtime = new();
 
     public SubmitInteractionHandlerTests()
     {
@@ -51,6 +56,24 @@ public class SubmitInteractionHandlerTests
         _auditEventRepository = Substitute.For<IAuditEventRepository>();
         _promptEvaluationRepository = Substitute.For<IPromptEvaluationRepository>();
         _unitOfWork = Substitute.For<IUnitOfWork>();
+        _capabilities = Substitute.For<IProtectionCapabilityRepository>();
+        _profiles = Substitute.For<IPurviewDlpProfileRepository>();
+        _capabilities.GetByKindAsync(
+                ProtectionCapabilityKind.Purview,
+                Arg.Any<CancellationToken>())
+            .Returns(new ProtectionCapability
+            {
+                Id = Guid.NewGuid(),
+                Kind = ProtectionCapabilityKind.Purview,
+                Status = ProtectionCapabilityStatus.Installed,
+                LastReadbackAtUtc = DateTime.UtcNow
+            });
+        _profiles.GetByBlueprintApplicationIdAsync(
+                Arg.Any<BlueprintApplicationId>(),
+                Arg.Any<CancellationToken>())
+            .Returns(call =>
+                CreateReadyProfile(
+                    ((BlueprintApplicationId)call[0]).Value));
         _handler = new SubmitInteractionHandler(
             _agentRepository,
             _aiInteractionRepository,
@@ -61,7 +84,37 @@ public class SubmitInteractionHandlerTests
             _auditEventRepository,
             _promptEvaluationRepository,
             _unitOfWork,
-            NullLogger<SubmitInteractionHandler>.Instance);
+            NullLogger<SubmitInteractionHandler>.Instance,
+            new ProtectionEffectiveFeatureEvaluator(
+                _capabilities,
+                _profiles,
+                TimeProvider.System, purviewBinding: _runtime.Binding,
+                connections: _runtime.Connections, inventory: _runtime.Inventory));
+    }
+
+    private PurviewDlpProfile CreateReadyProfile(
+        Guid blueprintApplicationId)
+    {
+        var now = DateTime.UtcNow;
+        return _runtime.Seed(new PurviewDlpProfile
+        {
+            Id = new PurviewDlpProfileId(Guid.NewGuid()),
+            BlueprintApplicationId =
+                new BlueprintApplicationId(blueprintApplicationId),
+            SensitiveInformationTypeSnapshotExpiresAtUtc =
+                now.AddHours(1),
+            Status = PurviewDlpProfileStatus.Ready,
+            Readiness = ProtectionReadiness.Ready,
+            DlpPolicyProviderId = "policy-id",
+            DlpRuleProviderId = "rule-id",
+            LastReadbackAtUtc = now,
+            PropagationVerifiedAtUtc = now,
+            TokenRolesVerifiedAtUtc = now,
+            RuntimeAllowVerifiedAtUtc = now,
+            RuntimeBlockVerifiedAtUtc = now,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        });
     }
 
     [Theory]
@@ -310,6 +363,26 @@ public class SubmitInteractionHandlerTests
                 && value.BlueprintClientId == agent.BlueprintId
                 && value.ExternalInteractionId == command.InteractionId),
             Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Handle_RejectsRuntimeBindingDriftBeforePurviewOrStorage()
+    {
+        var agent = CreateAgent(ObservabilityMode.GatewayOnly);
+        agent.BlueprintId = Guid.NewGuid().ToString("D");
+        agent.FeatureConfiguration.PurviewEnabled = true;
+        agent.FeatureConfiguration.PurviewMode = PurviewMode.Enforce;
+        _agentRepository.GetByIdAsync(agent.Id, Arg.Any<CancellationToken>()).Returns(agent);
+        _runtime.Binding.IsExact(Arg.Any<ProtectionCapability>()).Returns(false);
+        _purviewPolicyClient.IsEnabled.Returns(true);
+
+        var action = () => _handler.Handle(CreateCommand(null), CancellationToken.None);
+
+        (await action.Should().ThrowAsync<DomainException>()).Which.ErrorCode
+            .Should().Be(ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE);
+        await _purviewPolicyClient.DidNotReceiveWithAnyArgs().EvaluateInteractionAsync(default!, default);
+        await _interactionContentStore.DidNotReceiveWithAnyArgs()
+            .StoreAsync(default, default, default!, default!, default!, default!, default);
     }
 
     [Fact]

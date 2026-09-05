@@ -1,0 +1,49 @@
+@inject IJSRuntime JS
+
+<div class="copyable-command">
+    <label for="@fieldId">@Label</label>
+    <textarea id="@fieldId"
+              @ref="commandField"
+              class="form-control command-text"
+              rows="5"
+              readonly
+              aria-readonly="true"
+              aria-describedby="@statusId"
+              autocomplete="off"
+              spellcheck="false">@Command</textarea>
+    <div class="copyable-command-actions">
+        <FluentButton Appearance="Appearance.Neutral" OnClick="CopyAsync">
+            Copy command
+        </FluentButton>
+        <span id="@statusId" class="field-help" role="status" aria-live="polite">@copyStatus</span>
+    </div>
+</div>
+
+@code {
+    private readonly string fieldId = $"companion-command-{Guid.NewGuid():N}";
+    private readonly string statusId = $"companion-command-status-{Guid.NewGuid():N}";
+    private ElementReference commandField;
+    private string copyStatus = "You can also select the command manually.";
+
+    [Parameter, EditorRequired] public string Command { get; set; } = string.Empty;
+    [Parameter] public string Label { get; set; } = "Windows PowerShell command";
+
+    private async Task CopyAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync(
+                "A365Gateway.copyTextFrom",
+                commandField);
+            copyStatus = "Command copied.";
+        }
+        catch (JSDisconnectedException)
+        {
+            copyStatus = "Copy was unavailable. Select the command and copy it manually.";
+        }
+        catch (JSException)
+        {
+            copyStatus = "Copy was unavailable. Select the command and copy it manually.";
+        }
+    }
+}

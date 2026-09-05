@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Claims;
 using System.Text.Json;
 using Gateway.Contracts.Requests;
 using Gateway.Contracts.Responses;
@@ -197,10 +198,15 @@ public class AgentLifecycleTests : IDisposable
     }
 
     [Fact]
-    public async Task RegisterAgent_Should_Return202WithCorrectStatus_When_FeaturesProvided()
+    public async Task RegisterAgent_ShouldFailClosedWhenPurviewProfileIsAbsent()
     {
         // Arrange
         HttpClientExtensions.SetRole("Gateway.Administrator");
+        TestAuthHandler.Claims =
+        [
+            new Claim("tid", Guid.NewGuid().ToString("D")),
+            new Claim("scp", "access_as_user")
+        ];
 
         var request = new RegisterAgentRequest(
             ExternalAgentId: "test-agent-features-001",
@@ -218,10 +224,8 @@ public class AgentLifecycleTests : IDisposable
         var response = await _client.PostAsJsonAsync("/api/v1/agents", request, JsonOptions);
 
         // Assert
-        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
-
-        var body = await response.Content.ReadFromJsonAsync<RegisterAgentResponse>(JsonOptions);
-        body.Should().NotBeNull();
-        body!.Status.Should().Be("Draft");
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("PURVIEW_DLP_PROFILE_NOT_READY");
     }
 }

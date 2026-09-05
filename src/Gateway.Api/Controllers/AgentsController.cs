@@ -4,6 +4,7 @@ using Gateway.Api.Options;
 using Gateway.Application.Agents.Commands;
 using Gateway.Application.Agents.Queries;
 using Gateway.Application.Audit.Queries;
+using Gateway.Application.Protection;
 using Gateway.Contracts.Requests;
 using Gateway.Contracts.Responses;
 using MediatR;
@@ -40,6 +41,7 @@ public class AgentsController : ControllerBase
         CancellationToken cancellationToken)
     {
         _provisioningAdmissionGate.EnsureRegistrationOpen();
+        var callerObjectId = User.GetProtectionActor().ObjectId;
 
         var command = new RegisterAgentCommand(
             request.ExternalAgentId,
@@ -48,9 +50,10 @@ public class AgentsController : ControllerBase
             request.OwnerObjectId,
             request.Environment,
             request.Features,
-            User.GetObjectId(),
+            callerObjectId,
             request.Blueprint,
-            request.PurviewPolicyProfile);
+            request.PurviewPolicyProfile,
+            request.PurviewDlpProfile);
 
         var result = await _sender.Send(command, cancellationToken);
 
@@ -163,15 +166,46 @@ public class AgentsController : ControllerBase
         [FromBody] UpdateFeaturesRequest request,
         CancellationToken cancellationToken)
     {
+        var isProtectionMutation =
+            request.PurviewEnabled is not null ||
+            request.PurviewMode is not null ||
+            request.PromptShieldEnabled is not null ||
+            request.PurviewDlpProfile is not null ||
+            request.IdempotencyKey is not null ||
+            request.ExpectedRowVersion is not null;
+        ProtectionActor? protectionActor = null;
+        if (isProtectionMutation)
+        {
+            protectionActor = User.GetProtectionActor();
+            if (request.IdempotencyKey is null ||
+                request.ExpectedRowVersion is null)
+            {
+                throw new Gateway.Application.Exceptions.ValidationException(
+                    new Dictionary<string, string[]>
+                    {
+                        ["Idempotency-Key"] =
+                        ["Protection feature mutations require Idempotency-Key and If-Match."]
+                    });
+            }
+
+            ProtectionRequestHeaderValidation.RequireMutationHeaders(
+                Request,
+                request.IdempotencyKey.Value,
+                request.ExpectedRowVersion);
+        }
+
         var command = new UpdateFeaturesCommand(
             agentId,
             request.ObservabilityMode,
             request.PurviewEnabled,
             request.PurviewMode,
-            User.GetObjectId(),
+            protectionActor?.ObjectId ?? User.GetObjectId(),
             request.Agent365ObservabilityEnabled,
             request.AzureMonitorExportEnabled,
-            request.PromptShieldEnabled);
+            request.PromptShieldEnabled,
+            request.PurviewDlpProfile,
+            request.IdempotencyKey,
+            request.ExpectedRowVersion);
 
         var result = await _sender.Send(command, cancellationToken);
 

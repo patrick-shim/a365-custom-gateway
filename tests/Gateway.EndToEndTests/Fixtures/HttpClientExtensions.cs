@@ -11,7 +11,11 @@ public static class HttpClientExtensions
     public static void SetRole(string role)
     {
         TestAuthHandler.DefaultRole = role;
-        TestAuthHandler.Claims = new List<Claim>();
+        TestAuthHandler.Claims =
+        [
+            new("tid", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            new("scp", "access_as_user")
+        ];
         TestAuthHandler.ShouldAuthenticate = true;
     }
 
@@ -26,6 +30,7 @@ public static class HttpClientExtensions
         {
             new(ClaimTypes.Role, "Gateway.Administrator"),
             new("oid", objectId ?? TestAuthHandler.DefaultObjectId),
+            new("tid", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
             new("scp", "access_as_user")
         };
         TestAuthHandler.ShouldAuthenticate = true;

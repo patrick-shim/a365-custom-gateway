@@ -15,7 +15,7 @@ $script:GatewayBootstrapSteps = @(
     'Gateway database',
     'Admin UI identity',
     'Admin UI Key Vault credential',
-    'Purview policies',
+    'Purview capability prerequisites',
     'Gateway runtime deployment',
     'Admin UI deployment',
     'Admin UI redirect URIs',
@@ -50,6 +50,7 @@ function Write-GatewayExperienceEvent {
             message = $safeMessage
             data = $Data
         }
+
         [Console]::Out.WriteLine(($event | ConvertTo-Json -Depth 20 -Compress))
         return
     }
@@ -62,6 +63,314 @@ function Write-GatewayExperienceEvent {
         default { 'Gray' }
     }
     Write-Host $safeMessage -ForegroundColor $color
+}
+
+function Get-GatewayPurviewCapabilityEvidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$WorkloadIdentity,
+        [Parameter()][AllowNull()]$Automation
+    )
+
+    if ($Config.purview.enabled -ne $true) {
+        return [ordered]@{
+            enabled = $false
+            status = 'Unavailable'
+            apiGraphRoles = 'NotConfigured'
+            automationIdentity = 'NotConfigured'
+            certificateAndKeyVaultPath = 'NotConfigured'
+            runtimeWiring = 'NotConfigured'
+            protectionAdminQueue = 'NotConfigured'
+            protectionAdminWorker = 'NotConfigured'
+            policyConfiguration = 'NotPerformed'
+            policyReadiness = 'NotClaimed'
+        }
+    }
+
+    [string[]]$requiredRoles = @(
+        'AgentIdentityBlueprint.Read.All',
+        'ProtectionScopes.Compute.User',
+        'Content.Process.User',
+        'ContentActivity.Write'
+    )
+    [string[]]$actualRoles = @($WorkloadIdentity.apiApplicationRoles.Keys | ForEach-Object { [string]$_ })
+    [Array]::Sort($requiredRoles, [StringComparer]::Ordinal)
+    [Array]::Sort($actualRoles, [StringComparer]::Ordinal)
+    if (($requiredRoles -join "`n") -cne ($actualRoles -join "`n")) {
+        throw 'Purview capability readback did not contain the exact reviewed Gateway API Graph application-role set.'
+    }
+    if ($Automation -isnot [System.Collections.IDictionary] -or
+        [string]$Automation.status -cne 'Installed' -or
+        [string]$Automation.organization -cnotmatch '^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?[.][A-Za-z]{2,}$' -or
+        [string]$Automation.automationApplicationId -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
+        [string]$Automation.automationServicePrincipalId -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
+        [string]$Automation.keyCredentialId -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
+        [string]$Automation.certificateThumbprint -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$Automation.policyConfiguration -cne 'NotPerformed' -or
+        [string]$Automation.policyReadiness -cne 'NotClaimed') {
+        throw 'Purview automation identity, compliance RBAC, or certificate capability evidence is incomplete.'
+    }
+    return [ordered]@{
+        enabled = $true
+        status = 'Installed'
+        apiGraphRoles = 'Installed'
+        automationIdentity = 'Installed'
+        complianceRbac = 'Installed'
+        certificateAndKeyVaultPath = 'Installed'
+        runtimeWiring = 'Requested'
+        protectionAdminQueue = 'Requested'
+        protectionAdminWorker = 'Requested'
+        organization = [string]$Automation.organization
+        automationApplicationObjectId = [string]$Automation.automationApplicationObjectId
+        automationApplicationId = [string]$Automation.automationApplicationId
+        automationServicePrincipalId = [string]$Automation.automationServicePrincipalId
+        exchangeOnlineProtectionApplicationId = [string]$Automation.exchangeOnlineProtectionApplicationId
+        exchangeManageAsAppRoleId = [string]$Automation.exchangeManageAsAppRoleId
+        complianceAdministratorRoleDefinitionId = [string]$Automation.complianceAdministratorRoleDefinitionId
+        keyCredentialId = [string]$Automation.keyCredentialId
+        certificateThumbprint = [string]$Automation.certificateThumbprint
+        certificateSecretResourceId = [string]$Automation.certificateSecretResourceId
+        certificateSecretUri = [string]$Automation.certificateSecretUri
+        deploymentOwnershipId = [string]$Automation.deploymentOwnershipId
+        sourceFingerprint = [string]$Automation.sourceFingerprint
+        policyConfiguration = 'NotPerformed'
+        policyReadiness = 'NotClaimed'
+    }
+}
+
+function Test-GatewayPurviewCapabilityEvidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$WorkloadIdentity,
+        [Parameter()][AllowNull()]$Automation,
+        [Parameter(Mandatory)]$Evidence
+    )
+
+    $expected = Get-GatewayPurviewCapabilityEvidence `
+        -Config $Config `
+        -WorkloadIdentity $WorkloadIdentity `
+        -Automation $Automation
+    if ((Get-BootstrapObjectFingerprint -InputObject $Evidence) -cne
+        (Get-BootstrapObjectFingerprint -InputObject $expected)) {
+        throw (New-BootstrapValidationMismatchException -PropertyName 'purviewCapability')
+    }
+    return $true
+}
+
+function Get-GatewayBootstrapCapabilityEvidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)]$RuntimeReadback,
+        [Parameter()][AllowNull()]$PurviewCapability,
+        [Parameter()][string]$ReadbackAtUtc = ''
+    )
+
+    $ownershipId = [guid]::Empty
+    if (-not [guid]::TryParse([string]$RuntimeReadback.deploymentOwnershipId, [ref]$ownershipId) -or
+        $ownershipId -eq [guid]::Empty -or
+        [string]$RuntimeReadback.deploymentOwnershipId -cne $ownershipId.ToString('D')) {
+        throw 'Bootstrap capability readback has no canonical deployment ownership ID.'
+    }
+    Assert-BootstrapFingerprintValue `
+        -Value ([string]$RuntimeReadback.sourceFingerprint) `
+        -Label 'Bootstrap capability source fingerprint'
+    $apiPrincipalId = [guid]::Empty
+    $workerPrincipalId = [guid]::Empty
+    $apiApplicationId = [guid]::Empty
+    if (-not [guid]::TryParse([string]$RuntimeReadback.apiPrincipalId, [ref]$apiPrincipalId) -or
+        $apiPrincipalId -eq [guid]::Empty -or
+        [string]$RuntimeReadback.apiPrincipalId -cne $apiPrincipalId.ToString('D') -or
+        -not [guid]::TryParse([string]$RuntimeReadback.workerPrincipalId, [ref]$workerPrincipalId) -or
+        $workerPrincipalId -eq [guid]::Empty -or
+        [string]$RuntimeReadback.workerPrincipalId -cne $workerPrincipalId.ToString('D') -or
+        -not [guid]::TryParse([string]$Identity.gatewayApiClientId, [ref]$apiApplicationId) -or
+        $apiApplicationId -eq [guid]::Empty -or
+        [string]$Identity.gatewayApiClientId -cne $apiApplicationId.ToString('D')) {
+        throw 'Bootstrap capability identity facts are not canonical.'
+    }
+    if ([string]::IsNullOrEmpty($ReadbackAtUtc)) {
+        $ReadbackAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+    }
+    $readbackAt = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParseExact(
+            $ReadbackAtUtc,
+            'O',
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::None,
+            [ref]$readbackAt) -or
+        $readbackAt.Offset -ne [TimeSpan]::Zero) {
+        throw 'Bootstrap capability readback time must be one exact UTC round-trip timestamp.'
+    }
+
+    $agent365Installed =
+        [string]$Config.environment -ceq 'dev' -and
+        $Config.agent365.allowDevelopmentRegistryPreview -eq $true
+    $promptShieldInstalled = $Config.promptShield.enabled -eq $true
+    $purviewInstalled = $Config.purview.enabled -eq $true
+
+    $contentSafetyId = ''
+    $contentSafetyEndpoint = ''
+    if ($promptShieldInstalled) {
+        $contentSafetyId = [string]$RuntimeReadback.promptShieldAccountId
+        $contentSafetyEndpoint = [string]$RuntimeReadback.promptShieldEndpoint
+        $contentSafetyUri = $null
+        if ([string]::IsNullOrWhiteSpace($contentSafetyId) -or
+            -not [Uri]::TryCreate($contentSafetyEndpoint, [UriKind]::Absolute, [ref]$contentSafetyUri) -or
+            $contentSafetyUri.Scheme -cne 'https' -or
+            -not $contentSafetyUri.IsDefaultPort -or
+            $contentSafetyUri.AbsolutePath -cne '/' -or
+            -not [string]::IsNullOrEmpty($contentSafetyUri.Query) -or
+            -not [string]::IsNullOrEmpty($contentSafetyUri.Fragment)) {
+            throw 'Installed Prompt Shields capability facts are incomplete.'
+        }
+    }
+    elseif (-not [string]::IsNullOrEmpty([string]$RuntimeReadback.promptShieldAccountId) -or
+        -not [string]::IsNullOrEmpty([string]$RuntimeReadback.promptShieldEndpoint)) {
+        throw 'NotInstalled Prompt Shields capability must have clear resource identifiers.'
+    }
+
+    $purviewFacts = [ordered]@{
+        status = 'NotInstalled'
+        gatewayApiManagedIdentityPrincipalObjectId = ''
+        purviewRuntimeManagedIdentityPrincipalObjectId = ''
+        automationApplicationId = ''
+        automationServicePrincipalObjectId = ''
+        keyVaultResourceId = ''
+        keyVaultHost = ''
+        certificateName = ''
+        certificateSecretUri = ''
+    }
+    if ($purviewInstalled) {
+        $runtimePrincipalId = [guid]::Empty
+        if (-not [guid]::TryParse([string]$RuntimeReadback.runtimeImagePullIdentityPrincipalId, [ref]$runtimePrincipalId) -or
+            $runtimePrincipalId -eq [guid]::Empty -or
+            [string]$RuntimeReadback.runtimeImagePullIdentityPrincipalId -cne $runtimePrincipalId.ToString('D')) {
+            throw 'Installed Purview capability requires the exact shared runtime managed identity.'
+        }
+        if ($PurviewCapability -isnot [System.Collections.IDictionary] -or
+            [string]$PurviewCapability.status -cne 'Installed' -or
+            [string]$PurviewCapability.certificateSecretUri -cnotmatch '/secrets/purview-automation-certificate$' -or
+            [string]$PurviewCapability.deploymentOwnershipId -cne $ownershipId.ToString('D') -or
+            [string]$PurviewCapability.sourceFingerprint -cne [string]$RuntimeReadback.sourceFingerprint -or
+            -not ([string]$PurviewCapability.certificateSecretResourceId).StartsWith(
+                "$($RuntimeReadback.sharedKeyVaultId)/secrets/",
+                [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Installed Purview capability facts are not bound to exact bootstrap readback.'
+        }
+        $purviewFacts = [ordered]@{
+            status = 'Installed'
+            gatewayApiManagedIdentityPrincipalObjectId = $apiPrincipalId.ToString('D')
+            purviewRuntimeManagedIdentityPrincipalObjectId = $runtimePrincipalId.ToString('D')
+            automationApplicationId = [string]$PurviewCapability.automationApplicationId
+            automationServicePrincipalObjectId = [string]$PurviewCapability.automationServicePrincipalId
+            keyVaultResourceId = [string]$RuntimeReadback.sharedKeyVaultId
+            keyVaultHost = ([Uri][string]$PurviewCapability.certificateSecretUri).Host
+            certificateName = 'purview-automation-certificate'
+            certificateSecretUri = [string]$PurviewCapability.certificateSecretUri
+        }
+    }
+
+    return [ordered]@{
+        enabled = $true
+        readbackAtUtc = $readbackAt.ToUniversalTime().ToString('O')
+        deploymentOwnershipId = $ownershipId.ToString('D')
+        sourceFingerprint = [string]$RuntimeReadback.sourceFingerprint
+        agent365RegistrationBeta = [ordered]@{
+            status = if ($agent365Installed) { 'Installed' } else { 'NotInstalled' }
+            registryApiApplicationId = if ($agent365Installed) { $apiApplicationId.ToString('D') } else { '' }
+        }
+        promptShields = [ordered]@{
+            status = if ($promptShieldInstalled) { 'Installed' } else { 'NotInstalled' }
+            contentSafetyAccountResourceId = $contentSafetyId
+            contentSafetyEndpoint = $contentSafetyEndpoint
+            gatewayApiManagedIdentityPrincipalObjectId = if ($promptShieldInstalled) { $apiPrincipalId.ToString('D') } else { '' }
+        }
+        purview = $purviewFacts
+    }
+}
+
+function Test-GatewayBootstrapCapabilityEvidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)]$RuntimeReadback,
+        [Parameter()][AllowNull()]$PurviewCapability,
+        [Parameter(Mandatory)]$Evidence
+    )
+
+    $expected = Get-GatewayBootstrapCapabilityEvidence `
+        -Config $Config `
+        -Identity $Identity `
+        -RuntimeReadback $RuntimeReadback `
+        -PurviewCapability $PurviewCapability `
+        -ReadbackAtUtc ([string]$Evidence.readbackAtUtc)
+    if ((Get-BootstrapObjectFingerprint -InputObject $Evidence) -cne
+        (Get-BootstrapObjectFingerprint -InputObject $expected)) {
+        throw (New-BootstrapValidationMismatchException -PropertyName 'bootstrapCapabilities')
+    }
+    return $true
+}
+
+function Convert-GatewayLegacyPurviewPolicyStep {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)]$Config
+    )
+
+    if ($State.steps -isnot [System.Collections.IDictionary] -or
+        -not $State.steps.Contains('Purview policies')) {
+        return $false
+    }
+    if ($State.steps.Contains('Purview capability prerequisites')) {
+        throw 'Bootstrap state contains both legacy Purview policy and current capability checkpoints. Preserve the state for review; no provider action was attempted.'
+    }
+
+    $legacyRecord = $State.steps['Purview policies']
+    if ($legacyRecord -isnot [System.Collections.IDictionary] -or
+        [string]$legacyRecord.status -cnotin @('Running', 'Failed', 'Completed')) {
+        throw 'The legacy Purview policy checkpoint is malformed. Preserve the state for review; no provider action was attempted.'
+    }
+    $State['legacyPurviewPolicyMigration'] = [ordered]@{
+        detectedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        action = 'PreservedForGatewaySettingsReview'
+        priorStep = $legacyRecord
+    }
+    $State.steps.Remove('Purview policies')
+
+    $replacement = [ordered]@{}
+    foreach ($key in @($legacyRecord.Keys | ForEach-Object { [string]$_ })) {
+        if ($key -cne 'evidence') {
+            $replacement[$key] = $legacyRecord[$key]
+        }
+    }
+    if ([string]$legacyRecord.status -ceq 'Completed') {
+        if ($Config.purview.enabled -eq $true) {
+            $replacement.status = 'Failed'
+            $replacement.Remove('completedAtUtc')
+            $replacement['failedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
+            $replacement['message'] = 'Legacy Purview policy evidence is preserved for Gateway Settings migration; bootstrap will not reuse it as capability readiness.'
+        }
+        elseif (-not $State.steps.Contains('Workflow v3 Entra configuration') -or
+            $State.steps['Workflow v3 Entra configuration'].evidence -isnot [System.Collections.IDictionary]) {
+            throw 'The legacy Purview policy checkpoint has no preceding workload-identity evidence. Preserve the state for review; no provider action was attempted.'
+        }
+        else {
+            $replacement['evidence'] = Get-GatewayPurviewCapabilityEvidence `
+                -Config $Config `
+                -WorkloadIdentity $State.steps['Workflow v3 Entra configuration'].evidence
+        }
+    }
+    elseif ($legacyRecord.Contains('evidence')) {
+        $replacement['evidence'] = $legacyRecord.evidence
+    }
+    $State.steps['Purview capability prerequisites'] = $replacement
+    return $true
 }
 
 function Write-GatewayResult {
@@ -495,7 +804,7 @@ function Connect-GatewayPurviewSelectedTenantMember {
     )
 
     if (-not (Test-GatewayPurviewPolicyAuthoringPlatform)) {
-        throw 'Purview sensitive-information-type inventory and policy authoring require a Windows workstation because Microsoft currently does not make Connect-IPPSSession available in PowerShell 7 on macOS or Linux. Run Purview selection and bootstrap from Windows, or leave Purview disabled; core Gateway bootstrap remains available on macOS and Linux.'
+        throw 'The post-deployment Purview sensitive-information-type inventory and policy companion requires a Windows workstation because Microsoft currently does not make Connect-IPPSSession available in PowerShell 7 on macOS or Linux. Capability bootstrap remains available on macOS and Linux.'
     }
 
     $graphUser = Get-GatewaySelectedTenantGraphMember `
@@ -830,7 +1139,7 @@ function New-GatewayBootstrapConfiguration {
     $profiles = @(
         [ordered]@{
             label = 'Quick development'
-            description = 'Deploys the complete cloud-backed development foundation; Registry preview remains a separate explicit choice.'
+            description = 'Defaults to the recommended Full evaluation capabilities; Registry beta still requires explicit acknowledgement.'
             environment = 'dev'
         },
         [ordered]@{
@@ -879,13 +1188,6 @@ function New-GatewayBootstrapConfiguration {
     catch { }
     $alertEmail = Read-GatewayText -Prompt 'Operational alert email' -Default $suggestedEmail -Pattern '^[^@\s]+@[^@\s]+\.[^@\s]+$' -ValidationMessage 'Enter a valid email address.'
 
-    $registryPreview = $false
-    if ($environment -eq 'dev') {
-        Write-Host ''
-        Write-Host 'Agent 365 Registry creation uses a preview, Global-cloud-only dependency that Microsoft does not support for production.' -ForegroundColor Yellow
-        $registryPreview = Read-GatewayYesNo -Prompt 'Explicitly enable continuous Registry preview for this development deployment' -Default $false
-    }
-
     Write-Host ''
     Write-Host 'Agent 365 managerApplications grant first-party manager authority and must be independently reviewed for this tenant/provider version.' -ForegroundColor Yellow
     Write-Host 'Do not copy IDs from blueprint discovery alone. Follow the "Reviewed manager applications" section of docs/operations/entra-setup-runbook.md.' -ForegroundColor DarkGray
@@ -896,54 +1198,95 @@ function New-GatewayBootstrapConfiguration {
         catch { Write-Host $_.Exception.Message -ForegroundColor Yellow }
     }
 
-    $promptShieldEnabled = Read-GatewayYesNo -Prompt 'Provision Azure AI Content Safety Prompt Shields' -Default $false
+    Write-Host ''
+    Write-Host 'Capabilities to install' -ForegroundColor Cyan
+    $capabilityChoices = if ($environment -eq 'dev') {
+        @(
+            [ordered]@{
+                label = 'Full evaluation'
+                description = 'Recommended. Includes Agent 365 Registry beta, Prompt Shields infrastructure, and Purview prerequisites.'
+                value = 'fullEvaluation'
+            },
+            [ordered]@{
+                label = 'Core Gateway'
+                description = 'Includes the development registration capability without Prompt Shields or Purview prerequisites.'
+                value = 'coreGateway'
+            },
+            [ordered]@{
+                label = 'Custom'
+                description = 'Choose Prompt Shields and Purview prerequisites independently.'
+                value = 'custom'
+            }
+        )
+    }
+    else {
+        @(
+            [ordered]@{
+                label = 'Core Gateway'
+                description = 'Installs the Gateway with Agent 365 Registry beta closed.'
+                value = 'coreGateway'
+            },
+            [ordered]@{
+                label = 'Custom'
+                description = 'Choose Prompt Shields and Purview prerequisites independently; Registry beta remains closed.'
+                value = 'custom'
+            }
+        )
+    }
+    $capabilityPreset = [string](Read-GatewayChoice `
+        -Prompt 'Choose capabilities to install' `
+        -Choices $capabilityChoices `
+        -DefaultIndex 0).value
+    $registryPreview = $environment -eq 'dev'
+    $promptShieldEnabled = $capabilityPreset -eq 'fullEvaluation'
+    $purviewEnabled = $capabilityPreset -eq 'fullEvaluation'
+    if ($capabilityPreset -eq 'custom') {
+        $promptShieldEnabled = Read-GatewayYesNo `
+            -Prompt 'Install shared Azure AI Content Safety Prompt Shields infrastructure' `
+            -Default $false
+        $purviewEnabled = Read-GatewayYesNo `
+            -Prompt 'Prepare Microsoft Purview identities, RBAC, certificate path, and runtime wiring' `
+            -Default $false
+    }
+
+    $registryBetaAcknowledged = $false
+    if ($registryPreview) {
+        Write-Host ''
+        Write-Host 'Agent 365 Registry is a beta, Global-cloud-only dependency that Microsoft does not support for production. Each registration still requires a signed-in Gateway Administrator OBO action.' -ForegroundColor Yellow
+        $registryBetaAcknowledged = Read-GatewayYesNo `
+            -Prompt 'Acknowledge the Agent 365 Registry beta boundary' `
+            -Default $false
+        if (-not $registryBetaAcknowledged) {
+            throw 'Agent 365 Registry beta was not acknowledged.'
+        }
+    }
+
     $promptShieldSku = 'F0'
+    $promptShieldCostAndQuotaAcknowledged = $false
     if ($promptShieldEnabled) {
+        Write-Host 'Prompt Shields uses Azure AI Content Safety. F0 has limited subscription quota, soft-deleted accounts can retain that quota, and S0 plus service usage can incur Azure cost.' -ForegroundColor Yellow
         $skuChoice = Read-GatewayChoice -Prompt 'Choose the Content Safety SKU' -Choices @(
             [ordered]@{ label = 'F0'; description = 'Requests the free tier, subject to regional availability and subscription limits.'; value = 'F0' },
             [ordered]@{ label = 'S0'; description = 'Uses the paid standard tier; Azure charges apply.'; value = 'S0' }
         ) -DefaultIndex 0
         $promptShieldSku = [string]$skuChoice.value
-        if ($promptShieldSku -eq 'S0' -and -not (Read-GatewayYesNo -Prompt 'Acknowledge that S0 is a paid Azure resource' -Default $false)) {
-            throw 'Paid Prompt Shields SKU was not acknowledged.'
+        $promptShieldCostAndQuotaAcknowledged = Read-GatewayYesNo `
+            -Prompt 'Acknowledge the Prompt Shields quota and cost boundary' `
+            -Default $false
+        if (-not $promptShieldCostAndQuotaAcknowledged) {
+            throw 'Prompt Shields quota and cost requirements were not acknowledged.'
         }
     }
 
-    $purviewEnabled = Read-GatewayYesNo -Prompt 'Author Purview Know Your Data and DLP policies during bootstrap (runtime remains disabled)' -Default $false
-    $sensitiveInformationTypeId = ''
-    $sensitiveInformationType = ''
+    $purviewAuthorityRequirementsAcknowledged = $false
     if ($purviewEnabled) {
-        Write-Host 'Purview requires tenant licensing and authoring roles. Microsoft Graph /me must report the signed-in user as userType Member in the selected tenant.' -ForegroundColor Yellow
-        $purviewConnectionId = ''
-        try {
-            $purviewSession = Connect-GatewayPurviewSelectedTenantMember `
-                -SubscriptionId ([string]$subscription.id) `
-                -TenantId ([string]$subscription.tenantId)
-            $purviewConnectionId = [string]$purviewSession.connectionId
-            $tenantTypes = @(Get-BootstrapPurviewSensitiveInformationTypes)
-            $typeChoices = @($tenantTypes | ForEach-Object {
-                $publisher = ConvertTo-GatewaySafeDisplayText -Value $_.publisher -MaximumLength 120
-                if ([string]::IsNullOrWhiteSpace($publisher)) { $publisher = '(not reported)' }
-                [ordered]@{
-                    label = "$(ConvertTo-GatewaySafeDisplayText -Value $_.name -MaximumLength 255) — $([string]$_.id)"
-                    description = "Publisher: $publisher"
-                    value = $_
-                }
-            })
-            $selectedType = (Read-GatewayChoice `
-                -Prompt 'Choose a sensitive information type from this tenant' `
-                -Choices $typeChoices `
-                -DefaultIndex -1).value
-            $resolvedType = Resolve-BootstrapPurviewSensitiveInformationType `
-                -Id ([string]$selectedType.id) `
-                -Name ([string]$selectedType.name)
-            $sensitiveInformationTypeId = [string]$resolvedType.id
-            $sensitiveInformationType = [string]$resolvedType.name
-        }
-        finally {
-            if (-not [string]::IsNullOrWhiteSpace($purviewConnectionId)) {
-                Disconnect-BootstrapPurview -ConnectionId $purviewConnectionId
-            }
+        Write-Host 'Purview capability preparation requires tenant-approved identity, Graph/compliance RBAC, certificate, and Key Vault authority. Bootstrap does not connect a compliance session, select a sensitive information type, author policy, or claim readiness.' -ForegroundColor Yellow
+        Write-Host 'After deployment, a Gateway Administrator completes tenant connection and policy work in Settings. Any required Security & Compliance PowerShell companion remains interactive and Windows-only.' -ForegroundColor DarkGray
+        $purviewAuthorityRequirementsAcknowledged = Read-GatewayYesNo `
+            -Prompt 'Acknowledge the Purview authority and post-deployment administration requirements' `
+            -Default $false
+        if (-not $purviewAuthorityRequirementsAcknowledged) {
+            throw 'Microsoft Purview authority requirements were not acknowledged.'
         }
     }
 
@@ -961,24 +1304,22 @@ function New-GatewayBootstrapConfiguration {
         projectName = $projectName
         resourceGroupName = $resourceGroupName
         alertEmail = $alertEmail
+        capabilityPreset = $capabilityPreset
         sql = [ordered]@{ skuName = 'Basic'; skuTier = 'Basic' }
         agent365 = [ordered]@{
             seedBlueprintName = "A365 Gateway $projectName $environment"
             allowDevelopmentRegistryPreview = $registryPreview
+            registryBetaAcknowledged = $registryBetaAcknowledged
             reviewedManagerApplicationIds = @($reviewedManagerApplicationIds)
         }
-        promptShield = [ordered]@{ enabled = $promptShieldEnabled; skuName = $promptShieldSku }
+        promptShield = [ordered]@{
+            enabled = $promptShieldEnabled
+            skuName = $promptShieldSku
+            costAndQuotaAcknowledged = $promptShieldCostAndQuotaAcknowledged
+        }
         purview = [ordered]@{
             enabled = $purviewEnabled
-            collectionPolicyName = "A365 Gateway $projectName AI collection"
-            dlpPolicyName = "A365 Gateway $projectName inline DLP"
-            dlpRuleName = "A365 Gateway $projectName inline DLP rule"
-            sensitiveInformationTypeId = $sensitiveInformationTypeId
-            sensitiveInformationType = $sensitiveInformationType
-            policyProvisioningEnabled = $false
-            policyProvisioningOrganization = ''
-            policyProvisioningApplicationId = ''
-            policyProvisioningCertificateSecretUri = ''
+            authorityRequirementsAcknowledged = $purviewAuthorityRequirementsAcknowledged
         }
     }
 
@@ -987,6 +1328,7 @@ function New-GatewayBootstrapConfiguration {
     Write-Host "Subscription: $($subscriptionChoice.label)"
     Write-Host "Region:       $location"
     Write-Host "Resource group: $resourceGroupName"
+    Write-Host "Capabilities:    $capabilityPreset"
     Write-Host "Registry preview: $registryPreview"
     Write-Host "Reviewed Agent 365 manager IDs: $($reviewedManagerApplicationIds -join ', ')"
     Write-Host "Prompt Shields:   $promptShieldEnabled ($promptShieldSku)"
@@ -1293,10 +1635,10 @@ function Get-GatewayPlanDescriptor {
         'Managed identities, role assignments, diagnostics, and alerts'
     )) { $azureResources.Add($resource) }
     if ($Config.promptShield.enabled -eq $true) { $azureResources.Add('Azure AI Content Safety account with local authentication disabled') }
+    if ($Config.purview.enabled -eq $true) { $azureResources.Add('Dedicated gateway-protection-admin-v1 queue with exact API sender and worker receiver roles') }
 
     $imperative = [Collections.Generic.List[object]]::new()
     $imperative.Add([ordered]@{ system = 'Local workstation'; operation = 'Verify Git, Azure CLI, .NET SDK 10, and Bicep; install supported missing prerequisites when explicitly enabled'; mutation = $true })
-    $imperative.Add([ordered]@{ system = 'Local workstation'; operation = 'Install the optional Exchange Online module before Apply when Purview policy authoring is enabled'; mutation = $true })
     $imperative.Add([ordered]@{ system = 'Azure'; operation = 'Register required resource providers and read back Registered state'; mutation = $true })
     $imperative.Add([ordered]@{ system = 'Azure Container Registry'; operation = 'Build API, worker, Admin UI, and database-migrator images and resolve immutable digests'; mutation = $true })
     $imperative.Add([ordered]@{ system = 'Azure network controls'; operation = 'Enforce disabled public access on the project-scoped Key Vaults and verify the hardened state'; mutation = $true })
@@ -1312,7 +1654,7 @@ function Get-GatewayPlanDescriptor {
     $imperative.Add([ordered]@{ system = 'Azure SQL'; operation = 'Initialize only an empty database and create the two exact runtime principals through one VNet-private, retry-disabled Container Apps Job; temporarily assign that job identity as the singular Entra administrator, restore the original administrator exactly, keep public access Disabled, and prove zero firewall rules'; mutation = $true })
     $imperative.Add([ordered]@{ system = 'Key Vault'; operation = 'Transfer the one-time Admin UI application credential directly to Key Vault without rendering it'; mutation = $true })
     if ($Config.purview.enabled -eq $true) {
-        $imperative.Add([ordered]@{ system = 'Microsoft Purview'; operation = 'Create or verify the fixed tenant-wide Know Your Data Group and the blueprint-specific Individual DLP location through an interactive compliance session'; mutation = $true })
+        $imperative.Add([ordered]@{ system = 'Microsoft Purview capability'; operation = 'Prepare and read back API/automation identity authority, exact Graph/compliance RBAC, certificate and Key Vault path, and runtime wiring; do not inventory a sensitive information type or create, update, or verify policy'; mutation = $true })
     }
     $imperative.Add([ordered]@{ system = 'Verification'; operation = 'Read back identities, permissions, private-network posture, immutable images, health, and provisioning prerequisites'; mutation = $false })
 
@@ -1328,13 +1670,20 @@ function Get-GatewayPlanDescriptor {
             deploymentOwnershipId = $canonicalOwnershipId
         }
         profile = [string]$Config.environment
+        capabilityPreset = [string]$Config.capabilityPreset
         features = [ordered]@{
             developmentRegistryPreview = $registryPreview
+            registryBetaAcknowledged = [bool]$Config.agent365.registryBetaAcknowledged
             promptShields = [bool]$Config.promptShield.enabled
             promptShieldSku = [string]$Config.promptShield.skuName
-            purview = [bool]$Config.purview.enabled
-            purviewRuntimeAdapter = $false
-            purviewPolicyProfiles = [bool]$Config.purview.policyProvisioningEnabled
+            promptShieldCostAndQuotaAcknowledged = [bool]$Config.promptShield.costAndQuotaAcknowledged
+            purviewPrerequisites = [bool]$Config.purview.enabled
+            purviewAuthorityRequirementsAcknowledged = [bool]$Config.purview.authorityRequirementsAcknowledged
+            purviewRuntimeWiring = [bool]$Config.purview.enabled
+            purviewRegistrationDefault = $false
+            purviewPolicyReadiness = 'NotClaimed'
+            protectionAdminQueue = if ($Config.purview.enabled -eq $true) { 'gateway-protection-admin-v1' } else { '' }
+            protectionAdminWorker = [bool]$Config.purview.enabled
             reviewedAgent365ManagerApplicationIds = @($reviewedManagerIds)
         }
         agent365SeedBlueprint = [ordered]@{
@@ -1354,19 +1703,18 @@ function Get-GatewayPlanDescriptor {
             'Azure and Microsoft tenant authentication may require interactive sign-in or Conditional Access.',
             'Tenant-wide Entra consent and Agent ID permissions must be held by the signed-in administrator.',
             'Database initialization temporarily replaces the singular Azure SQL Entra administrator with the exact private migration-job identity, then restores and independently reads back the original administrator before continuing.',
-            'Purview authoring requires a separate interactive Security & Compliance session when enabled.',
+            'Purview capability preparation does not connect a Security & Compliance session or authorize policy. Later Settings-owned policy operations require a signed-in Gateway Administrator and may use an interactive Windows companion.',
             'Workflow v3 stops at 71% for a signed-in Gateway Administrator Registry action; the worker never calls Registry.'
         )
         costClasses = @(
             'Azure consumption, logs, SQL, registry, networking, storage, and Container Apps can incur charges.',
             $(if ($Config.promptShield.enabled -eq $true) { "Prompt Shields requests SKU $($Config.promptShield.skuName); availability and charges are subscription/region dependent." } else { 'Prompt Shields is not provisioned.' }),
-            $(if ($Config.purview.enabled -eq $true) { 'Purview requires eligible Microsoft 365 licensing and tenant capacity.' } else { 'Purview policy authoring is not requested.' })
+            $(if ($Config.purview.enabled -eq $true) { 'Purview prerequisites require eligible Microsoft 365 licensing and separately authorized tenant administration.' } else { 'Purview prerequisites are not installed.' })
         )
         preflightLimitations = @(
             'NotChecked: subscription quota and every regional data-plane SKU limit; review Azure quota before Apply.',
             'NotChecked: tenant Agent 365 licensing/eligibility and interactive Conditional Access; the imperative requirements step fails closed.',
-            'NotChecked: Purview propagation or synthetic verdict behavior; policy readback is configuration evidence only.',
-            $(if ($Config.purview.policyProvisioningEnabled -eq $true) { 'NotChecked: the optional Microsoft 365 automation application certificate binding and Security & Compliance RBAC. Bootstrap verifies enabled Key Vault secret metadata; registrations that select a protection profile remain subject to independent fail-closed validation.' } else { 'Purview protection-profile automation authority is not requested.' }),
+            'NotChecked: Purview policy, propagation, managed-identity token roles, or synthetic verdict behavior. Bootstrap capability readback is not protection readiness.',
             'NotChecked: an authenticated browser session, first Active agent, or downstream Agent 365 landing.',
             'The ARM What-If below covers the subscription foundation only; Entra, Graph, Agent 365, SQL initialization, and Purview are listed separately in the imperative manifest.'
         )
@@ -3830,6 +4178,10 @@ function Show-GatewayPlan {
     Write-Host "Plan fingerprint: $PlanFingerprint"
     Write-Host "Configuration fingerprint: $ConfigurationFingerprint"
     Write-Host "Source fingerprint: $SourceFingerprint"
+    Write-Host "Capability preset: $($Descriptor.capabilityPreset)"
+    Write-Host "Agent 365 Registry beta: $(if ($Descriptor.features.developmentRegistryPreview) { 'selected and acknowledged for development' } else { 'closed' })"
+    Write-Host "Prompt Shields infrastructure: $(if ($Descriptor.features.promptShields) { 'selected; quota and cost reviewed' } else { 'not selected' })"
+    Write-Host "Purview prerequisites: $(if ($Descriptor.features.purviewPrerequisites) { 'selected; authority reviewed; no policy or readiness claim' } else { 'not selected' })"
     Write-Host ''
     Write-Host 'Azure resource families' -ForegroundColor Cyan
     foreach ($resource in $Descriptor.azureResources) { Write-Host "  - $resource" }
@@ -4628,6 +4980,67 @@ function Assert-GatewayExactSystemContainerAppEnvelope {
     return $true
 }
 
+function Get-GatewayVerifiedPurviewRuntimeDeploymentIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Evidence,
+        [Parameter(Mandatory)]$Outputs,
+        [Parameter(Mandatory)]$CapabilityEvidence,
+        [Parameter(Mandatory)]$Api,
+        [Parameter(Mandatory)]$Worker,
+        [Parameter(Mandatory)][bool]$Enabled
+    )
+
+    $runtimeIdentity = [ordered]@{ resourceId = ''; clientId = ''; principalId = '' }
+    if ($Enabled) {
+        $runtimeIdentity = Get-GatewayPurviewRuntimeManagedIdentity -Config $Config -Identity ([ordered]@{
+            deploymentOwnershipId = [string]$Evidence.deploymentOwnershipId
+        })
+        if ([string]$runtimeIdentity.resourceId -cne [string]$Evidence.runtimeImagePullIdentityId -or
+            [string]$runtimeIdentity.principalId -cne [string]$Evidence.runtimeImagePullIdentityPrincipalId) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'purviewRuntimeIdentity.foundation')
+        }
+    }
+    if ([string]$CapabilityEvidence.purview.purviewRuntimeManagedIdentityPrincipalObjectId -cne [string]$runtimeIdentity.principalId) {
+        throw (New-BootstrapValidationMismatchException -PropertyName 'purviewRuntimeIdentity.capability')
+    }
+    foreach ($mapping in @(
+        @('purviewRuntimeIdentityResourceId', 'resourceId'),
+        @('purviewRuntimeIdentityClientId', 'clientId'),
+        @('purviewRuntimeIdentityPrincipalId', 'principalId')
+    )) {
+        $name = [string]$mapping[0]
+        $expected = [string]$runtimeIdentity[$mapping[1]]
+        $output = Get-GatewayOptionalObjectProperty -Object $Outputs -Name $name
+        $recorded = Get-GatewayOptionalObjectProperty -Object $Evidence -Name $name
+        if ($null -eq $output -or [string]$output.value -cne $expected -or
+            $null -eq $recorded -or [string]$recorded -cne $expected) {
+            throw (New-BootstrapValidationMismatchException -PropertyName "purviewRuntimeIdentity.$name")
+        }
+    }
+    foreach ($target in @(@{ role = 'api'; app = $Api }, @{ role = 'worker'; app = $Worker })) {
+        if ($Enabled) {
+            $attachment = Get-GatewayOptionalObjectProperty -Object $target.app.identity.userAssignedIdentities -Name ([string]$runtimeIdentity.resourceId)
+            if ($null -eq $attachment -or [string]$attachment.clientId -cne [string]$runtimeIdentity.clientId -or
+                [string]$attachment.principalId -cne [string]$runtimeIdentity.principalId) {
+                throw (New-BootstrapValidationMismatchException -PropertyName "$($target.role).purviewRuntimeIdentity.attachment")
+            }
+        }
+        foreach ($mapping in @(
+            @('PurviewRuntimeIdentity__ManagedIdentityClientId', 'clientId'),
+            @('PurviewRuntimeIdentity__ManagedIdentityPrincipalObjectId', 'principalId')
+        )) {
+            $entries = @($target.app.properties.template.containers[0].env | Where-Object { [string]$_.name -ceq $mapping[0] })
+            if ($entries.Count -ne 1 -or [string]$entries[0].value -cne [string]$runtimeIdentity[$mapping[1]] -or
+                -not [string]::IsNullOrEmpty([string](Get-GatewayOptionalObjectProperty -Object $entries[0] -Name 'secretRef'))) {
+                throw (New-BootstrapValidationMismatchException -PropertyName "$($target.role).purviewRuntimeIdentity.$($mapping[1])")
+            }
+        }
+    }
+    return $runtimeIdentity
+}
+
 function Test-GatewayGroupDeploymentEvidence {
     param(
         [Parameter(Mandatory)]$Config,
@@ -4639,6 +5052,8 @@ function Test-GatewayGroupDeploymentEvidence {
         [Parameter(Mandatory)][string]$ApiImage,
         [Parameter(Mandatory)][string]$WorkerImage,
         [Parameter()]$Database,
+        [Parameter()][AllowNull()]$PurviewAutomation,
+        [Parameter()][AllowNull()]$CapabilityEvidence,
         [switch]$AllowRuntimeSupersession
     )
     if (-not $Evidence -or [string]::IsNullOrWhiteSpace([string]$Evidence.deploymentName)) { throw 'Deployment evidence is incomplete; refusing automatic replay.' }
@@ -4681,6 +5096,44 @@ function Test-GatewayGroupDeploymentEvidence {
             throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.deploymentName')
         }
         $isRuntime = [string]$Evidence.deploymentName -eq $runtimeDeploymentName
+        $expectedCapabilities = if ($isRuntime) {
+            if ($CapabilityEvidence -isnot [System.Collections.IDictionary]) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'capabilityEvidence')
+            }
+            Test-GatewayBootstrapCapabilityEvidence `
+                -Evidence $CapabilityEvidence `
+                -Config $Config `
+                -Identity $Identity `
+                -RuntimeReadback $Evidence `
+                -PurviewCapability $PurviewAutomation | Out-Null
+            $CapabilityEvidence
+        }
+        else {
+            $disabled = $Evidence.bootstrapCapabilities
+            if ($disabled -isnot [System.Collections.IDictionary] -or
+                $disabled.enabled -ne $false -or
+                [string]$disabled.readbackAtUtc -cne '' -or
+                [string]$disabled.deploymentOwnershipId -cne '' -or
+                [string]$disabled.sourceFingerprint -cne '' -or
+                [string]$disabled.agent365RegistrationBeta.status -cne '' -or
+                [string]$disabled.agent365RegistrationBeta.registryApiApplicationId -cne '' -or
+                [string]$disabled.promptShields.status -cne '' -or
+                [string]$disabled.promptShields.contentSafetyAccountResourceId -cne '' -or
+                [string]$disabled.promptShields.contentSafetyEndpoint -cne '' -or
+                [string]$disabled.promptShields.gatewayApiManagedIdentityPrincipalObjectId -cne '' -or
+                [string]$disabled.purview.status -cne '' -or
+                [string]$disabled.purview.gatewayApiManagedIdentityPrincipalObjectId -cne '' -or
+                [string]$disabled.purview.purviewRuntimeManagedIdentityPrincipalObjectId -cne '' -or
+                [string]$disabled.purview.automationApplicationId -cne '' -or
+                [string]$disabled.purview.automationServicePrincipalObjectId -cne '' -or
+                [string]$disabled.purview.keyVaultResourceId -cne '' -or
+                [string]$disabled.purview.keyVaultHost -cne '' -or
+                [string]$disabled.purview.certificateName -cne '' -or
+                [string]$disabled.purview.certificateSecretUri -cne '') {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.bootstrapCapabilities')
+            }
+            $disabled
+        }
                 if ((($isRuntime)) -and (-not $Database)) {
             throw (New-BootstrapValidationMismatchException -PropertyName 'isRuntime')
         }
@@ -4724,6 +5177,16 @@ function Test-GatewayGroupDeploymentEvidence {
         }
         if ([string]$deployment.outputs.bootstrapSourceFingerprint.value -cne $SourceFingerprint) {
             throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.bootstrapSourceFingerprint.value')
+        }
+        $expectedCapabilitiesFingerprint = Get-BootstrapObjectFingerprint -InputObject $expectedCapabilities
+        if ((Get-BootstrapObjectFingerprint -InputObject $Evidence.bootstrapCapabilities) -cne $expectedCapabilitiesFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.bootstrapCapabilities')
+        }
+        if ((Get-BootstrapObjectFingerprint -InputObject $deployment.parameters.bootstrapCapabilities.value) -cne $expectedCapabilitiesFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.bootstrapCapabilities.value')
+        }
+        if ((Get-BootstrapObjectFingerprint -InputObject $deployment.outputs.bootstrapCapabilities.value) -cne $expectedCapabilitiesFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.outputs.bootstrapCapabilities.value')
         }
         if ([string]$deployment.parameters.apiContainerImage.value -cne $ApiImage) {
             throw (New-BootstrapValidationMismatchException -PropertyName 'deployment.parameters.apiContainerImage.value')
@@ -4791,6 +5254,8 @@ function Test-GatewayGroupDeploymentEvidence {
             sqlServerFqdn = 'sqlServerFqdn'
             serviceBusQueueName = 'serviceBusQueueName'
             serviceBusQueueId = 'serviceBusQueueId'
+            protectionAdminQueueName = 'protectionAdminQueueName'
+            protectionAdminQueueId = 'protectionAdminQueueId'
         }
         Assert-GatewayDeploymentOutputEvidenceMap `
             -Outputs $deployment.outputs `
@@ -4806,7 +5271,7 @@ function Test-GatewayGroupDeploymentEvidence {
             -ExpectedRegistryId $expectedRegistryId `
             -DeploymentOwnershipId $canonicalOwnershipId `
             -SourceFingerprint $SourceFingerprint | Out-Null
-        foreach ($property in @('provisioningExecutionEnabled', 'workerProcessingEnabled')) {
+        foreach ($property in @('provisioningExecutionEnabled', 'protectionAdminProcessingEnabled', 'workerProcessingEnabled')) {
             if ([bool]$deployment.outputs.$property.value -ne [bool]$Evidence.$property) {
                 throw (New-BootstrapValidationMismatchException -PropertyName "deployment.outputs.$property.value")
             }
@@ -4843,6 +5308,10 @@ function Test-GatewayGroupDeploymentEvidence {
         }
         if ([bool]$Evidence.provisioningExecutionEnabled -ne $expectedPreview) {
             throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.provisioningExecutionEnabled')
+        }
+        $expectedProtectionAdmin = [bool]($isRuntime -and $Config.purview.enabled -eq $true)
+        if ([bool]$Evidence.protectionAdminProcessingEnabled -ne $expectedProtectionAdmin) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.protectionAdminProcessingEnabled')
         }
 
         $api = Invoke-AzJson -Arguments @('containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', "ca-gateway-api-$($Config.environment)")
@@ -4914,13 +5383,23 @@ function Test-GatewayGroupDeploymentEvidence {
             $storageName = [string]$Matches.name
             $sqlConnection = "Server=tcp:$($Evidence.sqlServerFqdn),1433;Database=GatewayDb;Authentication=Active Directory Managed Identity;Encrypt=True;TrustServerCertificate=False;"
             $serviceBusNamespace = "sb-$($Config.projectName)-$($Config.environment).servicebus.windows.net"
-            $expectedPurviewEnabled = [bool]($Config.purview.enabled -eq $true)
+            $expectedPurviewEnabled = [bool]($isRuntime -and $Config.purview.enabled -eq $true)
+            if ($expectedPurviewEnabled -and (
+                $PurviewAutomation -isnot [System.Collections.IDictionary] -or
+                [string]$PurviewAutomation.deploymentOwnershipId -cne $canonicalOwnershipId -or
+                [string]$PurviewAutomation.sourceFingerprint -cne $SourceFingerprint -or
+                [string]$PurviewAutomation.status -cne 'Installed')) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'purviewAutomation')
+            }
             $booleanEnvironment = Get-GatewayArmBooleanEnvironmentContract `
                 -RuntimeEnabled ([bool]$isRuntime) `
                 -RegistryPreviewEnabled ([bool]$expectedPreview) `
                 -PurviewEnabled $expectedPurviewEnabled `
-                -PurviewPolicyProvisioningEnabled ([bool]($expectedPurviewEnabled -and $Config.purview.policyProvisioningEnabled -eq $true)) `
+                -PurviewPolicyProvisioningEnabled $expectedPurviewEnabled `
                 -PromptShieldEnabled ([bool]$Config.promptShield.enabled)
+            $purviewRuntimeIdentity = Get-GatewayVerifiedPurviewRuntimeDeploymentIdentity `
+                -Config $Config -Evidence $Evidence -Outputs $deployment.outputs `
+                -CapabilityEvidence $expectedCapabilities -Api $api -Worker $worker -Enabled $expectedPurviewEnabled
             $apiEnvironment = [ordered]@{
                 'ConnectionStrings__GatewayDb' = $sqlConnection
                 'ServiceBus__FullyQualifiedNamespace' = $serviceBusNamespace
@@ -4936,12 +5415,33 @@ function Test-GatewayGroupDeploymentEvidence {
                 'EntraId__ClientCredentials__0__SourceType' = 'SignedAssertionFromManagedIdentity'
                 'EntraId__ClientCredentials__0__TokenExchangeUrl' = 'api://AzureADTokenExchange'
                 'KeyVault__VaultUri' = [string]$Evidence.keyVaultUri
+                'BootstrapCapabilities__Enabled' = ([string][bool]$expectedCapabilities.enabled).ToLowerInvariant()
+                'BootstrapCapabilities__AttestedAtUtc' = [string]$expectedCapabilities.readbackAtUtc
+                'BootstrapCapabilities__DeploymentOwnershipId' = [string]$expectedCapabilities.deploymentOwnershipId
+                'BootstrapCapabilities__AcceptedSourceFingerprint' = [string]$expectedCapabilities.sourceFingerprint
+                'BootstrapCapabilities__Agent365RegistrationBeta__Status' = [string]$expectedCapabilities.agent365RegistrationBeta.status
+                'BootstrapCapabilities__Agent365RegistrationBeta__Agent365RegistryApiApplicationId' = [string]$expectedCapabilities.agent365RegistrationBeta.registryApiApplicationId
+                'BootstrapCapabilities__PromptShields__Status' = [string]$expectedCapabilities.promptShields.status
+                'BootstrapCapabilities__PromptShields__ContentSafetyAccountResourceId' = [string]$expectedCapabilities.promptShields.contentSafetyAccountResourceId
+                'BootstrapCapabilities__PromptShields__ContentSafetyEndpoint' = [string]$expectedCapabilities.promptShields.contentSafetyEndpoint
+                'BootstrapCapabilities__PromptShields__GatewayApiManagedIdentityPrincipalObjectId' = [string]$expectedCapabilities.promptShields.gatewayApiManagedIdentityPrincipalObjectId
+                'BootstrapCapabilities__Purview__Status' = [string]$expectedCapabilities.purview.status
+                'BootstrapCapabilities__Purview__GatewayApiManagedIdentityPrincipalObjectId' = [string]$expectedCapabilities.purview.gatewayApiManagedIdentityPrincipalObjectId
+                'BootstrapCapabilities__Purview__PurviewRuntimeManagedIdentityPrincipalObjectId' = [string]$expectedCapabilities.purview.purviewRuntimeManagedIdentityPrincipalObjectId
+                'BootstrapCapabilities__Purview__PurviewAutomationApplicationId' = [string]$expectedCapabilities.purview.automationApplicationId
+                'BootstrapCapabilities__Purview__PurviewAutomationServicePrincipalObjectId' = [string]$expectedCapabilities.purview.automationServicePrincipalObjectId
+                'BootstrapCapabilities__Purview__KeyVaultResourceId' = [string]$expectedCapabilities.purview.keyVaultResourceId
+                'BootstrapCapabilities__Purview__KeyVaultHost' = [string]$expectedCapabilities.purview.keyVaultHost
+                'BootstrapCapabilities__Purview__CertificateName' = [string]$expectedCapabilities.purview.certificateName
+                'BootstrapCapabilities__Purview__CertificateSecretUri' = [string]$expectedCapabilities.purview.certificateSecretUri
                 'Agent365__TenantId' = [string]$Config.tenantId
                 'Agent365__DelegatedRegistry__Enabled' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__Enabled']
                 'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess']
                 'Agent365__DelegatedRegistry__Scopes__0' = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All'
                 'Agent365__DelegatedRegistry__Scopes__1' = 'https://graph.microsoft.com/AgentRegistration.Read.All'
                 'Purview__Enabled' = $booleanEnvironment.Api['Purview__Enabled']
+                'PurviewRuntimeIdentity__ManagedIdentityClientId' = [string]$purviewRuntimeIdentity.clientId
+                'PurviewRuntimeIdentity__ManagedIdentityPrincipalObjectId' = [string]$purviewRuntimeIdentity.principalId
                 'PromptShield__Enabled' = $booleanEnvironment.Api['PromptShield__Enabled']
                 'PromptShield__Endpoint' = $(if ($Config.promptShield.enabled -eq $true) { [string]$Evidence.promptShieldEndpoint } else { '' })
                 'PromptShield__ApiVersion' = '2024-09-01'
@@ -4973,13 +5473,20 @@ function Test-GatewayGroupDeploymentEvidence {
                 'ProvisioningWorker__MaxConcurrentCalls' = $(if ($expectedPreview) { '1' } else { '5' })
                 'ProvisioningWorker__ProcessingEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProcessingEnabled']
                 'ProvisioningWorker__ProvisioningExecutionEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProvisioningExecutionEnabled']
+                'ProtectionAdminWorker__ProcessingEnabled' = $(if ($expectedPurviewEnabled) { 'True' } else { 'False' })
+                'ProtectionAdminWorker__MaxConcurrentCalls' = '2'
+                'ProtectionAdminWorker__MaxDeliveryCount' = '10'
+                'ProtectionAdminWorker__MaximumPropagationAttempts' = '5'
+                'ProtectionAdminWorker__PropagationRetryDelaySeconds' = '30'
                 'Purview__Enabled' = $booleanEnvironment.Worker['Purview__Enabled']
+                'PurviewRuntimeIdentity__ManagedIdentityClientId' = [string]$purviewRuntimeIdentity.clientId
+                'PurviewRuntimeIdentity__ManagedIdentityPrincipalObjectId' = [string]$purviewRuntimeIdentity.principalId
                 'Purview__PolicyProvisioningEnabled' = $booleanEnvironment.Worker['Purview__PolicyProvisioningEnabled']
-                'Purview__PolicyProvisioningOrganization' = [string]$Config.purview.policyProvisioningOrganization
-                'Purview__PolicyProvisioningApplicationId' = [string]$Config.purview.policyProvisioningApplicationId
-                'Purview__PolicyProvisioningCertificateSecretUri' = [string]$Config.purview.policyProvisioningCertificateSecretUri
-                'Purview__DefaultSensitiveInformationTypeId' = [string]$Config.purview.sensitiveInformationTypeId
-                'Purview__DefaultSensitiveInformationType' = [string]$Config.purview.sensitiveInformationType
+                'Purview__PolicyProvisioningOrganization' = $(if ($expectedPurviewEnabled) { [string]$PurviewAutomation.organization } else { '' })
+                'Purview__PolicyProvisioningApplicationId' = $(if ($expectedPurviewEnabled) { [string]$PurviewAutomation.automationApplicationId } else { '' })
+                'Purview__PolicyProvisioningCertificateSecretUri' = $(if ($expectedPurviewEnabled) { [string]$PurviewAutomation.certificateSecretUri } else { '' })
+                'Purview__DefaultSensitiveInformationTypeId' = ''
+                'Purview__DefaultSensitiveInformationType' = ''
                 'DOTNET_ENVIRONMENT' = 'Production'
             }
             for ($index = 0; $index -lt $expectedManagerIds.Count; $index++) {
@@ -5023,6 +5530,25 @@ function Test-GatewayGroupDeploymentEvidence {
         }
         if ($queueName -ne [string]$Evidence.serviceBusQueueName) {
             throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.serviceBusQueueName')
+        }
+        $protectionQueueNames = @(Invoke-AzJson -Arguments @(
+            'servicebus', 'queue', 'list', '--resource-group', [string]$Config.resourceGroupName,
+            '--namespace-name', "sb-$($Config.projectName)-$($Config.environment)",
+            '--query', "[?name=='gateway-protection-admin-v1'].name"
+        ))
+        if ($expectedProtectionAdmin) {
+            $expectedProtectionQueueId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.ServiceBus/namespaces/sb-$($Config.projectName)-$($Config.environment)/queues/gateway-protection-admin-v1"
+            if ($protectionQueueNames.Count -ne 1 -or
+                [string]$protectionQueueNames[0] -cne 'gateway-protection-admin-v1' -or
+                [string]$Evidence.protectionAdminQueueName -cne 'gateway-protection-admin-v1' -or
+                -not ([string]$Evidence.protectionAdminQueueId).Equals($expectedProtectionQueueId, [StringComparison]::OrdinalIgnoreCase)) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.protectionAdminQueue')
+            }
+        }
+        elseif ($protectionQueueNames.Count -ne 0 -or
+            -not [string]::IsNullOrEmpty([string]$Evidence.protectionAdminQueueName) -or
+            -not [string]::IsNullOrEmpty([string]$Evidence.protectionAdminQueueId)) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'evidence.protectionAdminQueue')
         }
 
         if ($Config.promptShield.enabled -eq $true) {

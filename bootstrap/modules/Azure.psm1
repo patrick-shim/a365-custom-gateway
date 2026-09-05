@@ -852,6 +852,187 @@ function Deploy-GatewayAdminUiCredentialSecret {
     }
 }
 
+function Get-GatewayPurviewAutomationCertificateContext {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$AutomationApplicationId,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    foreach ($entry in ([ordered]@{
+        subscriptionId = [string]$Config.subscriptionId
+        automationApplicationId = $AutomationApplicationId
+        deploymentOwnershipId = $DeploymentOwnershipId
+    }).GetEnumerator()) {
+        Assert-GuidValue -Value ([string]$entry.Value) -Label "Purview automation certificate $($entry.Key)"
+        if ([string]$entry.Value -cne ([guid][string]$entry.Value).ToString('D')) {
+            throw 'Purview automation certificate identifiers must be canonical lowercase GUIDs.'
+        }
+    }
+    Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Purview automation certificate source fingerprint'
+
+    $vaultName = "kv-$($Config.projectName)-$($Config.environment)"
+    $expectedVaultUri = "https://$vaultName.vault.azure.net/"
+    if ($KeyVaultUri -cne $expectedVaultUri) {
+        throw 'Purview automation certificate Key Vault URI is outside the exact deployment vault boundary.'
+    }
+    $secretName = 'purview-automation-certificate'
+    return [ordered]@{
+        subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
+        resourceGroupName = [string]$Config.resourceGroupName
+        keyVaultName = $vaultName
+        secretName = $secretName
+        secretResourceId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.KeyVault/vaults/$vaultName/secrets/$secretName"
+        versionlessSecretUri = "$($KeyVaultUri.TrimEnd('/'))/secrets/$secretName"
+        automationApplicationId = ([guid]$AutomationApplicationId).ToString('D')
+        deploymentOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+        sourceFingerprint = $SourceFingerprint
+    }
+}
+
+function Get-GatewayPurviewAutomationCertificateSecretArmMetadata {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$AutomationApplicationId,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    $context = Get-GatewayPurviewAutomationCertificateContext @PSBoundParameters
+    $raw = Invoke-BootstrapCommand `
+        -FilePath 'az' `
+        -ArgumentList @(
+            'resource', 'show', '--ids', [string]$context.secretResourceId,
+            '--api-version', '2023-07-01',
+            '--query', '{id:id,name:name,enabled:properties.attributes.enabled,contentType:properties.contentType,tags:tags}',
+            '--output', 'json', '--only-show-errors'
+        ) `
+        -AllowFailure `
+        -CaptureStdoutOnly
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 3 -and [string]::IsNullOrWhiteSpace($raw)) {
+        return [ordered]@{ status = 'Absent' }
+    }
+    if ($exitCode -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
+        throw 'Purview automation certificate ARM metadata could not be read through the exact management-plane boundary.'
+    }
+
+    try {
+        $metadata = $raw | ConvertFrom-Json -Depth 20 -ErrorAction Stop
+        $tagNames = @($metadata.tags.PSObject.Properties.Name)
+        $keyCredentialId = [guid]::Empty
+        if (-not ([string]$metadata.id).Equals([string]$context.secretResourceId, [StringComparison]::OrdinalIgnoreCase) -or
+            [string]$metadata.name -cne [string]$context.secretName -or
+            $metadata.enabled -ne $true -or
+            [string]$metadata.contentType -cne 'application/x-pkcs12' -or
+            $tagNames.Count -ne 6 -or
+            @(@(
+                'managedBy', 'keyCredentialId', 'certificateThumbprint',
+                'automationApplicationId', 'bootstrapOwnershipId',
+                'bootstrapSourceFingerprint') | Where-Object {
+                    $tagNames -cnotcontains $_
+                }).Count -ne 0 -or
+            [string]$metadata.tags.managedBy -cne 'a365gw-bootstrap' -or
+            [string]$metadata.tags.automationApplicationId -cne [string]$context.automationApplicationId -or
+            [string]$metadata.tags.bootstrapOwnershipId -cne [string]$context.deploymentOwnershipId -or
+            [string]$metadata.tags.bootstrapSourceFingerprint -cne [string]$context.sourceFingerprint -or
+            -not [guid]::TryParse([string]$metadata.tags.keyCredentialId, [ref]$keyCredentialId) -or
+            [string]$metadata.tags.keyCredentialId -cne $keyCredentialId.ToString('D') -or
+            [string]$metadata.tags.certificateThumbprint -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'mismatch'
+        }
+        return [ordered]@{
+            status = 'Present'
+            secretResourceId = [string]$context.secretResourceId
+            secretUri = [string]$context.versionlessSecretUri
+            keyCredentialId = $keyCredentialId.ToString('D')
+            certificateThumbprint = [string]$metadata.tags.certificateThumbprint
+            automationApplicationId = [string]$context.automationApplicationId
+            deploymentOwnershipId = [string]$context.deploymentOwnershipId
+            sourceFingerprint = [string]$context.sourceFingerprint
+            contentType = 'application/x-pkcs12'
+        }
+    }
+    catch {
+        throw 'Purview automation certificate ARM metadata was malformed or mismatched.'
+    }
+}
+
+function Deploy-GatewayPurviewAutomationCertificateSecret {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$AutomationApplicationId,
+        [Parameter(Mandatory)][string]$KeyCredentialId,
+        [Parameter(Mandatory)][string]$CertificateThumbprint,
+        [Parameter(Mandatory)][string]$CertificateSecretText,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint
+    )
+
+    Assert-GuidValue -Value $KeyCredentialId -Label 'Purview automation certificate key credential ID'
+    if ($KeyCredentialId -cne ([guid]$KeyCredentialId).ToString('D') -or
+        $CertificateThumbprint -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]::IsNullOrEmpty($CertificateSecretText)) {
+        throw 'Purview automation certificate input metadata is invalid.'
+    }
+    $context = Get-GatewayPurviewAutomationCertificateContext `
+        -Config $Config `
+        -KeyVaultUri $KeyVaultUri `
+        -AutomationApplicationId $AutomationApplicationId `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -SourceFingerprint $SourceFingerprint
+    $root = Get-BootstrapExecutionSourceRoot
+    $relativeTemplate = 'bootstrap/infra/purview-automation-certificate.bicep'
+    Assert-BootstrapSourcePathIsRegular -Root $root -RelativePath $relativeTemplate | Out-Null
+    if ((Get-BootstrapSourceFingerprint -Root $root) -cne $SourceFingerprint) {
+        throw 'Purview automation certificate deployment source no longer matches the accepted snapshot.'
+    }
+    $parameters = [ordered]@{
+        keyVaultName = [string]$context.keyVaultName
+        keyCredentialId = ([guid]$KeyCredentialId).ToString('D')
+        certificateThumbprint = $CertificateThumbprint
+        automationApplicationId = [string]$context.automationApplicationId
+        deploymentOwnershipId = [string]$context.deploymentOwnershipId
+        bootstrapSourceFingerprint = [string]$context.sourceFingerprint
+        secretValue = $CertificateSecretText
+    }
+    try {
+        try {
+            $null = Invoke-ArmDeploymentWithSecureParameters `
+                -SubscriptionId ([string]$context.subscriptionId) `
+                -ResourceGroup ([string]$context.resourceGroupName) `
+                -Name "a365gw-$($Config.projectName)-purview-certificate-$($Config.environment)" `
+                -TemplateFile (Join-Path $root $relativeTemplate) `
+                -Parameters $parameters
+        }
+        catch {
+            # The exact management-plane metadata read below is the only recovery
+            # path for an unknown deployment response. The deployment is not replayed.
+        }
+        $metadata = Get-GatewayPurviewAutomationCertificateSecretArmMetadata `
+            -Config $Config `
+            -KeyVaultUri $KeyVaultUri `
+            -AutomationApplicationId $AutomationApplicationId `
+            -DeploymentOwnershipId $DeploymentOwnershipId `
+            -SourceFingerprint $SourceFingerprint
+        if ([string]$metadata.status -cne 'Present' -or
+            [string]$metadata.keyCredentialId -cne ([guid]$KeyCredentialId).ToString('D') -or
+            [string]$metadata.certificateThumbprint -cne $CertificateThumbprint) {
+            throw 'Purview automation certificate deployment returned an unknown outcome and exact metadata did not prove success. No deployment was repeated.'
+        }
+        return $metadata
+    }
+    finally {
+        if ($parameters) { $parameters.secretValue = $null }
+        $parameters = $null
+        $CertificateSecretText = $null
+    }
+}
+
 function Assert-GatewayRuntimeImagePullFoundationEvidence {
     param(
         [Parameter(Mandatory)]$Config,
@@ -1339,13 +1520,20 @@ function Get-GatewayInertPartialEnvironmentContract {
             'ProvisioningWorker__MaxConcurrentCalls' = '5'
             'ProvisioningWorker__ProcessingEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProcessingEnabled']
             'ProvisioningWorker__ProvisioningExecutionEnabled' = $booleanEnvironment.Worker['ProvisioningWorker__ProvisioningExecutionEnabled']
+            'ProtectionAdminWorker__ProcessingEnabled' = 'False'
+            'ProtectionAdminWorker__MaxConcurrentCalls' = '2'
+            'ProtectionAdminWorker__MaxDeliveryCount' = '10'
+            'ProtectionAdminWorker__MaximumPropagationAttempts' = '5'
+            'ProtectionAdminWorker__PropagationRetryDelaySeconds' = '30'
             'Purview__Enabled' = $booleanEnvironment.Worker['Purview__Enabled']
+            'PurviewRuntimeIdentity__ManagedIdentityClientId' = ''
+            'PurviewRuntimeIdentity__ManagedIdentityPrincipalObjectId' = ''
             'Purview__PolicyProvisioningEnabled' = $booleanEnvironment.Worker['Purview__PolicyProvisioningEnabled']
             'Purview__PolicyProvisioningOrganization' = [string]$Config.purview.policyProvisioningOrganization
             'Purview__PolicyProvisioningApplicationId' = [string]$Config.purview.policyProvisioningApplicationId
             'Purview__PolicyProvisioningCertificateSecretUri' = [string]$Config.purview.policyProvisioningCertificateSecretUri
-            'Purview__DefaultSensitiveInformationTypeId' = [string]$Config.purview.sensitiveInformationTypeId
-            'Purview__DefaultSensitiveInformationType' = [string]$Config.purview.sensitiveInformationType
+            'Purview__DefaultSensitiveInformationTypeId' = ''
+            'Purview__DefaultSensitiveInformationType' = ''
             'DOTNET_ENVIRONMENT' = 'Production'
         }
     }
@@ -1389,12 +1577,33 @@ function Get-GatewayInertPartialEnvironmentContract {
         'EntraId__ClientCredentials__0__SourceType' = 'SignedAssertionFromManagedIdentity'
         'EntraId__ClientCredentials__0__TokenExchangeUrl' = 'api://AzureADTokenExchange'
         'KeyVault__VaultUri' = "https://kv-$($Config.projectName)-$($Config.environment).vault.azure.net/"
+        'BootstrapCapabilities__Enabled' = 'false'
+        'BootstrapCapabilities__AttestedAtUtc' = ''
+        'BootstrapCapabilities__DeploymentOwnershipId' = ''
+        'BootstrapCapabilities__AcceptedSourceFingerprint' = ''
+        'BootstrapCapabilities__Agent365RegistrationBeta__Status' = ''
+        'BootstrapCapabilities__Agent365RegistrationBeta__Agent365RegistryApiApplicationId' = ''
+        'BootstrapCapabilities__PromptShields__Status' = ''
+        'BootstrapCapabilities__PromptShields__ContentSafetyAccountResourceId' = ''
+        'BootstrapCapabilities__PromptShields__ContentSafetyEndpoint' = ''
+        'BootstrapCapabilities__PromptShields__GatewayApiManagedIdentityPrincipalObjectId' = ''
+        'BootstrapCapabilities__Purview__Status' = ''
+        'BootstrapCapabilities__Purview__GatewayApiManagedIdentityPrincipalObjectId' = ''
+        'BootstrapCapabilities__Purview__PurviewRuntimeManagedIdentityPrincipalObjectId' = ''
+        'BootstrapCapabilities__Purview__PurviewAutomationApplicationId' = ''
+        'BootstrapCapabilities__Purview__PurviewAutomationServicePrincipalObjectId' = ''
+        'BootstrapCapabilities__Purview__KeyVaultResourceId' = ''
+        'BootstrapCapabilities__Purview__KeyVaultHost' = ''
+        'BootstrapCapabilities__Purview__CertificateName' = ''
+        'BootstrapCapabilities__Purview__CertificateSecretUri' = ''
         'Agent365__TenantId' = [string]$Config.tenantId
         'Agent365__DelegatedRegistry__Enabled' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__Enabled']
         'Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess' = $booleanEnvironment.Api['Agent365__DelegatedRegistry__AllowContinuousDevelopmentAccess']
         'Agent365__DelegatedRegistry__Scopes__0' = 'https://graph.microsoft.com/AgentRegistration.ReadWrite.All'
         'Agent365__DelegatedRegistry__Scopes__1' = 'https://graph.microsoft.com/AgentRegistration.Read.All'
         'Purview__Enabled' = $booleanEnvironment.Api['Purview__Enabled']
+        'PurviewRuntimeIdentity__ManagedIdentityClientId' = ''
+        'PurviewRuntimeIdentity__ManagedIdentityPrincipalObjectId' = ''
         'PromptShield__Enabled' = $booleanEnvironment.Api['PromptShield__Enabled']
         'PromptShield__Endpoint' = $promptShieldEndpoint
         'PromptShield__ApiVersion' = '2024-09-01'
@@ -1460,8 +1669,12 @@ function New-GatewayCoreEvidence {
         @('storageBlobPrivateEndpointId', 'storageBlobPrivateEndpointId'),
         @('storageBlobPrivateDnsZoneId', 'storageBlobPrivateDnsZoneId'),
         @('sqlServerFqdn', 'sqlServerFqdn'), @('serviceBusQueueName', 'serviceBusQueueName'), @('serviceBusQueueId', 'serviceBusQueueId'),
+        @('protectionAdminQueueName', 'protectionAdminQueueName'), @('protectionAdminQueueId', 'protectionAdminQueueId'),
         @('promptShieldEndpoint', 'promptShieldEndpoint'),
         @('promptShieldAccountId', 'promptShieldAccountId'), @('promptShieldAccountName', 'promptShieldAccountName'),
+        @('purviewRuntimeIdentityResourceId', 'purviewRuntimeIdentityResourceId'),
+        @('purviewRuntimeIdentityClientId', 'purviewRuntimeIdentityClientId'),
+        @('purviewRuntimeIdentityPrincipalId', 'purviewRuntimeIdentityPrincipalId'),
         @('databaseAttestationExpectedSchemaFingerprint', 'databaseAttestationExpectedSchemaFingerprint'),
         @('databaseAttestationApiPrincipalName', 'databaseAttestationApiPrincipalName'),
         @('databaseAttestationApiPrincipalClientId', 'databaseAttestationApiPrincipalClientId'),
@@ -1471,6 +1684,7 @@ function New-GatewayCoreEvidence {
     )) { $evidence[$mapping[1]] = [string](Get-GatewayCoreOutputValue -Outputs $Outputs -Name $mapping[0]) }
     foreach ($mapping in @(
         @('provisioningExecutionEnabled', 'provisioningExecutionEnabled'),
+        @('protectionAdminProcessingEnabled', 'protectionAdminProcessingEnabled'),
         @('workerProcessingEnabled', 'workerProcessingEnabled'),
         @('databaseAttestationEnabled', 'databaseAttestationEnabled')
     )) { $evidence[$mapping[1]] = [bool](Get-GatewayCoreOutputValue -Outputs $Outputs -Name $mapping[0]) }
@@ -1480,6 +1694,39 @@ function New-GatewayCoreEvidence {
             throw 'A recovered Container App system principal drifted across the same-name ARM retry.'
         }
     }
+    $rawOutputCapabilities = Get-GatewayCoreOutputValue -Outputs $Outputs -Name 'bootstrapCapabilities'
+    $outputCapabilities = [ordered]@{
+        enabled = [bool]$rawOutputCapabilities.enabled
+        readbackAtUtc = [string]$rawOutputCapabilities.readbackAtUtc
+        deploymentOwnershipId = [string]$rawOutputCapabilities.deploymentOwnershipId
+        sourceFingerprint = [string]$rawOutputCapabilities.sourceFingerprint
+        agent365RegistrationBeta = [ordered]@{
+            status = [string]$rawOutputCapabilities.agent365RegistrationBeta.status
+            registryApiApplicationId = [string]$rawOutputCapabilities.agent365RegistrationBeta.registryApiApplicationId
+        }
+        promptShields = [ordered]@{
+            status = [string]$rawOutputCapabilities.promptShields.status
+            contentSafetyAccountResourceId = [string]$rawOutputCapabilities.promptShields.contentSafetyAccountResourceId
+            contentSafetyEndpoint = [string]$rawOutputCapabilities.promptShields.contentSafetyEndpoint
+            gatewayApiManagedIdentityPrincipalObjectId = [string]$rawOutputCapabilities.promptShields.gatewayApiManagedIdentityPrincipalObjectId
+        }
+        purview = [ordered]@{
+            status = [string]$rawOutputCapabilities.purview.status
+            gatewayApiManagedIdentityPrincipalObjectId = [string]$rawOutputCapabilities.purview.gatewayApiManagedIdentityPrincipalObjectId
+            purviewRuntimeManagedIdentityPrincipalObjectId = [string]$rawOutputCapabilities.purview.purviewRuntimeManagedIdentityPrincipalObjectId
+            automationApplicationId = [string]$rawOutputCapabilities.purview.automationApplicationId
+            automationServicePrincipalObjectId = [string]$rawOutputCapabilities.purview.automationServicePrincipalObjectId
+            keyVaultResourceId = [string]$rawOutputCapabilities.purview.keyVaultResourceId
+            keyVaultHost = [string]$rawOutputCapabilities.purview.keyVaultHost
+            certificateName = [string]$rawOutputCapabilities.purview.certificateName
+            certificateSecretUri = [string]$rawOutputCapabilities.purview.certificateSecretUri
+        }
+    }
+    if ((Get-BootstrapObjectFingerprint -InputObject $outputCapabilities) -cne
+        (Get-BootstrapObjectFingerprint -InputObject $Parameters.bootstrapCapabilities)) {
+        throw 'The workload deployment did not echo the exact bootstrap capability evidence.'
+    }
+    $evidence.bootstrapCapabilities = $outputCapabilities
     if ($RetryReceipts.Count -gt 0) { $evidence.terminalDeploymentRetryReceipts = @($RetryReceipts) }
     if ($ObservedPartialPrincipalIds.Count -gt 0) { $evidence.observedPartialPrincipalIds = $ObservedPartialPrincipalIds }
     return $evidence
@@ -1721,6 +1968,8 @@ function Deploy-GatewayCore {
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
         [Parameter()]$Database,
+        [Parameter()][AllowNull()]$PurviewAutomation,
+        [Parameter()][AllowNull()]$CapabilityEvidence,
         [Parameter()][string]$AdminUiImage = '',
         [Parameter()][string]$AdminUiClientId = '',
         [Parameter()][string]$AdminUiSecretUri = '',
@@ -1790,6 +2039,8 @@ function Deploy-GatewayCore {
             throw 'Initial inert deployment requires empty worker and managerApplications authority inputs.'
         }
         if ($null -ne $Database -or
+            $null -ne $PurviewAutomation -or
+            $null -ne $CapabilityEvidence -or
             $EnableWorkerProcessing -or $EnableProvisioning -or $EnablePurview -or
             -not [string]::IsNullOrEmpty($AdminUiImage) -or
             -not [string]::IsNullOrEmpty($AdminUiClientId) -or
@@ -1830,8 +2081,16 @@ function Deploy-GatewayCore {
         Assert-GuidValue -Value ([string]$Database.apiPrincipalClientId) -Label 'Gateway API database-principal client ID'
         Assert-GuidValue -Value ([string]$Database.workerPrincipalClientId) -Label 'Gateway worker database-principal client ID'
     }
-    if ($EnablePurview -and $Config.purview.policyProvisioningEnabled -eq $true) {
-        $configuredVaultHost = ([Uri][string]$Config.purview.policyProvisioningCertificateSecretUri).Host
+    if ($EnablePurview) {
+        if ($PurviewAutomation -isnot [System.Collections.IDictionary] -or
+            [string]$PurviewAutomation.status -cne 'Installed' -or
+            [string]$PurviewAutomation.policyConfiguration -cne 'NotPerformed' -or
+            [string]$PurviewAutomation.policyReadiness -cne 'NotClaimed' -or
+            [string]$PurviewAutomation.deploymentOwnershipId -cne $canonicalOwnershipId -or
+            [string]$PurviewAutomation.sourceFingerprint -cne $SourceFingerprint) {
+            throw 'Purview runtime deployment requires exact capability-only automation identity evidence.'
+        }
+        $configuredVaultHost = ([Uri][string]$PurviewAutomation.certificateSecretUri).Host
         # The bootstrap foundation precedes the workload deployment that creates
         # Key Vault, so its evidence intentionally has no keyVaultUri output. The
         # shared vault name is nevertheless deterministic in the reviewed Bicep.
@@ -1839,6 +2098,124 @@ function Deploy-GatewayCore {
         if (-not $configuredVaultHost.Equals($gatewayVaultHost, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Purview policy automation certificate must be stored in the Gateway shared Key Vault '$gatewayVaultHost' so the worker's read-only role remains narrowly scoped."
         }
+    }
+    $bootstrapCapabilities = if ($Initial) {
+        [ordered]@{
+            enabled = $false
+            readbackAtUtc = ''
+            deploymentOwnershipId = ''
+            sourceFingerprint = ''
+            agent365RegistrationBeta = [ordered]@{
+                status = ''
+                registryApiApplicationId = ''
+            }
+            promptShields = [ordered]@{
+                status = ''
+                contentSafetyAccountResourceId = ''
+                contentSafetyEndpoint = ''
+                gatewayApiManagedIdentityPrincipalObjectId = ''
+            }
+            purview = [ordered]@{
+                status = ''
+                gatewayApiManagedIdentityPrincipalObjectId = ''
+                purviewRuntimeManagedIdentityPrincipalObjectId = ''
+                automationApplicationId = ''
+                automationServicePrincipalObjectId = ''
+                keyVaultResourceId = ''
+                keyVaultHost = ''
+                certificateName = ''
+                certificateSecretUri = ''
+            }
+        }
+    }
+    else {
+        $expectedRootKeys = 'agent365RegistrationBeta|deploymentOwnershipId|enabled|promptShields|purview|readbackAtUtc|sourceFingerprint'
+        $expectedAgentKeys = 'registryApiApplicationId|status'
+        $expectedPromptKeys = 'contentSafetyAccountResourceId|contentSafetyEndpoint|gatewayApiManagedIdentityPrincipalObjectId|status'
+        $expectedPurviewKeys = 'automationApplicationId|automationServicePrincipalObjectId|certificateName|certificateSecretUri|gatewayApiManagedIdentityPrincipalObjectId|keyVaultHost|keyVaultResourceId|purviewRuntimeManagedIdentityPrincipalObjectId|status'
+        $readbackAt = [DateTimeOffset]::MinValue
+        $expectedAgentStatus = if ([string]$Config.environment -ceq 'dev' -and
+            $Config.agent365.allowDevelopmentRegistryPreview -eq $true) { 'Installed' } else { 'NotInstalled' }
+        $expectedPromptStatus = if ($Config.promptShield.enabled -eq $true) { 'Installed' } else { 'NotInstalled' }
+        $expectedPurviewStatus = if ($Config.purview.enabled -eq $true) { 'Installed' } else { 'NotInstalled' }
+        $capabilityMismatches = [Collections.Generic.List[string]]::new()
+        if ($CapabilityEvidence -isnot [System.Collections.IDictionary]) {
+            $capabilityMismatches.Add('root type')
+        }
+        else {
+            if ((($CapabilityEvidence.Keys | Sort-Object -CaseSensitive) -join '|') -cne $expectedRootKeys) {
+                $capabilityMismatches.Add('root keys')
+            }
+            if ($CapabilityEvidence.agent365RegistrationBeta -isnot [System.Collections.IDictionary] -or
+                (($CapabilityEvidence.agent365RegistrationBeta.Keys | Sort-Object -CaseSensitive) -join '|') -cne $expectedAgentKeys) {
+                $capabilityMismatches.Add('Agent 365 keys')
+            }
+            if ($CapabilityEvidence.promptShields -isnot [System.Collections.IDictionary] -or
+                (($CapabilityEvidence.promptShields.Keys | Sort-Object -CaseSensitive) -join '|') -cne $expectedPromptKeys) {
+                $capabilityMismatches.Add('Prompt Shields keys')
+            }
+            if ($CapabilityEvidence.purview -isnot [System.Collections.IDictionary] -or
+                (($CapabilityEvidence.purview.Keys | Sort-Object -CaseSensitive) -join '|') -cne $expectedPurviewKeys) {
+                $capabilityMismatches.Add('Purview keys')
+            }
+            if ($CapabilityEvidence.enabled -ne $true) { $capabilityMismatches.Add('enabled') }
+            if (-not [DateTimeOffset]::TryParseExact(
+                    [string]$CapabilityEvidence.readbackAtUtc,
+                    'O',
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::RoundtripKind,
+                    [ref]$readbackAt) -or
+                $readbackAt.Offset -ne [TimeSpan]::Zero) {
+                $capabilityMismatches.Add('readback timestamp')
+            }
+            if ([string]$CapabilityEvidence.deploymentOwnershipId -cne $canonicalOwnershipId) { $capabilityMismatches.Add('ownership') }
+            if ([string]$CapabilityEvidence.sourceFingerprint -cne $SourceFingerprint) { $capabilityMismatches.Add('source') }
+            if ([string]$CapabilityEvidence.agent365RegistrationBeta.status -cne $expectedAgentStatus) { $capabilityMismatches.Add('Agent 365 status') }
+            if ([string]$CapabilityEvidence.promptShields.status -cne $expectedPromptStatus) { $capabilityMismatches.Add('Prompt Shields status') }
+            if ([string]$CapabilityEvidence.purview.status -cne $expectedPurviewStatus) { $capabilityMismatches.Add('Purview status') }
+            if ([string]$CapabilityEvidence.purview.purviewRuntimeManagedIdentityPrincipalObjectId -notin @('', [string]$Foundation.runtimeImagePullIdentityPrincipalId)) {
+                $capabilityMismatches.Add('Purview runtime identity')
+            }
+            if ([string]$CapabilityEvidence.agent365RegistrationBeta.registryApiApplicationId -notin @('', [string]$Identity.gatewayApiClientId)) {
+                $capabilityMismatches.Add('Agent 365 application')
+            }
+        }
+        if ($capabilityMismatches.Count -ne 0) {
+            throw "Runtime deployment requires one exact bootstrap capability evidence snapshot: $($capabilityMismatches -join ', ')."
+        }
+        foreach ($capability in @(
+            [ordered]@{
+                installed = $expectedAgentStatus -ceq 'Installed'
+                values = @([string]$CapabilityEvidence.agent365RegistrationBeta.registryApiApplicationId)
+            },
+            [ordered]@{
+                installed = $expectedPromptStatus -ceq 'Installed'
+                values = @(
+                    [string]$CapabilityEvidence.promptShields.contentSafetyAccountResourceId,
+                    [string]$CapabilityEvidence.promptShields.contentSafetyEndpoint,
+                    [string]$CapabilityEvidence.promptShields.gatewayApiManagedIdentityPrincipalObjectId
+                )
+            },
+            [ordered]@{
+                installed = $expectedPurviewStatus -ceq 'Installed'
+                values = @(
+                    [string]$CapabilityEvidence.purview.gatewayApiManagedIdentityPrincipalObjectId,
+                    [string]$CapabilityEvidence.purview.purviewRuntimeManagedIdentityPrincipalObjectId,
+                    [string]$CapabilityEvidence.purview.automationApplicationId,
+                    [string]$CapabilityEvidence.purview.automationServicePrincipalObjectId,
+                    [string]$CapabilityEvidence.purview.keyVaultResourceId,
+                    [string]$CapabilityEvidence.purview.keyVaultHost,
+                    [string]$CapabilityEvidence.purview.certificateName,
+                    [string]$CapabilityEvidence.purview.certificateSecretUri
+                )
+            }
+        )) {
+            if (($capability.installed -and @($capability.values | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) -or
+                (-not $capability.installed -and @($capability.values | Where-Object { -not [string]::IsNullOrEmpty($_) }).Count -ne 0)) {
+                throw 'Runtime deployment requires one exact bootstrap capability evidence snapshot.'
+            }
+        }
+        $CapabilityEvidence
     }
     $enablePreview = $EnableProvisioning -and [string]$Config.environment -eq 'dev' -and $Config.agent365.allowDevelopmentRegistryPreview -eq $true
     $parameters = [ordered]@{
@@ -1862,6 +2239,7 @@ function Deploy-GatewayCore {
         entraIdTenantId = [string]$Config.tenantId
         entraIdClientId = [string]$Identity.gatewayApiClientId
         entraIdAudience = [string]$Identity.gatewayApiTokenAudience
+        bootstrapCapabilities = $bootstrapCapabilities
         entraAdminObjectId = [string]$Identity.userObjectId
         entraAdminLogin = [string]$Identity.userPrincipalName
         apiContainerImage = $ApiImage
@@ -1880,12 +2258,12 @@ function Deploy-GatewayCore {
         purviewEnabled = [bool]$EnablePurview
         promptShieldEnabled = [bool]$Config.promptShield.enabled
         promptShieldSkuName = [string]$Config.promptShield.skuName
-        purviewPolicyProvisioningEnabled = [bool]($EnablePurview -and $Config.purview.policyProvisioningEnabled -eq $true)
-        purviewPolicyProvisioningOrganization = [string]$Config.purview.policyProvisioningOrganization
-        purviewPolicyProvisioningApplicationId = [string]$Config.purview.policyProvisioningApplicationId
-        purviewPolicyProvisioningCertificateSecretUri = [string]$Config.purview.policyProvisioningCertificateSecretUri
-        purviewDefaultSensitiveInformationTypeId = [string]$Config.purview.sensitiveInformationTypeId
-        purviewDefaultSensitiveInformationType = [string]$Config.purview.sensitiveInformationType
+        purviewPolicyProvisioningEnabled = [bool]$EnablePurview
+        purviewPolicyProvisioningOrganization = if ($EnablePurview) { [string]$PurviewAutomation.organization } else { '' }
+        purviewPolicyProvisioningApplicationId = if ($EnablePurview) { [string]$PurviewAutomation.automationApplicationId } else { '' }
+        purviewPolicyProvisioningCertificateSecretUri = if ($EnablePurview) { [string]$PurviewAutomation.certificateSecretUri } else { '' }
+        purviewDefaultSensitiveInformationTypeId = ''
+        purviewDefaultSensitiveInformationType = ''
         deployAdminUi = -not [string]::IsNullOrWhiteSpace($AdminUiImage)
         adminUiContainerImage = $AdminUiImage
         adminUiEntraClientId = $AdminUiClientId
@@ -1898,6 +2276,7 @@ function Deploy-GatewayCore {
         sqlSkuTier = [string]$Config.sql.skuTier
         serviceBusSku = 'Basic'
         serviceBusQueueName = 'gateway-provisioning-v3'
+        protectionAdminQueueName = 'gateway-protection-admin-v1'
         storageSku = 'Standard_LRS'
         apiCpu = '0.5'
         apiMemory = '1Gi'

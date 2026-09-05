@@ -14,6 +14,7 @@ RUN dotnet restore "src/Gateway.AdminUi/Gateway.AdminUi.csproj" --configfile nug
 
 COPY ["src/Gateway.AdminUi/", "src/Gateway.AdminUi/"]
 COPY ["src/Gateway.Contracts/", "src/Gateway.Contracts/"]
+COPY ["src/Gateway.Purview/Automation/Connect-PurviewTenant.ps1", "src/Gateway.Purview/Automation/"]
 WORKDIR "/src/src/Gateway.AdminUi"
 RUN dotnet publish "Gateway.AdminUi.csproj" \
     --configuration "$BUILD_CONFIGURATION" \
@@ -21,7 +22,8 @@ RUN dotnet publish "Gateway.AdminUi.csproj" \
     --output /app/publish \
     /p:UseAppHost=false
 RUN test -s /app/publish/wwwroot/_framework/blazor.web.js \
-    && test -s /app/publish/Gateway.AdminUi.staticwebassets.endpoints.json
+    && test -s /app/publish/Gateway.AdminUi.staticwebassets.endpoints.json \
+    && test -s /app/publish/wwwroot/downloads/Connect-PurviewTenant.ps1
 
 FROM mcr.microsoft.com/dotnet/aspnet:${ASPNET_RUNTIME_VERSION} AS final
 WORKDIR /app

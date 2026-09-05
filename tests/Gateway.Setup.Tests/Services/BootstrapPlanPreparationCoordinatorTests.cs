@@ -106,7 +106,7 @@ public sealed class BootstrapPlanPreparationCoordinatorTests : IDisposable
     }
 
     [Fact]
-    public async Task PurviewProofInvalidatedAfterSnapshot_PreservesCanonicalAndDoesNotLaunchPlan()
+    public async Task CapabilityAcknowledgementInvalidatedAfterSnapshot_PreservesCanonicalAndDoesNotLaunchPlan()
     {
         Directory.CreateDirectory(Path.Combine(root, "bootstrap"));
         var atomicWriter = new BlockingAtomicFileWriter();
@@ -116,15 +116,14 @@ public sealed class BootstrapPlanPreparationCoordinatorTests : IDisposable
         var preparation = CreatePreparation(atomicWriter, execution);
         var form = ValidForm("gwpurv", "koreacentral");
         form.PurviewEnabled = true;
-        form.PurviewSensitiveInformationTypeId = Guid.NewGuid();
-        form.PurviewSensitiveInformationType = "주민등록번호";
+        form.PurviewAuthorityRequirementsAcknowledged = true;
         var state = ReadyState(form);
 
         var preparationTask = preparation.TryPrepareAndStartAsync(
             state,
             explicitlyConfirmed: true);
         await atomicWriter.WaitUntilEnteredAsync();
-        state.BeginPurviewSensitiveInformationTypeDiscovery();
+        state.Form.PurviewAuthorityRequirementsAcknowledged = false;
         atomicWriter.Release();
 
         var result = await preparationTask;
@@ -279,19 +278,6 @@ public sealed class BootstrapPlanPreparationCoordinatorTests : IDisposable
             form.SubscriptionId,
             [new AzureLocation(form.Location, "Selected region")],
             null));
-        if (form.PurviewEnabled)
-        {
-            state.ApplyPurviewSensitiveInformationTypeDiscovery(new(
-                form.SubscriptionId,
-                form.TenantId,
-                [new PurviewSensitiveInformationType(
-                    form.PurviewSensitiveInformationTypeId,
-                    form.PurviewSensitiveInformationType,
-                    "Test publisher")],
-                PurviewSensitiveInformationTypeDiscovery.Provenance,
-                null));
-        }
-
         return state;
     }
 
@@ -307,11 +293,11 @@ public sealed class BootstrapPlanPreparationCoordinatorTests : IDisposable
         AlertEmail = "operator@example.com",
         SeedBlueprintName = $"A365 Gateway {projectName} dev",
         ReviewedManagerApplicationIds = "33333333-3333-4333-8333-333333333333",
+        CapabilityPreset = CapabilityPreset.Custom,
+        AllowDevelopmentRegistryPreview = false,
         PromptShieldEnabled = false,
         PromptShieldSkuName = "F0",
-        PurviewEnabled = false,
-        PurviewSensitiveInformationTypeId = Guid.Empty,
-        PurviewSensitiveInformationType = string.Empty
+        PurviewEnabled = false
     };
 
     public void Dispose()

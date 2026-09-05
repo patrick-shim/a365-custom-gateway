@@ -6,6 +6,7 @@ using FluentAssertions;
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Requests;
 using Gateway.Contracts.Responses;
+using Gateway.ContentSafety;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
@@ -13,7 +14,10 @@ using Gateway.Domain.Models;
 using Gateway.Domain.ValueObjects;
 using Gateway.EndToEndTests.Fixtures;
 using Gateway.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 
 namespace Gateway.EndToEndTests;
@@ -29,16 +33,107 @@ public sealed class PromptEvaluationTests : IDisposable
     private readonly GatewayWebApplicationFactory _factory;
     private readonly HttpClient _client;
 
-    public PromptEvaluationTests(GatewayWebApplicationFactory factory)
+    public PromptEvaluationTests()
     {
-        _factory = factory;
-        _client = factory.CreateAuthenticatedClient();
+        _factory = new PromptGatewayWebApplicationFactory();
+        _client = _factory.CreateAuthenticatedClient();
     }
 
     public void Dispose()
     {
         _client.Dispose();
+        _factory.Dispose();
         TestAuthHandler.Reset();
+    }
+
+    [Fact]
+    public async Task MissingAttestation_ShouldFailBeforePromptProviderCall()
+    {
+        const string externalAgentId = "prompt-shield-missing-attestation-agent";
+        var apiKey = await SetupProtectedAgentAsync(externalAgentId);
+        UseGatewayCredential(apiKey);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<GatewayDbContext>();
+            var capability = db.ProtectionCapabilities.Single(item =>
+                item.Kind == ProtectionCapabilityKind.PromptShields);
+            capability.ResourceIdentifiers = new ProtectionCapabilityResourceIdentifiers();
+            await db.SaveChangesAsync();
+        }
+        using var request = CreateEvaluationRequest(externalAgentId, "missing-attestation", "safe test prompt");
+
+        using var response = await _client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        problem.RootElement.GetProperty("errorCode").GetString().Should().Be("PROTECTION_CAPABILITY_UNAVAILABLE");
+        await _factory.MockPromptShieldClient.DidNotReceiveWithAnyArgs()
+            .EvaluateAsync(default!, default!, default);
+    }
+
+    [Theory]
+    [InlineData("disabled")]
+    [InlineData("endpoint")]
+    public async Task RuntimeDrift_ReportsIneffectiveAndStopsBeforePromptProvider(string drift)
+    {
+        const string externalAgentId = "prompt-shield-runtime-drift-agent";
+        var apiKey = await SetupProtectedAgentAsync(externalAgentId);
+        Guid agentId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<GatewayDbContext>();
+            agentId = db.AgentRegistrations.Single(agent => agent.ExternalAgentId == new ExternalAgentId(externalAgentId)).Id;
+        }
+        var before = await _client.GetFromJsonAsync<AgentDetailDto>($"/api/v1/agents/{agentId:D}", JsonOptions);
+        before!.Features!.PromptShieldEffectivelyEnabled.Should().BeTrue();
+        var runtime = _factory.Services.GetRequiredService<IOptions<PromptShieldOptions>>().Value;
+        if (drift == "disabled")
+            runtime.Enabled = false;
+        else
+            runtime.Endpoint = "https://different.cognitiveservices.azure.com/";
+
+        var after = await _client.GetFromJsonAsync<AgentDetailDto>($"/api/v1/agents/{agentId:D}", JsonOptions);
+
+        after!.Features!.PromptShieldEnabled.Should().BeTrue();
+        after.Features.PromptShieldEffectivelyEnabled.Should().BeFalse();
+        UseGatewayCredential(apiKey);
+        using var request = CreateEvaluationRequest(externalAgentId, "runtime-drift", "safe test prompt");
+        using var response = await _client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        problem.RootElement.GetProperty("errorCode").GetString().Should().Be("PROTECTION_CAPABILITY_UNAVAILABLE");
+        await _factory.MockPromptShieldClient.DidNotReceiveWithAnyArgs().EvaluateAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task InstalledCapabilityWithDisabledRuntimeAtStartup_IsIneffectiveAndCannotEvaluate()
+    {
+        using var baseFactory = new PromptGatewayWebApplicationFactory();
+        using var factory = baseFactory.WithWebHostBuilder(builder =>
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
+                new Dictionary<string, string?> { ["PromptShield:Enabled"] = "false" })));
+        using var client = factory.CreateClient();
+        const string externalAgentId = "prompt-shield-startup-disabled-agent";
+        var apiKey = await SetupProtectedAgentAsync(externalAgentId, factory.Services);
+        Guid agentId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<GatewayDbContext>();
+            agentId = db.AgentRegistrations.Single(agent => agent.ExternalAgentId == new ExternalAgentId(externalAgentId)).Id;
+            db.ProtectionCapabilities.Single(item => item.Kind == ProtectionCapabilityKind.PromptShields)
+                .Status.Should().Be(ProtectionCapabilityStatus.Installed);
+        }
+        factory.Services.GetRequiredService<IOptions<PromptShieldOptions>>().Value.Enabled.Should().BeFalse();
+
+        var details = await client.GetFromJsonAsync<AgentDetailDto>($"/api/v1/agents/{agentId:D}", JsonOptions);
+
+        details!.Features!.PromptShieldEnabled.Should().BeTrue();
+        details.Features.PromptShieldEffectivelyEnabled.Should().BeFalse();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        using var request = CreateEvaluationRequest(externalAgentId, "startup-disabled", "safe test prompt");
+        using var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        await baseFactory.MockPromptShieldClient.DidNotReceiveWithAnyArgs().EvaluateAsync(default!, default!, default);
     }
 
     [Fact]
@@ -175,9 +270,9 @@ public sealed class PromptEvaluationTests : IDisposable
         return request;
     }
 
-    private async Task<string> SetupProtectedAgentAsync(string externalAgentId)
+    private async Task<string> SetupProtectedAgentAsync(string externalAgentId, IServiceProvider? services = null)
     {
-        using var scope = _factory.Services.CreateScope();
+        using var scope = (services ?? _factory.Services).CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<GatewayDbContext>();
         var agent = new AgentRegistration
         {
@@ -212,5 +307,29 @@ public sealed class PromptEvaluationTests : IDisposable
     private void UseGatewayCredential(string apiKey)
     {
         _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+    }
+
+    private sealed class PromptGatewayWebApplicationFactory : GatewayWebApplicationFactory
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["PromptShield:Enabled"] = "true",
+                    ["PromptShield:Endpoint"] = "https://content-safety.cognitiveservices.azure.com/",
+                    ["BootstrapCapabilities:Enabled"] = "true",
+                    ["BootstrapCapabilities:DeploymentOwnershipId"] = "11111111-1111-4111-8111-111111111111",
+                    ["BootstrapCapabilities:AcceptedSourceFingerprint"] = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    ["BootstrapCapabilities:AttestedAtUtc"] = DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O"),
+                    ["BootstrapCapabilities:Agent365RegistrationBeta:Status"] = "NotInstalled",
+                    ["BootstrapCapabilities:Purview:Status"] = "NotInstalled",
+                    ["BootstrapCapabilities:PromptShields:Status"] = "Installed",
+                    ["BootstrapCapabilities:PromptShields:ContentSafetyAccountResourceId"] = "/subscriptions/44444444-4444-4444-8444-444444444444/resourceGroups/gateway-rg/providers/Microsoft.CognitiveServices/accounts/content-safety",
+                    ["BootstrapCapabilities:PromptShields:ContentSafetyEndpoint"] = "https://content-safety.cognitiveservices.azure.com/",
+                    ["BootstrapCapabilities:PromptShields:GatewayApiManagedIdentityPrincipalObjectId"] = "22222222-2222-4222-8222-222222222222"
+                }));
+        }
     }
 }

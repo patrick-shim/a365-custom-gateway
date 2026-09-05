@@ -50,10 +50,10 @@ param databaseAttestationWorkerPrincipalClientId string = ''
 @minLength(1)
 param containerAppsEnvironmentName string
 
-@description('Exact resource ID of the foundation-owned user-assigned identity used by API and worker for ACR image pulls. The all-empty value set is retained only for the guarded historical system-identity deployment path.')
+@description('Exact resource ID of the foundation-owned workload identity used by API and worker for ACR image pulls and, when selected, API Purview runtime tokens. The all-empty value set is retained only for the guarded historical system-identity deployment path.')
 param runtimeImagePullIdentityId string = ''
 
-@description('Exact principal ID of the foundation-owned runtime image-pull identity.')
+@description('Exact principal ID of the foundation-owned shared runtime workload identity.')
 param runtimeImagePullIdentityPrincipalId string = ''
 
 @description('Exact resource ID of the foundation-created AcrPull assignment for the runtime image-pull identity and ACR.')
@@ -78,6 +78,35 @@ param entraIdClientId string
 
 @description('Bare Gateway API client ID required by the Microsoft identity platform v2 aud claim.')
 param entraIdAudience string
+
+@description('Strict non-secret bootstrap capability evidence supplied only from the accepted bootstrap readback checkpoint.')
+param bootstrapCapabilities object = {
+  enabled: false
+  readbackAtUtc: ''
+  deploymentOwnershipId: ''
+  sourceFingerprint: ''
+  agent365RegistrationBeta: {
+    status: ''
+    registryApiApplicationId: ''
+  }
+  promptShields: {
+    status: ''
+    contentSafetyAccountResourceId: ''
+    contentSafetyEndpoint: ''
+    gatewayApiManagedIdentityPrincipalObjectId: ''
+  }
+  purview: {
+    status: ''
+    gatewayApiManagedIdentityPrincipalObjectId: ''
+    purviewRuntimeManagedIdentityPrincipalObjectId: ''
+    automationApplicationId: ''
+    automationServicePrincipalObjectId: ''
+    keyVaultResourceId: ''
+    keyVaultHost: ''
+    certificateName: ''
+    certificateSecretUri: ''
+  }
+}
 
 @description('Entra ID object ID for the SQL AD administrator.')
 param entraAdminObjectId string
@@ -122,7 +151,7 @@ param agent365ManagerApplicationsPreflightConfirmed bool = false
 @maxLength(10)
 param agent365ManagerApplicationIds array = []
 
-@description('Enable the Microsoft Purview Graph adapter only after tenant licensing, policy readback, token roles, and approved runtime verification succeed.')
+@description('Install Microsoft Purview API and Settings administration capability wiring. This does not enable a registration or claim policy/runtime readiness.')
 param purviewEnabled bool = false
 
 @description('Provision and enable Azure AI Content Safety Prompt Shields for synchronous prompt evaluation.')
@@ -135,7 +164,7 @@ param promptShieldEnabled bool = false
 @description('Azure AI Content Safety SKU. Use S0 for normal deployments; F0 is development-only and subject to availability.')
 param promptShieldSkuName string = 'S0'
 
-@description('Enable automated Purview policy assignment: fixed tenant-wide Know Your Data Group plus blueprint-specific Individual DLP locations. Requires the reviewed app-only Security & Compliance PowerShell identity.')
+@description('Enable the Settings-owned Purview administration worker with the reviewed app-only Security & Compliance identity. Bootstrap itself never authors policy.')
 param purviewPolicyProvisioningEnabled bool = false
 
 @description('Microsoft 365 organization domain used by Purview policy automation.')
@@ -189,6 +218,9 @@ param serviceBusSku string = 'Basic'
 
 @description('Service Bus queue used exclusively by the current N:N workflow. Keep historical workers on their legacy queue during a blue/green cutover.')
 param serviceBusQueueName string = 'gateway-provisioning-v3'
+
+@description('Dedicated queue for Settings-owned protection administration operations.')
+param protectionAdminQueueName string = 'gateway-protection-admin-v1'
 
 @description('Storage account SKU.')
 param storageSku string = 'Standard_LRS'
@@ -295,6 +327,7 @@ var bootstrapOwnedDeployment = !empty(deploymentOwnershipId) || !empty(bootstrap
 var runtimeImagePullAcrRoleAssignmentPrefix = '${toLower(acr.outputs.registryId)}/providers/microsoft.authorization/roleassignments/'
 var runtimeImagesAreDeploymentAcrDigests = startsWith(toLower(apiContainerImage), '${toLower(acr.outputs.loginServer)}/') && contains(toLower(apiContainerImage), '@sha256:') && length(last(split(toLower(apiContainerImage), '@sha256:'))) == 64 && startsWith(toLower(workerContainerImage), '${toLower(acr.outputs.loginServer)}/') && contains(toLower(workerContainerImage), '@sha256:') && length(last(split(toLower(workerContainerImage), '@sha256:'))) == 64
 var runtimeImagePullIdentityInputsAreTyped = runtimeImagePullIdentityInputsArePopulated && contains(toLower(runtimeImagePullIdentityId), '/providers/microsoft.managedidentity/userassignedidentities/') && startsWith(toLower(runtimeImagePullAcrPullRoleAssignmentId), runtimeImagePullAcrRoleAssignmentPrefix) && length(last(split(runtimeImagePullAcrPullRoleAssignmentId, '/'))) == 36 && length(runtimeImagePullIdentityPrincipalId) == 36 && runtimeImagesAreDeploymentAcrDigests
+var purviewRuntimeIdentityConfigured = purviewEnabled && runtimeImagePullIdentityInputsArePopulated
 var runtimeImagePullContractMode = runtimeImagePullIdentityInputsAreEmpty && allowLegacySystemAssignedImagePull && !bootstrapOwnedDeployment && runtimeImagesAreDeploymentAcrDigests
   ? 'LegacySystemAssignedIdentity'
   : runtimeImagePullIdentityInputsAreTyped
@@ -307,6 +340,7 @@ var runtimeImagePullContractMode = runtimeImagePullIdentityInputsAreEmpty && all
 var effectiveDelegatedRegistryEnabled = environment == 'dev' && agent365DelegatedRegistryEnabled
 var effectiveWorkerProvisioningExecutionEnabled = provisioningExecutionEnabled && environment == 'dev' && workerProcessingEnabled && !empty(entraIdClientId) && !empty(agent365ProvisioningManagedIdentityPrincipalId) && length(agent365ManagerApplicationIds) > 0 && effectiveDelegatedRegistryEnabled && agent365ManagerApplicationsPreflightConfirmed
 var effectiveContinuousDevelopmentProvisioningEnabled = effectiveWorkerProvisioningExecutionEnabled && continuousDevelopmentProvisioningEnabled
+var effectiveProtectionAdminProcessingEnabled = purviewEnabled && workerProcessingEnabled && purviewPolicyProvisioningEnabled && !empty(purviewPolicyProvisioningOrganization) && !empty(purviewPolicyProvisioningApplicationId) && !empty(purviewPolicyProvisioningCertificateSecretUri)
 // Workflow v3 uses SQL-backed distributed ingress, idempotency, and per-job
 // execution ownership. Registration/Registry admission does not override the
 // configured API scale range.
@@ -337,6 +371,10 @@ module logAnalytics './modules/log-analytics.bicep' = {
     retentionInDays: logRetentionInDays
     tags: tags
   }
+}
+
+resource runtimeWorkloadIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = if (runtimeImagePullIdentityInputsArePopulated) {
+  name: last(split(runtimeImagePullIdentityId, '/'))
 }
 
 module acr './modules/container-registry.bicep' = {
@@ -395,6 +433,8 @@ module serviceBus './modules/service-bus.bicep' = {
     location: location
     sku: serviceBusSku
     queueName: serviceBusQueueName
+    protectionAdminQueueEnabled: purviewEnabled
+    protectionAdminQueueName: protectionAdminQueueName
     tags: tags
     logAnalyticsWorkspaceId: logAnalytics.outputs.workspaceId
   }
@@ -502,6 +542,7 @@ module apiApp './modules/container-app-api.bicep' = {
     agent365DelegatedRegistryEnabled: effectiveContinuousDevelopmentProvisioningEnabled
     agent365DelegatedRegistryContinuousDevelopmentAccess: effectiveContinuousDevelopmentProvisioningEnabled
     keyVaultUri: keyVault.outputs.vaultUri
+    bootstrapCapabilities: bootstrapCapabilities
     blobStorageEndpoint: storage.outputs.blobEndpoint
     appInsightsConnectionString: appInsights.outputs.connectionString
     entraIdTenantId: entraIdTenantId
@@ -509,6 +550,9 @@ module apiApp './modules/container-app-api.bicep' = {
     entraIdAudience: entraIdAudience
     agent365ManagerApplicationIds: agent365ManagerApplicationIds
     purviewEnabled: purviewEnabled
+    purviewRuntimeIdentityResourceId: purviewRuntimeIdentityConfigured ? runtimeImagePullIdentityId : ''
+    purviewRuntimeIdentityClientId: purviewRuntimeIdentityConfigured ? runtimeWorkloadIdentity!.properties.clientId : ''
+    purviewRuntimeIdentityPrincipalId: purviewRuntimeIdentityConfigured ? runtimeImagePullIdentityPrincipalId : ''
     promptShieldEnabled: promptShieldEnabled
     promptShieldEndpoint: promptShieldEnabled ? contentSafety!.outputs.endpoint : ''
     databaseAttestationEnabled: databaseAttestationEnabled
@@ -551,6 +595,7 @@ module workerApp './modules/container-app-worker.bicep' = {
     serviceBusNamespace: serviceBus.outputs.namespaceFqdn
     serviceBusNamespaceName: serviceBus.outputs.namespaceName
     serviceBusQueueName: serviceBus.outputs.queueName
+    protectionAdminQueueName: protectionAdminQueueName
     sqlServerFqdn: sqlDb.outputs.serverFqdn
     sqlDatabaseName: sqlDb.outputs.databaseName
     keyVaultUri: keyVault.outputs.vaultUri
@@ -561,7 +606,11 @@ module workerApp './modules/container-app-worker.bicep' = {
     agent365ManagerApplicationIds: agent365ManagerApplicationIds
     processingEnabled: workerProcessingEnabled
     provisioningExecutionEnabled: effectiveWorkerProvisioningExecutionEnabled
+    protectionAdminProcessingEnabled: effectiveProtectionAdminProcessingEnabled
     purviewEnabled: purviewEnabled
+    purviewRuntimeIdentityResourceId: purviewRuntimeIdentityConfigured ? runtimeImagePullIdentityId : ''
+    purviewRuntimeIdentityClientId: purviewRuntimeIdentityConfigured ? runtimeWorkloadIdentity!.properties.clientId : ''
+    purviewRuntimeIdentityPrincipalId: purviewRuntimeIdentityConfigured ? runtimeImagePullIdentityPrincipalId : ''
     purviewPolicyProvisioningEnabled: purviewEnabled && purviewPolicyProvisioningEnabled
     purviewPolicyProvisioningOrganization: purviewPolicyProvisioningOrganization
     purviewPolicyProvisioningApplicationId: purviewPolicyProvisioningApplicationId
@@ -613,6 +662,8 @@ module roleAssignments './modules/role-assignments.bicep' = {
     storageAccountName: names.storage
     serviceBusNamespaceName: names.serviceBus
     serviceBusQueueName: serviceBus.outputs.queueName
+    protectionAdminQueueEnabled: purviewEnabled
+    protectionAdminQueueName: protectionAdminQueueName
     containerRegistryName: names.acr
     enableLegacySystemAssignedAcrPull: runtimeImagePullIdentityInputsAreEmpty && allowLegacySystemAssignedImagePull && !bootstrapOwnedDeployment
   }
@@ -666,6 +717,9 @@ output deploymentOwnershipId string = deploymentOwnershipId
 @description('Accepted bootstrap source fingerprint echoed for exact deployment recovery.')
 output bootstrapSourceFingerprint string = bootstrapSourceFingerprint
 
+@description('Strict non-secret capability evidence supplied to API startup materialization.')
+output bootstrapCapabilities object = bootstrapCapabilities
+
 @description('Whether the API runtime is configured for exact read-only bootstrap database attestation.')
 output databaseAttestationEnabled bool = databaseAttestationEnabled
 
@@ -702,10 +756,19 @@ output apiPrincipalId string = apiApp.outputs.principalId
 @description('Principal ID of the Worker managed identity.')
 output workerPrincipalId string = workerApp.outputs.principalId
 
-@description('Resource ID of the dedicated user-assigned identity used by API and worker for ACR image pulls.')
+@description('Resource ID of the foundation workload identity selected by the API for Purview and by the worker only for readiness checks.')
+output purviewRuntimeIdentityResourceId string = purviewRuntimeIdentityConfigured ? runtimeImagePullIdentityId : ''
+
+@description('Client ID selected for API Purview runtime calls, or empty when Purview prerequisites are omitted.')
+output purviewRuntimeIdentityClientId string = purviewRuntimeIdentityConfigured ? runtimeWorkloadIdentity!.properties.clientId : ''
+
+@description('Principal ID selected for API Purview runtime calls, or empty when Purview prerequisites are omitted.')
+output purviewRuntimeIdentityPrincipalId string = purviewRuntimeIdentityConfigured ? runtimeImagePullIdentityPrincipalId : ''
+
+@description('Resource ID of the foundation-owned runtime workload identity used by API and worker.')
 output runtimeImagePullIdentityId string = runtimeImagePullIdentityId
 
-@description('Principal ID of the dedicated user-assigned runtime image-pull identity.')
+@description('Principal ID of the foundation-owned runtime workload identity.')
 output runtimeImagePullIdentityPrincipalId string = runtimeImagePullIdentityPrincipalId
 
 @description('Resource ID of the exact AcrPull assignment established before API and worker creation.')
@@ -772,6 +835,15 @@ output provisioningConcurrencyCaveat string = effectiveWorkerProvisioningExecuti
 
 @description('Service Bus queue used by the current N:N API outbox publisher and worker. Historical workers must remain on their legacy queue during cutover.')
 output serviceBusQueueName string = serviceBus.outputs.queueName
+
+@description('Dedicated protection administration queue name, or empty when Purview prerequisites are omitted.')
+output protectionAdminQueueName string = purviewEnabled ? serviceBus.outputs.protectionAdminQueueName : ''
+
+@description('Dedicated protection administration queue resource ID, or empty when Purview prerequisites are omitted.')
+output protectionAdminQueueId string = purviewEnabled ? serviceBus.outputs.protectionAdminQueueId : ''
+
+@description('True only when the worker has complete Purview automation inputs and may process Settings-owned operations.')
+output protectionAdminProcessingEnabled bool = workerApp.outputs.protectionAdminProcessingEnabled
 
 @description('Dead-letter queue recovery remains a separate, explicitly authorized operation after topology, code, and identity validation.')
 output deadLetterQueueRecoveryGate string = 'Do not receive, peek, settle, replay, or purge retained workflow-v2 or historical provisioning messages during deployment.'

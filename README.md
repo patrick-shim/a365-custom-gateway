@@ -6,10 +6,20 @@ reusable Agent ID blueprint, and receives a Gateway external ID plus a one-time
 ingress key. The agent then submits activity and interaction data through the
 Gateway API without receiving an Entra token or managed-identity identifier.
 
-Version `0.1.0-beta.1` is a prerelease source contract, not proof that this checkout
+Version `0.1.0-beta.2` is a prerelease source contract, not proof that this checkout
 is deployed. The current source is ahead of the deployment evidence recorded in
 [development deployment status](docs/operations/development-deployment-status.md),
 and a Purview DLP allow/block pair has not been live-proven on a deployed build.
+
+> **Implemented in source, not deployed:** bootstrap installs deployment
+> capabilities only. Prompt Shields defaults and per-agent use, plus Purview tenant
+> connection, sensitive-information-type selection, Know Your Data, blueprint DLP,
+> readiness, and ongoing changes are in role-aware Gateway Admin Settings. Final
+> backend acceptance failed and reopened the beta.2 candidate for four corrections:
+> runtime identity correctness, exact capability/runtime binding, cancellation
+> cleanup, and truthful updates of existing KYD/DLP policy. Prior final gates are
+> invalidated. The clean-deployment E2E remains postponed and requires fresh
+> exact-target authority.
 
 The supported fresh-subscription installer is the repository-root `gateway`
 launcher. It configures, plans, deploys, and verifies the complete Gateway. The
@@ -19,25 +29,24 @@ browser path has not yet been validated against preserved stopped state; use the
 terminal recovery command described below.
 
 > The Agent 365 Registry dependency is currently a beta capability that Microsoft
-> does not support for production use. The bootstrap
-> can open the end-to-end Registry path only for an explicitly configured
-> development environment. Staging and production deployments keep that boundary
-> closed.
+> does not support for production use. **Quick development** defaults this
+> deployment-wide capability on but requires explicit beta acknowledgement.
+> Staging and production remain closed.
 
 ## Quick start
 
 You need an Agent-365-enabled Microsoft Entra tenant, an Azure subscription, and an
-administrator who can approve the Azure, Entra, Agent ID, and optional Purview
-changes shown by the installer. On the workstation, install Git, the .NET 10 SDK,
-PowerShell 7, and Azure CLI 2.76 or later.
+administrator who can approve the Azure, Entra, and Agent ID changes shown by the
+installer. On the workstation, install Git, the .NET 10 SDK, PowerShell 7, and Azure
+CLI 2.76 or later.
 
-Core Gateway setup and deployment run on Windows, macOS, and Linux. The optional
-Purview sensitive-information-type inventory and policy-authoring flow currently
-requires Windows: Microsoft documents `Connect-IPPSSession` and Security &
-Compliance PowerShell as unavailable in PowerShell 7 on
-[macOS and Linux](https://learn.microsoft.com/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps#supported-operating-systems-for-the-exchange-online-powershell-module).
-On macOS or Linux, leave Purview disabled or run Purview selection and bootstrap
-from a Windows workstation.
+Core Gateway setup and deployment run on Windows, macOS, and Linux. Bootstrap
+prepares optional Purview identities, RBAC, certificate, Key Vault, dedicated
+administration queue, and runtime prerequisites without choosing a classifier or
+authoring policy.
+Security & Compliance PowerShell operations that still require
+`Connect-IPPSSession` remain interactive and Windows-only; Gateway Settings
+coordinates those operations through a bounded, downloadable Windows companion.
 
 ```bash
 git clone https://github.com/patrick-shim/a365-custom-gateway.git
@@ -50,21 +59,18 @@ On Windows, use `.\gateway.cmd setup` instead. Setup opens a temporary browser U
 `127.0.0.1`, discovers the subscriptions visible to the current Azure CLI session,
 and loads the selected subscription's physical Azure regions into a dropdown. The
 dropdown shows the friendly label and exact Azure name together—for example,
-`Korea Central · koreacentral`—and stores only the canonical name. On Windows, if
-you enable Purview, explicitly select **Load tenant types**. Setup opens the official
-Security & Compliance PowerShell sign-in for the same work account that Azure CLI and
-Microsoft Graph resolved in the selected tenant. Graph must report `userType` as
-`Member`; a `Guest` result or mismatched Security & Compliance session is rejected.
-**Retry tenant type discovery** is available if the sign-in or inventory fails. The
-no-default dropdown shows the tenant's real sensitive-information-type names,
-GUIDs, and publishers. Choose the type your organization approves; Setup stores its
-GUID with its exact current name and never asks you to type a classifier. Only after
-every required selection is current can Setup atomically write the reviewed
-non-secret `bootstrap/config.json`. It then
-proves the configured Azure SQL tier is available in the selected region, runs an
-authenticated Azure What-If plan, and waits for explicit confirmation before
-deployment. Complete any Microsoft sign-in or consent windows that open during
-setup or deployment.
+`Korea Central · koreacentral`—and stores only the canonical name. Setup writes the
+reviewed non-secret `bootstrap/config.json`, proves the configured Azure SQL tier is
+available in the selected region, runs an authenticated Azure What-If plan, and
+waits for explicit confirmation before deployment. Complete any Microsoft sign-in
+or consent windows that open during setup or deployment.
+
+Setup offers three capability presets. **Full evaluation** is selected by default
+for Quick development and includes Agent 365 Registry beta, Prompt Shields
+infrastructure, and Purview prerequisites; each applicable beta, cost/quota, and
+authority acknowledgement is explicit. **Core Gateway** omits Prompt Shields and
+Purview. **Custom** selects those two independently. Registry beta remains closed
+outside development.
 
 ```mermaid
 flowchart LR
@@ -74,7 +80,8 @@ flowchart LR
     plan --> deploy[Confirm and deploy]
     deploy --> verify[Automatic verification]
     verify --> admin[Sign in to Admin UI]
-    admin --> register[Register external agent]
+    admin --> settings[Configure optional protections]
+    settings --> register[Register external agent]
     register --> active[Registration Active]
     active --> use[Send through Gateway API]
 ```
@@ -157,7 +164,16 @@ mirroring, Prompt Shields, and Microsoft Purview are separate choices.
 | Agent 365 observability | On | Submits registration-scoped activities to Agent 365. |
 | Azure Monitor mirror | Off | Mirrors selected telemetry to the Gateway's Azure Monitor path. |
 | Prompt Shields | Off | Evaluates prompts before protected interaction ingestion by using Azure AI Content Safety with managed identity. |
-| Microsoft Purview | Off | Evaluates configured activities and attributes them to the child Agent ID and reusable blueprint. |
+| Microsoft Purview | Off | Evaluates configured activities and attributes them to the child Agent ID and reusable blueprint after its exact DLP profile is Ready. |
+
+Bootstrap capability and Gateway configuration are different facts. Prompt Shields
+requires bootstrap-provisioned Azure AI Content Safety and RBAC, while its default
+and per-agent enablement belong in Settings. Purview bootstrap prepares only
+identity, RBAC, certificate, Key Vault, dedicated queue, and runtime prerequisites.
+A signed-in Administrator then uses Settings for tenant connection, SIT selection,
+KYD, blueprint profiles/rules, propagation/readiness, and ongoing changes. Settings
+keeps capability readback, policy readback, propagation, token roles, and runtime
+allow/block evidence separate.
 
 Purview policy provisioning uses two different Microsoft location contracts and
 must not combine them:
@@ -168,12 +184,10 @@ must not combine them:
 - DLP policy: the selected reusable blueprint application/client ID, with
   `LocationType=Individual` on the Application plane.
 
-The [Purview runbook](docs/operations/purview-setup-runbook.md) describes the
-post-bootstrap Security & Compliance PowerShell application, certificate, roles,
-policy readback, token-role check, and bounded runtime validation. When Purview is
-selected before Plan, bootstrap can deploy the runtime adapter after exact policy
-readback. That readback does not prove token-role propagation or a data-plane
-verdict, and no registration uses Purview unless an administrator selects it.
+The [Purview runbook](docs/operations/purview-setup-runbook.md) describes the current
+transition and the target role-aware flow. Policy readback does not prove token-role
+propagation or a data-plane verdict, and no registration uses Purview unless an
+administrator explicitly enables it after the exact blueprint profile is Ready.
 
 ## Architecture
 
@@ -186,7 +200,9 @@ flowchart TB
     api --> blob[(Encrypted Blob storage)]
     sql --> relay[Transactional outbox relay]
     relay --> bus[Service Bus gateway-provisioning-v3]
+    relay --> pbus[Service Bus gateway-protection-admin-v1]
     bus --> worker[Provisioning worker]
+    pbus --> worker
     worker --> sql
     worker --> entra[Microsoft Entra Agent ID]
     worker --> a365[Agent 365]
@@ -231,6 +247,7 @@ cleanup command.
 - [Admin UI guide](docs/agent-guides/admin-ui.md)
 - [Provisioning guide](docs/agent-guides/provisioning.md)
 - [System architecture](docs/architecture/system-architecture.md)
+- [Protection settings plan](docs/architecture/protection-settings-plan.md)
 - [Backup and recovery](docs/operations/backup-recovery.md)
 - [Incident response](docs/operations/incident-response.md)
 - [Contributor continuation checkpoint](docs/agent-continuation.md)

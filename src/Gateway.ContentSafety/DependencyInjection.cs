@@ -1,4 +1,5 @@
 using Gateway.Domain.Interfaces;
+using Gateway.Application.Protection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -14,6 +15,13 @@ public static class DependencyInjection
         services.AddOptions<PromptShieldOptions>()
             .Bind(configuration.GetSection(PromptShieldOptions.SectionName))
             .ValidateOnStart();
+        // The options validator uses this binding's attestation check. Defer the
+        // actual options lookup until effective readiness, after validation.
+        services.AddSingleton<BootstrapPromptShieldRuntimeBinding>(serviceProvider =>
+            new BootstrapPromptShieldRuntimeBinding(configuration, () =>
+                serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>().Value));
+        services.AddSingleton<IBootstrapPromptShieldRuntimeBinding>(serviceProvider =>
+            serviceProvider.GetRequiredService<BootstrapPromptShieldRuntimeBinding>());
         services.AddSingleton<IValidateOptions<PromptShieldOptions>, PromptShieldOptionsValidator>();
         services.AddSingleton<IPromptShieldTokenProvider, ManagedIdentityPromptShieldTokenProvider>();
         services.AddHttpClient(nameof(PromptShieldClient), (serviceProvider, client) =>
@@ -31,7 +39,8 @@ public static class DependencyInjection
                 serviceProvider.GetRequiredService<IHttpClientFactory>()
                     .CreateClient(nameof(PromptShieldClient)),
                 serviceProvider.GetRequiredService<IPromptShieldTokenProvider>(),
-                serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>()));
+                serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>(),
+                serviceProvider.GetRequiredService<BootstrapPromptShieldRuntimeBinding>()));
 
         return services;
     }

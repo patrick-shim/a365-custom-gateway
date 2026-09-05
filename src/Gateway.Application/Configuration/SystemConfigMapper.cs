@@ -38,6 +38,10 @@ internal static class SystemConfigMapper
             config.UseCliProvisioningFallback,
             destinations.Agent365ObservabilityEnabled,
             destinations.AzureMonitorExportEnabled,
-            DefaultPromptShieldEnabled: config.DefaultPromptShieldEnabled);
+            DefaultPromptShieldEnabled: config.DefaultPromptShieldEnabled,
+            RowVersion: Protection.ProtectionRowVersion.Encode(
+                config.RowVersion,
+                config.Id,
+                config.UpdatedAtUtc));
     }
 }

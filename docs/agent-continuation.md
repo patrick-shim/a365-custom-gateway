@@ -1,6 +1,6 @@
 # Agent continuation checkpoint
 
-Last updated: 2026-09-05 (Asia/Seoul).
+Last updated: 2026-09-06 (Asia/Seoul).
 
 This tracked file is the bounded continuation seed for Claude, Codex, GitHub
 Copilot, other automation, and human contributors after a fetch, pull, fresh clone,
@@ -94,437 +94,90 @@ by Git.
 
 ## Current objective and proven source state
 
-The delivery objective is one public bootstrap that a fresh-clone audience can use
-on Windows and macOS to configure, deploy, verify, open, and operate the complete
-Gateway. Windows is the primary audience. Optional Purview selection and policy
-authoring remain Windows-only; the core path remains cross-platform with Purview
-disabled.
+The `0.1.0-beta.2` protection-governance source has passed final integrated offline
+acceptance and clean-export validation. The source handoff includes all intended
+new files. Detailed prior chronology stays in Git history; local journal evidence
+does not transfer to another computer.
 
-The commit containing this checkpoint is the `0.1.0-beta.1` source candidate. After
-that commit is merged and pushed to `main`, the first unfinished action is to name
-and explicitly authorize one new unused Windows deployment resource group. Bootstrap
-that exact commit with Prompt Shields and Purview enabled, then register two agents
-on one newly created blueprint and two agents on one existing blueprint. Validate
-all four through truthful `Active`, Agent 365 observability, Prompt Shields allow
-and block behavior, and a blueprint-scoped Purview DLP allow/block pair. Only after
-that evidence is recorded should the project produce the requested novice-friendly
-Setup, console, and Admin UI improvement plan.
+Bootstrap prepares shared capabilities only. Settings owns tenant connection, SIT
+inventory/selection, fixed KYD Group, blueprint Individual DLP, readiness, defaults,
+and per-registration controls. The canonical contracts are in AGENTS.md and the
+[protection settings plan](architecture/protection-settings-plan.md).
 
-The current source has passed these local offline gates. Both rows were measured on
-Windows at this checkpoint:
-
-| Evidence | Result |
+| Gate | Final result |
 |---|---:|
-| The eight .NET test projects under `tests/` | 1,767 passed, 0 failed |
-| The three Pester suites, run as one gate | 802 passed, 0 failed, 7 skipped |
+| Release build | 0 warnings, 0 errors |
+| Gateway.UnitTests | 805 passed |
+| Gateway.AdminUi.Tests | 217 passed |
+| Gateway.Setup.Tests | 255 passed |
+| Gateway.ObservabilityRuntime.Tests | 232 passed |
+| Gateway.ArchitectureTests | 131 passed |
+| Gateway.IntegrationTests | 107 passed |
+| Gateway.EndToEndTests | 116 passed |
+| Gateway.SecurityTests | 141 passed |
+| **.NET total** | **2,004 passed, 0 failed** |
+| Pester | 846 passed, 0 failed, 7 skipped |
+| Format | All nine targets passed |
+| Independent security and UI source review | Passed; no remaining actionable findings |
+| Clean export | Release, all eight test projects, canonical bootstrap gate, layout and launcher smoke passed |
 
-Pester tests live in three separate directories, not one. `tests/Bootstrap.Tests`
-holds 748 of them, `tests/Gateway.Purview.Tests` holds 22, and
-`tests/Operations.Tests` holds 32. Run all three through the canonical gate rather
-than naming a directory directly, because that script is what defines the set:
+Canonical source gate: 20 PowerShell files and 2 JSON files, with 28 Bicep templates and 3 parameter files compiled, with Pester behavior tests.
 
-```powershell
-pwsh -NoProfile -File tools/Test-BootstrapSource.ps1 -RunPester -CompileBicep
-```
+The fresh independent review passed the combined source after explicitly
+rechecking all four original findings: shared API/worker runtime identity and
+token subject, exact capability/runtime binding, cancellation-owned process
+termination, and provider-ID-bound KYD/DLP updates with exact readback and
+ambiguous-outcome recovery. It also rechecked the exact 19-key
+`BootstrapCapabilities` startup materialization and subsequent integration
+corrections to bootstrap identity attestation, API credential guards, current
+tenant/SIT readiness, and Settings action compatibility. No earlier review was
+reused as acceptance.
 
-Its `$pesterPaths` array is the authoritative list. If a fourth suite is added
-later, it belongs there, and a checkpoint that names directories individually will
-silently stop covering it.
+UI acceptance uses the full bUnit suite and fresh independent source review.
+The user explicitly accepted that evidence after automatic browser policy blocked
+local inspection. Desktop and narrow-width browser inspection was waived, not
+reported as executed. AgentDetails distinguishes effective protection from
+selected-profile readiness. Settings uses the supported UploadText Block rule
+for both policy modes, and only Enforce can request runtime allow/block proof.
 
-Every narrower lane named in earlier revisions of this file — launcher,
-source-compiler, Azure CLI boundary, Bicep prerequisite, and Entra credential
-regressions — is a file inside `tests/Bootstrap.Tests` and is already counted in
-its 748. Do not restate a subset as though it were an independent gate.
 
-Run the .NET projects individually. `src/A365Gateway.slnx` deliberately contains
-only shipping projects, so a solution-scoped `dotnet test` matches no test project,
-runs nothing, and still exits successfully; treat an empty run as a failure to
-execute, never as a pass. The bootstrap Pester set takes roughly seventeen minutes
-on Windows, and PowerShell buffers redirected output, so a log file that stops
-growing for several minutes is normal. Confirm progress from the file's size and
-modification time before concluding that a run has hung. Pester 5 also discovers
-every test file before running any of them, so editing a module mid-suite
-contaminates the result; stop the run and start it again instead.
+OpenAPI parsing/internal references, Markdown links/anchors/fences, ignored private
+paths, Claude frontmatter, Codex TOML, skill YAML, behavioral parity, whitespace,
+and the full local delivery-ledger audit passed. All intended tracked and new
+source files were included in the clean export. No secret or ignored runtime state
+belongs in the commit.
 
-The Release solution build completes with zero warnings and zero errors under
-`-warnaserror`. The same gate command above also parsed 18 PowerShell files and two
-JSON contracts and locally compiled 27 Bicep templates and three parameter files;
-`-CompileBicep` is what opens that Windows compilation lane, and the script skips it
-silently when the switch is absent.
+## Exact first unfinished action and invalidated gates
 
-`dotnet format --verify-no-changes` is not part of that script and is not part of
-any local script, so run it by hand over `src/A365Gateway.slnx` and each of the
-eight test projects. Continuous integration used to format only the solution, which
-by design contains no test project, so nothing under `tests/` was ever checked; that
-job now formats all nine targets. Two whitespace violations reached `main` through
-the gap.
+For the release coordinator, commit and push the accepted source on `main`, then
+verify the hosted Build and Test workflow for that exact commit. A receiving
+checkout first verifies its actual HEAD and the associated hosted CI result; do
+not assume a green result from an older commit. A failed hosted job requires a
+normal corrective commit and affected local gates before another push.
 
-These results are source evidence. They are not a hosted-Windows launcher, browser,
-deployment, or live-Gateway claim.
+No offline gate remains invalidated at this checkpoint. Any subsequent source
+change invalidates its affected build, tests, formatting, review, and export
+evidence and must be validated before release. The browser inspection exception
+above remains explicit; it is not a browser pass.
 
-The cross-tool handoff itself was revalidated at this checkpoint: all 17 Codex role
-definitions in `.codex/agents/` parsed, all 20 Claude agent and skill frontmatters
-under `.claude/` parsed, and every local link and anchor resolved across 56 Markdown
-files. The schema-v2 delivery-ledger regressions and the focused Release
-architecture suite are .NET tests counted inside the 1,767 above rather than
-separate gates; between them they cover source binding, coordinator/delegate
-isolation, assignment provenance, redaction, rotation, exact pre-append rejection of
-oversized current-checkpoint and handoff payloads, legacy and rotated-empty-tail
-migration, writer-locked bounded normal validation, explicit full-history audit with
-historical tamper detection, and checkpoint/handoff integrity.
+## Live boundary and next separately authorized task
 
-`.secret`, `.secrets`, `.bootstrap/`, `bootstrap/config.json`, `.agent-runtime/`,
-and legacy `.agents/runtime/` remain outside tracked source.
+Source remains undeployed, and live E2E is postponed. No live authority transfers
+through Git, documentation, local evidence, or earlier deployments. A future
+deployment or live E2E requires fresh authorization naming an exact unused
+resource group and the allowed provider actions. Azure, Entra, SQL, Graph,
+Service Bus, Purview, and cleanup actions are outside this source task; retiring
+an earlier environment needs separate exact-target authority. Do not reuse an
+older deployment state with this source.
 
-Codex and Claude now both define the read-only `bootstrap-delivery-reviewer` role.
-The tracked role/frontmatter parity gate covers both definitions; runtime host
-discovery remains a tool-host concern rather than source evidence.
+After exact-commit hosted CI is green and fresh authority is granted, the future
+live exercise begins with a clean bootstrap in the approved new target. Create two
+new blueprints with one external registration each. Verify both through truthful
+Active, independent Agent 365 observability, Prompt Shields allow/block, and
+blueprint-specific Purview DLP allow/block. Follow the current
+[deployment checkpoint](operations/development-deployment-status.md) and
+[Purview runbook](operations/purview-setup-runbook.md).
 
-## Current source-work boundary
-
-No source defect currently blocks a deployment. The offline gates above pass on
-this source generation. The Setup Resume integration and the bounded validator
-mismatch diagnostics that earlier revisions named as unfinished are implemented,
-tested, and independently rereviewed. Their records are kept below as history, not
-as work.
-
-The remaining delivery work is live and belongs to the operator. No additional
-source implementation task is selected before that run. Two smaller design items
-remain parked behind explicit decisions and must not be started merely to keep an
-agent busy.
-
-### The blocking work is live and operator-gated
-
-Every stated Gateway delivery goal is met except one: a blueprint-scoped Microsoft
-Purview DLP verdict has never been observed on a deployed build. The source needed
-for it is committed. None of it is deployed.
-
-That goal cannot be reached by changing the existing deployment. Bootstrap refuses
-to mix source generations inside one deployment state, so once a deployment has
-recorded durable state evidence, a working tree carrying newer commits is rejected
-rather than applied. Because corrections are pending, this is the ordinary
-condition rather than an error to work around. The supported path is a fresh
-provision under a new, unused deployment identity with Purview enabled from the
-start, which also lands every pending correction in one cycle.
-`docs/operations/purview-setup-runbook.md` states that procedure as its case B, and
-`.\gateway.cmd plan` — `./gateway plan` on macOS — is the discriminator that proves
-which case a given machine is actually in.
-
-Three properties of that run belong to the operator and to no agent:
-
-- it authors tenant policy over an interactive `Connect-IPPSSession` sign-in, so it
-  cannot run unattended, and `--non-interactive` must fail closed rather than
-  author policy without a signed-in operator;
-- Security & Compliance PowerShell is unavailable in PowerShell 7 on macOS and
-  Linux, so this particular run is Windows-only, while the core bootstrap stays
-  cross-platform with Purview disabled; and
-- creating a new deployment, and retiring the superseded one afterwards, each
-  require a fresh explicit authorization naming that specific resource group.
-  Authorization for one deployment's teardown never carries to the next.
-
-Do not attempt to reach this goal by hand-editing `bootstrap/config.json`, by
-deleting `.bootstrap/` state, or by pointing fresh state at an existing resource
-group. A sensitive-information-type GUID that was not chosen through the
-tenant-backed picker fails closed mid-run, after the deployment steps have already
-restarted.
-
-### Completed source task: diagnosable step-failure causes
-
-Validator branches now throw typed mismatch metadata containing only a bounded
-property path. `Invoke-BootstrapStateStep` carries that path into the failed
-checkpoint and operator error while suppressing expected and actual values.
-Validator catches retain their curated direct-call diagnostics and preserve the
-typed mismatch as an inner exception, so both contracts hold. Dynamic deployment
-parameter, output, and evidence names are validated by the same bounded path
-grammar. Arbitrary validator and provider exception text is not reflected.
-
-Focused regressions were written before the implementation. The complete Pester
-gate, all eight .NET test projects, Release build, Bicep compilation, and all nine
-format targets pass. A final independent rereview found no remaining significant
-issue.
-
-### Release-candidate source corrections
-
-The `0.1.0-beta.1` source audit found and corrected three release blockers:
-
-- Registry creation now emits exactly one POST and accepts only the documented
-  `201 Created`; timeout, transport, retryable HTTP, conflict, and non-201 2xx
-  outcomes use exact planned-ID GET recovery without replay. Every persisted
-  `Running` attempt rechecks the planned ID, including state written by older source,
-  and failure-state persistence does not reuse a cancelled request token.
-- Prompt Shields now authenticates with `ManagedIdentityCredential` only and
-  rejects an invalid configured user-assigned client ID.
-- active registrations cannot share either a child Agent Identity object ID or
-  child client ID. The new ordered SQL migration fails closed on existing
-  duplicates, serializes concurrent prepare runs with a transaction-owned database
-  application lock, and never rewrites registrations.
-
-These are source changes and invalidate prior deployment evidence. The next clean
-provision must include the new migration and record its own exact readbacks.
-
-The first hosted candidate CI run passed Windows, macOS, Bicep, Release, formatting,
-and all .NET projects, but Ubuntu exposed duplicate `chmod` application discoveries
-for `/bin` and `/usr/bin`. Secure temporary ARM parameters and restricted provider
-diagnostics now share a deterministic single-command resolver. Local focused and
-complete gates pass; the correction must be pushed and pass a new hosted run before
-deployment.
-
-### Parked source decisions
-
-These items are deliberately parked and should not be started without an explicit
-decision:
-
-- Purview is currently split between a bootstrap-time concern and a Gateway
-  feature. The reviewed intent is that bootstrap provisions the Gateway and the
-  Gateway owns per-blueprint DLP thereafter. `Purview.psm1` also swallows an
-  exception where it should surface a bounded cause.
-- The Purview policy-automation application and certificate exist only for
-  worker-authored protection profiles, the path taken when the Gateway creates a
-  *new* protected blueprint. That identity is not a prerequisite for the live goal
-  above, because registering an agent against an *existing* blueprint never enters
-  the profile-provisioning path.
-
-### Completed record
-
-The entries below are finished work, kept because each encodes a constraint that is
-cheaper to read than to rediscover. Nothing in this subsection is an open task.
-
-The local Setup application's restarted-process, two-step Resume integration:
-
-- `tools/Gateway.Setup/Services/BootstrapCommand.cs` expresses distinct read-only
-  review and confirmed Resume argument contracts. The review adds
-  `-InstallPrerequisites:$false` so a read-only review never inherits the engine's
-  default local-prerequisite installation.
-- `BootstrapProgressEvent.cs` and `BootstrapOutputSanitizer.cs` represent and
-  strictly parse exactly one safe typed `resumeReview` claim bound to its own
-  message. Missing, duplicate, conflicting, malformed, standard-error, and
-  noncanonical claims authorize nothing.
-- `BootstrapExecutionCoordinator.cs` holds the accepted-Plan and
-  Resume-authorization fingerprints only in bounded in-memory state and consumes
-  them once. Restart, a changed checkpoint, another command, a failed review,
-  cancellation, or first use invalidates that state.
-- `Components/Pages/Progress.razor` renders the read-only review action first and
-  gates a separate explicit confirmation on the review-produced authorization. No
-  path offers direct Resume mutation. The confirmation states the same Azure,
-  Entra, Agent 365, SQL, and optional policy boundary Apply states, and the review
-  claims only that it changes no such resource rather than claiming absolute safety.
-- `bootstrap/bootstrap.ps1` was left unchanged; the backend contract remained
-  authoritative and no regression proved a backend defect.
-
-Corrected later, in response to a stopped `Inert identity deployment` step that
-reported no diagnosable cause:
-
-- `Invoke-BootstrapCommand` no longer discards failed provider output. It extracts a
-  bounded signature — at most eight `code`/`errorCode` values and four correlation
-  GUIDs — attaches it to the thrown exception, and writes the unfiltered text to an
-  ignored `.bootstrap/diagnostics/` file restricted to the current account. The safe
-  failure event, the Setup timeline, and the persisted checkpoint carry only the
-  bounded identifiers and a local file path. Curated messages are unchanged when a
-  failure carries no provider signature.
-- `Get-BootstrapExceptionProviderErrorCodes` returns an empty result that unrolls to
-  `$null`, so every caller wraps it in `@(...)`. The first attempt did not, and the
-  complete Pester set caught four ordinary-failure regressions before commit;
-  `tests/Bootstrap.Tests/Common.Tests.ps1` now pins the empty case directly.
-- `Assert-GatewayPromptShieldFreeTierCapacity` discovers, read-only, whether the
-  subscription already holds a free Content Safety account outside the target
-  resource group. Azure permits one free account per Cognitive Services account type
-  per subscription and ARM rejects a duplicate during template preflight without
-  creating a deployment record, so the step previously stopped with nothing to read
-  back. The preflight names the conflicting account and three remediations, runs no
-  discovery when Prompt Shields is disabled or on a paid SKU, and attempts no
-  workload mutation.
-- That preflight first read only `az resource list`, which returns live accounts. A
-  soft-deleted Cognitive Services account keeps its free-tier slot for the rest of its
-  retention window and is absent from every resource listing, so deleting the resource
-  group never released the quota and a subscription with no live free account still
-  failed every retry with the identical `CanNotCreateMultipleFreeAccounts` rejection.
-  The preflight now also reads `az cognitiveservices account list-deleted`, and parses
-  the originating group and account name out of the deleted-account resource ID
-  because that listing reports a null `resourceGroup`. It never exempts a soft-deleted
-  account by resource group: the workload always creates a freshly suffixed account
-  rather than recovering a deleted name, so a same-named group does not help. A
-  soft-deleted conflict is remediated only by purging, and the message names the exact
-  `az cognitiveservices account purge` command for that account.
-- The capacity preflight also runs in `Invoke-GatewayPlanWorkflow` under the
-  `plan_prompt_shield_capacity` failure code, so the conflict is named during Plan
-  instead of only at the inert deployment, after Apply has already mutated Azure.
-- `cognitiveservices` joins the reviewed Azure CLI resource command groups in
-  `Get-BootstrapAzureCliArguments`, so the deleted-account listing is pinned to the
-  exact bootstrap subscription like every other resource family.
-- A trusted progress sink renders long provider calls. It receives only a command
-  label built from leading lowercase verb tokens, a phase word, and an elapsed
-  duration, all produced inside the bootstrap; child-process output never reaches it.
-  Completed steps also report their duration in text mode. The sink is registered
-  inside the run path rather than at module init so `Status` and `Open` JSON output
-  remain single documents.
-- `Components/Pages/Progress.razor` and `wwwroot/app.css` mark the newest stage as
-  working while a run is live and as stopped once a run ends without succeeding, and
-  keep a static ring under `prefers-reduced-motion`.
-- `bootstrap/README.md` documents reading the bounded provider cause, the Prompt
-  Shields free-tier constraint, and how to start over as a genuinely new isolated
-  deployment without deleting `.bootstrap/`.
-- A successful run now closes with an explicit completion summary instead of a single
-  streamed line, because the previous ending did not tell an operator when or how the
-  run finished. `Write-GatewayCompletionSummary` in `bootstrap/modules/Experience.psm1`
-  is the one emitter for both surfaces and both completion sites (Apply/Up and Verify).
-  In `Text` it renders a framed block — completion moment, duration, steps completed,
-  deployment, resource group, region, subscription, readiness tiers, agent admission,
-  state ledger path, endpoints, and numbered next steps — sanitizing every line
-  individually, because `Write-GatewayExperienceEvent` collapses a message into one
-  bounded line, which is right for streamed progress and wrong for a closing summary.
-  In `Json` it emits exactly one `Result` event, preserving the single-verification-claim
-  contract the Setup coordinator depends on. The completion moment is stamped into
-  `data.completedAtUtc` inside that emitter from the same value the console prints, so
-  the terminal and the wizard can never disagree about when the run ended. The frame
-  uses ASCII rules rather than Unicode box characters, because the supported console
-  is not guaranteed to be UTF-8.
-- `BootstrapProgressEvent.cs` carries the same facts as a `BootstrapCompletionSummary`
-  record hanging off `BootstrapVerifiedEndpoints`. Every member is a primitive, and
-  deliberately so: `BootstrapExecutionCoordinator` detects a conflicting second
-  verification claim by comparing two `BootstrapVerifiedEndpoints` values, and a nested
-  collection would compare by reference and report a false conflict.
-- Endpoint parsing stays strictly fail-closed, but the completion summary is fail-soft.
-  `BootstrapOutputSanitizer` bounds every summary field by regex or GUID parse and drops
-  the whole summary when any field is malformed, while still honoring the endpoint
-  claim. A presentational field must never downgrade a genuinely successful, verified
-  deployment to an error. `statePath` is a local filesystem path and is therefore
-  console-only; it is never parsed into the wizard.
-- `Components/Pages/Progress.razor` states the finish time, elapsed duration, and step
-  count in its success notice, and `Components/Pages/Finish.razor` renders a
-  "Deployment summary" card plus a machine-readable `<time datetime>` stamp. Both
-  render the moment in the operator's local clock with the UTC offset spelled out,
-  because a bare local time in a log is ambiguous and a bare UTC time makes the reader
-  do arithmetic before they can trust it.
-
-Two platform validations from that record are still open, and one is now closed:
-
-1. **Open.** Fixture-backed local browser inspection of the Setup Resume journey at
-   desktop and narrow widths, including a newly started Setup process over
-   representative preserved stopped state. This is the gate that would let a
-   restarted Setup process be claimed as end-to-end Resume recovery; until it
-   passes, terminal Resume remains the only documented recovery path.
-2. **Open.** The macOS root `gateway` launcher and core Setup path with Purview
-   disabled. Keep Purview disabled there: Security & Compliance PowerShell is
-   unavailable in PowerShell 7 on macOS, so a Purview-enabled macOS run is expected
-   to stop before any provider call rather than to succeed.
-3. **Closed.** A hosted Windows run of the root `gateway.cmd` launcher with real
-   prerequisite detection and repair. Operator-run Windows bootstraps have since
-   provisioned complete gateways through the launcher and reached all nineteen
-   steps `Completed`. Treat the launcher itself as exercised on Windows.
-
-One contributor-tool defect was found and corrected while closing the Windows Bicep
-compilation lane. `tools/Test-BootstrapSource.ps1` resolved the Azure CLI with an
-unbounded `Get-Command az -CommandType Application`. Because the Azure CLI MSI
-installs `az.cmd` and an extensionless shim in the same directory, that call
-returned two matches whose `Source` cast to one space-joined path, and the lane
-failed closed on an unusable boundary. The resolver now binds exactly one command
-source and deterministically promotes an extensionless shim to its sibling Windows
-launcher before the existing bundled-Python mapping; anything else still fails
-closed. `tests/Bootstrap.Tests/Source.Tests.ps1` covers both behaviors. The shipped
-bootstrap engine resolves the Azure CLI through a different, single-match call in
-`bootstrap/modules/Common.psm1` and was not affected.
-
-The focused test surfaces for this area are:
-
-- `tests/Gateway.Setup.Tests/Services/BootstrapCommandFactoryTests.cs`;
-- `tests/Gateway.Setup.Tests/Services/BootstrapOutputSanitizerTests.cs`;
-- `tests/Gateway.Setup.Tests/Services/BootstrapExecutionCoordinatorTests.cs`; and
-- `tests/Gateway.Setup.Tests/RepositoryLayoutTests.cs` for structural UI guards.
-
-## Acceptance criteria for the Setup Resume integration
-
-These are now regression invariants rather than open criteria. Items 1 through 7
-are proved by the tests listed above; the browser journey is what would extend them
-to an end-to-end recovery claim. Preserve all seven in any later change to this
-area.
-
-1. A stopped accepted deployment offers read-only Resume review, not direct
-   mutation and not a new Plan.
-2. Review starts one non-interactive child process without `-Yes` and accepts
-   exactly one canonical typed review claim from the trusted event stream.
-3. Missing, duplicate, conflicting, malformed, standard-error, or noncanonical
-   claims fail closed and authorize nothing.
-4. Setup stores only the accepted-Plan and Resume-authorization fingerprints in
-   bounded in-memory coordinator state. Restart, changed checkpoint, another
-   command, failed review, cancellation, or first use invalidates that state.
-5. A separate user confirmation starts a new non-interactive Resume process with
-   `-Yes` and both exact fingerprints. It cannot be replayed or bypassed.
-6. Successful Resume still requires exactly one nonconflicting Apply-mode endpoint
-   verification result before Setup reports the Gateway ready.
-7. Error text remains sanitized and tells the user to preserve `.bootstrap/` state.
-
-For any further change in this area, add focused failing tests first, implement the
-smallest coherent correction, rerun the complete Setup test project, and obtain an
-independent hash-scoped security rereview before broader gates.
-
-## Gates still required
-
-The offline gate is green for this source generation. The eight .NET test projects,
-all three Pester suites, the Release build under `-warnaserror`, and the format,
-whitespace, source, Bicep, documentation-link, and secret/state-path checks all
-pass, and the two measured totals are recorded above. Rerun them after any further
-source change.
-
-Rerun the format check deliberately, because no local script performs it. Two
-whitespace violations were sitting on `main` at this checkpoint — a collapsed brace
-in `tests/Gateway.Setup.Tests` and an under-indented object initializer in
-`tests/Gateway.UnitTests` — and both are now corrected. Neither could fail a test or
-a build, and continuous integration formatted only `src/A365Gateway.slnx`, which
-contains no test project, so nothing under `tests/` was checked at all. That CI job
-now formats all nine targets; locally, still run it by hand.
-
-Two platform gates remain open, both described in the completed record above: the
-macOS root `gateway` launcher on the core path with Purview disabled, and
-fixture-backed local browser inspection of the Setup Resume journey. Neither blocks
-the live goal.
-
-The live gates that earlier revisions of this file listed as missing are now closed
-on a deployed build, and `docs/operations/development-deployment-status.md` holds
-the authoritative record: signed-in Plan, explicit Apply, exact resource and image
-readback, API and Admin UI health, Admin UI sign-in, bounded registrations reaching
-`Active` across multiple blueprints, and a bounded data-plane use check. Prompt
-Shields is proven enforcing per agent request. Agent 365 activity attribution and
-interaction logging are proven per agent.
-
-One live gate remains open, and it is the whole of the remaining goal: a
-blueprint-scoped Purview DLP allow and block pair observed on a deployed build.
-Optional Prompt Shields and Purview evidence stays separate from core bootstrap
-completion; neither may be folded into a claim that bootstrap itself succeeded.
-
-An operator prerequisite that earlier revisions recorded as blocking is no longer
-blocking, and should not be re-raised as one. Azure permits a single free Content
-Safety account per Cognitive Services account type per subscription, and a
-soft-deleted account holds that slot for the rest of its retention window while
-being absent from every resource listing, so a free-SKU Prompt Shields deployment
-failed ARM preflight with no deployment record to read back. Later runs provisioned
-successfully, so the conflict is resolved for the current subscription. The
-read-only capacity check still runs during Plan and Apply and still names the
-conflicting account, live or soft-deleted, together with the exact
-`az cognitiveservices account purge` command. No agent may delete or purge such an
-account; that stays the user's decision and the user's own authorized action.
-
-## Current pause and stopping condition
-
-Live authorization does not travel with Git. On a fresh checkout, treat every
-Azure, Entra, SQL, Graph, Service Bus, Purview, deployment, and cleanup action as
-unauthorized until the user grants it for this machine and for that specific
-target. A grant recorded in chat history, in a previous session, or for a previous
-deployment is not a grant for the next one. Do not mutate or delete a stopped
-target, and do not begin a new deployment, on the strength of this file.
-
-That boundary is exactly where the remaining goal sits. The source is ready. The
-next run starts only after this candidate is on `main` and the user explicitly names
-and authorizes its new resource group.
-
-Source-only work may continue only after an explicit objective is selected. Stop
-before the first live action and record the exact remaining evidence. After any
-verified change, update this checkpoint and both status files, validate all links,
-commit every intended tracked file, and push the reviewed branch so the next
-receiver starts from Git rather than from chat history.
-
-A stopped deployment is diagnosed, not cleared. Read the bounded provider codes in
-the terminal, the Setup timeline, or the persisted checkpoint, and read the local
-ignored `.bootstrap/diagnostics/` file when a code is not enough. That file holds
-unfiltered provider text and must never be pasted into an issue, a chat, or a shared
-log. Never delete `.bootstrap/` to force a stopped deployment forward; it is the only
-record of what already exists in the tenant.
+Stop before that first live action. Preserved `.bootstrap/` state must never be
+deleted, edited, or pointed at another target to force progress. Restoring or
+retiring an earlier environment requires its own matching state and authority.

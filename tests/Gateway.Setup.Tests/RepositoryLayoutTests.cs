@@ -59,7 +59,7 @@ public sealed class RepositoryLayoutTests : IDisposable
     }
 
     [Fact]
-    public void PurviewUx_RemainsANativeNoDefaultTenantInventorySelect()
+    public void CapabilityUx_DoesNotDiscoverOrSelectPurviewPolicyInputs()
     {
         var source = File.ReadAllText(FindRepositoryFile(
             "tools",
@@ -68,16 +68,16 @@ public sealed class RepositoryLayoutTests : IDisposable
             "Pages",
             "ProfileFeatures.razor"));
 
-        source.Should().Contain("<select id=\"purview-classifier\"");
-        source.Should().Contain("value=\"@type.Id.ToString(\"D\")\"");
-        source.Should().Contain("@type.Name · @type.Id");
-        source.Should().Contain("Load tenant types");
-        source.Should().Contain("Retry tenant type discovery");
-        source.Should().Contain("!PurviewDiscovery.IsSupported");
-        source.Should().Contain("PurviewDiscovery.UnsupportedGuidance");
-        source.Should().Contain("Purview setup requires Windows");
-        source.Should().NotContain("<InputText id=\"purview-classifier\"");
-        source.Should().NotContain("@bind-Value=\"State.Form.PurviewSensitiveInformationType\"");
+        source.Should().Contain("Capabilities to install");
+        source.Should().Contain("Full evaluation");
+        source.Should().Contain("Core Gateway");
+        source.Should().Contain("Custom");
+        source.Should().Contain("quota");
+        source.Should().Contain("cost");
+        source.Should().Contain("authority");
+        source.Should().NotContain("PurviewDiscovery");
+        source.Should().NotContain("purview-classifier");
+        source.Should().NotContain("SensitiveInformationType");
     }
 
     [Fact]
@@ -91,9 +91,9 @@ public sealed class RepositoryLayoutTests : IDisposable
 
         source.Should().Contain("AddScoped<SetupWizardState>()");
         source.Should().NotContain("AddSingleton<SetupWizardState>()");
-        source.Should().Contain("AddSingleton<IPurviewSensitiveInformationTypeDiscovery,");
-        source.Should().Contain("AddSingleton<IPurviewSensitiveInformationTypeRunner,");
-        source.Should().Contain("AddSingleton<IPurviewSensitiveInformationTypePlatformSupport,");
+        source.Should().NotContain("IPurviewSensitiveInformationTypeDiscovery");
+        source.Should().NotContain("IPurviewSensitiveInformationTypeRunner");
+        source.Should().NotContain("IPurviewSensitiveInformationTypePlatformSupport");
     }
 
     [Fact]
@@ -194,13 +194,13 @@ public sealed class RepositoryLayoutTests : IDisposable
         var resumeConsent = source[authorizationGateIndex..];
 
         resumeConsent.Should().Contain(
-            "I authorize Azure, Entra, Agent 365, SQL, and optional policy changes",
+            "I authorize Azure, Entra, Agent 365, SQL, and selected capability-prerequisite changes",
             "Resume continues the same deployment boundary Apply started");
         source.Should().NotContain(
             "mutates nothing",
             "the review still authenticates and reads Azure, so only the mutation boundary may be claimed");
         source.Should().Contain(
-            "changes no Azure, Entra, Agent 365, SQL, or policy resource",
+            "changes no Azure, Entra, Agent 365, SQL, capability, or policy resource",
             "the read-only review states the exact boundary it preserves");
     }
 

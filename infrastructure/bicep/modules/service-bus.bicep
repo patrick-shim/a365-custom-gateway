@@ -20,6 +20,12 @@ param sku string = 'Basic'
 @description('Name of the provisioning queue.')
 param queueName string = 'gateway-provisioning-v3'
 
+@description('Create the dedicated protection administration queue.')
+param protectionAdminQueueEnabled bool = false
+
+@description('Name of the dedicated protection administration queue.')
+param protectionAdminQueueName string = 'gateway-protection-admin-v1'
+
 @description('Maximum number of delivery attempts before dead-lettering.')
 @minValue(1)
 @maxValue(2000)
@@ -89,6 +95,22 @@ resource provisioningQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-pr
   }
 }
 
+resource protectionAdminQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = if (protectionAdminQueueEnabled) {
+  parent: serviceBusNamespace
+  name: protectionAdminQueueName
+  properties: {
+    lockDuration: lockDuration
+    maxSizeInMegabytes: maxSizeInMegabytes
+    requiresDuplicateDetection: false
+    requiresSession: false
+    defaultMessageTimeToLive: 'P7D'
+    deadLetteringOnMessageExpiration: true
+    maxDeliveryCount: maxDeliveryCount
+    enablePartitioning: false
+    enableBatchedOperations: true
+  }
+}
+
 resource diagnosticSettings 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: '${namespaceName}-diag'
   scope: serviceBusNamespace
@@ -127,3 +149,9 @@ output queueName string = provisioningQueue.name
 
 @description('Resource ID of the provisioning queue.')
 output queueId string = provisioningQueue.id
+
+@description('Name of the dedicated protection administration queue, or empty when omitted.')
+output protectionAdminQueueName string = protectionAdminQueueEnabled ? protectionAdminQueue!.name : ''
+
+@description('Resource ID of the dedicated protection administration queue, or empty when omitted.')
+output protectionAdminQueueId string = protectionAdminQueueEnabled ? protectionAdminQueue!.id : ''

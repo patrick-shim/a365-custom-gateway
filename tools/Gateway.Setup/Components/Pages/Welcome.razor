@@ -16,7 +16,7 @@
     <div class="setup-card hero-card">
         <span class="hero-badge">@(State.ExistingConfigurationLoaded ? "Existing resumable configuration" : "Cloud-backed development")</span>
         <h2>@(State.ExistingConfigurationLoaded ? "Resume without changing deployment identity" : "One guided path, one deployment authority")</h2>
-        <p>The API, worker, Admin UI, identities, private dependencies, and policies remain Azure-hosted so managed identity and network boundaries stay truthful.</p>
+        <p>The API, worker, Admin UI, identities, and private dependencies remain Azure-hosted so managed identity and network boundaries stay truthful. Protection policy configuration happens after deployment in Gateway Settings.</p>
         <ul class="check-list">
             <li>Discovers the existing Azure CLI session without collecting credentials.</li>
             <li>Writes only ignored, non-secret <code>bootstrap/config.json</code>.</li>
@@ -42,6 +42,13 @@
         <strong>Existing bootstrap/config.json loaded safely.</strong>
         <span>The wizard imported its supported public fields. It will still run Plan and require a new explicit Resume or Apply confirmation; no prior plan is treated as accepted.</span>
     </div>
+    @if (State.ExistingConfigurationMigrationNotice is not null)
+    {
+        <div class="notice warning" role="status">
+            <strong>Legacy Purview configuration detected.</strong>
+            <span>@State.ExistingConfigurationMigrationNotice</span>
+        </div>
+    }
 }
 else if (State.ExistingConfigurationGuidance is not null)
 {

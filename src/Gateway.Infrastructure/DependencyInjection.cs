@@ -48,6 +48,22 @@ public static class DependencyInjection
         services.AddScoped<ISystemConfigurationRepository, SystemConfigurationRepository>();
         services.AddScoped<IPurviewPolicyProfileRepository, PurviewPolicyProfileRepository>();
         services.AddScoped<IPromptEvaluationRepository, PromptEvaluationRepository>();
+        services.AddScoped<IProtectionCapabilityRepository, ProtectionCapabilityRepository>();
+        services.AddScoped<
+            IBootstrapProtectionCapabilityStore,
+            BootstrapProtectionCapabilityStore>();
+        services.AddScoped<IPurviewTenantConnectionRepository, PurviewTenantConnectionRepository>();
+        services.AddScoped<
+            IPurviewSensitiveInformationTypeSnapshotRepository,
+            PurviewSensitiveInformationTypeSnapshotRepository>();
+        services.AddScoped<
+            IPurviewKnowYourDataConfigurationRepository,
+            PurviewKnowYourDataConfigurationRepository>();
+        services.AddScoped<IPurviewDlpProfileRepository, PurviewDlpProfileRepository>();
+        services.AddScoped<IProtectionAdminOperationRepository, ProtectionAdminOperationRepository>();
+        services.AddScoped<
+            IProtectionAdminOperationLockProvider,
+            ProtectionAdminOperationLockProvider>();
         services
             .AddOptions<AgentIngressCredentialOptions>()
             .Bind(configuration.GetSection(AgentIngressCredentialOptions.SectionName))
@@ -91,13 +107,6 @@ public static class DependencyInjection
             throw new InvalidOperationException(
                 "Configure ServiceBus:ConnectionString for local development or " +
                 "ServiceBus:FullyQualifiedNamespace for managed identity.");
-        });
-
-        services.AddSingleton(sp =>
-        {
-            var client = sp.GetRequiredService<ServiceBusClient>();
-            var options = sp.GetRequiredService<IOptions<ServiceBusOptions>>().Value;
-            return client.CreateSender(options.QueueName);
         });
 
         services.AddSingleton<IServiceBusPublisher, ServiceBusPublisher>();

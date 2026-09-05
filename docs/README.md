@@ -13,6 +13,7 @@ not setup instructions.
 | Integrate an external agent with the API | [OpenAPI contract](api/openapi.yaml) |
 | Understand Admin UI roles and routes | [Admin UI guide](agent-guides/admin-ui.md) |
 | Understand Agent ID provisioning | [Provisioning guide](agent-guides/provisioning.md) |
+| Review protection implementation and remaining gates | [Protection settings plan](architecture/protection-settings-plan.md) |
 
 ## Optional features
 
@@ -22,15 +23,18 @@ not setup instructions.
 | Microsoft Purview runtime and policies | [Purview setup](operations/purview-setup-runbook.md) |
 | Entra applications, app roles, and federation | [Entra setup](operations/entra-setup-runbook.md) |
 
-Prompt Shields are configured by the bootstrap's `promptShield` section and then
-selected per registration. Purview policy authoring is optional, and bootstrap
-can make its runtime adapter reachable after exact policy readback. Readback is not
-token-role propagation or live verdict proof, so keep Purview off on ordinary
-registrations and use only an approved nonproduction registration for the bounded
-runtime check. Its policy locations are not
-interchangeable: Know Your Data uses the fixed tenant-wide enterprise-AI-apps
-`Group` location, while DLP uses each selected blueprint application ID as an
-`Individual` location.
+The source separates capability installation from ongoing protection governance.
+Bootstrap prepares Azure AI Content Safety and Purview prerequisites.
+Role-aware Gateway Settings owns Prompt Shields defaults and per-agent use, plus
+Purview tenant connection, SIT selection, KYD, blueprint DLP profiles, readiness,
+and ongoing changes. Final backend acceptance reopened the source candidate for
+identity correctness, exact capability/runtime binding, cancellation cleanup, and
+truthful existing-policy updates. Prior final gates are invalidated. This
+implementation is not deployed, and its live E2E is postponed. Readback is not
+token-role propagation or live verdict proof.
+Purview locations remain independent: Know Your Data uses the fixed tenant-wide
+enterprise-AI-apps `Group`, while DLP uses each selected blueprint application ID
+as an `Individual`.
 
 ## Operate and recover
 
@@ -47,6 +51,7 @@ interchangeable: Know Your Data uses the fixed tenant-wide enterprise-AI-apps
 | Topic | Read |
 |---|---|
 | System architecture | [System architecture](architecture/system-architecture.md) |
+| Protection capability and Settings implementation | [Protection settings plan](architecture/protection-settings-plan.md) |
 | Persistence and workflow design | [Data model](architecture/data-model.md) |
 | Microsoft contract validation | [Microsoft capabilities](architecture/microsoft-capabilities.md) |
 | Product intent | [Product brief](spec/product-brief.md) |

@@ -1,3 +1,5 @@
+using Gateway.Contracts.Dtos;
+
 namespace Gateway.Contracts.Requests;
 
 public record UpdateFeaturesRequest(
@@ -6,4 +8,7 @@ public record UpdateFeaturesRequest(
     string? PurviewMode,
     bool? Agent365ObservabilityEnabled = null,
     bool? AzureMonitorExportEnabled = null,
-    bool? PromptShieldEnabled = null);
+    bool? PromptShieldEnabled = null,
+    PurviewDlpProfileSelectionDto? PurviewDlpProfile = null,
+    Guid? IdempotencyKey = null,
+    string? ExpectedRowVersion = null);

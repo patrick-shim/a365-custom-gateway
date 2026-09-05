@@ -1,5 +1,10 @@
+using System.Text.Json;
 using FluentAssertions;
+using Gateway.Contracts.Messages;
+using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
+using Gateway.Domain.ValueObjects;
+using Gateway.Infrastructure.Outbox;
 using Gateway.Infrastructure.Persistence.Repositories;
 using Gateway.IntegrationTests.Fixtures;
 
@@ -7,6 +12,40 @@ namespace Gateway.IntegrationTests.Repositories;
 
 public class OutboxRepositoryTests
 {
+    [Theory]
+    [InlineData("ProvisionAgent", OutboxRouting.ProvisioningDestination)]
+    [InlineData(nameof(ProtectionAdminOperationMessage), OutboxRouting.ProtectionAdminDestination)]
+    public async Task AddAsync_Should_PersistTheExactMessageDestination(
+        string messageType,
+        string expectedDestination)
+    {
+        await using var context = TestDbContextFactory.Create();
+        var repository = new OutboxRepository(context);
+        var message = TestEntityFactory.CreateOutboxMessage();
+        message.MessageType = messageType;
+
+        await repository.AddAsync(message, CancellationToken.None);
+        await context.SaveChangesAsync();
+
+        context.Entry(message).Property<string>("Destination").CurrentValue
+            .Should().Be(expectedDestination);
+        OutboxRouting.ResolveQueueName(messageType, "gateway-provisioning-v3")
+            .Should().Be(messageType == nameof(ProtectionAdminOperationMessage)
+                ? ProtectionAdminQueueContract.QueueName
+                : "gateway-provisioning-v3");
+    }
+
+    [Theory]
+    [InlineData("ProtectionAdminOperationMessageV2")]
+    [InlineData("Gateway.Contracts.Messages.ProtectionAdminOperationMessage")]
+    public void Routing_Should_RejectNonV1ProtectionAdminMessageTypes(string messageType)
+    {
+        var action = () => OutboxRouting.ResolveDestination(messageType);
+
+        action.Should().Throw<InvalidOperationException>()
+            .WithMessage("*exact supported v1 contract*");
+    }
+
     [Fact]
     public async Task AddAsync_Should_PersistMessage_When_ValidMessageProvided()
     {
@@ -147,4 +186,123 @@ public class OutboxRepositoryTests
         message.RetryCount.Should().Be(1);
         message.NextRetryAtUtc.Should().BeNull();
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MarkFailedAsync_Should_AtomicallyFailMatchingProtectionOperation_OnTerminalFailure(
+        bool useWorkerWebSerializer)
+    {
+        await using var context = TestDbContextFactory.Create();
+        var repository = new OutboxRepository(context);
+        var utcNow = new DateTime(2026, 9, 5, 12, 0, 0, DateTimeKind.Utc);
+        var claimExpiresAtUtc = utcNow.AddMinutes(2);
+        var operation = CreateProtectionOperation();
+        var message = CreateProtectionMessage(operation, useWorkerWebSerializer);
+        await context.ProtectionAdminOperations.AddAsync(operation);
+        await repository.AddAsync(message, CancellationToken.None);
+        await context.SaveChangesAsync();
+        await repository.ClaimPendingAsync(
+            1,
+            utcNow,
+            claimExpiresAtUtc,
+            CancellationToken.None);
+
+        var staleResult = await repository.MarkFailedAsync(
+            message.Id,
+            claimExpiresAtUtc.AddTicks(1),
+            null,
+            terminal: true,
+            CancellationToken.None);
+
+        staleResult.Should().BeFalse();
+        operation.Status.Should().Be(ProtectionAdminOperationStatus.Pending);
+
+        var currentResult = await repository.MarkFailedAsync(
+            message.Id,
+            claimExpiresAtUtc,
+            null,
+            terminal: true,
+            CancellationToken.None);
+
+        currentResult.Should().BeTrue();
+        message.Status.Should().Be(OutboxMessageStatus.Failed);
+        operation.Status.Should().Be(ProtectionAdminOperationStatus.Failed);
+        operation.RetryDisposition.Should().Be(ProtectionRetryDisposition.Exhausted);
+        operation.LastFailureCode.Should().Be("PROTECTION_ADMIN_OUTBOX_PUBLISH_FAILED");
+        operation.RequiredAction.Should().Be("ReviewOperationFailure");
+        operation.NextAttemptAtUtc.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task MarkFailedAsync_Should_NotChangeProtectionOperations_ForOrdinaryOutbox()
+    {
+        await using var context = TestDbContextFactory.Create();
+        var repository = new OutboxRepository(context);
+        var utcNow = new DateTime(2026, 9, 5, 12, 0, 0, DateTimeKind.Utc);
+        var claimExpiresAtUtc = utcNow.AddMinutes(2);
+        var operation = CreateProtectionOperation();
+        var message = TestEntityFactory.CreateOutboxMessage();
+        await context.ProtectionAdminOperations.AddAsync(operation);
+        await repository.AddAsync(message, CancellationToken.None);
+        await context.SaveChangesAsync();
+        await repository.ClaimPendingAsync(
+            1,
+            utcNow,
+            claimExpiresAtUtc,
+            CancellationToken.None);
+
+        var result = await repository.MarkFailedAsync(
+            message.Id,
+            claimExpiresAtUtc,
+            null,
+            terminal: true,
+            CancellationToken.None);
+
+        result.Should().BeTrue();
+        message.Status.Should().Be(OutboxMessageStatus.Failed);
+        operation.Status.Should().Be(ProtectionAdminOperationStatus.Pending);
+        operation.LastFailureCode.Should().BeNull();
+        operation.RequiredAction.Should().BeNull();
+    }
+
+    private static ProtectionAdminOperation CreateProtectionOperation() => new()
+    {
+        Id = Guid.NewGuid(),
+        WorkflowVersion = ProtectionAdminQueueContract.WorkflowVersion,
+        Type = ProtectionAdminOperationType.CreateOrUpdateDlpProfile,
+        Status = ProtectionAdminOperationStatus.Pending,
+        TenantId = new EntraTenantId(Guid.NewGuid()),
+        ActorObjectId = Guid.NewGuid().ToString("D"),
+        TargetType = ProtectionAdminTargetType.DlpProfile,
+        TargetIdentifier = Guid.NewGuid().ToString("D"),
+        ReviewedPayloadHash =
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        IdempotencyKey = new ProtectionIdempotencyKey(Guid.NewGuid()),
+        ExpectedRowVersion = [],
+        RetryDisposition = ProtectionRetryDisposition.Retryable,
+        MaximumAttempts = 3,
+        CorrelationId = Guid.NewGuid(),
+        CreatedAtUtc = new DateTime(2026, 9, 5, 11, 0, 0, DateTimeKind.Utc),
+        UpdatedAtUtc = new DateTime(2026, 9, 5, 11, 0, 0, DateTimeKind.Utc),
+    };
+
+    private static OutboxMessage CreateProtectionMessage(
+        ProtectionAdminOperation operation,
+        bool useWorkerWebSerializer = false) => new()
+        {
+            Id = Guid.NewGuid(),
+            MessageType = nameof(ProtectionAdminOperationMessage),
+            Payload = JsonSerializer.Serialize(
+            new ProtectionAdminOperationMessage(
+                operation.Id,
+                operation.WorkflowVersion,
+                ExpectedStepIndex: 0,
+                operation.CorrelationId),
+            useWorkerWebSerializer
+                ? new JsonSerializerOptions(JsonSerializerDefaults.Web)
+                : null),
+            Status = OutboxMessageStatus.Pending,
+            CreatedAtUtc = new DateTime(2026, 9, 5, 11, 0, 0, DateTimeKind.Utc),
+        };
 }

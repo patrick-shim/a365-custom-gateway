@@ -58,6 +58,24 @@ public sealed class UpdateSystemConfigValidator : AbstractValidator<UpdateSystem
             .Must(HaveCompatibleObservabilitySettings)
             .WithMessage("Legacy and destination-specific observability settings must describe the same destinations.")
             .OverridePropertyName(nameof(UpdateSystemConfigCommand.DefaultObservabilityMode));
+
+        RuleFor(x => x.IdempotencyKey)
+            .Must(value =>
+            {
+                if (value is null)
+                    return true;
+                if (value == Guid.Empty)
+                    return false;
+                var canonical = value.Value.ToString("D");
+                return canonical[14] == '4' &&
+                    canonical[19] is '8' or '9' or 'a' or 'b';
+            })
+            .WithMessage("IdempotencyKey must be a canonical UUIDv4 value.");
+        RuleFor(x => x)
+            .Must(command =>
+                (command.IdempotencyKey is null) ==
+                (command.ExpectedRowVersion is null))
+            .WithMessage("IdempotencyKey and ExpectedRowVersion must be supplied together.");
     }
 
     private static bool BeValidObservabilityMode(string? mode) =>

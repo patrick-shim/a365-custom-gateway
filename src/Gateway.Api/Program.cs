@@ -1,15 +1,18 @@
 using Gateway.Agent365;
 using Gateway.Api.Authentication;
 using Gateway.Api.Authorization;
+using Gateway.Api.Infrastructure;
 using Gateway.Api.Middleware;
 using Gateway.Api.Options;
 using Gateway.Application;
+using Gateway.Application.Protection;
 using Gateway.ContentSafety;
 using Gateway.Infrastructure;
 using Gateway.Infrastructure.Persistence;
 using Gateway.Observability;
 using Gateway.Purview;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.Options;
 using Microsoft.Identity.Web;
 using Scalar.AspNetCore;
 
@@ -31,6 +34,20 @@ builder.Services
     .AddOptions<ProvisioningOptions>()
     .Bind(builder.Configuration.GetSection(ProvisioningOptions.SectionName));
 builder.Services
+    .AddOptions<BootstrapCapabilitiesOptions>()
+    .Bind(builder.Configuration.GetSection(
+        BootstrapCapabilitiesOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<
+    IValidateOptions<BootstrapCapabilitiesOptions>,
+    BootstrapCapabilitiesOptionsValidator>();
+builder.Services.AddHostedService<BootstrapCapabilitiesInitializer>();
+builder.Services.AddSingleton<BootstrapPurviewRuntimeBinding>();
+builder.Services.AddSingleton<IBootstrapPurviewRuntimeBinding>(services =>
+    services.GetRequiredService<BootstrapPurviewRuntimeBinding>());
+builder.Services.AddSingleton<IPurviewRuntimeIdentityBinding>(services =>
+    services.GetRequiredService<BootstrapPurviewRuntimeBinding>());
+builder.Services
     .AddOptions<Agent365DelegatedRegistryOptions>()
     .Bind(builder.Configuration.GetSection(Agent365DelegatedRegistryOptions.SectionName))
     .Validate(options =>
@@ -46,6 +63,7 @@ builder.Services
     }, "Delegated Registry must request only the two documented AgentRegistration scopes.")
     .ValidateOnStart();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<ProtectionAdministrationRateLimitStore>();
 builder.Services.AddSingleton<ProvisioningAdmissionGate>();
 builder.Services.AddSingleton<DelegatedRegistryActionGate>();
 builder.Services.AddHttpContextAccessor();
@@ -58,7 +76,7 @@ builder.Services.AddInfrastructureServices(builder.Configuration);
 
 builder.Services.AddAgent365Services(builder.Configuration);
 
-builder.Services.AddPurviewServices(builder.Configuration);
+builder.Services.AddPurviewServices(builder.Configuration, requireRuntimeIdentityBinding: true);
 
 builder.Services.AddPromptShieldServices(builder.Configuration);
 
@@ -83,6 +101,7 @@ app.MapScalarApiReference();
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<ProtectionAdministrationRateLimitMiddleware>();
 app.UseMiddleware<IngressRateLimitMiddleware>();
 
 app.MapControllers();

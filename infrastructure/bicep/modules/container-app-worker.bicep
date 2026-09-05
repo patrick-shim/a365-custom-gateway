@@ -18,7 +18,7 @@ param containerImage string
 @description('Login server URL of the Azure Container Registry.')
 param acrLoginServer string
 
-@description('Resource ID of the dedicated user-assigned identity authorized to pull runtime images from the exact ACR. Empty is retained only for the historical public-image blue/green identity bootstrap.')
+@description('Resource ID of the foundation workload identity authorized for the exact ACR and, when Purview is selected, worker readiness tokens. Empty is retained only for the historical public-image blue/green identity bootstrap.')
 param imagePullIdentityResourceId string = ''
 
 @description('CPU cores allocated to the container (e.g., 0.25, 0.5, 1.0).')
@@ -47,6 +47,9 @@ param serviceBusNamespaceName string
 
 @description('Name of the Service Bus queue for provisioning messages.')
 param serviceBusQueueName string = 'gateway-provisioning-v3'
+
+@description('Name of the dedicated protection administration queue.')
+param protectionAdminQueueName string = 'gateway-protection-admin-v1'
 
 @description('Fully qualified domain name of the Azure SQL Server.')
 param sqlServerFqdn string
@@ -79,10 +82,22 @@ param processingEnabled bool = true
 @description('Enable Microsoft-side provisioning execution. Disabled by default and independent from shared observability processing.')
 param provisioningExecutionEnabled bool = false
 
-@description('Enable the Purview runtime and policy-provisioning module.')
+@description('Enable dedicated protection administration processing only when Purview capability prerequisites are installed.')
+param protectionAdminProcessingEnabled bool = false
+
+@description('Install the Purview runtime and Settings administration module without enabling a registration or claiming readiness.')
 param purviewEnabled bool = false
 
-@description('Enable app-only Security & Compliance PowerShell policy provisioning for new blueprints.')
+@description('Resource ID of the API-owned user-assigned identity used by this worker only for Purview runtime readiness.')
+param purviewRuntimeIdentityResourceId string = ''
+
+@description('Client ID of the API-owned user-assigned identity used for Purview runtime readiness Graph tokens.')
+param purviewRuntimeIdentityClientId string = ''
+
+@description('Principal ID expected in every Purview runtime readiness Graph token.')
+param purviewRuntimeIdentityPrincipalId string = ''
+
+@description('Enable app-only Security & Compliance PowerShell only for explicit Settings-owned administration operations.')
 param purviewPolicyProvisioningEnabled bool = false
 
 @description('Microsoft 365 organization domain used by Connect-IPPSSession app-only authentication.')
@@ -107,6 +122,18 @@ var managerApplicationEnvironmentVariables = [for (managerApplicationId, index) 
   name: 'Agent365__ManagerApplicationIds__${index}'
   value: string(managerApplicationId)
 }]
+var userAssignedIdentities = union(
+  empty(imagePullIdentityResourceId)
+    ? {}
+    : {
+        '${imagePullIdentityResourceId}': {}
+      },
+  empty(purviewRuntimeIdentityResourceId)
+    ? {}
+    : {
+        '${purviewRuntimeIdentityResourceId}': {}
+      })
+var hasUserAssignedIdentity = !empty(imagePullIdentityResourceId) || !empty(purviewRuntimeIdentityResourceId)
 
 // ============================================================================
 // Resources
@@ -119,15 +146,13 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
   // The empty branch preserves only the historical public-image blue/green
   // identity bootstrap. Clean and current deployments always provide the
   // foundation-owned pull identity before this Container App is created.
-  identity: empty(imagePullIdentityResourceId)
+  identity: !hasUserAssignedIdentity
     ? {
         type: 'SystemAssigned'
       }
     : {
         type: 'SystemAssigned, UserAssigned'
-        userAssignedIdentities: {
-          '${imagePullIdentityResourceId}': {}
-        }
+        userAssignedIdentities: userAssignedIdentities
       }
   properties: {
     managedEnvironmentId: environmentId
@@ -203,8 +228,36 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
               value: string(provisioningExecutionEnabled)
             }
             {
+              name: 'ProtectionAdminWorker__ProcessingEnabled'
+              value: string(protectionAdminProcessingEnabled)
+            }
+            {
+              name: 'ProtectionAdminWorker__MaxConcurrentCalls'
+              value: '2'
+            }
+            {
+              name: 'ProtectionAdminWorker__MaxDeliveryCount'
+              value: '10'
+            }
+            {
+              name: 'ProtectionAdminWorker__MaximumPropagationAttempts'
+              value: '5'
+            }
+            {
+              name: 'ProtectionAdminWorker__PropagationRetryDelaySeconds'
+              value: '30'
+            }
+            {
               name: 'Purview__Enabled'
               value: string(purviewEnabled)
+            }
+            {
+              name: 'PurviewRuntimeIdentity__ManagedIdentityClientId'
+              value: purviewRuntimeIdentityClientId
+            }
+            {
+              name: 'PurviewRuntimeIdentity__ManagedIdentityPrincipalObjectId'
+              value: purviewRuntimeIdentityPrincipalId
             }
             {
               name: 'Purview__PolicyProvisioningEnabled'
@@ -238,23 +291,44 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
         }
       ]
       scale: {
-        minReplicas: processingEnabled ? minReplicas : 0
+        minReplicas: processingEnabled || protectionAdminProcessingEnabled ? minReplicas : 0
         maxReplicas: maxReplicas
-        rules: processingEnabled ? [
-          {
-            name: 'service-bus-queue-rule'
-            custom: {
-              type: 'azure-servicebus'
-              metadata: {
-                queueName: serviceBusQueueName
-                namespace: serviceBusNamespaceName
-                messageCount: '5'
-              }
-              auth: []
-              identity: 'system'
-            }
-          }
-        ] : []
+        rules: concat(
+          processingEnabled
+            ? [
+                {
+                  name: 'service-bus-queue-rule'
+                  custom: {
+                    type: 'azure-servicebus'
+                    metadata: {
+                      queueName: serviceBusQueueName
+                      namespace: serviceBusNamespaceName
+                      messageCount: '5'
+                    }
+                    auth: []
+                    identity: 'system'
+                  }
+                }
+              ]
+            : [],
+          protectionAdminProcessingEnabled
+            ? [
+                {
+                  name: 'protection-admin-queue-rule'
+                  custom: {
+                    type: 'azure-servicebus'
+                    metadata: {
+                      queueName: protectionAdminQueueName
+                      namespace: serviceBusNamespaceName
+                      messageCount: '1'
+                    }
+                    auth: []
+                    identity: 'system'
+                  }
+                }
+              ]
+            : []
+        )
       }
     }
   }
@@ -278,6 +352,9 @@ output processingEnabled bool = processingEnabled
 
 @description('Effective provisioning-specific execution gate.')
 output provisioningExecutionEnabled bool = provisioningExecutionEnabled
+
+@description('Effective protection administration processing gate.')
+output protectionAdminProcessingEnabled bool = protectionAdminProcessingEnabled
 
 @description('Effective maximum number of worker replicas.')
 output maxReplicas int = maxReplicas
