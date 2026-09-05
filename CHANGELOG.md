@@ -20,6 +20,9 @@ Protection governance source release candidate.
   provider-ID-bound updates/readback. Settings submits supported DLP actions and
   limits runtime validation to enforcement mode.
 
+- Bootstrap certificate tests use native temporary paths and in-memory PKCS12
+  private-key proof on every platform, without certificate-store fallback.
+
 ### Validation boundary
 
 - Release: zero warnings/errors; all eight .NET projects: 2,004 passed;
@@ -30,6 +33,11 @@ Protection governance source release candidate.
   in favor of bUnit and independent source review after browser policy blocked it.
 - Clean export passed Release, all eight test projects, canonical bootstrap
   source/Pester/Bicep, layout, and launcher smoke with all intended new files.
+- The first hosted run passed .NET, Bicep, and Windows but exposed certificate-test
+  portability failures on Linux/macOS. The two-file correction passed 11 affected
+  tests in the canonical checkout and clean export, plus independent review.
+  Production source and full-suite test counts are unchanged; all hosted jobs
+  must pass for the corrective commit.
 - Source remains undeployed; live E2E is postponed. Hosted CI must be green for
   the exact commit, followed by fresh authorization naming an exact unused
   resource group. Git and documentation transfer no live authority.

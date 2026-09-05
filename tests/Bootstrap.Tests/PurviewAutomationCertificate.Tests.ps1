@@ -5,6 +5,7 @@ Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Azure.psm1') 
 Describe 'Purview automation certificate secure ARM boundary' {
     InModuleScope Azure {
         BeforeEach {
+            $script:certificateSourceRoot = Join-Path $TestDrive 'source'
             $script:certificateSource = "sha256:$('c' * 64)"
             $script:certificateOwnership = '11111111-1111-4111-8111-111111111111'
             $script:certificateApplicationId = '22222222-2222-4222-8222-222222222222'
@@ -31,7 +32,7 @@ Describe 'Purview automation certificate secure ARM boundary' {
                     sourceFingerprint = $script:certificateSource
                 }
             }
-            Mock Get-BootstrapExecutionSourceRoot { return 'C:\source' }
+            Mock Get-BootstrapExecutionSourceRoot { return $script:certificateSourceRoot }
             Mock Assert-BootstrapSourcePathIsRegular { return $true }
             Mock Get-BootstrapSourceFingerprint { return $script:certificateSource }
             Mock Invoke-ArmDeploymentWithSecureParameters {
@@ -66,6 +67,9 @@ Describe 'Purview automation certificate secure ARM boundary' {
                 -SourceFingerprint $script:certificateSource
 
             Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
+                $TemplateFile -ceq (Join-Path $script:certificateSourceRoot 'bootstrap/infra/purview-automation-certificate.bicep')
+            }
             [string]$script:secureDeploymentParameters.secretValue |
                 Should -BeNullOrEmpty
             ($result | ConvertTo-Json -Depth 20 -Compress) |
@@ -92,6 +96,9 @@ Describe 'Purview automation certificate secure ARM boundary' {
 
             $result.status | Should -BeExactly 'Present'
             Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly
+            Should -Invoke Invoke-ArmDeploymentWithSecureParameters -Times 1 -Exactly -ParameterFilter {
+                $TemplateFile -ceq (Join-Path $script:certificateSourceRoot 'bootstrap/infra/purview-automation-certificate.bicep')
+            }
             Should -Invoke Get-GatewayPurviewAutomationCertificateSecretArmMetadata -Times 1 -Exactly
         }
     }

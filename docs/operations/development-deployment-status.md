@@ -289,6 +289,18 @@ expected, not drift.
 
 Canonical source gate: 20 PowerShell files and 2 JSON files, with 28 Bicep templates and 3 parameter files compiled, with Pester behavior tests.
 
+
+The first hosted run passed .NET, Bicep, and Windows gates, but exposed
+Windows-only fixture paths and a macOS-unsupported certificate import in two
+Pester files. The corrective tests use a native temporary source path and prove
+the passwordless PKCS12 private key by an in-memory signature against the exact
+exported certificate, including rejection of a public-only package. Both affected
+files passed again (11 tests, zero failures/skips) in the canonical checkout and
+clean export; independent review of this correction passed. Production source,
+test counts, and UI contracts are unchanged, so the earlier full integrated
+results above remain applicable alongside this incremental evidence. All five
+hosted jobs must pass for the actual release commit before source closure.
+
 The fresh independent review passed the combined source after explicitly
 rechecking all four original findings: shared API/worker runtime identity and
 token subject, exact capability/runtime binding, cancellation-owned process

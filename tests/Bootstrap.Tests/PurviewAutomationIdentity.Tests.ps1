@@ -4,6 +4,93 @@ Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Azure.psm1') 
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Entra.psm1') -Force
 
 Describe 'Purview automation exact compliance RBAC boundary' {
+    BeforeAll {
+        # Decode bags and import RSA directly: macOS cannot load an X509 private key
+        # with EphemeralKeySet. No keychain or temporary certificate store is used.
+        # https://learn.microsoft.com/dotnet/api/system.security.cryptography.pkcs.pkcs12info
+        # https://learn.microsoft.com/dotnet/api/system.security.cryptography.rsa.importencryptedpkcs8privatekey
+        Add-Type -AssemblyName System.Security.Cryptography.Pkcs
+        if (-not ('Gateway.Bootstrap.Tests.Pkcs12PrivateKeyProof' -as [type])) {
+            Add-Type -ReferencedAssemblies @(
+                'System.Security.Cryptography.Pkcs', 'System.Security.Cryptography',
+                'System.Runtime', 'System.Memory', 'System.Collections'
+            ) -TypeDefinition @'
+using System;
+using System.Security.Cryptography;
+using System.Security.Cryptography.Pkcs;
+using System.Security.Cryptography.X509Certificates;
+
+namespace Gateway.Bootstrap.Tests
+{
+    public static class Pkcs12PrivateKeyProof
+    {
+        public static bool Verify(byte[] pfx, byte[] expectedCertificate)
+        {
+            var info = Pkcs12Info.Decode(pfx, out int consumed, skipCopy: true);
+            if (consumed != pfx.Length || info.IntegrityMode != Pkcs12IntegrityMode.Password ||
+                !info.VerifyMac(ReadOnlySpan<char>.Empty))
+                return false;
+
+            using var privateKey = RSA.Create();
+            RSA publicKey = null;
+            int keyCount = 0;
+            int certificateCount = 0;
+            try
+            {
+                foreach (var contents in info.AuthenticatedSafe)
+                {
+                    if (contents.ConfidentialityMode == Pkcs12ConfidentialityMode.Password)
+                        contents.Decrypt(ReadOnlySpan<char>.Empty);
+                    if (contents.ConfidentialityMode != Pkcs12ConfidentialityMode.None)
+                        return false;
+
+                    foreach (var bag in contents.GetBags())
+                    {
+                        if (bag is Pkcs12ShroudedKeyBag encrypted)
+                        {
+                            privateKey.ImportEncryptedPkcs8PrivateKey(ReadOnlySpan<char>.Empty,
+                                encrypted.EncryptedPkcs8PrivateKey.Span, out int keyBytes);
+                            if (++keyCount != 1 || keyBytes != encrypted.EncryptedPkcs8PrivateKey.Length)
+                                return false;
+                        }
+                        else if (bag is Pkcs12KeyBag plain)
+                        {
+                            privateKey.ImportPkcs8PrivateKey(plain.Pkcs8PrivateKey.Span, out int keyBytes);
+                            if (++keyCount != 1 || keyBytes != plain.Pkcs8PrivateKey.Length)
+                                return false;
+                        }
+                        else if (bag is Pkcs12CertBag certBag && certBag.IsX509Certificate)
+                        {
+                            using var certificate = certBag.GetCertificate();
+                            if (++certificateCount != 1 ||
+                                !certificate.RawData.AsSpan().SequenceEqual(expectedCertificate))
+                                return false;
+                            publicKey = certificate.GetRSAPublicKey();
+                        }
+                        else
+                        {
+                            return false;
+                        }
+                    }
+                }
+
+                if (keyCount != 1 || certificateCount != 1 || publicKey == null)
+                    return false;
+                byte[] challenge = { 1, 2, 3, 4 };
+                byte[] signature = privateKey.SignData(challenge, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                return publicKey.VerifyData(challenge, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            }
+            finally
+            {
+                publicKey?.Dispose();
+            }
+        }
+    }
+}
+'@
+        }
+    }
+
     InModuleScope Entra {
         BeforeEach {
             $script:purviewOwnershipId = '11111111-1111-4111-8111-111111111111'
@@ -211,7 +298,7 @@ Describe 'Purview automation exact compliance RBAC boundary' {
             $rsa = New-BootstrapPurviewCertificateRsa
             $certificate = $null
             $pfx = $null
-            $loaded = $null
+            $publicOnlyPfx = $null
             try {
                 $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
                     'CN=a365gw-test-purview',
@@ -223,16 +310,22 @@ Describe 'Purview automation exact compliance RBAC boundary' {
                     [DateTimeOffset]::UtcNow.AddDays(1))
                 $pfx = $certificate.Export(
                     [Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12)
-                $loaded = [Security.Cryptography.X509Certificates.X509CertificateLoader]::LoadPkcs12(
-                    $pfx,
-                    $null,
-                    [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+                [Gateway.Bootstrap.Tests.Pkcs12PrivateKeyProof]::Verify($pfx, $certificate.RawData) |
+                    Should -BeTrue
 
-                $loaded.HasPrivateKey | Should -BeTrue
+                # A parseable PFX containing only the public certificate must fail.
+                $publicContents = [Security.Cryptography.Pkcs.Pkcs12SafeContents]::new()
+                $null = $publicContents.AddCertificate($certificate)
+                $publicBuilder = [Security.Cryptography.Pkcs.Pkcs12Builder]::new()
+                $publicBuilder.AddSafeContentsUnencrypted($publicContents)
+                $publicBuilder.SealWithMac([string]::Empty, [Security.Cryptography.HashAlgorithmName]::SHA256, 1)
+                $publicOnlyPfx = $publicBuilder.Encode()
+                [Gateway.Bootstrap.Tests.Pkcs12PrivateKeyProof]::Verify($publicOnlyPfx, $certificate.RawData) |
+                    Should -BeFalse
             }
             finally {
                 if ($pfx) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($pfx) }
-                if ($loaded) { $loaded.Dispose() }
+                if ($publicOnlyPfx) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($publicOnlyPfx) }
                 if ($certificate) { $certificate.Dispose() }
                 $rsa.Dispose()
             }

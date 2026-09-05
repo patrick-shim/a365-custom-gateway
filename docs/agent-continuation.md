@@ -123,6 +123,18 @@ and per-registration controls. The canonical contracts are in AGENTS.md and the
 
 Canonical source gate: 20 PowerShell files and 2 JSON files, with 28 Bicep templates and 3 parameter files compiled, with Pester behavior tests.
 
+
+The first hosted run passed .NET, Bicep, and Windows gates, but exposed
+Windows-only fixture paths and a macOS-unsupported certificate import in two
+Pester files. The corrective tests use a native temporary source path and prove
+the passwordless PKCS12 private key by an in-memory signature against the exact
+exported certificate, including rejection of a public-only package. Both affected
+files passed again (11 tests, zero failures/skips) in the canonical checkout and
+clean export; independent review of this correction passed. Production source,
+test counts, and UI contracts are unchanged, so the earlier full integrated
+results above remain applicable alongside this incremental evidence. All five
+hosted jobs must pass for the actual release commit before source closure.
+
 The fresh independent review passed the combined source after explicitly
 rechecking all four original findings: shared API/worker runtime identity and
 token subject, exact capability/runtime binding, cancellation-owned process
@@ -149,11 +161,13 @@ belongs in the commit.
 
 ## Exact first unfinished action and invalidated gates
 
-For the release coordinator, commit and push the accepted source on `main`, then
-verify the hosted Build and Test workflow for that exact commit. A receiving
-checkout first verifies its actual HEAD and the associated hosted CI result; do
-not assume a green result from an older commit. A failed hosted job requires a
-normal corrective commit and affected local gates before another push.
+For the release coordinator, push this normal certificate-test corrective commit
+on `main`, then verify all five hosted Build and Test jobs for that exact commit.
+Hosted platform acceptance remains the first unfinished gate at this handoff.
+A receiving checkout first verifies its actual HEAD and the associated workflow;
+a green result closes this source task, and work stops before any live action.
+Do not assume success from an older commit. A failed job requires a normal
+corrective commit and affected local gates before another push; do not amend.
 
 No offline gate remains invalidated at this checkpoint. Any subsequent source
 change invalidates its affected build, tests, formatting, review, and export
