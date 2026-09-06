@@ -169,7 +169,7 @@ These are source gates. They are not deployment evidence or live-readiness proof
 | Focused credential-window and domain-lookup tests | 50 passed, 0 failed |
 | Bootstrap, Operations and Purview Pester | 964 passed, 0 failed, 7 skipped |
 | Hosted CI for the credential-window commit | Passed |
-| Hosted CI for the domain-lookup commit | Still running when work stopped |
+| Hosted CI for the domain-lookup commit | Passed |
 
 Each correction carries focused regression tests that fail against the previous
 behaviour. Release build, the eight .NET test projects, Bicep compilation, the nine
