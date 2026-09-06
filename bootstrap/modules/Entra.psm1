@@ -6,6 +6,7 @@ $script:KeyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
 $script:PurviewExchangeOnlineProtectionAppId = '00000007-0000-0ff1-ce00-000000000000'
 $script:PurviewExchangeManageAsAppRoleId = '455e5cd2-84e8-4751-8344-5672145dfa17'
 $script:PurviewComplianceAdministratorRoleDefinitionId = '17315797-102d-40b4-93e0-432062caca18'
+$script:PurviewCertificateCredentialDays = 364
 
 function Get-ExactApplicationByDisplayName {
     param([Parameter(Mandatory)][string]$DisplayName)
@@ -887,6 +888,28 @@ function Test-BootstrapPurviewAutomationIdentityEvidence {
     return $true
 }
 
+function Get-BootstrapPurviewCertificateCredentialWindow {
+    param([Parameter(Mandatory)]$Certificate)
+
+    # Microsoft documents endDateTime as at most one year from startDateTime, and the
+    # window must stay inside the certificate itself. X.509 validity has whole-second
+    # resolution, so a sub-second endDateTime outlives the certificate it describes and
+    # the application update is rejected as invalid.
+    $notBefore = [DateTimeOffset]::new(
+        ([datetime]$Certificate.NotBefore).ToUniversalTime(), [TimeSpan]::Zero)
+    $notAfter = [DateTimeOffset]::new(
+        ([datetime]$Certificate.NotAfter).ToUniversalTime(), [TimeSpan]::Zero)
+    $end = $notBefore.AddDays($script:PurviewCertificateCredentialDays)
+    if ($end -gt $notAfter) { $end = $notAfter }
+    if ($end -le $notBefore -or $end -le [DateTimeOffset]::UtcNow -or $end -gt $notBefore.AddYears(1)) {
+        throw 'The Purview automation certificate cannot produce a valid Microsoft Entra credential window.'
+    }
+    return [ordered]@{
+        startDateTime = $notBefore.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [cultureinfo]::InvariantCulture)
+        endDateTime = $end.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [cultureinfo]::InvariantCulture)
+    }
+}
+
 function New-BootstrapPurviewAutomationCertificate {
     param(
         [Parameter(Mandatory)]$Config,
@@ -941,6 +964,7 @@ function New-BootstrapPurviewAutomationCertificate {
         $notBefore = [DateTimeOffset]::UtcNow.AddMinutes(-5)
         $notAfter = [DateTimeOffset]::UtcNow.AddYears(1)
         $certificateObject = $request.CreateSelfSigned($notBefore, $notAfter)
+        $credentialWindow = Get-BootstrapPurviewCertificateCredentialWindow -Certificate $certificateObject
         $pfxBytes = $certificateObject.Export(
             [Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12)
         $publicBytes = $certificateObject.Export(
@@ -968,8 +992,8 @@ function New-BootstrapPurviewAutomationCertificate {
                     key = [Convert]::ToBase64String($publicBytes)
                     customKeyIdentifier = [Convert]::ToBase64String(
                         [Convert]::FromHexString($thumbprint))
-                    startDateTime = $notBefore.ToString('O')
-                    endDateTime = $notAfter.ToString('O')
+                    startDateTime = [string]$credentialWindow.startDateTime
+                    endDateTime = [string]$credentialWindow.endDateTime
                 })
             } | Out-Null
         }
