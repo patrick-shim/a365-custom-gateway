@@ -604,9 +604,11 @@ function Ensure-ServicePrincipal {
 }
 
 function Get-BootstrapInitialTenantDomain {
-    $domains = @(Get-BoundedGraphCollection -InitialUrl (
-        'https://graph.microsoft.com/v1.0/domains?' +
-        '$filter=isInitial%20eq%20true&$select=id,isInitial,isVerified'))
+    # Microsoft documents a known issue with $filter on the domains collection, and the
+    # service rejects a filtered request outright, so the initial domain is selected from
+    # the returned collection instead of being requested by server-side filter.
+    $domains = @(@(Get-BoundedGraphCollection -InitialUrl (
+        'https://graph.microsoft.com/v1.0/domains')) | Where-Object { $_.isInitial -eq $true })
     if ($domains.Count -ne 1 -or
         $domains[0].isInitial -ne $true -or
         $domains[0].isVerified -ne $true -or
