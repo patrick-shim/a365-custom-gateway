@@ -553,7 +553,8 @@ module apiApp './modules/container-app-api.bicep' = {
     purviewRuntimeIdentityResourceId: purviewRuntimeIdentityConfigured ? runtimeImagePullIdentityId : ''
     purviewRuntimeIdentityClientId: purviewRuntimeIdentityConfigured ? runtimeWorkloadIdentity!.properties.clientId : ''
     purviewRuntimeIdentityPrincipalId: purviewRuntimeIdentityConfigured ? runtimeImagePullIdentityPrincipalId : ''
-    promptShieldEnabled: promptShieldEnabled
+    // Capability attestation is supplied only after database and capability setup.
+    promptShieldEnabled: promptShieldEnabled && databaseAttestationEnabled
     promptShieldEndpoint: promptShieldEnabled ? contentSafety!.outputs.endpoint : ''
     databaseAttestationEnabled: databaseAttestationEnabled
     databaseAttestationDeploymentOwnershipId: databaseAttestationEnabled ? deploymentOwnershipId : ''

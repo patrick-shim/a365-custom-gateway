@@ -189,7 +189,8 @@ function Get-GatewayArmBooleanEnvironmentContract {
     $previewText = ConvertTo-GatewayArmBooleanText -Value $RegistryPreviewEnabled
     $purviewText = ConvertTo-GatewayArmBooleanText -Value $PurviewEnabled
     $policyText = ConvertTo-GatewayArmBooleanText -Value $PurviewPolicyProvisioningEnabled
-    $promptShieldText = ConvertTo-GatewayArmBooleanText -Value $PromptShieldEnabled
+    # Infrastructure is selected earlier; runtime activation requires attestation.
+    $promptShieldText = ConvertTo-GatewayArmBooleanText -Value ($PromptShieldEnabled -and $RuntimeEnabled)
 
     return [ordered]@{
         Api = [ordered]@{

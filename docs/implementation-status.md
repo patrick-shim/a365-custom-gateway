@@ -8,59 +8,44 @@ at the repository [README](../README.md). Exact deployed development evidence is
 machine or agent starts unfinished work from the tracked
 [agent continuation checkpoint](agent-continuation.md).
 
-## Current live stop: database schema verification
+## Current live stop: inert API startup
 
-All five hosted jobs passed for the capability-Boolean correction. The separately
-authorized replacement completed 10 of 19 bootstrap stages through visible Windows
-Setup, including one new seed blueprint and the private SQL endpoint. Its sole
-database job failed after EF schema creation at exact schema comparison. The
-original SQL administrator was independently verified restored; both deployment
-states and the failed execution remain preserved.
+The authorized replacement completed its first bounded database recovery with
+exactly one successful execution and no automatic retries. Independent Azure
+readback verified the corrected immutable image, preserved original failed job,
+and restored original SQL administrator. The original accepted plan and workload
+image evidence remain unchanged. Eleven of nineteen stages are complete.
 
-An isolated SQL Server 2022 reproduction identified one relational difference:
-the engine removes redundant AND-group parentheses from the legacy protection
-scope constraint. The model expression now matches that catalog serialization.
-[Microsoft's operator precedence](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/operator-precedence-transact-sql?view=sql-server-ver17)
-keeps AND before OR, preserving both exact scope branches. The normalizer,
-strict schema comparison, and Azure platform/authority checks are unchanged.
+Visible Setup's read-only Resume review passed the source, identity, infrastructure,
+image, and private-network checks, then stopped at the database-stage API readiness
+request. No Resume authorization was issued and no deployment mutation followed.
+Detailed revision health showed a restarting API. Its strict startup validator
+rejected enabled Prompt Shields because the inert deployment precedes capability
+attestation. This is an API startup ordering defect, not a failed database recovery.
 
-The regression failed before the model correction; all 167 focused migrator and
-recovery tests then passed. All seven local relational projections now match:
-24 tables, 335 columns, 24 primary keys, 0 unique constraints, 22 foreign keys,
-17 check constraints, and 57 indexes. LocalDB does not evaluate Azure-only
-platform or runtime-authority checks and is not deployment acceptance.
+The source correction gates API Prompt Shields on the runtime deployment phase.
+Selected Content Safety infrastructure, RBAC, and endpoint outputs remain prepared
+during inert deployment. Exact capability validation, provider fail-closed behavior,
+SQL evidence checks, and API readiness requirements remain enforced. The regression
+first reproduced three failures. The six focused phase/template regressions and
+22 Prompt Shields tests, including three actual HostBuilder startup cases, passed.
+The clean 900-file export passed Release with zero warnings/errors, all eight .NET
+projects (2,008 tests), and the complete bootstrap gate (876 passed, zero failed,
+7 skipped; 20 PowerShell files, 2 JSON files, 28 Bicep templates, 3 parameter files).
+All nine formatting targets, Windows/POSIX launcher smoke, metadata/private-path
+checks, full ledger audit, and fresh independent correction source review passed.
+Hosted CI must also be green for the containing commit before deployment.
 
-Independent review also identified a post-recovery Resume source-binding defect.
-Resume now retains the original accepted plan and workload source while separately
-binding the completed recovery's exact execution source and immutable snapshot.
-The review fingerprint and final mutation guard include that execution source;
-incomplete recovery, drifted evidence, and changed snapshots fail closed.
-The executable Resume regression first failed at RP00; all 17 new cases now pass,
-including database revalidation through RP13 and continuation at Admin UI identity.
+Independent review confirmed that no existing supported command accepts this new
+source generation after completed source-pinned database recovery. Preserve that
+deployment, its state, jobs, identities, accepted snapshots, and credentials. Do not
+replay recovery or bypass the source and readiness guards. A new isolated deployment
+needs its own exact-target authority; no additional target has been authorized.
 
-Credential creation and reconciliation now pass the corrected execution fingerprint
-through both Admin UI and Purview certificate deployment chains. The exact regular
-template and snapshot hash are verified before identity mutation, and again at
-deployment; original resource tags and exact metadata recovery are preserved.
-Final verification retains the exact shared-identity Purview role check and removes
-a contradictory duplicate check against the API system identity. No roles are added.
-Four credential regressions and the final identity regression failed before their
-corrections. The combined affected credential/verification suites pass 290 tests;
-the affected Resume/database/experience suites pass 236 tests.
-
-The complete correction passed fresh independent source review with no remaining
-actionable findings. The clean 900-file export passed Release with zero warnings
-or errors, all eight .NET projects (2,005 passed), the full bootstrap suite
-(871 passed, zero failed, 7 skipped), all 28 Bicep templates and 3 parameter files,
-layout, and Windows/POSIX launcher smoke. All nine format targets, metadata,
-private-path checks, and the full ledger audit passed. Local relational checks
-remain distinct from the recovery job's Azure platform and authority checks.
-
-The first unfinished action is to publish this validated correction and verify
-exact-commit hosted CI, then review the supported first bounded database-recovery
-plan. No recovery execution, state edit, SQL finalization, or cleanup has occurred.
-Admin UI, registrations, protection readiness, and live E2E remain unproved.
-Exact authority and evidence stay in the ignored operator ledger.
+Deployment and live E2E remain unfinished. Admin UI sign-in, two blueprint-bound
+registrations, delegated Registry completion, Agent 365 landing, Prompt Shields
+allow/block, and blueprint-specific DLP allow/block remain unproved. Environment
+identifiers and receipts remain in ignored operator evidence.
 
 ## Capability Boolean correction and offline evidence
 
@@ -181,8 +166,7 @@ including one seed blueprint, before its single database job failed at the exact
 post-EnsureCreated relational schema comparison. SQL administrator restoration was
 independently verified. Admin UI, registration, and protection E2E remain unproved.
 
-Verify exact-commit hosted CI before reviewing the supported bounded database
-recovery plan. Do not edit accepted state, replay the failed job,
+Complete the inert API startup correction before proposing a new deployment. Do not edit accepted state, replay the failed job,
 finalize SQL, or clean up either deployment. Exact receipts and current operator
 authority remain local; neither transfers through Git or documentation.
 
@@ -419,8 +403,7 @@ including one seed blueprint, before its single database job failed at the exact
 post-EnsureCreated relational schema comparison. SQL administrator restoration was
 independently verified. Admin UI, registration, and protection E2E remain unproved.
 
-Verify exact-commit hosted CI before reviewing the supported bounded database
-recovery plan. Do not edit accepted state, replay the failed job,
+Complete the inert API startup correction before proposing a new deployment. Do not edit accepted state, replay the failed job,
 finalize SQL, or clean up either deployment. Exact receipts and current operator
 authority remain local; neither transfers through Git or documentation.
 

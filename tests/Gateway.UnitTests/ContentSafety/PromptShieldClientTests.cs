@@ -13,6 +13,7 @@ using Gateway.Domain.Interfaces;
 using Gateway.Application.Protection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace Gateway.UnitTests.ContentSafety;
@@ -327,6 +328,37 @@ public sealed class PromptShieldClientTests
             options.Endpoint = "https://different.cognitiveservices.azure.com/";
             binding.IsExact(CreateCapability()).Should().BeFalse();
         }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    public async Task ActualHostStartup_RequiresAttestationWhenPromptShieldsAreEnabled(
+        bool enabled, bool attested)
+    {
+        var settings = CreateConfiguration().AsEnumerable()
+            .ToDictionary(pair => pair.Key, pair => attested ? pair.Value : string.Empty);
+        settings["BootstrapCapabilities:Enabled"] = attested.ToString();
+        settings["PromptShield:Enabled"] = enabled.ToString();
+        settings["PromptShield:Endpoint"] = ContentSafetyEndpoint;
+        using var host = new HostBuilder()
+            .ConfigureAppConfiguration(configuration =>
+                configuration.AddInMemoryCollection(settings))
+            .ConfigureServices((context, services) =>
+                services.AddPromptShieldServices(context.Configuration))
+            .Build();
+
+        if (enabled && !attested)
+        {
+            var start = () => host.StartAsync();
+            await start.Should().ThrowAsync<OptionsValidationException>();
+            return;
+        }
+
+        await host.StartAsync();
+        host.Services.GetRequiredService<IPromptShieldClient>().IsEnabled.Should().Be(enabled);
+        await host.StopAsync();
     }
 
     [Fact]

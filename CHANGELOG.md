@@ -8,6 +8,9 @@ Protection governance source release candidate.
 
 ### Changed
 
+- Inert deployment prepares selected Content Safety infrastructure while keeping
+  Prompt Shields off until runtime activation supplies capability attestation.
+  Runtime startup and fail-closed capability checks remain enforced.
 - Bootstrap installs shared Agent 365, Prompt Shields, and Purview capabilities
   without selecting a SIT or authoring tenant policy.
 - Gateway Settings owns tenant connection, SIT selection, KYD and blueprint DLP
@@ -69,10 +72,18 @@ Protection governance source release candidate.
   Combined correction acceptance passed fresh independent review, Release, all
   2,005 .NET tests, 871 Pester tests (zero failures, 7 skips), source/Bicep, all
   nine format targets, metadata/private-path checks, full ledger audit, and the
-  clean 900-file export with launcher smoke. Exact-commit hosted CI precedes
-  bounded recovery;
+  clean 900-file export with launcher smoke. All five hosted jobs passed.
+  The first bounded database recovery completed exactly once, and independent
+  execution/image/administrator-restoration readback passed;
   Admin UI deployment and live registration/protection E2E remain unproved.
   Git transfers no live authority.
+- Visible Resume then stopped at API readiness because inert Prompt Shields
+  preceded capability attestation. Its correction passed six focused regressions,
+  22 Prompt Shields tests, clean-export Release and all 2,008 .NET tests, 876 Pester
+  tests (zero failures, 7 skips), source/Bicep, all nine format targets, metadata,
+  full ledger audit, launcher smoke, and independent review. The preserved completed
+  recovery cannot admit another source generation through an existing command.
+  A new isolated proposal passed read-only Plan; its live authority is pending.
 
 
 ## [0.1.0-beta.1] - 2026-09-05

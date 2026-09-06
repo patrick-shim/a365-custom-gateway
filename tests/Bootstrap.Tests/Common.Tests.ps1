@@ -413,6 +413,19 @@ Describe 'Exact bootstrap configuration file fingerprint boundary' {
 }
 
 Describe 'Canonical bootstrap fingerprints' {
+    It 'enables selected Prompt Shields only after runtime activation: runtime=<Runtime>, selected=<Selected>' -ForEach @(
+        @{ Runtime = $false; Selected = $true; Expected = 'False' }
+        @{ Runtime = $false; Selected = $false; Expected = 'False' }
+        @{ Runtime = $true; Selected = $true; Expected = 'True' }
+        @{ Runtime = $true; Selected = $false; Expected = 'False' }
+    ) {
+        $contract = Get-GatewayArmBooleanEnvironmentContract `
+            -RuntimeEnabled $Runtime -RegistryPreviewEnabled $false `
+            -PurviewEnabled $false -PurviewPolicyProvisioningEnabled $false `
+            -PromptShieldEnabled $Selected
+        $contract.Api['PromptShield__Enabled'] | Should -BeExactly $Expected
+    }
+
     It 'projects booleans with the exact casing ARM persists for Bicep string(bool)' {
         (ConvertTo-GatewayArmBooleanText -Value $false) | Should -BeExactly 'False'
         (ConvertTo-GatewayArmBooleanText -Value $true) | Should -BeExactly 'True'
@@ -426,7 +439,7 @@ Describe 'Canonical bootstrap fingerprints' {
         $contract.Api.Count | Should -Be 7
         $contract.Worker.Count | Should -Be 4
         $contract.Api['Provisioning__AllowContinuousDevelopmentAccess'] | Should -BeExactly 'False'
-        $contract.Api['PromptShield__Enabled'] | Should -BeExactly 'True'
+        $contract.Api['PromptShield__Enabled'] | Should -BeExactly 'False'
         $contract.Worker['ProvisioningWorker__ProcessingEnabled'] | Should -BeExactly 'False'
         @($contract.Api.Values + $contract.Worker.Values | Where-Object { $_ -cnotin @('True', 'False') }).Count | Should -Be 0
 

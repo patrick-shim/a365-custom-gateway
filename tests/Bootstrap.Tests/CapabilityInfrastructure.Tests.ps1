@@ -55,6 +55,13 @@ Describe 'Fresh Purview capability infrastructure contract' {
             Join-Path $script:RepositoryRoot 'infrastructure/bicep/modules/role-assignments.bicep') -Raw
     }
 
+    It 'keeps selected Content Safety infrastructure while withholding runtime activation during inert bootstrap' {
+        $script:MainBicep | Should -Match 'promptShieldEnabled:\s*promptShieldEnabled && databaseAttestationEnabled'
+        $script:MainBicep | Should -Match "module contentSafety[^\r\n]+if \(promptShieldEnabled\)"
+        $script:MainBicep | Should -Match 'promptShieldEndpoint:\s*promptShieldEnabled \? contentSafety!\.outputs\.endpoint'
+        $script:MainBicep | Should -Match "resource promptShieldCognitiveServicesUser[^\r\n]+if \(promptShieldEnabled\)"
+    }
+
     It 'pins the documented Security and Compliance app-only permission and role' {
         $script:EntraSource |
             Should -Match "PurviewExchangeOnlineProtectionAppId\s*=\s*'00000007-0000-0ff1-ce00-000000000000'"

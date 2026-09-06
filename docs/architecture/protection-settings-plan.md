@@ -1,24 +1,18 @@
 # Protection capability and Gateway Settings plan
 
-Status: replacement bootstrap preserved at database verification; corrected source passed offline acceptance.
+Status: database recovery independently verified; inert API startup correction passed offline acceptance.
 
 Last updated: 2026-09-06 (Asia/Seoul).
 
-This document records the implemented source architecture for capability-only
-bootstrap and role-aware Gateway Settings governance. Phase 4 source gates passed
-after fresh independent review and exact-commit hosted CI. The separately authorized
-Phase 5 replacement bootstrap passed exact inert verification and completed ten
-stages, including the seed blueprint, workflow Entra configuration, and private
-SQL endpoint. Its database job failed at exact schema comparison after EF created
-the schema. The original SQL administrator was independently verified restored;
-the failed execution and both deployment states remain preserved. Local SQL
-comparison isolated redundant constraint parentheses. The model correction and
-separate completed-recovery Resume execution binding passed combined offline
-acceptance and fresh independent review; hosted CI precedes bounded recovery. Credential paths now validate and carry the corrected
-execution snapshot before identity mutations; final Purview role verification uses
-the shared runtime identity without adding API grants.
-No completed beta.2 deployment or live registration/protection E2E is claimed.
-Exact target authority and evidence remain in the local operator ledger.
+This document records the implemented capability-only bootstrap and role-aware
+Gateway Settings architecture. Database recovery passed independent readback, but
+visible Resume stopped at API readiness: inert deployment enabled Prompt Shields
+before capability attestation. The source correction delays runtime activation
+while retaining selected infrastructure. Correction-specific clean-export acceptance and independent source review passed;
+exact-commit hosted CI remains required before deployment.
+No supported existing command admits that new source into completed pinned recovery.
+The deployment is preserved; any new isolated target requires separate authority.
+Admin UI, registration, observability, and protection E2E remain unproved.
 
 ## Decision and boundaries
 
@@ -69,7 +63,8 @@ The Purview scope contracts stay independent:
   readback. Stored requested settings do not override effective readiness.
 - Beta.2 has reached the database stage in the authorized replacement attempt.
   Existing complete live evidence belongs to an older revision and does not prove
-  this implementation. The database recovery correction is not deployed.
+  this implementation. Only the bounded database recovery correction has
+  completed live verification; remaining deployment and E2E gates are unfinished.
 
 ## Implemented architecture
 
