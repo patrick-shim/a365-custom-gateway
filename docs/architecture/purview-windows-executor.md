@@ -124,9 +124,11 @@ The first deployment still needs these concrete pieces:
 6. Full source/export gates, independent integration review, authorized Windows
    runtime/provider proof, and Settings connection, SIT, KYD and DLP acceptance.
 
-The operator stopped live delivery with a partial certificate after Entra rejected
-public-key publication. Source was promoted for handoff only. The partial recovery
-needs a separate exact repair; promotion does not extend its source authorization.
+The operator stopped live delivery for a model handoff. The Entra public-key
+rejection is now corrected in source and proven by live readback, but the active
+deployment cannot yet adopt the corrected source, and a retained earlier target
+still holds a partial certificate needing a separate exact repair. Source was
+promoted for handoff only; promotion does not extend its source authorization.
 Complete core bootstrap independently before any live Windows upgrade. DLP remains fail closed until capability,
 policy readback, propagation, runtime token roles and exact allow/block evidence
 are independently verified. The [Purview runbook](../operations/purview-setup-runbook.md)

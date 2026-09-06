@@ -14,74 +14,103 @@ not transfer the ignored state required to Resume an existing deployment.
 
 ## Current delivery: stopped for model handoff
 
-The operator stopped live work because model credits were exhausted and requested
-this handoff. The fully running Gateway has **not** been delivered. Do not restart
-deployment automatically from this checkpoint; continue when the operator resumes
-the task. Exact target, original authorization, configuration and recovery evidence
-remain in ignored local operator records and do not transfer through Git.
+The operator stopped work and handed the task to another model. The fully running
+Gateway has **not** been delivered. Do not restart deployment automatically from
+this checkpoint; continue when the operator resumes. Exact target, original
+authorization, configuration and recovery evidence remain in ignored local operator
+records and do not transfer through Git.
 
-The active Azure bootstrap has thirteen of nineteen stages completed. Its original
-Purview prerequisite failure was a malformed directory-role query. The corrected,
-reviewed recovery completed and independently verified the exact Exchange and
-Compliance Administrator grants on the existing owned automation identity.
-Its certificate operation remains `Started`, with no completion receipt.
+Two bootstrap defects that blocked the Purview prerequisite stage were found,
+corrected against current Microsoft documentation, and pushed to `main`.
 
-Read-only evidence shows that the exact Key Vault certificate-secret deployment
-succeeded, while the pinned Entra application still has zero key credentials.
-The exact application audit event reports a failed `Update application` with
-`Microsoft.Online.Workflows.ValidationException`. This is a partial certificate,
-not a missing certificate and not a completed recovery. No secret value was read
-for diagnosis. Preserve the secret, both grants, original accepted snapshot,
-thirteen completed stages and the recovery operation record. Do not rotate,
-recreate, clear or replay the certificate operation, or rerun the whole identity
-Ensure function. The existing recovery rejects this partial state by design.
+The first defect built the Microsoft Entra key-credential window from the requested
+generation values instead of the issued certificate. That produced two simultaneous
+violations: a sub-second `endDateTime` outliving the certificate's whole-second
+`NotAfter`, and a window of one year plus five minutes exceeding the documented
+one-year maximum. Entra rejected the whole application update as a validation
+failure, which is the previously undiagnosed publication error. The window is now
+derived from the issued certificate, clamped inside its validity and under one
+year, and formatted to whole UTC seconds.
 
-Before that live attempt, the minimal recovery source passed independent review,
-Release with zero warnings/errors, all 2,008 .NET tests, 928 Pester tests with seven
-skips, 28 Bicep templates and three parameter files, formatting and clean-export
-Windows/POSIX launcher checks. The PKCS12 proof correction also passed independent
-review; its bounded zero-padding acceptance retains MAC, key and certificate proof.
-These are evidence for the minimal recovery source, not the combined handoff source.
+The second defect asked Microsoft Graph to filter the `domains` collection.
+Microsoft documents `$filter` as unsupported there, and the service answers HTTP
+400 `Request_UnsupportedQuery`. The initial verified domain is now selected from
+the returned collection. The uniqueness, verification and domain-shape guards are
+unchanged.
 
-The reviewed Windows executor, worker transport, private publisher, package
-inspector, Bicep and tests have now been promoted into canonical source. Required
-implementation is no longer held only in an ignored export. Canonical recovery and
-diagnostic privacy corrections were preserved during promotion. The host/client,
-publisher and package-inspector boundaries previously passed independent review
-with 66, 49 and 29 focused tests; two additional package-builder source-binding
-tests passed, with 31 combined package tests and independent review. Deployment
-integration, dedicated identity creation, package publication, upgrade receipt,
-fresh-bootstrap wiring and actual Windows/provider proof remain unfinished.
-The old package must be rebuilt against the final source before publication.
+Both corrections are proven by exact live provider readback, not by local state or
+configuration. The automation application on the active target now carries exactly
+one key credential with a whole-second window inside the certificate; this is the
+first successful publication of that credential on any target. The corrected domain
+lookup returned the tenant initial verified domain in a read-only call against the
+same tenant.
 
-Promotion changes the source fingerprint. It does not widen or complete the
-preserved minimal recovery authorization. The combined source must not be deployed
-as a finished Full evaluation release. A local Windows host startup check was
-blocked by automatic tool policy and remains unverified. The new source has not
-been deployed; final combined validation and hosted CI are reported separately.
+A clean deployment of the current source was separately authorized on a new
+development target. It reached thirteen of nineteen stages complete with the
+Purview prerequisite stage failed. Its certificate is **not** partial: publication
+succeeded and only the subsequent domain readback failed, which the second
+correction addresses. The earlier retained target that holds the partial
+certificate is untouched. Its certificate, both grants, accepted snapshot,
+completed stages and operation record were not replayed, rotated, cleared or
+rerun through the identity Ensure function. Preserve it exactly as recorded.
 
-No new registration, delegated Registry completion, worker-verified Active,
+Both corrections landed after that deployment's plan was accepted, so the current
+source fingerprint no longer matches its accepted-source snapshot. This is the
+active blocker and it is unresolved. Resume stops at its accepted-authorization
+preflight because current source differs from the accepted source without a
+completed automatic database recovery. Plan refuses because the deployment has
+already started. Resume also executes bootstrap modules from the accepted-source
+snapshot rather than the working tree, so even a passing Resume would run the
+uncorrected source. No supported operator path out of this state had been
+established when work stopped.
+
+Do not force progress. Do not edit or delete accepted state, remove `.bootstrap`,
+weaken the source-binding guard, or replay a completed recovery in order to adopt
+new source. If no supported command accepts a corrected source generation on a
+started deployment, that is a reviewable source gap to report to the operator with
+its trade-offs, not a guard to bypass.
+
+No registration, delegated Registry completion, worker-verified `Active`,
 independent Agent 365 landing, Prompt Shields allow/block or DLP allow/block has
-passed for this target. All remain required after deployment and Windows integration.
-Use the shared model handoff protocol and exact first unfinished action below or
-in the continuation checkpoint. Canonical `main` is the sole checkout; the old
-linked worktree, branch and verified-empty worktree parent were retired. Credentials
-and runtime evidence remain outside Git.
+passed for the active target. Windows executor deployment integration, dedicated
+identity creation, package rebuild and publication, upgrade receipt,
+fresh-bootstrap wiring and actual Windows/provider proof also remain unfinished;
+the old package is stale and must be rebuilt against final source. Canonical `main`
+is the sole checkout, with no branch or worktree created. Credentials and runtime
+evidence remain outside Git.
 
-## Handoff validation
+## Validation for the two corrections
+
+These are source gates. They are not deployment evidence or live-readiness proof.
+
+| Gate | Result |
+|---|---|
+| Focused Purview certificate and identity tests | 45 passed, 0 failed |
+| Focused credential-window and domain-lookup tests | 50 passed, 0 failed |
+| Bootstrap, Operations and Purview Pester | 964 passed, 0 failed, 7 skipped |
+| Hosted CI for the credential-window commit | Passed |
+| Hosted CI for the domain-lookup commit | Still running when work stopped |
+
+Each correction carries focused regression tests that fail against the previous
+behaviour. Release build, the eight .NET test projects, Bicep compilation, the nine
+format targets and the clean-export gates were **not** rerun for these two
+corrections, because both change PowerShell bootstrap source only. Rerun the
+affected gates before any release claim.
+
+## Earlier validation for the promoted Windows executor source
 
 The combined handoff source passed Release with zero warnings and errors, all 2123
 .NET tests across eight projects, 31 package/source-binding Pester tests, source
 structure checks, document/link/private-path checks and independent handoff review.
 The earlier architecture failure was a stale expectation of the removed local
 provider; its assertion now expects the reviewed remote provider and all affected
-tests pass. The first build was blocked only by the owned idle Setup executable;
-stopping that host resolved the lock. Final full bootstrap/export gates and hosted
-CI remain pending for this combined source. No live gate was closed by this handoff.
+tests pass. Hosted CI later passed for the promoted-source commit. Full
+bootstrap/export gates for that combined source remain pending. No live gate was
+closed by that handoff.
 
 ## Historical preserved deployment and startup correction
 
-The following retained-target evidence predates the active thirteen-stage attempt.
+The following retained-target evidence predates the active clean attempt.
 It is not the current next action. Follow the current delivery block above and
 the single continuation checkpoint for execution.
 
@@ -232,10 +261,10 @@ prove that later source changes are deployed.
 
 ## Current acceptance and upgrade boundary
 
-The active deployment is the thirteen-stage attempt described at the top of this
-checkpoint. No previous deployment's telemetry, registration or protection result
-closes its remaining gates. Detailed historical telemetry and troubleshooting
-chronology remain in Git history.
+The active deployment is the clean attempt described at the top of this checkpoint.
+No previous deployment's telemetry, registration or protection result closes its
+remaining gates. Detailed historical telemetry and troubleshooting chronology
+remain in Git history.
 
 Bootstrap prepares shared capabilities only. It never selects a sensitive
 information type or authors Know Your Data or DLP policy. Gateway Settings owns
@@ -245,12 +274,19 @@ readiness. Both compliance providers require the reviewed Windows execution path
 the Linux worker's module installation proves neither connection nor authoring.
 
 The accepted bootstrap source and completed stage evidence remain immutable.
-Ordinary Resume cannot silently adopt changed source. The active attempt stopped
-inside the [narrow prerequisite recovery](purview-prerequisite-recovery.md) with a
-partial certificate. That command cannot repair this state. Diagnose the failed
-publication and review an exact repair before any recovery completion or Resume.
-No new resource group, database initialization or replacement identity is authorized
-by this handoff.
+Ordinary Resume cannot silently adopt changed source, and that is the active
+blocker: the two corrections landed after the active plan was accepted, so Resume
+refuses the changed source and Plan refuses a started deployment. Establish a
+supported path or report the gap before changing anything. No new resource group,
+database initialization or replacement identity is authorized by this handoff.
+
+The retained earlier target stopped inside the
+[narrow prerequisite recovery](purview-prerequisite-recovery.md) with a partial
+certificate. That command cannot repair that state, and the operator deferred the
+repair until the active deployment runs. The publication failure itself is now
+explained by the corrected credential window, so the repair no longer needs
+diagnosis; it needs an exact reviewed write that publishes the preserved Key Vault
+certificate without rotating, recreating, clearing or replaying anything.
 
 A separate reviewed Windows executor upgrade is being implemented. It must bind
 the original accepted plan, exact existing resource/identity/SQL evidence, new

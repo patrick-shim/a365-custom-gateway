@@ -12,10 +12,12 @@ is deployed. The current source is ahead of the deployment evidence recorded in
 and a Purview DLP allow/block pair has not been live-proven on a deployed build.
 
 > **Delivery unfinished; stopped for model handoff.** Azure bootstrap remains at
-> thirteen of nineteen stages. The two prerequisite grants are verified, but
-> certificate storage succeeded while Entra public-key publication failed.
-> The partial recovery must not be replayed. Reviewed Windows executor source is
-> included, but deployment integration and all live E2E acceptance remain open.
+> thirteen of nineteen stages. Two bootstrap defects that blocked the Purview
+> prerequisite stage are corrected in this source and proven by live provider
+> readback, but the active deployment cannot yet adopt the corrected source, and a
+> retained earlier target still holds a partial certificate that must not be
+> replayed. Reviewed Windows executor source is included, but deployment
+> integration and all live E2E acceptance remain open.
 > Begin with [agent continuation](docs/agent-continuation.md) for the exact next
 > action and validated evidence. This checkout is not a completed Full evaluation release.
 
