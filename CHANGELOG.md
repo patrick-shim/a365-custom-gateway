@@ -24,6 +24,9 @@ Protection governance source release candidate.
   private-key proof with both documented null and empty password encodings,
   without certificate-store fallback.
 
+- Bootstrap capability verification uses ARM's exact `True`/`False` environment
+  text, with executable coverage for both values and fail-closed mismatches.
+
 ### Validation boundary
 
 - Release: zero warnings/errors; all eight .NET projects: 2,004 passed;
@@ -38,11 +41,18 @@ Protection governance source release candidate.
   canonical checkout and clean export, plus fresh independent review. Synthetic
   fixtures cover all eight null/empty password encoding combinations and reject
   nonempty-password and public-only packages. The preceding hosted run passed
-  .NET, Bicep, Ubuntu, and macOS; all jobs must pass for the final Windows proof
-  correction. Production source and full-suite test counts are unchanged.
-- Source remains undeployed; live E2E is postponed. Hosted CI must be green for
-  the exact commit, followed by fresh authorization naming an exact unused
-  resource group. Git and documentation transfer no live authority.
+  .NET, Bicep, Ubuntu, and macOS; all five jobs subsequently passed for the final
+  Windows proof correction before the authorized live attempt.
+- The authorized live bootstrap stopped at inert verification after ARM succeeded.
+  The capability-Boolean correction passes 14 focused tests, all 2,004 .NET tests,
+  Release, independent review, and read-only inert verification. The complete
+  correction gate passed 848 Pester tests with zero failures and 7 skips plus
+  source/Bicep. Clean export passed Release, 2,004 .NET tests, source/Bicep,
+  regression and launcher smoke; all nine format and metadata checks passed.
+  Verify hosted CI for the corrective commit; live E2E has not passed.
+- Original resources and accepted state are preserved. The corrected source has
+  no supported same-target continuation at this checkpoint; a fresh deployment
+  requires a newly authorized unused target. Git transfers no live authority.
 
 
 ## [0.1.0-beta.1] - 2026-09-05

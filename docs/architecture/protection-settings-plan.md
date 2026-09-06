@@ -1,13 +1,19 @@
 # Protection capability and Gateway Settings plan
 
-Status: beta.2 integrated offline acceptance and clean export passed; not deployed.
+Status: beta.2 baseline offline acceptance passed; live bootstrap stopped at inert verification.
 
 Last updated: 2026-09-06 (Asia/Seoul).
 
 This document records the implemented source architecture for capability-only
 bootstrap and role-aware Gateway Settings governance. Phase 4 source gates passed
-after fresh independent review. Phase 5 live E2E remains postponed until exact-commit
-hosted CI passes and fresh exact-target authority is granted.
+after fresh independent review and exact-commit hosted CI. The separately authorized
+Phase 5 bootstrap stopped at step 7 after ARM succeeded: the capability Boolean
+verifier expected lowercase text instead of ARM's exact Boolean casing. A surgical
+source correction passes the complete offline gate, clean-export checks, fresh
+independent review, and read-only live inert verification. Its hosted CI must be
+checked for the actual corrective commit. No completed beta.2 deployment or live
+registration/protection E2E is claimed. Existing accepted state is preserved; a
+new target requires separate exact-target authority.
 
 ## Decision and boundaries
 
@@ -56,8 +62,9 @@ The Purview scope contracts stay independent:
 - Purview is effectively enabled only for the exact resolved blueprint and Ready,
   unexpired DLP profile. Prompt Shields requires exact installed capability
   readback. Stored requested settings do not override effective readiness.
-- This source has not been deployed. Existing live evidence still belongs to the
-  older deployed revision and does not prove this implementation.
+- Beta.2 has reached only the inert deployment in the authorized live attempt.
+  Existing complete live evidence belongs to an older revision and does not prove
+  this implementation. The Boolean-verifier correction is not deployed.
 
 ## Implemented architecture
 

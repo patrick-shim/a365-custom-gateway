@@ -8,6 +8,29 @@ at the repository [README](../README.md). Exact deployed development evidence is
 machine or agent starts unfinished work from the tracked
 [agent continuation checkpoint](agent-continuation.md).
 
+## Latest bootstrap correction and live boundary
+
+A separately authorized clean beta.2 bootstrap reached the inert deployment, where
+ARM emitted `BootstrapCapabilities__Enabled` as `False` but the verifier expected
+`false`. The verifier now uses the existing ARM Boolean text helper for both
+`True` and `False`. Ordinal comparison, opposite-value rejection, secret-reference
+rejection, and all nineteen capability fields remain enforced. Templates, images,
+application behavior, and accepted-state guards are unchanged.
+
+The executable regression first failed for both Boolean values, then all fourteen
+container-configuration tests passed. Fresh independent source and recovery review
+accepted the correction. Release passed with zero warnings/errors, and all eight
+.NET test projects passed again (2,004 tests). The complete bootstrap gate passed
+848 tests with zero failures and 7 skips, plus all 28 Bicep templates and 3 parameter
+files. All nine format targets and metadata/private-path checks passed. The clean
+898-file export passed Release, all 2,004 .NET tests, source/Bicep, the 14-test
+regression, and Windows/POSIX launcher smoke. Production-source fingerprints match
+the canonical candidate. Verify correction-specific hosted CI for the actual
+checkout before any fresh deployment.
+
+The older full acceptance table below records the pre-deployment baseline. It is
+not evidence that the corrected source has been deployed or that live E2E passed.
+
 ## Current product state
 
 The repository implements an N:N Gateway with:
@@ -76,10 +99,9 @@ in-memory signature. Both affected files passed again (11 tests, zero
 failures/skips) in the canonical checkout and clean export; fresh independent
 review of the encoding correction passed. Production source, test counts, and UI
 contracts are unchanged, so the earlier full integrated results above remain
-applicable alongside this incremental evidence. The preceding hosted run passed
-.NET, Bicep, Ubuntu, and macOS; the Windows proof correction still requires
-exact-commit hosted acceptance at this handoff. All five hosted jobs must pass
-before source closure.
+applicable alongside this incremental evidence. All five hosted jobs passed for
+the certificate-proof correction before the separately authorized live attempt.
+The subsequent Boolean-verifier correction below requires its own acceptance.
 
 The fresh independent review passed the combined source after explicitly
 rechecking all four original findings: shared API/worker runtime identity and
@@ -99,13 +121,19 @@ selected-profile readiness. Settings uses the supported UploadText Block rule
 for both policy modes, and only Enforce can request runtime allow/block proof.
 
 
-Source remains undeployed, and live E2E is postponed. No live authority transfers
-through Git, documentation, local evidence, or earlier deployments. A future
-deployment or live E2E requires fresh authorization naming an exact unused
-resource group and the allowed provider actions. Azure, Entra, SQL, Graph,
-Service Bus, Purview, and cleanup actions are outside this source task; retiring
-an earlier environment needs separate exact-target authority. Do not reuse an
-older deployment state with this source.
+The authorized beta.2 bootstrap stopped after the inert ARM deployment succeeded
+but before step 7 verification completed. Steps 1–6 are Completed; later steps,
+Admin UI sign-in, registration, and protection E2E are unproved. Original resources,
+accepted source snapshot, configuration, and state are preserved. A read-only run
+of the corrected verifier passes against the existing inert resources; it does not
+change the persisted Failed checkpoint or authorize changed-source Resume.
+
+No supported continuation admits this source correction at a failed step 7 with
+persisted evidence. Existing pre-inert and database recovery guards do not apply
+and remain unchanged. After correction acceptance, a fresh supported bootstrap
+requires a separately authorized unused project/resource-group identity. Do not
+edit state, accepted snapshots, or old resources to force progress. No live or
+cleanup authority transfers through Git or documentation.
 
 
 ## Bootstrap contract
@@ -334,13 +362,19 @@ hosted CI for that exact commit. A receiving checkout verifies its actual HEAD a
 associated CI before acting; see the bounded
 [continuation checkpoint](agent-continuation.md).
 
-Source remains undeployed, and live E2E is postponed. No live authority transfers
-through Git, documentation, local evidence, or earlier deployments. A future
-deployment or live E2E requires fresh authorization naming an exact unused
-resource group and the allowed provider actions. Azure, Entra, SQL, Graph,
-Service Bus, Purview, and cleanup actions are outside this source task; retiring
-an earlier environment needs separate exact-target authority. Do not reuse an
-older deployment state with this source.
+The authorized beta.2 bootstrap stopped after the inert ARM deployment succeeded
+but before step 7 verification completed. Steps 1–6 are Completed; later steps,
+Admin UI sign-in, registration, and protection E2E are unproved. Original resources,
+accepted source snapshot, configuration, and state are preserved. A read-only run
+of the corrected verifier passes against the existing inert resources; it does not
+change the persisted Failed checkpoint or authorize changed-source Resume.
+
+No supported continuation admits this source correction at a failed step 7 with
+persisted evidence. Existing pre-inert and database recovery guards do not apply
+and remain unchanged. After correction acceptance, a fresh supported bootstrap
+requires a separately authorized unused project/resource-group identity. Do not
+edit state, accepted snapshots, or old resources to force progress. No live or
+cleanup authority transfers through Git or documentation.
 
 The future authorized E2E uses a clean bootstrap, two new blueprints and one external
 registration per blueprint. Both must reach provider-verified Active and independently

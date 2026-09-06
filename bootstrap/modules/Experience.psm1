@@ -5415,7 +5415,7 @@ function Test-GatewayGroupDeploymentEvidence {
                 'EntraId__ClientCredentials__0__SourceType' = 'SignedAssertionFromManagedIdentity'
                 'EntraId__ClientCredentials__0__TokenExchangeUrl' = 'api://AzureADTokenExchange'
                 'KeyVault__VaultUri' = [string]$Evidence.keyVaultUri
-                'BootstrapCapabilities__Enabled' = ([string][bool]$expectedCapabilities.enabled).ToLowerInvariant()
+                'BootstrapCapabilities__Enabled' = ConvertTo-GatewayArmBooleanText -Value ([bool]$expectedCapabilities.enabled)
                 'BootstrapCapabilities__AttestedAtUtc' = [string]$expectedCapabilities.readbackAtUtc
                 'BootstrapCapabilities__DeploymentOwnershipId' = [string]$expectedCapabilities.deploymentOwnershipId
                 'BootstrapCapabilities__AcceptedSourceFingerprint' = [string]$expectedCapabilities.sourceFingerprint

@@ -4,6 +4,27 @@ Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Experience.ps
 
 Describe 'Exact live Container App configuration contracts' {
     InModuleScope Experience {
+        BeforeAll {
+            $tokens = $null
+            $parseErrors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile(
+                (Get-Module Experience).Path, [ref]$tokens, [ref]$parseErrors)
+            $parseErrors.Count | Should -Be 0
+            $groupVerifier = $ast.Find({ param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ceq 'Test-GatewayGroupDeploymentEvidence'
+            }, $true)
+            $environment = $groupVerifier.Body.Find({ param($node)
+                $node -is [Management.Automation.Language.HashtableAst] -and
+                    @($node.KeyValuePairs | Where-Object { $_.Item1.Value -ceq 'BootstrapCapabilities__Enabled' }).Count -eq 1
+            }, $true)
+            $expression = @($environment.KeyValuePairs | Where-Object {
+                $_.Item1.Value -ceq 'BootstrapCapabilities__Enabled'
+            })[0].Item2.Extent.Text
+            $script:capabilityBooleanExpectation = [scriptblock]::Create(
+                "param(`$expectedCapabilities); Set-StrictMode -Version Latest; $expression")
+        }
+
         BeforeEach {
             $script:runtimePullIdentityId = '/subscriptions/11111111-1111-4111-8111-111111111111/resourceGroups/rg-safe-dev/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-runtime-pull-dev'
             $attachedIdentities = [pscustomobject]@{}
@@ -38,6 +59,28 @@ Describe 'Exact live Container App configuration contracts' {
                 -ExpectedValues ([ordered]@{ Tenant = 'expected' }) `
                 -ExpectedSecretRefs ([ordered]@{ Credential = 'reviewed-secret' }) |
                 Should -BeTrue
+        }
+
+        It 'verifies the capability flag using exact ARM Boolean text for enabled=<Enabled>' -TestCases @(
+            @{ Enabled = $false; ArmValue = 'False'; OppositeValue = 'True' },
+            @{ Enabled = $true; ArmValue = 'True'; OppositeValue = 'False' }
+        ) {
+            param($Enabled, $ArmValue, $OppositeValue)
+            $expectation = & $script:capabilityBooleanExpectation ([pscustomobject]@{ enabled = $Enabled })
+            $expectation | Should -BeExactly $ArmValue
+            $expected = [ordered]@{ BootstrapCapabilities__Enabled = $expectation }
+            Assert-GatewayExactContainerEnvironment -Entries @(
+                [pscustomobject]@{ name = 'BootstrapCapabilities__Enabled'; value = $ArmValue }
+            ) -ExpectedValues $expected | Should -BeTrue
+
+            foreach ($invalidValue in @($OppositeValue, $ArmValue.ToLowerInvariant())) {
+                { Assert-GatewayExactContainerEnvironment -Entries @(
+                    [pscustomobject]@{ name = 'BootstrapCapabilities__Enabled'; value = $invalidValue }
+                ) -ExpectedValues $expected } | Should -Throw '*exact reviewed value contract*'
+            }
+            { Assert-GatewayExactContainerEnvironment -Entries @(
+                [pscustomobject]@{ name = 'BootstrapCapabilities__Enabled'; value = $ArmValue; secretRef = 'unexpected' }
+            ) -ExpectedValues $expected } | Should -Throw '*exact reviewed value contract*'
         }
 
         It 'rejects duplicate, additional, or secret-backed value entries' {
