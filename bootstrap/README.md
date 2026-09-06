@@ -1,5 +1,10 @@
 # A365 Gateway bootstrap
 
+
+> Current delivery is stopped for model handoff with a partial Purview certificate.
+> The new Windows executor source still requires deployment integration. Read the
+> [continuation checkpoint](../docs/agent-continuation.md) before deployment or recovery.
+
 The bootstrap is the supported deployment system for a new A365 Custom Gateway. It
 owns the path from non-secret configuration through Azure What-If, explicit plan
 acceptance, Azure and tenant capability provisioning, database initialization,
@@ -365,11 +370,11 @@ for example `Provider error codes: InvalidTemplateDeployment >
 CanNotCreateMultipleFreeAccounts.` Those bounded identifiers appear in the terminal,
 in the Setup timeline, and in the persisted checkpoint.
 
-The unfiltered provider text stays local. Bootstrap writes it to
-`.bootstrap/diagnostics/`, which is ignored by Git and readable only by the account
-that ran the command. Read it yourself when a code is not enough; never paste it into
-an issue, a chat, or a shared log, because provider bodies can contain identities,
-headers, and other tenant data.
+Bootstrap discards raw provider text. Its account-restricted, ignored
+`.bootstrap/diagnostics/` files contain only bounded error codes, correlation IDs,
+command identity, exit status and timestamp. They never contain raw provider bodies,
+credentials, tokens or authorization headers. Preserve the stopped state and use
+exact read-only diagnosis when those bounded identifiers are insufficient.
 
 ### Prompt Shields free-tier capacity
 

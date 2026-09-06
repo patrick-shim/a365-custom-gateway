@@ -4,7 +4,7 @@ This matrix records current official contracts relied on by the Gateway. Code,
 tests, deployed evidence, and current Microsoft documentation take precedence over
 older design notes or prototypes.
 
-Last reviewed against official Microsoft Learn: 2026-09-05.
+Last reviewed against official Microsoft Learn: 2026-09-06.
 
 ## Agent Identity and Agent 365
 
@@ -84,12 +84,21 @@ least-privilege role mapping, so the approved flow probes authorization and fail
 closed instead of guessing either contract.
 
 Core bootstrap and capability preparation stay supported on Windows, macOS, and
-Linux. SIT inventory and policy authoring are owned by Gateway Settings, with the
-packaged bounded Windows companion wherever Microsoft's current Exchange
-Online module requires interactive `Connect-IPPSSession`. The Gateway does not
+Linux. Both interactive and certificate-authenticated `Connect-IPPSSession`
+require Windows; installing the module in the Linux worker does not provide a
+supported compliance execution path. A private Windows executor correction is
+pending deployment and live verification; see the current deployment checkpoint.
+SIT inventory and policy authoring are owned by Gateway Settings, with its
+packaged bounded Windows companion for interactive authorization. The Gateway does not
 substitute a static catalog or an unvalidated REST endpoint on other platforms.
 The companion verifies one exact owned session, tenant, operation Administrator,
 cmdlet surface, and bounded SIT inventory before returning one typed result line.
+
+The bounded [Purview prerequisite recovery](../operations/purview-prerequisite-recovery.md)
+uses Graph v1.0 assignment and application-update APIs. It adds no permission or
+role beyond the existing exact automation tuple. Its OData directory-role query
+uses the documented `$filter` and `$select` names. Unknown writes remain
+readback-only; local recovery receipts are not policy or runtime readiness proof.
 
 - [Configure Purview for custom AI applications](https://learn.microsoft.com/purview/developer/configurepurview)
 - [Use the Purview data-security APIs](https://learn.microsoft.com/purview/developer/use-the-api)

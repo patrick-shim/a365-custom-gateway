@@ -641,7 +641,7 @@ function Get-BootstrapPurviewDirectoryRoleAssignments {
     return @(Get-BoundedGraphCollection -InitialUrl (
         "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?" +
         "`$filter=principalId%20eq%20'$PrincipalId'&" +
-        '`$select=id,principalId,roleDefinitionId,directoryScopeId'))
+        '$select=id,principalId,roleDefinitionId,directoryScopeId'))
 }
 
 function Assert-BootstrapPurviewAutomationApplication {
@@ -887,6 +887,112 @@ function Test-BootstrapPurviewAutomationIdentityEvidence {
     return $true
 }
 
+function New-BootstrapPurviewAutomationCertificate {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$AzureIdentity,
+        [Parameter(Mandatory)][string]$ApplicationObjectId,
+        [Parameter(Mandatory)][string]$ApplicationId,
+        [Parameter(Mandatory)][string]$KeyCredentialId,
+        [Parameter(Mandatory)][string]$KeyVaultUri,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter(Mandatory)][string]$ExecutionSourceFingerprint
+    )
+
+    foreach ($value in @($ApplicationObjectId, $ApplicationId, $KeyCredentialId)) {
+        Assert-GuidValue -Value $value -Label 'Purview certificate pinned identifier'
+        if ($value -cne ([guid]$value).ToString('D')) { throw 'Purview certificate identifiers must be canonical.' }
+    }
+    $null = Resolve-GatewayCredentialDeploymentTemplate `
+        -RelativeTemplate 'bootstrap/infra/purview-automation-certificate.bicep' `
+        -ExecutionSourceFingerprint $ExecutionSourceFingerprint
+    $application = Get-BootstrapPurviewAutomationApplication -ApplicationObjectId $ApplicationObjectId
+    if ([string]$application.id -cne $ApplicationObjectId -or [string]$application.appId -cne $ApplicationId) {
+        throw 'Purview certificate application no longer matches the pinned identity.'
+    }
+    Assert-BootstrapPurviewAutomationApplication -Application $application `
+        -DisplayName "A365 Gateway Purview Automation - $($Config.projectName)-$($Config.environment)" `
+        -DeploymentOwnershipId $DeploymentOwnershipId -OwnerObjectId ([string]$AzureIdentity.userObjectId) `
+        -ExchangeRole (Get-BootstrapPurviewExchangeRole) -AllowMissingCertificate | Out-Null
+    $metadata = Get-GatewayPurviewAutomationCertificateSecretArmMetadata -Config $Config -KeyVaultUri $KeyVaultUri `
+        -AutomationApplicationId $ApplicationId -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint
+    if (@($application.keyCredentials).Count -ne 0 -or [string]$metadata.status -cne 'Absent') {
+        throw 'Purview certificate creation requires both Entra and Key Vault to be absent; no replacement is allowed.'
+    }
+    $rsa = $null
+    $certificateObject = $null
+    $pfxBytes = $null
+    $publicBytes = $null
+    $certificateSecretText = $null
+    try {
+        $rsa = New-BootstrapPurviewCertificateRsa
+        $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
+            "CN=a365gw-$($Config.projectName)-$($Config.environment)-purview",
+            $rsa,
+            [Security.Cryptography.HashAlgorithmName]::SHA256,
+            [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        $request.CertificateExtensions.Add(
+            [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $true))
+        $request.CertificateExtensions.Add(
+            [Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+                [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
+                $true))
+        $notBefore = [DateTimeOffset]::UtcNow.AddMinutes(-5)
+        $notAfter = [DateTimeOffset]::UtcNow.AddYears(1)
+        $certificateObject = $request.CreateSelfSigned($notBefore, $notAfter)
+        $pfxBytes = $certificateObject.Export(
+            [Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12)
+        $publicBytes = $certificateObject.Export(
+            [Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+        $certificateSecretText = [Convert]::ToBase64String($pfxBytes)
+        $thumbprint = ([string]$certificateObject.Thumbprint).ToLowerInvariant()
+        $null = Deploy-GatewayPurviewAutomationCertificateSecret `
+            -Config $Config `
+            -KeyVaultUri $KeyVaultUri `
+            -AutomationApplicationId ([string]$application.appId) `
+            -KeyCredentialId $keyCredentialId `
+            -CertificateThumbprint $thumbprint `
+            -CertificateSecretText $certificateSecretText `
+                -DeploymentOwnershipId $DeploymentOwnershipId `
+                -SourceFingerprint $SourceFingerprint `
+                -ExecutionSourceFingerprint $ExecutionSourceFingerprint
+            try {
+            Invoke-GraphJsonBody -Method 'PATCH' -Url (
+                "https://graph.microsoft.com/v1.0/applications/$($application.id)") -Body @{
+                keyCredentials = @(@{
+                    keyId = $keyCredentialId
+                    displayName = 'a365gw-purview-automation-certificate'
+                    type = 'AsymmetricX509Cert'
+                    usage = 'Verify'
+                    key = [Convert]::ToBase64String($publicBytes)
+                    customKeyIdentifier = [Convert]::ToBase64String(
+                        [Convert]::FromHexString($thumbprint))
+                    startDateTime = $notBefore.ToString('O')
+                    endDateTime = $notAfter.ToString('O')
+                })
+            } | Out-Null
+        }
+        catch {
+            $application = Get-BootstrapPurviewAutomationApplication `
+                -ApplicationObjectId ([string]$application.id)
+            if (@($application.keyCredentials | Where-Object {
+                [string]$_.keyId -ceq $keyCredentialId
+            }).Count -ne 1) {
+                throw 'Microsoft Graph returned an unknown Purview certificate outcome and exact readback did not prove success.'
+            }
+        }
+    }
+    finally {
+        if ($pfxBytes) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($pfxBytes) }
+        if ($publicBytes) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($publicBytes) }
+        if ($certificateObject) { $certificateObject.Dispose() }
+        if ($rsa) { $rsa.Dispose() }
+        $certificateSecretText = $null
+        $request = $null
+    }
+}
+
 function Ensure-BootstrapPurviewAutomationIdentity {
     param(
         [Parameter(Mandatory)]$Config,
@@ -1015,78 +1121,11 @@ function Ensure-BootstrapPurviewAutomationIdentity {
     }
     if ($keys.Count -eq 0) {
         if ($ReconcileOnly) { throw 'Purview automation certificate is missing during read-only reconciliation.' }
-        $rsa = $null
-        $certificateObject = $null
-        $pfxBytes = $null
-        $publicBytes = $null
-        $certificateSecretText = $null
-        try {
-            $rsa = New-BootstrapPurviewCertificateRsa
-            $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
-                "CN=a365gw-$($Config.projectName)-$($Config.environment)-purview",
-                $rsa,
-                [Security.Cryptography.HashAlgorithmName]::SHA256,
-                [Security.Cryptography.RSASignaturePadding]::Pkcs1)
-            $request.CertificateExtensions.Add(
-                [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $true))
-            $request.CertificateExtensions.Add(
-                [Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
-                    [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
-                    $true))
-            $notBefore = [DateTimeOffset]::UtcNow.AddMinutes(-5)
-            $notAfter = [DateTimeOffset]::UtcNow.AddYears(1)
-            $certificateObject = $request.CreateSelfSigned($notBefore, $notAfter)
-            $pfxBytes = $certificateObject.Export(
-                [Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12)
-            $publicBytes = $certificateObject.Export(
-                [Security.Cryptography.X509Certificates.X509ContentType]::Cert)
-            $certificateSecretText = [Convert]::ToBase64String($pfxBytes)
-            $thumbprint = ([string]$certificateObject.Thumbprint).ToLowerInvariant()
-            $keyCredentialId = [guid]::NewGuid().ToString('D')
-            $null = Deploy-GatewayPurviewAutomationCertificateSecret `
-                -Config $Config `
-                -KeyVaultUri $KeyVaultUri `
-                -AutomationApplicationId ([string]$application.appId) `
-                -KeyCredentialId $keyCredentialId `
-                -CertificateThumbprint $thumbprint `
-                -CertificateSecretText $certificateSecretText `
-                -DeploymentOwnershipId $DeploymentOwnershipId `
-                -SourceFingerprint $SourceFingerprint `
-                -ExecutionSourceFingerprint $ExecutionSourceFingerprint
-            try {
-                Invoke-GraphJsonBody -Method 'PATCH' -Url (
-                    "https://graph.microsoft.com/v1.0/applications/$($application.id)") -Body @{
-                    keyCredentials = @(@{
-                        keyId = $keyCredentialId
-                        displayName = 'a365gw-purview-automation-certificate'
-                        type = 'AsymmetricX509Cert'
-                        usage = 'Verify'
-                        key = [Convert]::ToBase64String($publicBytes)
-                        customKeyIdentifier = [Convert]::ToBase64String(
-                            [Convert]::FromHexString($thumbprint))
-                        startDateTime = $notBefore.ToString('O')
-                        endDateTime = $notAfter.ToString('O')
-                    })
-                } | Out-Null
-            }
-            catch {
-                $application = Get-BootstrapPurviewAutomationApplication `
-                    -ApplicationObjectId ([string]$application.id)
-                if (@($application.keyCredentials | Where-Object {
-                    [string]$_.keyId -ceq $keyCredentialId
-                }).Count -ne 1) {
-                    throw 'Microsoft Graph returned an unknown Purview certificate outcome and exact readback did not prove success.'
-                }
-            }
-        }
-        finally {
-            if ($pfxBytes) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($pfxBytes) }
-            if ($publicBytes) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($publicBytes) }
-            if ($certificateObject) { $certificateObject.Dispose() }
-            if ($rsa) { $rsa.Dispose() }
-            $certificateSecretText = $null
-            $request = $null
-        }
+        New-BootstrapPurviewAutomationCertificate -Config $Config -AzureIdentity $AzureIdentity `
+            -ApplicationObjectId ([string]$application.id) -ApplicationId ([string]$application.appId) `
+            -KeyCredentialId ([guid]::NewGuid().ToString('D')) -KeyVaultUri $KeyVaultUri `
+            -DeploymentOwnershipId $DeploymentOwnershipId -SourceFingerprint $SourceFingerprint `
+            -ExecutionSourceFingerprint $ExecutionSourceFingerprint
     }
 
     for ($attempt = 1; $attempt -le 12; $attempt++) {

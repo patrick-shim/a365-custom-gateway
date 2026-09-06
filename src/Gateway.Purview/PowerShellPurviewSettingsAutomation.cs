@@ -26,13 +26,16 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
 
     private readonly PurviewOptions _options;
     private readonly ILogger<PowerShellPurviewSettingsAutomation> _logger;
+    private readonly PurviewProcessSafety _processSafety;
 
     public PowerShellPurviewSettingsAutomation(
         IOptions<PurviewOptions> options,
-        ILogger<PowerShellPurviewSettingsAutomation> logger)
+        ILogger<PowerShellPurviewSettingsAutomation> logger,
+        PurviewProcessSafety? processSafety = null)
     {
         _options = options.Value;
         _logger = logger;
+        _processSafety = processSafety ?? new PurviewProcessSafety();
     }
 
     public async Task<PurviewProviderReadback<PurviewKnowYourDataReadback>>
@@ -185,7 +188,8 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
                     "Purview Settings automation could not start.");
             }
 
-            await process.StandardInput.WriteLineAsync(certificatePassword);
+            await using var processLease = new PurviewProcessLease(process, _processSafety);
+            await process.StandardInput.WriteLineAsync(certificatePassword.AsMemory(), cancellationToken);
             process.StandardInput.Close();
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -202,7 +206,7 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
                     process.StandardError,
                     StandardErrorCharacterLimit,
                     timeout.Token);
-                await WaitForExitOrTerminateAsync(process, timeout.Token);
+                await WaitForExitOrTerminateAsync(process, timeout.Token, _processSafety);
                 standardOutput = await outputTask;
                 standardError = await errorTask;
             }
@@ -604,7 +608,8 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
 
     internal static async Task WaitForExitOrTerminateAsync(
         Process process,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        PurviewProcessSafety? safety = null)
     {
         ArgumentNullException.ThrowIfNull(process);
         try
@@ -613,26 +618,12 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
         }
         catch (OperationCanceledException)
         {
-            Exception? terminationFailure = null;
-            try
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            catch (InvalidOperationException)
-            {
-                // The process exited between cancellation and termination.
-            }
-            catch (Exception exception)
-            {
-                terminationFailure = exception;
-            }
-
-            await process.WaitForExitAsync(CancellationToken.None);
-            if (terminationFailure is not null)
+            if (!await PurviewProcessTermination.TryTerminateAsync(
+                new PurviewOwnedProcess(process), safety ?? new PurviewProcessSafety(),
+                TimeSpan.FromSeconds(5)))
             {
                 throw new InvalidOperationException(
-                    "The Purview Settings automation process could not be terminated.",
-                    terminationFailure);
+                    "The Purview Settings automation process termination is unverified.");
             }
 
             throw;

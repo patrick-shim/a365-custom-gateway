@@ -33,7 +33,7 @@ broader gates and return exact results and remaining coverage risks.
 
 ## Implemented protection source invariants
 
-The redesign is offline-validated in source, not deployed. Bootstrap Full/Core/Custom
+The redesign is defined by source and tests; see the current deployment checkpoint for live status. Bootstrap Full/Core/Custom
 presets prepare capabilities only and never select a SIT or author policy. Every
 registration creation requires a signed-in delegated `Gateway.Administrator`;
 Registry completion stays user-only OBO. Settings owns SIT/KYD/DLP and
@@ -44,3 +44,7 @@ readback, propagation, token roles, runtime allow/block, current SIT generation,
 exact blueprint/provider IDs, and timestamps. Keep KYD Group and blueprint
 Individual DLP on the Application plane. Live claims require fresh exact-target
 authority.
+
+## Model handoff
+
+Follow docs/agent-guides/model-handoff.md before reporting completion or changing models. Continue the active objective and existing exact-target session authority. Keep current live status in docs/agent-continuation.md and the deployment checkpoint. Use canonical main; do not create Git worktrees.

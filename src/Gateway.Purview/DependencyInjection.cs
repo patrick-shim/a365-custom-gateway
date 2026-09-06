@@ -33,7 +33,20 @@ public static class DependencyInjection
             new PurviewTokenRoleAttestor(
                 serviceProvider.GetRequiredService<IPurviewTokenRoleSource>()));
         services.AddSingleton<PurviewTenantConnectionEvidenceValidator>();
-        services.AddSingleton<IPurviewSettingsAutomation, PowerShellPurviewSettingsAutomation>();
+        services.Configure<PurviewExecutorOptions>(configuration.GetSection(PurviewExecutorOptions.SectionName));
+        services.AddHttpClient(PurviewExecutorClient.HttpClientName, client =>
+        {
+            client.Timeout = Timeout.InfiniteTimeSpan;
+        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        {
+            AllowAutoRedirect = false
+        });
+        services.AddSingleton<IPurviewExecutorClient>(serviceProvider => new PurviewExecutorClient(
+            serviceProvider.GetRequiredService<IHttpClientFactory>(),
+            serviceProvider.GetRequiredService<IOptions<PurviewExecutorOptions>>(),
+            serviceProvider.GetRequiredService<IOptions<PurviewOptions>>(),
+            new Azure.Identity.ManagedIdentityCredential()));
+        services.AddSingleton<IPurviewSettingsAutomation, RemotePurviewSettingsAutomation>();
         services.AddSingleton<IPurviewSettingsProvider>(serviceProvider =>
             new PurviewSettingsProvider(
                 serviceProvider.GetRequiredService<IPurviewSettingsAutomation>()));

@@ -64,7 +64,7 @@ Do not call a bootstrap change complete from unit tests alone. The release candi
 
 ## Implemented protection source boundary
 
-The redesign is implemented and offline-validated in source, not deployed.
+The redesign is implemented and defined by source and tests; see the current deployment checkpoint for live status.
 Bootstrap's Full evaluation, Core Gateway, and Custom presets prepare shared
 capabilities only; they never select a SIT or author KYD/DLP policy, and
 staging/production keep Registry beta closed. Every registration creation requires
@@ -89,3 +89,11 @@ with one external registration each, then independent observability, Prompt Shie
 Preserve the current resource group and `.bootstrap` state unless deletion was explicitly requested. Diagnose from the active checkpoint, add a failing regression test, implement the smallest correction, and rerun the gate from the earliest invalidated stage. Record why each later stage was retained or invalidated.
 
 Keep generated journals small: the recorder rotates at 100 events, 128 KiB, or four hours. Put durable product truth in the normal status documents only after it is verified; journals are coordination evidence, not public product documentation.
+
+## Model handoff
+
+Follow the shared model handoff protocol in `docs/agent-guides/model-handoff.md`.
+Keep current live and recovery facts in the tracked continuation and deployment
+checkpoints. Honor existing session authorization and preserve unfinished work.
+The operator requires canonical `main` with reviewed changes committed and pushed;
+do not create a Git worktree.

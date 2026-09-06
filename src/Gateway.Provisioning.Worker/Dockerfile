@@ -21,16 +21,9 @@ RUN dotnet build "Gateway.Provisioning.Worker.csproj" -c Release -o /app/build
 FROM build AS publish
 RUN dotnet publish "Gateway.Provisioning.Worker.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
-FROM mcr.microsoft.com/powershell:7.5-debian-12 AS final
+FROM base AS final
 WORKDIR /app
-COPY --from=base /usr/share/dotnet /usr/share/dotnet
 COPY --from=publish /app/publish .
-ENV DOTNET_ROOT=/usr/share/dotnet \
-    PATH="${PATH}:/usr/share/dotnet" \
-    DOTNET_EnableDiagnostics=0
-RUN pwsh -NoLogo -NoProfile -Command \
-    "Set-PSRepository PSGallery -InstallationPolicy Trusted; Install-Module ExchangeOnlineManagement -RequiredVersion 3.10.1 -Scope AllUsers -Force" \
-    && useradd --uid 1654 --create-home appuser \
-    && chown -R appuser:appuser /app
-USER appuser
+ENV DOTNET_EnableDiagnostics=0
+USER $APP_UID
 ENTRYPOINT ["dotnet", "Gateway.Provisioning.Worker.dll"]

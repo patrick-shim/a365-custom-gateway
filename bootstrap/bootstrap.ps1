@@ -71,7 +71,7 @@ if ($OutputFormat -eq 'Json') {
     $InformationPreference = 'SilentlyContinue'
 }
 
-foreach ($module in @('Common', 'Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'Verification')) {
+foreach ($module in @('Common', 'Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'PurviewRecovery', 'Verification')) {
     Import-Module (Join-Path $PSScriptRoot "modules/$module.psm1") -Force -DisableNameChecking
 }
 
@@ -546,7 +546,11 @@ function Get-GatewayResumeExecutionSource {
     $acceptedSourceFingerprint = [string]$State.acceptedPlan.sourceFingerprint
     $executionSourceFingerprint = Get-BootstrapSourceFingerprint
     $plans = Get-BootstrapCompletedDatabaseValidationPlans -State $State
-    if ($null -ne $plans.databaseRecoveryPlan) {
+    if ($State.Contains('purviewPrerequisiteRecoveryPlan')) {
+        $executionSourceRoot = Assert-BootstrapPurviewRecoveryPlan -State $State `
+            -Recovery $State.purviewPrerequisiteRecoveryPlan -Completed
+    }
+    elseif ($null -ne $plans.databaseRecoveryPlan) {
         $recovery = $plans.databaseRecoveryPlan
         Assert-BootstrapAcceptedDatabaseRecoveryPlan -State $State `
             -PlanFingerprint ([string]$recovery.planFingerprint) -AllowCompleted | Out-Null
@@ -1272,6 +1276,18 @@ function Invoke-GatewayStateStep {
             -ConfigurationFingerprint (Get-BootstrapConfigurationFingerprint -Config $configuration) `
             -SourceFingerprint ([string]$state.acceptedPlan.sourceFingerprint) `
             -MaximumAge $acceptedPlanMaximumAge | Out-Null
+        if ($Mode -eq 'Resume' -and $state.Contains('purviewPrerequisiteRecoveryPlan')) {
+            # Accepted-plan validation restores the original snapshot. Restore the
+            # independently completed tooling recovery only after rechecking all
+            # preflight bindings, before any stage callback can use a template.
+            $stepExecution = Get-GatewayResumeExecutionSource -State $state
+            if ([string]$stepExecution.executionSourceFingerprint -cne $activeExecutionSourceFingerprint -or
+                [string]$stepExecution.deploymentSourceFingerprint -cne $activeDeploymentSourceFingerprint -or
+                [IO.Path]::GetFullPath([string]$stepExecution.executionSourceRoot) -cne [IO.Path]::GetFullPath($executionSourceRoot)) {
+                throw 'Purview prerequisite recovery execution binding changed after Resume preflight.'
+            }
+            Set-BootstrapExecutionSourceRoot -Path ([string]$stepExecution.executionSourceRoot)
+        }
         if ($Name -notin @('Prerequisites', 'Azure authentication')) {
             Assert-BootstrapAzureContext -Config $configuration | Out-Null
         }
@@ -1301,6 +1317,11 @@ function Invoke-GatewayStateStep {
             'Immutable workload images'
         )
     if ($preservePreInertPrefix) { $parameters.ValidateAndReuseOnly = $true }
+    if ($state.Contains('purviewPrerequisiteRecoveryPlan') -and $Name -cin @($stepNames[2..12])) {
+        # Retained side-effect stages must remain byte-for-byte intact even if a
+        # readback temporarily fails; only the two local/session checks rerun.
+        $parameters.ValidateAndReuseOnly = $true
+    }
     if ($AlwaysRun) { $parameters.AlwaysRun = $true }
     $stepTimer = [Diagnostics.Stopwatch]::StartNew()
     try {
@@ -2250,26 +2271,28 @@ try {
             -PurviewCapability $purviewComponent `
             -Evidence $state.steps['Purview capability prerequisites'].evidence
     } -Reconcile {
-        $purviewAutomation = if ($configuration.purview.enabled -eq $true) {
-            Ensure-BootstrapPurviewAutomationIdentity `
+        Invoke-GatewayExactReconciliation -Readback {
+            $purviewAutomation = if ($configuration.purview.enabled -eq $true) {
+                Ensure-BootstrapPurviewAutomationIdentity `
+                    -Config $configuration `
+                    -AzureIdentity $azureIdentity `
+                    -KeyVaultUri ([string]$inert.keyVaultUri) `
+                    -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+                    -SourceFingerprint $activeDeploymentSourceFingerprint `
+                    -ExecutionSourceFingerprint $activeExecutionSourceFingerprint `
+                    -ReconcileOnly
+            }
+            else { $null }
+            $purviewComponent = Get-GatewayPurviewCapabilityEvidence `
                 -Config $configuration `
-                -AzureIdentity $azureIdentity `
-                -KeyVaultUri ([string]$inert.keyVaultUri) `
-                -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
-                -SourceFingerprint $activeDeploymentSourceFingerprint `
-                -ExecutionSourceFingerprint $activeExecutionSourceFingerprint `
-                -ReconcileOnly
+                -WorkloadIdentity $workloadIdentity `
+                -Automation $purviewAutomation
+            Get-GatewayBootstrapCapabilityEvidence `
+                -Config $configuration `
+                -Identity $identity `
+                -RuntimeReadback $inert `
+                -PurviewCapability $purviewComponent
         }
-        else { $null }
-        $purviewComponent = Get-GatewayPurviewCapabilityEvidence `
-            -Config $configuration `
-            -WorkloadIdentity $workloadIdentity `
-            -Automation $purviewAutomation
-        Get-GatewayBootstrapCapabilityEvidence `
-            -Config $configuration `
-            -Identity $identity `
-            -RuntimeReadback $inert `
-            -PurviewCapability $purviewComponent
     } -NoAutomaticReplayAfterStart -Action {
         $purviewAutomation = if ($configuration.purview.enabled -eq $true) {
             Ensure-BootstrapPurviewAutomationIdentity `

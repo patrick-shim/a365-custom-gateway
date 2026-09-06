@@ -18,7 +18,7 @@ the canonical skill's initialization procedure. Do not infer deployable state or
 live authority from source history.
 
 Honor the canonical skill's implemented protection source boundary. The redesign is
-implemented and offline-validated in source, not deployed: bootstrap Full/Core/Custom presets prepare
+implemented and defined by source and tests; see the current deployment checkpoint for live status: bootstrap Full/Core/Custom presets prepare
 capabilities only and never select a SIT or author policy; Gateway Settings owns
 SIT/KYD/DLP and per-registration controls on `gateway-protection-admin-v1`; every
 registration creation requires a signed-in delegated `Gateway.Administrator`; and
@@ -29,3 +29,11 @@ Installed, readback, propagation, token roles, runtime allow/block evidence,
 current SIT generation, exact blueprint/provider IDs, and timestamps. Never convert
 source state into a live claim. Preserve fixed KYD Group versus blueprint
 Individual DLP on the Application plane, and require fresh exact-target authority.
+
+## Model handoff
+
+Follow the shared model handoff protocol in `docs/agent-guides/model-handoff.md`.
+Keep current live and recovery facts in the tracked continuation and deployment
+checkpoints. Honor existing session authorization and preserve unfinished work.
+The operator requires canonical `main` with reviewed changes committed and pushed;
+do not create a Git worktree.

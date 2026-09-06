@@ -13,7 +13,7 @@ public static class DependencyInjection
             configuration.GetSection(ProtectionAdminWorkerOptions.SectionName));
         services.AddSingleton<
             IPurviewConnectionVerificationProvider,
-            PowerShellPurviewConnectionVerificationProvider>();
+            RemotePurviewConnectionVerificationProvider>();
         services.AddScoped<IPurviewRuntimeReadinessValidator, PurviewRuntimeReadinessValidator>();
         services.AddScoped<ProtectionAdminMessageHandler>();
         services.AddHostedService<ProtectionAdminWorkerService>();

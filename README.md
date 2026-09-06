@@ -11,14 +11,13 @@ is deployed. The current source is ahead of the deployment evidence recorded in
 [development deployment status](docs/operations/development-deployment-status.md),
 and a Purview DLP allow/block pair has not been live-proven on a deployed build.
 
-> **Implemented in source, not deployed:** bootstrap installs deployment
-> capabilities only. Prompt Shields defaults and per-agent use, plus Purview tenant
-> connection, sensitive-information-type selection, Know Your Data, blueprint DLP,
-> readiness, and ongoing changes are in role-aware Gateway Admin Settings. The
-> corrected source passed offline acceptance, independent review, clean-export
-> validation, and all five hosted CI jobs. Fresh deployment and live E2E are
-> authorized in the active operator session and currently stopped at Graph sign-in
-> before Apply. See the deployment checkpoint for the exact unfinished gate.
+> **Delivery unfinished; stopped for model handoff.** Azure bootstrap remains at
+> thirteen of nineteen stages. The two prerequisite grants are verified, but
+> certificate storage succeeded while Entra public-key publication failed.
+> The partial recovery must not be replayed. Reviewed Windows executor source is
+> included, but deployment integration and all live E2E acceptance remain open.
+> Begin with [agent continuation](docs/agent-continuation.md) for the exact next
+> action and validated evidence. This checkout is not a completed Full evaluation release.
 
 The supported fresh-subscription installer is the repository-root `gateway`
 launcher. It configures, plans, deploys, and verifies the complete Gateway. The
@@ -43,9 +42,11 @@ Core Gateway setup and deployment run on Windows, macOS, and Linux. Bootstrap
 prepares optional Purview identities, RBAC, certificate, Key Vault, dedicated
 administration queue, and runtime prerequisites without choosing a classifier or
 authoring policy.
-Security & Compliance PowerShell operations that still require
-`Connect-IPPSSession` remain interactive and Windows-only; Gateway Settings
-coordinates those operations through a bounded, downloadable Windows companion.
+Security & Compliance PowerShell operations using `Connect-IPPSSession` require
+Windows for both interactive and unattended certificate authentication. Gateway
+Settings offers a bounded Windows companion for the administrator connection.
+Its independent provider verification and policy automation also need a supported
+Windows host; that correction is currently unfinished.
 
 ```bash
 git clone https://github.com/patrick-shim/a365-custom-gateway.git

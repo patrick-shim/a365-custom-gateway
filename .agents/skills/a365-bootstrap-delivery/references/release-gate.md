@@ -62,6 +62,10 @@ Application plane. Live validation requires fresh exact-target authority.
 - public root and bootstrap READMEs match the tested journey
 - stale troubleshooting narrative is not promoted as product guidance
 - the release commit and remote branch are identified
+- Copilot, Codex, Claude, role specs, skill adapters and communication follow
+  `docs/agent-guides/model-handoff.md`; current live facts remain centralized
+- all required implementation is committed on canonical `main`, with no remaining
+  source worktree or ignored-only implementation needed for the handoff
 
 ### Complete
 

@@ -1,6 +1,6 @@
 # Microsoft Purview setup and readiness
 
-Status: beta.2 source accepted offline; not deployed or live-ready.
+Status: beta.2 platform correction open; Purview is not live-ready.
 
 Last updated: 2026-09-06 (Asia/Seoul).
 
@@ -89,8 +89,18 @@ Ordinary bootstrap does **not**:
 - claim propagation, token-role readiness, or a runtime verdict.
 
 Core bootstrap and capability preparation remain supported on Windows, macOS, and
-Linux. Later provider operations that require `Connect-IPPSSession` remain
-interactive and Windows-only.
+Linux. Provider operations using `Connect-IPPSSession` require Windows for both
+interactive and unattended certificate authentication. The current Linux worker
+incorrectly hosts authoritative connection verification and policy automation.
+A supported Windows provider executor is being prepared; a successful companion
+submission cannot bypass this missing independent execution boundary.
+ExchangeOnlineManagement 3.10.1 also requires PowerShell 7.6 or later.
+
+For the exact thirteen-completed-stages/failed-prerequisite boundary, follow the
+[bounded prerequisite recovery runbook](purview-prerequisite-recovery.md).
+Ordinary Resume cannot grant missing roles or create the missing certificate for
+a previously started stage. The explicit recovery preserves its original evidence
+and admits only one attempt per missing prerequisite.
 
 ## Gateway Settings workflow
 

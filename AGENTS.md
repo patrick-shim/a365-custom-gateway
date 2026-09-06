@@ -155,7 +155,7 @@ deployed or live-readiness claims:
 - Purview remains fail closed with fixed scopes: KYD uses enterprise-AI-apps
   `ee1680d0-702f-4090-b26c-c49091e86531` as `Group`; DLP uses the selected
   blueprint application ID as `Individual`; both use the `Application` plane.
-- The source is not deployed. Live E2E still requires fresh exact-target authority,
+- Live status belongs in the current deployment checkpoint. Live E2E requires exact-target authority,
   a clean deployment, two compatible blueprints created or reused as authorized,
   one external registration each, and
   independent observability, Prompt Shields, and DLP validation.
@@ -232,3 +232,17 @@ Before a handoff commit or push, update `docs/agent-continuation.md` with the cu
 objective, completed evidence, exact first unfinished action, invalidated gates, and
 live-action boundary. Keep it bounded and current; detailed chronology stays in Git
 history and the rotating local ledger.
+
+Follow [the model handoff protocol](docs/agent-guides/model-handoff.md) for Codex,
+Copilot, Claude, role specs, skills, communication, and documentation synchronization.
+The operator requires the canonical checkout on `main`, with reviewed work committed
+and pushed. Do not create branches or Git worktrees unless the operator changes
+that instruction. Before retiring an older worktree, preserve local-only evidence
+and prove all source changes are merged.
+
+Purview prerequisite recovery is a separate exact-plan operation described in
+[its runbook](docs/operations/purview-prerequisite-recovery.md). Never reset the
+failed stage, repeat its whole identity Ensure action, or substitute this receipt
+for a different recovery or upgrade. Current live status belongs in the deployment
+checkpoint. Both interactive and unattended `Connect-IPPSSession` require Windows;
+a Linux module installation is not supported Purview execution evidence.

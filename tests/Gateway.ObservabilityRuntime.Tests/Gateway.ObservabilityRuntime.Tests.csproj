@@ -24,6 +24,8 @@
     <ProjectReference Include="..\..\src\Gateway.Agent365\Gateway.Agent365.csproj" />
     <ProjectReference Include="..\..\src\Gateway.Domain\Gateway.Domain.csproj" />
     <ProjectReference Include="..\..\src\Gateway.Provisioning.Worker\Gateway.Provisioning.Worker.csproj" />
+    <ProjectReference Include="..\..\src\Gateway.Purview.Executor\Gateway.Purview.Executor.csproj" />
+    <ProjectReference Include="..\..\src\Gateway.Purview.PackagePublisher\Gateway.Purview.PackagePublisher.csproj" />
   </ItemGroup>
 
   <ItemGroup>

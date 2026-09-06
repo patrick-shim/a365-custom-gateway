@@ -92,199 +92,125 @@ durable verified truth returns to the two tracked status files. The ignored lega
 `.agents/runtime/` location is not an active discovery path and is never transferred
 by Git.
 
-## Current live stop: Graph sign-in before fresh deployment
+## Current delivery: stopped for model handoff
 
-The corrected source is committed and pushed to canonical `main`. All five hosted
-jobs passed: Build and Test, Validate Bicep, and Bootstrap on Windows, macOS, and
-Ubuntu. The operator renewed authority for the reviewed fresh deployment and full
-Gateway E2E. This session does not need another deployment approval; that authority
-and the exact target remain in ignored local operator evidence and do not transfer
-with Git.
+The operator stopped live work because model credits were exhausted and requested
+this handoff. The fully running Gateway has **not** been delivered. Do not restart
+deployment automatically from this checkpoint; continue when the operator resumes
+the task. Exact target, original authorization, configuration and recovery evidence
+remain in ignored local operator records and do not transfer through Git.
 
-Visible Setup imported the reviewed fresh configuration and completed Azure
-What-If, then stopped at its read-only Agent ID blueprint check. Independent
-readback found Graph HTTP 401, `InvalidAuthenticationToken`, and a claims challenge.
-No Apply was accepted and no resources were created for this target. The official
-Azure CLI browser sign-in was started. Automatic Computer Use policy then stopped
-Windows browser inspection because the current URL could not be verified; no
-further browser automation was attempted.
+The active Azure bootstrap has thirteen of nineteen stages completed. Its original
+Purview prerequisite failure was a malformed directory-role query. The corrected,
+reviewed recovery completed and independently verified the exact Exchange and
+Compliance Administrator grants on the existing owned automation identity.
+Its certificate operation remains `Started`, with no completion receipt.
 
-The first unfinished action is to complete that official Microsoft sign-in, verify
-Graph access in the exact tenant, refresh Plan in visible Setup, and Apply under
-the existing authority. Continue through canonical Verify, real Admin UI sign-in,
-two blueprint-bound registrations, delegated Registry completion, independently
-observed Agent 365 landing, Prompt Shields allow/block, and blueprint DLP
-allow/block. The operator permits blueprint creation or compatible reuse; reconcile
-the existing seed before creating additional objects. Deployment and all live E2E
-claims remain open. No password, token, or Gateway key is stored in the handoff.
+Read-only evidence shows that the exact Key Vault certificate-secret deployment
+succeeded, while the pinned Entra application still has zero key credentials.
+The exact application audit event reports a failed `Update application` with
+`Microsoft.Online.Workflows.ValidationException`. This is a partial certificate,
+not a missing certificate and not a completed recovery. No secret value was read
+for diagnosis. Preserve the secret, both grants, original accepted snapshot,
+thirteen completed stages and the recovery operation record. Do not rotate,
+recreate, clear or replay the certificate operation, or rerun the whole identity
+Ensure function. The existing recovery rejects this partial state by design.
 
-## Preserved deployment and accepted startup correction
+Before that live attempt, the minimal recovery source passed independent review,
+Release with zero warnings/errors, all 2,008 .NET tests, 928 Pester tests with seven
+skips, 28 Bicep templates and three parameter files, formatting and clean-export
+Windows/POSIX launcher checks. The PKCS12 proof correction also passed independent
+review; its bounded zero-padding acceptance retains MAC, key and certificate proof.
+These are evidence for the minimal recovery source, not the combined handoff source.
 
-The authorized replacement completed its first bounded database recovery with
-exactly one successful execution and no automatic retries. Independent Azure
-readback verified the corrected immutable image, preserved original failed job,
-and restored original SQL administrator. The original accepted plan and workload
-image evidence remain unchanged. Eleven of nineteen stages are complete.
+The reviewed Windows executor, worker transport, private publisher, package
+inspector, Bicep and tests have now been promoted into canonical source. Required
+implementation is no longer held only in an ignored export. Canonical recovery and
+diagnostic privacy corrections were preserved during promotion. The host/client,
+publisher and package-inspector boundaries previously passed independent review
+with 66, 49 and 29 focused tests; two additional package-builder source-binding
+tests passed, with 31 combined package tests and independent review. Deployment
+integration, dedicated identity creation, package publication, upgrade receipt,
+fresh-bootstrap wiring and actual Windows/provider proof remain unfinished.
+The old package must be rebuilt against the final source before publication.
 
-Visible Setup's read-only Resume review passed the source, identity, infrastructure,
-image, and private-network checks, then stopped at the database-stage API readiness
-request. No Resume authorization was issued and no deployment mutation followed.
-Detailed revision health showed a restarting API. Its strict startup validator
-rejected enabled Prompt Shields because the inert deployment precedes capability
-attestation. This is an API startup ordering defect, not a failed database recovery.
+Promotion changes the source fingerprint. It does not widen or complete the
+preserved minimal recovery authorization. The combined source must not be deployed
+as a finished Full evaluation release. A local Windows host startup check was
+blocked by automatic tool policy and remains unverified. The new source has not
+been deployed; final combined validation and hosted CI are reported separately.
 
-The source correction gates API Prompt Shields on the runtime deployment phase.
-Selected Content Safety infrastructure, RBAC, and endpoint outputs remain prepared
-during inert deployment. Exact capability validation, provider fail-closed behavior,
-SQL evidence checks, and API readiness requirements remain enforced. The regression
-first reproduced three failures. The six focused phase/template regressions and
-22 Prompt Shields tests, including three actual HostBuilder startup cases, passed.
-The clean 900-file export passed Release with zero warnings/errors, all eight .NET
-projects (2,008 tests), and the complete bootstrap gate (876 passed, zero failed,
-7 skipped; 20 PowerShell files, 2 JSON files, 28 Bicep templates, 3 parameter files).
-All nine formatting targets, Windows/POSIX launcher smoke, metadata/private-path
-checks, full ledger audit, and fresh independent correction source review passed.
-All five hosted jobs passed for the containing source correction commit.
+No new registration, delegated Registry completion, worker-verified Active,
+independent Agent 365 landing, Prompt Shields allow/block or DLP allow/block has
+passed for this target. All remain required after deployment and Windows integration.
+Use the shared model handoff protocol and exact first unfinished action below or
+in the continuation checkpoint. Canonical `main` is the sole checkout; the old
+linked worktree, branch and verified-empty worktree parent were retired. Credentials
+and runtime evidence remain outside Git.
 
-Independent review confirmed that no existing supported command accepts this new
-source generation after completed source-pinned database recovery. Preserve that
-deployment, its state, jobs, identities, accepted snapshots, and credentials. Do not
-replay recovery or bypass the source and readiness guards. A new isolated deployment
-has now received exact-target authority in the active operator session.
+## Handoff validation
 
-Deployment and live E2E remain unfinished. Admin UI sign-in, two blueprint-bound
-registrations, delegated Registry completion, Agent 365 landing, Prompt Shields
-allow/block, and blueprint-specific DLP allow/block remain unproved. Environment
-identifiers and receipts remain in ignored operator evidence.
-
-## Capability Boolean correction and offline evidence
-
-A separately authorized clean beta.2 bootstrap reached the inert deployment, where
-ARM emitted `BootstrapCapabilities__Enabled` as `False` but the verifier expected
-`false`. The verifier now uses the existing ARM Boolean text helper for both
-`True` and `False`. Ordinal comparison, opposite-value rejection, secret-reference
-rejection, and all nineteen capability fields remain enforced. Templates, images,
-application behavior, and accepted-state guards are unchanged.
-
-The executable regression first failed for both Boolean values, then all fourteen
-container-configuration tests passed. Fresh independent source and recovery review
-accepted the correction. Release passed with zero warnings/errors, and all eight
-.NET test projects passed again (2,004 tests). The complete bootstrap gate passed
-848 tests with zero failures and 7 skips, plus all 28 Bicep templates and 3 parameter
-files. All nine format targets and metadata/private-path checks passed. The clean
-898-file export passed Release, all 2,004 .NET tests, source/Bicep, the 14-test
-regression, and Windows/POSIX launcher smoke. Production-source fingerprints match
-the canonical candidate. All five correction-specific hosted jobs passed before
-the separately authorized replacement deployment.
-
-The older full acceptance table below records the pre-deployment baseline. It is
-not evidence of a completed deployment or passed live E2E.
-
-## Current objective and proven source state
-
-The `0.1.0-beta.2` protection-governance source has passed final integrated offline
-acceptance and clean-export validation. The source handoff includes all intended
-new files. Detailed prior chronology stays in Git history; local journal evidence
-does not transfer to another computer.
-
-Bootstrap prepares shared capabilities only. Settings owns tenant connection, SIT
-inventory/selection, fixed KYD Group, blueprint Individual DLP, readiness, defaults,
-and per-registration controls. The canonical contracts are in AGENTS.md and the
-[protection settings plan](architecture/protection-settings-plan.md).
-
-| Gate | Final result |
-|---|---:|
-| Release build | 0 warnings, 0 errors |
-| Gateway.UnitTests | 805 passed |
-| Gateway.AdminUi.Tests | 217 passed |
-| Gateway.Setup.Tests | 255 passed |
-| Gateway.ObservabilityRuntime.Tests | 232 passed |
-| Gateway.ArchitectureTests | 131 passed |
-| Gateway.IntegrationTests | 107 passed |
-| Gateway.EndToEndTests | 116 passed |
-| Gateway.SecurityTests | 141 passed |
-| **.NET total** | **2,004 passed, 0 failed** |
-| Pester | 846 passed, 0 failed, 7 skipped |
-| Format | All nine targets passed |
-| Independent security and UI source review | Passed; no remaining actionable findings |
-| Clean export | Release, all eight test projects, canonical bootstrap gate, layout and launcher smoke passed |
-
-Canonical source gate: 20 PowerShell files and 2 JSON files, with 28 Bicep templates and 3 parameter files compiled, with Pester behavior tests.
-
-
-Hosted validation exposed Windows-only fixture paths and platform differences
-in passwordless PKCS12 verification. The tests now use a native temporary path and
-accept both documented null and empty password encodings independently for the
-MAC, safe contents, and private key. All eight synthetic encoding combinations
-pass; nonempty-password and public-only packages are rejected. The actual export
-must retain the exact certificate and prove its matching private key by an
-in-memory signature. Both affected files passed again (11 tests, zero
-failures/skips) in the canonical checkout and clean export; fresh independent
-review of the encoding correction passed. Production source, test counts, and UI
-contracts are unchanged, so the earlier full integrated results above remain
-applicable alongside this incremental evidence. All five hosted jobs passed for
-the certificate-proof correction before the separately authorized live attempt.
-The subsequent Boolean-verifier correction below requires its own acceptance.
-
-The fresh independent review passed the combined source after explicitly
-rechecking all four original findings: shared API/worker runtime identity and
-token subject, exact capability/runtime binding, cancellation-owned process
-termination, and provider-ID-bound KYD/DLP updates with exact readback and
-ambiguous-outcome recovery. It also rechecked the exact 19-key
-`BootstrapCapabilities` startup materialization and subsequent integration
-corrections to bootstrap identity attestation, API credential guards, current
-tenant/SIT readiness, and Settings action compatibility. No earlier review was
-reused as acceptance.
-
-UI acceptance uses the full bUnit suite and fresh independent source review.
-The user explicitly accepted that evidence after automatic browser policy blocked
-local inspection. Desktop and narrow-width browser inspection was waived, not
-reported as executed. AgentDetails distinguishes effective protection from
-selected-profile readiness. Settings uses the supported UploadText Block rule
-for both policy modes, and only Enforce can request runtime allow/block proof.
-
-
-OpenAPI parsing/internal references, Markdown links/anchors/fences, ignored private
-paths, Claude frontmatter, Codex TOML, skill YAML, behavioral parity, whitespace,
-and the full local delivery-ledger audit passed. All intended tracked and new
-source files were included in the clean export. No secret or ignored runtime state
-belongs in the commit.
+The combined handoff source passed Release with zero warnings and errors, all 2123
+.NET tests across eight projects, 31 package/source-binding Pester tests, source
+structure checks, document/link/private-path checks and independent handoff review.
+The earlier architecture failure was a stale expectation of the removed local
+provider; its assertion now expects the reviewed remote provider and all affected
+tests pass. The first build was blocked only by the owned idle Setup executable;
+stopping that host resolved the lock. Final full bootstrap/export gates and hosted
+CI remain pending for this combined source. No live gate was closed by this handoff.
 
 ## Exact first unfinished action and invalidated gates
 
-Complete the pending official Microsoft sign-in after the Computer Use URL-policy
-stop. Recheck exact-tenant Graph access, then use visible Setup to refresh Plan and
-Apply under the active session's existing authority. All five hosted jobs passed
-for the source correction. Preserve prior state and reconcile the existing seed
-blueprint for the two-registration journey. Only documentation changed afterward;
-production-source validation remains valid.
+When the operator resumes, inspect the local recovery receipt and the bounded
+certificate readback/audit evidence. Diagnose why Entra rejected public-certificate
+publication after Key Vault succeeded. The audit proves a failed update; it does
+not explain the validation detail. Do not guess that cause or repeat the write.
+Design and review a separate exact repair for the existing certificate if needed;
+the current recovery command cannot complete a partial certificate. Preserve the
+original and corrected accepted source snapshots and all operation records.
 
-Build and OfflineValidate passed on the corrected clean export: zero-warning/error
-Release, 2,008 .NET tests, 876 Pester tests with zero failures and 7 skips,
-source/Bicep, all nine format targets, metadata/private-path checks, full ledger
-audit, Windows/POSIX launcher smoke, and fresh independent source review. A new
-isolated proposal passed authenticated read-only Plan and preserved the active
-configuration and existing deployment state. That Plan grants no mutation authority.
-Deploy, LiveValidate, and final delivery acceptance remain open. The accepted UI
-source-inspection waiver remains unchanged.
+No live command is running. The visible Setup remains on a stopped read-only
+Resume review, with no Resume authorization. Its owned local host was stopped
+for handoff; restarting it does not authorize deployment. Only after exact
+repair and independent readback may the recovery complete, the normal read-only
+stage reconciler finish stage fourteen, and Setup Resume and `gateway verify` run.
 
-## Live boundary and remaining authorized work
+Then finish [Windows executor integration](architecture/purview-windows-executor.md)
+using the now-tracked implementation. Preserve original bootstrap evidence and
+record the upgrade separately. Finish core registrations, delegated Registry,
+Agent 365 observability, Prompt Shields and DLP live acceptance. This handoff
+contains unfinished implementation; it is not release or live acceptance.
 
-Earlier deployments and their evidence remain preserved. The most recent stopped
-deployment has eleven completed stages, one seed blueprint, and independently
-verified database recovery and SQL administrator restoration. Its API startup
-ordering correction is accepted in source, but that source cannot be resumed into
-the completed source-pinned recovery. Use the authorized fresh target described
-at the top of this checkpoint. Do not edit accepted state, replay database jobs,
-finalize SQL, or clean up earlier deployments. Exact receipts and current operator
-authority remain local; neither transfers through Git or documentation.
+Combined-source full bootstrap/export gates, deployment, Windows startup/provider
+proof, full Gateway E2E and final release acceptance remain open. The validation
+summary below records only checks actually completed for the handoff source.
 
-After the fresh bootstrap completes, verify two blueprint-bound registrations
-through provider-verified Active and independent Agent 365 observability, Prompt
-Shields allow/block, and blueprint-specific Purview DLP allow/block. Follow the
-[deployment checkpoint](operations/development-deployment-status.md) and
-[Purview runbook](operations/purview-setup-runbook.md).
+## Live boundary and remaining work after operator resume
 
-Preserved `.bootstrap/` state must never be
-deleted, edited, or pointed at another target to force progress. Restoring or
-retiring an earlier environment requires its own matching state and authority.
+The active deployment has thirteen completed stages and a failed Purview
+prerequisite stage. Older deployments and database recovery evidence are retained
+for diagnosis; they are different targets and are not Resume candidates for the
+current source. Do not edit accepted state, replay database jobs, finalize SQL,
+remove identities, or clean up earlier environments without exact authority.
+
+After the operator resumes and deployment is verified, prove real Admin UI sign-in and primary routes, two
+external registrations using compatible blueprints created or reused as authorized,
+user-only delegated Registry completion, final worker-verified Active, independent
+Agent 365 activity and audit landing, Prompt Shields allow/block, and blueprint DLP
+allow/block. Existing seed blueprints must be reconciled before creating additional
+ones. Follow the [deployment checkpoint](operations/development-deployment-status.md)
+and [Purview runbook](operations/purview-setup-runbook.md).
+
+The prior local desktop/narrow-width UI gate uses the user's explicit acceptance
+of bUnit tests and independent UI source review after automatic browser policy
+blocked inspection. That is a waiver, not evidence of a browser run or a waiver of
+real deployed Admin UI and Gateway E2E. Automatic policy separately blocked the
+local packaged Windows host startup check; that check remains unverified.
+
+Before commit/push, follow the shared [model handoff protocol](agent-guides/model-handoff.md):
+update all applicable model entry points, specs, skills, directives, guides,
+READMEs, status and notes; run metadata, link, private-path and ledger checks;
+commit and push canonical `main`; verify the remote commit and hosted CI. The
+retired worktree's local evidence remains an archive, not active deployment state.
+Git contains no credentials or ignored runtime evidence. Historical detail lives
+in Git history and the bounded local ledger, not a competing next-action section.

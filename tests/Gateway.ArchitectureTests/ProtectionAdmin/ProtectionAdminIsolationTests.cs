@@ -107,7 +107,7 @@ public sealed class ProtectionAdminIsolationTests
         dependencyInjection.Should().Contain(
             "IPurviewConnectionVerificationProvider");
         dependencyInjection.Should().Contain(
-            "PowerShellPurviewConnectionVerificationProvider");
+            "RemotePurviewConnectionVerificationProvider");
         handler.Should().Contain("PendingVerification");
         handler.Should().Contain("DiscoverConnectionProviderStateAsync");
         handler.Should().Contain("RecordConnectionProviderReadbackAsync");

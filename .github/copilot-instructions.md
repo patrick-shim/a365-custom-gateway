@@ -33,6 +33,12 @@ checkpoint; the delegate records a structured handoff and the coordinator
 records a receipt before using it. Do not let delegate events replace the
 coordinator's current objective or gate.
 
+Follow `docs/agent-guides/model-handoff.md` when changing models or handing off.
+Continue the active objective and existing exact-target authorization, synchronize
+the shared and model-specific instructions, and finish reviewed changes on canonical
+`main`. Do not create a Git worktree. Use the current checkpoints for recovery and
+live status; role specifications must not carry stale deployment claims.
+
 The bootstrap delivery gates are exactly Plan, Build, OfflineValidate, Deploy,
 LiveValidate, UpdateCheckpoint, and Complete. Advance only with the canonical
 gate evidence. A source change invalidates Build and every later gate; a
@@ -75,7 +81,9 @@ prove propagation or a runtime verdict.
 
 ### Implemented protection source invariants
 
-The redesign is implemented and offline-validated in source, not deployed.
+The following are implemented, offline-validated source invariants. Exact live
+status and remaining gates belong to the current implementation and deployment
+checkpoints.
 Bootstrap's Full evaluation, Core Gateway, and Custom presets prepare shared
 capabilities only; bootstrap never selects a SIT or authors KYD/DLP policy, and
 staging/production keep Registry beta closed. Every registration creation requires

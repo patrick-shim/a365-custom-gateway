@@ -23,6 +23,12 @@ The delegate records a structured handoff before reporting; the coordinator
 records a receipt before relying on it. Delegate events never replace the
 coordinator's current objective or gate.
 
+Before a model change or handoff, follow
+[the shared model handoff protocol](docs/agent-guides/model-handoff.md). Continue
+the existing objective and authorized work, synchronize all model entry points,
+and finish reviewed changes on canonical `main`. Do not create a Git worktree.
+Current recovery and live status come from the bounded checkpoints, not role specs.
+
 ## Product overview
 
 The Gateway lets tenant administrators deploy one Azure control plane for many
@@ -97,8 +103,9 @@ Settings configures protection governance after bootstrap verification. Unavaila
 optional authority must not close ordinary registration; choosing an unavailable
 profile fails closed.
 
-The protection redesign is implemented and offline-validated in source, but is not
-deployed. Bootstrap now offers capability-only Full evaluation, Core Gateway, and
+The following are implemented, offline-validated source invariants. Exact live
+status and remaining gates belong to the current implementation and deployment
+checkpoints. Bootstrap now offers capability-only Full evaluation, Core Gateway, and
 Custom presets; it prepares shared admission/infrastructure/authority and never
 selects a SIT or authors KYD/DLP policy. Staging and production keep Registry beta
 closed. Every registration creation requires a signed-in delegated

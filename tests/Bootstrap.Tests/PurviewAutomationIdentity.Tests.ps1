@@ -49,8 +49,15 @@ namespace Gateway.Bootstrap.Tests
         {
             failure = "PfxLength";
             var info = Pkcs12Info.Decode(pfx, out int consumed, skipCopy: true);
-            if (consumed != pfx.Length)
+            // The Windows CSP export may retain eight zero bytes of allocation
+            // padding. Decode reports the actual ASN.1 length. Verify the entire
+            // parsed object below and reject nonzero or unbounded trailing data.
+            failure = "PfxTrailingData";
+            if (pfx.Length - consumed > 8)
                 return false;
+            foreach (byte value in pfx.AsSpan(consumed))
+                if (value != 0)
+                    return false;
             failure = "PasswordlessMac";
             // PKCS12 distinguishes null (default span) from empty (string span).
             // Both are passwordless, and each protected section chooses its encoding.
@@ -402,6 +409,39 @@ namespace Gateway.Bootstrap.Tests
             finally {
                 if ($pfx) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($pfx) }
                 if ($publicOnlyPfx) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($publicOnlyPfx) }
+                if ($certificate) { $certificate.Dispose() }
+                $rsa.Dispose()
+            }
+        }
+
+        It 'proves the key with bounded Windows export padding and rejects other trailing data' -ForEach @(
+            @{ Padding = 0; Nonzero = $false; Expected = $true },
+            @{ Padding = 8; Nonzero = $false; Expected = $true },
+            @{ Padding = 9; Nonzero = $false; Expected = $false },
+            @{ Padding = 8; Nonzero = $true; Expected = $false },
+            @{ Padding = 1; Nonzero = $true; Expected = $false }
+        ) {
+            $rsa = New-BootstrapPurviewCertificateRsa
+            $certificate = $null
+            $canonical = $null
+            $padded = $null
+            try {
+                $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
+                    'CN=a365gw-test-pfx-padding', $rsa,
+                    [Security.Cryptography.HashAlgorithmName]::SHA256,
+                    [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+                $certificate = $request.CreateSelfSigned(
+                    [DateTimeOffset]::UtcNow.AddMinutes(-1), [DateTimeOffset]::UtcNow.AddDays(1))
+                $canonical = [Gateway.Bootstrap.Tests.Pkcs12PrivateKeyProof]::CreateEncodingFixture($certificate, $rsa, 0)
+                $padded = [byte[]]::new($canonical.Length + $Padding)
+                $canonical.CopyTo($padded, 0)
+                if ($Nonzero) { $padded[$padded.Length - 1] = 1 }
+                [Gateway.Bootstrap.Tests.Pkcs12PrivateKeyProof]::Verify($padded, $certificate.RawData) |
+                    Should -Be $Expected
+            }
+            finally {
+                if ($canonical) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($canonical) }
+                if ($padded) { [Security.Cryptography.CryptographicOperations]::ZeroMemory($padded) }
                 if ($certificate) { $certificate.Dispose() }
                 $rsa.Dispose()
             }

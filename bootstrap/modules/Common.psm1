@@ -604,27 +604,25 @@ function Write-BootstrapProviderDiagnostic {
         $safeCommand = [regex]::Replace([IO.Path]::GetFileNameWithoutExtension($CommandName), '[^A-Za-z0-9._-]', '-')
         if ([string]::IsNullOrWhiteSpace($safeCommand)) { $safeCommand = 'command' }
         if ($safeCommand.Length -gt 24) { $safeCommand = $safeCommand.Substring(0, 24) }
-        $fileName = '{0}-{1}-{2}.log' -f `
+        $fileName = '{0}-{1}-{2}.json' -f `
             [DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssZ'), $safeCommand, [guid]::NewGuid().ToString('N').Substring(0, 8)
         $path = Join-Path $script:BootstrapDiagnosticsDirectory $fileName
         $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         $stream.Dispose()
         Set-BootstrapRestrictedFilePermission -Path $path
-        $body = [string]$Output
-        if ($body.Length -gt $script:BootstrapDiagnosticsMaximumBytes) {
-            $body = '[truncated to the last ' + $script:BootstrapDiagnosticsMaximumBytes + ' characters]' + [Environment]::NewLine +
-                $body.Substring($body.Length - $script:BootstrapDiagnosticsMaximumBytes)
+        # Ignored files and filesystem ACLs do not authorize retaining raw provider
+        # bodies. Persist only the same bounded signature allowed in the UI/state.
+        $signature = Get-BootstrapProviderFailureSignature -Output $Output
+        $record = [ordered]@{
+            schemaVersion = 1
+            kind = 'ProviderFailureSignature'
+            command = $safeCommand
+            exitCode = $ExitCode
+            capturedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+            codes = @($signature.codes)
+            correlationIds = @($signature.correlationIds)
         }
-        $header = @(
-            "# A365 Gateway bootstrap provider diagnostic"
-            "# command: $CommandName"
-            "# exitCode: $ExitCode"
-            "# capturedAtUtc: $([DateTimeOffset]::UtcNow.ToString('O'))"
-            "# This local operator file holds unfiltered provider output. It is ignored by Git,"
-            "# is readable only by the current user, and must not be pasted into issues or chat."
-            ''
-        ) -join [Environment]::NewLine
-        [IO.File]::WriteAllText($path, $header + $body, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($path, ($record | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
         return $path
     }
     catch {
@@ -703,7 +701,7 @@ function New-BootstrapProviderFailureException {
         Write-BootstrapProviderDiagnostic -CommandName $CommandName -ExitCode $ExitCode -Output $Output
     }
     if (-not [string]::IsNullOrWhiteSpace($diagnosticPath)) {
-        $parts += "Unfiltered provider output was written to the local operator file '$diagnosticPath'."
+        $parts += "A bounded provider failure signature was written to the local operator file '$diagnosticPath'."
     }
     else {
         $parts += 'Provider output was suppressed at this trust boundary.'
@@ -1350,6 +1348,7 @@ function Get-BootstrapSourceManifest {
         'tools/_common.ps1',
         'tools/configure-workflow-v3-entra.ps1',
         'operations/test-provisioning-prerequisites.ps1',
+        'operations/build-purview-executor-package.ps1',
         'gateway',
         'gateway.cmd',
         'gateway.ps1',
@@ -2527,6 +2526,14 @@ function Get-BootstrapEffectiveDeploymentSourceFingerprint {
     }
     Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Bootstrap execution source fingerprint'
     $effectiveSourceFingerprint = $ExecutionSourceFingerprint
+    if ($State.Contains('purviewPrerequisiteRecoveryPlan')) {
+        $recovery = $State.purviewPrerequisiteRecoveryPlan
+        $null = Assert-BootstrapPurviewRecoveryPlan -State $State -Recovery $recovery -Completed
+        if ($ExecutionSourceFingerprint -cne [string]$recovery.plan.correctedSourceFingerprint) {
+            throw 'Purview prerequisite recovery does not authorize this execution source.'
+        }
+        return [string]$recovery.plan.originalSourceFingerprint
+    }
     if ($State.Contains('manualDatabaseRepairPlan') -and
         $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
         [string]$State.manualDatabaseRepairPlan.status -ceq 'Completed') {
@@ -2963,6 +2970,12 @@ function Add-BootstrapConfigurationChangeRecord {
 function Assert-BootstrapStateAllowsSourcePlan {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
 
+    # Validate even when lastWritten already matches current source. An incomplete
+    # or altered recovery receipt must never become ordinary Resume authorization.
+    if ($State.Contains('purviewPrerequisiteRecoveryPlan')) {
+        $null = Assert-BootstrapPurviewRecoveryPlan -State $State -Recovery $State.purviewPrerequisiteRecoveryPlan -Completed
+        return $true
+    }
     if (-not (Test-BootstrapStateHasEvidence -State $State)) { return $true }
     if (-not $State.Contains('source') -or $State.source -isnot [System.Collections.IDictionary] -or
         -not $State.source.Contains('lastWritten') -or $State.source.lastWritten -isnot [System.Collections.IDictionary]) {

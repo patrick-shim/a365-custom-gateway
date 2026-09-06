@@ -21,11 +21,8 @@ using ManagedIdentityCredential =
 
 namespace Gateway.Provisioning.Worker;
 
-internal interface IPurviewVerifierProcessControl
+internal interface IPurviewVerifierProcessControl : IPurviewOwnedProcess
 {
-    bool HasExited { get; }
-    void Kill(bool entireProcessTree);
-    Task WaitForExitAsync(CancellationToken cancellationToken);
 }
 
 internal sealed class PurviewVerifierProcessControl(Process process)
@@ -54,13 +51,16 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
 
     private readonly PurviewOptions _options;
     private readonly ILogger<PowerShellPurviewConnectionVerificationProvider> _logger;
+    private readonly PurviewProcessSafety _processSafety;
 
     public PowerShellPurviewConnectionVerificationProvider(
         IOptions<PurviewOptions> options,
-        ILogger<PowerShellPurviewConnectionVerificationProvider> logger)
+        ILogger<PowerShellPurviewConnectionVerificationProvider> logger,
+        PurviewProcessSafety? processSafety = null)
     {
         _options = options.Value;
         _logger = logger;
+        _processSafety = processSafety ?? new PurviewProcessSafety();
     }
 
     public async Task<PurviewConnectionVerificationEvidence> VerifyAsync(
@@ -141,7 +141,8 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
             if (!process.Start())
                 throw Failure("PURVIEW_CONNECTION_VERIFIER_START_FAILED");
 
-            await process.StandardInput.WriteLineAsync(certificatePassword);
+            await using var processLease = new PurviewProcessLease(process, _processSafety);
+            await process.StandardInput.WriteLineAsync(certificatePassword.AsMemory(), ct);
             process.StandardInput.Close();
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(
@@ -158,7 +159,8 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
                 new PurviewVerifierProcessControl(process),
                 workingDirectory,
                 timeout.Token,
-                ct);
+                ct,
+                _processSafety);
             var standardOutput = await outputTask;
             var standardError = await errorTask;
 
@@ -564,64 +566,26 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
         IPurviewVerifierProcessControl process,
         string workingDirectory,
         CancellationToken waitToken,
-        CancellationToken callerCancellationToken)
+        CancellationToken callerCancellationToken,
+        PurviewProcessSafety? safety = null)
     {
         try
         {
-            await process.WaitForExitAsync(waitToken);
+            await process.WaitForExitAsync(waitToken).WaitAsync(waitToken);
         }
         catch (OperationCanceledException)
         {
-            await StopProcessAndCleanupAsync(process, workingDirectory);
+            var terminated = await PurviewProcessTermination.TryTerminateAsync(
+                process, safety ?? new PurviewProcessSafety(), TimeSpan.FromSeconds(5));
+            await DeleteDirectoryWithRetryAsync(workingDirectory);
+            if (!terminated)
+                throw Failure("PURVIEW_CONNECTION_PROCESS_TERMINATION_UNVERIFIED");
             if (callerCancellationToken.IsCancellationRequested)
                 throw new OperationCanceledException(callerCancellationToken);
 
             throw Failure(
                 "PURVIEW_CONNECTION_READ_TIMEOUT",
                 isTransient: true);
-        }
-    }
-
-    private static async Task StopProcessAndCleanupAsync(
-        IPurviewVerifierProcessControl process,
-        string workingDirectory)
-    {
-        TryKill(process);
-        using var exitWait = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        try
-        {
-            await process.WaitForExitAsync(exitWait.Token);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (InvalidOperationException)
-        {
-        }
-        catch (System.ComponentModel.Win32Exception)
-        {
-        }
-        finally
-        {
-            await DeleteDirectoryWithRetryAsync(workingDirectory);
-        }
-    }
-
-    private static void TryKill(IPurviewVerifierProcessControl process)
-    {
-        try
-        {
-            if (!process.HasExited)
-                process.Kill(entireProcessTree: true);
-        }
-        catch (InvalidOperationException)
-        {
-        }
-        catch (System.ComponentModel.Win32Exception)
-        {
-        }
-        catch (NotSupportedException)
-        {
         }
     }
 

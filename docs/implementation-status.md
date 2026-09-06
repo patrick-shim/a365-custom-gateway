@@ -8,33 +8,74 @@ at the repository [README](../README.md). Exact deployed development evidence is
 machine or agent starts unfinished work from the tracked
 [agent continuation checkpoint](agent-continuation.md).
 
-## Current live stop: Graph sign-in before fresh deployment
+## Current delivery: stopped for model handoff
 
-The corrected source is committed and pushed to canonical `main`. All five hosted
-jobs passed: Build and Test, Validate Bicep, and Bootstrap on Windows, macOS, and
-Ubuntu. The operator renewed authority for the reviewed fresh deployment and full
-Gateway E2E. This session does not need another deployment approval; that authority
-and the exact target remain in ignored local operator evidence and do not transfer
-with Git.
+The operator stopped live work because model credits were exhausted and requested
+this handoff. The fully running Gateway has **not** been delivered. Do not restart
+deployment automatically from this checkpoint; continue when the operator resumes
+the task. Exact target, original authorization, configuration and recovery evidence
+remain in ignored local operator records and do not transfer through Git.
 
-Visible Setup imported the reviewed fresh configuration and completed Azure
-What-If, then stopped at its read-only Agent ID blueprint check. Independent
-readback found Graph HTTP 401, `InvalidAuthenticationToken`, and a claims challenge.
-No Apply was accepted and no resources were created for this target. The official
-Azure CLI browser sign-in was started. Automatic Computer Use policy then stopped
-Windows browser inspection because the current URL could not be verified; no
-further browser automation was attempted.
+The active Azure bootstrap has thirteen of nineteen stages completed. Its original
+Purview prerequisite failure was a malformed directory-role query. The corrected,
+reviewed recovery completed and independently verified the exact Exchange and
+Compliance Administrator grants on the existing owned automation identity.
+Its certificate operation remains `Started`, with no completion receipt.
 
-The first unfinished action is to complete that official Microsoft sign-in, verify
-Graph access in the exact tenant, refresh Plan in visible Setup, and Apply under
-the existing authority. Continue through canonical Verify, real Admin UI sign-in,
-two blueprint-bound registrations, delegated Registry completion, independently
-observed Agent 365 landing, Prompt Shields allow/block, and blueprint DLP
-allow/block. The operator permits blueprint creation or compatible reuse; reconcile
-the existing seed before creating additional objects. Deployment and all live E2E
-claims remain open. No password, token, or Gateway key is stored in the handoff.
+Read-only evidence shows that the exact Key Vault certificate-secret deployment
+succeeded, while the pinned Entra application still has zero key credentials.
+The exact application audit event reports a failed `Update application` with
+`Microsoft.Online.Workflows.ValidationException`. This is a partial certificate,
+not a missing certificate and not a completed recovery. No secret value was read
+for diagnosis. Preserve the secret, both grants, original accepted snapshot,
+thirteen completed stages and the recovery operation record. Do not rotate,
+recreate, clear or replay the certificate operation, or rerun the whole identity
+Ensure function. The existing recovery rejects this partial state by design.
 
-## Preserved deployment and accepted startup correction
+Before that live attempt, the minimal recovery source passed independent review,
+Release with zero warnings/errors, all 2,008 .NET tests, 928 Pester tests with seven
+skips, 28 Bicep templates and three parameter files, formatting and clean-export
+Windows/POSIX launcher checks. The PKCS12 proof correction also passed independent
+review; its bounded zero-padding acceptance retains MAC, key and certificate proof.
+These are evidence for the minimal recovery source, not the combined handoff source.
+
+The reviewed Windows executor, worker transport, private publisher, package
+inspector, Bicep and tests have now been promoted into canonical source. Required
+implementation is no longer held only in an ignored export. Canonical recovery and
+diagnostic privacy corrections were preserved during promotion. The host/client,
+publisher and package-inspector boundaries previously passed independent review
+with 66, 49 and 29 focused tests; two additional package-builder source-binding
+tests passed, with 31 combined package tests and independent review. Deployment
+integration, dedicated identity creation, package publication, upgrade receipt,
+fresh-bootstrap wiring and actual Windows/provider proof remain unfinished.
+The old package must be rebuilt against the final source before publication.
+
+Promotion changes the source fingerprint. It does not widen or complete the
+preserved minimal recovery authorization. The combined source must not be deployed
+as a finished Full evaluation release. A local Windows host startup check was
+blocked by automatic tool policy and remains unverified. The new source has not
+been deployed; final combined validation and hosted CI are reported separately.
+
+No new registration, delegated Registry completion, worker-verified Active,
+independent Agent 365 landing, Prompt Shields allow/block or DLP allow/block has
+passed for this target. All remain required after deployment and Windows integration.
+Use the shared model handoff protocol and exact first unfinished action below or
+in the continuation checkpoint. Canonical `main` is the sole checkout; the old
+linked worktree, branch and verified-empty worktree parent were retired. Credentials
+and runtime evidence remain outside Git.
+
+## Handoff validation
+
+The combined handoff source passed Release with zero warnings and errors, all 2123
+.NET tests across eight projects, 31 package/source-binding Pester tests, source
+structure checks, document/link/private-path checks and independent handoff review.
+The earlier architecture failure was a stale expectation of the removed local
+provider; its assertion now expects the reviewed remote provider and all affected
+tests pass. The first build was blocked only by the owned idle Setup executable;
+stopping that host resolved the lock. Final full bootstrap/export gates and hosted
+CI remain pending for this combined source. No live gate was closed by this handoff.
+
+## Historical preserved deployment and accepted startup correction
 
 The authorized replacement completed its first bounded database recovery with
 exactly one successful execution and no automatic retries. Independent Azure
@@ -186,7 +227,7 @@ selected-profile readiness. Settings uses the supported UploadText Block rule
 for both policy modes, and only Enforce can request runtime allow/block proof.
 
 
-Earlier deployments and their evidence remain preserved. The most recent stopped
+Earlier deployments and their evidence remain preserved. An earlier retained
 deployment has eleven completed stages, one seed blueprint, and independently
 verified database recovery and SQL administrator restoration. Its API startup
 ordering correction is accepted in source, but that source cannot be resumed into
@@ -231,9 +272,10 @@ A stopped step now names its own cause. `Invoke-BootstrapCommand` extracts a bou
 signature from failed provider output — at most eight `code`/`errorCode` values and
 four correlation GUIDs — and attaches it to the thrown exception, so the safe failure
 event, the Setup timeline, and the persisted checkpoint all carry those identifiers.
-The unfiltered provider text never crosses that boundary; it is written to an ignored
-`.bootstrap/diagnostics/` file restricted to the current account and referenced only
-by path. A failure with no provider signature keeps its curated message unchanged.
+Raw provider text is never persisted. The ignored, account-restricted
+`.bootstrap/diagnostics/` JSON record contains only the same bounded signature,
+a sanitized command name, exit code and timestamp. A failure with no provider
+signature keeps its curated message unchanged.
 Completed-step validators likewise attach only the exact property path and the fact
 that it disagreed. Curated validator context is preserved, while expected and actual
 resource IDs, endpoints, principal IDs, image digests, and provider text remain
@@ -416,30 +458,7 @@ belongs only to the revision recorded in the deployment checkpoint.
 
 ## Safe resume point
 
-Beta.2 integrated offline acceptance, independent security/UI source review, and
-clean export are complete, and all five hosted jobs passed for the Boolean
-correction. A receiving checkout verifies its actual HEAD and
-associated CI before acting; see the bounded
-[continuation checkpoint](agent-continuation.md).
-
-Earlier deployments and their evidence remain preserved. The most recent stopped
-deployment has eleven completed stages, one seed blueprint, and independently
-verified database recovery and SQL administrator restoration. Its API startup
-ordering correction is accepted in source, but that source cannot be resumed into
-the completed source-pinned recovery. Use the authorized fresh target described
-at the top of this checkpoint. Do not edit accepted state, replay database jobs,
-finalize SQL, or clean up earlier deployments. Exact receipts and current operator
-authority remain local; neither transfers through Git or documentation.
-
-The authorized E2E uses a clean bootstrap and two compatible blueprints, created
-or reused as authorized, with one external registration per blueprint. Both must reach provider-verified Active and independently
-prove Agent 365 observability, Prompt Shields allow/block, and Purview DLP allow/block.
-
-The previously identified macOS interactive core-launcher check and fixture-backed
-Setup Resume browser journey remain separate platform checks. The explicit browser
-waiver above applies to the changed protection UI acceptance; it is not live or
-Setup browser evidence.
-
-Before any separately authorized live action, read the
-[deployment status](operations/development-deployment-status.md) and relevant runbook.
-Preserve ignored bootstrap state and never read or expose `.secret`/`.secrets` values.
+Follow the single [continuation checkpoint](agent-continuation.md). Live work was
+stopped by the operator. Certificate publication is partially complete and requires
+diagnosis plus an exact reviewed repair; do not replay the existing operation.
+Earlier deployment histories do not authorize a retry or establish current proof.

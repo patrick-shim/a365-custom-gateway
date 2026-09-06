@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Gateway.ObservabilityRuntime.Tests" />
+    <InternalsVisibleTo Include="Gateway.Purview.Executor" />
     <InternalsVisibleTo Include="Gateway.ArchitectureTests" />
     <InternalsVisibleTo Include="DynamicProxyGenAssembly2" />
   </ItemGroup>

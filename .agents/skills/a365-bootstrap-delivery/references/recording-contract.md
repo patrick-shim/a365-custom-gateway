@@ -83,3 +83,17 @@ An existing schema-v1 session is upgraded only on a valid write. The bounded mig
 Journal append, handoff-file replacement, manifest replacement, and `CURRENT.json` replacement are separate filesystem operations; a cross-file crash-atomic transaction is not claimed. Input, semantic, and derived-size validation occurs before append. Normal validation acquires the writer lock and checks the bounded current snapshot: the current schema and checkpoint, manifest, current shard, active assignments, and bounded recent handoff indexes and files. It detects a mismatch in that snapshot, an incomplete migration, or indexed-handoff divergence before work continues. `-FullAudit` explicitly scans every historical journal shard and handoff under the same writer lock; use it for a release or handoff integrity gate or when historical corruption is suspected, not for routine resume.
 
 This ledger supplements, but does not replace, required repository architecture and safety guidance.
+
+## Model changes and source delivery
+
+Follow `docs/agent-guides/model-handoff.md` before changing models or publishing a
+handoff. The same objective and existing session authorization remain active.
+Record the exact first unfinished action and distinguish reviewed source, passing
+offline checks, deployed state, and independent live proof. A policy-blocked test
+stays unverified unless the operator explicitly accepts a different gate.
+
+Use canonical `main` for the current delivery. Before retiring an older linked
+worktree, record its source comparison and preserve its local-only ledger and
+deployment evidence. Do not move those records into the active ledger or infer
+current deployment authority from them. A successful source merge does not merge
+deployment states. Git transfers neither archived local evidence nor ignored drafts.

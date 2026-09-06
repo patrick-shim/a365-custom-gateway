@@ -1357,7 +1357,7 @@ exit 3
         }
     }
 
-    It 'writes unfiltered provider output only to a restricted local operator file' {
+    It 'writes only a bounded failure signature to a restricted local operator file' {
         $diagnostics = Join-Path $TestDrive 'diagnostics'
         $childScript = Join-Path $TestDrive 'diagnostic-failure.ps1'
         @'
@@ -1377,7 +1377,15 @@ exit 5
                 $diagnosticPath = [string]$_.Exception.Data['GatewayProviderDiagnosticPath']
                 $diagnosticPath | Should -Not -BeNullOrEmpty
                 $_.Exception.Message | Should -BeLike "*$diagnosticPath*"
-                Get-Content -LiteralPath $diagnosticPath -Raw | Should -Match 'private-provider-prose'
+                $recordText = Get-Content -LiteralPath $diagnosticPath -Raw
+                $recordText | Should -Not -Match 'private-provider-prose'
+                $record = $recordText | ConvertFrom-Json -AsHashtable
+                $record.schemaVersion | Should -Be 1
+                $record.kind | Should -BeExactly 'ProviderFailureSignature'
+                @($record.codes) | Should -Be @('ResourceNotFound')
+                @($record.correlationIds).Count | Should -Be 0
+                @($record.Keys | Sort-Object) | Should -Be @(
+                    'capturedAtUtc', 'codes', 'command', 'correlationIds', 'exitCode', 'kind', 'schemaVersion')
 
                 if ($IsWindows) {
                     $acl = Get-Acl -LiteralPath $diagnosticPath

@@ -75,8 +75,9 @@ validating docs.
 
 ## Implemented protection source boundary
 
-The protection redesign is implemented and offline-validated in source, not
-deployed. Bootstrap Full/Core/Custom presets prepare capabilities only and never
+The following are implemented, offline-validated source invariants. Exact live
+status and remaining gates belong to the current implementation and deployment
+checkpoints. Bootstrap Full/Core/Custom presets prepare capabilities only and never
 select a SIT or author policy. Every registration creation requires a signed-in
 delegated `Gateway.Administrator`. Gateway Settings owns SIT/KYD/DLP and
 per-registration controls on dedicated `gateway-protection-admin-v1`. The immutable
@@ -87,3 +88,11 @@ roles, and runtime allow/block evidence, with current SIT generation, exact
 blueprint/provider IDs, and timestamps. Preserve KYD Group versus blueprint
 Individual DLP on the Application plane. Any live claim still requires fresh
 exact-target authority and exact readback.
+
+## Model handoff
+
+Follow the shared model handoff protocol in `docs/agent-guides/model-handoff.md`.
+Keep current live and recovery facts in the tracked continuation and deployment
+checkpoints. Honor existing session authorization and preserve unfinished work.
+The operator requires canonical `main` with reviewed changes committed and pushed;
+do not create a Git worktree.

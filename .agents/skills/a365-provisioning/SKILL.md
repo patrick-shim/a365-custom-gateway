@@ -42,8 +42,9 @@ registration. Purview policy automation keeps the fixed tenant-wide enterprise-A
 apps Group for Know Your Data separate from blueprint Individual DLP locations; both
 use the Application plane.
 
-The protection redesign is implemented and offline-validated in source, not
-deployed. Bootstrap's Full/Core/Custom presets prepare capabilities only and never
+The following are implemented, offline-validated source invariants. Exact live
+status and remaining gates belong to the current implementation and deployment
+checkpoints. Bootstrap's Full/Core/Custom presets prepare capabilities only and never
 select a SIT or author KYD/DLP. Every registration creation requires a signed-in
 delegated `Gateway.Administrator`; actual Registry completion remains user-only
 OBO. Gateway Settings owns SIT/KYD/DLP, defaults, and per-registration controls on
@@ -63,3 +64,11 @@ responses, or certificate material in configuration, logs, tests, or chat.
 
 Run focused tests first, then full relevant .NET, Pester, Release, source, Bicep,
 formatting, and documentation gates. Local success is not deployment evidence.
+
+## Model handoff
+
+Follow the shared model handoff protocol in `docs/agent-guides/model-handoff.md`.
+Keep current live and recovery facts in the tracked continuation and deployment
+checkpoints. Honor existing session authorization and preserve unfinished work.
+The operator requires canonical `main` with reviewed changes committed and pushed;
+do not create a Git worktree.

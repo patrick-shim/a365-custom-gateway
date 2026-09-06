@@ -12,33 +12,78 @@ For unfinished source work after a fetch, pull, or fresh clone, begin with the
 tracked [agent continuation checkpoint](../agent-continuation.md). Git alone does
 not transfer the ignored state required to Resume an existing deployment.
 
-## Current live stop: Graph sign-in before fresh deployment
+## Current delivery: stopped for model handoff
 
-The corrected source is committed and pushed to canonical `main`. All five hosted
-jobs passed: Build and Test, Validate Bicep, and Bootstrap on Windows, macOS, and
-Ubuntu. The operator renewed authority for the reviewed fresh deployment and full
-Gateway E2E. This session does not need another deployment approval; that authority
-and the exact target remain in ignored local operator evidence and do not transfer
-with Git.
+The operator stopped live work because model credits were exhausted and requested
+this handoff. The fully running Gateway has **not** been delivered. Do not restart
+deployment automatically from this checkpoint; continue when the operator resumes
+the task. Exact target, original authorization, configuration and recovery evidence
+remain in ignored local operator records and do not transfer through Git.
 
-Visible Setup imported the reviewed fresh configuration and completed Azure
-What-If, then stopped at its read-only Agent ID blueprint check. Independent
-readback found Graph HTTP 401, `InvalidAuthenticationToken`, and a claims challenge.
-No Apply was accepted and no resources were created for this target. The official
-Azure CLI browser sign-in was started. Automatic Computer Use policy then stopped
-Windows browser inspection because the current URL could not be verified; no
-further browser automation was attempted.
+The active Azure bootstrap has thirteen of nineteen stages completed. Its original
+Purview prerequisite failure was a malformed directory-role query. The corrected,
+reviewed recovery completed and independently verified the exact Exchange and
+Compliance Administrator grants on the existing owned automation identity.
+Its certificate operation remains `Started`, with no completion receipt.
 
-The first unfinished action is to complete that official Microsoft sign-in, verify
-Graph access in the exact tenant, refresh Plan in visible Setup, and Apply under
-the existing authority. Continue through canonical Verify, real Admin UI sign-in,
-two blueprint-bound registrations, delegated Registry completion, independently
-observed Agent 365 landing, Prompt Shields allow/block, and blueprint DLP
-allow/block. The operator permits blueprint creation or compatible reuse; reconcile
-the existing seed before creating additional objects. Deployment and all live E2E
-claims remain open. No password, token, or Gateway key is stored in the handoff.
+Read-only evidence shows that the exact Key Vault certificate-secret deployment
+succeeded, while the pinned Entra application still has zero key credentials.
+The exact application audit event reports a failed `Update application` with
+`Microsoft.Online.Workflows.ValidationException`. This is a partial certificate,
+not a missing certificate and not a completed recovery. No secret value was read
+for diagnosis. Preserve the secret, both grants, original accepted snapshot,
+thirteen completed stages and the recovery operation record. Do not rotate,
+recreate, clear or replay the certificate operation, or rerun the whole identity
+Ensure function. The existing recovery rejects this partial state by design.
 
-## Preserved deployment and accepted startup correction
+Before that live attempt, the minimal recovery source passed independent review,
+Release with zero warnings/errors, all 2,008 .NET tests, 928 Pester tests with seven
+skips, 28 Bicep templates and three parameter files, formatting and clean-export
+Windows/POSIX launcher checks. The PKCS12 proof correction also passed independent
+review; its bounded zero-padding acceptance retains MAC, key and certificate proof.
+These are evidence for the minimal recovery source, not the combined handoff source.
+
+The reviewed Windows executor, worker transport, private publisher, package
+inspector, Bicep and tests have now been promoted into canonical source. Required
+implementation is no longer held only in an ignored export. Canonical recovery and
+diagnostic privacy corrections were preserved during promotion. The host/client,
+publisher and package-inspector boundaries previously passed independent review
+with 66, 49 and 29 focused tests; two additional package-builder source-binding
+tests passed, with 31 combined package tests and independent review. Deployment
+integration, dedicated identity creation, package publication, upgrade receipt,
+fresh-bootstrap wiring and actual Windows/provider proof remain unfinished.
+The old package must be rebuilt against the final source before publication.
+
+Promotion changes the source fingerprint. It does not widen or complete the
+preserved minimal recovery authorization. The combined source must not be deployed
+as a finished Full evaluation release. A local Windows host startup check was
+blocked by automatic tool policy and remains unverified. The new source has not
+been deployed; final combined validation and hosted CI are reported separately.
+
+No new registration, delegated Registry completion, worker-verified Active,
+independent Agent 365 landing, Prompt Shields allow/block or DLP allow/block has
+passed for this target. All remain required after deployment and Windows integration.
+Use the shared model handoff protocol and exact first unfinished action below or
+in the continuation checkpoint. Canonical `main` is the sole checkout; the old
+linked worktree, branch and verified-empty worktree parent were retired. Credentials
+and runtime evidence remain outside Git.
+
+## Handoff validation
+
+The combined handoff source passed Release with zero warnings and errors, all 2123
+.NET tests across eight projects, 31 package/source-binding Pester tests, source
+structure checks, document/link/private-path checks and independent handoff review.
+The earlier architecture failure was a stale expectation of the removed local
+provider; its assertion now expects the reviewed remote provider and all affected
+tests pass. The first build was blocked only by the owned idle Setup executable;
+stopping that host resolved the lock. Final full bootstrap/export gates and hosted
+CI remain pending for this combined source. No live gate was closed by this handoff.
+
+## Historical preserved deployment and startup correction
+
+The following retained-target evidence predates the active thirteen-stage attempt.
+It is not the current next action. Follow the current delivery block above and
+the single continuation checkpoint for execution.
 
 The authorized replacement completed its first bounded database recovery with
 exactly one successful execution and no automatic retries. Independent Azure
@@ -77,7 +122,7 @@ registrations, delegated Registry completion, Agent 365 landing, Prompt Shields
 allow/block, and blueprint-specific DLP allow/block remain unproved. Environment
 identifiers and receipts remain in ignored operator evidence.
 
-## Capability Boolean correction and offline evidence
+## Historical capability Boolean correction and offline evidence
 
 A separately authorized clean beta.2 bootstrap reached the inert deployment, where
 ARM emitted `BootstrapCapabilities__Enabled` as `False` but the verifier expected
@@ -100,7 +145,7 @@ the separately authorized replacement deployment.
 The older full acceptance table below records the pre-deployment baseline. It is
 not evidence of a completed deployment or passed live E2E.
 
-## What is deployed and verified
+## Historical deployed and verified evidence
 
 A user-operated bootstrap run provisioned a gateway into an empty resource group
 and reached all nineteen steps `Completed`. Verified against that live
@@ -185,178 +230,43 @@ operation to the exporter to manufacture one.
 Those observations prove the deployed build that produced them. They do not
 prove that later source changes are deployed.
 
-## What is not yet proven
+## Current acceptance and upgrade boundary
 
-Fail closed on each of these; none may be reported as met.
+The active deployment is the thirteen-stage attempt described at the top of this
+checkpoint. No previous deployment's telemetry, registration or protection result
+closes its remaining gates. Detailed historical telemetry and troubleshooting
+chronology remain in Git history.
 
-The source direction has changed since this deployment. Bootstrap now prepares
-Agent 365, Prompt Shields, and Purview capabilities, while role-aware Gateway Admin
-Settings owns mutable protection configuration and readiness. Phases 1–4 of the
-[protection settings plan](../architecture/protection-settings-plan.md) passed
-offline acceptance after fresh independent review. Existing deployed evidence below
-does not prove that experience. The corrected source passed exact-commit hosted CI and received fresh-target
-authority. Its current Graph sign-in stop is recorded at the top of this checkpoint.
+Bootstrap prepares shared capabilities only. It never selects a sensitive
+information type or authors Know Your Data or DLP policy. Gateway Settings owns
+those operations and requires exact provider verification of its automation
+authority. Creating or reusing a compatible blueprint does not bypass DLP profile
+readiness. Both compliance providers require the reviewed Windows execution path;
+the Linux worker's module installation proves neither connection nor authoring.
 
-- **Purview DLP at blueprint level.** No blueprint-scoped DLP verdict has been
-  observed, so this remains unmet. Two coupled constants previously pinned
-  `Purview__Enabled` to false on every deployment: the policy evidence builder
-  reported the adapter as disabled even after the collection, the DLP policy,
-  and the DLP rule passed exact typed readback, and the deployment-evidence
-  validator expected that same false value, so it would have rejected a
-  deployment that enabled it. Being mutually consistent, neither ever failed a
-  check. Both now follow the reviewed configuration, but that is a source
-  correction which has not been deployed. A second blocker sat behind the first
-  and would have stopped the very next run: a step that completed while Purview
-  was disabled records `configured: false`, and the validator rejected that as a
-  mismatch while the anti-replay guard refused to run the step again, so the run
-  failed and flipped the step to `Failed`, after which the reconciler found no
-  tenant object to recover and the deployment could not proceed at all. The
-  guard now scopes itself to evidence of an actual prior authoring attempt,
-  which the disabled early return provably is not, so a no-op completion simply
-  runs while a real prior mutation still fails closed. Provisioning the Purview
-  policy-automation application and certificate is *not* a prerequisite here:
-  bootstrap already authors the blueprint-scoped DLP policy over the operator's
-  interactive session, and registering an agent against an *existing* blueprint
-  never enters the profile-provisioning path. That automation identity is
-  required only to create a *new* protected blueprint, where the worker must
-  author policies unattended. Enabling the adapter makes the runtime path
-  reachable, not correct: evaluation stays per-agent opt-in and fails closed,
-  and a managed identity lacking the Purview Graph roles still fails the
-  request. Treat the feature as unproven until a live allow and block pair is
-  observed on a deployed build.
-- **Azure Monitor mirror completeness.** The Agent 365 sink is proven per sink.
-  The mirror is now *instrumentable* but is still not *proven*. The counter
-  `gateway.observability.azure_monitor.emitted_events` previously hardcoded its
-  `gateway.export.result` dimension to `emitted` and incremented even when no
-  span had been created, so it could not distinguish an event that was never
-  recorded from one recorded and then lost in export. That dimension now carries
-  the real outcome, `recorded` or `not_recorded`, and the worker logs a warning
-  whenever an event whose idempotency claim was already consumed produced no
-  span, because such an event can never be mirrored again. This is a source
-  correction that has not been deployed. Treat the mirror as lossy until a live
-  emitted-versus-mirrored count check passes on a deployed build: query the
-  counter split by `gateway.export.result` and confirm `not_recorded` is zero
-  over the same window as the exercised traffic.
-- **Defender agent inventory for the current agents.** The Defender advanced
-  hunting inventory table does carry the gateway's own platform value alongside
-  the first-party agent platforms, which proves gateway-created agent identities
-  reach Defender. It is a periodic snapshot, not a live feed: the most recent
-  snapshot predated the current registrations by several hours, so those specific
-  agents were legitimately not in it yet. Absence within one snapshot interval is
-  latency, not rejection.
-- **Defender cloud app interaction rows.** The advanced hunting table that would
-  carry these rows has ingested nothing tenant-wide for the entire retention
-  window. That emptiness is an ingestion gap in the table itself, not evidence
-  that gateway spans were rejected, and it must not be read as either
-  confirmation or refutation.
+The accepted bootstrap source and completed stage evidence remain immutable.
+Ordinary Resume cannot silently adopt changed source. The active attempt stopped
+inside the [narrow prerequisite recovery](purview-prerequisite-recovery.md) with a
+partial certificate. That command cannot repair this state. Diagnose the failed
+publication and review an exact repair before any recovery completion or Resume.
+No new resource group, database initialization or replacement identity is authorized
+by this handoff.
 
-When reading either portal, note that timestamps render in the signed-in
-operator's local time zone while the gateway's own evidence is in UTC. Compare
-them by converting explicitly; a snapshot that looks current can be most of a
-day old.
+A separate reviewed Windows executor upgrade is being implemented. It must bind
+the original accepted plan, exact existing resource/identity/SQL evidence, new
+immutable package and worker image, scoped roles and private network readback in
+its own receipt. It must not rewrite the original plan or stage history. Follow
+[Windows execution](../architecture/purview-windows-executor.md) for the concrete
+unfinished integration. Do not improvise an upgrade from historical instructions.
 
-Purview audit search additionally distinguishes **record types** from **operation
-names**, and for Agent 365 the two spellings differ in a way that follows no
-single rule. The record types are `AIInvokeAgent`, `AIInferenceCall`,
-`AIExecuteTool`, and `AIGuardrail`. The operation names are `InvokeAgent`,
-`InferenceCall`, and `ExecuteToolBySDK`: the first two are the record type minus
-its `AI` prefix, the third is not, so an operation name cannot be derived from a
-record type and must be read off an actual record. A name the audit store does
-not use returns zero rows with no error, which reads exactly like an ingestion
-failure. Every "missing records" finding in earlier revisions of this checkpoint
-was this mistake — twice a record-type spelling was entered in the "Activities -
-operation names" box and returned zero, and once `ExecuteTool` was entered and
-silently omitted the seven tool records that were present all along.
+Full E2E remains open: real Admin UI use, two external registrations, blueprint
+creation or authorized reuse, user-only Registry completion, provider-verified
+Active, independent Agent 365 and audit landing, Prompt Shields allow/block and
+blueprint DLP allow/block. Azure Monitor mirror completeness and any Defender
+inventory claims also require fresh exact-window evidence if reported. An accepted
+export or a historical portal result does not prove current landing or readiness.
 
-Prefer filtering by record type, because the picker offers only valid values and
-so cannot be misspelled. Before concluding anything from a zero-result search,
-run the same window with every filter cleared as a control: if the unfiltered
-control returns rows, the pipeline is ingesting and the zero is a filter error,
-not latency. Confirm what was actually submitted from the results-page URL,
-because the search form resets to its defaults as soon as the search is queued.
-
-## Relationship to the current source tree
-
-The verification and telemetry corrections listed below are **deployed** in the
-current development gateway, and their live outcomes are recorded above:
-
-- the Agent 365 exporter proves acceptance from the per-sink statuses in
-  `results` and fails closed with a bounded reason, instead of trusting
-  `partialSuccess` alone;
-- the tracer records every gateway span regardless of the caller's sampling
-  decision, because an external agent arriving with `sampled=0` was previously
-  able to suppress the gateway's own audit span;
-- the Azure SDK activity sources are subscribed, so Service Bus and Blob
-  dependencies are no longer invisible; and
-- each host reports its own `service.name`, so API and worker telemetry can be
-  told apart in Azure Monitor.
-
-A source revision is not deployed evidence until immutable image digests, exact
-resource readbacks, health checks, queue state, and a bounded registration are
-recorded for that revision. Anything committed after this checkpoint is
-undeployed until the next clean provision records its own readbacks.
-
-## Shipping a source change to an existing deployment
-
-Bootstrap is provision-once by design. Once a deployment has recorded durable
-state evidence, its accepted source is immutable: Plan routes to Resume, and
-Resume refuses when the working tree no longer matches the accepted source
-fingerprint. The engine states the supported remedies itself — restore the exact
-prior source, or choose a distinct project/resource group.
-
-There is therefore **no in-place application upgrade path, and none should be
-added without an explicit decision**, because mixing source generations inside
-one deployment state is exactly what the guard exists to prevent. To deploy
-changed application source, run a new bootstrap under a new unused deployment
-identity. Do not delete `.bootstrap/` state to force progress, and do not point
-fresh state at an existing resource group.
-
-Because each deploy cycle is a full clean provision, batch pending source
-corrections and deploy them together rather than one per cycle.
-
-Pending that batch, in commit order:
-
-- transient Microsoft Graph 400 handling when establishing a blueprint principal;
-- the existing-blueprint picker remaining usable past forty blueprints;
-- the honest `recorded` / `not_recorded` outcome on the Azure Monitor mirror;
-- per-agent Prompt Shields identity attribution, which also adds
-  `infrastructure/sql/20260903_prompt_evaluation_agent_identity.sql`;
-- the Purview runtime adapter following the reviewed configuration once the
-  policy objects pass exact typed readback;
-- the setup wizard defaulting to the recorded deployment identity, so accepting
-  the defaults reconfigures that deployment instead of silently naming a new
-  one;
-- the Purview anti-replay guard scoping itself to a real prior authoring
-  attempt, so enabling Purview after a disabled no-op completion can proceed; and
-- completed-step validator failures naming only the exact mismatched property path,
-  while expected and actual resource values remain suppressed;
-- Registry creation emitting one POST only and treating every result except
-  documented `201 Created` as failure or exact-ID-recoverable ambiguity;
-- Prompt Shields using managed identity only, without a default developer or
-  environment credential chain; and
-- active child Agent Identity object IDs being database-unique through an ordered,
-  fail-closed migration that does not rewrite registrations.
-
-The protection-settings implementation is now part of the undeployed source batch:
-capability presets/bootstrap, Admin UI, API, governance SQL, provider adapters,
-packaged Windows companion, dedicated queue/worker, effective readiness, and tests.
-The current deployed Gateway contains none of it.
-
-The combined beta.2 source passed integrated offline acceptance and fresh
-independent security/UI source review, followed by a clean export containing all
-intended new files. The exact counts and validation boundary are below. This
-replaces the earlier failed review and concurrent focused evidence as the source
-acceptance record. None of it is deployment or live-readiness evidence.
-
-Two items in the pending batch change the database schema. Per-agent Prompt Shields
-identity attribution adds
-`infrastructure/sql/20260903_prompt_evaluation_agent_identity.sql`, and active child
-identity uniqueness adds
-`infrastructure/sql/20260905_active_agent_identity_uniqueness.sql`. The next
-provision applies both in order and records a different schema fingerprint. That is
-expected, not drift.
-
-## Offline gate
+## Historical offline gates
 
 | Gate | Final result |
 |---|---:|
@@ -416,7 +326,7 @@ Use `tools/Test-BootstrapSource.ps1 -RunPester -CompileBicep` for the canonical
 PowerShell/Pester/Bicep coverage, and verify formatting for the solution plus all
 eight test projects. Check hosted CI against the exact release commit before any
 separately authorized live task.
-Earlier deployments and their evidence remain preserved. The most recent stopped
+Earlier deployments and their evidence remain preserved. An earlier retained
 deployment has eleven completed stages, one seed blueprint, and independently
 verified database recovery and SQL administrator restoration. Its API startup
 ordering correction is accepted in source, but that source cannot be resumed into
@@ -426,9 +336,9 @@ finalize SQL, or clean up earlier deployments. Exact receipts and current operat
 authority remain local; neither transfers through Git or documentation.
 
 
-## Optional protection evidence
+## Historical optional protection evidence
 
-Prompt Shields reached Azure AI Content Safety successfully. The combined Prompt
+In an earlier retained deployment, Prompt Shields reached Azure AI Content Safety successfully. The combined Prompt
 Shields plus Purview request failed closed at the Purview dependency.
 
 Directory readback showed the intended Purview Graph app-role assignments, but a
@@ -437,9 +347,8 @@ the required Purview roles. No token was printed or persisted. Therefore:
 
 - policy-object readback is configuration evidence only;
 - directory role assignment is not token-role evidence;
-- the deployed build was provisioned with `Purview__Enabled=false`, which was
-  correct for it; current source instead derives that flag from the reviewed
-  configuration once the policy objects pass exact typed readback;
+- that historical build was provisioned with `Purview__Enabled=false`; this is
+  not the active deployment's runtime configuration or current-source contract;
 - Purview runtime readiness requires a fresh managed-identity token-role check and
   a bounded allow/block request; and
 - the repository does not claim response-side inline DLP enforcement.
@@ -461,9 +370,9 @@ configuration and validation boundary.
 - Do not enable Purview runtime enforcement merely because directory assignments
   or policy objects exist.
 - Do not treat an empty telemetry table as proof that an export was rejected.
-- Keep unfiltered provider text in ignored `.bootstrap/diagnostics/` only; it can
-  contain identities and headers and must never be pasted into an issue, a chat,
-  or a shared log.
+- Never persist or display raw provider bodies, tokens, credentials, assertions,
+  authorization headers, prompts, or responses. Store only bounded sanitized
+  evidence in ignored or access-controlled operator records.
 
 ## Evidence required after a future deployment
 
@@ -476,7 +385,7 @@ only the non-sensitive outcome here:
 4. API and Admin UI health;
 5. active/scheduled/dead-letter counts for every owned queue;
 6. two bounded registrations through `Active` without duplicate Registry mutation,
-   each creating a new blueprint;
+   using compatible blueprints created or reused as authorized;
 7. one external agent connected to each blueprint;
 8. per-agent Agent 365 export acceptance, not merely an HTTP status;
 9. Prompt Shields allow/block and Purview DLP allow/block results for both

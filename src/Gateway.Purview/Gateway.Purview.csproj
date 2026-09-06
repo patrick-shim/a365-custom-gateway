@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Gateway.UnitTests" />
+    <InternalsVisibleTo Include="Gateway.Purview.Executor" />
+    <InternalsVisibleTo Include="Gateway.ObservabilityRuntime.Tests" />
   </ItemGroup>
 
   <ItemGroup>
