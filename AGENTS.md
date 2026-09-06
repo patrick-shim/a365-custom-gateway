@@ -156,7 +156,8 @@ deployed or live-readiness claims:
   `ee1680d0-702f-4090-b26c-c49091e86531` as `Group`; DLP uses the selected
   blueprint application ID as `Individual`; both use the `Application` plane.
 - The source is not deployed. Live E2E still requires fresh exact-target authority,
-  a clean deployment, two new blueprints with one external registration each, and
+  a clean deployment, two compatible blueprints created or reused as authorized,
+  one external registration each, and
   independent observability, Prompt Shields, and DLP validation.
 
 ## Bootstrap

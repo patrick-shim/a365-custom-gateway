@@ -120,8 +120,8 @@ enterprise-AI-apps Group, DLP remains blueprint Individual, and both remain on t
 Application plane and fail closed.
 
 Live E2E still requires fresh exact-target authority, a clean deployment, exactly
-two new blueprints with one delegated-Administrator-created external registration
-each, then independent observability, Prompt Shields, and DLP validation.
+two compatible blueprints created or reused as authorized, with one delegated
+Administrator-created external registration each, then independent observability, Prompt Shields, and DLP validation.
 
 ## Sensitive data
 

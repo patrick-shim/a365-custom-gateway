@@ -92,8 +92,8 @@ non-authoritative until exact capability-bound provider verification.
 `Ready` requires capability Installed, exact policy readback, propagation, token
 roles, and bounded runtime allow-and-block verdicts, plus current SIT generation,
 exact blueprint/provider IDs, and timestamps. Live E2E requires fresh exact-target
-authority, a clean deployment, two new blueprints with one external registration
-each, then independent observability, Prompt Shields, and DLP validation.
+authority, a clean deployment, two compatible blueprints created or reused as
+authorized with one external registration each, then independent observability, Prompt Shields, and DLP validation.
 
 ## Bootstrap and security
 

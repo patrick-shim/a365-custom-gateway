@@ -10,13 +10,12 @@ propagation, readiness, defaults, and ongoing changes. The source passed integra
 tests, fresh independent review, and clean-export validation. Exact results are in
 the [implementation checkpoint](../implementation-status.md).
 
-Source remains undeployed, and live E2E is postponed. No live authority transfers
-through Git, documentation, local evidence, or earlier deployments. A future
-deployment or live E2E requires fresh authorization naming an exact unused
-resource group and the allowed provider actions. Azure, Entra, SQL, Graph,
-Service Bus, Purview, and cleanup actions are outside this source task; retiring
-an earlier environment needs separate exact-target authority. Do not reuse an
-older deployment state with this source.
+Current live readiness and the next action are recorded in the deployment
+checkpoint. Live authority remains specific to the operator session and exact
+target; it does not transfer through Git or documentation. Honor existing session
+authorization for deployment and synthetic E2E, including its reviewed policy
+scope. Retiring earlier environments still requires separate exact-target cleanup
+authority. Do not reuse an older deployment state with changed source.
 
 Settings authors the supported UploadText Block restriction in either policy mode.
 AuditOnly uses TestWithoutNotifications and takes no enforcement actions. Only an

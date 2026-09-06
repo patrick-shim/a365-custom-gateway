@@ -14,12 +14,11 @@ and a Purview DLP allow/block pair has not been live-proven on a deployed build.
 > **Implemented in source, not deployed:** bootstrap installs deployment
 > capabilities only. Prompt Shields defaults and per-agent use, plus Purview tenant
 > connection, sensitive-information-type selection, Know Your Data, blueprint DLP,
-> readiness, and ongoing changes are in role-aware Gateway Admin Settings. Final
-> backend acceptance failed and reopened the beta.2 candidate for four corrections:
-> runtime identity correctness, exact capability/runtime binding, cancellation
-> cleanup, and truthful updates of existing KYD/DLP policy. Prior final gates are
-> invalidated. The clean-deployment E2E remains postponed and requires fresh
-> exact-target authority.
+> readiness, and ongoing changes are in role-aware Gateway Admin Settings. The
+> corrected source passed offline acceptance, independent review, clean-export
+> validation, and all five hosted CI jobs. Fresh deployment and live E2E are
+> authorized in the active operator session and currently stopped at Graph sign-in
+> before Apply. See the deployment checkpoint for the exact unfinished gate.
 
 The supported fresh-subscription installer is the repository-root `gateway`
 launcher. It configures, plans, deploys, and verifies the complete Gateway. The

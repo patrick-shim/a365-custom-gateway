@@ -8,7 +8,33 @@ at the repository [README](../README.md). Exact deployed development evidence is
 machine or agent starts unfinished work from the tracked
 [agent continuation checkpoint](agent-continuation.md).
 
-## Current live stop: inert API startup
+## Current live stop: Graph sign-in before fresh deployment
+
+The corrected source is committed and pushed to canonical `main`. All five hosted
+jobs passed: Build and Test, Validate Bicep, and Bootstrap on Windows, macOS, and
+Ubuntu. The operator renewed authority for the reviewed fresh deployment and full
+Gateway E2E. This session does not need another deployment approval; that authority
+and the exact target remain in ignored local operator evidence and do not transfer
+with Git.
+
+Visible Setup imported the reviewed fresh configuration and completed Azure
+What-If, then stopped at its read-only Agent ID blueprint check. Independent
+readback found Graph HTTP 401, `InvalidAuthenticationToken`, and a claims challenge.
+No Apply was accepted and no resources were created for this target. The official
+Azure CLI browser sign-in was started. Automatic Computer Use policy then stopped
+Windows browser inspection because the current URL could not be verified; no
+further browser automation was attempted.
+
+The first unfinished action is to complete that official Microsoft sign-in, verify
+Graph access in the exact tenant, refresh Plan in visible Setup, and Apply under
+the existing authority. Continue through canonical Verify, real Admin UI sign-in,
+two blueprint-bound registrations, delegated Registry completion, independently
+observed Agent 365 landing, Prompt Shields allow/block, and blueprint DLP
+allow/block. The operator permits blueprint creation or compatible reuse; reconcile
+the existing seed before creating additional objects. Deployment and all live E2E
+claims remain open. No password, token, or Gateway key is stored in the handoff.
+
+## Preserved deployment and accepted startup correction
 
 The authorized replacement completed its first bounded database recovery with
 exactly one successful execution and no automatic retries. Independent Azure
@@ -34,13 +60,13 @@ projects (2,008 tests), and the complete bootstrap gate (876 passed, zero failed
 7 skipped; 20 PowerShell files, 2 JSON files, 28 Bicep templates, 3 parameter files).
 All nine formatting targets, Windows/POSIX launcher smoke, metadata/private-path
 checks, full ledger audit, and fresh independent correction source review passed.
-Hosted CI must also be green for the containing commit before deployment.
+All five hosted jobs passed for the containing source correction commit.
 
 Independent review confirmed that no existing supported command accepts this new
 source generation after completed source-pinned database recovery. Preserve that
 deployment, its state, jobs, identities, accepted snapshots, and credentials. Do not
 replay recovery or bypass the source and readiness guards. A new isolated deployment
-needs its own exact-target authority; no additional target has been authorized.
+has now received exact-target authority in the active operator session.
 
 Deployment and live E2E remain unfinished. Admin UI sign-in, two blueprint-bound
 registrations, delegated Registry completion, Agent 365 landing, Prompt Shields
@@ -160,14 +186,13 @@ selected-profile readiness. Settings uses the supported UploadText Block rule
 for both policy modes, and only Enforce can request runtime allow/block proof.
 
 
-The original deployment remains preserved at failed inert verification. The
-separately authorized replacement passed that check and completed ten stages,
-including one seed blueprint, before its single database job failed at the exact
-post-EnsureCreated relational schema comparison. SQL administrator restoration was
-independently verified. Admin UI, registration, and protection E2E remain unproved.
-
-Complete the inert API startup correction before proposing a new deployment. Do not edit accepted state, replay the failed job,
-finalize SQL, or clean up either deployment. Exact receipts and current operator
+Earlier deployments and their evidence remain preserved. The most recent stopped
+deployment has eleven completed stages, one seed blueprint, and independently
+verified database recovery and SQL administrator restoration. Its API startup
+ordering correction is accepted in source, but that source cannot be resumed into
+the completed source-pinned recovery. Use the authorized fresh target described
+at the top of this checkpoint. Do not edit accepted state, replay database jobs,
+finalize SQL, or clean up earlier deployments. Exact receipts and current operator
 authority remain local; neither transfers through Git or documentation.
 
 
@@ -397,18 +422,17 @@ correction. A receiving checkout verifies its actual HEAD and
 associated CI before acting; see the bounded
 [continuation checkpoint](agent-continuation.md).
 
-The original deployment remains preserved at failed inert verification. The
-separately authorized replacement passed that check and completed ten stages,
-including one seed blueprint, before its single database job failed at the exact
-post-EnsureCreated relational schema comparison. SQL administrator restoration was
-independently verified. Admin UI, registration, and protection E2E remain unproved.
-
-Complete the inert API startup correction before proposing a new deployment. Do not edit accepted state, replay the failed job,
-finalize SQL, or clean up either deployment. Exact receipts and current operator
+Earlier deployments and their evidence remain preserved. The most recent stopped
+deployment has eleven completed stages, one seed blueprint, and independently
+verified database recovery and SQL administrator restoration. Its API startup
+ordering correction is accepted in source, but that source cannot be resumed into
+the completed source-pinned recovery. Use the authorized fresh target described
+at the top of this checkpoint. Do not edit accepted state, replay database jobs,
+finalize SQL, or clean up earlier deployments. Exact receipts and current operator
 authority remain local; neither transfers through Git or documentation.
 
-The future authorized E2E uses a clean bootstrap, two new blueprints and one external
-registration per blueprint. Both must reach provider-verified Active and independently
+The authorized E2E uses a clean bootstrap and two compatible blueprints, created
+or reused as authorized, with one external registration per blueprint. Both must reach provider-verified Active and independently
 prove Agent 365 observability, Prompt Shields allow/block, and Purview DLP allow/block.
 
 The previously identified macOS interactive core-launcher check and fixture-backed

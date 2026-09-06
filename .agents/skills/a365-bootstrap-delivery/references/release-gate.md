@@ -36,8 +36,9 @@ The supported outcome is: a public user clones `a365-custom-gateway`, runs the r
 
 - `gateway verify` passes
 - Admin UI sign-in and primary routes pass in a real browser
-- the implemented protection source is deployed cleanly and creates exactly two new
-  blueprints and one delegated-Administrator-created external registration for each
+- the implemented protection source is deployed cleanly and verifies two compatible
+  blueprints, created or reused as authorized, with one delegated-Administrator-created
+  external registration for each
 - actual Registry completion remains a signed-in `Gateway.Administrator` user-only
   OBO action for each registration
 - observability, enabled per-agent Prompt Shields, and blueprint-scoped DLP are

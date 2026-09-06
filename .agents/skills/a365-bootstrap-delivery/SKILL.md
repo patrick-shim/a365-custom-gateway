@@ -81,8 +81,8 @@ IDs, and timestamps. Preserve fixed KYD Group versus blueprint Individual DLP on
 the Application plane.
 
 The live release journey remains unproved. It requires fresh exact-target authority,
-a clean deployment, exactly two new blueprints with one external registration each,
-then independent observability, Prompt Shields, and DLP validation.
+a clean deployment, two compatible blueprints created or reused as authorized,
+with one external registration each, then independent observability, Prompt Shields, and DLP validation.
 
 ## Failure handling
 
