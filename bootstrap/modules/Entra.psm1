@@ -894,9 +894,16 @@ function Ensure-BootstrapPurviewAutomationIdentity {
         [Parameter(Mandatory)][string]$KeyVaultUri,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter()][string]$ExecutionSourceFingerprint = '',
         [switch]$ReconcileOnly
     )
 
+    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) { $ExecutionSourceFingerprint = $SourceFingerprint }
+    if (-not $ReconcileOnly) {
+        $null = Resolve-GatewayCredentialDeploymentTemplate `
+            -RelativeTemplate 'bootstrap/infra/purview-automation-certificate.bicep' `
+            -ExecutionSourceFingerprint $ExecutionSourceFingerprint
+    }
     $displayName = "A365 Gateway Purview Automation - $($Config.projectName)-$($Config.environment)"
     $exchangeRole = Get-BootstrapPurviewExchangeRole
     $application = Get-ExactApplicationByDisplayName -DisplayName $displayName
@@ -1044,7 +1051,8 @@ function Ensure-BootstrapPurviewAutomationIdentity {
                 -CertificateThumbprint $thumbprint `
                 -CertificateSecretText $certificateSecretText `
                 -DeploymentOwnershipId $DeploymentOwnershipId `
-                -SourceFingerprint $SourceFingerprint
+                -SourceFingerprint $SourceFingerprint `
+                -ExecutionSourceFingerprint $ExecutionSourceFingerprint
             try {
                 Invoke-GraphJsonBody -Method 'PATCH' -Url (
                     "https://graph.microsoft.com/v1.0/applications/$($application.id)") -Body @{
@@ -1908,7 +1916,8 @@ function Resolve-AdminUiCredentialAfterStartedOutcome {
         [Parameter(Mandatory)][string]$KeyVaultUri,
         [Parameter(Mandatory)][string]$UserObjectId,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter()][string]$ExecutionSourceFingerprint = ''
     )
 
     Assert-GuidValue -Value $UserObjectId -Label 'Admin UI credential operator object ID'
@@ -1920,6 +1929,10 @@ function Resolve-AdminUiCredentialAfterStartedOutcome {
         throw 'Admin UI credential recovery ownership evidence is invalid.'
     }
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI credential recovery source fingerprint'
+    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) { $ExecutionSourceFingerprint = $SourceFingerprint }
+    $null = Resolve-GatewayCredentialDeploymentTemplate `
+        -RelativeTemplate 'bootstrap/infra/admin-ui-credential.bicep' `
+        -ExecutionSourceFingerprint $ExecutionSourceFingerprint
     $vault = $null
     if (-not [Uri]::TryCreate($KeyVaultUri, [UriKind]::Absolute, [ref]$vault) -or
         $vault.Scheme -cne 'https' -or -not $vault.IsDefaultPort -or
@@ -1988,7 +2001,8 @@ function Resolve-AdminUiCredentialAfterStartedOutcome {
         -AdminIdentity $AdminIdentity `
         -KeyVaultUri $KeyVaultUri `
         -DeploymentOwnershipId $ownershipId.ToString('D') `
-        -SourceFingerprint $SourceFingerprint
+        -SourceFingerprint $SourceFingerprint `
+        -ExecutionSourceFingerprint $ExecutionSourceFingerprint
 }
 
 function New-AdminUiCredentialInKeyVault {
@@ -1997,7 +2011,8 @@ function New-AdminUiCredentialInKeyVault {
         [Parameter(Mandatory)]$AdminIdentity,
         [Parameter(Mandatory)][string]$KeyVaultUri,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter()][string]$ExecutionSourceFingerprint = ''
     )
 
     $ownershipId = [guid]::Empty
@@ -2008,6 +2023,10 @@ function New-AdminUiCredentialInKeyVault {
         throw 'Admin UI credential creation ownership evidence is invalid.'
     }
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI credential creation source fingerprint'
+    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) { $ExecutionSourceFingerprint = $SourceFingerprint }
+    $null = Resolve-GatewayCredentialDeploymentTemplate `
+        -RelativeTemplate 'bootstrap/infra/admin-ui-credential.bicep' `
+        -ExecutionSourceFingerprint $ExecutionSourceFingerprint
 
     $credential = $null
     $secretText = $null
@@ -2056,7 +2075,8 @@ function New-AdminUiCredentialInKeyVault {
                 -CredentialKeyId $credentialKeyId.ToString('D') `
                 -SecretText $secretText `
                 -DeploymentOwnershipId $ownershipId.ToString('D') `
-                -SourceFingerprint $SourceFingerprint
+                -SourceFingerprint $SourceFingerprint `
+                -ExecutionSourceFingerprint $ExecutionSourceFingerprint
         }
         catch {
             try {

@@ -1,19 +1,24 @@
 # Protection capability and Gateway Settings plan
 
-Status: beta.2 baseline offline acceptance passed; live bootstrap stopped at inert verification.
+Status: replacement bootstrap preserved at database verification; corrected source passed offline acceptance.
 
 Last updated: 2026-09-06 (Asia/Seoul).
 
 This document records the implemented source architecture for capability-only
 bootstrap and role-aware Gateway Settings governance. Phase 4 source gates passed
 after fresh independent review and exact-commit hosted CI. The separately authorized
-Phase 5 bootstrap stopped at step 7 after ARM succeeded: the capability Boolean
-verifier expected lowercase text instead of ARM's exact Boolean casing. A surgical
-source correction passes the complete offline gate, clean-export checks, fresh
-independent review, and read-only live inert verification. Its hosted CI must be
-checked for the actual corrective commit. No completed beta.2 deployment or live
-registration/protection E2E is claimed. Existing accepted state is preserved; a
-new target requires separate exact-target authority.
+Phase 5 replacement bootstrap passed exact inert verification and completed ten
+stages, including the seed blueprint, workflow Entra configuration, and private
+SQL endpoint. Its database job failed at exact schema comparison after EF created
+the schema. The original SQL administrator was independently verified restored;
+the failed execution and both deployment states remain preserved. Local SQL
+comparison isolated redundant constraint parentheses. The model correction and
+separate completed-recovery Resume execution binding passed combined offline
+acceptance and fresh independent review; hosted CI precedes bounded recovery. Credential paths now validate and carry the corrected
+execution snapshot before identity mutations; final Purview role verification uses
+the shared runtime identity without adding API grants.
+No completed beta.2 deployment or live registration/protection E2E is claimed.
+Exact target authority and evidence remain in the local operator ledger.
 
 ## Decision and boundaries
 
@@ -62,9 +67,9 @@ The Purview scope contracts stay independent:
 - Purview is effectively enabled only for the exact resolved blueprint and Ready,
   unexpired DLP profile. Prompt Shields requires exact installed capability
   readback. Stored requested settings do not override effective readiness.
-- Beta.2 has reached only the inert deployment in the authorized live attempt.
+- Beta.2 has reached the database stage in the authorized replacement attempt.
   Existing complete live evidence belongs to an older revision and does not prove
-  this implementation. The Boolean-verifier correction is not deployed.
+  this implementation. The database recovery correction is not deployed.
 
 ## Implemented architecture
 
@@ -468,22 +473,22 @@ Purview roles remain separate from the worker's exact eight Agent Identity Graph
 roles. Effective readiness also requires a current verified tenant connection and
 the exact active SIT generation. Installation is never policy or runtime proof.
 
-Push the normal certificate-test correction and verify all hosted jobs for that exact commit.
-Source remains undeployed, and live E2E is postponed. No live authority transfers
-through Git, documentation, local evidence, or earlier deployments. A future
-deployment or live E2E requires fresh authorization naming an exact unused
-resource group and the allowed provider actions. Azure, Entra, SQL, Graph,
-Service Bus, Purview, and cleanup actions are outside this source task; retiring
-an earlier environment needs separate exact-target authority. Do not reuse an
-older deployment state with this source.
+All five hosted jobs passed for the subsequent Boolean-verifier correction.
+The authorized replacement is partially deployed and stopped at database schema
+verification. The model correction passes local relational comparison, and the
+Resume correction passes 17 execution-binding regressions. Complete combined
+acceptance and fresh independent review before the first bounded recovery. No live authority
+transfers through Git, documentation, local evidence, or earlier deployments.
+Preserve both deployments and all failed execution evidence. Cleanup requires
+separate exact-target authority.
 
 
 ### Phase 5 — authorized live E2E
 
-This phase is intentionally postponed. It starts only after Phase 4 and fresh user
-authority for the exact tenant, subscription, resource group, provider changes,
-and approved synthetic test data. Authorization previously given for a stopped or
-superseded target does not carry to this E2E.
+This phase started after Phase 4 and fresh user authority for the exact replacement
+target. It is incomplete at the database stage described above. Resume only through
+the verified, authorized recovery path after classifying and correcting the schema
+mismatch. Authorization for a different or superseded target does not transfer.
 
 From a clean checkout:
 
@@ -493,8 +498,9 @@ From a clean checkout:
    sign-in;
 3. use Settings to connect Purview authority, select the approved SIT, configure
    the independent tenant KYD Group, and reach exact readback;
-4. create two registrations, each choosing **Create new blueprint**, and require
-   both core workflows to reach provider-verified `Active`;
+4. create one registration using the newly created bootstrap seed blueprint and
+   one choosing **Create new blueprint**, producing exactly two new blueprints;
+   require both core workflows to reach provider-verified `Active`;
 5. in Settings, create one Individual DLP profile/rule for each newly resolved
    blueprint, prove each Ready independently, and enable its registration;
 6. connect one external agent to each blueprint and exercise both agents;

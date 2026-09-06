@@ -22,14 +22,16 @@ internal sealed class LegacyProtectionPolicyCandidateConfiguration
                 table.HasCheckConstraint(
                     "CK_LegacyProtectionPolicyCandidates_EnforcementPlane",
                     "[EnforcementPlane] = N'Application'");
+                // AND binds before OR. SQL Server omits redundant AND-group parentheses
+                // in catalog readback, which bootstrap compares with this model exactly.
                 table.HasCheckConstraint(
                     "CK_LegacyProtectionPolicyCandidates_Scope",
-                    "([CandidateKind] = N'KnowYourData' " +
+                    "[CandidateKind] = N'KnowYourData' " +
                     $"AND [ScopeType] = N'Group' AND [BlueprintApplicationId] IS NULL " +
-                    $"AND [LocationId] = '{PurviewPolicyLocationContract.EnterpriseAiAppsCollectionLocationId}') " +
-                    "OR ([CandidateKind] = N'DlpProfile' " +
+                    $"AND [LocationId] = '{PurviewPolicyLocationContract.EnterpriseAiAppsCollectionLocationId}' " +
+                    "OR [CandidateKind] = N'DlpProfile' " +
                     "AND [ScopeType] = N'Individual' AND [BlueprintApplicationId] IS NOT NULL " +
-                    "AND [LocationId] = [BlueprintApplicationId])");
+                    "AND [LocationId] = [BlueprintApplicationId]");
             });
         builder.HasKey(candidate => candidate.Id);
 

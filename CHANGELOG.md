@@ -27,6 +27,17 @@ Protection governance source release candidate.
 - Bootstrap capability verification uses ARM's exact `True`/`False` environment
   text, with executable coverage for both values and fail-closed mismatches.
 
+- The legacy protection scope constraint matches SQL Server catalog serialization
+  while preserving AND-before-OR semantics and strict bootstrap schema verification.
+
+- Resume after completed automatic database recovery separately binds its corrected
+  execution snapshot while preserving original plan and workload provenance.
+
+- Credential deployment validates corrected execution snapshots before identity
+  mutation and preserves original resource provenance through recovery.
+- Final verification checks Purview roles on the shared runtime identity and
+  retains the separate exact API and worker role sets.
+
 ### Validation boundary
 
 - Release: zero warnings/errors; all eight .NET projects: 2,004 passed;
@@ -49,10 +60,19 @@ Protection governance source release candidate.
   correction gate passed 848 Pester tests with zero failures and 7 skips plus
   source/Bicep. Clean export passed Release, 2,004 .NET tests, source/Bicep,
   regression and launcher smoke; all nine format and metadata checks passed.
-  Verify hosted CI for the corrective commit; live E2E has not passed.
-- Original resources and accepted state are preserved. The corrected source has
-  no supported same-target continuation at this checkpoint; a fresh deployment
-  requires a newly authorized unused target. Git transfers no live authority.
+  All five hosted jobs passed for the corrective commit.
+- A separately authorized replacement passed inert verification and ten bootstrap
+  stages, then stopped at exact SQL schema comparison after EF schema creation.
+  The original SQL administrator was independently verified restored. Both
+  deployment states and the one failed database execution are preserved. Schema
+  comparison and regression coverage identify the model and Resume corrections.
+  Combined correction acceptance passed fresh independent review, Release, all
+  2,005 .NET tests, 871 Pester tests (zero failures, 7 skips), source/Bicep, all
+  nine format targets, metadata/private-path checks, full ledger audit, and the
+  clean 900-file export with launcher smoke. Exact-commit hosted CI precedes
+  bounded recovery;
+  Admin UI deployment and live registration/protection E2E remain unproved.
+  Git transfers no live authority.
 
 
 ## [0.1.0-beta.1] - 2026-09-05

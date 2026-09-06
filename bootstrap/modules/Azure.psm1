@@ -758,6 +758,21 @@ function Wait-GatewayAdminUiCredentialSecretArmMetadata {
     throw 'Admin UI credential secret deployment did not produce one exact metadata readback; no deployment was repeated.'
 }
 
+function Resolve-GatewayCredentialDeploymentTemplate {
+    param(
+        [Parameter(Mandatory)][ValidateSet('bootstrap/infra/admin-ui-credential.bicep', 'bootstrap/infra/purview-automation-certificate.bicep')][string]$RelativeTemplate,
+        [Parameter(Mandatory)][string]$ExecutionSourceFingerprint
+    )
+
+    Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Credential execution source fingerprint'
+    $root = Get-BootstrapExecutionSourceRoot
+    Assert-BootstrapSourcePathIsRegular -Root $root -RelativePath $RelativeTemplate | Out-Null
+    if ((Get-BootstrapSourceFingerprint -Root $root) -cne $ExecutionSourceFingerprint) {
+        throw 'The credential execution source no longer matches the accepted content-addressed snapshot.'
+    }
+    return Join-Path $root $RelativeTemplate
+}
+
 function Deploy-GatewayAdminUiCredentialSecret {
     param(
         [Parameter(Mandatory)]$Config,
@@ -765,7 +780,8 @@ function Deploy-GatewayAdminUiCredentialSecret {
         [Parameter(Mandatory)][string]$CredentialKeyId,
         [Parameter(Mandatory)][string]$SecretText,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter()][string]$ExecutionSourceFingerprint = ''
     )
 
     $credentialGuid = [guid]::Empty
@@ -783,12 +799,10 @@ function Deploy-GatewayAdminUiCredentialSecret {
         -KeyVaultUri $KeyVaultUri `
         -DeploymentOwnershipId $DeploymentOwnershipId `
         -SourceFingerprint $SourceFingerprint
-    $root = Get-BootstrapExecutionSourceRoot
-    Assert-BootstrapSourcePathIsRegular -Root $root -RelativePath 'bootstrap/infra/admin-ui-credential.bicep' | Out-Null
-    if ((Get-BootstrapSourceFingerprint -Root $root) -cne $SourceFingerprint) {
-        throw 'The Admin UI credential deployment source no longer matches the accepted content-addressed snapshot.'
-    }
-    $templateFile = Join-Path $root 'bootstrap/infra/admin-ui-credential.bicep'
+    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) { $ExecutionSourceFingerprint = $SourceFingerprint }
+    $templateFile = Resolve-GatewayCredentialDeploymentTemplate `
+        -RelativeTemplate 'bootstrap/infra/admin-ui-credential.bicep' `
+        -ExecutionSourceFingerprint $ExecutionSourceFingerprint
     $deploymentName = "a365gw-$($context.projectName)-bootstrap-admin-credential-$($context.environment)"
     if ($deploymentName.Length -gt 64 -or $deploymentName -cnotmatch '^[a-z0-9-]+$') {
         throw 'The deterministic Admin UI credential deployment name is invalid.'
@@ -970,7 +984,8 @@ function Deploy-GatewayPurviewAutomationCertificateSecret {
         [Parameter(Mandatory)][string]$CertificateThumbprint,
         [Parameter(Mandatory)][string]$CertificateSecretText,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
-        [Parameter(Mandatory)][string]$SourceFingerprint
+        [Parameter(Mandatory)][string]$SourceFingerprint,
+        [Parameter()][string]$ExecutionSourceFingerprint = ''
     )
 
     Assert-GuidValue -Value $KeyCredentialId -Label 'Purview automation certificate key credential ID'
@@ -985,12 +1000,10 @@ function Deploy-GatewayPurviewAutomationCertificateSecret {
         -AutomationApplicationId $AutomationApplicationId `
         -DeploymentOwnershipId $DeploymentOwnershipId `
         -SourceFingerprint $SourceFingerprint
-    $root = Get-BootstrapExecutionSourceRoot
-    $relativeTemplate = 'bootstrap/infra/purview-automation-certificate.bicep'
-    Assert-BootstrapSourcePathIsRegular -Root $root -RelativePath $relativeTemplate | Out-Null
-    if ((Get-BootstrapSourceFingerprint -Root $root) -cne $SourceFingerprint) {
-        throw 'Purview automation certificate deployment source no longer matches the accepted snapshot.'
-    }
+    if ([string]::IsNullOrWhiteSpace($ExecutionSourceFingerprint)) { $ExecutionSourceFingerprint = $SourceFingerprint }
+    $templateFile = Resolve-GatewayCredentialDeploymentTemplate `
+        -RelativeTemplate 'bootstrap/infra/purview-automation-certificate.bicep' `
+        -ExecutionSourceFingerprint $ExecutionSourceFingerprint
     $parameters = [ordered]@{
         keyVaultName = [string]$context.keyVaultName
         keyCredentialId = ([guid]$KeyCredentialId).ToString('D')
@@ -1006,7 +1019,7 @@ function Deploy-GatewayPurviewAutomationCertificateSecret {
                 -SubscriptionId ([string]$context.subscriptionId) `
                 -ResourceGroup ([string]$context.resourceGroupName) `
                 -Name "a365gw-$($Config.projectName)-purview-certificate-$($Config.environment)" `
-                -TemplateFile (Join-Path $root $relativeTemplate) `
+                -TemplateFile $templateFile `
                 -Parameters $parameters
         }
         catch {

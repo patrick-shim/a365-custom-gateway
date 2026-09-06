@@ -573,6 +573,8 @@ Describe 'Admin UI one-time credential role boundary' {
             $script:testAdminClientId = '55555555-5555-4555-8555-555555555555'
             $script:testDeploymentOwnershipId = '77777777-7777-4777-8777-777777777777'
             $script:testSourceFingerprint = "sha256:$('a' * 64)"
+            $script:testExecutionSourceFingerprint = $script:testSourceFingerprint
+            Mock Resolve-GatewayCredentialDeploymentTemplate { Join-Path $TestDrive 'credential.bicep' }
             $script:invokeTestAdminUiCredentialCreate = {
                 param($Config, $AdminIdentity, [string]$KeyVaultUri, [string]$UserObjectId)
                 $arguments = @{
@@ -590,6 +592,7 @@ Describe 'Admin UI one-time credential role boundary' {
                 if ($command.Parameters.ContainsKey('SourceFingerprint')) {
                     $arguments.SourceFingerprint = $script:testSourceFingerprint
                 }
+                $arguments.ExecutionSourceFingerprint = $script:testExecutionSourceFingerprint
                 return New-AdminUiCredentialInKeyVault @arguments
             }
             $script:invokeTestAdminUiCredentialResolve = {
@@ -607,6 +610,7 @@ Describe 'Admin UI one-time credential role boundary' {
                 if ($command.Parameters.ContainsKey('SourceFingerprint')) {
                     $arguments.SourceFingerprint = $script:testSourceFingerprint
                 }
+                $arguments.ExecutionSourceFingerprint = $script:testExecutionSourceFingerprint
                 return Resolve-AdminUiCredentialAfterStartedOutcome @arguments
             }
             $script:testScope = "/subscriptions/$script:testSubscriptionId/resourceGroups/$script:testResourceGroup/providers/Microsoft.KeyVault/vaults/kv-gwtest-dev"
@@ -902,6 +906,7 @@ Describe 'Admin UI one-time credential role boundary' {
         }
 
         It 'uses one secure ARM child-secret deployment for a private vault without local vault authority or secret output' {
+            $script:testExecutionSourceFingerprint = "sha256:$('b' * 64)"
             $config = [pscustomobject]@{
                 subscriptionId = $script:testSubscriptionId
                 resourceGroupName = $script:testResourceGroup
@@ -949,7 +954,12 @@ Describe 'Admin UI one-time credential role boundary' {
                 $CredentialKeyId -ceq $script:testCredentialKeyId -and
                 $SecretText -ceq $script:syntheticSecretValue -and
                 $DeploymentOwnershipId -ceq $script:testDeploymentOwnershipId -and
-                $SourceFingerprint -ceq $script:testSourceFingerprint
+                $SourceFingerprint -ceq $script:testSourceFingerprint -and
+                $ExecutionSourceFingerprint -ceq $script:testExecutionSourceFingerprint
+            }
+            Should -Invoke Resolve-GatewayCredentialDeploymentTemplate -Times 1 -Exactly -ParameterFilter {
+                $RelativeTemplate -ceq 'bootstrap/infra/admin-ui-credential.bicep' -and
+                    $ExecutionSourceFingerprint -ceq $script:testExecutionSourceFingerprint
             }
             $moduleDirectory = Split-Path -Parent (Get-Module Entra).Path
             $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $moduleDirectory '../..'))

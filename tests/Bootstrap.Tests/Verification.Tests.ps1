@@ -87,6 +87,69 @@ Describe 'Final verification strict-mode delegated-scope cardinality' {
     }
 }
 
+Describe 'Final verifier Purview identity consistency' {
+    InModuleScope Verification {
+        BeforeAll {
+            $tokens = $null
+            $errors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile(
+                (Get-Module Verification).Path, [ref]$tokens, [ref]$errors)
+            $errors.Count | Should -Be 0
+            $function = $ast.Find({ param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ceq 'Test-GatewayBootstrapDeployment'
+            }, $true)
+            # Execute every role-check statement shipped by the final verifier,
+            # including the legacy duplicate if it is ever reintroduced.
+            $statements = @($function.Body.EndBlock.Statements | Where-Object {
+                $_.Extent.Text -match '^Assert-GatewayRuntimeGraphRoleAssignments\b|^\$purviewRoleIds\s*=' -or
+                    ($_.Extent.Text.StartsWith('if ') -and $_.Extent.Text.Contains('$purviewRoleIds'))
+            })
+            $statements.Count | Should -BeGreaterThan 0
+            $script:roleVerification = [scriptblock]::Create(
+                'param($Config,$Runtime); ' + ($statements.Extent.Text -join [Environment]::NewLine))
+        }
+        BeforeEach {
+            $script:runtime = @{
+                apiPrincipalId = '11111111-1111-4111-8111-111111111111'
+                workerPrincipalId = '22222222-2222-4222-8222-222222222222'
+                runtimeImagePullIdentityPrincipalId = '33333333-3333-4333-8333-333333333333'
+            }
+            Mock Assert-ExactGraphApplicationRoleAssignments { $true }
+            Mock Get-BoundedGraphCollection {
+                if ($InitialUrl.Contains($script:runtime.runtimeImagePullIdentityPrincipalId)) {
+                    @('fe696d63-5e1f-4515-8232-cccc316903c6', '24ceb246-ad29-4680-90b4-3e91ffad15eb',
+                        '2932e07a-3c29-44e4-bb36-6d0fc176387f') | ForEach-Object { @{ appRoleId = $_ } }
+                }
+                else { @() }
+            }
+        }
+        It 'accepts Purview roles on the shared identity while API and worker keep their own exact roles' {
+            { & $script:roleVerification -Config @{ purview = @{ enabled = $true } } -Runtime $script:runtime } |
+                Should -Not -Throw
+            Should -Invoke Assert-ExactGraphApplicationRoleAssignments -Times 1 -Exactly -ParameterFilter {
+                $PrincipalId -ceq $script:runtime.runtimeImagePullIdentityPrincipalId -and
+                    ($ExpectedRoleValues -join ',') -ceq 'ProtectionScopes.Compute.User,Content.Process.User,ContentActivity.Write'
+            }
+            Should -Invoke Assert-ExactGraphApplicationRoleAssignments -Times 1 -Exactly -ParameterFilter {
+                $PrincipalId -ceq $script:runtime.apiPrincipalId -and
+                    ($ExpectedRoleValues -join ',') -ceq 'AgentIdentityBlueprint.Read.All'
+            }
+            Should -Invoke Assert-ExactGraphApplicationRoleAssignments -Times 1 -Exactly -ParameterFilter {
+                $PrincipalId -ceq $script:runtime.workerPrincipalId -and $ExpectedRoleValues.Count -eq 8
+            }
+        }
+        It 'propagates failure when the shared identity does not have its exact role set' {
+            Mock Assert-ExactGraphApplicationRoleAssignments {
+                if ($PrincipalId -ceq $script:runtime.runtimeImagePullIdentityPrincipalId) { throw 'Role drift.' }
+                $true
+            }
+            { & $script:roleVerification -Config @{ purview = @{ enabled = $true } } -Runtime $script:runtime } |
+                Should -Throw '*Role drift*'
+        }
+    }
+}
+
 Describe 'Final Entra and runtime admission boundaries' {
     InModuleScope Verification {
         BeforeEach {

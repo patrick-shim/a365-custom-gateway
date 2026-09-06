@@ -1147,19 +1147,6 @@ function Test-GatewayBootstrapDeployment {
     Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $Config -Runtime $Runtime -PurviewAutomation $purviewAutomation | Out-Null
     $purviewCapabilityPrerequisites = Get-GatewayPurviewCertificateMetadataEvidence -Config $Config -PurviewAutomation $purviewAutomation
 
-    $purviewRoleIds = @(
-        'fe696d63-5e1f-4515-8232-cccc316903c6',
-        '24ceb246-ad29-4680-90b4-3e91ffad15eb',
-        '2932e07a-3c29-44e4-bb36-6d0fc176387f'
-    )
-    if ($Config.purview.enabled -eq $true) {
-        $assignments = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/servicePrincipals/$($Runtime.apiPrincipalId)/appRoleAssignments?`$select=appRoleId,resourceId")
-        $assignedIds = @($assignments | ForEach-Object { [string]$_.appRoleId })
-        foreach ($roleId in $purviewRoleIds) {
-            if ($assignedIds -notcontains $roleId) { throw "Gateway API managed identity is missing required Purview Graph role $roleId." }
-        }
-    }
-
     $promptShieldVerification = 'NotConfigured'
     if ($Config.promptShield.enabled -eq $true) {
         if ([string]::IsNullOrWhiteSpace([string]$Runtime.promptShieldEndpoint) -or

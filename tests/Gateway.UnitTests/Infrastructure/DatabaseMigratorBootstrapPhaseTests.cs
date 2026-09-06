@@ -779,6 +779,42 @@ public sealed class DatabaseMigratorBootstrapPhaseTests
     }
 
     [Fact]
+    public void ExpectedSchemaContract_MatchesSqlServerLegacyProtectionScopeReadback()
+    {
+        using var connection = new Microsoft.Data.SqlClient.SqlConnection(
+            "Server=tcp:127.0.0.1,1;Database=GatewayDb;Integrated Security=True;" +
+            "Encrypt=False;Connect Timeout=1");
+        using var context = new GatewayDbContext(new DbContextOptionsBuilder<GatewayDbContext>()
+            .UseSqlServer(connection).Options);
+        var expected = InvokeExpectedSchemaContract(
+            GetExpectedSchemaContractHelper(), context, "SQL_Latin1_General_CP1_CI_AS");
+
+        // SQL Server 2022 sys.check_constraints readback after EF EnsureCreated.
+        // AND binds before OR, so the engine omits the redundant AND-group parentheses.
+        const string catalogDefinition =
+            "([CandidateKind]=N'KnowYourData' AND [ScopeType]=N'Group' AND " +
+            "[BlueprintApplicationId] IS NULL AND [LocationId]='ee1680d0-702f-4090-b26c-c49091e86531' OR " +
+            "[CandidateKind]=N'DlpProfile' AND [ScopeType]=N'Individual' AND " +
+            "[BlueprintApplicationId] IS NOT NULL AND [LocationId]=[BlueprintApplicationId])";
+        var normalize = typeof(DatabaseBootstrapRecoveryContract).Assembly.GetTypes()
+            .SelectMany(type => type.GetMethods(BindingFlags.Static | BindingFlags.NonPublic))
+            .Single(method => method.Name.Contains("g__NormalizeSqlExpression|", StringComparison.Ordinal));
+        var normalized = (string)normalize.Invoke(null, [catalogDefinition])!;
+        const string constraintKey =
+            "dbo.LegacyProtectionPolicyCandidates|CK_LegacyProtectionPolicyCandidates_Scope|";
+        var actual = expected with
+        {
+            CheckConstraints = expected.CheckConstraints
+                .Where(value => !value.StartsWith(constraintKey, StringComparison.Ordinal))
+                .Append($"{constraintKey}{normalized}|disabled:0|untrusted:0").ToArray()
+        };
+
+        var verify = () => ExactDatabaseSchemaContract.AssertExact(expected, actual);
+        verify.Should().NotThrow();
+        connection.State.Should().Be(System.Data.ConnectionState.Closed);
+    }
+
+    [Fact]
     public void ActualSchemaContract_SerializesDetectedRowVersionMetadata()
     {
         var source = File.ReadAllText(Path.Combine(

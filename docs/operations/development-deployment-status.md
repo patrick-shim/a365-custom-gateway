@@ -12,7 +12,61 @@ For unfinished source work after a fetch, pull, or fresh clone, begin with the
 tracked [agent continuation checkpoint](../agent-continuation.md). Git alone does
 not transfer the ignored state required to Resume an existing deployment.
 
-## Latest bootstrap correction and live boundary
+## Current live stop: database schema verification
+
+All five hosted jobs passed for the capability-Boolean correction. The separately
+authorized replacement completed 10 of 19 bootstrap stages through visible Windows
+Setup, including one new seed blueprint and the private SQL endpoint. Its sole
+database job failed after EF schema creation at exact schema comparison. The
+original SQL administrator was independently verified restored; both deployment
+states and the failed execution remain preserved.
+
+An isolated SQL Server 2022 reproduction identified one relational difference:
+the engine removes redundant AND-group parentheses from the legacy protection
+scope constraint. The model expression now matches that catalog serialization.
+[Microsoft's operator precedence](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/operator-precedence-transact-sql?view=sql-server-ver17)
+keeps AND before OR, preserving both exact scope branches. The normalizer,
+strict schema comparison, and Azure platform/authority checks are unchanged.
+
+The regression failed before the model correction; all 167 focused migrator and
+recovery tests then passed. All seven local relational projections now match:
+24 tables, 335 columns, 24 primary keys, 0 unique constraints, 22 foreign keys,
+17 check constraints, and 57 indexes. LocalDB does not evaluate Azure-only
+platform or runtime-authority checks and is not deployment acceptance.
+
+Independent review also identified a post-recovery Resume source-binding defect.
+Resume now retains the original accepted plan and workload source while separately
+binding the completed recovery's exact execution source and immutable snapshot.
+The review fingerprint and final mutation guard include that execution source;
+incomplete recovery, drifted evidence, and changed snapshots fail closed.
+The executable Resume regression first failed at RP00; all 17 new cases now pass,
+including database revalidation through RP13 and continuation at Admin UI identity.
+
+Credential creation and reconciliation now pass the corrected execution fingerprint
+through both Admin UI and Purview certificate deployment chains. The exact regular
+template and snapshot hash are verified before identity mutation, and again at
+deployment; original resource tags and exact metadata recovery are preserved.
+Final verification retains the exact shared-identity Purview role check and removes
+a contradictory duplicate check against the API system identity. No roles are added.
+Four credential regressions and the final identity regression failed before their
+corrections. The combined affected credential/verification suites pass 290 tests;
+the affected Resume/database/experience suites pass 236 tests.
+
+The complete correction passed fresh independent source review with no remaining
+actionable findings. The clean 900-file export passed Release with zero warnings
+or errors, all eight .NET projects (2,005 passed), the full bootstrap suite
+(871 passed, zero failed, 7 skipped), all 28 Bicep templates and 3 parameter files,
+layout, and Windows/POSIX launcher smoke. All nine format targets, metadata,
+private-path checks, and the full ledger audit passed. Local relational checks
+remain distinct from the recovery job's Azure platform and authority checks.
+
+The first unfinished action is to publish this validated correction and verify
+exact-commit hosted CI, then review the supported first bounded database-recovery
+plan. No recovery execution, state edit, SQL finalization, or cleanup has occurred.
+Admin UI, registrations, protection readiness, and live E2E remain unproved.
+Exact authority and evidence stay in the ignored operator ledger.
+
+## Capability Boolean correction and offline evidence
 
 A separately authorized clean beta.2 bootstrap reached the inert deployment, where
 ARM emitted `BootstrapCapabilities__Enabled` as `False` but the verifier expected
@@ -29,11 +83,11 @@ accepted the correction. Release passed with zero warnings/errors, and all eight
 files. All nine format targets and metadata/private-path checks passed. The clean
 898-file export passed Release, all 2,004 .NET tests, source/Bicep, the 14-test
 regression, and Windows/POSIX launcher smoke. Production-source fingerprints match
-the canonical candidate. Verify correction-specific hosted CI for the actual
-checkout before any fresh deployment.
+the canonical candidate. All five correction-specific hosted jobs passed before
+the separately authorized replacement deployment.
 
 The older full acceptance table below records the pre-deployment baseline. It is
-not evidence that the corrected source has been deployed or that live E2E passed.
+not evidence of a completed deployment or passed live E2E.
 
 ## What is deployed and verified
 
@@ -351,19 +405,16 @@ Use `tools/Test-BootstrapSource.ps1 -RunPester -CompileBicep` for the canonical
 PowerShell/Pester/Bicep coverage, and verify formatting for the solution plus all
 eight test projects. Check hosted CI against the exact release commit before any
 separately authorized live task.
-The authorized beta.2 bootstrap stopped after the inert ARM deployment succeeded
-but before step 7 verification completed. Steps 1–6 are Completed; later steps,
-Admin UI sign-in, registration, and protection E2E are unproved. Original resources,
-accepted source snapshot, configuration, and state are preserved. A read-only run
-of the corrected verifier passes against the existing inert resources; it does not
-change the persisted Failed checkpoint or authorize changed-source Resume.
+The original deployment remains preserved at failed inert verification. The
+separately authorized replacement passed that check and completed ten stages,
+including one seed blueprint, before its single database job failed at the exact
+post-EnsureCreated relational schema comparison. SQL administrator restoration was
+independently verified. Admin UI, registration, and protection E2E remain unproved.
 
-No supported continuation admits this source correction at a failed step 7 with
-persisted evidence. Existing pre-inert and database recovery guards do not apply
-and remain unchanged. After correction acceptance, a fresh supported bootstrap
-requires a separately authorized unused project/resource-group identity. Do not
-edit state, accepted snapshots, or old resources to force progress. No live or
-cleanup authority transfers through Git or documentation.
+Verify exact-commit hosted CI before reviewing the supported bounded database
+recovery plan. Do not edit accepted state, replay the failed job,
+finalize SQL, or clean up either deployment. Exact receipts and current operator
+authority remain local; neither transfers through Git or documentation.
 
 
 ## Optional protection evidence
