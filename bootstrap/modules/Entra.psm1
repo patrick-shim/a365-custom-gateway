@@ -54,6 +54,57 @@ function Get-ApplicationsByExactIdentifierUri {
     return $applications
 }
 
+function Assert-GatewayApplicationNamespacePlanBoundary {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId
+    )
+
+    # Limited read-only Plan preflight, not adoption or application readiness.
+    # Apply/Resume must still independently verify full shape, owners, principals
+    # and grants; this check neither reserves the namespace nor repairs anything.
+    try {
+        $expectedTags = @(Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId)
+        if ($Config.purview.enabled -isnot [bool]) { throw 'Unknown optional capability selection.' }
+        $suffix = "$($Config.projectName)-$($Config.environment)"
+        $apiName = "A365 Gateway API - $suffix"
+        $names = @($apiName, "A365 Gateway Admin UI - $suffix")
+        if ($Config.purview.enabled) { $names += "A365 Gateway Purview Automation - $suffix" }
+        $apiObjectId = ''
+        foreach ($name in $names) {
+            $application = Get-ExactApplicationByDisplayName -DisplayName $name
+            if ($null -eq $application) { continue }
+            Assert-GuidValue -Value ([string]$application.id) -Label 'Application object ID'
+            $tagsProperty = $application.PSObject.Properties['tags']
+            if ([string]$application.displayName -cne $name -or
+                $null -eq $tagsProperty -or $tagsProperty.Value -isnot [System.Array] -or
+                @($tagsProperty.Value | Where-Object { $_ -isnot [string] }).Count -ne 0 -or
+                -not (Test-ExactStringSet -Actual @($tagsProperty.Value) -Expected $expectedTags)) {
+                throw 'Application discovery did not prove the exact owned namespace.'
+            }
+            if ($name -ceq $apiName) { $apiObjectId = [string]$application.id }
+        }
+
+        # Query even when the API name exists: a differently named URI owner or
+        # ambiguous result must never pass on the strength of display-name tags.
+        $audience = "api://a365-gateway-$suffix"
+        $matches = @(Get-ApplicationsByExactIdentifierUri -IdentifierUri $audience)
+        if ($matches.Count -gt 1) { throw 'Ambiguous application identifier URI.' }
+        if ($matches.Count -eq 1) {
+            Assert-GuidValue -Value ([string]$matches[0].id) -Label 'Identifier URI owner object ID'
+            if ([string]::IsNullOrWhiteSpace($apiObjectId) -or
+                -not $apiObjectId.Equals([string]$matches[0].id, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Application identifier URI is not bound to the owned API name.'
+            }
+        }
+        return $true
+    }
+    catch {
+        # Never surface discovery exceptions or provider prose through Plan.
+        throw 'Entra application namespace could not be verified. Choose a unique, fresh project name for a new deployment. Preserve existing objects; do not adopt, repair, or delete them. Confirm Graph read access, then run Plan again.'
+    }
+}
+
 function Invoke-GraphJsonBody {
     param([Parameter(Mandatory)][string]$Method, [Parameter(Mandatory)][string]$Url, [Parameter(Mandatory)]$Body)
     $json = $Body | ConvertTo-Json -Depth 30 -Compress

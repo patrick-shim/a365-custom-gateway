@@ -1,6 +1,6 @@
 # Development deployment status
 
-Last updated: 2026-09-07 (Asia/Seoul).
+Last updated: 2026-09-08 (Asia/Seoul).
 
 This checkpoint separates deployed evidence from source claims. It intentionally
 contains no subscription, tenant, resource-group, application, principal,
@@ -13,6 +13,26 @@ tracked [agent continuation checkpoint](../agent-continuation.md). Git alone doe
 not transfer the ignored state required to Resume an existing deployment.
 
 ## Current operator direction and evidence boundary
+
+On 2026-09-08 the operator explicitly approved the exact cleanup and replacement.
+Only the specified failed resource group was deleted; group absence and zero
+remaining resources in that scope were independently verified. Original
+configuration/state hashes and tenant identities were preserved, with no purge
+or policy changes.
+
+The approved replacement passed actual UI Plan and completed four deployment
+stages. API identity provisioning then stopped because the selected project
+namespace contains an Entra application predating this attempt with a different
+bootstrap ownership marker. No application was adopted, retagged or deleted.
+The replacement's resources and state remain preserved. A different namespace was
+checked read-only before requesting a scope amendment; the prompt returned
+NoResponse, so neither another cleanup nor another target is authorized by it.
+Early Plan collision checking passed final validation: 1,290 Pester tests,
+source/Bicep, independent review and clean-export package verification. Its
+read-only helper rejected the actual known namespace conflict without mutation.
+This source proof grants no additional live authority. No deployed Admin UI URL
+or completed deployment is verified. The following sections describe earlier
+attempts and do not supersede this boundary.
 
 Latest operator report: Azure resources and bootstrap configuration were deleted
 before another Setup run. The newly configured target was independently confirmed

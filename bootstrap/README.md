@@ -97,6 +97,15 @@ The installer uses official Microsoft sign-in surfaces. It never asks you to pas
 an Azure password, access token, client secret, certificate, or Gateway key into its
 configuration.
 
+The project namespace is tenant-scoped, not just resource-group-scoped. Deleting
+an Azure group leaves Entra applications behind. Before What-If, Plan checks the
+API, Admin UI and selected Purview automation application names plus the API
+audience. Unowned or ambiguous identities stop Plan without adoption, owner
+repair or deletion. Exact ownership at this limited preflight does not replace
+the deployment stages' full identity verification or reserve a namespace.
+Use an unused project namespace for a new installation; do not edit preserved
+state or relabel existing applications to force a fresh deployment.
+
 ## Guided deployment
 
 From the repository root:

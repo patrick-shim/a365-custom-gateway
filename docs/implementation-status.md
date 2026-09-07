@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-09-07 (Asia/Seoul).
+Last updated: 2026-09-08 (Asia/Seoul).
 
 This is the concise source-of-truth checkpoint for contributors. Public setup starts
 at the repository [README](../README.md). Exact deployed development evidence is in
@@ -9,6 +9,21 @@ machine or agent starts unfinished work from the tracked
 [agent continuation checkpoint](agent-continuation.md).
 
 ## Current operating contract
+
+The operator subsequently approved the exact cleanup and replacement. The original
+failed group is verified absent, with local evidence and tenant identities intact.
+The replacement's actual UI Plan succeeded on the published fixes, but Apply
+stopped after four stages because the chosen project namespace already has a
+pre-existing Entra API application with a different ownership marker. The guard
+correctly refused adoption. A new candidate namespace was checked read-only before
+requesting an amended deployment scope; that prompt returned NoResponse.
+Early Plan namespace validation is implemented with 38 focused and 258 affected
+tests passing to reject such conflicts before Azure foundation creation.
+Final new-source validation passed 1,290 Pester tests (zero failures, seven
+existing platform exclusions), source/Bicep, independent review and a 954-file
+clean export with rebuilt Windows package and independent ZIP verification.
+The amended live approval remains open; no Admin UI URL or deployment completion
+is claimed.
 
 Latest repair: the operator reported deleting Azure resources and configuration
 and requested completion of a fresh Setup deployment. Its new Plan failed locally:

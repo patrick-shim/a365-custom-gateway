@@ -1,6 +1,6 @@
 # Agent continuation checkpoint
 
-Last updated: 2026-09-07 (Asia/Seoul).
+Last updated: 2026-09-08 (Asia/Seoul).
 
 This tracked file is the bounded continuation seed for Claude, Codex, GitHub
 Copilot, other automation, and human contributors after a fetch, pull, fresh clone,
@@ -95,6 +95,29 @@ by Git.
 ## Current execution contract and operator direction
 
 ### Current publication checkpoint
+
+Latest continuation on 2026-09-08: the operator explicitly approved the exact
+cleanup and replacement, resolving the earlier approval hold. The failed original
+resource group was deleted once and independently verified absent, with original
+configuration/state hashes unchanged and tenant identities preserved. Actual fresh
+Setup Plan succeeded on the reviewed, published fixes. Replacement Apply completed
+four stages, then the API-identity guard refused an Entra application created
+before this attempt whose ownership marker does not match the replacement.
+No application adoption, ownership rewrite or tenant-identity deletion occurred.
+
+The remaining replacement namespace was checked read-only before proposing a new
+scope: the named Entra applications and API audience were absent, the Key Vault
+and Service Bus names were available, and the proposed group was absent. The
+scope-amendment prompt returned NoResponse; that does not authorize deletion of
+the current replacement or creation of another target. Preserve its four completed
+stages, configuration, resources and prior tenant identities. Early Plan namespace
+validation is implemented with 38 focused and 258 affected tests passing so this
+conflict is caught before foundation creation. Final validation passed 1,290
+Pester tests (zero failures, seven existing platform exclusions), source/Bicep,
+independent review and a 954-file clean export with rebuilt Windows package and
+independent ZIP verification. The new read-only helper also rejected the actual
+known namespace conflict without mutation. Obtain the exact scope amendment
+before another live deployment. No Admin UI URL or completed deployment is verified.
 
 Latest operator action: after source publication, the operator reported deleting
 Azure resources and bootstrap configuration, then requested repair of a fresh

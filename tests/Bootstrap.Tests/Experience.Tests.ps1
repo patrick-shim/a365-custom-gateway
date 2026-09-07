@@ -1188,6 +1188,18 @@ Describe 'Bootstrap actionable failure and diagnostic routing' {
         $failure.data.resumable | Should -BeFalse
     }
 
+    It 'reports a curated namespace failure preserving preexisting objects without rendering exceptions' {
+        $failure = Get-GatewaySafeFailureEvent `
+            -FailureCode plan_entra_namespace -FailureStage 'Plan review' -CommandMode Plan `
+            -Exception ([InvalidOperationException]::new('synthetic-private-provider-detail'))
+        $failure.message | Should -Match 'unique.*fresh project'
+        $failure.message | Should -Match 'Preserve existing'
+        $failure.message | Should -Not -Match 'synthetic-private-provider-detail'
+        $failure.data.failureCode | Should -BeExactly 'plan_entra_namespace'
+        $failure.data.category | Should -BeExactly 'planFailure'
+        $failure.data.resumable | Should -BeFalse
+    }
+
     It 'sets the package failure boundary before invoking local package validation' {
         $codeIndex = $script:bootstrapSource.IndexOf(
             "`$script:GatewayFailureCode = 'plan_purview_package'", [StringComparison]::Ordinal)
@@ -1313,6 +1325,12 @@ Describe 'Plan exact-account context boundary' {
         $clearIndex = $planSource.IndexOf('Clear-BootstrapAzureSubscriptionContext', [StringComparison]::Ordinal)
         $setIndex = $planSource.IndexOf('Set-BootstrapAzureSubscriptionContext', [StringComparison]::Ordinal)
         $whatIfIndex = $planSource.IndexOf('Invoke-GatewayFoundationWhatIf', [StringComparison]::Ordinal)
+        $namespaceIndex = $planSource.IndexOf('Assert-GatewayApplicationNamespacePlanBoundary', [StringComparison]::Ordinal)
+        $namespaceCodeIndex = $planSource.IndexOf("`$script:GatewayFailureCode = 'plan_entra_namespace'", [StringComparison]::Ordinal)
+        $namespaceCodeIndex | Should -BeGreaterThan $setIndex
+        $namespaceIndex | Should -BeGreaterThan $namespaceCodeIndex
+        $whatIfIndex | Should -BeGreaterThan $namespaceIndex
+        $planSource | Should -Match 'Assert-GatewayApplicationNamespacePlanBoundary[^\r\n]+-Config \$Configuration[^\r\n]+-DeploymentOwnershipId \(\[string\]\$State\.deploymentOwnershipId\)'
         $graphIndex = $planSource.IndexOf('Assert-GatewaySeedBlueprintPlanBoundary', [StringComparison]::Ordinal)
 
         $planStart | Should -BeGreaterOrEqual 0

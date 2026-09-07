@@ -40,6 +40,12 @@ administrator who can approve the Azure, Entra, and Agent ID changes shown by th
 installer. On the workstation, install Git, the .NET 10 SDK, PowerShell 7, and Azure
 CLI 2.76 or later.
 
+Use an unused project namespace for a fresh deployment. Deleting an Azure resource
+group does not delete its Entra applications. Plan checks the selected tenant's
+API, Admin UI, selected Purview automation names, and API audience before What-If;
+an existing identity without the exact bootstrap ownership marker blocks Plan.
+This check never adopts or deletes an application.
+
 Core Gateway setup and deployment run on Windows, macOS, and Linux. **Full
 evaluation and Custom with Purview enabled require a Windows x64 workstation**:
 Plan validates local executor packaging with Microsoft-signed PowerShell **7.6.5**

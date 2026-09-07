@@ -408,6 +408,8 @@ function Invoke-GatewayPlanWorkflow {
     Set-BootstrapAzureSubscriptionContext `
         -SubscriptionId ([string]$Configuration.subscriptionId) `
         -TenantId ([string]$Configuration.tenantId)
+    $script:GatewayFailureCode = 'plan_entra_namespace'
+    Assert-GatewayApplicationNamespacePlanBoundary -Config $Configuration -DeploymentOwnershipId ([string]$State.deploymentOwnershipId) | Out-Null
     $script:GatewayFailureCode = 'plan_what_if'
     $whatIf = Invoke-GatewayFoundationWhatIf -Config $Configuration -RepositoryRoot $root -DeploymentOwnershipId ([string]$State.deploymentOwnershipId) -SourceFingerprint $deploymentSourceFingerprint -ExecutionSourceFingerprint $sourceFingerprintBefore -State $State
     $script:GatewayFailureCode = 'plan_blueprint'
@@ -1042,6 +1044,7 @@ function Get-GatewaySafeFailureEvent {
         'plan_purview_package' { 'Purview packaging requires Windows x64, signed PowerShell 7.6.5 and ExchangeOnlineManagement 3.10.1. Run pwsh -File operations/build-purview-executor-package.ps1 -ValidateOnly in the launch terminal, correct its prerequisite failure, then run Plan again.' }
         'plan_source' { 'Repository or Bicep validation failed. Run gateway doctor, correct the reported tool or source issue, then run Plan again.' }
         'plan_account' { 'The configured Azure tenant and subscription could not be selected. Run az login, verify the active subscription, then run Plan again.' }
+        'plan_entra_namespace' { 'Entra application namespace could not be verified. Choose a unique, fresh project name for a new deployment. Preserve existing objects; do not adopt, repair, or delete them. Confirm Graph read access, then run Plan again.' }
         'plan_sql_availability' { 'Azure SQL regional availability could not be verified for the selected region and SKU. Confirm the Azure session and subscription access, or choose another listed region, then run Plan again.' }
         'plan_what_if' { 'Azure What-If could not produce a reviewable result. Check the Azure session, subscription access, required providers, policy, region, and quota, then run Plan again.' }
         'plan_blueprint' { 'The Agent ID blueprint boundary check did not complete. Confirm tenant eligibility and Graph access, then run Plan again.' }
