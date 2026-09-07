@@ -43,8 +43,10 @@ CLI 2.76 or later.
 Core Gateway setup and deployment run on Windows, macOS, and Linux. **Full
 evaluation and Custom with Purview enabled require a Windows x64 workstation**:
 Plan validates local executor packaging with Microsoft-signed PowerShell **7.6.5**
-and exactly one installed Microsoft-signed ExchangeOnlineManagement **3.10.1**
-module. Generic PowerShell 7 is insufficient for that path. On macOS/Linux select
+and Microsoft-signed ExchangeOnlineManagement **3.10.1**. Packaging follows
+`PSModulePath` order and pins the exact installed manifest; another installed copy
+is allowed, but an invalid or ambiguous first candidate is never skipped.
+Generic PowerShell 7 is insufficient for that path. On macOS/Linux select
 Core Gateway or Custom with Purview disabled before Plan.
 Bootstrap prepares optional Purview identities, RBAC, certificate, Key Vault,
 dedicated administration queue, and runtime prerequisites without choosing a

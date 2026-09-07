@@ -2084,6 +2084,26 @@ Describe 'Gateway core initial and runtime identity bindings' {
                 -SecureParameterNames @('adminUiEntraClientSecretKeyVaultSecretUri') | Should -BeTrue
         }
 
+        It 'accepts a disabled executor binding returned as a real empty JSON object' {
+            $actual = ConvertFrom-Json '{"purviewExecutorBinding":{"type":"Object","value":{}}}'
+            $expected = [ordered]@{ purviewExecutorBinding = [ordered]@{} }
+
+            Assert-GatewayExactReadableArmParameters -ActualParameters $actual -ExpectedParameters $expected |
+                Should -BeTrue
+        }
+
+        It 'rejects a changed disabled executor binding JSON value: <Json>' -ForEach @(
+            @{ Json = '{"purviewExecutorBinding":{"value":null}}' },
+            @{ Json = '{"purviewExecutorBinding":{"value":[]}}' },
+            @{ Json = '{"purviewExecutorBinding":{"value":{"enabled":true}}}' }
+        ) {
+            $actual = ConvertFrom-Json $Json
+            $expected = [ordered]@{ purviewExecutorBinding = [ordered]@{} }
+
+            { Assert-GatewayExactReadableArmParameters -ActualParameters $actual -ExpectedParameters $expected } |
+                Should -Throw '*prior inert deployment parameter does not match*'
+        }
+
         It 'rejects exact deployment parameter mismatch <Mutation>' -ForEach @(
             @{ Mutation = 'extra' },
             @{ Mutation = 'missing' },

@@ -10,6 +10,25 @@ machine or agent starts unfinished work from the tracked
 
 ## Current operating contract
 
+Latest repair: the operator reported deleting Azure resources and configuration
+and requested completion of a fresh Setup deployment. Its new Plan failed locally:
+Windows PowerShell ancestry exposes two exact-version ExchangeOnlineManagement
+installations, while the packager incorrectly required one globally. The reviewed
+fix follows module search-path order, pins the exact signed manifest and rejects
+invalid shadowing installations without fallback. The real Windows parent/child
+reproduction now passes, alongside 54 package and 200 Experience tests. The
+combined candidate then passed 1,256 Pester tests, source/Bicep and clean-export
+package verification. Actual UI Plan passed and Apply completed six stages before
+`VaultAlreadyExists` stopped inert deployment. Current active/deleted vault
+inventories were empty and the name was available; soft deletion is not proven as
+the cause. Resume revalidated the prefix but exposed strict-mode fingerprinting of
+an empty ARM JSON object. The one-line correction passes 25 focused tests with one
+existing exclusion. Final validation passed 1,265 Pester tests (zero failures,
+seven existing platform exclusions), source/Bicep, independent review and a
+953-file clean export with rebuilt package and independent ZIP verification.
+Accepted state is preserved. Replacement approval returned NoResponse, so
+deployment and endpoint verification remain incomplete.
+
 Current publication checkpoint: the operator authorized committing and pushing
 the accumulated source and protocol work on 2026-09-07. The publisher metadata
 correction passed independent review, 61 focused regressions and 1,161 Bootstrap

@@ -96,6 +96,44 @@ by Git.
 
 ### Current publication checkpoint
 
+Latest operator action: after source publication, the operator reported deleting
+Azure resources and bootstrap configuration, then requested repair of a fresh
+Setup Plan failure, completion of deployment, and the verified Admin UI URL.
+The new configured target is independently absent in Azure and has zero local
+completed stages with no accepted Plan. Preserve older state; never Resume a
+deleted target. Existing selected-subscription authority remains bounded to the
+reviewed configuration and documented provider operations.
+
+The Plan failure was reproduced through Windows PowerShell launching PowerShell 7:
+both editions' module paths expose ExchangeOnlineManagement 3.10.1, and the
+packager incorrectly required exactly one installed copy globally. The reviewed
+source fix pins an exact signed manifest using ordered module discovery, rejects
+an invalid first candidate without fallback, and retains version and reparse
+guards. Actual launcher-ancestry validation now passes; 54 package tests and 200
+Experience tests passed. Setup reports an actionable, curated packaging boundary.
+The combined candidate passed 1,256 Pester tests (seven existing exclusions),
+source/Bicep, independent review and a 953-file clean export with an actual rebuilt
+Windows package. Actual Setup Plan then succeeded, and explicitly confirmed Apply
+completed six stages before Azure returned `VaultAlreadyExists` during inert
+deployment. Subsequent exact active/deleted vault inventory was empty and name
+availability was true; a persistent soft-delete collision is not established.
+Supported read-only Resume validated all six stages, but confirmed Resume stopped
+before another ARM deployment.
+
+Read-only diagnosis proved a second source defect: strict-mode canonicalization
+crashes on an empty `PSCustomObject`, including the disabled executor binding
+returned by ARM. A one-line enumeration fix passes 25 focused canonical/parameter
+tests (one existing exclusion), including previously failing real JSON fixtures.
+Its final source generation passed 1,265 Pester tests (zero failures, seven existing
+platform exclusions), all source/Bicep checks, independent review, and a 953-file
+clean export with rebuilt Windows package and independent ZIP verification. It
+cannot silently replace the accepted snapshot. The exact replacement-target approval request received
+NoResponse, not consent or revocation. Preserve the failed target, its six
+completed stages and all local evidence; no purge, reset, replacement or another
+Resume is authorized by that failed prompt. The first unfinished action is to
+obtain exact replacement authority or a separately reviewed in-place source
+recovery plan. Deployment, `gateway verify` and the Admin UI URL remain unverified.
+
 The operator explicitly authorized committing and pushing the accumulated source
 and protocol work on canonical `main` on 2026-09-07. This is a source handoff, not
 a completed deployment or release. The current live attempt remains at fourteen

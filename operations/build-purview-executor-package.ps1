@@ -5,6 +5,8 @@ Builds a content-addressed Windows Purview executor package without deploying it
 .DESCRIPTION
 Requires installed Microsoft-signed PowerShell 7.6.5 and ExchangeOnlineManagement
 3.10.1. Copies only their installation directories, never a user profile or cache.
+Selects the first exact-version installation in PSModulePath order and pins its
+absolute manifest path. An invalid or ambiguous candidate fails without fallback.
 The output directory must be new and inside the repository's ignored runtime area.
 #>
 [CmdletBinding(DefaultParameterSetName = 'Build')]
@@ -16,6 +18,87 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Assert-PurviewDependencyTree {
+    param([Parameter(Mandatory)][string]$Root)
+    # Check ancestors too: a version directory beneath a junction is not an
+    # independent installation root. Never recurse through a reparse point.
+    $directory = [IO.DirectoryInfo]::new($Root)
+    for ($ancestor = $directory; $null -ne $ancestor; $ancestor = $ancestor.Parent) {
+        if (([IO.File]::GetAttributes($ancestor.FullName) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Executor dependency roots and ancestors cannot be reparse points.'
+        }
+    }
+    if (-not $directory.Exists) { throw 'Executor dependency root must be an installed directory.' }
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push($directory.FullName)
+    while ($pending.Count -gt 0) {
+        foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($pending.Pop())) {
+            $attributes = [IO.File]::GetAttributes($path)
+            if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Executor dependencies cannot contain reparse points.'
+            }
+            if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) { $pending.Push($path) }
+        }
+    }
+}
+
+function Resolve-PurviewExecutorModuleRoot {
+    param([AllowEmptyString()][string]$ModulePath = $env:PSModulePath)
+    # PSModulePath differs with Windows PowerShell ancestry. Multiple installed
+    # copies are normal, not an ambiguity across ordered search roots.
+    # https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_psmodulepath
+    # https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_modules
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in $ModulePath.Split([IO.Path]::PathSeparator)) {
+        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+        if (-not [IO.Path]::IsPathFullyQualified($entry)) {
+            throw 'Executor module search paths must be absolute installation paths.'
+        }
+        $searchRoot = [IO.Path]::GetFullPath($entry)
+        if (-not $seen.Add($searchRoot)) { continue }
+        $moduleDirectory = Join-Path $searchRoot 'ExchangeOnlineManagement'
+        $versionDirectory = Join-Path $moduleDirectory '3.10.1'
+        $versionExists = Test-Path -LiteralPath $versionDirectory
+        $unversionedExists = @('.psd1', '.psm1', '.dll') | Where-Object {
+            Test-Path -LiteralPath (Join-Path $moduleDirectory ('ExchangeOnlineManagement' + $_))
+        }
+        if ($versionExists -and $unversionedExists) {
+            throw 'The first ExchangeOnlineManagement installation is ambiguous: both versioned and unversioned candidates exist. Repair that installation before packaging.'
+        }
+        if (-not $versionExists -and -not $unversionedExists) { continue }
+        $candidateRoot = if ($versionExists) { $versionDirectory } else { $moduleDirectory }
+        # Inspect the path before module discovery: Get-Module can omit a broken
+        # manifest, which would silently promote a lower-priority installation.
+        Assert-PurviewDependencyTree -Root $candidateRoot
+        $manifestPath = Join-Path $candidateRoot 'ExchangeOnlineManagement.psd1'
+        if (-not [IO.File]::Exists($manifestPath)) {
+            throw 'The first ExchangeOnlineManagement installation is missing its pinned manifest. Repair that installation before packaging.'
+        }
+        $moduleSignature = Get-AuthenticodeSignature -LiteralPath $manifestPath
+        if ($moduleSignature.Status -ne 'Valid' -or
+            $moduleSignature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') {
+            throw 'The pinned ExchangeOnlineManagement module must have a valid Microsoft signature. Repair the first installation in PSModulePath; no fallback is permitted.'
+        }
+        # Get-Module reads metadata without importing EOM, and supports its signed
+        # edition-conditional RootModule (unlike Import-PowerShellDataFile).
+        # Never re-resolve by bare name: only this verified manifest can qualify.
+        try {
+            $modules = @(Get-Module -ListAvailable -FullyQualifiedName @{
+                ModuleName = $manifestPath; RequiredVersion = '3.10.1'
+            } -ErrorAction Stop)
+        } catch {
+            throw 'The pinned ExchangeOnlineManagement manifest must be valid and declare version 3.10.1 exactly.'
+        }
+        if ($modules.Count -ne 1 -or $modules[0].Version -ne [version]'3.10.1' -or
+            [IO.Path]::GetFullPath($modules[0].ModuleBase) -ine [IO.Path]::GetFullPath($candidateRoot)) {
+            throw 'The pinned ExchangeOnlineManagement manifest must be valid and declare version 3.10.1 exactly.'
+        }
+        return [IO.Path]::GetFullPath($candidateRoot)
+    }
+    throw 'Installed ExchangeOnlineManagement 3.10.1 is required in PSModulePath. Install the exact Microsoft-signed version before packaging.'
+}
+
 if (-not $IsWindows -or -not [Environment]::Is64BitProcess) {
     throw 'Purview executor packaging requires Windows x64.'
 }
@@ -33,6 +116,7 @@ if (-not $ValidateOnly) {
     }
 }
 $powerShellRoot = [IO.Path]::GetFullPath($PowerShellDirectory)
+Assert-PurviewDependencyTree -Root $powerShellRoot
 $powerShellPath = Join-Path $powerShellRoot 'pwsh.exe'
 $signature = Get-AuthenticodeSignature -LiteralPath $powerShellPath
 if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') {
@@ -42,24 +126,7 @@ $runtimeVersion = & $powerShellPath -NoLogo -NoProfile -NonInteractive -Command 
 if ($LASTEXITCODE -ne 0 -or [string]$runtimeVersion -cne '7.6.5') {
     throw 'This executor package requires PowerShell 7.6.5 exactly.'
 }
-$modules = @(Get-Module -ListAvailable -FullyQualifiedName @{ ModuleName = 'ExchangeOnlineManagement'; RequiredVersion = '3.10.1' })
-if ($modules.Count -ne 1) { throw 'Exactly one installed ExchangeOnlineManagement 3.10.1 module is required.' }
-$moduleRoot = [IO.Path]::GetFullPath($modules[0].ModuleBase)
-$moduleManifest = Join-Path $moduleRoot 'ExchangeOnlineManagement.psd1'
-$moduleSignature = Get-AuthenticodeSignature -LiteralPath $moduleManifest
-if ($moduleSignature.Status -ne 'Valid' -or $moduleSignature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') {
-    throw 'The pinned ExchangeOnlineManagement module must have a valid Microsoft signature.'
-}
-foreach ($sourceRoot in @($powerShellRoot, $moduleRoot)) {
-    if (([IO.File]::GetAttributes($sourceRoot) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'Executor dependency roots cannot be reparse points.'
-    }
-    foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($sourceRoot, '*', [IO.SearchOption]::AllDirectories)) {
-        if (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw 'Executor dependencies cannot contain reparse points.'
-        }
-    }
-}
+$moduleRoot = Resolve-PurviewExecutorModuleRoot
 if ($ValidateOnly) { return }
 $sourceFingerprint = Get-BootstrapSourceFingerprint -Root $repositoryRoot
 if (-not [string]::IsNullOrEmpty($ExpectedSourceFingerprint) -and $sourceFingerprint -cne $ExpectedSourceFingerprint) {

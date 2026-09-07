@@ -413,6 +413,26 @@ Describe 'Exact bootstrap configuration file fingerprint boundary' {
 }
 
 Describe 'Canonical bootstrap fingerprints' {
+    It 'canonicalizes empty JSON objects like dictionaries: <Json>' -ForEach @(
+        @{ Json = '{}' },
+        @{ Json = '{"binding":{}}' },
+        @{ Json = '{"z":{},"a":[]}' },
+        @{ Json = '[{"binding":{}},{}]' }
+    ) {
+        $providerValue = ConvertFrom-Json -InputObject $Json -NoEnumerate
+        $dictionaryValue = ConvertFrom-Json -InputObject $Json -AsHashtable -NoEnumerate
+
+        Get-BootstrapObjectFingerprint -InputObject $providerValue |
+            Should -BeExactly (Get-BootstrapObjectFingerprint -InputObject $dictionaryValue)
+    }
+
+    It 'keeps empty objects distinct from null and empty arrays' {
+        $emptyObject = Get-BootstrapObjectFingerprint -InputObject ([pscustomobject]@{})
+        $emptyObject | Should -BeExactly 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a'
+        $emptyObject | Should -Not -Be (Get-BootstrapObjectFingerprint -InputObject $null)
+        $emptyObject | Should -Not -Be (Get-BootstrapObjectFingerprint -InputObject @())
+    }
+
     It 'enables selected Prompt Shields only after runtime activation: runtime=<Runtime>, selected=<Selected>' -ForEach @(
         @{ Runtime = $false; Selected = $true; Expected = 'False' }
         @{ Runtime = $false; Selected = $false; Expected = 'False' }
@@ -779,7 +799,7 @@ Describe 'Bootstrap state compatibility and atomic persistence' {
         { Invoke-BootstrapStateStep -Name 'Noisy action' -State $state -StatePath $path -Action {
             'private-provider-output-that-is-not-evidence'
             return [ordered]@{ resourceId = 'safe-resource-id' }
-        } } | Should -Throw '*did not return exactly one non-null evidence object*'
+        } } | Should -Throw '*bootstrap.actionEvidence*'
 
         $raw = Get-Content -LiteralPath $path -Raw
         $raw | Should -Not -Match 'private-provider-output-that-is-not-evidence'
@@ -895,6 +915,49 @@ Describe 'Bootstrap state compatibility and atomic persistence' {
         $caught.Exception.Message | Should -Be "Completed bootstrap step 'Diagnosable validation' could not be independently revalidated because property 'runtime.apiPrincipalId' disagreed. State was preserved; correct the validation prerequisite before resuming."
         $state.steps['Diagnosable validation'].message | Should -Be "Bootstrap step 'Diagnosable validation' failed independent revalidation because property 'runtime.apiPrincipalId' disagreed. Prior evidence was preserved for exact reconciliation."
         $state.steps['Diagnosable validation'].message | Should -Not -Match 'expected-value|actual-value'
+    }
+
+    It 'preserves only validated action mismatch metadata, not exception bodies: <Shape>' -ForEach @(
+        @{ Shape = 'trusted'; Expected = 'runtime.apiPrincipalId' },
+        @{ Shape = 'malformed'; Expected = '' },
+        @{ Shape = 'oversized'; Expected = '' },
+        @{ Shape = 'untyped'; Expected = '' },
+        @{ Shape = 'absent'; Expected = '' }
+        @{ Shape = 'invalid codes'; Expected = '' }
+        @{ Shape = 'excess codes'; Expected = '' }
+    ) {
+        $state = New-BootstrapState -Config (New-TestBootstrapConfig)
+        $path = Join-Path $TestDrive 'safe-action-mismatch.json'
+        $exception = [InvalidOperationException]::new('synthetic-private-outer',
+            [InvalidOperationException]::new('synthetic-private-inner'))
+        switch ($Shape) {
+            'trusted' { $exception.InnerException.Data['GatewayValidationMismatchPropertyName'] =
+                (New-BootstrapValidationMismatchException -PropertyName $Expected).Data['GatewayValidationMismatchPropertyName'] }
+            'malformed' { $exception.Data['GatewayValidationMismatchPropertyName'] = 'synthetic-private-body !' }
+            'oversized' { $exception.Data['GatewayValidationMismatchPropertyName'] = 'x' * 129 }
+            'untyped' { $exception.Data['GatewayValidationMismatchPropertyName'] = @('runtime.apiPrincipalId') }
+            'invalid codes' { $exception.Data['GatewayProviderErrorCodes'] = [string[]]@('ResourceNotFound', 'synthetic-private-body !') }
+            'excess codes' { $exception.Data['GatewayProviderErrorCodes'] = [string[]]@('ResourceNotFound') * 9 }
+        }
+        $caught = $null
+        try {
+            Invoke-BootstrapStateStep -Name 'Safe action' -State $state -StatePath $path -Action { throw $exception }
+        }
+        catch { $caught = $_ }
+        $caught | Should -Not -BeNullOrEmpty
+        $caught.Exception.ToString() | Should -Not -Match 'synthetic-private'
+        $saved = Get-Content $path -Raw
+        $saved | Should -Not -Match 'synthetic-private'
+        @(Get-BootstrapExceptionProviderErrorCodes -Exception $caught.Exception).Count | Should -Be 0
+        $saved | Should -Not -Match 'ResourceNotFound'
+        if ($Expected) {
+            $state.steps['Safe action'].message | Should -BeLike "*$Expected*"
+            Get-BootstrapExceptionValidationMismatchPropertyName -Exception $caught.Exception | Should -BeExactly $Expected
+        }
+        else {
+            $state.steps['Safe action'].message | Should -Not -Match 'property|runtime.apiPrincipalId'
+            Get-BootstrapExceptionValidationMismatchPropertyName -Exception $caught.Exception | Should -BeExactly ''
+        }
     }
 
     It 'does not propagate untrusted validator exception text' {

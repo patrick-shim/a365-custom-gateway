@@ -769,42 +769,72 @@ function Start-PurviewPublisherOnce {
     param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$Template,
         [Parameter(Mandatory)][Collections.IDictionary]$Record,
         [Parameter(Mandatory)][scriptblock]$Checkpoint, [switch]$ReadOnly)
+    # Only static source-owned guard names cross the diagnostic boundary. This
+    # mutable local context follows callbacks without copying provider values,
+    # arbitrary labels or exception text. It is never publication evidence.
+    $diagnostic = @{ property = 'publisher.publish.intent' }
+    $publisherCheckpoint = $Checkpoint
+    try {
     $jobName = [string]$Record.publisher.jobName.value
     return Invoke-PurviewBootstrapOnce -Operations $Record.operations -Name publish `
         -Intent @{ jobId = $Record.publisher.jobId.value; template = $Template; intentId = $Record.intentId } `
-        -Checkpoint $Checkpoint -ReadOnly:$ReadOnly -Discover {
+        -Checkpoint {
+            $previousGuard = $diagnostic.property
+            $diagnostic.property = 'publisher.publish.checkpoint'
+            & $publisherCheckpoint | Out-Null
+            $diagnostic.property = $previousGuard
+        } -ReadOnly:$ReadOnly -Discover {
+            $diagnostic.property = 'publisher.publish.discovery'
             $executions = @(Invoke-AzJsonArray -OperationLabel 'Exact publisher execution discovery' -Arguments @(
                 'containerapp', 'job', 'execution', 'list', '--subscription', $Config.subscriptionId,
                 '--resource-group', $Config.resourceGroupName, '--name', $jobName, '--query', '[].{name:name}'))
-            if ($executions.Count -eq 0) { return $null }
+            if ($executions.Count -eq 0) {
+                $diagnostic.property = 'publisher.publish.reconciliation'
+                return $null
+            }
             if ($executions.Count -ne 1 -or [string]$executions[0].name -cnotmatch '^[a-z0-9-]{1,80}$') {
                 throw 'Publisher execution is ambiguous; no execution will be repeated.'
             }
             for ($attempt = 0; $attempt -lt 140; $attempt++) {
+                $diagnostic.property = 'publisher.publish.execution.readback'
                 $execution = Invoke-AzJson -Arguments @('containerapp', 'job', 'execution', 'show',
                     '--subscription', $Config.subscriptionId, '--resource-group', $Config.resourceGroupName,
                     '--name', $jobName, '--job-execution-name', $executions[0].name)
+                $diagnostic.property = 'publisher.publish.execution.identity'
                 if ([string]$execution.name -cne [string]$executions[0].name) { throw 'Publisher execution identity changed.' }
+                $diagnostic.property = 'publisher.publish.execution.template'
                 Assert-PurviewExecutorEqual `
                     -Actual (ConvertTo-PurviewPublisherExecutionTemplate -Template $execution.properties.template) `
                     -Expected (ConvertTo-PurviewPublisherExecutionTemplate -Template $Template -JobTemplate) `
                     -Label 'publisher execution template'
+                $diagnostic.property = 'publisher.publish.execution.status'
                 $status = [string]$execution.properties.status
                 if ($status -ceq 'Succeeded') {
                     # This exact immutable entrypoint exits zero only after conditional
                     # upload AND separate ETag-bound, full-byte SHA256 readback.
+                    $diagnostic.property = 'publisher.publish.reconciliation'
                     return [ordered]@{ name = [string]$execution.name; packageDigest = $Record.package.receipt.packageDigest }
                 }
                 if ($status -cnotin @('Running', 'Processing', 'Pending', 'Scheduled')) { throw 'Publisher execution is failed or unknown; no repeat start is authorized.' }
                 if ($ReadOnly) { throw 'Publisher execution has not completed.' }
                 Start-Sleep -Seconds 5
             }
+            $diagnostic.property = 'publisher.publish.execution.deadline'
             throw 'Publisher execution deadline elapsed; resume exact readback without restarting.'
         } -Mutate {
+            $diagnostic.property = 'publisher.publish.dispatch'
             Invoke-AzJson -CaptureStdoutOnly -Arguments @('containerapp', 'job', 'start',
                 '--subscription', $Config.subscriptionId, '--resource-group', $Config.resourceGroupName,
                 '--name', $jobName, '--query', '{name:name}') | Out-Null
         }
+    }
+    catch {
+        # Contextual rethrow only: no retry, swallowed failure or provider body,
+        # and no inner exception that could expose the rejected metadata.
+        $failure = New-BootstrapValidationMismatchException -PropertyName $diagnostic.property
+        $failure.Data['GatewayProviderErrorCodes'] = [string[]]@(Get-BootstrapExceptionProviderErrorCodes -Exception $_.Exception)
+        throw $failure
+    }
 }
 
 function Get-PurviewExecutorFreshContext {

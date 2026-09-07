@@ -379,10 +379,13 @@ function Invoke-GatewayPlanWorkflow {
     if ($Configuration.purview.enabled -eq $true) {
         # Fail before Azure Plan/Apply if the selected Windows packaging boundary
         # cannot be built. Core never inspects these optional dependencies.
+        $script:GatewayFailureStage = 'Purview executor prerequisites'
+        $script:GatewayFailureCode = 'plan_purview_package'
         Invoke-BootstrapCommand -FilePath 'pwsh' -ArgumentList @(
             '-NoLogo', '-NoProfile', '-NonInteractive', '-File',
             (Join-Path (Get-RepositoryRoot) 'operations/build-purview-executor-package.ps1'), '-ValidateOnly') | Out-Null
     }
+    $script:GatewayFailureStage = 'Plan review'
     Write-GatewayExperienceEvent -Type PhaseStarted -Message 'Validating bootstrap source and compiling every bootstrap Bicep template...' -Data $planEventBase -OutputFormat $Format
     $script:GatewayFailureCode = 'plan_source'
     $root = Get-RepositoryRoot
@@ -1036,6 +1039,7 @@ function Get-GatewaySafeFailureEvent {
         'diagnose' { 'Diagnose could not write its safe bundle. Run gateway doctor and review local file access.' }
         'plan_state' { 'The preserved bootstrap state does not allow a new Plan. Keep .bootstrap intact and run gateway diagnose.' }
         'plan_prerequisites' { 'Local prerequisite validation failed. Run gateway doctor, correct its failed item, then run Plan again.' }
+        'plan_purview_package' { 'Purview packaging requires Windows x64, signed PowerShell 7.6.5 and ExchangeOnlineManagement 3.10.1. Run pwsh -File operations/build-purview-executor-package.ps1 -ValidateOnly in the launch terminal, correct its prerequisite failure, then run Plan again.' }
         'plan_source' { 'Repository or Bicep validation failed. Run gateway doctor, correct the reported tool or source issue, then run Plan again.' }
         'plan_account' { 'The configured Azure tenant and subscription could not be selected. Run az login, verify the active subscription, then run Plan again.' }
         'plan_sql_availability' { 'Azure SQL regional availability could not be verified for the selected region and SKU. Confirm the Azure session and subscription access, or choose another listed region, then run Plan again.' }

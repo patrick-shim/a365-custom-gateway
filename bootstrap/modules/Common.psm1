@@ -233,7 +233,7 @@ function ConvertTo-BootstrapCanonicalValue {
 
     if ($Value.GetType() -eq [System.Management.Automation.PSCustomObject]) {
         $result = [ordered]@{}
-        [string[]]$names = @($Value.PSObject.Properties.Name)
+        [string[]]$names = @($Value.PSObject.Properties | ForEach-Object { $_.Name })
         [Array]::Sort($names, [StringComparer]::Ordinal)
         foreach ($name in $names) {
             if ($IsRoot -and $ExcludeSchemaAnnotation -and $name -eq '$schema') { continue }
@@ -720,7 +720,12 @@ function Get-BootstrapExceptionProviderErrorCodes {
     $current = $Exception
     for ($depth = 0; $depth -lt 8 -and $null -ne $current; $depth++) {
         $codes = $current.Data['GatewayProviderErrorCodes']
-        if ($codes -is [string[]] -and $codes.Count -gt 0) { return @($codes) }
+        # Revalidate exception metadata at the consuming boundary using the same
+        # bounds as Get-BootstrapProviderFailureSignature, never arbitrary text.
+        if ($codes -is [string[]] -and $codes.Count -gt 0 -and $codes.Count -le 8 -and
+            @($codes | Where-Object { $_ -cnotmatch '^[A-Za-z][A-Za-z0-9._-]{0,63}$' }).Count -eq 0) {
+            return @($codes)
+        }
         $current = $current.InnerException
     }
     return @()
@@ -4274,7 +4279,7 @@ function Invoke-BootstrapStateStep {
     try {
         [object[]]$actionOutput = @(& $Action)
         if ($actionOutput.Count -ne 1 -or $null -eq $actionOutput[0]) {
-            throw "Bootstrap step '$Name' did not return exactly one non-null evidence object. Provider output was not persisted; correct the action contract and Resume."
+            throw (New-BootstrapValidationMismatchException -PropertyName 'bootstrap.actionEvidence')
         }
         $evidence = $actionOutput[0]
         $State.steps[$Name] = [ordered]@{
@@ -4292,12 +4297,21 @@ function Invoke-BootstrapStateStep {
     catch {
         $partialEvidence = if ($State.steps[$Name].Contains('evidence')) { $State.steps[$Name].evidence } else { $null }
         $providerCodes = @(Get-BootstrapExceptionProviderErrorCodes -Exception $_.Exception)
-        $failureMessage = if ($providerCodes.Count -gt 0) {
-            "Bootstrap step '$Name' failed with provider error codes $($providerCodes -join ' > '). Review the local terminal output, correct the cause, and run Resume."
+        $mismatchPropertyName = Get-BootstrapExceptionValidationMismatchPropertyName -Exception $_.Exception
+        $mismatchCause = if ([string]::IsNullOrWhiteSpace($mismatchPropertyName)) { '' } else {
+            " because property '$mismatchPropertyName' disagreed"
         }
-        else {
-            "Bootstrap step '$Name' failed. Review the local terminal output, correct the cause, and run Resume."
+        $providerCause = if ($providerCodes.Count -gt 0) {
+            " with provider error codes $($providerCodes -join ' > ')"
+        } else { '' }
+        $failureMessage = "Bootstrap step '$Name' failed$mismatchCause$providerCause. Review the local terminal output, correct the cause, and run Resume."
+        # Do not rethrow or attach the original exception chain. Only validated
+        # diagnostic metadata may survive either state persistence or the caller.
+        $failure = [InvalidOperationException]::new($failureMessage)
+        if (-not [string]::IsNullOrWhiteSpace($mismatchPropertyName)) {
+            $failure.Data['GatewayValidationMismatchPropertyName'] = $mismatchPropertyName
         }
+        if ($providerCodes.Count -gt 0) { $failure.Data['GatewayProviderErrorCodes'] = [string[]]$providerCodes }
         $State.steps[$Name] = [ordered]@{
             status = 'Failed'
             startedAtUtc = $State.steps[$Name].startedAtUtc
@@ -4309,7 +4323,7 @@ function Invoke-BootstrapStateStep {
         if ($null -ne $partialEvidence) { $State.steps[$Name].evidence = $partialEvidence }
         Save-BootstrapState -State $State -Path $StatePath
         Write-BootstrapEvent -Status Failed -StepName $Name
-        throw
+        throw $failure
     }
 }
 

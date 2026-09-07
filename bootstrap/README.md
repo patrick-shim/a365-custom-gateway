@@ -79,8 +79,11 @@ flowchart TD
 - an administrator able to approve the Entra and Agent ID changes
 - Agent 365 tenant eligibility and licensing
 - for Full evaluation or Custom with Purview enabled, a Windows x64 workstation
-  with Microsoft-signed PowerShell **7.6.5** and exactly one installed
-  Microsoft-signed ExchangeOnlineManagement **3.10.1** module. Plan validates
+  with Microsoft-signed PowerShell **7.6.5** and an installed
+  Microsoft-signed ExchangeOnlineManagement **3.10.1** module. Packaging follows
+  `PSModulePath` order and pins the exact manifest. Multiple installed copies are
+  supported; an invalid or ambiguous first candidate fails without fallback.
+  Plan validates
   these local executor-packaging prerequisites before Azure planning; generic
   PowerShell 7 is insufficient. On macOS/Linux use Core Gateway or Custom with
   Purview disabled.

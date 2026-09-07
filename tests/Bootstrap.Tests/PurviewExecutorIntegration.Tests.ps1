@@ -353,7 +353,7 @@ Describe 'Fresh Full Core Custom executor integration source contract' {
                     packageContainerUri = @{ value = 'https://safe.blob.core.windows.net/purview-executor-packages' }
                 }
                 Mock Get-PurviewExecutorFreshContext { $script:context }
-                Mock Get-BootstrapExecutionSourceRoot { 'C:/synthetic-source' }
+                Mock Get-BootstrapExecutionSourceRoot { Join-Path $TestDrive 'synthetic-source' }
                 Mock Save-BootstrapState {}
                 Mock Invoke-AzTsv { 'Registered' }
                 Mock Invoke-BootstrapCommand {

@@ -23,8 +23,26 @@ elseif ($args[0] -ceq 'account' -and $args[1] -ceq 'get-access-token') {
         accessToken = 'synthetic-native-boundary-only'
     }
 }
-elseif (($args[0..3] -join ' ') -ceq 'containerapp job execution list') { $result = @(@{ name = 'exact-execution' }) }
-elseif (($args[0..3] -join ' ') -ceq 'containerapp job execution show') { $result = $f.execution }
+elseif (($args[0..3] -join ' ') -ceq 'containerapp job execution list') {
+    if ($f.ContainsKey('fault') -and $f.fault -eq 'discovery') {
+        [Console]::Error.Write('{"error":{"code":"ResourceNotFound","message":"synthetic-private-provider-body"}}')
+        exit 3
+    }
+    $result = @(@{ name = 'exact-execution' })
+    if ($f.ContainsKey('fresh') -and $f.fresh -and
+        -not ([IO.File]::ReadAllText($env:A365GW_PUBLISHER_TEST_CALLS).Contains('"start"'))) { $result = @() }
+}
+elseif (($args[0..3] -join ' ') -ceq 'containerapp job execution show') {
+    if ($f.ContainsKey('fault') -and $f.fault -eq 'readback') {
+        [Console]::Error.Write('synthetic-private-provider-body')
+        exit 3
+    }
+    $result = $f.execution
+}
+elseif (($args[0..2] -join ' ') -ceq 'containerapp job start') {
+    [Console]::Error.Write('synthetic-private-provider-body')
+    exit 3
+}
 else { exit 93 }
 [Console]::Out.Write((ConvertTo-Json -InputObject $result -Depth 60 -Compress))
 exit 0
@@ -78,7 +96,10 @@ Describe 'Actual publisher guard provider metadata shapes' {
         $tenant = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
         $principal = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
         $scope = "/subscriptions/$subscription/resourceGroups/rg-publisher"
-        $config = @{ subscriptionId = $subscription; tenantId = $tenant; resourceGroupName = 'rg-publisher' }
+        $config = @{
+            subscriptionId = $subscription; tenantId = $tenant; resourceGroupName = 'rg-publisher'
+            environment = 'dev'; location = 'koreacentral'; projectName = 'fixture'
+        }
         $foundation = @{
             runtimeImagePullIdentityId = "$scope/providers/Microsoft.ManagedIdentity/userAssignedIdentities/pull"
             containerAppsEnvironmentId = "$scope/providers/Microsoft.App/managedEnvironments/private"
@@ -157,7 +178,8 @@ Describe 'Actual publisher guard provider metadata shapes' {
     AfterEach {
         foreach ($line in Get-Content $env:A365GW_PUBLISHER_TEST_CALLS) {
             $call = @(ConvertFrom-Json $line)
-            ($call -join ' ') | Should -Not -Match 'listSecrets|secret list|job start|rest|--show-values'
+            ($call -join ' ') | Should -Not -Match 'listSecrets|secret list|rest|--show-values'
+            if (-not $fixture.ContainsKey('fresh')) { ($call -join ' ') | Should -Not -Match 'job start' }
             @($call | Where-Object { $_ -ceq '--subscription' }).Count | Should -Be 1
             $call[[array]::IndexOf($call, '--subscription') + 1] | Should -BeExactly $subscription
         }
@@ -267,6 +289,157 @@ Describe 'Actual publisher guard provider metadata shapes' {
     It 'reconciles the documented execution template shape read-only, without persisting normalized intent' {
         $null = Assert-PublisherFixture
         (Invoke-PublisherReadOnlyFixture).name | Should -BeExactly 'exact-execution'
+    }
+
+    It 'keeps only static publisher diagnostics through the actual step and native boundary: <Fault>' -ForEach @(
+        @{ Fault = 'discovery'; Guard = 'discovery' },
+        @{ Fault = 'readback'; Guard = 'execution.readback' },
+        @{ Fault = 'identity'; Guard = 'execution.identity' },
+        @{ Fault = 'template'; Guard = 'execution.template' },
+        @{ Fault = 'status'; Guard = 'execution.status' },
+        @{ Fault = 'checkpoint'; Guard = 'checkpoint' }
+    ) {
+        $fixture.fault = $Fault
+        switch ($Fault) {
+            'identity' { $fixture.execution.name = 'synthetic-private-provider-body' }
+            'template' { $fixture.execution.properties.template.containers[0].image = 'synthetic-private-provider-body' }
+            'status' { $fixture.execution.properties.status = 'synthetic-private-provider-body' }
+        }
+        $record.operations.publish = @{
+            status = 'Started'
+            intentFingerprint = Get-BootstrapObjectFingerprint -InputObject @{
+                jobId = $record.publisher.jobId.value; template = $job.properties.template; intentId = $record.intentId
+            }
+        }
+        if ($Fault -eq 'checkpoint') {
+            $fixture.fresh = $true
+            $record.operations.Clear()
+        }
+        $state = New-BootstrapState -Config $config
+        $state.publisherFixture = $record
+        $path = Join-Path $TestDrive 'publisher-step.json'
+        Save-PublisherFixture
+        Save-BootstrapState -State $state -Path $path
+        $events = [Collections.Generic.List[object]]::new()
+        Set-BootstrapEventWriter -Writer { param($Event) $events.Add($Event) }.GetNewClosure()
+        try {
+            foreach ($delivery in 1..2) {
+                $caught = $null
+                try {
+                    Invoke-BootstrapStateStep -Name 'Publisher diagnostics' -State $state -StatePath $path -Action {
+                        $null = Start-PurviewPublisherOnce -Config $config -Template $job.properties.template -Record $record -Checkpoint {
+                            throw 'synthetic-private-checkpoint-body'
+                        }
+                        $state.hostEnabled = $true
+                        return @{ enabled = $true }
+                    } | Out-Null
+                }
+                catch { $caught = $_ }
+                $caught | Should -Not -BeNullOrEmpty
+                $expected = if ($Fault -eq 'checkpoint' -and $delivery -eq 2) {
+                    'publisher.publish.reconciliation'
+                } else { "publisher.publish.$Guard" }
+                $state.steps['Publisher diagnostics'].message | Should -BeLike "*$expected*"
+                $caught.Exception.Message | Should -BeLike "*$expected*"
+                if ($Fault -eq 'discovery') {
+                    $state.steps['Publisher diagnostics'].providerErrorCodes | Should -Be @('ResourceNotFound')
+                    @(Get-BootstrapExceptionProviderErrorCodes -Exception $caught.Exception) | Should -Be @('ResourceNotFound')
+                }
+                # Reload the actual saved step failure, never reset its intent.
+                $persisted = Get-Content $path -Raw
+                $persisted | Should -Not -Match 'synthetic-private|publisherAccepted|hostEnabled'
+                ($events | ConvertTo-Json -Depth 20) | Should -Not -Match 'synthetic-private'
+                $caught.Exception.ToString() | Should -Not -Match 'synthetic-private'
+                $disk = ConvertFrom-Json -InputObject $persisted -AsHashtable
+                $disk.publisherFixture.operations.publish.status | Should -BeExactly 'Started'
+                $disk.publisherFixture.operations.publish.Contains('evidenceFingerprint') | Should -BeFalse
+                $state = $disk
+                $record = $state.publisherFixture
+            }
+        }
+        finally { Set-BootstrapEventWriter -Writer $null }
+    }
+
+    It 'retains Started after an ambiguous native start and never starts again through the actual step' {
+        $fixture.fresh = $true
+        Save-PublisherFixture
+        $state = New-BootstrapState -Config $config
+        $state.publisherFixture = $record
+        $path = Join-Path $TestDrive 'publisher-lost-start.json'
+        foreach ($delivery in 1..2) {
+            $caught = $null
+            try {
+                Invoke-BootstrapStateStep -Name 'Publisher diagnostics' -State $state -StatePath $path -Action {
+                    $null = Start-PurviewPublisherOnce -Config $config -Template $job.properties.template -Record $record -Checkpoint {
+                        Save-BootstrapState -State $state -Path $path
+                    }
+                    $state.hostEnabled = $true
+                    return @{ enabled = $true }
+                } | Out-Null
+            }
+            catch { $caught = $_ }
+            $caught | Should -Not -BeNullOrEmpty
+            $expected = if ($delivery -eq 1) { 'publisher.publish.dispatch' } else { 'publisher.publish.execution.template' }
+            $state.steps['Publisher diagnostics'].message | Should -BeLike "*$expected*"
+            $caught.Exception.ToString() | Should -Not -Match 'synthetic-private'
+            $record.operations.publish.status | Should -BeExactly 'Started'
+            $record.operations.publish.Contains('evidenceFingerprint') | Should -BeFalse
+            $state.Contains('hostEnabled') | Should -BeFalse
+            # A provider Succeeded is still rejected on redelivery if the exact
+            # template differs; it must never become publication acceptance.
+            $fixture.execution.properties.template.containers[0].image = 'synthetic-private-provider-body'
+            Save-PublisherFixture
+        }
+        @(Get-Content $env:A365GW_PUBLISHER_TEST_CALLS | Where-Object { $_ -match '"start"' }).Count | Should -Be 1
+        (Get-Content $path -Raw) | Should -Not -Match 'synthetic-private|publisherAccepted|hostEnabled'
+    }
+
+    It 'classifies a pending read-only execution without accepting or checkpointing it' {
+        $fixture.execution.properties.status = 'Pending'
+        $caught = $null
+        try { Invoke-PublisherReadOnlyFixture | Out-Null } catch { $caught = $_ }
+        $caught | Should -Not -BeNullOrEmpty
+        Get-BootstrapExceptionValidationMismatchPropertyName -Exception $caught.Exception |
+            Should -BeExactly 'publisher.publish.execution.status'
+        $record.operations.publish.status | Should -BeExactly 'Started'
+        $record.operations.publish.Contains('evidenceFingerprint') | Should -BeFalse
+    }
+
+    It 'classifies the bounded execution deadline through native polling without starting or enabling' {
+        $fixture.execution.properties.status = 'Running'
+        Save-PublisherFixture
+        $record.operations.publish = @{
+            status = 'Started'
+            intentFingerprint = Get-BootstrapObjectFingerprint -InputObject @{
+                jobId = $record.publisher.jobId.value; template = $job.properties.template; intentId = $record.intentId
+            }
+        }
+        # Only elapsed waiting is elided; all 140 polls cross the real native
+        # process boundary and retain exact identity/template/status validation.
+        Mock -ModuleName PurviewExecutor Start-Sleep {}
+        $state = New-BootstrapState -Config $config
+        $state.publisherFixture = $record
+        $path = Join-Path $TestDrive 'publisher-deadline.json'
+        $caught = $null
+        try {
+            Invoke-BootstrapStateStep -Name 'Publisher diagnostics' -State $state -StatePath $path -Action {
+                $null = Start-PurviewPublisherOnce -Config $config -Template $job.properties.template -Record $record -Checkpoint {
+                    throw 'synthetic-private-checkpoint-body'
+                }
+                $state.hostEnabled = $true
+                return @{ enabled = $true }
+            } | Out-Null
+        }
+        catch { $caught = $_ }
+        $caught | Should -Not -BeNullOrEmpty
+        Get-BootstrapExceptionValidationMismatchPropertyName -Exception $caught.Exception |
+            Should -BeExactly 'publisher.publish.execution.deadline'
+        $state.steps['Publisher diagnostics'].message | Should -BeLike '*publisher.publish.execution.deadline*'
+        $state.Contains('hostEnabled') | Should -BeFalse
+        $record.operations.publish.status | Should -BeExactly 'Started'
+        $record.operations.publish.Contains('evidenceFingerprint') | Should -BeFalse
+        @(Get-Content $env:A365GW_PUBLISHER_TEST_CALLS | Where-Object { $_ -match '"show"' }).Count | Should -Be 140
+        Should -Invoke -ModuleName PurviewExecutor Start-Sleep -Times 140 -Exactly -ParameterFilter { $Seconds -eq 5 }
     }
 
     It 'normalizes only documented empty optional fields, with <Shape> job metadata' -ForEach @(

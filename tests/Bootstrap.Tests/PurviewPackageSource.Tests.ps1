@@ -25,4 +25,13 @@ Describe 'Windows executor packaging source identity' {
         [IO.File]::WriteAllText((Join-Path $repository 'operations/unrelated.ps1'), '# unrelated fixture')
         Get-BootstrapSourceFingerprint -Root $repository | Should -BeExactly $before
     }
+    It 'validates and copies the same pinned module root without re-resolving by name' {
+        $source = Get-Content -LiteralPath (Join-Path $root 'operations/build-purview-executor-package.ps1') -Raw
+        $source | Should -Match '\$moduleRoot = Resolve-PurviewExecutorModuleRoot'
+        $source | Should -Match 'Copy-Item -LiteralPath \$moduleRoot -Destination \$moduleDestination -Recurse'
+        $source | Should -Match 'if \(\$ValidateOnly\) \{ return \}'
+        $source | Should -Match 'ModuleName = \$manifestPath; RequiredVersion = ''3\.10\.1'''
+        $source | Should -Not -Match 'ModuleName = ''ExchangeOnlineManagement'''
+        $source | Should -Not -Match 'Import-Module\s+.*ExchangeOnlineManagement'
+    }
 }

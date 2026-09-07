@@ -14,6 +14,29 @@ not transfer the ignored state required to Resume an existing deployment.
 
 ## Current operator direction and evidence boundary
 
+Latest operator report: Azure resources and bootstrap configuration were deleted
+before another Setup run. The newly configured target was independently confirmed
+absent in Azure, with zero completed local stages and no accepted Plan. Existing
+deleted-target state remains preserved and cannot be resumed to recreate it.
+The new failure is local, before Azure planning: Windows PowerShell ancestry makes
+two installed copies of the pinned ExchangeOnlineManagement version visible.
+The packager's global uniqueness requirement rejected this supported layout.
+The corrected ordered, exact-manifest discovery passes the original Windows
+parent/child reproduction and independent source review. The corrected actual UI
+Plan succeeded and Apply completed six stages before Azure returned
+`VaultAlreadyExists` during inert deployment. Exact active/deleted inventory later
+contained no matching vault, and the name-availability check returned available;
+a persistent soft-delete collision is not established.
+Supported Resume revalidated six stages but stopped before another ARM create.
+Read-only diagnosis proved that an empty executor-binding JSON object crashes the
+strict-mode fingerprint helper. The correction passed final offline validation
+(1,265 Pester tests, source/Bicep, independent review and clean-export package
+verification), but cannot replace the accepted snapshot implicitly.
+Exact replacement approval returned
+NoResponse; no cleanup, purge, reset, replacement or further Resume followed.
+No Admin UI URL, completed deployment or live acceptance is claimed.
+The following paragraphs retain prior attempts, not the current target state.
+
 Apply the [end-to-end execution contract](../agent-guides/end-to-end-execution.md).
 The latest instruction authorizes automated clean teardown, Windows Setup UI
 deployment, full live multi-agent/blueprint observability, SIT DLP and Prompt

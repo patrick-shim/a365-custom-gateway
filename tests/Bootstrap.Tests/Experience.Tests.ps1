@@ -1172,6 +1172,31 @@ Describe 'Bootstrap actionable failure and diagnostic routing' {
         $failure.data.Contains('total') | Should -BeFalse
     }
 
+    It 'reports safe actionable Purview packaging prerequisites without exposing child output' {
+        $failure = Get-GatewaySafeFailureEvent `
+            -FailureCode plan_purview_package `
+            -FailureStage 'Purview executor prerequisites' `
+            -CommandMode Plan `
+            -Exception ([InvalidOperationException]::new('private-child-output'))
+
+        $failure.message | Should -Match 'Windows x64'
+        $failure.message | Should -Match '7\.6\.5'
+        $failure.message | Should -Match '3\.10\.1'
+        $failure.message | Should -Match 'ValidateOnly'
+        $failure.message | Should -Not -Match 'private-child-output'
+        $failure.data.category | Should -BeExactly 'planFailure'
+        $failure.data.resumable | Should -BeFalse
+    }
+
+    It 'sets the package failure boundary before invoking local package validation' {
+        $codeIndex = $script:bootstrapSource.IndexOf(
+            "`$script:GatewayFailureCode = 'plan_purview_package'", [StringComparison]::Ordinal)
+        $validationIndex = $script:bootstrapSource.IndexOf(
+            "'operations/build-purview-executor-package.ps1'), '-ValidateOnly'", [StringComparison]::Ordinal)
+        $codeIndex | Should -BeGreaterOrEqual 0
+        $validationIndex | Should -BeGreaterThan $codeIndex
+    }
+
     It 'maps only the typed SQL regional-availability failure to actionable safe Plan guidance' {
         $typedException = [InvalidOperationException]::new('provider-private-detail')
         $typedException.Data['GatewaySafeFailureCode'] = 'sql_regional_availability'
