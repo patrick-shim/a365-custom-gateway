@@ -84,6 +84,53 @@ Describe 'Purview prerequisite recovery preserves the accepted deployment' {
             Should -Invoke New-BootstrapPurviewAutomationCertificate -Times 0
         }
 
+        It 'plans and completes read-only reconciliation for exact complete prerequisites without replay' {
+            $script:provider.operations.ExchangeGrant = @{ status = 'Present'; assignmentId = 'exact-exchange' }
+            $script:provider.operations.ComplianceGrant = @{ status = 'Present'; assignmentId = 'exact-compliance' }
+            $script:provider.operations.Certificate = @{ status = 'Present'; keyCredentialId = '99999999-9999-4999-8999-999999999999'; evidenceFingerprint = 'sha256:' + ('e' * 64) }
+            $script:provider.automationEvidence = @{ status = 'Installed'; keyCredentialId = $script:provider.operations.Certificate.keyCredentialId }
+            $reconciliation = New-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $script:state -Config $script:config -AzureIdentity $script:identity
+            $script:state.purviewPrerequisiteReconciliation = $reconciliation
+            (Invoke-BootstrapPurviewCompletePrerequisiteReconciliation -State $script:state -StatePath 'TestDrive:/state.json' `
+                -Config $script:config -AzureIdentity $script:identity -Reconciliation $reconciliation `
+                -ExpectedPlanFingerprint $reconciliation.planFingerprint -Yes).status | Should -BeExactly 'Completed'
+            Should -Invoke Invoke-GraphJsonBody -Times 0
+            Should -Invoke New-BootstrapPurviewAutomationCertificate -Times 0
+            Assert-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $script:state `
+                -Reconciliation $script:state.purviewPrerequisiteReconciliation -Completed | Should -Not -BeNullOrEmpty
+            $restarted = [ordered]@{}
+            foreach ($entry in $script:state.GetEnumerator()) { $restarted[$entry.Key] = $entry.Value }
+            $restarted.purviewPrerequisiteReconciliation = $script:state.purviewPrerequisiteReconciliation |
+                ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable
+            $restarted.purviewPrerequisiteReconciliation.status | Should -BeExactly 'Completed'
+            $restarted.purviewPrerequisiteReconciliation.completionFingerprint |
+                Should -BeExactly $reconciliation.completionFingerprint
+            $restarted.purviewPrerequisiteReconciliation.providerEvidenceFingerprint |
+                Should -BeExactly $reconciliation.providerEvidenceFingerprint
+        }
+
+        It 'rejects tampered complete-prerequisite reconciliation receipts' {
+            $script:provider.operations.ExchangeGrant = @{ status = 'Present'; assignmentId = 'exact-exchange' }
+            $script:provider.operations.ComplianceGrant = @{ status = 'Present'; assignmentId = 'exact-compliance' }
+            $script:provider.operations.Certificate = @{ status = 'Present'; keyCredentialId = '99999999-9999-4999-8999-999999999999'; evidenceFingerprint = 'sha256:' + ('e' * 64) }
+            $script:provider.automationEvidence = @{ status = 'Installed'; keyCredentialId = $script:provider.operations.Certificate.keyCredentialId }
+            $reconciliation = New-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $script:state -Config $script:config -AzureIdentity $script:identity
+            $reconciliation.plan.binding.applicationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            { Assert-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $script:state -Reconciliation $reconciliation } | Should -Throw
+            Should -Invoke Save-BootstrapState -Times 0
+        }
+
+        It 'rejects partial complete-prerequisite provider state' {
+            $script:provider.operations.ExchangeGrant = @{ status = 'Present'; assignmentId = 'exact-exchange' }
+            $script:provider.operations.ComplianceGrant = @{ status = 'Absent'; assignmentId = '' }
+            $script:provider.operations.Certificate = @{ status = 'Present'; keyCredentialId = '99999999-9999-4999-8999-999999999999'; evidenceFingerprint = 'sha256:' + ('e' * 64) }
+            $script:provider.automationEvidence = @{ status = 'Installed'; keyCredentialId = $script:provider.operations.Certificate.keyCredentialId }
+            { New-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $script:state -Config $script:config -AzureIdentity $script:identity } |
+                Should -Throw '*every existing certificate and grant*'
+            Should -Invoke Invoke-GraphJsonBody -Times 0
+            Should -Invoke New-BootstrapPurviewAutomationCertificate -Times 0
+        }
+
         It 'validates a complete immutable plan' {
             Assert-BootstrapPurviewRecoveryPlan -State $script:state -Recovery $script:recovery | Should -Not -BeNullOrEmpty
         }

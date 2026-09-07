@@ -109,6 +109,11 @@ param purviewPolicyProvisioningApplicationId string = ''
 @description('Versionless Key Vault secret URI containing the base64 PKCS#12 automation certificate.')
 param purviewPolicyProvisioningCertificateSecretUri string = ''
 
+@description('Use the private Windows provider instead of local Security & Compliance PowerShell.')
+param purviewExecutorEnabled bool = false
+param purviewExecutorEndpoint string = ''
+param purviewExecutorBinding object = {}
+
 @description('Sensitive information type used by the reviewed default DLP rule template.')
 param purviewDefaultSensitiveInformationType string = ''
 
@@ -122,6 +127,15 @@ var managerApplicationEnvironmentVariables = [for (managerApplicationId, index) 
   name: 'Agent365__ManagerApplicationIds__${index}'
   value: string(managerApplicationId)
 }]
+var executorBindingEnvironmentVariables = [for entry in items(purviewExecutorBinding): {
+  name: 'PurviewExecutor__Binding__${entry.key}'
+  value: string(entry.value)
+}]
+var executorEnvironmentVariables = purviewExecutorEnabled ? concat([
+  { name: 'PurviewExecutor__Enabled', value: string(purviewExecutorEnabled) }
+  { name: 'PurviewExecutor__Endpoint', value: purviewExecutorEndpoint }
+  { name: 'PurviewExecutor__TimeoutSeconds', value: '215' }
+], executorBindingEnvironmentVariables) : []
 var userAssignedIdentities = union(
   empty(imagePullIdentityResourceId)
     ? {}
@@ -287,7 +301,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = {
               name: 'DOTNET_ENVIRONMENT'
               value: 'Production'
             }
-          ], managerApplicationEnvironmentVariables)
+          ], managerApplicationEnvironmentVariables, executorEnvironmentVariables)
         }
       ]
       scale: {

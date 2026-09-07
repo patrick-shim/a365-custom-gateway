@@ -30,6 +30,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$suppliedParameters = @{} + $PSBoundParameters
 
 Import-Module (Join-Path $PSScriptRoot 'DeliveryLedger.Core.psm1') -Force -DisableNameChecking
 $schemaVersion = Get-DeliveryLedgerSchemaVersion
@@ -211,6 +212,7 @@ if ($Action -ceq 'Show') {
 
 Invoke-WithLedgerLock -Root $RuntimeRoot -Body {
     if ($Action -ceq 'Start') {
+        if ($Gate -ceq 'Complete') { throw 'Start cannot claim delivery completion.' }
         if (Test-Path -LiteralPath $currentPath) {
             $existing = Read-JsonDictionary -Path $currentPath
             Assert-CurrentFingerprint -Current $existing
@@ -329,8 +331,33 @@ Invoke-WithLedgerLock -Root $RuntimeRoot -Body {
     $manifest = $state.manifest
     $coordinator = [string]$manifest.coordinator
     $isCoordinator = $Actor -ceq $coordinator
+    if (-not $suppliedParameters.ContainsKey('Gate')) { $Gate = [string]$current.gate }
+    if (-not $suppliedParameters.ContainsKey('Blockers')) { $safeBlockers = @($current.blockers) }
+    if (-not $suppliedParameters.ContainsKey('NextAction')) { $NextAction = [string]$current.nextAction }
     if ($Action -in @('Checkpoint', 'Complete') -and -not $isCoordinator) {
         throw "Only manifest coordinator '$coordinator' may record $Action."
+    }
+    $objectiveChanged = -not [string]::IsNullOrWhiteSpace($Objective) -and
+        $Objective -cne [string]$current.objective
+    if ($objectiveChanged -and $isCoordinator -and
+        ($Action -cne 'Record' -or $kind -cne 'Decision' -or $safeEvidence.Count -eq 0)) {
+        throw 'Changing the delivery objective requires a coordinator Decision with an operator scope or correction evidence reference.'
+    }
+    if ($Gate -ceq 'Complete' -and $Action -cne 'Complete') {
+        throw 'Only Action Complete may enter the Complete gate.'
+    }
+    if ($Action -ceq 'Complete') {
+        if ([string]$current.gate -cne 'UpdateCheckpoint' -or
+            @($current.blockers).Count -gt 0 -or $safeBlockers.Count -gt 0 -or
+            @($current.activeAssignments).Count -gt 0) {
+            throw 'Delivery completion requires UpdateCheckpoint with no persisted blockers or active assignments; resolve holds explicitly first.'
+        }
+        foreach ($required in @('Plan', 'Build', 'OfflineValidate', 'Deploy', 'LiveValidate', 'UpdateCheckpoint', 'IndependentReview')) {
+            $references = @($safeEvidence | Where-Object { $_ -cmatch "^$required=\S.*$" })
+            if ($references.Count -ne 1) {
+                throw "Delivery completion requires exactly one nonempty $required evidence reference."
+            }
+        }
     }
 
     $activeAssignments = @($current.activeAssignments)
@@ -351,6 +378,10 @@ Invoke-WithLedgerLock -Root $RuntimeRoot -Body {
     }
 
     $eventMetadata = [ordered]@{}
+    if ($objectiveChanged -and $isCoordinator) {
+        $eventMetadata['previousObjective'] = [string]$current.objective
+        $eventMetadata['objective'] = $Objective
+    }
     if ($kind -ceq 'Handoff') {
         $safeWorkItem = $WorkItem -replace '[^A-Za-z0-9._-]', '-'
         $predictedSequence = [int64]$current.lastSequence + 1

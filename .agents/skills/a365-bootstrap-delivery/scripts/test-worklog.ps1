@@ -203,6 +203,90 @@ try {
     Remove-Item -LiteralPath $dirtyMarker -Force
     $null = & $validator -RuntimeRoot $dirtyRoot
 
+    $continuityRoot = Join-Path $testRoot 'continuity'
+    & $worklog -Action Start -RuntimeRoot $continuityRoot -Actor coordinator -Gate OfflineValidate `
+        -Objective 'Deliver bootstrap through deployment and independent live acceptance.' `
+        -WorkItem full-delivery -Summary 'Offline milestone, not delivery completion.' `
+        -Blockers 'Live authorization is on hold.' -NextAction 'Finish authorized offline work.' | Out-Null
+    & $worklog -Action Record -RuntimeRoot $continuityRoot -Actor coordinator `
+        -Summary 'Focused tests passed.' -Status Passed | Out-Null
+    $preserved = Read-Current -Root $continuityRoot
+    Assert-True ($preserved.gate -ceq 'OfflineValidate') 'An omitted gate reset the delivery gate.'
+    Assert-True (@($preserved.blockers).Count -eq 1) 'A routine result erased an authorization hold.'
+    Assert-True ($preserved.nextAction -ceq 'Finish authorized offline work.') 'A routine result erased the next action.'
+
+    foreach ($invalid in @(
+        @{ Action = 'Record'; Objective = '50 tests passed.' },
+        @{ Action = 'Checkpoint'; Objective = '50 tests passed.'; Evidence = @('validation/local') },
+        @{ Action = 'Record'; EventType = 'Decision'; Objective = 'Narrow the objective without authority.' },
+        @{ Action = 'Record'; Gate = 'Complete' },
+        @{ Action = 'Complete'; Evidence = @('OfflineValidate=validation/local') }
+    )) {
+        $before = Get-LedgerSnapshot -Root $continuityRoot
+        $rejected = $false
+        try {
+            & $worklog @invalid -RuntimeRoot $continuityRoot -Actor coordinator `
+                -Summary 'Reject unsafe delivery transition.' | Out-Null
+        }
+        catch { $rejected = $true }
+        Assert-True $rejected 'An unsafe objective or completion transition was accepted.'
+        Assert-True ((Get-LedgerSnapshot -Root $continuityRoot) -ceq $before) 'Rejected transition changed ledger bytes.'
+    }
+    & $worklog -Action Record -EventType Decision -RuntimeRoot $continuityRoot -Actor coordinator `
+        -Objective 'Deliver Full evaluation from bootstrap through independent live acceptance.' `
+        -Evidence 'operator-scope-reference' -Summary 'Restore the operator objective, not a test milestone.' | Out-Null
+    $restored = Read-Current -Root $continuityRoot
+    Assert-True ($restored.objective -like 'Deliver Full evaluation*') 'Explicit objective decision was not applied.'
+    Assert-True (@($restored.blockers).Count -eq 1) 'Objective restoration erased the live hold.'
+
+    $completionEvidence = @('Plan=validation/plan', 'Build=validation/build',
+        'OfflineValidate=validation/offline', 'Deploy=validation/deploy',
+        'LiveValidate=validation/live', 'UpdateCheckpoint=validation/checkpoint',
+        'IndependentReview=validation/review')
+    & $worklog -Action Checkpoint -RuntimeRoot $continuityRoot -Actor coordinator `
+        -Gate UpdateCheckpoint -Summary 'Synthetic fixture only; never live proof.' | Out-Null
+    $before = Get-LedgerSnapshot -Root $continuityRoot
+    $rejected = $false
+    try {
+        & $worklog -Action Complete -RuntimeRoot $continuityRoot -Actor coordinator `
+            -Blockers @() -Evidence $completionEvidence -Summary 'Cannot clear a hold through completion.' | Out-Null
+    }
+    catch { $rejected = $true }
+    Assert-True $rejected 'Complete implicitly cleared a persisted hold.'
+    Assert-True ((Get-LedgerSnapshot -Root $continuityRoot) -ceq $before) 'Blocked completion changed ledger bytes.'
+    & $worklog -Action Record -EventType Decision -RuntimeRoot $continuityRoot -Actor coordinator `
+        -Blockers @() -Evidence 'synthetic-hold-resolution' -Summary 'Resolve fixture hold explicitly.' | Out-Null
+    foreach ($evidence in @(
+        @{ Values = @('OfflineValidate=validation/local') },
+        @{ Values = @($completionEvidence | Where-Object { $_ -notlike 'LiveValidate=*' }) },
+        @{ Values = @($completionEvidence) + @('LiveValidate=duplicate') }
+    )) {
+        $before = Get-LedgerSnapshot -Root $continuityRoot
+        $rejected = $false
+        try {
+            & $worklog -Action Complete -RuntimeRoot $continuityRoot -Actor coordinator `
+                -Evidence $evidence.Values -Summary 'Missing or duplicate evidence is not completion.' | Out-Null
+        }
+        catch { $rejected = $true }
+        Assert-True $rejected 'Incomplete or duplicate gate references were accepted.'
+        Assert-True ((Get-LedgerSnapshot -Root $continuityRoot) -ceq $before) 'Rejected evidence changed ledger bytes.'
+    }
+    Invoke-Assignment -Root $continuityRoot -WorkItem pending-review -Recipient reviewer
+    & $worklog -Action Checkpoint -RuntimeRoot $continuityRoot -Actor coordinator `
+        -Gate UpdateCheckpoint -Summary 'Fixture awaits review.' | Out-Null
+    $rejected = $false
+    try {
+        & $worklog -Action Complete -RuntimeRoot $continuityRoot -Actor coordinator `
+            -Evidence $completionEvidence -Summary 'Review remains assigned.' | Out-Null
+    }
+    catch { $rejected = $true }
+    Assert-True $rejected 'An open assignment did not prevent completion.'
+    Invoke-Handoff -Root $continuityRoot -WorkItem pending-review -Actor reviewer
+    & $worklog -Action Complete -RuntimeRoot $continuityRoot -Actor coordinator `
+        -Evidence $completionEvidence -Summary 'Synthetic completion contract satisfied.' | Out-Null
+    Assert-True ((Read-Current -Root $continuityRoot).status -ceq 'Completed') 'Valid completion was rejected.'
+    $null = & $validator -RuntimeRoot $continuityRoot -FullAudit
+
     $beforeFirstAssignment = Read-Current -Root $basicRoot
     Invoke-Assignment -Root $basicRoot -WorkItem task-one -Recipient agent-one
     $afterFirstAssignment = Read-Current -Root $basicRoot
@@ -448,6 +532,7 @@ try {
         schemaVersion = [int]$basic.schemaVersion
         sourceBound = $true
         delegateIsolated = $true
+        continuityAndCompletionGuards = $true
         assignmentStartPropagated = $true
         atomicRejections = $missingRecipientRejected -and $missingAssignmentRejected -and
             $oversizedCurrentRejected -and $oversizedHandoffRejected

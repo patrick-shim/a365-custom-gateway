@@ -18,6 +18,10 @@ BeforeAll {
         }, $true)
         $definition.Count | Should -Be 1
         . ([scriptblock]::Create($definition[0].Extent.Text.Replace("function $name {", "function script:$name {")))
+        if ($name -ceq 'Get-GatewayResumeExecutionSource') {
+            $body = $definition[0].Body.Extent.Text
+            $script:resumeSourceFunction = [scriptblock]::Create($body.Substring(1, $body.Length - 2))
+        }
 
     }
     $commands = $ast.FindAll({ param($node)
@@ -91,6 +95,26 @@ Describe 'Shipped Purview recovery Resume composition' {
         $script:actionCalls | Should -Be 0
         Should -Invoke Ensure-BootstrapPurviewAutomationIdentity -Times 1 -Exactly -ParameterFilter { $ReconcileOnly }
         Should -Invoke Save-BootstrapState -ModuleName Common -Times 1 -Exactly
+    }
+
+    It 'selects the corrected immutable source for the new reconciliation receipt' {
+        $script:state = [ordered]@{
+            deploymentOwnershipId = '33333333-3333-4333-8333-333333333333'
+            acceptedPlan = @{ sourceFingerprint = $script:activeDeploymentSourceFingerprint }
+            purviewPrerequisiteReconciliation = @{ plan = @{ correctedSourceFingerprint = $script:activeExecutionSourceFingerprint } }
+            steps = [ordered]@{}
+        }
+        Mock Assert-BootstrapStateAllowsSourcePlan { }
+        Mock Resolve-BootstrapAcceptedSourceRoot { Join-Path $TestDrive 'original' }
+        Mock Get-BootstrapSourceFingerprint { $script:activeExecutionSourceFingerprint }
+        Mock Get-BootstrapCompletedDatabaseValidationPlans { @{ databaseRecoveryPlan = $null; manualDatabaseRepairPlan = $null } }
+        Mock Assert-BootstrapPurviewCompletePrerequisiteReconciliationPlan { Join-Path $TestDrive 'corrected' }
+        Mock Get-BootstrapEffectiveDeploymentSourceFingerprint { $script:activeDeploymentSourceFingerprint }
+        $result = & $script:resumeSourceFunction -State $script:state
+        $result.executionSourceFingerprint | Should -BeExactly $script:activeExecutionSourceFingerprint
+        $result.deploymentSourceFingerprint | Should -BeExactly $script:activeDeploymentSourceFingerprint
+        $result.executionSourceRoot | Should -BeExactly (Join-Path $TestDrive 'corrected')
+        Should -Invoke Assert-BootstrapPurviewCompletePrerequisiteReconciliationPlan -Times 1 -Exactly
     }
 
     It 'keeps failed readback unresolved without repeating the shipped stage action' {

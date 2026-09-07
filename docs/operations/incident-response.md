@@ -1,5 +1,9 @@
 # Incident response
 
+Apply the [end-to-end execution contract](../agent-guides/end-to-end-execution.md)
+within this runbook's exact authority and verification boundary; a subtask result
+does not complete product delivery or override an explicit hold.
+
 This runbook applies to security, availability, identity, data, credential,
 provisioning, and dependency incidents affecting the Gateway.
 

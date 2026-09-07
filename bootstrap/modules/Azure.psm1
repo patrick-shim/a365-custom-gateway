@@ -1982,6 +1982,7 @@ function Deploy-GatewayCore {
         [Parameter(Mandatory)][string]$SourceFingerprint,
         [Parameter()]$Database,
         [Parameter()][AllowNull()]$PurviewAutomation,
+        [Parameter()][AllowNull()]$PurviewExecutor,
         [Parameter()][AllowNull()]$CapabilityEvidence,
         [Parameter()][string]$AdminUiImage = '',
         [Parameter()][string]$AdminUiClientId = '',
@@ -2275,6 +2276,9 @@ function Deploy-GatewayCore {
         purviewPolicyProvisioningOrganization = if ($EnablePurview) { [string]$PurviewAutomation.organization } else { '' }
         purviewPolicyProvisioningApplicationId = if ($EnablePurview) { [string]$PurviewAutomation.automationApplicationId } else { '' }
         purviewPolicyProvisioningCertificateSecretUri = if ($EnablePurview) { [string]$PurviewAutomation.certificateSecretUri } else { '' }
+        purviewExecutorEnabled = [bool]($EnablePurview -and $null -ne $PurviewExecutor -and $PurviewExecutor.enabled -eq $true)
+        purviewExecutorEndpoint = if ($EnablePurview -and $null -ne $PurviewExecutor) { [string]$PurviewExecutor.endpoint } else { '' }
+        purviewExecutorBinding = if ($EnablePurview -and $null -ne $PurviewExecutor) { $PurviewExecutor.binding } else { [ordered]@{} }
         purviewDefaultSensitiveInformationTypeId = ''
         purviewDefaultSensitiveInformationType = ''
         deployAdminUi = -not [string]::IsNullOrWhiteSpace($AdminUiImage)

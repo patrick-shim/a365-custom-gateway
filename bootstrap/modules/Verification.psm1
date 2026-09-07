@@ -341,7 +341,8 @@ function Assert-GatewayExactAzureRoleAssignments {
         [Parameter(Mandatory)]$Runtime,
         [Parameter(Mandatory)]$AdminUi,
         [Parameter(Mandatory)]$Database,
-        [Parameter()][AllowNull()]$PurviewAutomation
+        [Parameter()][AllowNull()]$PurviewAutomation,
+        [Parameter()][AllowNull()]$PurviewExecutor
     )
 
     $purviewCapabilityEnabled =
@@ -463,7 +464,9 @@ function Assert-GatewayExactAzureRoleAssignments {
             $segments.Count -ne 2 -or [string]$segments[0] -cne 'secrets') {
             throw 'Purview certificate URI is outside the exact reviewed Azure RBAC secret scope.'
         }
-        $workerExpected.Add([ordered]@{ scope = "$expectedVaultId/secrets/$([string]$segments[1])"; roleDefinitionId = $keyVaultSecretsUser })
+        if ($null -eq $PurviewExecutor) {
+            $workerExpected.Add([ordered]@{ scope = "$expectedVaultId/secrets/$([string]$segments[1])"; roleDefinitionId = $keyVaultSecretsUser })
+        }
     }
 
     $adminExpected = @(
@@ -607,7 +610,8 @@ function Assert-GatewayPurviewWorkerDeploymentConfiguration {
     param(
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$Runtime,
-        [Parameter()][AllowNull()]$PurviewAutomation
+        [Parameter()][AllowNull()]$PurviewAutomation,
+        [Parameter()][AllowNull()]$PurviewExecutor
     )
 
     $purviewCapabilityEnabled =
@@ -636,6 +640,11 @@ function Assert-GatewayPurviewWorkerDeploymentConfiguration {
         'ProtectionAdminWorker__PropagationRetryDelaySeconds' = '30'
     }
     $environment = @($containers[0].env)
+    if ($null -ne $PurviewExecutor) {
+        foreach ($entry in (Get-PurviewExecutorWorkerEnvironment -Executor $PurviewExecutor).GetEnumerator()) {
+            $expectedEnvironment[$entry.Key] = $entry.Value
+        }
+    }
     foreach ($entry in $expectedEnvironment.GetEnumerator()) {
         $matches = @($environment | Where-Object { [string]$_.name -ceq [string]$entry.Key })
         if ($matches.Count -ne 1 -or [string]$matches[0].value -cne [string]$entry.Value) {
@@ -670,7 +679,7 @@ function Assert-GatewayPurviewWorkerDeploymentConfiguration {
     $assignments = @($workerAssignments | Where-Object {
         Test-AzureRoleAssignmentScopeIntersects -AssignmentScope ([string]$_.scope) -ResourceScope $vaultScope
     })
-    $expectedRoleCount = if ($purviewCapabilityEnabled) { 1 } else { 0 }
+    $expectedRoleCount = if ($purviewCapabilityEnabled -and $null -eq $PurviewExecutor) { 1 } else { 0 }
     if ($assignments.Count -ne $expectedRoleCount) {
         throw 'The worker has an unreviewed direct or inherited role at the Purview certificate vault.'
     }
@@ -794,7 +803,8 @@ function Assert-GatewayRuntimeGraphRoleAssignments {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Config,
-        [Parameter(Mandatory)]$Runtime
+        [Parameter(Mandatory)]$Runtime,
+        [AllowNull()][Collections.IDictionary]$State
     )
     $expectedWorkerRoles = @(
         'Application.Read.All', 'AppRoleAssignment.ReadWrite.All',
@@ -807,7 +817,11 @@ function Assert-GatewayRuntimeGraphRoleAssignments {
             'ProtectionScopes.Compute.User', 'Content.Process.User', 'ContentActivity.Write'
         }
     )
-    Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Runtime.workerPrincipalId) -ExpectedRoleValues $expectedWorkerRoles | Out-Null
+    $executorParameters = @{}
+    if ($null -ne $State -and $State.Contains('freshPurviewExecutor')) {
+        $executorParameters.PurviewExecutorContext = @{ Configuration = $Config; State = $State; Runtime = $Runtime }
+    }
+    Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Runtime.workerPrincipalId) -ExpectedRoleValues $expectedWorkerRoles @executorParameters | Out-Null
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Runtime.apiPrincipalId) -ExpectedRoleValues @('AgentIdentityBlueprint.Read.All') | Out-Null
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Runtime.runtimeImagePullIdentityPrincipalId) -ExpectedRoleValues $expectedPurviewRuntimeRoles | Out-Null
 }
@@ -837,10 +851,19 @@ function Test-GatewayBootstrapDeployment {
         throw 'Bootstrap capability evidence is missing from the exact bootstrap state.'
     }
     $capabilityEvidence = $State.steps['Purview capability prerequisites'].evidence
+    $purviewExecutor = $null
     $purviewAutomation = if ($Config.purview.enabled -eq $true) {
         $capabilityEvidence.purview
     }
     else { $null }
+    if ($Config.purview.enabled -eq $true -and $State.Contains('freshPurviewExecutor')) {
+        $purviewAutomation = Get-BootstrapPurviewAutomationIdentityEvidence -Config $Config -AzureIdentity $Identity `
+            -KeyVaultUri ([string]$Runtime.keyVaultUri) -DeploymentOwnershipId $DeploymentOwnershipId `
+            -SourceFingerprint ([string]$Images.sourceFingerprint)
+        $purviewExecutor = Install-BootstrapPurviewExecutor -Config $Config -State $State `
+            -StatePath (Get-BootstrapStatePath -Config $Config) -Foundation $Foundation -Runtime $Runtime `
+            -Automation $purviewAutomation -Database $Database -ReadOnly
+    }
     Test-GatewayBootstrapCapabilityEvidence `
         -Evidence $capabilityEvidence `
         -Config $Config `
@@ -1026,6 +1049,7 @@ function Test-GatewayBootstrapDeployment {
         WorkerImage = [string]$Images.worker
         Database = $Database
         PurviewAutomation = $purviewAutomation
+        PurviewExecutor = $purviewExecutor
         CapabilityEvidence = $capabilityEvidence
     }
     Test-GatewayGroupDeploymentEvidence @runtimeEvidenceParameters | Out-Null
@@ -1041,7 +1065,7 @@ function Test-GatewayBootstrapDeployment {
         -DeploymentOwnershipId $DeploymentOwnershipId `
         -SourceFingerprint ([string]$Images.sourceFingerprint) `
         -AdminUiImage ([string]$Images.adminUi) | Out-Null
-    Assert-GatewayExactAzureRoleAssignments -Config $Config -Runtime $Runtime -AdminUi $AdminUi -Database $Database -PurviewAutomation $purviewAutomation | Out-Null
+    Assert-GatewayExactAzureRoleAssignments -Config $Config -Runtime $Runtime -AdminUi $AdminUi -Database $Database -PurviewAutomation $purviewAutomation -PurviewExecutor $purviewExecutor | Out-Null
     Assert-GatewayExactAzureLocalCredentialControls -Config $Config -Runtime $Runtime | Out-Null
     Test-GatewayApplicationEvidence -Config $Config -Evidence $Identity -ObjectIdProperty 'gatewayApiApplicationObjectId' -ClientIdProperty 'gatewayApiClientId' -ApplicationKind GatewayApi | Out-Null
     Test-GatewayApplicationEvidence -Config $Config -Evidence $AdminIdentity -ObjectIdProperty 'adminUiApplicationObjectId' -ClientIdProperty 'adminUiClientId' -ApplicationKind AdminUi -ExpectedAdminUiUrl ([string]$AdminUi.adminUiUrl) | Out-Null
@@ -1078,7 +1102,7 @@ function Test-GatewayBootstrapDeployment {
         throw 'Admin UI credential evidence does not match exact Entra and Key Vault metadata during final verification.'
     }
     Assert-GatewayApiDelegatedPermissionBoundary -Identity $Identity -RequireComplete | Out-Null
-    Assert-GatewayRuntimeGraphRoleAssignments -Config $Config -Runtime $Runtime
+    Assert-GatewayRuntimeGraphRoleAssignments -Config $Config -Runtime $Runtime -State $State
     Assert-ExactGraphApplicationRoleAssignments -PrincipalId ([string]$Database.databaseBootstrapJobPrincipalId) -ExpectedRoleValues @() | Out-Null
     if ($isRecovery) {
         $originalJobPrincipalId = [string]$DatabaseRecoveryPlan.failedJob.jobPrincipalId
@@ -1144,7 +1168,7 @@ function Test-GatewayBootstrapDeployment {
         [string]$databaseJobExecutions[0].status -cne 'Succeeded') {
         throw 'The dormant database-bootstrap job does not retain exactly one successful source-bound execution.'
     }
-    Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $Config -Runtime $Runtime -PurviewAutomation $purviewAutomation | Out-Null
+    Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $Config -Runtime $Runtime -PurviewAutomation $purviewAutomation -PurviewExecutor $purviewExecutor | Out-Null
     $purviewCapabilityPrerequisites = Get-GatewayPurviewCertificateMetadataEvidence -Config $Config -PurviewAutomation $purviewAutomation
 
     $promptShieldVerification = 'NotConfigured'

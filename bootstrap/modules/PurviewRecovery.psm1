@@ -181,6 +181,132 @@ function New-BootstrapPurviewRecoveryPlan {
     return [ordered]@{ plan = $plan; planFingerprint = $fingerprint; executionSource = $snapshot }
 }
 
+function New-BootstrapPurviewCompletePrerequisiteReconciliationPlan {
+    param([Parameter(Mandatory)]$State, [Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$AzureIdentity)
+
+    if ($State.Contains('purviewPrerequisiteRecoveryPlan') -or $State.Contains('purviewPrerequisiteReconciliation')) {
+        throw 'A Purview prerequisite recovery or reconciliation already exists; use its exact persisted plan.'
+    }
+    Assert-BootstrapPurviewRecoveryEligibility -State $State -Config $Config
+    $root = Get-RepositoryRoot
+    Assert-BootstrapPurviewRecoverySourceBoundary -State $State -CandidateRoot $root | Out-Null
+    $candidate = Get-BootstrapSourceFingerprint -Root $root
+    Set-BootstrapExecutionSourceRoot -Path $root
+    $template = Resolve-GatewayCredentialDeploymentTemplate -RelativeTemplate $script:PurviewRecoveryTemplate -ExecutionSourceFingerprint $candidate
+    $provider = Get-BootstrapPurviewRecoveryProviderState -Config $Config -State $State -AzureIdentity $AzureIdentity
+    foreach ($name in $script:PurviewRecoveryOperations) {
+        if ([string]$provider.operations[$name].status -cne 'Present') {
+            throw 'Complete-prerequisite reconciliation requires exact readback of every existing certificate and grant.'
+        }
+    }
+    $prefix = [ordered]@{}
+    foreach ($name in @(Get-GatewayBootstrapStepNames)[0..12]) { $prefix[$name] = $State.steps[$name] }
+    $plan = ConvertTo-BootstrapCanonicalValue -Value ([ordered]@{
+        schemaVersion = 1
+        kind = 'CompletePrerequisiteReconciliation'
+        createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        deploymentOwnershipId = [string]$State.deploymentOwnershipId
+        deploymentKey = [string]$State.deploymentKey
+        configurationFingerprint = [string]$State.configurationFingerprint
+        originalAcceptedPlan = $State.acceptedPlan
+        originalSourceFingerprint = [string]$State.acceptedPlan.sourceFingerprint
+        correctedSourceFingerprint = $candidate
+        completedPrefix = $prefix
+        failedStep = $State.steps[$script:PurviewRecoveryStep]
+        binding = $provider.binding
+        initialOperations = $provider.operations
+        initialAutomationEvidence = $provider.automationEvidence
+        certificateTemplateHash = (Get-FileHash -LiteralPath $template -Algorithm SHA256).Hash.ToLowerInvariant()
+    })
+    $fingerprint = Get-BootstrapObjectFingerprint -InputObject $plan
+    $snapshot = New-BootstrapAcceptedSourceSnapshot -State $State -PlanFingerprint $fingerprint -SourceFingerprint $candidate
+    return [ordered]@{ plan = $plan; planFingerprint = $fingerprint; executionSource = $snapshot }
+}
+
+function Assert-BootstrapPurviewCompletePrerequisiteReconciliationPlan {
+    param([Parameter(Mandatory)]$State, [Parameter(Mandatory)]$Reconciliation,
+        [Parameter()][string]$ExpectedPlanFingerprint = '', [switch]$Completed)
+
+    $plan = $Reconciliation.plan
+    if ($plan -isnot [Collections.IDictionary] -or [string]$plan.kind -cne 'CompletePrerequisiteReconciliation' -or
+        [string]$Reconciliation.planFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $plan) -or
+        (-not [string]::IsNullOrEmpty($ExpectedPlanFingerprint) -and [string]$Reconciliation.planFingerprint -cne $ExpectedPlanFingerprint) -or
+        [string]$plan.deploymentOwnershipId -cne [string]$State.deploymentOwnershipId -or
+        [string]$plan.deploymentKey -cne [string]$State.deploymentKey -or
+        [string]$plan.configurationFingerprint -cne [string]$State.configurationFingerprint -or
+        (Get-BootstrapObjectFingerprint -InputObject $plan.originalAcceptedPlan) -cne (Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan) -or
+        [string]$plan.originalSourceFingerprint -cne [string]$State.acceptedPlan.sourceFingerprint -or
+        [string]$plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) {
+        throw 'Purview prerequisite reconciliation plan, target or source binding changed.'
+    }
+    foreach ($name in @('databaseRecoveryPlan', 'databaseRecoveryHistory', 'manualDatabaseRepairPlan', 'preInertSourceCorrectionPlan', 'purviewPrerequisiteRecoveryPlan')) {
+        if ($State.Contains($name)) { throw 'Purview prerequisite reconciliation cannot be combined with another recovery generation.' }
+    }
+    $expected = ".bootstrap/accepted-source/$($State.deploymentOwnershipId)/$(([string]$Reconciliation.planFingerprint).Substring(7))"
+    if ([string]$Reconciliation.executionSource -cne $expected) { throw 'Purview prerequisite reconciliation snapshot path is not exact.' }
+    $snapshot = Join-Path (Get-RepositoryRoot) $expected
+    if ((Get-BootstrapSourceFingerprint -Root $snapshot) -cne [string]$plan.correctedSourceFingerprint) {
+        throw 'Purview prerequisite reconciliation immutable snapshot changed.'
+    }
+    Assert-BootstrapPurviewRecoverySourceBoundary -State $State -CandidateRoot $snapshot | Out-Null
+    $template = Join-Path $snapshot $script:PurviewRecoveryTemplate
+    if ((Get-FileHash -LiteralPath $template -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$plan.certificateTemplateHash) {
+        throw 'Purview prerequisite reconciliation certificate template changed.'
+    }
+    if ($Reconciliation.Contains('status') -and [string]$Reconciliation.status -ceq 'Completed' -and $Completed -ne $true) {
+        throw 'Completed Purview prerequisite reconciliation requires completed validation.'
+    }
+    if ($Completed) {
+        if ([string]$Reconciliation.status -cne 'Completed' -or
+            [string]::IsNullOrWhiteSpace([string]$Reconciliation.providerEvidenceFingerprint) -or
+            [string]::IsNullOrWhiteSpace([string]$Reconciliation.completionFingerprint)) {
+            throw 'Purview prerequisite reconciliation has no exact completed receipt.'
+        }
+        $receipt = [ordered]@{
+            planFingerprint = [string]$Reconciliation.planFingerprint
+            providerEvidenceFingerprint = [string]$Reconciliation.providerEvidenceFingerprint
+            completedAtUtc = [string]$Reconciliation.completedAtUtc
+        }
+        if ([string]$Reconciliation.completionFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $receipt)) {
+            throw 'Purview prerequisite reconciliation completion receipt changed.'
+        }
+    }
+    return $snapshot
+}
+
+function Invoke-BootstrapPurviewCompletePrerequisiteReconciliation {
+    param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][string]$StatePath,
+        [Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$AzureIdentity,
+        [Parameter(Mandatory)]$Reconciliation, [Parameter(Mandatory)][string]$ExpectedPlanFingerprint, [switch]$Yes)
+
+    if (-not $Yes) { throw 'Purview prerequisite reconciliation Execute requires Yes and the reviewed plan fingerprint.' }
+    if ([string]$State.configurationFingerprint -cne (Get-BootstrapConfigurationFingerprint -Config $Config)) {
+        throw 'Purview prerequisite reconciliation configuration changed.'
+    }
+    $snapshot = Assert-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $State `
+        -Reconciliation $Reconciliation -ExpectedPlanFingerprint $ExpectedPlanFingerprint
+    Set-BootstrapExecutionSourceRoot -Path $snapshot
+    $plan = $Reconciliation.plan
+    $provider = Get-BootstrapPurviewRecoveryProviderState -Config $Config -State $State -AzureIdentity $AzureIdentity
+    foreach ($name in $script:PurviewRecoveryOperations) {
+        if ((Get-BootstrapObjectFingerprint -InputObject $provider.operations[$name]) -cne
+            (Get-BootstrapObjectFingerprint -InputObject $plan.initialOperations[$name])) {
+            throw 'Complete-prerequisite reconciliation provider readback changed.'
+        }
+    }
+    $Reconciliation.status = 'Completed'
+    $Reconciliation.completedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+    $Reconciliation.providerEvidenceFingerprint = Get-BootstrapObjectFingerprint -InputObject $provider
+    $receipt = [ordered]@{ planFingerprint = [string]$Reconciliation.planFingerprint
+        providerEvidenceFingerprint = [string]$Reconciliation.providerEvidenceFingerprint
+        completedAtUtc = [string]$Reconciliation.completedAtUtc }
+    $Reconciliation.completionFingerprint = Get-BootstrapObjectFingerprint -InputObject $receipt
+    $null = Assert-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $State `
+        -Reconciliation $Reconciliation -ExpectedPlanFingerprint $ExpectedPlanFingerprint -Completed
+    Save-BootstrapState -State $State -Path $StatePath
+    return [ordered]@{ status = 'Completed'; planFingerprint = [string]$Reconciliation.planFingerprint; stageReconciliation = 'PendingResume' }
+}
+
 function Assert-BootstrapPurviewRecoveryPlan {
     param([Parameter(Mandatory)]$State, [Parameter(Mandatory)]$Recovery,
         [Parameter()][string]$ExpectedPlanFingerprint = '', [switch]$Completed)

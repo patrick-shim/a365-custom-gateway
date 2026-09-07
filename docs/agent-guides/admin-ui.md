@@ -1,5 +1,9 @@
 # Admin UI contributor guide
 
+Read and follow the [end-to-end execution contract](end-to-end-execution.md).
+UI source/test acceptance is a subtask; deployed browser acceptance remains part
+of the selected product matrix, under existing authority and explicit holds.
+
 Read the current [implementation status](../implementation-status.md) and
 [deployment status](../operations/development-deployment-status.md) before changing
 the portal. The API contract and server-advertised capability flags are

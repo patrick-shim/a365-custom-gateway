@@ -57,6 +57,14 @@ The session coordinator reads these in order before changing the repository:
 
 For a fresh subscription, also read `bootstrap/README.md`.
 
+After that sequence, every coordinator and delegate must read and follow
+[the end-to-end execution contract](docs/agent-guides/end-to-end-execution.md).
+It applies to all instructions, roles, skills and runbooks: preserve the full
+product objective, exact-target authority, safe credential-input references and
+explicit holds across restarts. Automate authorized work through independent live
+acceptance; milestones and blocked/paused turn closure are not delivery completion.
+The contract grants no live authority and never overrides a stop or safety boundary.
+
 ## Authority
 
 When sources disagree, use this order and record the discrepancy:

@@ -1,5 +1,9 @@
 # Credential and certificate rotation
 
+Apply the [end-to-end execution contract](../agent-guides/end-to-end-execution.md)
+within this runbook's exact authority and verification boundary; a subtask result
+does not complete product delivery or override an explicit hold.
+
 Rotate only the credential named by the approved change. Inventory its consumers,
 create the replacement, verify use, and then revoke the predecessor. Never print a
 secret value in terminal capture, logs, documentation, tickets, or chat.

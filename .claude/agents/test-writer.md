@@ -47,4 +47,6 @@ authority.
 
 ## Model handoff
 
+Read and follow [the end-to-end execution contract](../../docs/agent-guides/end-to-end-execution.md); preserve the product objective, authority, secure-input references and holds. Report this assignment separately from product delivery.
+
 Follow docs/agent-guides/model-handoff.md before reporting completion or changing models. Continue the active objective and existing exact-target session authority. Keep current live status in docs/agent-continuation.md and the deployment checkpoint. Use canonical main; do not create Git worktrees.

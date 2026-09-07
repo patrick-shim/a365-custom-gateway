@@ -1,6 +1,6 @@
 # Development deployment status
 
-Last updated: 2026-09-06 (Asia/Seoul).
+Last updated: 2026-09-07 (Asia/Seoul).
 
 This checkpoint separates deployed evidence from source claims. It intentionally
 contains no subscription, tenant, resource-group, application, principal,
@@ -12,7 +12,50 @@ For unfinished source work after a fetch, pull, or fresh clone, begin with the
 tracked [agent continuation checkpoint](../agent-continuation.md). Git alone does
 not transfer the ignored state required to Resume an existing deployment.
 
-## Current delivery: stopped for model handoff
+## Current operator direction and evidence boundary
+
+Apply the [end-to-end execution contract](../agent-guides/end-to-end-execution.md).
+The latest instruction authorizes automated clean teardown, Windows Setup UI
+deployment, full live multi-agent/blueprint observability, SIT DLP and Prompt
+Shields testing with safe screenshots, and a repeated scratch run. It supersedes
+the earlier recovery-first/paused direction. Credentials were supplied and existing
+authenticated subscription/group inventory succeeded without reading their values.
+The operator subsequently selected one subscription under the full teardown
+directive. Cleanup is independently verified within that subscription: zero groups
+and active ARM resources, with all original groups absent. Eight parent deletions
+removed four managed groups through Azure; no platform locks or deny assignments
+were bypassed, and no soft-deleted assets or tenant identities were purged.
+All other subscriptions and prior local evidence remain untouched.
+The actual Windows Setup UI Plan succeeded for a fresh Full evaluation identity
+on the corrected, independently re-reviewed executor integration source. Apply was
+started once through the UI's Plan-bound confirmation. It completed fourteen stages
+and stopped at runtime deployment before executor mutation intent. Safe read-only
+reproduction confirmed an ARM GET incorrectly routed through the Graph-only
+dispatcher, not an authorization failure. SQL completed once, Purview prerequisites
+completed, and the initial API activation failure recovered without intervention.
+The failed state/config/evidence are preserved and attempt1 teardown is verified
+with zero groups/active ARM resources. The routing correction passed independent
+review and current offline gates. Fresh UI attempt2 Plan succeeded; Apply completed
+fourteen stages before its sixty-minute validity window expired. The actual UI
+read-only Resume review validated those checkpoints, including the one database
+execution and administrator restoration, and a fresh remaining-step confirmation
+started supported same-source Resume once. No guard, clock, source or config was
+changed and no completed action was replayed. It created and verified executor
+identity/image and disabled host/publisher resources, then stopped before publisher
+execution on null-secret and case-normalized ARM-ID validation. The corrected
+publisher source was used for one supported same-source Resume; it revalidated
+stages 1-14, provisioned the executor resources, and then failed at stage 15.
+A subsequent sanitized diagnosis found the executor ARM deployments and one
+prior succeeded publisher execution, but no safe dependency error detail.
+No deployment completion or live acceptance is
+yet proven; no completed SQL/certificate action is replayed. Exact inventory/authority references stay in the local execution
+context; use [agent continuation](../agent-continuation.md) for the current next action.
+
+Protocol-only checks passed: 70 cross-tool Pester tests, isolated ledger self-tests
+and independent review with no high-confidence findings. No deployment or live
+acceptance claim is made by these checks.
+
+## Prior stopped deployment evidence
 
 The operator stopped work and handed the task to another model. The fully running
 Gateway has **not** been delivered. Do not restart deployment automatically from
@@ -92,10 +135,12 @@ These are source gates. They are not deployment evidence or live-readiness proof
 | Hosted CI for the domain-lookup commit | Passed |
 
 Each correction carries focused regression tests that fail against the previous
-behaviour. Release build, the eight .NET test projects, Bicep compilation, the nine
-format targets and the clean-export gates were **not** rerun for these two
-corrections, because both change PowerShell bootstrap source only. Rerun the
-affected gates before any release claim.
+behaviour. The final recovery selectors passed 50/50, the bootstrap source gate
+passed, and the source plus Windows/POSIX launcher tests passed 21 with six
+existing skips. Release build, the eight .NET test projects, Bicep compilation,
+the nine format targets and a clean export were not rerun. These results remain
+offline source evidence only; rerun the broader release gates before any release
+claim.
 
 ## Earlier validation for the promoted Windows executor source
 

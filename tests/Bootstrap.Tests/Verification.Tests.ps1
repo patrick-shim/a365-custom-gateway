@@ -2,6 +2,7 @@ $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Common.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Entra.psm1') -Force
 Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/Verification.psm1') -Force
+Import-Module (Join-Path $script:RepositoryRoot 'bootstrap/modules/PurviewExecutor.psm1') -DisableNameChecking
 
 Describe 'Final verification strict-mode delegated-scope cardinality' {
     BeforeAll {
@@ -107,7 +108,7 @@ Describe 'Final verifier Purview identity consistency' {
             })
             $statements.Count | Should -BeGreaterThan 0
             $script:roleVerification = [scriptblock]::Create(
-                'param($Config,$Runtime); ' + ($statements.Extent.Text -join [Environment]::NewLine))
+                'param($Config,$Runtime,$State); ' + ($statements.Extent.Text -join [Environment]::NewLine))
         }
         BeforeEach {
             $script:runtime = @{
@@ -1343,6 +1344,35 @@ Describe 'Purview worker deployment truth' {
         It 'accepts exact worker settings and one exact shared-vault read role' {
             Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime -PurviewAutomation $script:purviewAutomation |
                 Should -BeTrue
+        }
+
+        It 'accepts fresh Windows transport only with zero worker certificate roles' {
+            $executor = @{ enabled = $true; endpoint = 'https://safe.azurewebsites.net'; binding = [ordered]@{ PackageDigest = 'sha256:' + ('a' * 64) } }
+            foreach ($entry in (Get-PurviewExecutorWorkerEnvironment -Executor $executor).GetEnumerator()) {
+                $script:environment += [pscustomobject]@{ name = $entry.Key; value = $entry.Value }
+            }
+            $script:roleAssignments = @()
+            Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime `
+                -PurviewAutomation $script:purviewAutomation -PurviewExecutor $executor | Should -BeTrue
+        }
+
+        It 'rejects even the former exact worker certificate grant when Windows transport is enabled' {
+            $executor = @{ enabled = $true; endpoint = 'https://safe.azurewebsites.net'; binding = [ordered]@{ PackageDigest = 'sha256:' + ('a' * 64) } }
+            foreach ($entry in (Get-PurviewExecutorWorkerEnvironment -Executor $executor).GetEnumerator()) {
+                $script:environment += [pscustomobject]@{ name = $entry.Key; value = $entry.Value }
+            }
+            { Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime `
+                -PurviewAutomation $script:purviewAutomation -PurviewExecutor $executor } | Should -Throw '*unreviewed*role*'
+        }
+
+        It 'rejects stale worker executor package binding before capability verification' {
+            $executor = @{ enabled = $true; endpoint = 'https://safe.azurewebsites.net'; binding = [ordered]@{ PackageDigest = 'sha256:' + ('a' * 64) } }
+            foreach ($entry in (Get-PurviewExecutorWorkerEnvironment -Executor $executor).GetEnumerator()) {
+                $script:environment += [pscustomobject]@{ name = $entry.Key; value = $entry.Value }
+            }
+            ($script:environment | Where-Object name -eq 'PurviewExecutor__Binding__PackageDigest').value = 'sha256:' + ('b' * 64)
+            { Assert-GatewayPurviewWorkerDeploymentConfiguration -Config $script:config -Runtime $script:runtime `
+                -PurviewAutomation $script:purviewAutomation -PurviewExecutor $executor } | Should -Throw '*PackageDigest*'
         }
 
         It 'rejects a policy feature silently deployed disabled' {

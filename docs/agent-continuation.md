@@ -1,6 +1,6 @@
 # Agent continuation checkpoint
 
-Last updated: 2026-09-06 (Asia/Seoul).
+Last updated: 2026-09-07 (Asia/Seoul).
 
 This tracked file is the bounded continuation seed for Claude, Codex, GitHub
 Copilot, other automation, and human contributors after a fetch, pull, fresh clone,
@@ -92,7 +92,117 @@ durable verified truth returns to the two tracked status files. The ignored lega
 `.agents/runtime/` location is not an active discovery path and is never transferred
 by Git.
 
-## Current delivery: stopped for model handoff
+## Current execution contract and operator direction
+
+### Current publication checkpoint
+
+The operator explicitly authorized committing and pushing the accumulated source
+and protocol work on canonical `main` on 2026-09-07. This is a source handoff, not
+a completed deployment or release. The current live attempt remains at fourteen
+of nineteen stages, with Gateway runtime deployment (stage 15) failed after
+supported same-source Resume. Preserve its accepted state and the prior successful
+publisher execution; do not replay completed mutations.
+
+The publisher metadata correction passed 61 focused regressions, independent
+review, and the full Bootstrap suite (1,161 passed, zero failed, seven existing
+platform exclusions), with source/Bicep and package/export evidence recorded in
+the local ledger. Earlier counts below belong to their named source generations.
+The exact first unfinished product action is to isolate the stage-15 validation
+failure from safe evidence and source, then validate any proven correction before
+another authorized live action. Deploy, LiveValidate and final release acceptance
+remain open. Git publication does not authorize a new deployment or bypass source
+binding; ignored state, configuration and private inputs are not published.
+
+### Execution history and retained authority
+
+Follow the [end-to-end execution contract](agent-guides/end-to-end-execution.md).
+The latest operator instruction supersedes the earlier recovery-first plan and
+cloud hold: automatically tear down the authorized test scope, configure/deploy
+through the Windows Setup UI, verify multiple external agents and blueprints,
+independent Agent 365 observability, SIT-based DLP and Prompt Shields allow/block,
+capture safe screenshots, and repeat a clean scratch run with edge cases.
+No test milestone or blocked turn closes this product objective.
+
+Canonical `main` remains the sole checkout. The operator authorized login,
+deletion and recreation and supplied temporary credentials. Do not request the
+same credentials again or copy their values. Existing authenticated Azure CLI
+subscription/group inventory succeeded. The operator then explicitly selected one
+subscription under the full teardown directive, resolving the earlier scope prompt.
+Only that subscription is in scope; the other subscription and bulk tenant identity
+deletion are excluded. Cleanup is verified: zero resource groups and zero active
+ARM resources, with independent delegate readback and coordinator corroboration.
+All original groups are absent; provider-managed groups disappeared through their
+parents. No soft-delete purge, tenant identity cleanup or local evidence deletion
+was performed. Deleted-target state must never be resumed to recreate resources.
+Fresh Windows integration and its exact executor-grant Verify/Resume correction
+are implemented and independently re-reviewed. The current frozen source passed
+Release with zero warnings/errors, all 2,123 .NET tests, 1,055 Bootstrap tests,
+32 Operations tests and 22 Purview tests. Seven Bootstrap exclusions are six POSIX
+launcher cases on Windows and a symlink case unavailable on this host; they are
+not execution proof. Source/Bicep, replacement Windows package and clean-export
+checks passed. These are offline results, not live readiness.
+Do not treat the earlier NoResponse or cloud hold as a current blocker.
+
+The bounded local ledger references `execution-context.json` in its active session
+for the current authority, credential-availability facts, scope question and next
+action. That context contains no credential values. Git does not transfer it or
+grant a receiving session cloud authority. Preserve prior accepted deployment state
+and config evidence; the fresh UI run uses a new deployment identity. Do not restart the obsolete
+recovery-only sequence or claim the old cloud prohibition is still current.
+
+The public Windows Setup UI Plan succeeded and attempt1 Apply ran once under its
+exact confirmation. It completed fourteen stages, including one successful private
+database execution and Purview prerequisites, then stopped at runtime deployment.
+Read-only reproduction identified an ARM resource GET incorrectly routed through
+the shared Graph-only dispatcher; the Graph hostname guard correctly rejected it
+before any executor mutation intent. A regression-first adapter correction and
+authorized selected-subscription teardown are separately assigned. Do not weaken
+the guard, Resume deleted state, or replay completed SQL/certificate work.
+
+Attempt1 teardown is now independently verified: zero groups/active ARM resources,
+with the original state/config/diagnostic hashes unchanged. The ARM routing repair
+passed independent review and 45 real-dispatch regressions, 1,100 Bootstrap tests
+(seven unchanged exclusions), Release with zero warnings/errors, all 2,123 .NET
+tests and 54 Operations/Purview tests. Replacement package and clean-export proof
+are bound to the new source. Attempt2 uses a fresh identity and exact UI-reviewed
+resource-group name; its public UI Plan succeeded and Apply was started once.
+Apply completed fourteen stages and then crossed its built-in sixty-minute validity
+window before runtime deployment began. Source/configuration/snapshot checks still
+matched. The actual UI's supported read-only Resume review then validated all
+fourteen checkpoints, including the single database execution, schema and original
+administrator restoration. A fresh remaining-step confirmation started Resume once
+under existing authority; no clock,
+guard, source, config or completed SQL/certificate action was changed/replayed.
+That Resume passed the former ARM routing boundary and completed the executor
+identity/grant, publisher image and disabled host/publisher deployments. It then
+stopped before any publisher execution: Azure returned no secrets as null and
+case-normalized ARM identity IDs, which the exact publisher validator rejected.
+Read-only diagnostics confirmed all substantive principal/environment/manual-job
+limits and Main/None lifecycle bindings match. A regression-first semantic
+normalization fix and authorized clean teardown are now separately assigned.
+The attempt2 UI was closed and its config archived byte-identically; state and
+operation evidence remain preserved. Next UI identity is fresh, never a Resume of
+deleted state. Current references are in the local execution context.
+This also records successful supported UI continuation, not an expiry bypass.
+
+The failed attempt's accepted state, byte-identical config archive and safe
+diagnostic/screenshot evidence remain local. Its owned UI/browser were closed.
+The new public UI run checks field settlement and the exact reviewed
+resource-group name before Plan. S0 retains the previously reviewed cost choice.
+API activation recovered without intervention; an unrelated policy deployment's
+ResourceNotFound remains separately recorded, not asserted as the Gateway cause.
+
+Protocol repair evidence: 70 cross-tool contract Pester tests passed with zero
+failures/skips; the isolated ledger self-test passed after first reproducing an
+omitted-gate reset. Recorder guards now preserve omitted gate/blockers/next action,
+require an evidenced coordinator Decision to change the objective, and reject
+premature Complete without the required gate references or with open holds/tasks.
+Independent review found no high-confidence issues. Machine-readable test output
+and the review receipt are referenced by the local ledger. This is protocol-only
+acceptance, not cloud delivery; the earlier recovery clean-export check still has
+not run and the earlier completion report overstated that milestone.
+
+## Prior stopped deployment evidence (not current authorization)
 
 The operator stopped work and handed the task to another model. The fully running
 Gateway has **not** been delivered. Do not restart deployment automatically from
@@ -172,10 +282,12 @@ These are source gates. They are not deployment evidence or live-readiness proof
 | Hosted CI for the domain-lookup commit | Passed |
 
 Each correction carries focused regression tests that fail against the previous
-behaviour. Release build, the eight .NET test projects, Bicep compilation, the nine
-format targets and the clean-export gates were **not** rerun for these two
-corrections, because both change PowerShell bootstrap source only. Rerun the
-affected gates before any release claim.
+behaviour. The final recovery selectors passed 50/50, the bootstrap source gate
+passed, and the source plus Windows/POSIX launcher tests passed 21 with six
+existing skips. Release build, the eight .NET test projects, Bicep compilation,
+the nine format targets and a clean export were not rerun. These results remain
+offline source evidence only; rerun the broader release gates before any release
+claim.
 
 ## Earlier validation for the promoted Windows executor source
 
@@ -190,21 +302,24 @@ closed by that handoff.
 
 ## Exact first unfinished action and invalidated gates
 
-Resolve the accepted-source deadlock on the active deployment. Both corrections
-landed after its plan was accepted, so Resume refuses the changed source and Plan
-refuses a started deployment. Read `Get-GatewayResumeExecutionSource` and
-`Invoke-GatewayResumePreflight` in `bootstrap/bootstrap.ps1` together with
-`bootstrap/recover-purview-prerequisites.ps1`, and establish whether any supported
-command accepts a corrected source generation on a started deployment. The only
-escapes from source drift recorded in that guard are a completed Purview
-prerequisite recovery plan and a completed automatic database recovery plan.
-Neither exists on the active target, and its certificate is deliberately not
-partial, so the narrow prerequisite recovery command does not apply as written.
+The accepted-source deadlock is now addressed in source by the separately
+reviewable `CompletePrerequisiteReconciliation` plan and receipt. It accepts only
+the active case with thirteen completed stages, exact complete grant and
+certificate readback, and corrected tooling pinned in an immutable snapshot.
+Resume restores that snapshot before callbacks while preserving the original
+deployment source, images, SQL binding, and completed prefix. It performs only
+the normal `ReconcileOnly` stage verification; it does not create, rotate, grant,
+replay, reset, or mutate provider state.
 
-If no supported path exists, report the gap and its options to the operator before
-changing anything. Do not bypass the guard, edit or delete accepted state, remove
-`.bootstrap`, or start a third deployment to avoid the question. Diagnose with
-`-OutputFormat Text`; the JSON output swallows the failing stage's exception detail.
+The source candidate passed 48 focused recovery tests and the full bootstrap
+suite (917 passed, 7 skipped). The seven skips remain test-environment exclusions
+from the existing suite; no skipped test was used as recovery evidence. An
+independent diff review found no significant issues. No live Plan, provider
+readback, Execute, Resume, deployment, policy, or cleanup action has been run.
+
+The earlier next action was exact-target read-only recovery Plan approval. The
+latest clean-test directive above supersedes that ordering; the recovery candidate
+is retained as source evidence, not the current execution plan.
 
 Once the deployment can advance on corrected source, finish Apply through all
 nineteen stages and run `gateway verify`. Then finish
@@ -214,21 +329,22 @@ the upgrade separately. Then finish core registrations, delegated Registry,
 Agent 365 observability, Prompt Shields and DLP live acceptance.
 
 The retained earlier target still holds an unresolved partial certificate. Its
-publication failure is now explained by the corrected credential window, but the
-existing recovery command still refuses partial state by design, and the operator
-deferred that repair until the active deployment runs. When it is taken up, build
-an exact repair that publishes the preserved Key Vault certificate without
-rotating, recreating, clearing or replaying anything.
+publication failure is now explained by the corrected credential window, but both
+the ordinary recovery and the complete-prerequisite reconciliation deliberately
+refuse partial state. Leave that target untouched.
 
-No live command is running and no deployment mutation is authorized by this
-handoff. Deployment, Windows startup and provider proof, full Gateway E2E and
-final release acceptance remain open.
+Deployment, Windows startup and provider proof, full Gateway E2E and final release
+acceptance remain open. Current authority and destructive-scope resolution are
+described above, not supplied by this historical handoff.
 
 ## Live boundary and remaining work after operator resume
 
-The active deployment has thirteen completed stages and a failed Purview
-prerequisite stage whose two causes are now corrected in source but not yet
-applied to that target. Older deployments and database recovery evidence are
+The active deployment has fourteen completed stages and a failed Gateway runtime
+deployment stage. The corrected publisher source was used for one supported
+same-source Resume: stages 1-14 revalidated and executor resources were
+provisioned, but stage 15 failed. A sanitized diagnosis confirmed the executor
+ARM deployments and one prior succeeded publisher execution without exposing a
+dependency error body. Older deployments and database recovery evidence are
 retained for diagnosis; they are different targets and are not Resume candidates
 for the current source. Do not edit accepted state, replay database jobs, finalize
 SQL, remove identities, or clean up earlier environments without exact authority.

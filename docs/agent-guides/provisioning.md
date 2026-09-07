@@ -1,5 +1,9 @@
 # Provisioning contributor guide
 
+Read and follow the [end-to-end execution contract](end-to-end-execution.md).
+Provisioning source/test acceptance is a subtask, not independent provider proof
+or completion of the selected product matrix.
+
 Read the current [implementation status](../implementation-status.md),
 [deployment status](../operations/development-deployment-status.md), and applicable
 runbook before changing provisioning or taking any live action.

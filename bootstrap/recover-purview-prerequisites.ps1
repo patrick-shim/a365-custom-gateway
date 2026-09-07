@@ -10,6 +10,7 @@ mutations are readback-only forever. This command never repeats the failed stage
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidateSet('Plan', 'Execute')][string]$Mode,
+    [ValidateSet('AbsentCertificate', 'CompletePrerequisiteReconciliation')][string]$RecoveryMode = 'AbsentCertificate',
     [string]$Config = (Join-Path $PSScriptRoot 'config.json'),
     [string]$ExpectedPlanFingerprint = '',
     [switch]$Yes
@@ -29,9 +30,12 @@ try {
     $lock = Enter-BootstrapLock -StatePath $statePath
     $state = Read-BootstrapState -Path $statePath -Config $configuration
     $azureIdentity = Connect-BootstrapAzure -Config $configuration -NonInteractive
-    $planPath = Join-Path (Get-RepositoryRoot) ".bootstrap/purview-prerequisite-recovery/$($state.deploymentOwnershipId)/plan.json"
-    if ($state.Contains('purviewPrerequisiteRecoveryPlan')) {
-        $recovery = $state.purviewPrerequisiteRecoveryPlan
+    $stateProperty = if ($RecoveryMode -ceq 'CompletePrerequisiteReconciliation') {
+        'purviewPrerequisiteReconciliation'
+    } else { 'purviewPrerequisiteRecoveryPlan' }
+    $planPath = Join-Path (Get-RepositoryRoot) ".bootstrap/purview-prerequisite-recovery/$($state.deploymentOwnershipId)/$($RecoveryMode.ToLowerInvariant()).json"
+    if ($state.Contains($stateProperty)) {
+        $recovery = $state[$stateProperty]
     }
     elseif (Test-Path -LiteralPath $planPath -PathType Leaf) {
         $parameters = @{ AsHashtable = $true; Depth = 100 }
@@ -40,7 +44,11 @@ try {
         Convert-BootstrapParsedJsonDatesToStrings -Value $recovery
     }
     elseif ($Mode -ceq 'Plan') {
-        $recovery = New-BootstrapPurviewRecoveryPlan -State $state -Config $configuration -AzureIdentity $azureIdentity
+        $recovery = if ($RecoveryMode -ceq 'CompletePrerequisiteReconciliation') {
+            New-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $state -Config $configuration -AzureIdentity $azureIdentity
+        } else {
+            New-BootstrapPurviewRecoveryPlan -State $state -Config $configuration -AzureIdentity $azureIdentity
+        }
         [IO.Directory]::CreateDirectory((Split-Path -Parent $planPath)) | Out-Null
         $stream = [IO.File]::Open($planPath, 'CreateNew', 'Write', 'None')
         try {
@@ -53,7 +61,11 @@ try {
     else { throw 'Run Plan before Execute.' }
 
     $completed = $recovery.Contains('status') -and [string]$recovery.status -ceq 'Completed'
-    $snapshot = Assert-BootstrapPurviewRecoveryPlan -State $state -Recovery $recovery -Completed:$completed
+    $snapshot = if ($RecoveryMode -ceq 'CompletePrerequisiteReconciliation') {
+        Assert-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $state -Reconciliation $recovery -Completed:$completed
+    } else {
+        Assert-BootstrapPurviewRecoveryPlan -State $state -Recovery $recovery -Completed:$completed
+    }
     $null = Get-BootstrapPurviewRecoveryProviderState -Config $configuration -State $state -AzureIdentity $azureIdentity -Binding $recovery.plan.binding
     if ($Mode -ceq 'Plan') {
         [ordered]@{ status = if ($completed) { 'Completed' } else { 'ReviewedReadOnly' }
@@ -65,15 +77,32 @@ try {
     elseif ($completed) {
         if (-not $Yes -or $ExpectedPlanFingerprint -cne [string]$recovery.planFingerprint) { throw 'Exact confirmation is required.' }
         $provider = Get-BootstrapPurviewRecoveryProviderState -Config $configuration -State $state -AzureIdentity $azureIdentity -Binding $recovery.plan.binding
-        if ((Get-BootstrapObjectFingerprint -InputObject $provider.automationEvidence) -cne [string]$recovery.automationEvidenceFingerprint) {
+        $expectedEvidence = if ($RecoveryMode -ceq 'CompletePrerequisiteReconciliation') {
+            [string]$recovery.providerEvidenceFingerprint
+        } else {
+            [string]$recovery.automationEvidenceFingerprint
+        }
+        $actualEvidence = if ($RecoveryMode -ceq 'CompletePrerequisiteReconciliation') {
+            Get-BootstrapObjectFingerprint -InputObject $provider
+        } else {
+            Get-BootstrapObjectFingerprint -InputObject $provider.automationEvidence
+        }
+        if ($actualEvidence -cne $expectedEvidence) {
             throw 'Completed recovery provider evidence changed.'
         }
         [ordered]@{ status = 'Completed'; planFingerprint = [string]$recovery.planFingerprint; readbackOnly = $true } | ConvertTo-Json
     }
     else {
         Set-BootstrapExecutionSourceRoot -Path $snapshot
-        Invoke-BootstrapPurviewRecovery -State $state -StatePath $statePath -Config $configuration -AzureIdentity $azureIdentity `
-            -Recovery $recovery -ExpectedPlanFingerprint $ExpectedPlanFingerprint -Yes:$Yes | ConvertTo-Json -Depth 5
+        if ($RecoveryMode -ceq 'CompletePrerequisiteReconciliation') {
+            $state[$stateProperty] = $recovery
+            Invoke-BootstrapPurviewCompletePrerequisiteReconciliation -State $state -StatePath $statePath `
+                -Config $configuration -AzureIdentity $azureIdentity -Reconciliation $recovery `
+                -ExpectedPlanFingerprint $ExpectedPlanFingerprint -Yes:$Yes | ConvertTo-Json -Depth 5
+        } else {
+            Invoke-BootstrapPurviewRecovery -State $state -StatePath $statePath -Config $configuration -AzureIdentity $azureIdentity `
+                -Recovery $recovery -ExpectedPlanFingerprint $ExpectedPlanFingerprint -Yes:$Yes | ConvertTo-Json -Depth 5
+        }
     }
 }
 catch {

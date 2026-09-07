@@ -1,9 +1,15 @@
 # A365 Gateway bootstrap
 
 
-> Current delivery is stopped for model handoff with a partial Purview certificate.
-> The new Windows executor source still requires deployment integration. Read the
+> Current delivery is unfinished. Windows executor deployment integration is
+> implemented and offline-validated; deployment and independent live acceptance
+> remain incomplete. Read the
 > [continuation checkpoint](../docs/agent-continuation.md) before deployment or recovery.
+
+For automated delivery, follow the
+[end-to-end execution contract](../docs/agent-guides/end-to-end-execution.md).
+Bootstrap Verify ends installation, not a selected Full evaluation live acceptance
+matrix. Existing approvals and explicit holds remain separate from credentials.
 
 The bootstrap is the supported deployment system for a new A365 Custom Gateway. It
 owns the path from non-secret configuration through Azure What-If, explicit plan
@@ -72,6 +78,12 @@ flowchart TD
   the role assignments shown by Plan
 - an administrator able to approve the Entra and Agent ID changes
 - Agent 365 tenant eligibility and licensing
+- for Full evaluation or Custom with Purview enabled, a Windows x64 workstation
+  with Microsoft-signed PowerShell **7.6.5** and exactly one installed
+  Microsoft-signed ExchangeOnlineManagement **3.10.1** module. Plan validates
+  these local executor-packaging prerequisites before Azure planning; generic
+  PowerShell 7 is insufficient. On macOS/Linux use Core Gateway or Custom with
+  Purview disabled.
 - for optional Purview capability preparation, authority to create the reviewed
   identities, RBAC, certificate, Key Vault, and runtime prerequisites. Later tenant
   connection and policy work requires a signed-in `Gateway.Administrator` with the
@@ -114,8 +126,10 @@ and lets you choose one of three deployment-capability presets:
 
 Registry beta, Prompt Shields cost/quota, and Purview authority each require their
 applicable explicit acknowledgement before Plan. A checked capability does not
-enable every registration or prove runtime readiness. The installer remains supported on
-Windows, macOS, and Linux. Region labels are paired with their canonical Azure
+enable every registration or prove runtime readiness. Core and Purview-disabled
+Custom installation run on Windows, macOS, and Linux; Full evaluation and
+Purview-enabled Custom require the Windows packaging prerequisites above.
+Region labels are paired with their canonical Azure
 values—for example,
 `Korea Central · koreacentral`—and the configuration stores `koreacentral`. Setup
 does not accept a free-text region or silently choose one. Only after every required
@@ -125,9 +139,8 @@ explicit confirmation before Apply. If an accepted deployment later stops, Setup
 offers a read-only resume review first. That review runs its own process, installs
 nothing, changes no Azure, Entra, Agent 365, SQL, or policy resource, and returns
 one accepted plan fingerprint plus a single-use authorization. Only then does Setup
-offer a separate Resume confirmation. This path is implemented and covered by
-tests; it has not yet been exercised in a hosted browser against preserved stopped
-state, so use the terminal Resume path for recovery evidence.
+offer a separate Resume confirmation. This does not bypass accepted-source guards
+or permit replay of completed SQL, certificate, or other mutation steps.
 
 Keep the terminal open. Deployment may hand control to official Microsoft browser
 windows for refreshed Azure, Entra, or Agent ID authentication. Setup closes after
@@ -245,9 +258,8 @@ fingerprint in a separately authorized process. The local Setup UI performs that
 same two-process exchange after Setup restarts: it starts one read-only review
 without `-Yes`, holds the returned authorization only in memory for a single
 confirmation, and discards it on restart, a changed checkpoint, another command, a
-failed review, or cancellation. That browser path has not yet been validated against
-preserved stopped state, so do not use a restarted browser session as recovery
-evidence until it has.
+failed review, or cancellation. A successful review is not deployment completion;
+the remaining steps and final verification must still pass.
 
 State and sanitized evidence live under ignored `.bootstrap/`. They may contain
 tenant, subscription, resource, application, principal, image-digest, and
@@ -295,8 +307,9 @@ After deployment, a signed-in `Gateway.Administrator` uses Gateway Settings to
 connect the exact tenant, load its live SIT inventory, make an explicit no-default
 selection, configure and read back the independent KYD Group and blueprint
 Individual DLP profiles, and prove propagation and runtime readiness. Provider
-steps that require Security & Compliance PowerShell remain interactive and
-Windows-only; the core bootstrap and capability preparation remain cross-platform.
+steps that require Security & Compliance PowerShell run on Windows. Purview
+capability preparation also requires the Windows packaging prerequisites above;
+Core and Purview-disabled Custom bootstrap remain cross-platform.
 The downloadable companion is packaged in the immutable Admin UI image and runs
 locally only after the Administrator explicitly downloads and invokes it.
 
@@ -346,10 +359,10 @@ Review the reported failure and correct its cause before Resume. Do not edit or
 delete `.bootstrap/`, manually replay completed tenant operations, access retained
 messages, or run a second bootstrap against the same deployment.
 
-If Setup itself was closed or restarted, the terminal sequence above is the verified
-path. Setup also implements the equivalent browser exchange—a read-only Resume
-review, an in-memory single-use authorization handoff, and a separate
-confirmation—but that path is not yet validated against preserved stopped state.
+If Setup itself was closed or restarted, use the terminal sequence above or
+Setup's equivalent browser exchange: a read-only Resume review, an in-memory
+single-use authorization handoff, and a separate confirmation. Either path must
+validate the preserved checkpoint before starting any remaining mutation.
 
 Database recovery, one-shot manual database repair, and Admin UI upgrade are
 deliberately bounded commands. Use them only when the bootstrap identifies that

@@ -176,6 +176,11 @@ param purviewPolicyProvisioningApplicationId string = ''
 @description('Versionless Key Vault secret URI containing the base64 PKCS#12 Purview automation certificate.')
 param purviewPolicyProvisioningCertificateSecretUri string = ''
 
+@description('Use the source-bound private Windows executor. Bootstrap supplies this only after exact identity, package and host readback.')
+param purviewExecutorEnabled bool = false
+param purviewExecutorEndpoint string = ''
+param purviewExecutorBinding object = {}
+
 @description('Sensitive information type used by the reviewed default protection-profile rule.')
 param purviewDefaultSensitiveInformationType string = ''
 
@@ -616,6 +621,9 @@ module workerApp './modules/container-app-worker.bicep' = {
     purviewPolicyProvisioningOrganization: purviewPolicyProvisioningOrganization
     purviewPolicyProvisioningApplicationId: purviewPolicyProvisioningApplicationId
     purviewPolicyProvisioningCertificateSecretUri: purviewPolicyProvisioningCertificateSecretUri
+    purviewExecutorEnabled: purviewEnabled && purviewExecutorEnabled
+    purviewExecutorEndpoint: purviewExecutorEndpoint
+    purviewExecutorBinding: purviewExecutorBinding
     purviewDefaultSensitiveInformationTypeId: purviewDefaultSensitiveInformationTypeId
     purviewDefaultSensitiveInformationType: purviewDefaultSensitiveInformationType
     tags: tags
@@ -658,7 +666,7 @@ module roleAssignments './modules/role-assignments.bicep' = {
     apiPrincipalId: apiApp.outputs.principalId
     workerPrincipalId: workerApp.outputs.principalId
     keyVaultName: names.keyVault
-    enableWorkerKeyVaultSecretsUser: purviewEnabled && purviewPolicyProvisioningEnabled
+    enableWorkerKeyVaultSecretsUser: purviewEnabled && purviewPolicyProvisioningEnabled && !purviewExecutorEnabled
     workerPurviewCertificateSecretName: purviewCertificateSecretName
     storageAccountName: names.storage
     serviceBusNamespaceName: names.serviceBus

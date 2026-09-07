@@ -4,6 +4,14 @@ The supported outcome is: a public user clones `a365-custom-gateway`, runs the r
 
 ## Gate evidence
 
+Apply the [end-to-end execution contract](../../../../docs/agent-guides/end-to-end-execution.md).
+The user's selected Full evaluation matrix includes Windows execution, two
+registrations, independent Agent 365 landing and Prompt Shields/DLP allow/block on
+the currently approved targets and repeated scratch runs. Core bootstrap ending at Verify
+does not end that delivery. Progress automatically within existing authority;
+preserve explicit stops and record unavailable approval responses as NoResponse.
+Source-subtask completion and host turn closure never close the product gate.
+
 ### Plan
 
 - user journey and supported commands are explicit

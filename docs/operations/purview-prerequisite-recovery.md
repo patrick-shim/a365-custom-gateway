@@ -1,5 +1,9 @@
 # Recover a failed Purview prerequisite stage
 
+Apply the [end-to-end execution contract](../agent-guides/end-to-end-execution.md)
+within this runbook's exact authority and verification boundary; a subtask result
+does not complete product delivery or override an explicit hold.
+
 This narrow recovery applies only to thirteen completed bootstrap stages followed
 by a failed **Purview capability prerequisites** stage without completion evidence.
 It requires the original local configuration, state, accepted snapshot, and exact
@@ -14,7 +18,8 @@ recovery implementation and offline evidence do not prove a live recovery passed
 From the canonical repository checkout, with the intended Azure session selected:
 
 ```powershell
-pwsh -NoProfile -File bootstrap/recover-purview-prerequisites.ps1 -Mode Plan
+pwsh -NoProfile -File bootstrap/recover-purview-prerequisites.ps1 `
+  -Mode Plan -RecoveryMode AbsentCertificate
 ```
 
 Plan performs provider reads and writes only local review artifacts. It verifies
@@ -23,21 +28,48 @@ assignments, and certificate metadata. Both the Entra certificate and the exact
 Key Vault certificate secret must be absent. An existing or partial certificate
 requires separate read-only reconciliation; this recovery never replaces it.
 
+After reviewing that plan and obtaining its exact mutation approval, execute the
+same mode with its returned fingerprint:
+
+```powershell
+pwsh -NoProfile -File bootstrap/recover-purview-prerequisites.ps1 `
+  -Mode Execute -RecoveryMode AbsentCertificate `
+  -ExpectedPlanFingerprint '<reviewed AbsentCertificate sha256 fingerprint>' -Yes
+```
+
+When the failed stage already has exact, complete readback for both grants and
+the certificate in both stores, use the separately reviewed reconciliation mode:
+
+```powershell
+pwsh -NoProfile -File bootstrap/recover-purview-prerequisites.ps1 `
+  -Mode Plan -RecoveryMode CompletePrerequisiteReconciliation
+```
+
+This mode is read-only and pins the corrected tooling snapshot while preserving
+the original accepted plan, completed stages, images, and SQL binding. Execute
+with its exact plan fingerprint only after review. It never creates, rotates,
+replays, or repairs a prerequisite; normal Resume later performs only the
+stage's `ReconcileOnly` verification. Partial, absent, changed, or mismatched
+provider state is rejected.
+
 Review the returned plan fingerprint and ignored local plan. The plan pins the
 original accepted authorization, owner, configuration, completed prefix, failed
 record, existing identity object IDs, role tuple, certificate resource, planned key
 ID, template hash, and a corrected immutable tooling snapshot. Runtime source,
 infrastructure, templates, workload images, and SQL inputs must remain unchanged.
 
-Use the exact returned fingerprint after that review:
+For `CompletePrerequisiteReconciliation`, use that mode's exact returned
+fingerprint after review:
 
 ```powershell
 pwsh -NoProfile -File bootstrap/recover-purview-prerequisites.ps1 `
-  -Mode Execute -ExpectedPlanFingerprint '<reviewed sha256 fingerprint>' -Yes
+  -Mode Execute -RecoveryMode CompletePrerequisiteReconciliation `
+  -ExpectedPlanFingerprint '<reviewed sha256 fingerprint>' -Yes
 ```
 
-The command holds the bootstrap state lock and rechecks the plan before writes.
-It may complete only three fixed prerequisites:
+Both commands hold the bootstrap state lock and recheck their own plan before
+local receipt writes. Reconciliation remains provider-read-only. Only
+`AbsentCertificate` may complete these three fixed prerequisites:
 
 1. the existing automation principal's exact `Exchange.ManageAsApp` assignment;
 2. its exact tenant-root Compliance Administrator assignment; and
@@ -80,12 +112,13 @@ single-quoted PowerShell strings must not contain literal escaping backticks in
 those option names. Provider success responses are followed by independent exact
 readback and are never sufficient on their own.
 
-## Current stopped attempt
+## Applicability to stopped attempts
 
-The current operator stopped live work for a model handoff. Both role grants passed
-exact readback. Certificate storage succeeded, but Entra rejected its public-key
-update and still has zero keys. The operation is preserved as Started. This command
-deliberately refuses that partial state. Do not repeat Execute expecting it to repair
-the certificate; diagnose the exact failure and design a separately reviewed repair
-that preserves the existing certificate and operation evidence. See the current
-continuation checkpoint before any live action.
+The complete-prerequisite reconciliation case is thirteen completed stages and a
+failure at Purview domain readback, with both grants and the certificate complete
+in their respective stores and accepted source predating corrected tooling.
+Partial certificate publication is not that case; both modes reject it.
+Neither mode applies to a later Gateway runtime deployment failure or a deleted
+target. Consult the [current continuation checkpoint](../agent-continuation.md)
+and deployment checkpoint for the actual stopped stage and exact authority before
+any live action.

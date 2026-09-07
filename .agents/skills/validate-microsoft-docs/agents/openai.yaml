@@ -2,6 +2,9 @@ interface:
   display_name: "Validate Microsoft Docs"
   short_description: "Verify A365 Microsoft APIs and permissions"
   default_prompt: >-
+    Read and follow docs/agent-guides/end-to-end-execution.md; preserve the product
+    objective, authority, secure-input references and holds across this assignment.
     Use $validate-microsoft-docs to verify this Microsoft capability against
     official sources while preserving the implemented Gateway protection contract,
-    its exact readiness boundary, undeployed status, and fresh live authority.
+    its exact readiness boundary and current live authority. Read live status from
+    the deployment checkpoint, never from a skill's historical claim.

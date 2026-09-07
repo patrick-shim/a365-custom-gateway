@@ -1,5 +1,9 @@
 # Microsoft Purview setup and readiness
 
+Apply the [end-to-end execution contract](../agent-guides/end-to-end-execution.md)
+within this runbook's exact authority and verification boundary; a subtask result
+does not complete product delivery or override an explicit hold.
+
 Status: beta.2 platform correction open; Purview is not live-ready.
 
 Last updated: 2026-09-06 (Asia/Seoul).

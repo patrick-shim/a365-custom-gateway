@@ -1,5 +1,9 @@
 # Entra and Agent Identity setup
 
+Apply the [end-to-end execution contract](../agent-guides/end-to-end-execution.md)
+within this runbook's exact authority and verification boundary; a subtask result
+does not complete product delivery or override an explicit hold.
+
 Fresh deployments should let `./gateway setup` create and verify the Entra objects.
 This runbook explains the resulting contract and how to diagnose it; it is not a
 second installer.

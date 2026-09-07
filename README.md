@@ -1,5 +1,10 @@
 # A365 Custom Gateway
 
+Contributors and automation follow the
+[end-to-end execution contract](docs/agent-guides/end-to-end-execution.md):
+bootstrap, deployment and independent live acceptance are distinct required
+milestones for an end-to-end delivery. A source/test pass is not that delivery.
+
 A365 Custom Gateway gives external agents one controlled path into Microsoft Agent
 365. An administrator deploys the Gateway, registers an external agent against a
 reusable Agent ID blueprint, and receives a Gateway external ID plus a one-time
@@ -11,22 +16,17 @@ is deployed. The current source is ahead of the deployment evidence recorded in
 [development deployment status](docs/operations/development-deployment-status.md),
 and a Purview DLP allow/block pair has not been live-proven on a deployed build.
 
-> **Delivery unfinished; stopped for model handoff.** Azure bootstrap remains at
-> thirteen of nineteen stages. Two bootstrap defects that blocked the Purview
-> prerequisite stage are corrected in this source and proven by live provider
-> readback, but the active deployment cannot yet adopt the corrected source, and a
-> retained earlier target still holds a partial certificate that must not be
-> replayed. Reviewed Windows executor source is included, but deployment
-> integration and all live E2E acceptance remain open.
+> **Delivery unfinished; follow the current continuation checkpoint.** Windows
+> executor deployment integration is implemented and offline-validated, but the
+> current installation has not completed deployment or independent live acceptance.
 > Begin with [agent continuation](docs/agent-continuation.md) for the exact next
 > action and validated evidence. This checkout is not a completed Full evaluation release.
 
 The supported fresh-subscription installer is the repository-root `gateway`
 launcher. It configures, plans, deploys, and verifies the complete Gateway. The
 terminal launcher also supports checkpoint-aware Resume. A restarted Setup browser
-process implements the same read-only review and separate confirmation, but that
-browser path has not yet been validated against preserved stopped state; use the
-terminal recovery command described below.
+process offers read-only review and a separate confirmation before remaining steps.
+Completed mutations must not be replayed to force progress.
 
 > The Agent 365 Registry dependency is currently a beta capability that Microsoft
 > does not support for production use. **Quick development** defaults this
@@ -40,15 +40,20 @@ administrator who can approve the Azure, Entra, and Agent ID changes shown by th
 installer. On the workstation, install Git, the .NET 10 SDK, PowerShell 7, and Azure
 CLI 2.76 or later.
 
-Core Gateway setup and deployment run on Windows, macOS, and Linux. Bootstrap
-prepares optional Purview identities, RBAC, certificate, Key Vault, dedicated
-administration queue, and runtime prerequisites without choosing a classifier or
-authoring policy.
+Core Gateway setup and deployment run on Windows, macOS, and Linux. **Full
+evaluation and Custom with Purview enabled require a Windows x64 workstation**:
+Plan validates local executor packaging with Microsoft-signed PowerShell **7.6.5**
+and exactly one installed Microsoft-signed ExchangeOnlineManagement **3.10.1**
+module. Generic PowerShell 7 is insufficient for that path. On macOS/Linux select
+Core Gateway or Custom with Purview disabled before Plan.
+Bootstrap prepares optional Purview identities, RBAC, certificate, Key Vault,
+dedicated administration queue, and runtime prerequisites without choosing a
+classifier or authoring policy.
 Security & Compliance PowerShell operations using `Connect-IPPSSession` require
 Windows for both interactive and unattended certificate authentication. Gateway
 Settings offers a bounded Windows companion for the administrator connection.
-Its independent provider verification and policy automation also need a supported
-Windows host; that correction is currently unfinished.
+Its independent provider verification and policy automation also need the supported
+Windows executor; deployment and live proof remain unfinished.
 
 ```bash
 git clone https://github.com/patrick-shim/a365-custom-gateway.git
@@ -105,9 +110,8 @@ before changing anything. If an interruption occurs, correct the reported cause 
 run `./gateway resume` on macOS/Linux or `.\gateway.cmd resume` on Windows; do not
 delete `.bootstrap/` or start a second deployment.
 Terminal Resume is the supported recovery path after Setup has closed or restarted.
-The Setup browser's separate read-only Resume review and second confirmation are
-implemented and covered by local tests, but are not an end-to-end recovery claim
-until validated in a browser against preserved stopped state.
+The Setup browser's separate read-only Resume review and second confirmation do
+not bypass source binding or authorize replay of completed mutations.
 
 See the [bootstrap guide](bootstrap/README.md) for prerequisites, configuration,
 automation, and recovery behavior.

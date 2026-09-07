@@ -9,6 +9,12 @@ Treat bootstrap as one public product journey, not independent scripts.
 Follow the complete Required reading sequence in the binding `AGENTS.md` before
 acting; this skill supplements and never replaces that repository contract.
 
+Read and follow [the end-to-end execution contract](../../../docs/agent-guides/end-to-end-execution.md).
+Keep the full product objective and live acceptance matrix distinct from the
+current work item. Preserve authority, secure-input references and holds across
+restarts; automate authorized work. NoResponse, a stop, or a completed source
+subtask never means product Complete and never grants new cloud authority.
+
 ## Start or resume
 
 Before any task action, read [references/recording-contract.md](references/recording-contract.md). Use `scripts/worklog.ps1` to resume the active delivery session or start one when none exists. Read only `CURRENT.json`, the active manifest, the tail of the active journal shard, and handoffs named by the current checkpoint. Do not reconstruct current state by rereading all historical logs.

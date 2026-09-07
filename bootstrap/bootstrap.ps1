@@ -74,6 +74,9 @@ if ($OutputFormat -eq 'Json') {
 foreach ($module in @('Common', 'Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'PurviewRecovery', 'Verification')) {
     Import-Module (Join-Path $PSScriptRoot "modules/$module.psm1") -Force -DisableNameChecking
 }
+foreach ($module in @('PurviewPackage', 'PurviewExecutor')) {
+    Import-Module (Join-Path $PSScriptRoot "modules/$module.psm1") -Force -DisableNameChecking
+}
 
 function Get-GatewayPlanContractFingerprint {
     param(
@@ -373,6 +376,13 @@ function Invoke-GatewayPlanWorkflow {
     }) -OutputFormat $Format
     $script:GatewayFailureCode = 'plan_prerequisites'
     Assert-GatewayPlanPrerequisites -Install:$InstallLocalPrerequisites | Out-Null
+    if ($Configuration.purview.enabled -eq $true) {
+        # Fail before Azure Plan/Apply if the selected Windows packaging boundary
+        # cannot be built. Core never inspects these optional dependencies.
+        Invoke-BootstrapCommand -FilePath 'pwsh' -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+            (Join-Path (Get-RepositoryRoot) 'operations/build-purview-executor-package.ps1'), '-ValidateOnly') | Out-Null
+    }
     Write-GatewayExperienceEvent -Type PhaseStarted -Message 'Validating bootstrap source and compiling every bootstrap Bicep template...' -Data $planEventBase -OutputFormat $Format
     $script:GatewayFailureCode = 'plan_source'
     $root = Get-RepositoryRoot
@@ -549,6 +559,10 @@ function Get-GatewayResumeExecutionSource {
     if ($State.Contains('purviewPrerequisiteRecoveryPlan')) {
         $executionSourceRoot = Assert-BootstrapPurviewRecoveryPlan -State $State `
             -Recovery $State.purviewPrerequisiteRecoveryPlan -Completed
+    }
+    elseif ($State.Contains('purviewPrerequisiteReconciliation')) {
+        $executionSourceRoot = Assert-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $State `
+            -Reconciliation $State.purviewPrerequisiteReconciliation -Completed
     }
     elseif ($null -ne $plans.databaseRecoveryPlan) {
         $recovery = $plans.databaseRecoveryPlan
@@ -808,8 +822,10 @@ function Invoke-GatewayResumePreflight {
             }
             'Workflow v3 Entra configuration' {
                 & $invokeBooleanStage -Code 'RP11_WORKFLOW_V3_ENTRA' -Label 'workflow-v3 Entra configuration' -Action {
+                    $workflowIdentityParameters = @{}
+                    if ($State.Contains('freshPurviewExecutor')) { $workflowIdentityParameters.State = $State }
                     Test-GatewayWorkflowIdentityEvidence -Config $Configuration -Identity $identity -Inert $inert `
-                        -Evidence $State.steps['Workflow v3 Entra configuration'].evidence
+                        -Evidence $State.steps['Workflow v3 Entra configuration'].evidence @workflowIdentityParameters
                 }
             }
             'SQL private endpoint' {
@@ -872,12 +888,22 @@ function Invoke-GatewayResumePreflight {
             }
             'Gateway runtime deployment' {
                 & $invokeBooleanStage -Code 'RP17_GATEWAY_RUNTIME' -Label 'runtime API and worker deployment' -Action {
+                    $runtimeAutomation = $purviewCapability.purview
+                    $executorParameters = @{}
+                    if ($State.Contains('freshPurviewExecutor')) {
+                        $runtimeAutomation = Get-BootstrapPurviewAutomationIdentityEvidence -Config $Configuration -AzureIdentity $azureIdentity `
+                            -KeyVaultUri ([string]$runtime.keyVaultUri) -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
+                            -SourceFingerprint ([string]$binding.deploymentSourceFingerprint)
+                        $executorParameters.PurviewExecutor = Install-BootstrapPurviewExecutor -Config $Configuration -State $State `
+                            -StatePath (Get-BootstrapStatePath -Config $Configuration) -Foundation $foundation -Runtime $runtime `
+                            -Automation $runtimeAutomation -Database $database -ReadOnly
+                    }
                     Test-GatewayGroupDeploymentEvidence -Config $Configuration -Foundation $foundation -Identity $identity `
                         -Evidence $runtime -DeploymentOwnershipId ([string]$binding.deploymentOwnershipId) `
                         -SourceFingerprint ([string]$binding.deploymentSourceFingerprint) `
                         -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database `
-                        -PurviewAutomation $purviewCapability.purview `
-                        -CapabilityEvidence $purviewCapability
+                        -PurviewAutomation $runtimeAutomation `
+                        -CapabilityEvidence $purviewCapability @executorParameters
                 }
             }
             'Admin UI deployment' {
@@ -1276,7 +1302,8 @@ function Invoke-GatewayStateStep {
             -ConfigurationFingerprint (Get-BootstrapConfigurationFingerprint -Config $configuration) `
             -SourceFingerprint ([string]$state.acceptedPlan.sourceFingerprint) `
             -MaximumAge $acceptedPlanMaximumAge | Out-Null
-        if ($Mode -eq 'Resume' -and $state.Contains('purviewPrerequisiteRecoveryPlan')) {
+        if ($Mode -eq 'Resume' -and ($state.Contains('purviewPrerequisiteRecoveryPlan') -or
+            $state.Contains('purviewPrerequisiteReconciliation'))) {
             # Accepted-plan validation restores the original snapshot. Restore the
             # independently completed tooling recovery only after rechecking all
             # preflight bindings, before any stage callback can use a template.
@@ -1317,7 +1344,8 @@ function Invoke-GatewayStateStep {
             'Immutable workload images'
         )
     if ($preservePreInertPrefix) { $parameters.ValidateAndReuseOnly = $true }
-    if ($state.Contains('purviewPrerequisiteRecoveryPlan') -and $Name -cin @($stepNames[2..12])) {
+    if (($state.Contains('purviewPrerequisiteRecoveryPlan') -or
+        $state.Contains('purviewPrerequisiteReconciliation')) -and $Name -cin @($stepNames[2..12])) {
         # Retained side-effect stages must remain byte-for-byte intact even if a
         # readback temporarily fails; only the two local/session checks rerun.
         $parameters.ValidateAndReuseOnly = $true
@@ -2167,7 +2195,10 @@ try {
     }
 
     $workloadIdentity = Invoke-GatewayStateStep -Name 'Workflow v3 Entra configuration' -Validate {
-        Test-GatewayWorkflowIdentityEvidence -Config $configuration -Identity $identity -Inert $inert -Evidence $state.steps['Workflow v3 Entra configuration'].evidence
+        # Older accepted recovery modules have no executor State parameter.
+        $workflowIdentityParameters = @{}
+        if ($state.Contains('freshPurviewExecutor')) { $workflowIdentityParameters.State = $state }
+        Test-GatewayWorkflowIdentityEvidence -Config $configuration -Identity $identity -Inert $inert -Evidence $state.steps['Workflow v3 Entra configuration'].evidence @workflowIdentityParameters
     } -Reconcile {
         Invoke-GatewayExactReconciliation -Readback {
             Get-GatewayWorkloadIdentityEvidence -Config $configuration -Identity $identity -ApiPrincipalId ([string]$inert.apiPrincipalId) -WorkerPrincipalId ([string]$inert.workerPrincipalId) -EnablePurview:($configuration.purview.enabled -eq $true)
@@ -2315,15 +2346,44 @@ try {
             -PurviewCapability $purviewComponent
     }
 
+    # Source-bound fresh installation is part of the existing runtime stage's
+    # prerequisite sequence. No recovery/upgrade receipt and no new stage is used.
+    $purviewExecutor = $null
+    $purviewExecutorParameters = @{}
+    $freshPurviewExecutorSelected = $false
+    $purviewRuntimeAutomation = $purviewCapability.purview
+    if ($configuration.purview.enabled -eq $true -and
+        $activeExecutionSourceFingerprint -ceq $activeDeploymentSourceFingerprint -and
+        (Test-Path -LiteralPath (Join-Path (Get-BootstrapExecutionSourceRoot) 'bootstrap/modules/PurviewExecutor.psm1'))) {
+        foreach ($module in @('PurviewPackage', 'PurviewExecutor')) {
+            Import-Module (Join-Path (Get-BootstrapExecutionSourceRoot) "bootstrap/modules/$module.psm1") -Force -DisableNameChecking
+        }
+        # The 19-key capability materialization is not the full automation receipt.
+        # Re-read its exact authority rather than inventing organization/key metadata.
+        $purviewRuntimeAutomation = Get-BootstrapPurviewAutomationIdentityEvidence -Config $configuration -AzureIdentity $azureIdentity `
+            -KeyVaultUri ([string]$inert.keyVaultUri) -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) `
+            -SourceFingerprint $activeDeploymentSourceFingerprint
+        $freshPurviewExecutorSelected = $true
+    }
     $developmentPreviewRequested = [string]$configuration.environment -eq 'dev' -and $configuration.agent365.allowDevelopmentRegistryPreview -eq $true
     # Purview protection profiles are optional registration-level controls. Their
     # independent authority/readback boundary must not close ordinary registration.
     $enableProvisioning = $developmentPreviewRequested
     $runtime = Invoke-GatewayStateStep -Name 'Gateway runtime deployment' -Validate {
-        Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $state.steps['Gateway runtime deployment'].evidence -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database -PurviewAutomation $purviewCapability.purview -CapabilityEvidence $purviewCapability
+        if ($freshPurviewExecutorSelected) {
+            $purviewExecutor = Install-BootstrapPurviewExecutor -Config $configuration -State $state -StatePath $statePath `
+                -Foundation $foundation -Runtime $inert -Automation $purviewRuntimeAutomation -Database $database -ReadOnly
+            $purviewExecutorParameters.PurviewExecutor = $purviewExecutor
+        }
+        Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $state.steps['Gateway runtime deployment'].evidence -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database -PurviewAutomation $purviewRuntimeAutomation -CapabilityEvidence $purviewCapability @purviewExecutorParameters
     } -Action {
-        $created = Deploy-GatewayCore -Config $configuration -Foundation $foundation -Identity $identity -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -WorkerPrincipalId ([string]$inert.workerPrincipalId) -ManagerApplicationIds @($blueprint.managerApplicationIds) -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ExecutionSourceFingerprint $activeExecutionSourceFingerprint -Database $database -EnableWorkerProcessing -EnableProvisioning:$enableProvisioning -EnablePurview:($configuration.purview.enabled -eq $true) -PurviewAutomation $purviewCapability.purview -CapabilityEvidence $purviewCapability
-        $null = Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $created -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database -PurviewAutomation $purviewCapability.purview -CapabilityEvidence $purviewCapability
+        if ($freshPurviewExecutorSelected) {
+            $purviewExecutor = Install-BootstrapPurviewExecutor -Config $configuration -State $state -StatePath $statePath `
+                -Foundation $foundation -Runtime $inert -Automation $purviewRuntimeAutomation -Database $database
+            $purviewExecutorParameters.PurviewExecutor = $purviewExecutor
+        }
+        $created = Deploy-GatewayCore -Config $configuration -Foundation $foundation -Identity $identity -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -WorkerPrincipalId ([string]$inert.workerPrincipalId) -ManagerApplicationIds @($blueprint.managerApplicationIds) -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ExecutionSourceFingerprint $activeExecutionSourceFingerprint -Database $database -EnableWorkerProcessing -EnableProvisioning:$enableProvisioning -EnablePurview:($configuration.purview.enabled -eq $true) -PurviewAutomation $purviewRuntimeAutomation -CapabilityEvidence $purviewCapability @purviewExecutorParameters
+        $null = Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $created -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database -PurviewAutomation $purviewRuntimeAutomation -CapabilityEvidence $purviewCapability @purviewExecutorParameters
         return $created
     }
 

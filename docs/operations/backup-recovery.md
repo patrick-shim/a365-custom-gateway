@@ -1,5 +1,9 @@
 # Backup and recovery
 
+Apply the [end-to-end execution contract](../agent-guides/end-to-end-execution.md)
+within this runbook's exact authority and verification boundary; a subtask result
+does not complete product delivery or override an explicit hold.
+
 This runbook covers Gateway-owned data and configuration. It does not authorize
 deleting identities, replaying Registry creation, receiving dead-letter messages,
 or rebuilding a deleted completed deployment from stale bootstrap state.

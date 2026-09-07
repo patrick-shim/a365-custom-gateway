@@ -531,17 +531,50 @@ function Assert-GraphApplicationRoleAssignmentBoundary {
     param(
         [Parameter(Mandatory)][string]$PrincipalId,
         [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedRoleValues,
-        [switch]$RequireComplete
+        [switch]$RequireComplete,
+        [AllowNull()][Collections.IDictionary]$PurviewExecutorContext
     )
     $graph = (Get-GraphPermissionCatalog).servicePrincipal
     $expectedIds = @($ExpectedRoleValues | ForEach-Object { Get-UniqueGraphPermissionId -Graph $graph -Value $_ -Type Role })
-    $assignments = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/servicePrincipals/$PrincipalId/appRoleAssignments?`$select=id,resourceId,appRoleId")
-    if (@($assignments | Where-Object {
-        -not ([string]$_.resourceId).Equals([string]$graph.id, [StringComparison]::OrdinalIgnoreCase) -or [string]$_.appRoleId -notin $expectedIds
+    $executorGrant = if ($null -ne $PurviewExecutorContext) {
+        Get-PurviewExecutorWorkerGrant -VerificationContext $PurviewExecutorContext -PrincipalId $PrincipalId
+    } else { $null }
+    if ($null -ne $executorGrant) {
+        $workerRoles = @(
+            'Application.Read.All', 'AppRoleAssignment.ReadWrite.All',
+            'AgentIdentityBlueprint.Create', 'AgentIdentityBlueprint.AddRemoveCreds.All',
+            'AgentIdentityBlueprintPrincipal.Create', 'AgentIdentityBlueprint.Read.All',
+            'AgentIdentity.Create.All', 'AgentIdentity.Read.All'
+        )
+        if ($ExpectedRoleValues.Count -ne 8 -or
+            -not (Test-ExactStringSet -Actual $ExpectedRoleValues -Expected $workerRoles) -or
+            [string]$executorGrant.resourceId -ieq [string]$graph.id) {
+            throw 'Executor grant verification is restricted to the exact eight-role worker boundary.'
+        }
+    }
+    $assignments = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/servicePrincipals/$PrincipalId/appRoleAssignments?`$select=id,principalId,resourceId,appRoleId")
+    if (@($assignments | Where-Object { [string]$_.principalId -ine $PrincipalId }).Count -ne 0) {
+        throw 'Managed identity has an application-role assignment outside the exact reviewed principal boundary.'
+    }
+    $graphAssignments = @($assignments | Where-Object { [string]$_.resourceId -ieq [string]$graph.id })
+    $otherAssignments = @($assignments | Where-Object { [string]$_.resourceId -ine [string]$graph.id })
+    if ($null -eq $executorGrant -and $otherAssignments.Count -ne 0) {
+        throw 'Managed identity has an application-role assignment outside the exact reviewed Microsoft Graph boundary.'
+    }
+    if ($null -ne $executorGrant) {
+        if ($otherAssignments.Count -ne 1) { throw 'Worker must have exactly one independently verified executor grant.' }
+        foreach ($field in @('id', 'principalId', 'resourceId', 'appRoleId')) {
+            if ([string]$otherAssignments[0].$field -cne [string]$executorGrant[$field]) {
+                throw 'Worker executor application-role assignment differs from exact owned authority.'
+            }
+        }
+    }
+    if (@($graphAssignments | Where-Object {
+        [string]$_.appRoleId -notin $expectedIds
     }).Count -gt 0) {
         throw 'Managed identity has an application-role assignment outside the exact reviewed Microsoft Graph boundary.'
     }
-    $actualIds = @($assignments | ForEach-Object { [string]$_.appRoleId })
+    $actualIds = @($graphAssignments | ForEach-Object { [string]$_.appRoleId })
     if (@($actualIds | Sort-Object -Unique).Count -ne $actualIds.Count) {
         throw 'Managed identity has duplicate Microsoft Graph application-role assignments.'
     }
@@ -554,9 +587,10 @@ function Assert-GraphApplicationRoleAssignmentBoundary {
 function Assert-ExactGraphApplicationRoleAssignments {
     param(
         [Parameter(Mandatory)][string]$PrincipalId,
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedRoleValues
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedRoleValues,
+        [AllowNull()][Collections.IDictionary]$PurviewExecutorContext
     )
-    return Assert-GraphApplicationRoleAssignmentBoundary -PrincipalId $PrincipalId -ExpectedRoleValues $ExpectedRoleValues -RequireComplete
+    return Assert-GraphApplicationRoleAssignmentBoundary -PrincipalId $PrincipalId -ExpectedRoleValues $ExpectedRoleValues -RequireComplete -PurviewExecutorContext $PurviewExecutorContext
 }
 
 function Assert-GatewayFederatedCredentialBoundary {
@@ -1533,9 +1567,17 @@ function Test-GatewayWorkflowIdentityEvidence {
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$Identity,
         [Parameter(Mandatory)]$Inert,
-        [Parameter(Mandatory)]$Evidence
+        [Parameter(Mandatory)]$Evidence,
+        [AllowNull()][Collections.IDictionary]$State
     )
 
+    $executorParameters = @{}
+    if ($null -ne $State -and $State.Contains('freshPurviewExecutor')) {
+        if ($Config.purview.enabled -ne $true) { throw 'Core cannot carry fresh executor authority.' }
+        # Keep original Full/Custom configuration in the trust context. The base
+        # verifier's Purview-disabled copy below describes API-host roles only.
+        $executorParameters.PurviewExecutorContext = @{ Configuration = $Config; State = $State; Runtime = $Inert }
+    }
     if ($Config.purview.enabled -ne $true) {
         return Experience\Test-GatewayWorkflowIdentityEvidence `
             -Config $Config `
@@ -1561,7 +1603,7 @@ function Test-GatewayWorkflowIdentityEvidence {
         -Config $baseConfig `
         -Identity $Identity `
         -Inert $Inert `
-        -Evidence $baseEvidence
+        -Evidence $baseEvidence @executorParameters
 
     $runtimeIdentity = Get-GatewayPurviewRuntimeManagedIdentity `
         -Config $Config `

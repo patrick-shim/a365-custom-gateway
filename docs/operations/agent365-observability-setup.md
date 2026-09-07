@@ -1,5 +1,9 @@
 # Agent 365 observability
 
+Apply the [end-to-end execution contract](../agent-guides/end-to-end-execution.md)
+within this runbook's exact authority and verification boundary; a subtask result
+does not complete product delivery or override an explicit hold.
+
 Agent 365 observability is enabled by default for new registrations. The Gateway
 uses the mapped child Agent ID to acquire an Agent 365 token and exports sanitized
 OpenTelemetry data to the documented Agent 365 OTLP endpoint. Azure Monitor

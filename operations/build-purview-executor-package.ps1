@@ -7,10 +7,12 @@ Requires installed Microsoft-signed PowerShell 7.6.5 and ExchangeOnlineManagemen
 3.10.1. Copies only their installation directories, never a user profile or cache.
 The output directory must be new and inside the repository's ignored runtime area.
 #>
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Build')]
 param(
-    [Parameter(Mandatory)][string]$OutputDirectory,
-    [string]$PowerShellDirectory = $PSHOME
+    [Parameter(Mandatory, ParameterSetName = 'Build')][string]$OutputDirectory,
+    [Parameter(Mandatory, ParameterSetName = 'Validate')][switch]$ValidateOnly,
+    [string]$PowerShellDirectory = $PSHOME,
+    [string]$ExpectedSourceFingerprint = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -19,13 +21,16 @@ if (-not $IsWindows -or -not [Environment]::Is64BitProcess) {
 }
 $repositoryRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 Import-Module (Join-Path $repositoryRoot 'bootstrap/modules/Common.psm1') -Force -DisableNameChecking
-$outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
-$allowedRoots = @('.bootstrap', '.agent-runtime') | ForEach-Object {
-    [IO.Path]::GetFullPath((Join-Path $repositoryRoot $_)).TrimEnd('\') + '\'
-}
-if (-not @($allowedRoots | Where-Object { $outputRoot.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -or
-    (Test-Path -LiteralPath $outputRoot)) {
-    throw 'Executor package output must be a new directory under this repository .bootstrap or .agent-runtime.'
+$outputRoot = ''
+if (-not $ValidateOnly) {
+    $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
+    $allowedRoots = @('.bootstrap', '.agent-runtime') | ForEach-Object {
+        [IO.Path]::GetFullPath((Join-Path $repositoryRoot $_)).TrimEnd('\') + '\'
+    }
+    if (-not @($allowedRoots | Where-Object { $outputRoot.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -or
+        (Test-Path -LiteralPath $outputRoot)) {
+        throw 'Executor package output must be a new directory under this repository .bootstrap or .agent-runtime.'
+    }
 }
 $powerShellRoot = [IO.Path]::GetFullPath($PowerShellDirectory)
 $powerShellPath = Join-Path $powerShellRoot 'pwsh.exe'
@@ -55,7 +60,11 @@ foreach ($sourceRoot in @($powerShellRoot, $moduleRoot)) {
         }
     }
 }
+if ($ValidateOnly) { return }
 $sourceFingerprint = Get-BootstrapSourceFingerprint -Root $repositoryRoot
+if (-not [string]::IsNullOrEmpty($ExpectedSourceFingerprint) -and $sourceFingerprint -cne $ExpectedSourceFingerprint) {
+    throw 'Executor package source differs from the accepted bootstrap generation.'
+}
 $publishDirectory = Join-Path $outputRoot 'publish'
 [IO.Directory]::CreateDirectory($publishDirectory) | Out-Null
 & dotnet publish (Join-Path $repositoryRoot 'src/Gateway.Purview.Executor/Gateway.Purview.Executor.csproj') `
@@ -65,6 +74,9 @@ Copy-Item -LiteralPath $powerShellRoot -Destination (Join-Path $publishDirectory
 $moduleDestination = Join-Path $publishDirectory 'PowerShellModules/ExchangeOnlineManagement/3.10.1'
 [IO.Directory]::CreateDirectory((Split-Path -Parent $moduleDestination)) | Out-Null
 Copy-Item -LiteralPath $moduleRoot -Destination $moduleDestination -Recurse
+if ((Get-BootstrapSourceFingerprint -Root $repositoryRoot) -cne $sourceFingerprint) {
+    throw 'Executor source changed while publishing; no package receipt will be issued.'
+}
 $files = @([IO.Directory]::EnumerateFiles($publishDirectory, '*', [IO.SearchOption]::AllDirectories) | ForEach-Object {
     [ordered]@{
         path = [IO.Path]::GetRelativePath($publishDirectory, $_).Replace('\', '/')

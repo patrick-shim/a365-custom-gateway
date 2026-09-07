@@ -44,9 +44,10 @@ retained evidence, and existing resources unless the exact destructive action is
 separately authorized. Never broaden authority from a delivery objective.
 
 Never access or expose `.secret` or `.secrets`, credentials, tokens, Gateway keys,
-prompts, responses, authorization headers, or provider bodies. Stop at the first
-unproved gate and hand off the exact safe next action; never claim completion from
-partial or stale evidence.
+prompts, responses, authorization headers, or provider bodies. Resolve unproved
+gates within existing authority rather than stopping at every milestone. Pause only
+at a real external boundary or explicit stop, persist the next action, and never
+claim completion from partial or stale evidence.
 
 ## Implemented protection source invariants
 
@@ -63,5 +64,7 @@ Individual DLP on the Application plane. Live claims require fresh exact-target
 authority.
 
 ## Model handoff
+
+Read and follow [the end-to-end execution contract](../../docs/agent-guides/end-to-end-execution.md); preserve the product objective, authority, secure-input references and holds. Report this assignment separately from product delivery.
 
 Follow docs/agent-guides/model-handoff.md before reporting completion or changing models. Continue the active objective and existing exact-target session authority. Keep current live status in docs/agent-continuation.md and the deployment checkpoint. Use canonical main; do not create Git worktrees.

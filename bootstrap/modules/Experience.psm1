@@ -1635,7 +1635,10 @@ function Get-GatewayPlanDescriptor {
         'Managed identities, role assignments, diagnostics, and alerts'
     )) { $azureResources.Add($resource) }
     if ($Config.promptShield.enabled -eq $true) { $azureResources.Add('Azure AI Content Safety account with local authentication disabled') }
-    if ($Config.purview.enabled -eq $true) { $azureResources.Add('Dedicated gateway-protection-admin-v1 queue with exact API sender and worker receiver roles') }
+    if ($Config.purview.enabled -eq $true) {
+        $azureResources.Add('Dedicated gateway-protection-admin-v1 queue with exact API sender and worker receiver roles')
+        $azureResources.Add('Private Windows B1 App Service executor, dedicated integration subnet, private endpoint and app/SCM DNS; private package/claim containers and exact system-identity roles')
+    }
 
     $imperative = [Collections.Generic.List[object]]::new()
     $imperative.Add([ordered]@{ system = 'Local workstation'; operation = 'Verify Git, Azure CLI, .NET SDK 10, and Bicep; install supported missing prerequisites when explicitly enabled'; mutation = $true })
@@ -1655,6 +1658,7 @@ function Get-GatewayPlanDescriptor {
     $imperative.Add([ordered]@{ system = 'Key Vault'; operation = 'Transfer the one-time Admin UI application credential directly to Key Vault without rendering it'; mutation = $true })
     if ($Config.purview.enabled -eq $true) {
         $imperative.Add([ordered]@{ system = 'Microsoft Purview capability'; operation = 'Prepare and read back API/automation identity authority, exact Graph/compliance RBAC, certificate and Key Vault path, and runtime wiring; do not inventory a sensitive information type or create, update, or verify policy'; mutation = $true })
+        $imperative.Add([ordered]@{ system = 'Private Windows executor'; operation = 'Build the accepted-source Windows x64 package with Microsoft-signed PowerShell 7.6.5 and ExchangeOnlineManagement 3.10.1; create a dedicated single-tenant API application and grant only the exact worker Purview.Executor.Invoke; build an immutable publisher image, run one private nonretrying publisher job with full-byte readback, and enable the private host before binding the worker. No SAS, publishing password, client secret, policy authoring or worker certificate access'; mutation = $true })
     }
     $imperative.Add([ordered]@{ system = 'Verification'; operation = 'Read back identities, permissions, private-network posture, immutable images, health, and provisioning prerequisites'; mutation = $false })
 
@@ -5053,6 +5057,7 @@ function Test-GatewayGroupDeploymentEvidence {
         [Parameter(Mandatory)][string]$WorkerImage,
         [Parameter()]$Database,
         [Parameter()][AllowNull()]$PurviewAutomation,
+        [Parameter()][AllowNull()]$PurviewExecutor,
         [Parameter()][AllowNull()]$CapabilityEvidence,
         [switch]$AllowRuntimeSupersession
     )
@@ -5488,6 +5493,13 @@ function Test-GatewayGroupDeploymentEvidence {
                 'Purview__DefaultSensitiveInformationTypeId' = ''
                 'Purview__DefaultSensitiveInformationType' = ''
                 'DOTNET_ENVIRONMENT' = 'Production'
+            }
+            # Older accepted snapshots retain their original environment contract.
+            # New source always emits the explicit disabled or exact enabled transport.
+            if ($null -ne $PurviewExecutor) {
+                foreach ($entry in (Get-PurviewExecutorWorkerEnvironment -Executor $PurviewExecutor).GetEnumerator()) {
+                    $workerEnvironment[$entry.Key] = $entry.Value
+                }
             }
             for ($index = 0; $index -lt $expectedManagerIds.Count; $index++) {
                 $apiEnvironment["Agent365__ManagerApplicationIds__$index"] = [string]$expectedManagerIds[$index]
@@ -6139,7 +6151,8 @@ function Test-GatewayWorkflowIdentityEvidence {
         [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$Identity,
         [Parameter(Mandatory)]$Inert,
-        [Parameter(Mandatory)]$Evidence
+        [Parameter(Mandatory)]$Evidence,
+        [AllowNull()][Collections.IDictionary]$PurviewExecutorContext
     )
 
     if (-not $Evidence -or
@@ -6188,6 +6201,16 @@ function Test-GatewayWorkflowIdentityEvidence {
             [ordered]@{ id = [string]$Inert.workerPrincipalId; expected = $expectedWorkerRoles },
             [ordered]@{ id = [string]$Inert.apiPrincipalId; expected = @($expectedApiRoles) }
         )) {
+            if ([string]$principal.id -ceq [string]$Inert.workerPrincipalId) {
+                # Do not count the executor as Graph or weaken the API-host check.
+                # The shared guard resolves the exception from accepted state and
+                # independent owned executor readback, never from this role map.
+                $executorParameters = @{}
+                if ($null -ne $PurviewExecutorContext) { $executorParameters.PurviewExecutorContext = $PurviewExecutorContext }
+                Entra\Assert-ExactGraphApplicationRoleAssignments -PrincipalId $principal.id `
+                    -ExpectedRoleValues $principal.expected @executorParameters | Out-Null
+                continue
+            }
             $allAssignments = @(Get-BoundedGraphCollection -InitialUrl "https://graph.microsoft.com/v1.0/servicePrincipals/$($principal.id)/appRoleAssignments?`$select=id,resourceId,appRoleId")
             $graphAssignments = @($allAssignments | Where-Object { [string]$_.resourceId -eq [string]$graph.id })
             $actualValues = [Collections.Generic.List[string]]::new()

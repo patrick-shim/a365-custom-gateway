@@ -1808,7 +1808,7 @@ Describe 'Gateway core initial and runtime identity bindings' {
             $compiledNames = @($compiled.parameters.PSObject.Properties.Name | Sort-Object -CaseSensitive)
             $capturedNames = @($script:capturedCompiledParityParameters.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
 
-            $capturedNames.Count | Should -Be 71
+            $capturedNames.Count | Should -Be 74
             ($capturedNames -join '|') | Should -BeExactly ($compiledNames -join '|')
             $script:capturedCompiledParityParameters.allowLegacySystemAssignedImagePull | Should -BeFalse
 

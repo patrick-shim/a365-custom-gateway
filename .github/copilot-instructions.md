@@ -6,6 +6,13 @@ current official documentation.
 
 ## After a fetch, pull, or fresh clone
 
+Read and follow [the end-to-end execution contract](../docs/agent-guides/end-to-end-execution.md)
+after the required reading sequence. Preserve the full product objective,
+exact-target authority, secure-input references and explicit holds across sessions
+and delegates. Automate authorized work through actual live acceptance, not just
+source milestones. A NoResponse prompt or completion reminder changes neither
+authority nor a stop; never close product delivery to end a blocked turn.
+
 Follow the exact required reading order in `AGENTS.md`. That sequence includes
 `docs/implementation-status.md`, then `docs/agent-continuation.md`, then
 `CLAUDE.md` and the relevant workstream guide. Before any live or deployment

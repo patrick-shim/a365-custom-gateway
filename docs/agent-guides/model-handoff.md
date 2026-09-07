@@ -3,6 +3,14 @@
 This protocol applies to Codex, GitHub Copilot, Claude, delegated agents, and human
 contributors. Follow `AGENTS.md` and its required reading order first.
 
+Every role and skill must also read and follow
+[the end-to-end execution contract](end-to-end-execution.md).
+Handoffs preserve the full product objective, acceptance matrix, authorization and
+hold references, secure credential-input reference and availability facts, current
+phase/gate, evidence and exact next action. Do not turn a completed subtask into a
+completed product, a failed prompt into revoked access, or a model switch into a
+new approval cycle. Explicit stops remain effective until the affected scope resumes.
+
 Continue the current objective when the model changes. A question, progress
 request, or handoff request does not cancel the unfinished delivery. Read
 [agent continuation](../agent-continuation.md) for the first unfinished action,
@@ -37,7 +45,7 @@ local-only deployment evidence, and verify the exact removal boundary.
 7. Keep credentials, tokens, Gateway keys, provider bodies, prompts, responses,
    deployment configuration, and operator evidence out of Git. Preserve local
    recovery state separately; never modify an accepted snapshot to fit new source.
-8. Commit the reviewed changes on canonical `main`, push, and check the remote
+8. Under current repository-write authority, commit the reviewed changes on canonical `main`, push, and check the remote
    commit and hosted CI. State any unfinished gate plainly. Verify that no required
    implementation remains only in a worktree or ignored draft.
 

@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-09-06 (Asia/Seoul).
+Last updated: 2026-09-07 (Asia/Seoul).
 
 This is the concise source-of-truth checkpoint for contributors. Public setup starts
 at the repository [README](../README.md). Exact deployed development evidence is in
@@ -8,7 +8,59 @@ at the repository [README](../README.md). Exact deployed development evidence is
 machine or agent starts unfinished work from the tracked
 [agent continuation checkpoint](agent-continuation.md).
 
-## Current delivery: stopped for model handoff
+## Current operating contract
+
+Current publication checkpoint: the operator authorized committing and pushing
+the accumulated source and protocol work on 2026-09-07. The publisher metadata
+correction passed independent review, 61 focused regressions and 1,161 Bootstrap
+tests (zero failures, seven existing platform exclusions), plus source/Bicep and
+package/export checks. These are source results, not a release-readiness claim.
+The latest fresh UI deployment and supported same-source Resume reached fourteen
+of nineteen completed stages and failed at Gateway runtime deployment (stage 15).
+Executor ARM deployment and one succeeded publisher execution do not close that
+failure. Isolate the failing validation without replaying completed mutations.
+Deployment, independent live acceptance and the scratch repeat remain unfinished.
+The paragraphs below retain the earlier attempts and their source-bound evidence;
+the [continuation checkpoint](agent-continuation.md) defines the next action.
+
+All instruction/model/role/skill entry points follow the
+[end-to-end execution contract](agent-guides/end-to-end-execution.md). The latest
+operator scope is automated teardown of the authorized test resources, Windows
+Setup UI deployment, full multi-agent/blueprint live acceptance with observability,
+SIT DLP and Prompt Shields screenshot proof, and a repeated clean scratch run.
+This supersedes earlier recovery-first ordering, not provider safety guards.
+Temporary credentials were supplied; existing authenticated inventory works.
+The operator subsequently selected one subscription under the full teardown
+directive. Selected-subscription cleanup is verified with zero resource groups and
+active ARM resources; other subscriptions remain untouched. Actual Windows Setup
+UI configuration, desktop/narrow screenshots and invalid-submit checks were
+exercised. Fresh Windows integration and its exact executor-grant Verify/Resume
+fix passed independent review. Corrected source passed Release, 2,123 .NET tests,
+1,055 Bootstrap tests (seven explicit exclusions), 32 Operations and 22 Purview
+tests, source/Bicep and replacement package/export checks.
+The actual public UI Plan succeeded. Attempt1 Apply completed fourteen stages,
+then failed before executor mutation intent because its ARM GET used Graph-only
+dispatch. The shared guard correctly rejected the hostname. Correction and the
+authorized clean retry followed: attempt1 was fully torn down with evidence
+preserved, and the routing repair passed independent review and 1,100 Bootstrap
+tests (seven exclusions), all 2,123 .NET tests and 54 Operations/Purview tests.
+The replacement package/export is source-bound. Fresh UI attempt2 Plan succeeded;
+Apply completed fourteen stages before its sixty-minute validity window expired.
+Actual UI read-only review validated all fourteen, then a fresh confirmation
+started supported same-source Resume for the remaining steps. That run progressed
+through executor identity/image and disabled host/publisher deployments, then
+stopped on a publisher validator's null-secret/ARM-ID casing mismatch before any
+publisher execution. Actual semantic bindings were confirmed read-only; correction
+and clean retry are in progress with prior state/config preserved. Completed
+SQL/certificate work was not replayed. Deployment/live acceptance remain unproved.
+Use [agent continuation](agent-continuation.md) for the current next action.
+
+The operating protocol has 70 passing cross-tool Pester tests, successful isolated
+ledger self-tests and independent review with no high-confidence findings. This
+validates instruction wiring and objective/hold/completion guards only, not the
+pending clean deployment or live matrix.
+
+## Prior stopped deployment evidence
 
 The operator stopped work and handed the task to another model. The fully running
 Gateway has **not** been delivered. Do not restart deployment automatically from
@@ -51,20 +103,19 @@ completed stages and operation record were not replayed, rotated, cleared or
 rerun through the identity Ensure function. Preserve it exactly as recorded.
 
 Both corrections landed after that deployment's plan was accepted, so the current
-source fingerprint no longer matches its accepted-source snapshot. This is the
-active blocker and it is unresolved. Resume stops at its accepted-authorization
-preflight because current source differs from the accepted source without a
-completed automatic database recovery. Plan refuses because the deployment has
-already started. Resume also executes bootstrap modules from the accepted-source
-snapshot rather than the working tree, so even a passing Resume would run the
-uncorrected source. No supported operator path out of this state had been
-established when work stopped.
+source fingerprint no longer matches its accepted-source snapshot. The source-only
+deadlock is addressed by a separately reviewable
+`CompletePrerequisiteReconciliation` plan and receipt. It accepts only exact
+complete grant and certificate readback, pins corrected tooling in an immutable
+snapshot, preserves the original deployment source/images/SQL binding, and lets
+only normal `ReconcileOnly` verification advance the failed stage. It rejects
+partial, absent, mismatched, tampered, or incompatible state.
 
 Do not force progress. Do not edit or delete accepted state, remove `.bootstrap`,
 weaken the source-binding guard, or replay a completed recovery in order to adopt
-new source. If no supported command accepts a corrected source generation on a
-started deployment, that is a reviewable source gap to report to the operator with
-its trade-offs, not a guard to bypass.
+new source. Exact-target read-only Plan approval is still required before using
+the new mode; no live Plan, provider readback, Execute, Resume, deployment, policy,
+or cleanup action has run.
 
 No registration, delegated Registry completion, worker-verified `Active`,
 independent Agent 365 landing, Prompt Shields allow/block or DLP allow/block has
@@ -88,10 +139,17 @@ These are source gates. They are not deployment evidence or live-readiness proof
 | Hosted CI for the domain-lookup commit | Passed |
 
 Each correction carries focused regression tests that fail against the previous
-behaviour. Release build, the eight .NET test projects, Bicep compilation, the nine
-format targets and the clean-export gates were **not** rerun for these two
-corrections, because both change PowerShell bootstrap source only. Rerun the
-affected gates before any release claim.
+behaviour. The final recovery selectors passed 50/50, the bootstrap source gate
+passed, and the source plus Windows/POSIX launcher tests passed 21 with six
+existing skips. Release build, the eight .NET test projects, Bicep compilation,
+the nine format targets and a clean export were not rerun. These results remain
+offline source evidence only; rerun the broader release gates before any release
+claim.
+
+The recovery reconciliation candidate then passed 48 focused recovery/resume/guard
+tests and the full bootstrap suite with 917 passed, zero failed, and 7 skipped.
+The skips are existing test-environment exclusions, not live or recovery evidence.
+An independent review of the actual diff found no significant issues.
 
 ## Earlier validation for the promoted Windows executor source
 
@@ -487,7 +545,7 @@ belongs only to the revision recorded in the deployment checkpoint.
 
 ## Safe resume point
 
-Follow the single [continuation checkpoint](agent-continuation.md). Live work was
-stopped by the operator. Certificate publication is partially complete and requires
-diagnosis plus an exact reviewed repair; do not replay the existing operation.
-Earlier deployment histories do not authorize a retry or establish current proof.
+Follow the single [continuation checkpoint](agent-continuation.md) and current
+execution context. The active target has complete prerequisites; a distinct retained
+target has partial publication. Neither historical state authorizes ambiguous
+replay or determines the latest operator-selected deletion scope.

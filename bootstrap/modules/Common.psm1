@@ -2534,6 +2534,15 @@ function Get-BootstrapEffectiveDeploymentSourceFingerprint {
         }
         return [string]$recovery.plan.originalSourceFingerprint
     }
+    if ($State.Contains('purviewPrerequisiteReconciliation')) {
+        $reconciliation = $State.purviewPrerequisiteReconciliation
+        $null = Assert-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $State `
+            -Reconciliation $reconciliation -Completed
+        if ($ExecutionSourceFingerprint -cne [string]$reconciliation.plan.correctedSourceFingerprint) {
+            throw 'Purview prerequisite reconciliation does not authorize this execution source.'
+        }
+        return [string]$reconciliation.plan.originalSourceFingerprint
+    }
     if ($State.Contains('manualDatabaseRepairPlan') -and
         $State.manualDatabaseRepairPlan -is [System.Collections.IDictionary] -and
         [string]$State.manualDatabaseRepairPlan.status -ceq 'Completed') {
@@ -2974,6 +2983,11 @@ function Assert-BootstrapStateAllowsSourcePlan {
     # or altered recovery receipt must never become ordinary Resume authorization.
     if ($State.Contains('purviewPrerequisiteRecoveryPlan')) {
         $null = Assert-BootstrapPurviewRecoveryPlan -State $State -Recovery $State.purviewPrerequisiteRecoveryPlan -Completed
+        return $true
+    }
+    if ($State.Contains('purviewPrerequisiteReconciliation')) {
+        $null = Assert-BootstrapPurviewCompletePrerequisiteReconciliationPlan -State $State `
+            -Reconciliation $State.purviewPrerequisiteReconciliation -Completed
         return $true
     }
     if (-not (Test-BootstrapStateHasEvidence -State $State)) { return $true }

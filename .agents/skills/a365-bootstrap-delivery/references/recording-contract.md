@@ -32,6 +32,22 @@ A completed session is immutable. Start a new session for a new delivery objecti
 
 ## Event protocol
 
+Read and follow the [end-to-end execution contract](../../../../docs/agent-guides/end-to-end-execution.md).
+Reference its bounded local execution context from Evidence: product objective,
+acceptance scope, exact authority/holds, secure-input mechanism and availability
+facts, phase/gate, validation and next action. Never store private input values.
+An objective correction requires coordinator `Record -EventType Decision` with
+Evidence; a Result cannot replace the objective with a test count. Omitted Gate,
+Blockers and NextAction retain their prior values. Clear resolved blockers only
+explicitly, with the resolution recorded; omission is not resolution.
+
+`Complete` requires the current gate UpdateCheckpoint, no persisted blockers or
+active assignments, and one nonempty evidence reference per prior gate plus
+IndependentReview. Reference structure is checked by the recorder; actual live
+proof must still be inspected. Blocked/paused turn closure leaves the ledger Active.
+Use in-process invocation (`& .\...\worklog.ps1`) or PowerShell splatting for array
+arguments; native `pwsh -File` argument passing does not preserve PowerShell arrays.
+
 Record two events around every material action:
 
 - `Intent`: what will be done, why, the work item, and owned files or external boundary.

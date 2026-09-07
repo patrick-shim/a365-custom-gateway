@@ -1,5 +1,9 @@
 # Upgrade strategy
 
+Apply the [end-to-end execution contract](../agent-guides/end-to-end-execution.md)
+within this runbook's exact authority and verification boundary; a subtask result
+does not complete product delivery or override an explicit hold.
+
 Upgrades preserve API compatibility, database recoverability, identity boundaries,
 and exact external-mutation recovery. Fresh installation uses `./gateway setup`;
 this runbook applies to an existing verified deployment.

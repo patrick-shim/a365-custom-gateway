@@ -2,6 +2,8 @@ interface:
   display_name: "A365 Bootstrap Delivery"
   short_description: "Run the evidence-bound bootstrap release gate"
   default_prompt: >-
+    Read and follow docs/agent-guides/end-to-end-execution.md; preserve the product
+    objective, authority, secure-input references and holds across this assignment.
     Use $a365-bootstrap-delivery to validate and resume CURRENT.json. If it is
     absent after a clone or pull, read tracked docs/agent-continuation.md and
     start a source-bound local ledger before continuing the exact unfinished

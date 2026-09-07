@@ -67,6 +67,8 @@ formatting, and documentation gates. Local success is not deployment evidence.
 
 ## Model handoff
 
+Read and follow [the end-to-end execution contract](../../../docs/agent-guides/end-to-end-execution.md). Preserve the product objective, authority, secure-input references and holds; a skill result is not product delivery.
+
 Follow the shared model handoff protocol in `docs/agent-guides/model-handoff.md`.
 Keep current live and recovery facts in the tracked continuation and deployment
 checkpoints. Honor existing session authorization and preserve unfinished work.

@@ -71,6 +71,11 @@ provider mutations directly.
 
 ## Development workflow
 
+Read and follow [the end-to-end execution contract](docs/agent-guides/end-to-end-execution.md).
+Preserve the product objective, authorization and secure-input references across
+handoffs. Automate authorized work; a milestone, NoResponse approval prompt, or
+paused turn is not delivery completion and does not change existing authority.
+
 1. Read `docs/implementation-status.md` and the relevant guide.
 2. Inspect the current worktree and preserve unrelated changes.
 3. Validate Microsoft contracts against current official documentation when an API,
@@ -139,7 +144,8 @@ identifiers and correlation IDs only.
 
 ## Completion
 
-A source change is complete after affected tests, full relevant gates, and
-documentation pass. A deployment claim additionally requires authorized exact live
-readback. A registration is `Active` only after final provider verification. Preview
-dependencies remain described as preview even when development evidence succeeds.
+A source subtask is complete after affected tests, full relevant gates, and
+documentation pass; this does not complete an end-to-end delivery. That requires
+the agreed deployment and independent live acceptance matrix plus final release
+evidence. A registration is `Active` only after final provider verification.
+Preview dependencies remain preview even when development evidence succeeds.

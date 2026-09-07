@@ -424,6 +424,7 @@ Describe 'Workload Entra pre-mutation authority boundary' {
         It 'allows only a duplicate-free subset of the reviewed roles before mutation' {
             $script:assignments = @([pscustomobject]@{
                 resourceId = $script:graphPrincipalId
+                principalId = '22222222-2222-4222-8222-222222222222'
                 appRoleId = 'id-AgentIdentity.Read.All'
             })
 
@@ -436,6 +437,7 @@ Describe 'Workload Entra pre-mutation authority boundary' {
         It 'rejects an unknown application role before adding a missing reviewed role' {
             $script:assignments = @([pscustomobject]@{
                 resourceId = $script:graphPrincipalId
+                principalId = '22222222-2222-4222-8222-222222222222'
                 appRoleId = 'id-Unreviewed.Role'
             })
 
@@ -453,6 +455,7 @@ Describe 'Workload Entra pre-mutation authority boundary' {
 
             $script:assignments = @([pscustomobject]@{
                 resourceId = $script:graphPrincipalId
+                principalId = '22222222-2222-4222-8222-222222222222'
                 appRoleId = 'id-Unreviewed.Role'
             })
             { Assert-ExactGraphApplicationRoleAssignments `
@@ -468,12 +471,14 @@ Describe 'Workload Entra pre-mutation authority boundary' {
                 if ($url -match 'second-role-page') {
                     return [pscustomobject]@{ value = @([pscustomobject]@{
                         resourceId = $script:graphPrincipalId
+                        principalId = '22222222-2222-4222-8222-222222222222'
                         appRoleId = 'id-Unreviewed.Role'
                     }) }
                 }
                 return [pscustomobject]@{
                     value = @([pscustomobject]@{
                         resourceId = $script:graphPrincipalId
+                        principalId = '22222222-2222-4222-8222-222222222222'
                         appRoleId = 'id-AgentIdentity.Read.All'
                     })
                     '@odata.nextLink' = 'https://graph.microsoft.com/v1.0/servicePrincipals/22222222-2222-4222-8222-222222222222/appRoleAssignments?$skiptoken=second-role-page'
