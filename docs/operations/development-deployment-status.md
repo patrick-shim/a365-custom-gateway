@@ -14,6 +14,39 @@ not transfer the ignored state required to Resume an existing deployment.
 
 ## Current operator direction and evidence boundary
 
+The latest operator instruction approves all further independently reviewed work
+needed for full deployment and live Gateway function testing on the existing R3
+target. It resolves the host-settings amendment's earlier NoResponse hold.
+Proceed through reviewed, source-bound repairs and authorized remaining work
+without asking again for each repair; do not bypass sign-in, source or no-replay
+guards or infer unrelated cleanup, purge, bulk identity deletion or a new target.
+
+The reviewed Amendment Plan attempt currently stops at Graph GET `/me` with
+HTTP 401; an independent exact-account CLI read confirmed
+`InvalidAuthenticationToken`. Claimed token expiry metadata did not prove usable
+access. Official exact-tenant Azure CLI sign-in was started with all credential
+output suppressed and remains pending user interaction. Existing authorization
+is retained; no amendment Execute or further Resume occurred.
+
+The operator approved the exact R3 tooling reconciliation and continuation.
+Receipt-only Execute completed and an independent semantic comparison confirmed
+that only the receipt was added. Public read-only Resume review validated all
+fourteen completed checkpoints. Normal Resume then accepted the original
+successful publisher execution without restarting it and completed the existing
+Windows executor enable deployment.
+
+The next runtime check failed on settings readback. Generic ARM action output was
+empty, while the dedicated Web App settings command returned all thirty values
+matching the expected non-secret configuration in memory. No settings values were
+displayed and no configuration mutation was used to repair the check.
+The completed receipt, publication and enable-operation evidence remain preserved.
+A read-only adapter fix and exact tooling amendment passed independent review
+and final offline validation: 1,419 Pester tests, source/Bicep and a 959-file
+clean export with package verification. Original R3 assets remain unchanged.
+That amendment's approval prompt returned NoResponse; no amended binding or
+further Resume followed. R3 remains fourteen of nineteen complete, with no
+verified Admin UI URL. Earlier publisher-failure descriptions below are historical.
+
 The operator explicitly approved R3 after the earlier namespace collision. Only
 the specified failed R2 group was deleted, and its absence and unchanged local
 evidence were verified. Existing tenant applications were preserved. R3 passed

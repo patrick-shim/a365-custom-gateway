@@ -458,6 +458,23 @@ function Get-BootstrapAzureCliArguments {
     }
 
     $commandGroup = [string]$effectiveArguments[0]
+    if ($commandGroup -ceq 'webapp') {
+        # The dedicated app-settings reader is the sole Web CLI exception.
+        # Do not admit the command group, slots, projections or mutation verbs.
+        if ($effectiveArguments.Count -notin @(10, 13) -or
+            ($effectiveArguments[0..3] -join ' ') -cne 'webapp config appsettings list' -or
+            $effectiveArguments[4] -cne '--subscription' -or
+            $effectiveArguments[5] -cne $script:BootstrapAzureSubscriptionId -or
+            $effectiveArguments[6] -cne '--resource-group' -or
+            $effectiveArguments[7] -cnotmatch '^[A-Za-z0-9_()][A-Za-z0-9_.()-]*$' -or
+            $effectiveArguments[8] -cne '--name' -or
+            $effectiveArguments[9] -cnotmatch '^[A-Za-z0-9][A-Za-z0-9-]*$' -or
+            ($effectiveArguments.Count -eq 13 -and
+                ($effectiveArguments[10..12] -join ' ') -cne '--output json --only-show-errors')) {
+            throw 'Only the exact scoped read-only Web app-settings command is permitted.'
+        }
+        return $effectiveArguments
+    }
     $resourceCommandGroups = @(
         'acr', 'cognitiveservices', 'containerapp', 'deployment', 'eventgrid', 'group', 'identity',
         'keyvault', 'monitor', 'network', 'provider', 'resource', 'role', 'servicebus',
@@ -2532,8 +2549,8 @@ function Get-BootstrapEffectiveDeploymentSourceFingerprint {
     Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Bootstrap execution source fingerprint'
     $effectiveSourceFingerprint = $ExecutionSourceFingerprint
     if ($State.Contains('publisherMetadataReconciliation')) {
-        $null = Assert-BootstrapPublisherRecoveryReceipt -State $State
-        if ($ExecutionSourceFingerprint -cne [string]$State.publisherMetadataReconciliation.plan.correctedSourceFingerprint) {
+        $publisherRoot = Assert-BootstrapPublisherRecoveryReceipt -State $State
+        if ($ExecutionSourceFingerprint -cne (Get-BootstrapSourceFingerprint -Root $publisherRoot)) {
             throw 'Publisher metadata receipt does not authorize this tooling source.'
         }
         return [string]$State.acceptedPlan.sourceFingerprint
@@ -2616,7 +2633,7 @@ function Get-BootstrapAssetSourceRoot {
     if ($null -eq $State -or -not $State.Contains('publisherMetadataReconciliation')) { return $toolingRoot }
     $corrected = Assert-BootstrapPublisherRecoveryReceipt -State $State
     if ([IO.Path]::GetFullPath($toolingRoot) -cne [IO.Path]::GetFullPath($corrected) -or
-        $ExecutionSourceFingerprint -cne [string]$State.publisherMetadataReconciliation.plan.correctedSourceFingerprint -or
+        $ExecutionSourceFingerprint -cne (Get-BootstrapSourceFingerprint -Root $corrected) -or
         $DeploymentSourceFingerprint -cne [string]$State.acceptedPlan.sourceFingerprint) {
         throw 'Publisher receipt does not bind this exact tooling and original asset pair.'
     }
@@ -3016,6 +3033,7 @@ function Add-BootstrapConfigurationChangeRecord {
 function Assert-BootstrapStateAllowsSourcePlan {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
 
+    if ($State.Contains('hostSettingsAmendment') -and -not $State.Contains('publisherMetadataReconciliation')) { throw 'Host settings amendment requires its original completed publisher receipt.' }
     if ($State.Contains('publisherMetadataReconciliation')) {
         $null = Assert-BootstrapPublisherRecoveryReceipt -State $State
         return $true

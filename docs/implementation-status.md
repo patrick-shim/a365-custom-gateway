@@ -10,6 +10,32 @@ machine or agent starts unfinished work from the tracked
 
 ## Current operating contract
 
+Current authority: the operator approved further independently reviewed repairs
+and live Gateway function testing on the existing R3 deployment. The host-settings
+amendment no longer awaits another approval prompt; implementation, review,
+validation and exact execution binding are still required. Preserve completed
+work and retain the boundary against unrelated destructive actions or new targets.
+
+Live Amendment Plan currently stops at Graph authentication: both bootstrap and
+an independent exact-account CLI read returned HTTP 401 / `InvalidAuthenticationToken`.
+Official sign-in is pending; this is an access boundary, not a new approval request.
+Offline validation continues and no amendment receipt or further deployment ran.
+
+The operator approved the reviewed R3 in-place reconciliation. Receipt-only
+Execute preserved the original semantic state, and normal Resume reconciled
+publication without another publisher start and completed host enablement.
+Runtime verification then exposed a separate settings-read adapter defect:
+generic ARM action output was empty, while the dedicated Web App read returned
+all thirty exact expected settings. A read-only adapter correction and bounded
+receipt amendment are implemented; 109 changed-file tests and 45 native-dispatch
+tests pass, with one platform exclusion. Independent review and final validation
+passed: 1,419 Pester tests (zero failures, eight platform exclusions), source/Bicep
+and a 959-file clean export with package verification. Original deployed assets
+remain unchanged; live amendment execution is blocked by Graph authentication.
+The earlier amendment approval prompt
+returned NoResponse. R3 remains at fourteen completed stages; no Admin UI URL or
+completed deployment is verified.
+
 Current R3 attempt passed actual Setup Plan and fourteen deployment stages after
 the explicitly approved R2 cleanup. Runtime deployment stopped on a strict
 publisher-template check: execution metadata contains the additional

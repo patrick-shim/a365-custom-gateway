@@ -1,6 +1,6 @@
 BeforeAll {
     $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-    foreach ($module in @('Common', 'Entra', 'PurviewExecutor')) {
+    foreach ($module in @('Common', 'Azure', 'Entra', 'PurviewExecutor')) {
         Import-Module "$root/bootstrap/modules/$module.psm1" -Force -DisableNameChecking
     }
     $originalPath = $env:PATH
@@ -29,7 +29,11 @@ elseif ($args[0] -ceq 'resource' -and $args[1] -ceq 'show') {
         @{ id = $id; properties = @{ fixture = $true } }
     }
 }
-elseif ($args[0] -ceq 'resource' -and $args[1] -ceq 'invoke-action') { $result = $f.settings }
+elseif (($args[0..3] -join ' ') -ceq 'webapp config appsettings list') {
+    $result = @($f.settings.GetEnumerator() | ForEach-Object {
+        @{ name = [string]$_.Key; value = [string]$_.Value; slotSetting = $false }
+    })
+}
 elseif ($args[0] -cin @('network', 'storage') -and $args -ccontains 'list') { $result = $f.collection }
 else { exit 93 }
 if ($f.stderr) { [Console]::Error.WriteLine('synthetic-native-diagnostic-must-not-escape') }
@@ -199,16 +203,18 @@ Describe 'Executor ARM dispatch through real Common and native boundary' {
         $http.calls.Count | Should -Be 0
     }
 
-    It 'routes the actual host appsettings assignment through exact resource list action, never Graph' {
+    It 'routes the actual host appsettings assignment through the exact dedicated reader, never Graph' {
         $siteId = "$scope/providers/Microsoft.Web/sites/executor"
         (& $readHostSettings -siteId $siteId).DOTNET_EnableDiagnostics | Should -BeExactly '0'
         $calls = @(Get-NativeCalls)
         $calls.Count | Should -Be 1
         Assert-ExactNativeScope $calls[0]
-        ($calls[0][0..1] -join ' ') | Should -BeExactly 'resource invoke-action'
-        $calls[0][[array]::IndexOf($calls[0], '--ids') + 1] | Should -BeExactly "$siteId/config/appsettings"
-        $calls[0][[array]::IndexOf($calls[0], '--action') + 1] | Should -BeExactly 'list'
-        $calls[0][[array]::IndexOf($calls[0], '--query') + 1] | Should -BeExactly 'properties'
+        ($calls[0][0..3] -join ' ') | Should -BeExactly 'webapp config appsettings list'
+        $calls[0][[array]::IndexOf($calls[0], '--name') + 1] | Should -BeExactly 'executor'
+        $calls[0][[array]::IndexOf($calls[0], '--resource-group') + 1] | Should -BeExactly 'rg-arm-test'
+        $calls[0] | Should -Not -Contain '--ids'
+        $calls[0] | Should -Not -Contain '--action'
+        $calls[0] | Should -Not -Contain '--query'
         $calls[0] | Should -Not -Contain '--request-body'
         $http.calls.Count | Should -Be 0
     }

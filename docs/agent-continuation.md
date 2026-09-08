@@ -96,7 +96,48 @@ by Git.
 
 ### Current publication checkpoint
 
-Current R3 continuation: the operator explicitly approved the exact replacement.
+The operator subsequently approved all further independently reviewed work needed
+for full deployment and live Gateway function testing on the existing R3 target.
+This resolves the host-settings amendment approval hold below. Continue bounded
+repairs, exact Plan/receipt execution, normal Resume, verification and live tests
+without repeated approval prompts within that scope. Independent review, source
+binding, safe input handling and no-replay guards remain mandatory. Unrelated
+cleanup, purge, bulk tenant-identity deletion or another target are not implied.
+
+Current live access boundary: both the bootstrap and an independent exact-account
+CLI Graph read returned HTTP 401 / `InvalidAuthenticationToken`. Official
+exact-tenant Azure CLI sign-in was started without exposing credential output and
+is awaiting user interaction. Supplied credentials and ongoing authorization are
+not forgotten or revoked; current Graph access must be re-established before
+Amendment Plan/Execute. Continue offline validation while sign-in is pending.
+
+Latest R3 continuation: the operator approved the exact reviewed in-place
+reconciliation and continuation. Receipt-only Execute completed, and comparison
+after removing only that receipt matched the original semantic state. Public
+Setup's read-only Resume review passed all fourteen checkpoints. Normal Resume
+then reconciled the existing publisher execution without another start and
+completed the Windows executor host-enable deployment.
+
+Runtime verification stopped afterward on the host-settings readback adapter.
+The generic ARM action returned an empty object, while the dedicated Web App
+settings read returned all thirty settings matching the exact expected values.
+No host configuration drift was found. A narrowly scoped read-only adapter fix and
+amendment to the completed tooling receipt are implemented, with 109 changed-file
+tests passing (one platform exclusion) and the aligned native fixture passing 45.
+Independent review and final validation passed: 1,419 Pester tests (zero failures,
+eight explicit platform exclusions), source/Bicep and a 959-file clean export
+with fresh-source package verification. Original R3 assets were not rebuilt or
+replaced. Amendment Plan is blocked by Graph authentication as described above.
+Preserve the
+original receipt and assets, completed publication and host enablement, SQL,
+certificates and identities; none may be replayed or reset.
+
+The new host-settings amendment approval prompt returned NoResponse. Continue
+source implementation, tests and independent review, but do not amend execution
+binding or Resume again without explicit approval. R3 remains at fourteen of
+nineteen completed stages, with no verified Admin UI URL.
+
+Earlier R3 publisher boundary: the operator explicitly approved the exact replacement.
 The failed R2 group was deleted once and verified absent, with its local evidence
 and existing tenant applications preserved. Fresh R3 Setup Plan passed, and Apply
 completed fourteen stages including SQL, Admin UI credentials and Purview

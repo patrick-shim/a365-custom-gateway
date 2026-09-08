@@ -57,8 +57,8 @@ BeforeAll {
         $stepNames = @(Get-GatewayBootstrapStepNames)
         $activeAcceptedPlanFingerprint = $State.acceptedPlan.planFingerprint
         $activeDeploymentSourceFingerprint = $State.acceptedPlan.sourceFingerprint
-        $activeExecutionSourceFingerprint = $State.publisherMetadataReconciliation.plan.correctedSourceFingerprint
         $executionSourceRoot = Assert-BootstrapPublisherRecoveryReceipt -State $State
+        $activeExecutionSourceFingerprint = Get-BootstrapSourceFingerprint -Root $executionSourceRoot
         $stopwatch = [Diagnostics.Stopwatch]::StartNew(); $OutputFormat = 'Json'
         Invoke-GatewayStateStep -Name $Name -Action $Action -Validate $Validate -AlwaysRun:$AlwaysRun
     }
@@ -87,6 +87,83 @@ BeforeAll {
         foreach ($entry in $r.host.executorBinding.value.GetEnumerator()) { $f.hostSettings["Executor__Binding__$($entry.Key)"] = [string]$entry.Value }
     }
 
+    function ConvertTo-PublisherBaseFixtureSource {
+        param([string]$Path, [string]$Text)
+        # Reconstruct only the bounded pre-amendment glue in synthetic snapshots.
+        # No Git dependency, operator snapshot, or production validator is mocked.
+        if ($Path -ceq 'bootstrap/reconcile-publisher-metadata.ps1') {
+            $Text = $Text.Replace(", 'AmendmentPlan', 'AmendmentExecute'", '')
+            $start = $Text.IndexOf("    if (`$Mode -cin @('AmendmentPlan'")
+            $end = $Text.IndexOf("`n}", $start)
+            return $Text.Substring(0, $start) + @'
+    Invoke-BootstrapPublisherMetadataReconciliation -Mode $Mode -Config $configuration `
+        -StatePath (Get-BootstrapStatePath -Config $configuration) -ExpectedPlanFingerprint $ExpectedPlanFingerprint -Yes:$Yes |
+        ConvertTo-Json -Depth 5
+'@ + $Text.Substring($end)
+        }
+        $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$null, [ref]$null)
+        $functions = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+            Sort-Object { $_.Extent.StartOffset } -Descending)
+        foreach ($function in $functions) {
+            $body = $function.Extent.Text
+            $body = $body.Replace("    if (`$State.Contains('hostSettingsAmendment') -and -not `$State.Contains('publisherMetadataReconciliation')) { throw 'Host settings amendment requires its original completed publisher receipt.' }", '')
+            switch ($function.Name) {
+                'Get-BootstrapAzureCliArguments' {
+                    $start = $body.IndexOf("    if (`$commandGroup -ceq 'webapp')")
+                    $end = $body.IndexOf('    $resourceCommandGroups', $start)
+                    $body = $body.Remove($start, $end - $start)
+                }
+                'Get-BootstrapEffectiveDeploymentSourceFingerprint' {
+                    $body = $body.Replace('$publisherRoot = Assert-BootstrapPublisherRecoveryReceipt', '$null = Assert-BootstrapPublisherRecoveryReceipt').
+                        Replace('(Get-BootstrapSourceFingerprint -Root $publisherRoot)', '[string]$State.publisherMetadataReconciliation.plan.correctedSourceFingerprint')
+                }
+                'Get-BootstrapAssetSourceRoot' {
+                    $body = $body.Replace('(Get-BootstrapSourceFingerprint -Root $corrected)', '[string]$State.publisherMetadataReconciliation.plan.correctedSourceFingerprint')
+                }
+                'Get-PurviewExecutorArmSettings' {
+                    $body = @'
+function Get-PurviewExecutorArmSettings {
+    param([Parameter(Mandatory)][string]$SiteId)
+    $scope = Get-PurviewExecutorArmScope -Id $SiteId
+    if ($scope.resourcePath -notmatch '^Microsoft.Web/sites/[A-Za-z0-9-]+$') {
+        throw 'Executor settings read requires the exact owned Web site resource ID.'
+    }
+    return Invoke-AzJson -CaptureStdoutOnly -Arguments @(
+        'resource', 'invoke-action', '--subscription', $scope.subscriptionId,
+        '--ids', "$SiteId/config/appsettings", '--action', 'list', '--api-version', '2024-11-01', '--query', 'properties')
+}
+'@
+                }
+                { $_ -cin @('Invoke-PurviewExecutorDeployment', 'Build-PurviewExecutorPublisher',
+                    'Get-PurviewExecutorFreshContext', 'Install-BootstrapPurviewExecutor', 'Get-PurviewExecutorWorkerGrant') } {
+                    $stateName = if ($_ -cin @('Invoke-PurviewExecutorDeployment', 'Build-PurviewExecutorPublisher')) {
+                        '$PublisherRecoveryState'
+                    } elseif ($_ -ceq 'Get-PurviewExecutorWorkerGrant') { '$state' } else { '$State' }
+                    $body = $body.Replace('(Get-BootstrapSourceFingerprint -Root (Get-BootstrapExecutionSourceRoot))',
+                        "$stateName.publisherMetadataReconciliation.plan.correctedSourceFingerprint")
+                }
+                'Get-BootstrapPublisherStableState' { $body = $body.Replace(", 'hostSettingsAmendment'", '') }
+                'Assert-BootstrapPublisherParentPlan' {
+                    $body = $body.Replace('Assert-BootstrapPublisherParentPlan', 'Assert-BootstrapPublisherRecoveryPlan').
+                        Replace('[string]$State.source.lastWritten.bootstrapSourceFingerprint -cne [string]$plan.originalSourceFingerprint)',
+                            "[string]`$State.source.lastWritten.bootstrapSourceFingerprint -cne [string]`$plan.originalSourceFingerprint -or`n        [string]`$plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint))")
+                }
+                'Assert-BootstrapPublisherParentReceipt' {
+                    $body = $body.Replace('Assert-BootstrapPublisherParentReceipt', 'Assert-BootstrapPublisherRecoveryReceipt').
+                        Replace('Assert-BootstrapPublisherParentPlan', 'Assert-BootstrapPublisherRecoveryPlan')
+                }
+                { $_ -cin @('Assert-BootstrapPublisherRecoveryPlan', 'Assert-BootstrapPublisherRecoveryReceipt',
+                    'Get-BootstrapHostSettingsReviewedFunctions', 'Get-BootstrapHostSettingsSourceSurface',
+                    'Assert-BootstrapHostSettingsSourceDelta', 'Assert-BootstrapHostSettingsEligibility',
+                    'Assert-BootstrapHostSettingsPlan', 'Assert-BootstrapHostSettingsAmendment',
+                    'Get-BootstrapHostSettingsProof', 'Invoke-BootstrapHostSettingsAmendment') } { $body = '' }
+            }
+            $Text = $Text.Remove($function.Extent.StartOffset, $function.Extent.EndOffset - $function.Extent.StartOffset).
+                Insert($function.Extent.StartOffset, $body)
+        }
+        return $Text
+    }
+
     function New-PublisherRecoveryFixture {
         $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         $null = New-Item -ItemType Directory "$root/bootstrap/modules" -Force
@@ -103,6 +180,11 @@ BeforeAll {
         [IO.File]::WriteAllText("$root/infrastructure/bicep/admin-ui.bicep", '// immutable synthetic asset')
         [IO.File]::WriteAllText("$root/src/fixture/runtime.cs", '// immutable synthetic runtime')
         [IO.File]::WriteAllText("$root/src/A365Gateway.slnx", '<Solution />')
+        foreach ($path in @('bootstrap/modules/Common.psm1', 'bootstrap/modules/PurviewExecutor.psm1',
+            'bootstrap/modules/PublisherRecovery.psm1', 'bootstrap/reconcile-publisher-metadata.ps1')) {
+            $file = Join-Path $root $path
+            [IO.File]::WriteAllText($file, (ConvertTo-PublisherBaseFixtureSource -Path $path -Text ([IO.File]::ReadAllText($file))))
+        }
         $owner = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
         $accepted = 'sha256:' + ('a' * 64)
         $originalRelative = ".bootstrap/accepted-source/$owner/$($accepted.Substring(7))"
@@ -406,7 +488,15 @@ Describe 'Publisher metadata reconciliation entrypoint contract' {
                     $id = Arg '--ids'; if (-not $f.resources.ContainsKey($id)) { throw 'Unknown synthetic resource' }; $result = $f.resources[$id]
                 }
                 elseif ($a[0] -ceq 'resource' -and $a[1] -ceq 'invoke-action' -and
-                    (Arg '--ids') -ceq "$($f.ids.site)/config/appsettings" -and (Arg '--action') -ceq 'list') { $result = $f.hostSettings }
+                    (Arg '--ids') -ceq "$($f.ids.site)/config/appsettings" -and (Arg '--action') -ceq 'list') {
+                    $result = if ($f.ContainsKey('amendmentSource')) { @{} } else { $f.hostSettings }
+                }
+                elseif ($prefix -ceq 'webapp config appsettings list') {
+                    (Arg '--name') | Should -BeExactly $f.ids.site.Split('/')[-1]
+                    (Arg '--resource-group') | Should -BeExactly $f.config.resourceGroupName
+                    (Arg '--subscription') | Should -BeExactly $f.config.subscriptionId
+                    $result = @($f.hostSettings.GetEnumerator() | ForEach-Object { @{ name = $_.Key; value = $_.Value; slotSetting = $false } })
+                }
                 elseif ($a[0] -ceq 'provider' -and $a[1] -ceq 'show') { return 'Registered' }
                 elseif (($a[0..2] -join ' ') -ceq 'acr task list-runs') { $result = @($f.acrRun) }
                 elseif (($a[0..2] -join ' ') -ceq 'acr task show-run') { $result = $f.acrRun }
@@ -428,6 +518,7 @@ Describe 'Publisher metadata reconciliation entrypoint contract' {
                     $parameterEnvelope = @{}; foreach ($key in $parameters.Keys) { $parameterEnvelope[$key] = @{ value = $parameters[$key] } }
                     $result = @{ state = 'Succeeded'; parameters = $parameterEnvelope
                         outputs = if ($name -match '-executor-publisher-') { $r.publisher } else { $r.host } }
+                    if ($name -match '-executor-enable-' -and $f.ContainsKey('enableReadFailed')) { $result.state = 'Failed' }
                 }
                 elseif (($a[0..2] -join ' ') -ceq 'deployment group create' -and ($f.allowRuntime -or $f.allowAdmin)) {
                     $name = Arg '--name'; $template = Arg '--template-file'
@@ -520,6 +611,46 @@ Describe 'Publisher metadata reconciliation entrypoint contract' {
                 Convert-BootstrapParsedJsonDatesToStrings -Value $s
                 return $s
             }
+            function New-HostSettingsFixture {
+                $review = Plan-Fixture; $null = Execute-Fixture $review.planFingerprint
+                $s = Read-FixtureState
+                Set-FixtureInstalledState -State $s
+                $s.freshPurviewExecutor.status = 'Installing'
+                $s.steps['Gateway runtime deployment'].message = "Bootstrap step 'Gateway runtime deployment' failed. Review the local terminal output, correct the cause, and run Resume."
+                $f.enableDeployment = $true
+                $f.parentRoot = Assert-BootstrapPublisherRecoveryReceipt -State $s
+                $f.parentHash = Get-BootstrapObjectFingerprint -InputObject $s.publisherMetadataReconciliation
+                $f.originalStateHash = Get-BootstrapObjectFingerprint -InputObject $s
+                $f.state = $s
+                [IO.File]::WriteAllText($statePath, (ConvertTo-Json -InputObject $s -Depth 100))
+                foreach ($path in @('bootstrap/modules/Common.psm1', 'bootstrap/modules/PurviewExecutor.psm1',
+                    'bootstrap/modules/PublisherRecovery.psm1', 'bootstrap/reconcile-publisher-metadata.ps1')) {
+                    Copy-Item -LiteralPath (Join-Path $repository $path) -Destination (Join-Path $f.root $path) -Force
+                }
+                $f.amendmentSource = $true
+            }
+            function Plan-HostSettings {
+                Invoke-BootstrapHostSettingsAmendment -Mode Plan -Config $f.config -StatePath $statePath
+            }
+            function Execute-HostSettings($Fingerprint) {
+                Invoke-BootstrapHostSettingsAmendment -Mode Execute -Config $f.config -StatePath $statePath `
+                    -ExpectedPlanFingerprint $Fingerprint -Yes
+            }
+            function Initialize-AmendedFixture($State, $Mode) {
+                Initialize-BootstrapPublisherRecoveryTooling -State $State -Config $f.config -Mode $Mode
+                $pinned = Assert-BootstrapPublisherRecoveryReceipt -State $State
+                foreach ($module in @(Get-Module -All | Where-Object {
+                    $_.Path -and $_.Path.StartsWith($pinned, [StringComparison]::OrdinalIgnoreCase)
+                })) {
+                    & $module {
+                        param($process)
+                        Set-Item Function:script:Invoke-BootstrapCommand -Value $process
+                        if ($ExecutionContext.SessionState.Module.Name -ceq 'Common') {
+                            Set-Item Function:script:Get-BootstrapGraphHttpClient -Value { $global:publisherRecoveryHttp }
+                        }
+                    } $processBoundary
+                }
+            }
         }
         It 'keeps Azure CLI unavailable while permitting the real local chmod boundary' -Skip:$IsWindows {
             @(Get-Command az -CommandType Application -ErrorAction SilentlyContinue).Count | Should -Be 0
@@ -555,6 +686,200 @@ Describe 'Publisher metadata reconciliation entrypoint contract' {
                 }
             }
             $global:publisherRecoveryFixture = $null; $global:publisherRecoveryHttp = $null
+        }
+
+        It 'host amendment Plan is read-only and Execute adds only the separately approved receipt' {
+            New-HostSettingsFixture
+            $before = (Get-FileHash $statePath).Hash
+            { Get-GatewayResumeExecutionSource -State $f.state } | Should -Throw
+            $review = Plan-HostSettings
+            (Get-FileHash $statePath).Hash | Should -BeExactly $before
+            { Invoke-BootstrapHostSettingsAmendment -Mode Execute -Config $f.config -StatePath $statePath `
+                -ExpectedPlanFingerprint $review.planFingerprint } | Should -Throw '*requires Yes*'
+            { Execute-HostSettings ('sha256:' + ('f' * 64)) } | Should -Throw '*approval fingerprint*'
+            $lock = Enter-BootstrapLock -StatePath $statePath
+            try { { Execute-HostSettings $review.planFingerprint } | Should -Throw '*lock*' }
+            finally { $lock.Dispose() }
+            $null = Execute-HostSettings $review.planFingerprint
+            $s = Read-FixtureState
+            $s.steps['Gateway runtime deployment'].status | Should -BeExactly 'Failed'
+            $s.freshPurviewExecutor.status | Should -BeExactly 'Installing'
+            $s.freshPurviewExecutor.operations.publish.status | Should -BeExactly 'Completed'
+            (Get-BootstrapObjectFingerprint -InputObject $s.publisherMetadataReconciliation) | Should -BeExactly $f.parentHash
+            (Get-BootstrapSourceFingerprint -Root $f.parentRoot) | Should -BeExactly $s.publisherMetadataReconciliation.plan.correctedSourceFingerprint
+            $copy = ConvertTo-BootstrapCanonicalValue -Value $s; $copy.Remove('hostSettingsAmendment')
+            (Get-BootstrapObjectFingerprint -InputObject $copy) | Should -BeExactly $f.originalStateHash
+            $selection = Get-GatewayResumeExecutionSource -State $s
+            $selection.executionSourceFingerprint | Should -BeExactly $review.correctedSourceFingerprint
+            $selection.deploymentSourceFingerprint | Should -BeExactly $s.acceptedPlan.sourceFingerprint
+            Set-BootstrapExecutionSourceRoot -Path $selection.executionSourceRoot
+            (Get-BootstrapAssetSourceRoot -State $s -ExecutionSourceFingerprint $selection.executionSourceFingerprint `
+                -DeploymentSourceFingerprint $selection.deploymentSourceFingerprint) | Should -BeExactly $f.originalRoot
+            { Get-BootstrapAssetSourceRoot -State $s -ExecutionSourceFingerprint $s.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+                -DeploymentSourceFingerprint $selection.deploymentSourceFingerprint } | Should -Throw
+            $receiptHash = (Get-FileHash $statePath).Hash
+            $null = Execute-HostSettings $review.planFingerprint
+            (Get-FileHash $statePath).Hash | Should -BeExactly $receiptHash
+            @($f.calls | Where-Object { ($_ -join ' ') -match 'webapp config appsettings list' }).Count | Should -BeGreaterThan 0
+        }
+
+        It 'host amendment creation rejects partial core runtime evidence before any provider read' {
+            New-HostSettingsFixture
+            $s = Read-FixtureState
+            $s.steps['Gateway runtime deployment'].evidence = @{ partialRuntime = $true }
+            [IO.File]::WriteAllText($statePath, (ConvertTo-Json -InputObject $s -Depth 100))
+            $before = (Get-FileHash $statePath).Hash
+            $calls = $f.calls.Count
+            { Plan-HostSettings } | Should -Throw
+            $f.calls.Count | Should -Be $calls
+            (Get-FileHash $statePath).Hash | Should -BeExactly $before
+        }
+
+        It 'host amendment rejects pre-review source or eligibility drift <Fault>' -ForEach @(
+            @{ Fault = 'publisher Started' }, @{ Fault = 'enable Started' }, @{ Fault = 'Installed' },
+            @{ Fault = 'parent receipt' }, @{ Fault = 'runtime asset' }, @{ Fault = 'Azure source' },
+            @{ Fault = 'CLI' }, @{ Fault = 'guard body' }, @{ Fault = 'other recovery' }
+        ) {
+            New-HostSettingsFixture
+            $s = Read-FixtureState
+            switch ($Fault) {
+                'publisher Started' { $s.freshPurviewExecutor.operations.publish.status = 'Started' }
+                'enable Started' { $s.freshPurviewExecutor.operations['a365gw-fixture-executor-enable-dev'].status = 'Started' }
+                'Installed' { $s.freshPurviewExecutor.status = 'Installed' }
+                'parent receipt' { $s.publisherMetadataReconciliation.completionFingerprint = 'sha256:' + ('f' * 64) }
+                'runtime asset' { [IO.File]::AppendAllText("$($f.root)/src/fixture/runtime.cs", '// changed') }
+                'Azure source' { [IO.File]::AppendAllText("$($f.root)/bootstrap/modules/Azure.psm1", "`nfunction Unapproved-Mutation {}") }
+                'CLI' { [IO.File]::AppendAllText("$($f.root)/bootstrap/reconcile-publisher-metadata.ps1", "`nWrite-Output unapproved") }
+                'guard body' {
+                    $path = "$($f.root)/bootstrap/modules/PublisherRecovery.psm1"
+                    [IO.File]::WriteAllText($path, ([IO.File]::ReadAllText($path).Replace(
+                        "throw 'Host settings amendment snapshot changed.'", 'return $root')))
+                }
+                'other recovery' { $s.databaseRecoveryPlan = @{} }
+            }
+            [IO.File]::WriteAllText($statePath, (ConvertTo-Json -InputObject $s -Depth 100))
+            $before = (Get-FileHash $statePath).Hash
+            { Plan-HostSettings } | Should -Throw
+            (Get-FileHash $statePath).Hash | Should -BeExactly $before
+        }
+
+        It 'host amendment rejects a failed enable deployment record even when enabled resources match' {
+            New-HostSettingsFixture
+            $f.enableReadFailed = $true
+            $before = (Get-FileHash $statePath).Hash
+            { Plan-HostSettings } | Should -Throw
+            (Get-FileHash $statePath).Hash | Should -BeExactly $before
+        }
+
+        It 'host amendment rejects provider drift without a fallback or mutation <Fault>' -ForEach @(
+            @{ Fault = 'setting value' }, @{ Fault = 'extra setting' }, @{ Fault = 'extra execution' },
+            @{ Fault = 'CloudBuild' }, @{ Fault = 'raw intent' }, @{ Fault = 'network' }, @{ Fault = 'operator' }
+        ) {
+            New-HostSettingsFixture
+            switch ($Fault) {
+                'setting value' { $f.hostSettings.DOTNET_EnableDiagnostics = '1' }
+                'extra setting' { $f.hostSettings.Unreviewed = 'unsupported' }
+                'extra execution' { $f.count = 2 }
+                'CloudBuild' { $f.execution.properties.template.containers[0].imageType = 'CloudBuild' }
+                'raw intent' { $f.job.properties.template.containers[0].resources.memory = '3Gi'; $f.execution.properties.template.containers[0].resources.memory = '3Gi' }
+                'network' { $f.resources[$f.ids.storage].properties.publicNetworkAccess = 'Enabled' }
+                'operator' { $f.operator.userObjectId = 'ffffffff-ffff-4fff-8fff-ffffffffffff' }
+            }
+            $before = (Get-FileHash $statePath).Hash
+            { Plan-HostSettings } | Should -Throw
+            (Get-FileHash $statePath).Hash | Should -BeExactly $before
+        }
+
+        It 'host amendment rejects post-Plan state, artifact or config drift <Fault>' -ForEach @(
+            @{ Fault = 'state' }, @{ Fault = 'config' }, @{ Fault = 'plan' }, @{ Fault = 'partial' },
+            @{ Fault = 'snapshot' }, @{ Fault = 'owner' }, @{ Fault = 'package' },
+            @{ Fault = 'settings' }, @{ Fault = 'execution' }
+        ) {
+            New-HostSettingsFixture
+            $review = Plan-HostSettings
+            $s = Read-FixtureState
+            $p = Get-Content -LiteralPath $review.planPath -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+            switch ($Fault) {
+                'state' { $s.steps['Gateway runtime deployment'].message = 'different failure' }
+                'config' { $f.config.location = 'other' }
+                'plan' { $p.plan.parentReceiptFingerprint = 'sha256:' + ('f' * 64) }
+                'partial' { $p.Remove('plan') }
+                'snapshot' {
+                    $path = Join-Path $f.root "$($p.executionSource)/src/fixture/runtime.cs"
+                    (Get-Item $path).IsReadOnly = $false
+                    [IO.File]::AppendAllText($path, '// changed')
+                }
+                'owner' { $p.executionSource = $p.executionSource.Replace($s.deploymentOwnershipId, 'ffffffff-ffff-4fff-8fff-ffffffffffff') }
+                'package' { [IO.File]::AppendAllText((Join-Path $s.freshPurviewExecutor.packageDirectory $s.freshPurviewExecutor.package.receipt.packageFileName), 'changed') }
+                'settings' { $f.hostSettings.DOTNET_EnableDiagnostics = '1' }
+                'execution' { $f.count = 2 }
+            }
+            [IO.File]::WriteAllText($review.planPath, (ConvertTo-Json -InputObject $p -Depth 100))
+            [IO.File]::WriteAllText($statePath, (ConvertTo-Json -InputObject $s -Depth 100))
+            $before = (Get-FileHash $statePath).Hash
+            { Execute-HostSettings $review.planFingerprint } | Should -Throw
+            (Get-FileHash $statePath).Hash | Should -BeExactly $before
+        }
+
+        It 'host amendment pins real Resume and Verify callbacks and survives forward progress with no publication or enable replay' {
+            New-HostSettingsFixture
+            $review = Plan-HostSettings; $null = Execute-HostSettings $review.planFingerprint
+            $s = Read-FixtureState
+            $operations = Get-BootstrapObjectFingerprint -InputObject $s.freshPurviewExecutor.operations
+            $prefix = @{}; foreach ($name in @(Get-GatewayBootstrapStepNames)[2..13]) {
+                $prefix[$name] = Get-BootstrapObjectFingerprint -InputObject $s.steps[$name]
+            }
+            Initialize-AmendedFixture $s Resume
+            (Get-Command Get-PurviewExecutorArmSettings).Module.Path | Should -BeLike "*$($review.planFingerprint.Substring(7))*"
+            foreach ($delivery in 1..2) {
+                { Invoke-ShippedRuntimeFixture -State $s } | Should -Throw
+                $s.freshPurviewExecutor.status | Should -BeExactly 'Installed'
+                (Get-BootstrapObjectFingerprint -InputObject $s.freshPurviewExecutor.operations) | Should -BeExactly $operations
+                $s = Read-FixtureState
+            }
+            # After amendment completion, a later ordinary core attempt may retain
+            # partial evidence. Creation-only restrictions must not invalidate it.
+            $s.steps['Gateway runtime deployment'].evidence = @{ partialRuntime = $true }
+            $null = Assert-BootstrapPublisherRecoveryReceipt -State $s
+            foreach ($name in @(Get-GatewayBootstrapStepNames)[0..1]) {
+                $evidence = $s.steps[$name].evidence
+                $null = Invoke-RecoveryStepFixture -State $s -Name $name -AlwaysRun -Action { $evidence }
+            }
+            foreach ($name in @(Get-GatewayBootstrapStepNames)[2..13]) {
+                $null = Invoke-RecoveryStepFixture -State $s -Name $name -Validate { $true } -Action { throw 'Immutable prefix replay forbidden' }
+                (Get-BootstrapObjectFingerprint -InputObject $s.steps[$name]) | Should -BeExactly $prefix[$name]
+            }
+            foreach ($name in @(Get-GatewayBootstrapStepNames)[14..18]) {
+                $null = Invoke-RecoveryStepFixture -State $s -Name $name -Action { @{ verified = $true } }
+                $null = Assert-BootstrapPublisherRecoveryReceipt -State $s
+            }
+            Initialize-AmendedFixture $s Verify
+            $verified = Install-BootstrapPurviewExecutor -Config $f.config -State $s -StatePath $statePath `
+                -Foundation $s.steps['Azure foundation'].evidence -Runtime $s.steps['Inert identity deployment'].evidence `
+                -Automation $f.automation -Database $f.database -ReadOnly
+            $verified.packageDigest | Should -BeExactly $s.freshPurviewExecutor.package.receipt.packageDigest
+            $null = Invoke-RecoveryStepFixture -State $s -Name 'End-to-end deployment verification' -Mode Verify -AlwaysRun -Action { @{ verified = $true } }
+            $null = Execute-HostSettings $review.planFingerprint
+            (Get-BootstrapObjectFingerprint -InputObject $s.publisherMetadataReconciliation) | Should -BeExactly $f.parentHash
+            @($f.calls | Where-Object { ($_ -join ' ') -match 'deployment group create|job start|acr build' }).Count | Should -Be 0
+            $f.count = 2
+            $sentinel = @{ called = $false }
+            { Invoke-RecoveryStepFixture -State $s -Name 'Gateway runtime deployment' -Action { $sentinel.called = $true } } | Should -Throw
+            $sentinel.called | Should -BeFalse
+            $f.count = 1
+            foreach ($fault in @('partial', 'parent', 'hash', 'prefix', 'operations', 'package', 'config')) {
+                $copy = ConvertTo-BootstrapCanonicalValue -Value $s
+                switch ($fault) {
+                    'partial' { $copy.hostSettingsAmendment.Remove('completedAtUtc') }
+                    'parent' { $copy.Remove('publisherMetadataReconciliation') }
+                    'hash' { $copy.hostSettingsAmendment.completionFingerprint = 'sha256:' + ('f' * 64) }
+                    'prefix' { $copy.steps['Gateway database'].evidence.verified = $false }
+                    'operations' { $copy.freshPurviewExecutor.operations.unknown = @{ status = 'Completed' } }
+                    'package' { $copy.freshPurviewExecutor.package.receipt.packageBytes++ }
+                    'config' { $copy.configurationFingerprint = 'sha256:' + ('f' * 64) }
+                }
+                { Get-GatewayResumeExecutionSource -State $copy } | Should -Throw
+            }
         }
 
         It 'plans read-only and executes only a separate receipt; same approved plan is restart-idempotent' {

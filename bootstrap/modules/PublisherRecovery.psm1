@@ -14,7 +14,7 @@ function Assert-BootstrapPublisherRecoveryGeneration {
 function Get-BootstrapPublisherStableState {
     param([Parameter(Mandatory)][Collections.IDictionary]$State)
     $value = ConvertTo-BootstrapCanonicalValue -Value $State
-    foreach ($name in @('updatedAtUtc', 'steps', 'outputs', 'freshPurviewExecutor', 'publisherMetadataReconciliation')) {
+    foreach ($name in @('updatedAtUtc', 'steps', 'outputs', 'freshPurviewExecutor', 'publisherMetadataReconciliation', 'hostSettingsAmendment')) {
         $value.Remove($name)
     }
     # Save-BootstrapState legitimately refreshes this provenance metadata, not the
@@ -356,7 +356,7 @@ function Get-BootstrapPublisherRecoveryProviderState {
     }
 }
 
-function Assert-BootstrapPublisherRecoveryPlan {
+function Assert-BootstrapPublisherParentPlan {
     param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Recovery)
     Assert-BootstrapPublisherRecoveryGeneration -State $State
     $plan = $Recovery.plan
@@ -364,8 +364,7 @@ function Assert-BootstrapPublisherRecoveryPlan {
         [string]$Recovery.planFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $plan) -or
         (Get-BootstrapObjectFingerprint -InputObject (Get-BootstrapPublisherStableState -State $State)) -cne [string]$plan.stableStateFingerprint -or
         [string]$plan.originalSourceFingerprint -cne [string]$State.acceptedPlan.sourceFingerprint -or
-        [string]$State.source.lastWritten.bootstrapSourceFingerprint -cne [string]$plan.originalSourceFingerprint -or
-        [string]$plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) {
+        [string]$State.source.lastWritten.bootstrapSourceFingerprint -cne [string]$plan.originalSourceFingerprint) {
         throw 'Publisher reconciliation plan, configuration, target or current tooling changed.'
     }
     $expected = ".bootstrap/accepted-source/$($State.deploymentOwnershipId)/$(([string]$Recovery.planFingerprint).Substring(7))"
@@ -380,12 +379,12 @@ function Assert-BootstrapPublisherRecoveryPlan {
     return $root
 }
 
-function Assert-BootstrapPublisherRecoveryReceipt {
+function Assert-BootstrapPublisherParentReceipt {
     param([Parameter(Mandatory)][Collections.IDictionary]$State)
     $recovery = $State.publisherMetadataReconciliation
     Assert-PurviewPublisherObjectFields -Object $recovery -Required @('plan', 'planFingerprint', 'executionSource',
         'status', 'completedAtUtc', 'completionFingerprint')
-    $root = Assert-BootstrapPublisherRecoveryPlan -State $State -Recovery $recovery
+    $root = Assert-BootstrapPublisherParentPlan -State $State -Recovery $recovery
     if ([string]$recovery.status -cne 'Completed' -or [string]$recovery.completionFingerprint -cne
         (Get-BootstrapObjectFingerprint -InputObject @{
             planFingerprint = $recovery.planFingerprint; completedAtUtc = $recovery.completedAtUtc; status = 'Completed'
@@ -472,6 +471,24 @@ function Assert-BootstrapPublisherRecoveryReceipt {
     return $root
 }
 
+function Assert-BootstrapPublisherRecoveryPlan {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Recovery)
+    $root = Assert-BootstrapPublisherParentPlan -State $State -Recovery $Recovery
+    if ($State.Contains('hostSettingsAmendment')) {
+        return Assert-BootstrapHostSettingsAmendment -State $State
+    }
+    if ([string]$Recovery.plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) {
+        throw 'Publisher reconciliation current tooling changed; an explicitly approved amendment is required.'
+    }
+    return $root
+}
+
+function Assert-BootstrapPublisherRecoveryReceipt {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State)
+    $null = Assert-BootstrapPublisherParentReceipt -State $State
+    return Assert-BootstrapPublisherRecoveryPlan -State $State -Recovery $State.publisherMetadataReconciliation
+}
+
 function New-BootstrapPublisherRecoveryPlan {
     param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)]$AzureIdentity)
@@ -506,6 +523,7 @@ function New-BootstrapPublisherRecoveryPlan {
 function Initialize-BootstrapPublisherRecoveryTooling {
     param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)][string]$Mode)
+    if ($State.Contains('hostSettingsAmendment') -and -not $State.Contains('publisherMetadataReconciliation')) { throw 'Host settings amendment requires its original completed publisher receipt.' }
     if (-not $State.Contains('publisherMetadataReconciliation')) { return }
     if ($Mode -cnotin @('Resume', 'Verify', 'Apply', 'Up')) { throw 'Publisher receipt is only usable by normal Resume or Verify.' }
     if ((Get-BootstrapConfigurationFingerprint -Config $Config) -cne [string]$State.configurationFingerprint) { throw 'Publisher configuration changed.' }
@@ -514,6 +532,284 @@ function Initialize-BootstrapPublisherRecoveryTooling {
         Import-Module (Join-Path $root "bootstrap/modules/$module.psm1") -Force -Global -DisableNameChecking
     }
     Set-BootstrapExecutionSourceRoot -Path $root
+}
+
+function Get-BootstrapHostSettingsReviewedFunctions {
+    # Exact token digests for this one adapter/amendment generation. The parent
+    # v1 review table above remains immutable. This table is review data, bound
+    # with the complete current source by the operator's amendment fingerprint.
+    return @{
+        'bootstrap/modules/Common.psm1' = @{
+            'Get-BootstrapAzureCliArguments' = @('a94ad3795a2342eb05265b2fefb3bfb32cb599dc9e88e2147349e04d944bff60', '384d90e28bdc487cf7ec642e32e9a2fbde24822317e891de6b0f9c8e064f63c3')
+            'Get-BootstrapEffectiveDeploymentSourceFingerprint' = @('d525a94a44d55fbb7291aef2429ce98eef9001c5a4272c15342087e995618202', 'bcaa981f2b08d0ca9cd7cb70cf452b752a109f47af6dfdbca4e60559267cf87b')
+            'Get-BootstrapAssetSourceRoot' = @('27498e5bf57ae3d97562075c242f73f179d64e160ae7cd0c45181fcb57b16ac1', '237cba526744a625d83c0215ed24b5ce3f568d1cf2114fdfe6f603cf96d6d621')
+            'Assert-BootstrapStateAllowsSourcePlan' = @('89172212647ce1ceaca3b567d83f559dd45695156c79cbf05ee5f65099ecd043', 'b881d51c01f96e3008ac3629e2ffc1ecaeb80e1efce537829a7d23466811b60c')
+        }
+        'bootstrap/modules/PurviewExecutor.psm1' = @{
+            'Get-PurviewExecutorArmSettings' = @('cfaceb933f08f337520acaf5942d2eac8e90677a7b296b590780e4c07002b83f', '167d036f9a6658c84db762691aa63212bfa59f9170bbd24d79a31f1effc7cbaf')
+            'Invoke-PurviewExecutorDeployment' = @('b6db672324491a07cd6817f2267bd56c21ac171be04b8622db19f58715e20532', 'fa175a5a8c2badbb5860d8590819f489ad556dc18bbcdcd8933825013e0b641f')
+            'Build-PurviewExecutorPublisher' = @('5cad39c303e0c8375138eb30d5a732f6874b7501cda5cec04f322f3e15831e3d', 'b1a06f6600b264ea38cf9f48fbabf17aa78f9ee993ba166cf27eeb74cc72282d')
+            'Get-PurviewExecutorFreshContext' = @('205e50d51488ebe772f4e2c996cfc4ce6a9b680008ed3bf5d7ce8dfe28534190', 'dead75c81842bd48f401c36cedf5095b372cf62d869b80e1f63a4936587eebdc')
+            'Install-BootstrapPurviewExecutor' = @('382c03a85aa5c3bfc14c17da0758c8511daa0a06b0a372a25510d7a4b072c33f', 'a308d756e395096c160a6d32b04e05eec1c384b7eb49743d9b359128baf5c10f')
+            'Get-PurviewExecutorWorkerGrant' = @('82fd73e78403aba626a4da80293b54f55feaaf293d3e8ebdad25f2c89a47d0f8', '76002dc4ab030c8f1c3fc7e1ef175a5b1edcf87c8f81279b5f30ed356c0ba5a6')
+        }
+        'bootstrap/modules/PublisherRecovery.psm1' = @{
+            'Get-BootstrapPublisherStableState' = @('d6ca319919119cf46e5ad4460e2d79763328400b0ec4b612478df7b699b34449', '220e15816a5df8394959056abe82493c72aa9e9d097a6c50e7425aebae044058')
+            'Initialize-BootstrapPublisherRecoveryTooling' = @('8fa340f19fff49d145d7707a4b317202985eacefa390f404543bb81831442127', 'd175db5d26721b5f24059b657086934b0bde472d4976ba1a2da7a85c2aa93d8f')
+            'Assert-BootstrapPublisherRecoveryPlan' = @('88beefeb65aea2a7ddd168a9b3fd2be1714151a1b6d158e5e0cece7d75b248ce', '15570640f4d9624f9946feaee99f9af8accdc9005c4acb1aa6d0c2ca47bd2ea4')
+            'Assert-BootstrapPublisherRecoveryReceipt' = @('912d3aa65d7d02a288dd3138203ebdcb7d15ab42b73e5a9d8c8fd0c91fa7a4d8', '82cca0b24284f9f3d67b6c6e54c504c092b8d36ba6256497e03f6134de89178c')
+            'Assert-BootstrapPublisherParentPlan' = @('', 'aab30e552a51f2ad4605f0f9a8c91c73e38fdc5c6fdc8cb1fd84c044ad98c531')
+            'Assert-BootstrapPublisherParentReceipt' = @('', '75e890bef01e01fffdbd0955ab5aae6dcc82ce3998d44ea4511370f8dfad4823')
+            'Get-BootstrapHostSettingsSourceSurface' = @('', '60450908023b0cd1213bff9865503339145827a491c5038648a9a6c742dd58c3')
+            'Assert-BootstrapHostSettingsSourceDelta' = @('', '415101b8453570875f1a267f834a1b3b497538cc730fec69cc3fe86977efe4b7')
+            'Assert-BootstrapHostSettingsEligibility' = @('', 'b3a4f6a8b111697e6b4c1f8fbe1e07b3b4dee883bc89eec682feb41686917cf2')
+            'Assert-BootstrapHostSettingsPlan' = @('', '7f11b2fad857ddeada90b851d9407d937fba4c3f3d5eb25ee17fef497cad8b86')
+            'Assert-BootstrapHostSettingsAmendment' = @('', '4d8b1d589ba1233bdad038dd82a2019c2d67de3dd3ed7a17bc1089be7c7694c8')
+            'Get-BootstrapHostSettingsProof' = @('', 'ac18661a0381618227f2fb71cd3c5efebbee9ccb9de1ed8617df48af95e17b78')
+            'Invoke-BootstrapHostSettingsAmendment' = @('', '7bb5bb8f6590864a2c9b4cdcdc657bf8a6304e148ec3d125580b47eef7b1db78')
+        }
+        'bootstrap/reconcile-publisher-metadata.ps1' = @{ '#script' = @('7fdff6d423d36fe0f6e6a765cb91e494f12dffa26bd090c08bb647bc3aee8cd0', '9f4441cd0130b863271c241459fdbc7d9633bc89fdf0a6972bec45db0a127be0') }
+    }
+}
+
+function Get-BootstrapHostSettingsSourceSurface {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Functions, [switch]$Original)
+    $text = [IO.File]::ReadAllText($Path)
+    if ($Functions.Contains('#script')) {
+        $expected = $Functions['#script'][[int](-not $Original)]
+        if ((Get-BootstrapPublisherTokenFingerprint -Text $text) -cne $expected) {
+            throw 'The amendment CLI differs from the exact reviewed command.'
+        }
+        return ''
+    }
+    $tokens = $null; $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput($text, [ref]$tokens, [ref]$errors)
+    if ($errors.Count) { throw 'Host settings tooling cannot be parsed.' }
+    $definitions = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $true))
+    foreach ($name in $Functions.Keys) {
+        $found = @($definitions | Where-Object Name -CEQ $name)
+        $expected = $Functions[$name][[int](-not $Original)]
+        if ($Original -and $expected -ceq '' -and $found.Count -eq 0) { continue }
+        if ($found.Count -ne 1 -or (Get-BootstrapPublisherTokenFingerprint -Text $found[0].Extent.Text) -cne $expected) {
+            throw 'Host settings tooling differs from the exact reviewed function.'
+        }
+    }
+    $names = @($Functions.Keys)
+    if ($Functions.Contains('Assert-BootstrapHostSettingsPlan')) { $names += 'Get-BootstrapHostSettingsReviewedFunctions' }
+    $ranges = @($definitions | Where-Object { $_.Name -cin $names })
+    $surface = [Collections.Generic.List[string]]::new()
+    foreach ($token in $tokens) {
+        if ($token.Kind -in @('Comment', 'NewLine', 'LineContinuation', 'EndOfInput')) { continue }
+        $inside = $false
+        foreach ($range in $ranges) {
+            if ($token.Extent.StartOffset -ge $range.Extent.StartOffset -and
+                $token.Extent.EndOffset -le $range.Extent.EndOffset) { $inside = $true; break }
+        }
+        if (-not $inside) { $surface.Add($token.Text) }
+    }
+    return $surface -join "`n"
+}
+
+function Assert-BootstrapHostSettingsSourceDelta {
+    param([Parameter(Mandatory)][string]$ParentRoot, [Parameter(Mandatory)][string]$CandidateRoot)
+    $parent = @{}; $candidate = @{}
+    foreach ($entry in @(Get-BootstrapSourceManifest -Root $ParentRoot)) { $parent[$entry.path] = $entry.sha256 }
+    foreach ($entry in @(Get-BootstrapSourceManifest -Root $CandidateRoot)) { $candidate[$entry.path] = $entry.sha256 }
+    $allowed = Get-BootstrapHostSettingsReviewedFunctions
+    $delta = [Collections.Generic.List[object]]::new()
+    foreach ($path in @(@($parent.Keys) + @($candidate.Keys) | Sort-Object -Unique)) {
+        if (-not $parent.ContainsKey($path) -or -not $candidate.ContainsKey($path)) {
+            throw 'Host settings amendment cannot add or remove deployment source files.'
+        }
+        if ($parent[$path] -ceq $candidate[$path]) { continue }
+        if (-not $allowed.Contains($path)) { throw 'Host settings amendment changed immutable assets or unrelated source.' }
+        $a = Get-BootstrapHostSettingsSourceSurface -Path (Join-Path $ParentRoot $path) -Functions $allowed[$path] -Original
+        $b = Get-BootstrapHostSettingsSourceSurface -Path (Join-Path $CandidateRoot $path) -Functions $allowed[$path]
+        if ($a -cne $b) { throw 'Host settings amendment changed source outside its exact adapter and receipt glue.' }
+        $delta.Add([ordered]@{ path = $path; original = $parent[$path]; corrected = $candidate[$path] })
+    }
+    if ($delta.Count -ne $allowed.Count) { throw 'The complete, distinct host settings amendment source is required.' }
+    return ,@($delta)
+}
+
+function Assert-BootstrapHostSettingsEligibility {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Config)
+    if ($State.Contains('hostSettingsAmendment')) { throw 'Use the existing exact completed host settings amendment.' }
+    $null = Assert-BootstrapPublisherParentReceipt -State $State
+    if ((Get-BootstrapConfigurationFingerprint -Config $Config) -cne [string]$State.configurationFingerprint -or
+        $Config.purview.enabled -ne $true -or $State.steps.Count -ne 15 -or
+        [string]$State.steps['Gateway runtime deployment'].status -cne 'Failed' -or
+        $State.steps['Gateway runtime deployment'].Contains('evidence') -or
+        [string]$State.freshPurviewExecutor.status -cne 'Installing') {
+        throw 'Host settings amendment requires the exact post-publication failed runtime checkpoint.'
+    }
+    foreach ($name in @(Get-GatewayBootstrapStepNames)[0..13]) {
+        if ([string]$State.steps[$name].status -cne 'Completed') { throw 'Host settings amendment prefix is incomplete.' }
+    }
+    $record = $State.freshPurviewExecutor
+    $enableName = [string]$State.publisherMetadataReconciliation.plan.provider.enableName
+    if ([string]$record.operations.publish.status -cne 'Completed' -or
+        -not $record.Contains('publication') -or -not $record.operations.Contains($enableName) -or
+        [string]$record.operations[$enableName].status -cne 'Completed') {
+        throw 'Host settings amendment requires completed publication and host-enable operations; no replay is allowed.'
+    }
+}
+
+function Assert-BootstrapHostSettingsPlan {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Amendment)
+    $parentRoot = Assert-BootstrapPublisherParentReceipt -State $State
+    Assert-PurviewPublisherObjectFields -Object $Amendment -Required @('plan', 'planFingerprint', 'executionSource') `
+        -Optional @('status', 'completedAtUtc', 'completionFingerprint')
+    $plan = $Amendment.plan
+    $enableName = [string]$State.publisherMetadataReconciliation.plan.provider.enableName
+    if ([string]$State.freshPurviewExecutor.operations.publish.status -cne 'Completed' -or
+        -not $State.freshPurviewExecutor.operations.Contains($enableName) -or
+        [string]$State.freshPurviewExecutor.operations[$enableName].status -cne 'Completed' -or
+        -not $State.freshPurviewExecutor.Contains('publication')) {
+        throw 'Host settings amendment cannot regress completed publication or host enablement.'
+    }
+    Assert-PurviewPublisherObjectFields -Object $plan -Required @('schemaVersion', 'kind', 'createdAtUtc',
+        'parentReceiptFingerprint', 'parentSourceFingerprint', 'correctedSourceFingerprint', 'initialStateFingerprint',
+        'operationsFingerprint', 'sourceDelta', 'provider')
+    if ($plan.schemaVersion -ne 1 -or [string]$plan.kind -cne 'PublisherHostSettingsAmendment' -or
+        [string]$Amendment.planFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $plan) -or
+        [string]$plan.parentReceiptFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.publisherMetadataReconciliation) -or
+        [string]$plan.parentSourceFingerprint -cne [string]$State.publisherMetadataReconciliation.plan.correctedSourceFingerprint -or
+        [string]$plan.operationsFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.freshPurviewExecutor.operations) -or
+        [string]$plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) {
+        throw 'Host settings amendment parent, operations, plan or current source changed.'
+    }
+    $expected = ".bootstrap/accepted-source/$($State.deploymentOwnershipId)/$(([string]$Amendment.planFingerprint).Substring(7))"
+    if ([string]$Amendment.executionSource -cne $expected) { throw 'Host settings amendment snapshot owner or path changed.' }
+    Assert-BootstrapSourcePathIsRegular -Root (Get-RepositoryRoot) -RelativePath $expected | Out-Null
+    $root = Join-Path (Get-RepositoryRoot) $expected
+    if ((Get-BootstrapSourceFingerprint -Root $root) -cne [string]$plan.correctedSourceFingerprint) {
+        throw 'Host settings amendment snapshot changed.'
+    }
+    $delta = Assert-BootstrapHostSettingsSourceDelta -ParentRoot $parentRoot -CandidateRoot $root
+    Assert-PurviewExecutorEqual -Actual $delta -Expected $plan.sourceDelta -Label 'host settings amendment source delta'
+    Assert-PurviewExecutorEqual -Actual $plan.provider -Expected $State.publisherMetadataReconciliation.plan.provider `
+        -Label 'host settings original provider binding'
+    return $root
+}
+
+function Assert-BootstrapHostSettingsAmendment {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State)
+    $amendment = $State.hostSettingsAmendment
+    Assert-PurviewPublisherObjectFields -Object $amendment -Required @('plan', 'planFingerprint', 'executionSource',
+        'status', 'completedAtUtc', 'completionFingerprint')
+    if ([string]$amendment.status -cne 'Completed' -or [string]$amendment.completionFingerprint -cne
+        (Get-BootstrapObjectFingerprint -InputObject @{
+            planFingerprint = $amendment.planFingerprint; completedAtUtc = $amendment.completedAtUtc; status = 'Completed'
+        })) { throw 'Host settings amendment is incomplete or changed.' }
+    $time = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParseExact([string]$amendment.completedAtUtc, 'O', [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind, [ref]$time)) { throw 'Host settings amendment timestamp is invalid.' }
+    return Assert-BootstrapHostSettingsPlan -State $State -Amendment $amendment
+}
+
+function Get-BootstrapHostSettingsProof {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Config)
+    $identity = Get-BootstrapPublisherRecoveryIdentity -Config $Config
+    $proof = Get-BootstrapPublisherRecoveryProviderState -State $State -Config $Config -AzureIdentity $identity `
+        -Operator $State.publisherMetadataReconciliation.plan.operator
+    Assert-PurviewExecutorEqual -Actual $proof -Expected $State.publisherMetadataReconciliation.plan.provider `
+        -Label 'host settings original publication and enabled host'
+    # The added completed operation is now part of this immutable prefix.
+    # Re-read its exact record too; matching resources alone cannot hide a later
+    # failed or replaced deployment under the original enable name.
+    $parameters = Get-PurviewExecutorHostParameters -Config $Config `
+        -Foundation $State.steps['Azure foundation'].evidence -Record $State.freshPurviewExecutor
+    $parameters.enableRuntime = $true
+    $deployment = Invoke-AzJson -Arguments @('deployment', 'group', 'show', '--subscription', $Config.subscriptionId,
+        '--resource-group', $Config.resourceGroupName, '--name', $proof.enableName,
+        '--query', '{state:properties.provisioningState,parameters:properties.parameters,outputs:properties.outputs}')
+    if ([string]$deployment.state -cne 'Succeeded') { throw 'Original host-enable deployment is not Succeeded.' }
+    Assert-GatewayExactReadableArmParameters -ActualParameters $deployment.parameters -ExpectedParameters $parameters | Out-Null
+    Assert-PurviewExecutorEqual -Actual $deployment.outputs -Expected $State.freshPurviewExecutor.host -Label 'original host-enable deployment outputs'
+    $package = Read-PurviewExecutorPackage -PackageDirectory $State.freshPurviewExecutor.packageDirectory `
+        -ExpectedSourceFingerprint $State.acceptedPlan.sourceFingerprint
+    Assert-PurviewExecutorEqual -Actual $package.receipt -Expected $State.freshPurviewExecutor.package.receipt -Label 'host settings original package'
+    if ($package.receiptFingerprint -cne [string]$State.freshPurviewExecutor.package.receiptFingerprint) { throw 'Original package changed.' }
+    return $proof
+}
+
+function Invoke-BootstrapHostSettingsAmendment {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Plan', 'Execute')][string]$Mode,
+        [Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$StatePath,
+        [string]$ExpectedPlanFingerprint = '', [switch]$Yes)
+    if ($Mode -ceq 'Execute' -and (-not $Yes -or $ExpectedPlanFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$')) {
+        throw 'Host settings amendment Execute requires Yes and the exact reviewed amendment fingerprint.'
+    }
+    if ([IO.Path]::GetFullPath($StatePath) -cne [IO.Path]::GetFullPath((Get-BootstrapStatePath -Config $Config)) -or
+        -not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { throw 'Original exact deployment state is required.' }
+    $repository = Get-RepositoryRoot
+    Assert-BootstrapSourcePathIsRegular -Root $repository -RelativePath ([IO.Path]::GetRelativePath($repository, $StatePath)) | Out-Null
+    $lock = Enter-BootstrapLock -StatePath $StatePath
+    try {
+        $state = Read-BootstrapState -Path $StatePath -Config $Config
+        if ((Get-BootstrapConfigurationFingerprint -Config $Config) -cne [string]$state.configurationFingerprint) {
+            throw 'Host settings amendment configuration changed.'
+        }
+        $rawHash = (Get-FileHash -LiteralPath $StatePath -Algorithm SHA256).Hash
+        $completed = $state.Contains('hostSettingsAmendment')
+        if ($completed) { $null = Assert-BootstrapHostSettingsAmendment -State $state }
+        else { Assert-BootstrapHostSettingsEligibility -State $state -Config $Config }
+        $planPath = Join-Path $repository ".bootstrap/publisher-host-settings-amendment/$($state.deploymentOwnershipId)/plan.json"
+        Assert-BootstrapSourcePathIsRegular -Root $repository -RelativePath ([IO.Path]::GetRelativePath($repository, $planPath)) | Out-Null
+        $amendment = $null
+        if ($completed) { $amendment = $state.hostSettingsAmendment }
+        elseif (Test-Path -LiteralPath $planPath -PathType Leaf) {
+            $amendment = [IO.File]::ReadAllText($planPath) | ConvertFrom-Json -AsHashtable -Depth 100
+            Convert-BootstrapParsedJsonDatesToStrings -Value $amendment
+        }
+        elseif ($Mode -ceq 'Execute') { throw 'A separately reviewed host settings amendment Plan is required.' }
+        if ($null -eq $amendment) {
+            $parentRoot = Assert-BootstrapPublisherParentReceipt -State $state
+            $delta = Assert-BootstrapHostSettingsSourceDelta -ParentRoot $parentRoot -CandidateRoot $repository
+            $proof = Get-BootstrapHostSettingsProof -State $state -Config $Config
+            $plan = ConvertTo-BootstrapCanonicalValue -Value @{
+                schemaVersion = 1; kind = 'PublisherHostSettingsAmendment'; createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+                parentReceiptFingerprint = Get-BootstrapObjectFingerprint -InputObject $state.publisherMetadataReconciliation
+                parentSourceFingerprint = $state.publisherMetadataReconciliation.plan.correctedSourceFingerprint
+                correctedSourceFingerprint = Get-BootstrapSourceFingerprint
+                initialStateFingerprint = Get-BootstrapObjectFingerprint -InputObject $state
+                operationsFingerprint = Get-BootstrapObjectFingerprint -InputObject $state.freshPurviewExecutor.operations
+                sourceDelta = $delta; provider = $proof
+            }
+            $fingerprint = Get-BootstrapObjectFingerprint -InputObject $plan
+            $snapshot = New-BootstrapAcceptedSourceSnapshot -State $state -PlanFingerprint $fingerprint -SourceFingerprint $plan.correctedSourceFingerprint
+            $amendment = [ordered]@{ plan = $plan; planFingerprint = $fingerprint; executionSource = $snapshot }
+            [IO.Directory]::CreateDirectory((Split-Path -Parent $planPath)) | Out-Null
+            Write-BootstrapPublisherRecoveryJson -Path $planPath -Value $amendment
+        }
+        if ($Mode -ceq 'Execute' -and $ExpectedPlanFingerprint -cne [string]$amendment.planFingerprint) {
+            throw 'Host settings amendment approval fingerprint does not match.'
+        }
+        $null = Assert-BootstrapHostSettingsPlan -State $state -Amendment $amendment
+        if (-not $completed -and (Get-BootstrapObjectFingerprint -InputObject $state) -cne [string]$amendment.plan.initialStateFingerprint) {
+            throw 'Original forward state changed after host settings Plan.'
+        }
+        $null = Get-BootstrapHostSettingsProof -State $state -Config $Config
+        if ($Mode -ceq 'Execute' -and -not $completed) {
+            $amendment.status = 'Completed'
+            $amendment.completedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+            $amendment.completionFingerprint = Get-BootstrapObjectFingerprint -InputObject @{
+                planFingerprint = $amendment.planFingerprint; completedAtUtc = $amendment.completedAtUtc; status = 'Completed'
+            }
+            $state.hostSettingsAmendment = $amendment
+            $null = Assert-BootstrapHostSettingsAmendment -State $state
+            if ((Get-FileHash -LiteralPath $StatePath -Algorithm SHA256).Hash -cne $rawHash) { throw 'Original state changed while locked.' }
+            Write-BootstrapPublisherRecoveryJson -Path $StatePath -Value $state -Replace
+            $completed = $true
+        }
+        return [ordered]@{ status = if ($completed) { 'Completed' } else { 'ReviewedReadOnly' }
+            planFingerprint = $amendment.planFingerprint; planPath = $planPath
+            correctedSourceFingerprint = $amendment.plan.correctedSourceFingerprint
+            providerMutations = 0; stageReconciliation = 'NormalResumeOnly' }
+    }
+    finally { $lock.Dispose() }
 }
 
 function Write-BootstrapPublisherRecoveryJson {

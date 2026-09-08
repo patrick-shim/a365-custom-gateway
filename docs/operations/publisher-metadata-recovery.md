@@ -86,3 +86,38 @@ check, preserve the state, review artifacts and provider objects.
 Verify all nineteen stages and the actual Admin UI endpoint before claiming
 deployment success. Registry completion, verified Active registrations, Agent 365
 landing and protection allow/block verdicts retain their separate live gates.
+
+## Host-settings readback amendment
+
+A separate bounded amendment handles an enabled executor whose generic ARM action
+returns an empty settings object while the dedicated Web App settings read returns
+the exact expected configuration. It requires a completed parent reconciliation,
+completed publication and enable operations, fourteen completed stages and the
+failed runtime stage, without pre-existing partial core runtime evidence.
+
+The corrected transport permits only the exact scoped
+`webapp config appsettings list` read. It rejects malformed or duplicate entries,
+unexpected fields, non-string values and slot-specific settings. It never falls
+back to secret listing, publishing profiles or connection strings.
+
+```powershell
+pwsh -NoProfile -File .\bootstrap\reconcile-publisher-metadata.ps1 -Mode AmendmentPlan
+```
+
+Amendment Plan independently verifies the completed parent and both retained
+source snapshots, the exact source delta, original assets and publication intent,
+the one execution, all expected host settings, and the completed enable deployment
+record. It creates only new review and source-snapshot artifacts.
+
+After the exact amendment is reviewed and authorized:
+
+```powershell
+pwsh -NoProfile -File .\bootstrap\reconcile-publisher-metadata.ps1 `
+  -Mode AmendmentExecute -ExpectedPlanFingerprint '<reviewed amendment fingerprint>' -Yes
+```
+
+Execute adds only a separate `hostSettingsAmendment` receipt under the state lock.
+The parent receipt, its Plan and snapshots, completed operations and original
+assets remain unchanged. Normal Resume and Verify select the latest validated
+tooling while retaining original deployment assets; publication and host enablement
+must not run again. No arbitrary source amendment or settings write is authorized.

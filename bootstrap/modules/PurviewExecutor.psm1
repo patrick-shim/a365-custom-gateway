@@ -228,7 +228,7 @@ function Invoke-PurviewExecutorDeployment {
     $root = Get-BootstrapExecutionSourceRoot
     if ($null -ne $PublisherRecoveryState -and $PublisherRecoveryState.Contains('publisherMetadataReconciliation')) {
         $root = Get-BootstrapAssetSourceRoot -State $PublisherRecoveryState `
-            -ExecutionSourceFingerprint $PublisherRecoveryState.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+            -ExecutionSourceFingerprint (Get-BootstrapSourceFingerprint -Root (Get-BootstrapExecutionSourceRoot)) `
             -DeploymentSourceFingerprint $PublisherRecoveryState.acceptedPlan.sourceFingerprint
     }
     $templatePath = Join-Path $root $Template
@@ -290,7 +290,7 @@ function Build-PurviewExecutorPublisher {
             $root = Get-BootstrapExecutionSourceRoot
             if ($null -ne $PublisherRecoveryState -and $PublisherRecoveryState.Contains('publisherMetadataReconciliation')) {
                 $root = Get-BootstrapAssetSourceRoot -State $PublisherRecoveryState `
-                    -ExecutionSourceFingerprint $PublisherRecoveryState.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+                    -ExecutionSourceFingerprint (Get-BootstrapSourceFingerprint -Root (Get-BootstrapExecutionSourceRoot)) `
                     -DeploymentSourceFingerprint $context.sourceFingerprint
                 throw 'Publisher metadata reconciliation never authorizes rebuilding the existing publisher image.'
             }
@@ -385,11 +385,31 @@ function Get-PurviewExecutorArmSettings {
     if ($scope.resourcePath -notmatch '^Microsoft.Web/sites/[A-Za-z0-9-]+$') {
         throw 'Executor settings read requires the exact owned Web site resource ID.'
     }
-    # This fixed POST/list is a read action, not a configuration mutation. The
-    # caller has already verified host ownership and the non-secret-only template.
-    return Invoke-AzJson -CaptureStdoutOnly -Arguments @(
-        'resource', 'invoke-action', '--subscription', $scope.subscriptionId,
-        '--ids', "$SiteId/config/appsettings", '--action', 'list', '--api-version', '2024-11-01', '--query', 'properties')
+    # The generic resource invoke-action adapter loses the settings envelope.
+    # Use the documented dedicated list, never a fallback or a settings write:
+    # https://learn.microsoft.com/cli/azure/webapp/config/appsettings#az-webapp-config-appsettings-list
+    # Ownership is already verified by the caller. No values leave this guard.
+    $raw = Invoke-BootstrapCommand -FilePath az -CaptureStdoutOnly -ArgumentList @(
+        'webapp', 'config', 'appsettings', 'list', '--subscription', $scope.subscriptionId,
+        '--resource-group', $scope.resourceGroup, '--name', $scope.resourcePath.Split('/')[-1],
+        '--output', 'json', '--only-show-errors')
+    try { $items = ConvertFrom-Json -InputObject $raw -Depth 20 -NoEnumerate -ErrorAction Stop }
+    catch { throw 'Executor settings read returned an invalid JSON array; provider output suppressed.' }
+    if ($items -isnot [Array] -or $items.Count -eq 0) { throw 'Executor settings read requires a nonempty array.' }
+    $settings = [ordered]@{}
+    $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($item in $items) {
+        Assert-PurviewPublisherObjectFields -Object $item -Required @('name', 'value') -Optional @('slotSetting')
+        if ($item.name -isnot [string] -or [string]::IsNullOrWhiteSpace($item.name) -or
+            $item.value -isnot [string] -or -not $names.Add($item.name)) {
+            throw 'Executor settings contain invalid names, duplicate entries or non-string values.'
+        }
+        if (Test-GatewayArmObjectProperty -Object $item -Name 'slotSetting') {
+            if ($item.slotSetting -isnot [bool] -or $item.slotSetting) { throw 'Executor slot settings are not supported.' }
+        }
+        $settings[$item.name] = $item.value
+    }
+    return $settings
 }
 
 function Assert-PurviewExecutorCompleteArmCollection {
@@ -874,7 +894,7 @@ function Get-PurviewExecutorFreshContext {
     Assert-BootstrapFingerprintValue -Value $source -Label 'Fresh executor accepted source'
     if ($State.Contains('publisherMetadataReconciliation')) {
         $root = Get-BootstrapAssetSourceRoot -State $State `
-            -ExecutionSourceFingerprint $State.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+            -ExecutionSourceFingerprint (Get-BootstrapSourceFingerprint -Root (Get-BootstrapExecutionSourceRoot)) `
             -DeploymentSourceFingerprint $source
     }
     if ((Get-BootstrapSourceFingerprint -Root $root) -cne $source -or
@@ -974,7 +994,7 @@ function Install-BootstrapPurviewExecutor {
     $root = Get-BootstrapExecutionSourceRoot
     if ($State.Contains('publisherMetadataReconciliation')) {
         $root = Get-BootstrapAssetSourceRoot -State $State `
-            -ExecutionSourceFingerprint $State.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+            -ExecutionSourceFingerprint (Get-BootstrapSourceFingerprint -Root (Get-BootstrapExecutionSourceRoot)) `
             -DeploymentSourceFingerprint $context.sourceFingerprint
     }
     $checkpoint = { Save-BootstrapState -State $State -Path $StatePath }
@@ -1147,7 +1167,7 @@ function Get-PurviewExecutorWorkerGrant {
     $assetRoot = Get-BootstrapExecutionSourceRoot
     if ($state.Contains('publisherMetadataReconciliation')) {
         $assetRoot = Get-BootstrapAssetSourceRoot -State $state `
-            -ExecutionSourceFingerprint $state.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+            -ExecutionSourceFingerprint (Get-BootstrapSourceFingerprint -Root (Get-BootstrapExecutionSourceRoot)) `
             -DeploymentSourceFingerprint $source
     }
     Assert-BootstrapFingerprintValue -Value $source -Label 'Executor grant accepted source'
