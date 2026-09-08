@@ -378,6 +378,14 @@ Describe 'Publisher metadata reconciliation entrypoint contract' {
             $global:publisherRecoveryFixture = New-PublisherRecoveryFixture
             $f = $global:publisherRecoveryFixture
             $savedPath = $env:PATH
+            if (-not $IsWindows) {
+                # Keep native Azure tools isolated while exercising the real mode-600 guard.
+                $chmod = @(Get-Command chmod -CommandType Application -ErrorAction Stop)[0]
+                $isolatedChmod = Join-Path $TestDrive 'chmod'
+                Copy-Item -LiteralPath $chmod.Source -Destination $isolatedChmod -Force
+                [IO.File]::SetUnixFileMode($isolatedChmod, (
+                    [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute))
+            }
             $env:PATH = $TestDrive
             Mock Get-RepositoryRoot -ModuleName Common { $global:publisherRecoveryFixture.root }
             Mock Get-RepositoryRoot -ModuleName PublisherRecovery { $global:publisherRecoveryFixture.root }
@@ -513,6 +521,19 @@ Describe 'Publisher metadata reconciliation entrypoint contract' {
                 return $s
             }
         }
+        It 'keeps Azure CLI unavailable while permitting the real local chmod boundary' -Skip:$IsWindows {
+            @(Get-Command az -CommandType Application -ErrorAction SilentlyContinue).Count | Should -Be 0
+            $commands = @(Get-Command chmod -CommandType Application -ErrorAction Stop)
+            $commands.Count | Should -Be 1
+            $commands[0].Source | Should -BeExactly (Join-Path $TestDrive 'chmod')
+            $probe = Join-Path $TestDrive 'permission-probe'
+            [IO.File]::WriteAllText($probe, 'synthetic permission fixture')
+            & $commands[0].Source 600 $probe
+            $LASTEXITCODE | Should -Be 0
+            [IO.File]::GetUnixFileMode($probe) |
+                Should -Be ([IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite)
+        }
+
         AfterEach {
             foreach ($call in $f.calls) {
                 ($call -join ' ') | Should -Not -Match 'job start|account set|acr build|listSecrets'
