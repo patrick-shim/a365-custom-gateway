@@ -124,6 +124,10 @@ not bypass source binding or authorize replay of completed mutations.
 See the [bootstrap guide](bootstrap/README.md) for prerequisites, configuration,
 automation, and recovery behavior.
 
+A diagnosed publisher metadata mismatch with an existing successful execution has
+a separate [bounded tooling reconciliation](docs/operations/publisher-metadata-recovery.md)
+procedure. It never authorizes another publisher start or an arbitrary source upgrade.
+
 ## Sign in and register an agent
 
 After verification, Setup shows the Admin UI and API endpoints. You can reopen the

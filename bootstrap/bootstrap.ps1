@@ -71,7 +71,7 @@ if ($OutputFormat -eq 'Json') {
     $InformationPreference = 'SilentlyContinue'
 }
 
-foreach ($module in @('Common', 'Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'PurviewRecovery', 'Verification')) {
+foreach ($module in @('Common', 'Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'PurviewRecovery', 'Verification', 'PublisherRecovery')) {
     Import-Module (Join-Path $PSScriptRoot "modules/$module.psm1") -Force -DisableNameChecking
 }
 foreach ($module in @('PurviewPackage', 'PurviewExecutor')) {
@@ -561,7 +561,10 @@ function Get-GatewayResumeExecutionSource {
     $acceptedSourceFingerprint = [string]$State.acceptedPlan.sourceFingerprint
     $executionSourceFingerprint = Get-BootstrapSourceFingerprint
     $plans = Get-BootstrapCompletedDatabaseValidationPlans -State $State
-    if ($State.Contains('purviewPrerequisiteRecoveryPlan')) {
+    if ($State.Contains('publisherMetadataReconciliation')) {
+        $executionSourceRoot = Assert-BootstrapPublisherRecoveryReceipt -State $State
+    }
+    elseif ($State.Contains('purviewPrerequisiteRecoveryPlan')) {
         $executionSourceRoot = Assert-BootstrapPurviewRecoveryPlan -State $State `
             -Recovery $State.purviewPrerequisiteRecoveryPlan -Completed
     }
@@ -1310,7 +1313,7 @@ function Invoke-GatewayStateStep {
             -SourceFingerprint ([string]$state.acceptedPlan.sourceFingerprint) `
             -MaximumAge $acceptedPlanMaximumAge | Out-Null
         if ($Mode -eq 'Resume' -and ($state.Contains('purviewPrerequisiteRecoveryPlan') -or
-            $state.Contains('purviewPrerequisiteReconciliation'))) {
+            $state.Contains('purviewPrerequisiteReconciliation') -or $state.Contains('publisherMetadataReconciliation'))) {
             # Accepted-plan validation restores the original snapshot. Restore the
             # independently completed tooling recovery only after rechecking all
             # preflight bindings, before any stage callback can use a template.
@@ -1319,6 +1322,17 @@ function Invoke-GatewayStateStep {
                 [string]$stepExecution.deploymentSourceFingerprint -cne $activeDeploymentSourceFingerprint -or
                 [IO.Path]::GetFullPath([string]$stepExecution.executionSourceRoot) -cne [IO.Path]::GetFullPath($executionSourceRoot)) {
                 throw 'Purview prerequisite recovery execution binding changed after Resume preflight.'
+            }
+            if ($state.Contains('publisherMetadataReconciliation')) {
+                $pinnedRoot = Assert-BootstrapPublisherRecoveryReceipt -State $state
+                Set-BootstrapExecutionSourceRoot -Path $pinnedRoot
+                if ($Name -cnotin @('Prerequisites', 'Azure authentication')) {
+                    $publisherOperator = $state.steps['Azure authentication'].evidence
+                    $publisherReadback = Get-BootstrapPublisherRecoveryProviderState -State $state -Config $configuration `
+                        -AzureIdentity $publisherOperator -Operator $state.publisherMetadataReconciliation.plan.operator
+                    Assert-PurviewExecutorEqual -Actual $publisherReadback -Expected $state.publisherMetadataReconciliation.plan.provider `
+                        -Label 'publisher receipt provider revalidation'
+                }
             }
             Set-BootstrapExecutionSourceRoot -Path ([string]$stepExecution.executionSourceRoot)
         }
@@ -1355,6 +1369,9 @@ function Invoke-GatewayStateStep {
         $state.Contains('purviewPrerequisiteReconciliation')) -and $Name -cin @($stepNames[2..12])) {
         # Retained side-effect stages must remain byte-for-byte intact even if a
         # readback temporarily fails; only the two local/session checks rerun.
+        $parameters.ValidateAndReuseOnly = $true
+    }
+    if ($state.Contains('publisherMetadataReconciliation') -and $Name -cin @($stepNames[2..13])) {
         $parameters.ValidateAndReuseOnly = $true
     }
     if ($AlwaysRun) { $parameters.AlwaysRun = $true }
@@ -1404,6 +1421,7 @@ try {
     # refreshes the state only after holding the per-deployment lock. The earlier
     # read exists solely for the lock-free Status/Open paths above.
     $state = Read-BootstrapState -Path $statePath -Config $configuration
+    Initialize-BootstrapPublisherRecoveryTooling -State $state -Config $configuration -Mode $Mode;
     $hasStartedCheckpoint = (
         $state.Contains('steps') -and
         $state.steps -is [System.Collections.IDictionary] -and
@@ -2139,6 +2157,7 @@ try {
         }
         else { $null }
         Build-GatewayImages `
+            -PublisherRecoveryState $state `
             -Config $configuration `
             -AcrLoginServer ([string]$foundation.acrLoginServer) `
             -SourceFingerprint $activeDeploymentSourceFingerprint `
@@ -2360,7 +2379,7 @@ try {
     $freshPurviewExecutorSelected = $false
     $purviewRuntimeAutomation = $purviewCapability.purview
     if ($configuration.purview.enabled -eq $true -and
-        $activeExecutionSourceFingerprint -ceq $activeDeploymentSourceFingerprint -and
+        ($activeExecutionSourceFingerprint -ceq $activeDeploymentSourceFingerprint -or $state.Contains('publisherMetadataReconciliation')) -and
         (Test-Path -LiteralPath (Join-Path (Get-BootstrapExecutionSourceRoot) 'bootstrap/modules/PurviewExecutor.psm1'))) {
         foreach ($module in @('PurviewPackage', 'PurviewExecutor')) {
             Import-Module (Join-Path (Get-BootstrapExecutionSourceRoot) "bootstrap/modules/$module.psm1") -Force -DisableNameChecking
@@ -2389,7 +2408,7 @@ try {
                 -Foundation $foundation -Runtime $inert -Automation $purviewRuntimeAutomation -Database $database
             $purviewExecutorParameters.PurviewExecutor = $purviewExecutor
         }
-        $created = Deploy-GatewayCore -Config $configuration -Foundation $foundation -Identity $identity -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -WorkerPrincipalId ([string]$inert.workerPrincipalId) -ManagerApplicationIds @($blueprint.managerApplicationIds) -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ExecutionSourceFingerprint $activeExecutionSourceFingerprint -Database $database -EnableWorkerProcessing -EnableProvisioning:$enableProvisioning -EnablePurview:($configuration.purview.enabled -eq $true) -PurviewAutomation $purviewRuntimeAutomation -CapabilityEvidence $purviewCapability @purviewExecutorParameters
+        $created = Deploy-GatewayCore -PublisherRecoveryState $state -Config $configuration -Foundation $foundation -Identity $identity -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -WorkerPrincipalId ([string]$inert.workerPrincipalId) -ManagerApplicationIds @($blueprint.managerApplicationIds) -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ExecutionSourceFingerprint $activeExecutionSourceFingerprint -Database $database -EnableWorkerProcessing -EnableProvisioning:$enableProvisioning -EnablePurview:($configuration.purview.enabled -eq $true) -PurviewAutomation $purviewRuntimeAutomation -CapabilityEvidence $purviewCapability @purviewExecutorParameters
         $null = Test-GatewayGroupDeploymentEvidence -Config $configuration -Foundation $foundation -Identity $identity -Evidence $created -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ApiImage ([string]$images.api) -WorkerImage ([string]$images.worker) -Database $database -PurviewAutomation $purviewRuntimeAutomation -CapabilityEvidence $purviewCapability @purviewExecutorParameters
         return $created
     }
@@ -2403,7 +2422,7 @@ try {
             return $recovered
         }
     } -NoAutomaticReplayAfterStart -Action {
-        $created = Deploy-GatewayAdminUi -Config $configuration -Foundation $foundation -Identity $identity -AdminIdentity $adminIdentity -AdminUiImage ([string]$images.adminUi) -AdminUiSecretUri ([string]$adminCredential.secretUri) -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ExecutionSourceFingerprint $activeExecutionSourceFingerprint
+        $created = Deploy-GatewayAdminUi -PublisherRecoveryState $state -Config $configuration -Foundation $foundation -Identity $identity -AdminIdentity $adminIdentity -AdminUiImage ([string]$images.adminUi) -AdminUiSecretUri ([string]$adminCredential.secretUri) -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -ExecutionSourceFingerprint $activeExecutionSourceFingerprint
         $null = Test-GatewayNamedGroupDeployment -Config $configuration -Foundation $foundation -Runtime $runtime -Identity $identity -AdminIdentity $adminIdentity -AdminCredential $adminCredential -DeploymentName "a365gw-$($configuration.projectName)-bootstrap-admin-$($configuration.environment)" -Evidence $created -DeploymentOwnershipId ([string]$state.deploymentOwnershipId) -SourceFingerprint $activeDeploymentSourceFingerprint -AdminUiImage ([string]$images.adminUi)
         return $created
     }

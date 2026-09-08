@@ -2531,6 +2531,13 @@ function Get-BootstrapEffectiveDeploymentSourceFingerprint {
     }
     Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Bootstrap execution source fingerprint'
     $effectiveSourceFingerprint = $ExecutionSourceFingerprint
+    if ($State.Contains('publisherMetadataReconciliation')) {
+        $null = Assert-BootstrapPublisherRecoveryReceipt -State $State
+        if ($ExecutionSourceFingerprint -cne [string]$State.publisherMetadataReconciliation.plan.correctedSourceFingerprint) {
+            throw 'Publisher metadata receipt does not authorize this tooling source.'
+        }
+        return [string]$State.acceptedPlan.sourceFingerprint
+    }
     if ($State.Contains('purviewPrerequisiteRecoveryPlan')) {
         $recovery = $State.purviewPrerequisiteRecoveryPlan
         $null = Assert-BootstrapPurviewRecoveryPlan -State $State -Recovery $recovery -Completed
@@ -2591,6 +2598,31 @@ function Get-BootstrapEffectiveDeploymentSourceFingerprint {
 function Set-BootstrapExecutionSourceRoot {
     param([Parameter(Mandatory)][string]$Path)
     $script:BootstrapExecutionSourceRoot = [IO.Path]::GetFullPath($Path)
+}
+
+function Get-BootstrapAssetSourceRoot {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][Collections.IDictionary]$State,
+        [Parameter(Mandatory)][string]$ExecutionSourceFingerprint,
+        [Parameter(Mandatory)][string]$DeploymentSourceFingerprint
+    )
+    $toolingRoot = Get-BootstrapExecutionSourceRoot
+    Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Tooling source'
+    Assert-BootstrapFingerprintValue -Value $DeploymentSourceFingerprint -Label 'Asset source'
+    if ((Get-BootstrapSourceFingerprint -Root $toolingRoot) -cne $ExecutionSourceFingerprint) {
+        throw 'The tooling root does not match its independently reviewed fingerprint.'
+    }
+    if ($null -eq $State -or -not $State.Contains('publisherMetadataReconciliation')) { return $toolingRoot }
+    $corrected = Assert-BootstrapPublisherRecoveryReceipt -State $State
+    if ([IO.Path]::GetFullPath($toolingRoot) -cne [IO.Path]::GetFullPath($corrected) -or
+        $ExecutionSourceFingerprint -cne [string]$State.publisherMetadataReconciliation.plan.correctedSourceFingerprint -or
+        $DeploymentSourceFingerprint -cne [string]$State.acceptedPlan.sourceFingerprint) {
+        throw 'Publisher receipt does not bind this exact tooling and original asset pair.'
+    }
+    # Resolve independently hashes the original snapshot. Never return a supplied
+    # alternate root or reinterpret the original fingerprint as a tooling hash.
+    return Resolve-BootstrapAcceptedSourceRoot -State $State
 }
 
 function Get-BootstrapExecutionSourceRoot {
@@ -2984,6 +3016,10 @@ function Add-BootstrapConfigurationChangeRecord {
 function Assert-BootstrapStateAllowsSourcePlan {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
 
+    if ($State.Contains('publisherMetadataReconciliation')) {
+        $null = Assert-BootstrapPublisherRecoveryReceipt -State $State
+        return $true
+    }
     # Validate even when lastWritten already matches current source. An incomplete
     # or altered recovery receipt must never become ordinary Resume authorization.
     if ($State.Contains('purviewPrerequisiteRecoveryPlan')) {

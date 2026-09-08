@@ -14,6 +14,32 @@ not transfer the ignored state required to Resume an existing deployment.
 
 ## Current operator direction and evidence boundary
 
+The operator explicitly approved R3 after the earlier namespace collision. Only
+the specified failed R2 group was deleted, and its absence and unchanged local
+evidence were verified. Existing tenant applications were preserved. R3 passed
+actual Setup Plan and completed fourteen stages, including SQL and Purview
+prerequisites, before runtime deployment stopped at publisher-template validation.
+
+Exactly one publisher execution is `Succeeded`. Its execution-only
+`imageType: ContainerImage` field is the proven mismatch; read-only diagnostic
+comparison of all remaining normalized fields matched the current job readback.
+The reconciliation plan must also verify the original persisted publication-intent
+fingerprint; diagnostic comparison alone is not acceptance.
+The stable ARM API also returns this field. The BaseContainer discriminator is
+documented, while the execution schema inspected does not declare it. The
+application remains fail closed pending approval of the implemented parser
+correction and source-reconciliation receipt. Independent review and final
+validation passed: 1,362 Pester tests, source/Bicep and clean-export/package checks.
+The actual read-only Plan verified original raw intent, package, source and
+provider evidence with unchanged state/configuration hashes. Publication is still `Started` in local state;
+no repeated start, source-guard bypass, host enablement, purge or policy mutation
+was performed.
+
+The exact Plan Execute/continuation approval prompt returned NoResponse. Original
+plan, images, package, SQL, certificates and identities remain preserved.
+Execution rebinding and remaining deployment need explicit approval. No Admin UI URL or completed deployment is
+verified. Earlier attempt descriptions below are historical.
+
 On 2026-09-08 the operator explicitly approved the exact cleanup and replacement.
 Only the specified failed resource group was deleted; group absence and zero
 remaining resources in that scope were independently verified. Original

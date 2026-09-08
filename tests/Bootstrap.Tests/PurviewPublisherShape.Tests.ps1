@@ -291,6 +291,75 @@ Describe 'Actual publisher guard provider metadata shapes' {
         (Invoke-PublisherReadOnlyFixture).name | Should -BeExactly 'exact-execution'
     }
 
+    It 'accepts execution-only exact ContainerImage without changing raw job or publication intent' {
+        $executionContainer.imageType = 'ContainerImage'
+        $container.resources.ephemeralStorage = '1Gi'
+        $executionContainer.resources.ephemeralStorage = '1Gi'
+        $before = Get-BootstrapObjectFingerprint -InputObject $job
+        $template = Assert-PublisherFixture
+        (Invoke-PublisherReadOnlyFixture).name | Should -BeExactly 'exact-execution'
+        (Get-BootstrapObjectFingerprint -InputObject $job) | Should -BeExactly $before
+        $record.operations.publish.intentFingerprint | Should -BeExactly (Get-BootstrapObjectFingerprint -InputObject @{
+            jobId = $record.publisher.jobId.value; template = $template; intentId = $record.intentId
+        })
+        $record.operations.publish.status | Should -BeExactly 'Started'
+    }
+
+    It 'rejects unsupported execution imageType metadata: <Shape>' -ForEach @(
+        @{ Shape = 'CloudBuild'; Value = 'CloudBuild' }, @{ Shape = 'null'; Value = $null },
+        @{ Shape = 'unknown'; Value = 'Unknown' }, @{ Shape = 'empty'; Value = '' },
+        @{ Shape = 'case changed'; Value = 'containerimage' }, @{ Shape = 'number'; Value = 1 },
+        @{ Shape = 'boolean'; Value = $true }, @{ Shape = 'array'; Value = @('ContainerImage') },
+        @{ Shape = 'object'; Value = @{ value = 'ContainerImage' } }
+    ) {
+        $executionContainer.imageType = $Value
+        { Invoke-PublisherReadOnlyFixture } | Should -Throw
+        $record.operations.publish.status | Should -BeExactly 'Started'
+    }
+
+    It 'does not extend the job schema with execution imageType' {
+        $container.imageType = 'ContainerImage'
+        { Assert-PublisherFixture } | Should -Throw
+    }
+
+    It 'rejects exact ContainerImage with an additional mismatch: <Fault>' -ForEach @(
+        @{ Fault = 'unknown field' }, @{ Fault = 'field casing' }, @{ Fault = 'image' },
+        @{ Fault = 'environment' }, @{ Fault = 'CPU' }, @{ Fault = 'memory' }, @{ Fault = 'ephemeral storage' }
+    ) {
+        $executionContainer.imageType = 'ContainerImage'
+        switch ($Fault) {
+            'unknown field' { $executionContainer.extra = $null }
+            'field casing' { $executionContainer.Remove('imageType'); $executionContainer.ImageType = 'ContainerImage' }
+            'image' { $executionContainer.image = 'fixture.azurecr.io/publisher@sha256:' + ('d' * 64) }
+            'environment' { $executionContainer.env[0].value = 'changed' }
+            'CPU' { $executionContainer.resources.cpu = 1.0 }
+            'memory' { $executionContainer.resources.memory = '2Gi' }
+            'ephemeral storage' { $executionContainer.resources.ephemeralStorage = '2Gi' }
+        }
+        { Invoke-PublisherReadOnlyFixture } | Should -Throw
+        $record.operations.publish.status | Should -BeExactly 'Started'
+    }
+
+    It 'checkpoints the exact existing ContainerImage execution once after restart without a second start' {
+        $executionContainer.imageType = 'ContainerImage'
+        $null = Invoke-PublisherReadOnlyFixture
+        $state = New-BootstrapState -Config $config
+        $state.publisherFixture = $record
+        $path = Join-Path $TestDrive 'publisher-metadata-restart.json'
+        $jobBefore = Get-BootstrapObjectFingerprint -InputObject $job
+        foreach ($delivery in 1..2) {
+            $result = Start-PurviewPublisherOnce -Config $config -Template $job.properties.template -Record $record -Checkpoint {
+                Save-BootstrapState -State $state -Path $path
+            }
+            $result.name | Should -BeExactly 'exact-execution'
+            $record.operations.publish.status | Should -BeExactly 'Completed'
+            $state = Get-Content $path -Raw | ConvertFrom-Json -AsHashtable
+            $record = $state.publisherFixture
+        }
+        (Get-BootstrapObjectFingerprint -InputObject $job) | Should -BeExactly $jobBefore
+        @(Get-Content $env:A365GW_PUBLISHER_TEST_CALLS | Where-Object { $_ -match '"start"' }).Count | Should -Be 0
+    }
+
     It 'keeps only static publisher diagnostics through the actual step and native boundary: <Fault>' -ForEach @(
         @{ Fault = 'discovery'; Guard = 'discovery' },
         @{ Fault = 'readback'; Guard = 'execution.readback' },

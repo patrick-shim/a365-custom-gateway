@@ -96,6 +96,42 @@ by Git.
 
 ### Current publication checkpoint
 
+Current R3 continuation: the operator explicitly approved the exact replacement.
+The failed R2 group was deleted once and verified absent, with its local evidence
+and existing tenant applications preserved. Fresh R3 Setup Plan passed, and Apply
+completed fourteen stages including SQL, Admin UI credentials and Purview
+prerequisites. Runtime deployment stopped at publisher execution-template
+validation after exactly one publisher execution succeeded.
+
+Read-only comparison proved the sole mismatch: Azure adds execution metadata
+`imageType: ContainerImage`, including through the stable ARM API. All remaining
+normalized image, environment and resource fields match the current job readback.
+Reconciliation must additionally prove the original persisted publication-intent
+fingerprint before any execution-binding change.
+The ordinary guard rejected the unreviewed field; publication remains `Started`
+locally and no host enablement or later completion is claimed. No second publisher
+execution is allowed.
+
+A narrow parser correction and explicit tooling-source reconciliation plan/receipt
+are implemented for this exact fourteen-stage case, with 569 affected tests passed
+(one existing platform exclusion) and a final 52-test reconciliation rerun passed.
+Independent review and final validation passed: 1,362 Pester tests (zero failures,
+seven existing platform exclusions), source/Bicep and a 958-file clean export.
+Tests used an isolated Azure CLI configuration to prevent use of operator
+credentials. Fresh-source package verification passed separately; it is not a
+replacement for the original R3 package. They preserve the
+original accepted plan, runtime images, package, SQL, certificates and identities,
+restore corrected tooling before callbacks, and let only normal Resume advance.
+The actual read-only reconciliation Plan passed against R3, including original
+raw-intent, package, source and provider checks; original state/configuration
+hashes were unchanged. Its exact Execute/continuation approval prompt returned
+NoResponse. Obtain explicit approval of that recorded Plan before receipt-only
+Execute and normal Resume; do not rebind R3 execution or perform remaining
+mutations without it. No replacement target, purge or policy change
+is authorized by that prompt. Follow the
+[publisher metadata runbook](operations/publisher-metadata-recovery.md) only within
+its reviewed authority and source boundary. There is no verified Admin UI URL yet.
+
 Latest continuation on 2026-09-08: the operator explicitly approved the exact
 cleanup and replacement, resolving the earlier approval hold. The failed original
 resource group was deleted once and independently verified absent, with original

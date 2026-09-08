@@ -222,9 +222,15 @@ function Invoke-PurviewExecutorDeployment {
         [Parameter(Mandatory)][Collections.IDictionary]$Parameters,
         [Parameter(Mandatory)][Collections.IDictionary]$Operations,
         [Parameter(Mandatory)][scriptblock]$Checkpoint,
+        [AllowNull()][Collections.IDictionary]$PublisherRecoveryState,
         [switch]$ReadOnly
     )
     $root = Get-BootstrapExecutionSourceRoot
+    if ($null -ne $PublisherRecoveryState -and $PublisherRecoveryState.Contains('publisherMetadataReconciliation')) {
+        $root = Get-BootstrapAssetSourceRoot -State $PublisherRecoveryState `
+            -ExecutionSourceFingerprint $PublisherRecoveryState.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+            -DeploymentSourceFingerprint $PublisherRecoveryState.acceptedPlan.sourceFingerprint
+    }
     $templatePath = Join-Path $root $Template
     $templateHash = (Get-FileHash -LiteralPath $templatePath -Algorithm SHA256).Hash.ToLowerInvariant()
     return Invoke-PurviewBootstrapOnce -Operations $Operations -Name $Name `
@@ -255,6 +261,7 @@ function Build-PurviewExecutorPublisher {
         [Parameter(Mandatory)]$Foundation,
         [Parameter(Mandatory)][Collections.IDictionary]$Record,
         [Parameter(Mandatory)][scriptblock]$Checkpoint,
+        [AllowNull()][Collections.IDictionary]$PublisherRecoveryState,
         [switch]$ReadOnly
     )
     $context = $Record.context
@@ -281,6 +288,12 @@ function Build-PurviewExecutorPublisher {
             return [ordered]@{ digest = $digest; runId = [string]$run.runId }
         } -Mutate {
             $root = Get-BootstrapExecutionSourceRoot
+            if ($null -ne $PublisherRecoveryState -and $PublisherRecoveryState.Contains('publisherMetadataReconciliation')) {
+                $root = Get-BootstrapAssetSourceRoot -State $PublisherRecoveryState `
+                    -ExecutionSourceFingerprint $PublisherRecoveryState.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+                    -DeploymentSourceFingerprint $context.sourceFingerprint
+                throw 'Publisher metadata reconciliation never authorizes rebuilding the existing publisher image.'
+            }
             $buildContext = New-PurviewPublisherBuildContext -RepositoryRoot $root -SourceFingerprint $context.sourceFingerprint `
                 -PackageDirectory $Record.packageDirectory -ExpectedReceiptFingerprint $Record.package.receiptFingerprint `
                 -OutputDirectory (Join-Path $root ".bootstrap/purview-publisher/$([guid]::NewGuid().ToString('D'))")
@@ -655,7 +668,20 @@ function ConvertTo-PurviewPublisherExecutionTemplate {
     $container = $Template.containers[0]
     $containerOptional = @('command', 'args')
     if ($JobTemplate) { $containerOptional += @('probes', 'volumeMounts') }
-    Assert-PurviewPublisherObjectFields -Object $container -Required @('name', 'image', 'resources', 'env') -Optional $containerOptional
+    $metadataOptional = @()
+    if (-not $JobTemplate) { $metadataOptional += 'imageType' }
+    Assert-PurviewPublisherObjectFields -Object $container -Required @('name', 'image', 'resources', 'env') -Optional @($containerOptional + $metadataOptional)
+    # Service/schema discrepancy: stable 2025-01-01 executions return imageType,
+    # although Jobs.JobExecutionContainer omits it. The official Microsoft.App
+    # 2025-02-02-preview CommonDefinitions.BaseContainer enum defines ContainerImage
+    # as a user-provided image, distinct from CloudBuild. Accept only that exact
+    # execution-side discriminator, not a preview API or an unknown-field bypass.
+    if (-not $JobTemplate -and (Test-GatewayArmObjectProperty -Object $container -Name 'imageType')) {
+        $imageType = Get-GatewayArmObjectProperty -Object $container -Name 'imageType'
+        if ($imageType -isnot [string] -or $imageType -cne 'ContainerImage') {
+            throw 'Publisher execution image type is unsupported or unverifiable.'
+        }
+    }
     foreach ($name in $containerOptional) { Assert-PurviewPublisherEmptyOptionalArray -Object $container -Name $name }
     if ($container.name -isnot [string] -or $container.image -isnot [string] -or $container.env -isnot [Array]) {
         throw 'Publisher execution container metadata is malformed.'
@@ -846,6 +872,11 @@ function Get-PurviewExecutorFreshContext {
         $State.acceptedPlan -isnot [Collections.IDictionary]) { throw 'Fresh executor requires an accepted bootstrap plan.' }
     $source = [string]$State.acceptedPlan.sourceFingerprint
     Assert-BootstrapFingerprintValue -Value $source -Label 'Fresh executor accepted source'
+    if ($State.Contains('publisherMetadataReconciliation')) {
+        $root = Get-BootstrapAssetSourceRoot -State $State `
+            -ExecutionSourceFingerprint $State.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+            -DeploymentSourceFingerprint $source
+    }
     if ((Get-BootstrapSourceFingerprint -Root $root) -cne $source -or
         [string]$State.configurationFingerprint -cne [string]$State.acceptedPlan.configurationFingerprint -or
         (Get-BootstrapConfigurationFingerprint -Config $Config) -cne [string]$State.configurationFingerprint) {
@@ -901,6 +932,29 @@ function Get-PurviewExecutorFreshContext {
     return $context
 }
 
+function Get-PurviewExecutorHostParameters {
+    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$Foundation,
+        [Parameter(Mandatory)][Collections.IDictionary]$Record)
+    $context = $Record.context
+    $binding = [ordered]@{
+        AutomationApplicationId = $context.automationApplicationId; AutomationServicePrincipalObjectId = $context.automationServicePrincipalId
+        GatewayApiPrincipalId = $context.apiPrincipalId; RuntimeClientId = $context.runtimeClientId; RuntimePrincipalId = $context.runtimePrincipalId
+    }
+    return [ordered]@{
+        deploymentOwnershipId = $context.deploymentOwnershipId; bootstrapSourceFingerprint = $context.sourceFingerprint
+        executionSourceFingerprint = $context.sourceFingerprint; location = [string]$Config.location
+        projectName = [string]$Config.projectName; environmentName = [string]$Config.environment
+        virtualNetworkName = [string]$Foundation.virtualNetworkName; privateEndpointSubnetId = [string]$Foundation.privateEndpointSubnetId
+        executorSubnetPrefix = '10.42.3.0/26'; storageAccountName = $Record.network.storageAccountName
+        keyVaultName = "kv-$($Config.projectName)-$($Config.environment)"; certificateName = $context.certificateName
+        executorApplicationId = $Record.identity.applicationId; workerApplicationId = $context.workerApplicationId
+        workerPrincipalId = $context.workerPrincipalId; enableRuntime = $false
+        packageSha256 = ([string]$Record.package.receipt.packageDigest).Substring(7)
+        runtimeManifestDigest = $Record.package.receipt.runtimeManifestDigest
+        executionBinding = $binding; organization = $context.organization
+    }
+}
+
 function Install-BootstrapPurviewExecutor {
     [CmdletBinding()]
     param(
@@ -918,6 +972,11 @@ function Install-BootstrapPurviewExecutor {
     $context = Get-PurviewExecutorFreshContext -Config $Config -State $State -Foundation $Foundation `
         -Runtime $Runtime -Automation $Automation -Database $Database
     $root = Get-BootstrapExecutionSourceRoot
+    if ($State.Contains('publisherMetadataReconciliation')) {
+        $root = Get-BootstrapAssetSourceRoot -State $State `
+            -ExecutionSourceFingerprint $State.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+            -DeploymentSourceFingerprint $context.sourceFingerprint
+    }
     $checkpoint = { Save-BootstrapState -State $State -Path $StatePath }
     if (-not $State.Contains('freshPurviewExecutor')) {
         if ($ReadOnly) { throw 'Fresh Purview executor installation evidence is missing.' }
@@ -956,6 +1015,7 @@ function Install-BootstrapPurviewExecutor {
             }
     }
     if (-not $record.Contains('package')) {
+        if ($State.Contains('publisherMetadataReconciliation')) { throw 'Publisher reconciliation cannot rebuild the original package.' }
         if ($ReadOnly) { throw 'Source-bound executor package is not checkpointed.' }
         # Interrupted local packaging can use a new local output; it has no provider
         # authority and no package has been accepted for publication yet.
@@ -979,7 +1039,7 @@ function Install-BootstrapPurviewExecutor {
     }
     $record.identity = Ensure-PurviewExecutorIdentity -Context $context -Operations $record.operations -Checkpoint $checkpoint -ReadOnly:$ReadOnly
     $record.publisherImage = Build-PurviewExecutorPublisher -Config $Config -Foundation $Foundation -Record $record `
-        -Checkpoint $checkpoint -ReadOnly:$ReadOnly
+        -Checkpoint $checkpoint -ReadOnly:$ReadOnly -PublisherRecoveryState $State
     $network = Get-PurviewExecutorStorageNetwork -Config $Config -Foundation $Foundation -Runtime $Runtime -Context $context
     if ($record.Contains('network')) { Assert-PurviewExecutorEqual -Actual $network -Expected $record.network -Label 'private storage network' }
     else { $record.network = $network; & $checkpoint | Out-Null }
@@ -1019,7 +1079,7 @@ function Install-BootstrapPurviewExecutor {
             throw 'Executor storage containers are unowned or their absence is unknown.'
         }
     }
-    $deploymentArguments = @{ Config = $Config; Operations = $record.operations; Checkpoint = $checkpoint; ReadOnly = $ReadOnly }
+    $deploymentArguments = @{ Config = $Config; Operations = $record.operations; Checkpoint = $checkpoint; ReadOnly = $ReadOnly; PublisherRecoveryState = $State }
     $record.host = Invoke-PurviewExecutorDeployment @deploymentArguments -Name $hostName `
         -Template 'bootstrap/infra/purview-windows-executor.bicep' -Parameters $hostParameters
     # A resumed enabled host is verified as enabled; it is never disabled again.
@@ -1084,6 +1144,12 @@ function Get-PurviewExecutorWorkerGrant {
     }
     $context = $record.context
     $source = [string]$state.acceptedPlan.sourceFingerprint
+    $assetRoot = Get-BootstrapExecutionSourceRoot
+    if ($state.Contains('publisherMetadataReconciliation')) {
+        $assetRoot = Get-BootstrapAssetSourceRoot -State $state `
+            -ExecutionSourceFingerprint $state.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+            -DeploymentSourceFingerprint $source
+    }
     Assert-BootstrapFingerprintValue -Value $source -Label 'Executor grant accepted source'
     $expected = @{
         deploymentOwnershipId = [string]$state.deploymentOwnershipId
@@ -1100,7 +1166,7 @@ function Get-PurviewExecutorWorkerGrant {
     }
     if ([string]$state.acceptedPlan.configurationFingerprint -cne $expected.configurationFingerprint -or
         (Get-BootstrapConfigurationFingerprint -Config $config) -cne $expected.configurationFingerprint -or
-        (Get-BootstrapSourceFingerprint -Root (Get-BootstrapExecutionSourceRoot)) -cne $source -or
+        (Get-BootstrapSourceFingerprint -Root $assetRoot) -cne $source -or
         [string]$runtime.deploymentOwnershipId -cne $expected.deploymentOwnershipId -or
         [string]$runtime.sourceFingerprint -cne $source) {
         throw 'Executor grant source/configuration/runtime binding is not exact.'

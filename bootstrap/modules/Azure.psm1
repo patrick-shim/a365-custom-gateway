@@ -1994,7 +1994,8 @@ function Deploy-GatewayCore {
         [Parameter()][AllowNull()]$RecoveredEvidence,
         [Parameter()][scriptblock]$Checkpoint,
         [Parameter()][switch]$SucceededRecoveryOnly,
-        [Parameter()][string]$ExecutionSourceFingerprint = ''
+        [Parameter()][string]$ExecutionSourceFingerprint = '',
+        [AllowNull()][Collections.IDictionary]$PublisherRecoveryState
     )
     if ($SucceededRecoveryOnly -and -not $Initial) {
         throw 'Succeeded-only workload recovery is available only for the initial inert deployment.'
@@ -2011,6 +2012,10 @@ function Deploy-GatewayCore {
     Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Workload execution source fingerprint'
     if ((Get-BootstrapSourceFingerprint -Root $root) -cne $ExecutionSourceFingerprint) {
         throw 'The workload execution source no longer matches the accepted content-addressed snapshot.'
+    }
+    if ($null -ne $PublisherRecoveryState -and $PublisherRecoveryState.Contains('publisherMetadataReconciliation')) {
+        $root = Get-BootstrapAssetSourceRoot -State $PublisherRecoveryState `
+            -ExecutionSourceFingerprint $ExecutionSourceFingerprint -DeploymentSourceFingerprint $SourceFingerprint
     }
     $subscriptionId = ([guid][string]$Config.subscriptionId).ToString('D')
     $tenantId = ([guid][string]$Config.tenantId).ToString('D')
@@ -3427,9 +3432,15 @@ function Build-GatewayImages {
         [Parameter(Mandatory)][string]$SourceFingerprint,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter()][AllowNull()]$RecoveredEvidence,
-        [Parameter(Mandatory)][scriptblock]$Checkpoint
+        [Parameter(Mandatory)][scriptblock]$Checkpoint,
+        [AllowNull()][Collections.IDictionary]$PublisherRecoveryState
     )
     $root = Get-BootstrapExecutionSourceRoot
+    if ($null -ne $PublisherRecoveryState -and $PublisherRecoveryState.Contains('publisherMetadataReconciliation')) {
+        $root = Get-BootstrapAssetSourceRoot -State $PublisherRecoveryState `
+            -ExecutionSourceFingerprint $PublisherRecoveryState.publisherMetadataReconciliation.plan.correctedSourceFingerprint `
+            -DeploymentSourceFingerprint $SourceFingerprint
+    }
     $registry = $AcrLoginServer.Split('.')[0]
     Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Image-build source fingerprint'
     if ((Get-BootstrapSourceFingerprint -Root $root) -cne $SourceFingerprint) {
@@ -3957,7 +3968,8 @@ function Deploy-GatewayAdminUi {
         [Parameter(Mandatory)][string]$AdminUiSecretUri,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
-        [Parameter()][string]$ExecutionSourceFingerprint = ''
+        [Parameter()][string]$ExecutionSourceFingerprint = '',
+        [AllowNull()][Collections.IDictionary]$PublisherRecoveryState
     )
     $root = Get-BootstrapExecutionSourceRoot
     $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
@@ -3971,6 +3983,10 @@ function Deploy-GatewayAdminUi {
     Assert-BootstrapFingerprintValue -Value $ExecutionSourceFingerprint -Label 'Admin UI execution source fingerprint'
     if ((Get-BootstrapSourceFingerprint -Root $root) -cne $ExecutionSourceFingerprint) {
         throw 'The Admin UI execution source no longer matches the accepted content-addressed snapshot.'
+    }
+    if ($null -ne $PublisherRecoveryState -and $PublisherRecoveryState.Contains('publisherMetadataReconciliation')) {
+        $root = Get-BootstrapAssetSourceRoot -State $PublisherRecoveryState `
+            -ExecutionSourceFingerprint $ExecutionSourceFingerprint -DeploymentSourceFingerprint $SourceFingerprint
     }
     $deploymentName = "a365gw-$($Config.projectName)-bootstrap-admin-$($Config.environment)"
     $deploymentCountText = Invoke-AzTsv -Arguments @(

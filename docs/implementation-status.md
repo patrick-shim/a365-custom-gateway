@@ -10,6 +10,24 @@ machine or agent starts unfinished work from the tracked
 
 ## Current operating contract
 
+Current R3 attempt passed actual Setup Plan and fourteen deployment stages after
+the explicitly approved R2 cleanup. Runtime deployment stopped on a strict
+publisher-template check: execution metadata contains the additional
+`imageType: ContainerImage` discriminator. One publisher execution succeeded and
+read-only comparison showed every remaining normalized field matches the current
+job readback; original persisted-intent verification remains required.
+The metadata parser correction and bounded tooling-source reconciliation are
+implemented, with 569 affected tests passed (one existing platform exclusion)
+and a final 52-test recovery rerun passed. Independent review and final validation
+also passed: 1,362 Pester tests (zero failures, seven platform exclusions),
+source/Bicep and clean-export/package verification. The actual read-only
+reconciliation Plan passed without changing original R3 state/configuration.
+Receipt-only Execute and normal Resume remain unapproved; these are not deployed
+fixes. Preserve the original accepted
+artifacts and publication intent; never start the publisher again. In-place
+execution-binding approval returned NoResponse, and no Admin UI URL or completed
+deployment has been verified.
+
 The operator subsequently approved the exact cleanup and replacement. The original
 failed group is verified absent, with local evidence and tenant identities intact.
 The replacement's actual UI Plan succeeded on the published fixes, but Apply
