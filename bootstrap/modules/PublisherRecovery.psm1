@@ -14,7 +14,7 @@ function Assert-BootstrapPublisherRecoveryGeneration {
 function Get-BootstrapPublisherStableState {
     param([Parameter(Mandatory)][Collections.IDictionary]$State)
     $value = ConvertTo-BootstrapCanonicalValue -Value $State
-    foreach ($name in @('updatedAtUtc', 'steps', 'outputs', 'freshPurviewExecutor', 'publisherMetadataReconciliation', 'hostSettingsAmendment')) {
+    foreach ($name in @('updatedAtUtc', 'steps', 'outputs', 'freshPurviewExecutor', 'publisherMetadataReconciliation', 'hostSettingsAmendment', 'readResilienceAmendment')) {
         $value.Remove($name)
     }
     # Save-BootstrapState legitimately refreshes this provenance metadata, not the
@@ -473,6 +473,9 @@ function Assert-BootstrapPublisherParentReceipt {
 
 function Assert-BootstrapPublisherRecoveryPlan {
     param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Recovery)
+    if ($State.Contains('readResilienceAmendment')) {
+        return Assert-BootstrapReadResilienceAmendment -State $State
+    }
     $root = Assert-BootstrapPublisherParentPlan -State $State -Recovery $Recovery
     if ($State.Contains('hostSettingsAmendment')) {
         return Assert-BootstrapHostSettingsAmendment -State $State
@@ -523,6 +526,7 @@ function New-BootstrapPublisherRecoveryPlan {
 function Initialize-BootstrapPublisherRecoveryTooling {
     param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)][string]$Mode)
+    if ($State.Contains('readResilienceAmendment') -and -not $State.Contains('hostSettingsAmendment')) { throw 'Read resilience amendment requires its historical host settings receipt.' }
     if ($State.Contains('hostSettingsAmendment') -and -not $State.Contains('publisherMetadataReconciliation')) { throw 'Host settings amendment requires its original completed publisher receipt.' }
     if (-not $State.Contains('publisherMetadataReconciliation')) { return }
     if ($Mode -cnotin @('Resume', 'Verify', 'Apply', 'Up')) { throw 'Publisher receipt is only usable by normal Resume or Verify.' }
@@ -675,8 +679,7 @@ function Assert-BootstrapHostSettingsPlan {
         [string]$Amendment.planFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $plan) -or
         [string]$plan.parentReceiptFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.publisherMetadataReconciliation) -or
         [string]$plan.parentSourceFingerprint -cne [string]$State.publisherMetadataReconciliation.plan.correctedSourceFingerprint -or
-        [string]$plan.operationsFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.freshPurviewExecutor.operations) -or
-        [string]$plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) {
+        [string]$plan.operationsFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.freshPurviewExecutor.operations)) {
         throw 'Host settings amendment parent, operations, plan or current source changed.'
     }
     $expected = ".bootstrap/accepted-source/$($State.deploymentOwnershipId)/$(([string]$Amendment.planFingerprint).Substring(7))"
@@ -694,6 +697,15 @@ function Assert-BootstrapHostSettingsPlan {
 }
 
 function Assert-BootstrapHostSettingsAmendment {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State)
+    $root = Assert-BootstrapHostSettingsHistoricalReceipt -State $State
+    if ([string]$State.hostSettingsAmendment.plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) {
+        throw 'Host settings amendment current source changed; a distinct reviewed read resilience amendment is required.'
+    }
+    return $root
+}
+
+function Assert-BootstrapHostSettingsHistoricalReceipt {
     param([Parameter(Mandatory)][Collections.IDictionary]$State)
     $amendment = $State.hostSettingsAmendment
     Assert-PurviewPublisherObjectFields -Object $amendment -Required @('plan', 'planFingerprint', 'executionSource',
@@ -788,6 +800,9 @@ function Invoke-BootstrapHostSettingsAmendment {
             throw 'Host settings amendment approval fingerprint does not match.'
         }
         $null = Assert-BootstrapHostSettingsPlan -State $state -Amendment $amendment
+        if ([string]$amendment.plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) {
+            throw 'Host settings amendment cannot authorize new tooling.'
+        }
         if (-not $completed -and (Get-BootstrapObjectFingerprint -InputObject $state) -cne [string]$amendment.plan.initialStateFingerprint) {
             throw 'Original forward state changed after host settings Plan.'
         }
@@ -801,6 +816,198 @@ function Invoke-BootstrapHostSettingsAmendment {
             $state.hostSettingsAmendment = $amendment
             $null = Assert-BootstrapHostSettingsAmendment -State $state
             if ((Get-FileHash -LiteralPath $StatePath -Algorithm SHA256).Hash -cne $rawHash) { throw 'Original state changed while locked.' }
+            Write-BootstrapPublisherRecoveryJson -Path $StatePath -Value $state -Replace
+            $completed = $true
+        }
+        return [ordered]@{ status = if ($completed) { 'Completed' } else { 'ReviewedReadOnly' }
+            planFingerprint = $amendment.planFingerprint; planPath = $planPath
+            correctedSourceFingerprint = $amendment.plan.correctedSourceFingerprint
+            providerMutations = 0; stageReconciliation = 'NormalResumeOnly' }
+    }
+    finally { $lock.Dispose() }
+}
+
+function Get-BootstrapReadResilienceReviewedSources {
+    # Frozen old/new token surfaces for exactly this generation. Only this review
+    # data function is excluded from its own token surface; the complete manifest
+    # including this table is pinned by the separately authorized receipt.
+    return @{
+        'bootstrap/modules/Common.psm1' = @('d9abd6f6a53986449706d3ba8c3b2791f89c337e4b5a2b0afe4a52e64c54e3d8', '1dcfcaf4a4c00ec2d3950784627f576cd0e6d5b5c60295fcf0fa33ceb082a2eb')
+        'bootstrap/modules/PublisherRecovery.psm1' = @('bbfa31c5b17670f8bcaa2953cad68f31dd26bdf5b7b0d12806fb80089e3096a3', 'fe4ddfdcbd944f2a053f00f5d52f7d4222db62dfc7f8d5f5fa5f587b49c31c51')
+        'bootstrap/reconcile-publisher-metadata.ps1' = @('9f4441cd0130b863271c241459fdbc7d9633bc89fdf0a6972bec45db0a127be0', '52ff377ca21f4b7713bd21912b2af0b243d0dbca3053b04538d8431da51a522e')
+    }
+}
+
+function Get-BootstrapReadResilienceSourceSurface {
+    param([Parameter(Mandatory)][string]$Path)
+    $text = [IO.File]::ReadAllText($Path)
+    $tokens = $null; $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput($text, [ref]$tokens, [ref]$errors)
+    if ($errors.Count) { throw 'Read resilience source cannot be parsed.' }
+    $tables = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $n.Name -ceq 'Get-BootstrapReadResilienceReviewedSources' }, $true))
+    if ($tables.Count -gt 1 -or ($tables.Count -eq 1 -and [IO.Path]::GetFileName($Path) -cne 'PublisherRecovery.psm1')) {
+        throw 'Read resilience review table is ambiguous or outside its owning module.'
+    }
+    if ($tables.Count -eq 1) {
+        $text = $text.Remove($tables[0].Extent.StartOffset, $tables[0].Extent.EndOffset - $tables[0].Extent.StartOffset)
+    }
+    return Get-BootstrapPublisherTokenFingerprint -Text $text
+}
+
+function Assert-BootstrapReadResilienceSourceDelta {
+    param([Parameter(Mandatory)][string]$HostRoot, [Parameter(Mandatory)][string]$CandidateRoot)
+    $old = @{}; $candidate = @{}
+    foreach ($entry in @(Get-BootstrapSourceManifest -Root $HostRoot)) { $old[$entry.path] = $entry.sha256 }
+    foreach ($entry in @(Get-BootstrapSourceManifest -Root $CandidateRoot)) { $candidate[$entry.path] = $entry.sha256 }
+    $reviewed = Get-BootstrapReadResilienceReviewedSources
+    if ($reviewed.Count -ne 3 -or @($reviewed.Keys | Where-Object {
+        $_ -cnotin @('bootstrap/modules/Common.psm1', 'bootstrap/modules/PublisherRecovery.psm1',
+            'bootstrap/reconcile-publisher-metadata.ps1')
+    }).Count -ne 0) { throw 'Read resilience review cannot expand the three-file source boundary.' }
+    $delta = [Collections.Generic.List[object]]::new()
+    foreach ($path in @(@($old.Keys) + @($candidate.Keys) | Sort-Object -Unique)) {
+        if (-not $old.ContainsKey($path) -or -not $candidate.ContainsKey($path)) { throw 'Read resilience cannot add or remove source files.' }
+        if ($old[$path] -ceq $candidate[$path]) { continue }
+        if (-not $reviewed.Contains($path) -or
+            (Get-BootstrapReadResilienceSourceSurface -Path (Join-Path $HostRoot $path)) -cne $reviewed[$path][0] -or
+            (Get-BootstrapReadResilienceSourceSurface -Path (Join-Path $CandidateRoot $path)) -cne $reviewed[$path][1]) {
+            throw 'Read resilience source differs from the strict reviewed delta.'
+        }
+        $delta.Add([ordered]@{ path = $path; original = $old[$path]; corrected = $candidate[$path] })
+    }
+    if ($delta.Count -ne $reviewed.Count) { throw 'The complete distinct read resilience source is required.' }
+    return ,@($delta)
+}
+
+function Assert-BootstrapReadResilienceEligibility {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Config)
+    if ($State.Contains('readResilienceAmendment')) { throw 'Use the existing exact read resilience receipt.' }
+    $null = Assert-BootstrapHostSettingsHistoricalReceipt -State $State
+    # Reuse the exact creation boundary on an in-memory projection only. Historical
+    # receipt validation above has already proved the completed host child.
+    $prior = ConvertTo-BootstrapCanonicalValue -Value $State
+    $prior.Remove('hostSettingsAmendment')
+    Assert-BootstrapHostSettingsEligibility -State $prior -Config $Config
+}
+
+function Assert-BootstrapReadResiliencePlan {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Amendment)
+    # Historical authority is derived exclusively from the retained receipts and
+    # their immutable paths. Never accept a caller-supplied historical source root.
+    $hostRoot = Assert-BootstrapHostSettingsHistoricalReceipt -State $State
+    Assert-PurviewPublisherObjectFields -Object $Amendment -Required @('plan', 'planFingerprint', 'executionSource') `
+        -Optional @('status', 'completedAtUtc', 'completionFingerprint')
+    $plan = $Amendment.plan
+    Assert-PurviewPublisherObjectFields -Object $plan -Required @('schemaVersion', 'kind', 'createdAtUtc',
+        'parentReceiptFingerprint', 'hostReceiptFingerprint', 'hostSourceFingerprint', 'originalSourceFingerprint',
+        'correctedSourceFingerprint', 'initialStateFingerprint', 'operationsFingerprint', 'sourceDelta', 'provider')
+    if ($plan.schemaVersion -ne 1 -or [string]$plan.kind -cne 'PublisherReadResilienceAmendment' -or
+        [string]$Amendment.planFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $plan) -or
+        [string]$plan.parentReceiptFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.publisherMetadataReconciliation) -or
+        [string]$plan.hostReceiptFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.hostSettingsAmendment) -or
+        [string]$plan.hostSourceFingerprint -cne [string]$State.hostSettingsAmendment.plan.correctedSourceFingerprint -or
+        [string]$plan.originalSourceFingerprint -cne [string]$State.acceptedPlan.sourceFingerprint -or
+        [string]$plan.operationsFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.freshPurviewExecutor.operations) -or
+        [string]$plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) {
+        throw 'Read resilience original receipts, operations, source or plan changed.'
+    }
+    $expected = ".bootstrap/accepted-source/$($State.deploymentOwnershipId)/$(([string]$Amendment.planFingerprint).Substring(7))"
+    if ([string]$Amendment.executionSource -cne $expected) { throw 'Read resilience snapshot ownership or path changed.' }
+    Assert-BootstrapSourcePathIsRegular -Root (Get-RepositoryRoot) -RelativePath $expected | Out-Null
+    $root = Join-Path (Get-RepositoryRoot) $expected
+    if ((Get-BootstrapSourceFingerprint -Root $root) -cne [string]$plan.correctedSourceFingerprint) {
+        throw 'Read resilience immutable snapshot changed.'
+    }
+    $delta = Assert-BootstrapReadResilienceSourceDelta -HostRoot $hostRoot -CandidateRoot $root
+    Assert-PurviewExecutorEqual -Actual $delta -Expected $plan.sourceDelta -Label 'read resilience source delta'
+    Assert-PurviewExecutorEqual -Actual $plan.provider -Expected $State.publisherMetadataReconciliation.plan.provider -Label 'read resilience original provider binding'
+    return $root
+}
+
+function Assert-BootstrapReadResilienceAmendment {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State)
+    $amendment = $State.readResilienceAmendment
+    Assert-PurviewPublisherObjectFields -Object $amendment -Required @('plan', 'planFingerprint', 'executionSource',
+        'status', 'completedAtUtc', 'completionFingerprint')
+    if ([string]$amendment.status -cne 'Completed' -or [string]$amendment.completionFingerprint -cne
+        (Get-BootstrapObjectFingerprint -InputObject @{
+            planFingerprint = $amendment.planFingerprint; completedAtUtc = $amendment.completedAtUtc; status = 'Completed'
+        })) { throw 'Read resilience receipt is incomplete or changed.' }
+    $time = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParseExact([string]$amendment.completedAtUtc, 'O', [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind, [ref]$time)) { throw 'Read resilience receipt timestamp is invalid.' }
+    return Assert-BootstrapReadResiliencePlan -State $State -Amendment $amendment
+}
+
+function Invoke-BootstrapReadResilienceAmendment {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Plan', 'Execute')][string]$Mode,
+        [Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$StatePath,
+        [string]$ExpectedPlanFingerprint = '', [switch]$Yes)
+    if ($Mode -ceq 'Execute' -and (-not $Yes -or $ExpectedPlanFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$')) {
+        throw 'Read resilience Execute requires Yes and the exact separately reviewed fingerprint.'
+    }
+    $repository = Get-RepositoryRoot
+    if ([IO.Path]::GetFullPath($StatePath) -cne [IO.Path]::GetFullPath((Get-BootstrapStatePath -Config $Config)) -or
+        -not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { throw 'Original exact deployment state is required.' }
+    Assert-BootstrapSourcePathIsRegular -Root $repository -RelativePath ([IO.Path]::GetRelativePath($repository, $StatePath)) | Out-Null
+    $lock = Enter-BootstrapLock -StatePath $StatePath
+    try {
+        $state = Read-BootstrapState -Path $StatePath -Config $Config
+        if ((Get-BootstrapConfigurationFingerprint -Config $Config) -cne [string]$state.configurationFingerprint) { throw 'Read resilience configuration changed.' }
+        $rawHash = (Get-FileHash -LiteralPath $StatePath -Algorithm SHA256).Hash
+        $completed = $state.Contains('readResilienceAmendment')
+        if ($completed) { $null = Assert-BootstrapReadResilienceAmendment -State $state }
+        else { Assert-BootstrapReadResilienceEligibility -State $state -Config $Config }
+        $planPath = Join-Path $repository ".bootstrap/publisher-read-resilience-amendment/$($state.deploymentOwnershipId)/plan.json"
+        Assert-BootstrapSourcePathIsRegular -Root $repository -RelativePath ([IO.Path]::GetRelativePath($repository, $planPath)) | Out-Null
+        $amendment = $null
+        if ($completed) { $amendment = $state.readResilienceAmendment }
+        elseif (Test-Path -LiteralPath $planPath -PathType Leaf) {
+            $amendment = [IO.File]::ReadAllText($planPath) | ConvertFrom-Json -AsHashtable -Depth 100
+            Convert-BootstrapParsedJsonDatesToStrings -Value $amendment
+        }
+        elseif ($Mode -ceq 'Execute') { throw 'A separate read resilience Plan is required.' }
+        if ($null -eq $amendment) {
+            $hostRoot = Assert-BootstrapHostSettingsHistoricalReceipt -State $state
+            $delta = Assert-BootstrapReadResilienceSourceDelta -HostRoot $hostRoot -CandidateRoot $repository
+            $proof = Get-BootstrapHostSettingsProof -State $state -Config $Config
+            $plan = ConvertTo-BootstrapCanonicalValue -Value @{
+                schemaVersion = 1; kind = 'PublisherReadResilienceAmendment'; createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+                parentReceiptFingerprint = Get-BootstrapObjectFingerprint -InputObject $state.publisherMetadataReconciliation
+                hostReceiptFingerprint = Get-BootstrapObjectFingerprint -InputObject $state.hostSettingsAmendment
+                hostSourceFingerprint = $state.hostSettingsAmendment.plan.correctedSourceFingerprint
+                originalSourceFingerprint = $state.acceptedPlan.sourceFingerprint
+                correctedSourceFingerprint = Get-BootstrapSourceFingerprint
+                initialStateFingerprint = Get-BootstrapObjectFingerprint -InputObject $state
+                operationsFingerprint = Get-BootstrapObjectFingerprint -InputObject $state.freshPurviewExecutor.operations
+                sourceDelta = $delta; provider = $proof
+            }
+            $fingerprint = Get-BootstrapObjectFingerprint -InputObject $plan
+            $snapshot = New-BootstrapAcceptedSourceSnapshot -State $state -PlanFingerprint $fingerprint -SourceFingerprint $plan.correctedSourceFingerprint
+            $amendment = [ordered]@{ plan = $plan; planFingerprint = $fingerprint; executionSource = $snapshot }
+            [IO.Directory]::CreateDirectory((Split-Path -Parent $planPath)) | Out-Null
+            Write-BootstrapPublisherRecoveryJson -Path $planPath -Value $amendment
+        }
+        if ($Mode -ceq 'Execute' -and $ExpectedPlanFingerprint -cne [string]$amendment.planFingerprint) { throw 'Read resilience approval fingerprint does not match.' }
+        $null = Assert-BootstrapReadResiliencePlan -State $state -Amendment $amendment
+        if (-not $completed -and (Get-BootstrapObjectFingerprint -InputObject $state) -cne [string]$amendment.plan.initialStateFingerprint) {
+            throw 'Original entire state changed after read resilience Plan.'
+        }
+        $null = Get-BootstrapHostSettingsProof -State $state -Config $Config
+        if ($Mode -ceq 'Execute' -and -not $completed) {
+            $amendment.status = 'Completed'
+            $amendment.completedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+            $amendment.completionFingerprint = Get-BootstrapObjectFingerprint -InputObject @{
+                planFingerprint = $amendment.planFingerprint; completedAtUtc = $amendment.completedAtUtc; status = 'Completed'
+            }
+            $state.readResilienceAmendment = $amendment
+            $null = Assert-BootstrapReadResilienceAmendment -State $state
+            $prior = ConvertTo-BootstrapCanonicalValue -Value $state
+            $prior.Remove('readResilienceAmendment')
+            if ((Get-BootstrapObjectFingerprint -InputObject $prior) -cne [string]$amendment.plan.initialStateFingerprint -or
+                (Get-FileHash -LiteralPath $StatePath -Algorithm SHA256).Hash -cne $rawHash) { throw 'Read resilience state changed while locked.' }
             Write-BootstrapPublisherRecoveryJson -Path $StatePath -Value $state -Replace
             $completed = $true
         }

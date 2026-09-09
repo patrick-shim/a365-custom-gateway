@@ -121,3 +121,54 @@ The parent receipt, its Plan and snapshots, completed operations and original
 assets remain unchanged. Normal Resume and Verify select the latest validated
 tooling while retaining original deployment assets; publication and host enablement
 must not run again. No arbitrary source amendment or settings write is authorized.
+
+## Read-resilience amendment
+
+A **distinct** `readResilienceAmendment` supports the reviewed native ACR read
+repair after the host-settings amendment. Neither historical receipt nor its Plan
+or immutable snapshot is replaced. The newest receipt alone binds current tooling;
+historical receipts are checked against their derived immutable source snapshots.
+Original deployment assets, package, accepted Plan and stage provenance remain
+unchanged.
+
+The retry allowlist is only `az acr manifest show-metadata` with an exact registry,
+repository and deterministic bootstrap tag, `--query digest`, TSV output, suppressed
+informational output and the authenticated subscription/tenant context. See the
+[Microsoft CLI command reference](https://learn.microsoft.com/cli/azure/acr/manifest#az-acr-manifest-show-metadata).
+At most three native attempts run, with two- and five-second delays, and only
+nonzero native exits retry. This does **not** classify an unknown failure as
+transient. Successful output still faces every unchanged canonical digest,
+ownership, source and semantic check; malformed success and mismatches never
+retry. Repository/task reads, mutations, other commands, `AllowFailure` and
+`NoCapture` remain one-shot. No deadline, SDK replacement or transport/security
+change is introduced.
+
+Creation requires both completed historical receipts, fourteen completed stages,
+failed stage fifteen without partial core evidence, an `Installing` executor, and
+completed publication and host enablement. Exact original operator, configuration,
+ownership, package and provider readback (including the enable deployment record)
+must still agree. Only the strict reviewed three-file tooling delta is eligible.
+
+```powershell
+pwsh -NoProfile -File .\bootstrap\reconcile-publisher-metadata.ps1 -Mode ReadResiliencePlan
+```
+
+Plan performs provider reads and creates only a new review and immutable snapshot.
+After independent review and authorization of that exact fingerprint:
+
+```powershell
+pwsh -NoProfile -File .\bootstrap\reconcile-publisher-metadata.ps1 `
+  -Mode ReadResilienceExecute -ExpectedPlanFingerprint '<reviewed fingerprint>' -Yes
+```
+
+Execute locks and rereads state, verifies the entire original semantic state and
+fresh provider proof, then atomically adds only the new receipt. Removing that
+receipt from an in-memory copy must reproduce the entire pre-amendment state.
+Repeated Execute revalidates without rewriting the receipt.
+
+Obtain a **fresh Resume review and authorization** after the source/receipt change;
+never reuse a previous Resume authorization. Normal Resume/Verify select corrected
+pinned tooling before callbacks and retain original assets. Callback provider
+proofs are unchanged and not cached. Completed operations are never replayed.
+Offline tests and receipt completion do not establish nineteen-stage deployment,
+a verified Admin UI endpoint, or full live acceptance.

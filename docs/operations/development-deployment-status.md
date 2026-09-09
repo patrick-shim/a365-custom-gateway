@@ -28,19 +28,40 @@ passed; semantic comparison proved only the child receipt was added.
 The parent receipt, completed publication and enablement, original assets and
 fourteen completed stages remain intact.
 
-Local Setup has an SDK asset-feed build failure, so continuation uses the supported
-terminal Resume path. Its read-only review is stopping at the immutable-image gate
-amid intermittent registry reads. Exact individual reads have matched saved
-digests, but failed verification is never treated as success. A read-only
-registry investigation reproduced pre-authentication TCP resets (10054) and
-timeouts through independent Python and curl probes. The registry's observed
-policy did not show a firewall denial; local proxy settings and adapter error
-counters did not identify the cause. Resource Health did not support the queried
-resource type. Some subsequent probes and strict image reads passed, but the
-normal Resume review remained unsuccessful. The reset origin and durable
-remediation remain unverified. Restore the approved network/service path before
-another bounded check; no TLS/firewall bypass, image rebuild, further mutation
-or verified Admin UI URL is claimed.
+Local Setup's SDK asset-feed failure was resolved by a fresh restore from unchanged
+feeds; Release build and all eight .NET test projects pass. Continuation uses the
+supported terminal Resume path. The operator-requested retry passed all fourteen read-only
+checkpoints. A first Resume stopped on a SQL endpoint read; exact unchanged endpoint
+verification then passed. A second fingerprint-bound Resume passed preflight and
+revalidated retained stages through immutable images, then stopped on publisher
+manifest metadata readback before the next retained callback. The process has
+terminated; no parallel or duplicate Resume is active.
+
+The final native exit is unclassified. A later exact publisher metadata read
+succeeded and matched the saved digest. Earlier independent probes demonstrated
+pre-authentication TCP resets and timeouts, but do not establish this particular
+failure's cause. Fourteen completed stages, both tooling receipts, completed
+publication and host enablement remain preserved; runtime stage fifteen has not
+completed. No completed mutation was replayed.
+
+The finite, exact manifest-read retry correction and separate preserving tooling
+amendment passed independent review, 1,447 Pester tests, source/Bicep and a clean
+export with fresh Windows package verification. This rebuilt package is offline
+portability proof only; it does not replace the original deployment's package.
+Actual read-only Plan and receipt-only Execute passed. Removing only the new
+receipt reproduced the entire prior semantic state; configuration was unchanged.
+
+The original assets, earlier receipts and completed publication/enablement remain
+preserved. A fresh canonical Resume review is now running; its successful semantic
+result and new exact authorization are required before normal deployment continues.
+Failed or unknown reads never substitute for fresh exact provider proof. No
+TLS/firewall bypass, image rebuild, completed mutation replay or verified Admin UI
+URL is claimed. Nineteen-stage deployment and full live acceptance remain open.
+
+### Earlier deployment checkpoints (historical)
+
+The current evidence above supersedes the earlier approval holds and stopped
+states below.
 
 The operator approved the exact R3 tooling reconciliation and continuation.
 Receipt-only Execute completed and an independent semantic comparison confirmed

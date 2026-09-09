@@ -111,21 +111,47 @@ passed. Removing only the child receipt from the in-memory state reproduced the
 entire prior semantic state; parent receipt, publication, host enablement and all
 original assets remain preserved.
 
-Local Setup cannot currently rebuild because its configured feed lacks an SDK
-asset package, so continuation uses the documented canonical terminal Resume path.
-Read-only Resume review is stopping at immutable-image validation amid intermittent
-ACR read failures. Independent Python and curl probes reproduced pre-authentication
-TCP resets (10054) and timeouts; persistent authentication failure or image drift
-was not proved. Individual exact reads, bounded TLS checks and the unchanged image
-verifier have also passed, but the subsequent strict Resume review still failed.
-The reset origin remains unknown; no safe in-scope network correction was established.
-Restore reliable connectivity through the approved network/service path before
-another bounded verification and Resume review. Never bypass TLS, firewall or
-digest checks, rebuild images, or repeat unchanged full reviews indefinitely.
-Continue under existing reviewed R3 authority, without replay or another target.
-No verified Admin UI URL or completed deployment is claimed.
+Local Setup's missing SDK asset package was resolved by a fresh restore from the
+unchanged configured feeds. Full Release build and all eight .NET test projects
+now pass. Continuation is using the documented canonical terminal Resume path.
+The operator-requested retry passed all fourteen read-only Resume checkpoints.
+The first fingerprint-bound Resume stopped on a SQL endpoint read; the unchanged
+endpoint verifier then passed. A second normal Resume passed all fourteen preflight
+checks and revalidated retained stages through immutable images, but subsequently
+stopped on a publisher manifest metadata read before stage seven's callback.
+Fourteen stages remain completed; runtime deployment remains failed. No new
+publisher execution, host enablement or SQL initialization occurred.
 
-Latest R3 continuation: the operator approved the exact reviewed in-place
+The terminal native exit has no classified error code. Historical independent
+probes proved intermittent pre-authentication TCP resets and timeouts; a subsequent
+exact publisher metadata read succeeded and matched the retained digest. These
+facts do not prove the latest failure's cause or persistent image drift.
+The exact manifest-read retry repair and distinct preserving tooling amendment
+passed independent review, 1,447 Pester tests (eight platform exclusions), source/
+Bicep, a 960-file clean export with fresh Windows package verification, Release
+build, all 2,123 .NET tests, and nine formatting checks. Only exact manifest digest
+reads retry native nonzero exits, at most three times; unknown exits are not
+relabeled transient. Successful readback still requires exact semantic proof.
+Mutations, malformed successful output and digest mismatches never retry.
+
+Actual read-only amendment Plan and receipt-only Execute passed. Removing only the
+new receipt reproduced the entire prior semantic state; configuration remained
+byte-identical. Both historical receipts, snapshots, original deployment assets
+and completed operations remain intact.
+
+First unfinished action: finish the fresh canonical Resume review already started
+against the new tooling, inspect its semantic result, and use its new exact
+authorization for normal Resume. Never use an older authorization fingerprint.
+Then require all nineteen stages, `gateway verify`, independent Admin UI HTTPS/
+sign-in verification and the full live acceptance matrix. Deployment and live gates
+remain unfinished; no verified Admin UI URL or completed deployment is claimed.
+
+### Earlier R3 checkpoints (historical)
+
+The current continuation above supersedes the earlier approval holds and failure
+states below.
+
+The operator approved the exact reviewed in-place
 reconciliation and continuation. Receipt-only Execute completed, and comparison
 after removing only that receipt matched the original semantic state. Public
 Setup's read-only Resume review passed all fourteen checkpoints. Normal Resume

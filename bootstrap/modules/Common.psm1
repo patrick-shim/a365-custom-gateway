@@ -841,6 +841,31 @@ function Write-BootstrapCommandProgress {
     }
 }
 
+function Test-BootstrapExactAcrManifestRead {
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    # One existing idempotent read only. This is not a transient-error classifier
+    # or a general Azure retry policy. Unknown exits remain unknown.
+    if ([string]::IsNullOrWhiteSpace($script:BootstrapAzureSubscriptionId) -or
+        [string]::IsNullOrWhiteSpace($script:BootstrapAzureTenantId) -or
+        $Arguments.Count -ne 14 -or
+        ($Arguments[0..2] -join ' ') -cne 'acr manifest show-metadata') { return $false }
+    $values = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    for ($i = 3; $i -lt $Arguments.Count; $i++) {
+        $flag = $Arguments[$i]
+        if ($flag -ceq '--only-show-errors') {
+            if (-not $values.TryAdd($flag, '')) { return $false }
+            continue
+        }
+        if ($flag -cnotin @('--registry', '--name', '--query', '--output', '--subscription') -or
+            ++$i -ge $Arguments.Count -or -not $values.TryAdd($flag, $Arguments[$i])) { return $false }
+    }
+    if ($values.Count -ne 6) { return $false }
+    return $values['--registry'] -cmatch '^[a-z0-9]{5,50}$' -and
+        $values['--name'] -cmatch '^[a-z0-9]+(?:[._/-][a-z0-9]+)*:bootstrap-[0-9a-f]{32}-[0-9a-f]{32}-[0-9a-f]{32}$' -and
+        $values['--query'] -ceq 'digest' -and $values['--output'] -ceq 'tsv' -and
+        $values['--subscription'] -ceq $script:BootstrapAzureSubscriptionId
+}
+
 function Invoke-BootstrapCommand {
     [CmdletBinding()]
     param(
@@ -859,10 +884,25 @@ function Invoke-BootstrapCommand {
     $progressTimer = [Diagnostics.Stopwatch]::StartNew()
     Write-BootstrapCommandProgress -Label $progressLabel -Phase Started
 
+    $guardedArguments = @($ArgumentList)
+    if ($FilePath -eq 'az') {
+        $guardedArguments = @(Get-BootstrapAzureCliArguments -Arguments $guardedArguments)
+    }
+    $exactRead = $FilePath -ceq 'az' -and -not $AllowFailure -and -not $NoCapture -and
+        (Test-BootstrapExactAcrManifestRead -Arguments $guardedArguments)
+    $readTenant = $script:BootstrapAzureTenantId
+    $maximumAttempts = if ($exactRead) { 3 } else { 1 }
+    for ($attempt = 1; $attempt -le $maximumAttempts; $attempt++) {
     $resolvedFile = $FilePath
     $effectiveArguments = @($ArgumentList)
     if ($FilePath -eq 'az') {
         $effectiveArguments = @(Get-BootstrapAzureCliArguments -Arguments $effectiveArguments)
+    }
+    if ($exactRead -and (
+        -not (Test-BootstrapExactAcrManifestRead -Arguments $effectiveArguments) -or
+        $readTenant -cne $script:BootstrapAzureTenantId -or
+        ($effectiveArguments -join "`n") -cne ($guardedArguments -join "`n"))) {
+        throw 'Exact ACR read context or arguments changed between native attempts.'
     }
     if ($IsWindows -and $FilePath -eq 'az') {
         $azCommand = Get-Command az -ErrorAction Stop
@@ -873,6 +913,9 @@ function Invoke-BootstrapCommand {
                 $effectiveArguments = @('-IBm', 'azure.cli') + $effectiveArguments
             }
         }
+    }
+    if ($exactRead -and (Get-Command $resolvedFile -ErrorAction Stop).CommandType -ne 'Application') {
+        throw 'Exact ACR read requires the resolved native Azure CLI application.'
     }
 
     # This wrapper owns native exit-code handling and emits the fixed redacted
@@ -904,6 +947,11 @@ function Invoke-BootstrapCommand {
         $output = & $resolvedFile @effectiveArguments 2>&1
     }
     $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0 -or $attempt -eq $maximumAttempts) { break }
+    # Only an actual nonzero native exit reaches this delay. Exceptions, successful
+    # malformed results and downstream semantic mismatches never enter the loop.
+    Start-Sleep -Seconds (@(2, 5)[$attempt - 1])
+    }
     $progressTimer.Stop()
     Write-BootstrapCommandProgress -Label $progressLabel -Phase Completed -DurationMilliseconds ([int]$progressTimer.ElapsedMilliseconds)
     if ($exitCode -ne 0 -and -not $AllowFailure) {
@@ -3033,6 +3081,7 @@ function Add-BootstrapConfigurationChangeRecord {
 function Assert-BootstrapStateAllowsSourcePlan {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
 
+    if ($State.Contains('readResilienceAmendment') -and -not $State.Contains('hostSettingsAmendment')) { throw 'Read resilience amendment requires its historical host settings receipt.' }
     if ($State.Contains('hostSettingsAmendment') -and -not $State.Contains('publisherMetadataReconciliation')) { throw 'Host settings amendment requires its original completed publisher receipt.' }
     if ($State.Contains('publisherMetadataReconciliation')) {
         $null = Assert-BootstrapPublisherRecoveryReceipt -State $State

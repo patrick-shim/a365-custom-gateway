@@ -18,14 +18,34 @@ work and retain the boundary against unrelated destructive actions or new target
 
 Exact Graph access is restored. The host-settings amendment passed read-only Plan
 and receipt-only Execute with the parent and original semantic state preserved.
-Canonical terminal Resume review is now stopping at immutable-image checks amid
-intermittent ACR read failures; exact individual reads have matched retained
-digests. Independent read-only diagnosis reproduced pre-authentication TCP resets
-(10054) and timeouts through Python and curl. The reset origin is unresolved;
-restore the approved network/service path before another strict review. No image
-rebuild or guard bypass is permitted.
-Local Setup's SDK asset-feed failure is separate; no deployment completion or
-Admin UI URL is verified.
+The latest canonical terminal Resume review passed all fourteen checkpoints.
+After a failed SQL read and successful unchanged endpoint recheck, normal Resume
+passed preflight and revalidated retained stages through immutable images. It then
+stopped on another publisher manifest read before the next retained callback.
+Fourteen completed stages and completed publisher/host-enable operations remain
+preserved. The terminal native exit is unclassified; a later exact publisher read
+matched its retained digest. Earlier reset/timeout evidence does not prove this
+particular failure's cause.
+
+The exact manifest-read retry repair and separate preserving tooling amendment
+passed independent review and final validation: 1,447 Pester tests (zero failures,
+eight platform exclusions), source/Bicep, a 960-file clean export with fresh Windows
+package verification, full Release build, 2,123 .NET tests and nine formatting
+checks. Fresh restore from unchanged feeds resolved the local Setup SDK asset
+failure. Native nonzero exits retry at most three times only for the exact scoped
+manifest digest read; mutation and semantic mismatch behavior remains unchanged.
+
+Actual read-only amendment Plan and receipt-only Execute passed, preserving the
+entire previous semantic state except for the separate new receipt. Original
+deployment assets and completed operations remain untouched. Fresh canonical
+Resume review is running; its new exact authorization is required before deployment
+continues. No image rebuild, mutation replay, state reset or guard bypass is
+permitted. No deployment completion or Admin UI URL is verified.
+
+### Earlier repair checkpoints (historical)
+
+The current operating contract above supersedes the earlier approval holds and
+failure states below.
 
 The operator approved the reviewed R3 in-place reconciliation. Receipt-only
 Execute preserved the original semantic state, and normal Resume reconciled
