@@ -1,6 +1,6 @@
 # Agent continuation checkpoint
 
-Last updated: 2026-09-08 (Asia/Seoul).
+Last updated: 2026-09-09 (Asia/Seoul).
 
 This tracked file is the bounded continuation seed for Claude, Codex, GitHub
 Copilot, other automation, and human contributors after a fetch, pull, fresh clone,
@@ -104,12 +104,26 @@ without repeated approval prompts within that scope. Independent review, source
 binding, safe input handling and no-replay guards remain mandatory. Unrelated
 cleanup, purge, bulk tenant-identity deletion or another target are not implied.
 
-Current live access boundary: both the bootstrap and an independent exact-account
-CLI Graph read returned HTTP 401 / `InvalidAuthenticationToken`. Official
-exact-tenant Azure CLI sign-in was started without exposing credential output and
-is awaiting user interaction. Supplied credentials and ongoing authorization are
-not forgotten or revoked; current Graph access must be re-established before
-Amendment Plan/Execute. Continue offline validation while sign-in is pending.
+Current continuation: exact Graph operator access was restored through supported
+resource-specific claims sign-in and account renewal without exposing credentials,
+tokens or challenges. Host-settings Amendment Plan and receipt-only Execute then
+passed. Removing only the child receipt from the in-memory state reproduced the
+entire prior semantic state; parent receipt, publication, host enablement and all
+original assets remain preserved.
+
+Local Setup cannot currently rebuild because its configured feed lacks an SDK
+asset package, so continuation uses the documented canonical terminal Resume path.
+Read-only Resume review is stopping at immutable-image validation amid intermittent
+ACR read failures. Independent Python and curl probes reproduced pre-authentication
+TCP resets (10054) and timeouts; persistent authentication failure or image drift
+was not proved. Individual exact reads, bounded TLS checks and the unchanged image
+verifier have also passed, but the subsequent strict Resume review still failed.
+The reset origin remains unknown; no safe in-scope network correction was established.
+Restore reliable connectivity through the approved network/service path before
+another bounded verification and Resume review. Never bypass TLS, firewall or
+digest checks, rebuild images, or repeat unchanged full reviews indefinitely.
+Continue under existing reviewed R3 authority, without replay or another target.
+No verified Admin UI URL or completed deployment is claimed.
 
 Latest R3 continuation: the operator approved the exact reviewed in-place
 reconciliation and continuation. Receipt-only Execute completed, and comparison

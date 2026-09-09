@@ -1,6 +1,6 @@
 # Development deployment status
 
-Last updated: 2026-09-08 (Asia/Seoul).
+Last updated: 2026-09-09 (Asia/Seoul).
 
 This checkpoint separates deployed evidence from source claims. It intentionally
 contains no subscription, tenant, resource-group, application, principal,
@@ -21,12 +21,26 @@ Proceed through reviewed, source-bound repairs and authorized remaining work
 without asking again for each repair; do not bypass sign-in, source or no-replay
 guards or infer unrelated cleanup, purge, bulk identity deletion or a new target.
 
-The reviewed Amendment Plan attempt currently stops at Graph GET `/me` with
-HTTP 401; an independent exact-account CLI read confirmed
-`InvalidAuthenticationToken`. Claimed token expiry metadata did not prove usable
-access. Official exact-tenant Azure CLI sign-in was started with all credential
-output suppressed and remains pending user interaction. Existing authorization
-is retained; no amendment Execute or further Resume occurred.
+Exact Graph user, tenant and subscription were reverified after supported
+resource-specific claims sign-in and account renewal. No credential, token or
+challenge was exposed. Host-settings Amendment Plan and receipt-only Execute
+passed; semantic comparison proved only the child receipt was added.
+The parent receipt, completed publication and enablement, original assets and
+fourteen completed stages remain intact.
+
+Local Setup has an SDK asset-feed build failure, so continuation uses the supported
+terminal Resume path. Its read-only review is stopping at the immutable-image gate
+amid intermittent registry reads. Exact individual reads have matched saved
+digests, but failed verification is never treated as success. A read-only
+registry investigation reproduced pre-authentication TCP resets (10054) and
+timeouts through independent Python and curl probes. The registry's observed
+policy did not show a firewall denial; local proxy settings and adapter error
+counters did not identify the cause. Resource Health did not support the queried
+resource type. Some subsequent probes and strict image reads passed, but the
+normal Resume review remained unsuccessful. The reset origin and durable
+remediation remain unverified. Restore the approved network/service path before
+another bounded check; no TLS/firewall bypass, image rebuild, further mutation
+or verified Admin UI URL is claimed.
 
 The operator approved the exact R3 tooling reconciliation and continuation.
 Receipt-only Execute completed and an independent semantic comparison confirmed

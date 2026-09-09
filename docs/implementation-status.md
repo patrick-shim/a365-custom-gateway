@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-09-08 (Asia/Seoul).
+Last updated: 2026-09-09 (Asia/Seoul).
 
 This is the concise source-of-truth checkpoint for contributors. Public setup starts
 at the repository [README](../README.md). Exact deployed development evidence is in
@@ -16,10 +16,16 @@ amendment no longer awaits another approval prompt; implementation, review,
 validation and exact execution binding are still required. Preserve completed
 work and retain the boundary against unrelated destructive actions or new targets.
 
-Live Amendment Plan currently stops at Graph authentication: both bootstrap and
-an independent exact-account CLI read returned HTTP 401 / `InvalidAuthenticationToken`.
-Official sign-in is pending; this is an access boundary, not a new approval request.
-Offline validation continues and no amendment receipt or further deployment ran.
+Exact Graph access is restored. The host-settings amendment passed read-only Plan
+and receipt-only Execute with the parent and original semantic state preserved.
+Canonical terminal Resume review is now stopping at immutable-image checks amid
+intermittent ACR read failures; exact individual reads have matched retained
+digests. Independent read-only diagnosis reproduced pre-authentication TCP resets
+(10054) and timeouts through Python and curl. The reset origin is unresolved;
+restore the approved network/service path before another strict review. No image
+rebuild or guard bypass is permitted.
+Local Setup's SDK asset-feed failure is separate; no deployment completion or
+Admin UI URL is verified.
 
 The operator approved the reviewed R3 in-place reconciliation. Receipt-only
 Execute preserved the original semantic state, and normal Resume reconciled
