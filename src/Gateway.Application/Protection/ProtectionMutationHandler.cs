@@ -44,6 +44,7 @@ internal sealed class ProtectionMutationHandler :
     private readonly IUnitOfWork _unitOfWork;
     private readonly ProtectionOperationTokenService _tokens;
     private readonly TimeProvider _timeProvider;
+    private readonly IProtectionProfileMutationGuard? _profileMutationGuard;
 
     public ProtectionMutationHandler(
         IProtectionCapabilityRepository capabilities,
@@ -56,7 +57,8 @@ internal sealed class ProtectionMutationHandler :
         IAuditEventRepository auditEvents,
         IUnitOfWork unitOfWork,
         ProtectionOperationTokenService tokens,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        IProtectionProfileMutationGuard? profileMutationGuard = null)
     {
         _capabilities = capabilities;
         _connections = connections;
@@ -69,6 +71,7 @@ internal sealed class ProtectionMutationHandler :
         _unitOfWork = unitOfWork;
         _tokens = tokens;
         _timeProvider = timeProvider;
+        _profileMutationGuard = profileMutationGuard;
     }
 
     public async Task<ProtectionOperationAcceptedResponse> Handle(
@@ -371,6 +374,12 @@ internal sealed class ProtectionMutationHandler :
             ProtectionAdministrationRules
                 .DeserializePayload<PurviewKnowYourDataReviewPayload>(
                     accepted.Payload!.Value);
+        if (reviewed.IngestionEnabled)
+        {
+            throw ProtectionAdministrationRules.Validation(
+                "IngestionEnabled",
+                "Full AI content capture requires All classifiers. Review this filtered-SIT operation again with IngestionEnabled set to false.");
+        }
         var now = UtcNow();
         var connection =
             await ProtectionAdministrationRules.RequireConnectionAsync(
@@ -442,7 +451,7 @@ internal sealed class ProtectionMutationHandler :
         CancellationToken cancellationToken)
     {
         var acceptedRequestHash =
-            ProtectionAcceptedRequestHasher.Compute(command.Request);
+            ProtectionAcceptedRequestHasher.Compute(command.Request, command.Registration?.Id);
         var accepted = await PrepareQueuedOperationAsync(
             command.Actor,
             command.Request.ConfirmationTokenId,
@@ -453,7 +462,11 @@ internal sealed class ProtectionMutationHandler :
             acceptedRequestHash,
             cancellationToken);
         if (accepted.IsReplay)
+        {
+            if (command.Registration is not null)
+                throw IdempotencyConflict();
             return ReplayResult(accepted.Operation);
+        }
 
         var reviewed =
             ProtectionAdministrationRules
@@ -468,13 +481,45 @@ internal sealed class ProtectionMutationHandler :
                 now,
                 mustBeUsable: true,
                 cancellationToken);
-        var selection = await RequireReviewedInventoryAsync(
-            connection,
-            reviewed.InventoryGenerationId,
-            reviewed.SensitiveInformationTypeId,
-            reviewed.SensitiveInformationTypeName,
-            now,
-            cancellationToken);
+        var reviewedSelections = ProtectionAdministrationRules.DlpSelections(reviewed);
+        var selections = await ProtectionAdministrationRules.RequireInventorySelectionsAsync(
+            _inventory, connection, reviewedSelections, now, cancellationToken);
+        var selection = selections[0];
+        var requestedPolicyMode = ProtectionAdministrationRules.ParsePolicyMode(reviewed.PolicyMode, reviewed.Mode);
+        if (reviewed.DeferredBlueprint is { } deferred)
+        {
+            var agent = command.Registration;
+            if (agent is null || agent.Status != AgentStatus.Draft ||
+                agent.BlueprintSelectionMode != "CreateNew" ||
+                !string.Equals(agent.ExternalAgentId.Value, deferred.ExternalAgentId, StringComparison.Ordinal) ||
+                !string.Equals(agent.RequestedBlueprintDisplayName, deferred.DisplayName, StringComparison.Ordinal) ||
+                !string.Equals(agent.CreatedByObjectId, command.Actor.ObjectId, StringComparison.Ordinal) ||
+                reviewed.BlueprintApplicationId != Guid.Empty || command.ResolvedBlueprintApplicationId is not null ||
+                command.Request.ExpectedRowVersion != "*")
+                throw new DomainException("The deferred policy consent does not match this new registration.", ErrorCodes.PROTECTION_CONFIRMATION_INVALID);
+
+            accepted.Operation.DeferredConfiguration = new PurviewDeferredConfigurationIntent(
+                agent.Id, deferred.ExternalAgentId, deferred.DisplayName, reviewed.ProfileId,
+                connection.Id, reviewed.DisplayName, selection.Generation.Id.Value, requestedPolicyMode,
+                reviewedSelections.Select(ProtectionAdministrationRules.ToSelectedType).ToArray(),
+                ProtectionAdministrationRules.ParseActivities(reviewed.Activities),
+                ProtectionAdministrationRules.ParseActions(reviewed.Actions, ProtectionAdministrationRules.ParseActivities(reviewed.Activities)),
+                accepted.Operation.ReviewedPayloadHash);
+            accepted.Operation.Status = ProtectionAdminOperationStatus.AwaitingBlueprint;
+            accepted.Operation.RequiredAction = ProtectionRequiredActionCodes.WaitingForRegisteredBlueprint;
+            BindAgentConfiguration(agent, accepted.Operation, reviewed.ProfileId, requestedPolicyMode);
+            StoreResult(accepted.Operation, Accepted(accepted.Operation));
+            await AddAuditAsync(accepted.Operation, "PurviewConfigurationDeferredWithConsent", cancellationToken);
+            // The registration handler saves the consent, registration and provisioning outbox together.
+            return Accepted(accepted.Operation);
+        }
+
+        if (command.Registration is { } registration &&
+            (command.ResolvedBlueprintApplicationId != reviewed.BlueprintApplicationId ||
+             (registration.Status == AgentStatus.Draft && registration.BlueprintSelectionMode != "UseExisting")))
+            throw new DomainException("The reviewed policy belongs to a different blueprint.", ErrorCodes.PROTECTION_CONFIRMATION_INVALID);
+        if (_profileMutationGuard is not null)
+            await _profileMutationGuard.HoldAsync(reviewed.ProfileId, cancellationToken);
         var profile = await _profiles.GetByIdAsync(
             new PurviewDlpProfileId(reviewed.ProfileId),
             cancellationToken);
@@ -533,6 +578,8 @@ internal sealed class ProtectionMutationHandler :
             selection.Item.SensitiveInformationTypeId;
         profile.SensitiveInformationTypeName = selection.Item.ExactName;
         profile.Mode = mode;
+        profile.PolicyMode = ProtectionAdministrationRules.ParsePolicyMode(reviewed.PolicyMode, reviewed.Mode);
+        profile.SensitiveInformationTypes = reviewedSelections.Select(ProtectionAdministrationRules.ToSelectedType).ToList();
         profile.Activities = activities.ToList();
         profile.Actions = actions.ToList();
         profile.Status = PurviewDlpProfileStatus.Pending;
@@ -546,14 +593,32 @@ internal sealed class ProtectionMutationHandler :
         profile.TokenRolesVerifiedAtUtc = null;
         profile.RuntimeAllowVerifiedAtUtc = null;
         profile.RuntimeBlockVerifiedAtUtc = null;
+        profile.RuntimeBehaviorSuiteHash = null;
+        profile.RuntimeBehaviorVerifiedUntilUtc = null;
+        profile.RuntimeBehaviorCertificationOperationId = null;
         profile.LastFailureCode = null;
         profile.UpdatedAtUtc = now;
+        if (command.Registration is { } configuredAgent)
+            BindAgentConfiguration(configuredAgent, accepted.Operation, profile.Id.Value, profile.EffectivePolicyMode);
 
         await QueueAsync(
             accepted.Operation,
             "PurviewDlpProfileOperationAccepted",
-            cancellationToken);
+            cancellationToken,
+            saveChanges: command.Registration is null);
         return Accepted(accepted.Operation);
+    }
+
+    private static void BindAgentConfiguration(AgentRegistration agent, ProtectionAdminOperation operation,
+        Guid profileId, PurviewPolicyMode mode)
+    {
+        var originalProtectionConfiguration = PromptProtectionContext.ComputeAgentConfigurationHash(agent);
+        agent.PurviewConfigurationOperationId = operation.Id;
+        agent.RequestedPurviewPolicyProfileId = profileId;
+        agent.RequestedPurviewPolicyMode = mode;
+        agent.FeatureConfiguration.PurviewMode = mode.ToLegacy();
+        if (originalProtectionConfiguration != PromptProtectionContext.ComputeAgentConfigurationHash(agent))
+            agent.ProtectionRevision = Guid.NewGuid();
     }
 
     public async Task<ProtectionOperationAcceptedResponse> Handle(
@@ -592,41 +657,12 @@ internal sealed class ProtectionMutationHandler :
         return Accepted(accepted.Operation);
     }
 
-    public async Task<ProtectionOperationAcceptedResponse> Handle(
+    public Task<ProtectionOperationAcceptedResponse> Handle(
         ValidatePurviewDlpProfileRuntimeCommand command,
-        CancellationToken cancellationToken)
-    {
-        var acceptedRequestHash =
-            ProtectionAcceptedRequestHasher.Compute(
-                command.ProfileId,
-                command.Request);
-        var accepted = await PrepareQueuedOperationAsync(
-            command.Actor,
-            command.Request.ConfirmationTokenId,
-            command.Request.ConfirmationToken,
-            command.Request.IdempotencyKey,
-            command.Request.ExpectedRowVersion,
-            ProtectionAdminOperationType.ValidateDlpRuntime,
-            acceptedRequestHash,
-            cancellationToken,
-            reviewedType:
-                ProtectionAdminOperationType.ValidateDlpRuntime);
-        if (accepted.IsReplay)
-            return ReplayResult(accepted.Operation);
-
-        await EnsureExactReviewedProfileAsync(
-            command.Actor,
-            command.ProfileId,
-            command.Request.ExpectedRowVersion,
-            accepted.Payload!.Value,
-            requireRuntimePrerequisites: true,
-            cancellationToken);
-        await QueueAsync(
-            accepted.Operation,
-            "PurviewDlpRuntimeValidationAccepted",
-            cancellationToken);
-        return Accepted(accepted.Operation);
-    }
+        CancellationToken cancellationToken) =>
+        Task.FromException<ProtectionOperationAcceptedResponse>(new DomainException(
+            "Review an explicit synthetic sample suite with the runtime-test operation.",
+            PurviewRuntimeTestFailureCodes.SamplesRequired));
 
     private async Task<PreparedOperation> PrepareQueuedOperationAsync(
         ProtectionActor actor,
@@ -725,6 +761,8 @@ internal sealed class ProtectionMutationHandler :
             profile.UpdatedAtUtc,
             profile.RowVersion);
         EnsureProfileMatchesReview(profile, reviewed);
+        await ProtectionAdministrationRules.RequireInventorySelectionsAsync(
+            _inventory, connection, ProtectionAdministrationRules.DlpSelections(reviewed), UtcNow(), cancellationToken);
         ProtectionAdministrationRules.ParseActions(reviewed.Actions,
             ProtectionAdministrationRules.ParseActivities(reviewed.Activities));
         await RequireReviewedInventoryAsync(
@@ -767,6 +805,10 @@ internal sealed class ProtectionMutationHandler :
             value.Action));
         if (profile.BlueprintApplicationId.Value !=
                 reviewed.BlueprintApplicationId ||
+            profile.EffectivePolicyMode != ProtectionAdministrationRules.ParsePolicyMode(reviewed.PolicyMode, reviewed.Mode) ||
+            !profile.NormalizedSensitiveInformationTypes.SequenceEqual(
+                ProtectionAdministrationRules.DlpSelections(reviewed).Select(value =>
+                    ProtectionAdministrationRules.ToSelectedType(value))) ||
             !string.Equals(
                 profile.DisplayName,
                 reviewed.DisplayName,
@@ -813,7 +855,8 @@ internal sealed class ProtectionMutationHandler :
     private async Task QueueAsync(
         ProtectionAdminOperation operation,
         string auditEventType,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool saveChanges = true)
     {
         StoreResult(operation, Accepted(operation));
         await AddOutboxAsync(
@@ -824,7 +867,8 @@ internal sealed class ProtectionMutationHandler :
             operation,
             auditEventType,
             cancellationToken);
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        if (saveChanges)
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
     }
 
     private async Task<ProtectionAdminOperation?> GetReplayAsync(

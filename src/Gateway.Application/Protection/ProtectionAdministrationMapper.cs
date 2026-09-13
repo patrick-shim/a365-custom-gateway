@@ -73,10 +73,11 @@ internal static class ProtectionAdministrationMapper
 
     public static PurviewDlpProfileDto ToDto(
         PurviewDlpProfile profile,
-        DateTime? evaluationTimeUtc = null)
+        DateTime? evaluationTimeUtc = null,
+        bool runtimeCertificationCurrent = false)
     {
         var utcNow = evaluationTimeUtc ?? DateTime.UtcNow;
-        var blockers = GetReadinessBlockers(profile, utcNow).ToArray();
+        var blockers = GetReadinessBlockers(profile, utcNow, runtimeCertificationCurrent).ToArray();
         var evaluatedAtUtc = new[]
             {
                 profile.LastReadbackAtUtc,
@@ -112,10 +113,12 @@ internal static class ProtectionAdministrationMapper
                 profile.Readiness.Readback.ToString(),
                 profile.Readiness.Propagation.ToString(),
                 profile.Readiness.TokenRoles.ToString(),
-                profile.Readiness.RuntimeVerdict.ToString(),
-                profile.IsExactlyReadyFor(
-                    profile.BlueprintApplicationId,
-                    utcNow),
+                profile.EffectivePolicyMode == PurviewPolicyMode.Enforce &&
+                    profile.Readiness.RuntimeVerdict == ProtectionRuntimeVerdictStatus.Ready && !runtimeCertificationCurrent
+                        ? ProtectionRuntimeVerdictStatus.Failed.ToString()
+                        : profile.Readiness.RuntimeVerdict.ToString(),
+                !ProtectionAdministrationRules.HasUnverifiedLegacyThresholds(profile) &&
+                    profile.IsExactlyReadyFor(profile.BlueprintApplicationId, utcNow, runtimeCertificationCurrent),
                 blockers,
                 evaluatedAtUtc,
                 CapabilityReadbackAtUtc: null,
@@ -130,7 +133,13 @@ internal static class ProtectionAdministrationMapper
             ProtectionRowVersion.Encode(
                 profile.RowVersion,
                 profile.Id.Value,
-                profile.UpdatedAtUtc));
+                profile.UpdatedAtUtc),
+            profile.EffectivePolicyMode.ToString(),
+            profile.NormalizedSensitiveInformationTypes.Select(value => new PurviewSensitiveInformationTypeSelectionDto(
+                profile.InventoryGenerationId.Value, value.Id, value.ExactName,
+                value.MinCount, value.MaxCount, value.MinConfidence, value.MaxConfidence)).ToArray(),
+            profile.RuntimeBehaviorSuiteHash,
+            profile.RuntimeBehaviorVerifiedUntilUtc);
     }
 
     public static ProtectionAdminOperationDto ToDto(
@@ -184,13 +193,24 @@ internal static class ProtectionAdministrationMapper
             ProtectionRowVersion.Encode(
                 operation.RowVersion,
                 operation.Id,
-                operation.UpdatedAtUtc));
+                operation.UpdatedAtUtc),
+            operation.Type == ProtectionAdminOperationType.TestDlpRuntime && operation.RuntimeTestResultJson is not null
+                ? PurviewRuntimeTestSerialization.ReadResult(operation).Report : null);
     }
 
     private static IEnumerable<string> GetReadinessBlockers(
         PurviewDlpProfile profile,
-        DateTime utcNow)
+        DateTime utcNow,
+        bool runtimeCertificationCurrent)
     {
+        if (profile.NormalizedSensitiveInformationTypes.Any(value =>
+                !Gateway.Domain.Models.PurviewSensitiveInformationTypeThresholds.AreValid(
+                    value.MinCount, value.MaxCount, value.MinConfidence, value.MaxConfidence)))
+            yield return ErrorCodes.PURVIEW_SIT_THRESHOLDS_REVIEW_REQUIRED;
+        if (profile.EffectivePolicyMode == PurviewPolicyMode.Disabled)
+            yield return "PURVIEW_POLICY_DISABLED";
+        else if (profile.EffectivePolicyMode != PurviewPolicyMode.Enforce)
+            yield return "PURVIEW_POLICY_SIMULATION";
         if (profile.Readiness.Capability != ProtectionCapabilityStatus.Installed)
             yield return ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE;
         if (profile.Readiness.Readback != ProtectionReadbackStatus.Ready)
@@ -201,6 +221,10 @@ internal static class ProtectionAdministrationMapper
             yield return "PURVIEW_TOKEN_ROLES_NOT_READY";
         if (profile.Readiness.RuntimeVerdict != ProtectionRuntimeVerdictStatus.Ready)
             yield return "PURVIEW_RUNTIME_VERDICT_NOT_READY";
+        if (profile.EffectivePolicyMode == PurviewPolicyMode.Enforce &&
+            (!runtimeCertificationCurrent || profile.RuntimeBehaviorSuiteHash is null || profile.RuntimeBehaviorVerifiedUntilUtc is null ||
+             profile.RuntimeBehaviorVerifiedUntilUtc <= utcNow))
+            yield return "PURVIEW_RUNTIME_SAMPLES_REQUIRED";
         if (utcNow >= profile.SensitiveInformationTypeSnapshotExpiresAtUtc)
             yield return ErrorCodes.PURVIEW_INVENTORY_STALE;
     }

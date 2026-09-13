@@ -18,6 +18,18 @@ using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var maintenance = MaintenanceCutoverOptions.Read(builder.Configuration);
+builder.Services.AddSingleton(maintenance);
+if (maintenance.Phase == MaintenanceCutoverPhase.PreSchemaClosed)
+{
+    var closedApp = builder.Build();
+    closedApp.UseMiddleware<MaintenanceCutoverMiddleware>();
+    closedApp.Run();
+    return;
+}
+if (maintenance.Phase == MaintenanceCutoverPhase.PostSchemaClosed)
+    builder.Services.AddHostedService<MaintenanceCutoverStartup>();
+
 builder.Services
     .AddMicrosoftIdentityWebApiAuthentication(builder.Configuration, "EntraId")
     .EnableTokenAcquisitionToCallDownstreamApi()
@@ -91,7 +103,13 @@ builder.Services.AddOpenApi();
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<GatewayDbContext>();
 
+if (maintenance.Phase == MaintenanceCutoverPhase.PostSchemaClosed)
+    MaintenanceCutoverStartup.HoldOperationalServices(builder.Services);
+
 var app = builder.Build();
+
+if (maintenance.Phase == MaintenanceCutoverPhase.PostSchemaClosed)
+    app.UseMiddleware<MaintenanceCutoverMiddleware>();
 
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseMiddleware<ProblemDetailsMiddleware>();

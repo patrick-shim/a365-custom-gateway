@@ -41,8 +41,21 @@ internal sealed class SetupConfigurationForm : IValidatableObject
 
     public bool PromptShieldCostAndQuotaAcknowledged { get; set; }
 
+    private string promptShieldSkuName = "F0";
+
     [Required, RegularExpression("^(F0|S0)$")]
-    public string PromptShieldSkuName { get; set; } = "F0";
+    public string PromptShieldSkuName
+    {
+        get => promptShieldSkuName;
+        set
+        {
+            if (!string.Equals(promptShieldSkuName, value, StringComparison.Ordinal))
+            {
+                PromptShieldCostAndQuotaAcknowledged = false;
+            }
+            promptShieldSkuName = value;
+        }
+    }
 
     public bool PurviewEnabled { get; set; } = true;
 
@@ -101,10 +114,11 @@ internal sealed class SetupConfigurationForm : IValidatableObject
             case CapabilityPreset.CoreGateway:
                 AllowDevelopmentRegistryPreview =
                     Profile == DeploymentProfile.QuickDevelopment;
-                PromptShieldEnabled = false;
+                PromptShieldEnabled = true;
                 PurviewEnabled = false;
                 break;
             case CapabilityPreset.Custom:
+                PromptShieldEnabled = true;
                 if (Profile != DeploymentProfile.QuickDevelopment)
                 {
                     AllowDevelopmentRegistryPreview = false;
@@ -224,11 +238,10 @@ internal sealed class SetupConfigurationForm : IValidatableObject
                 [nameof(CapabilityPreset)]);
         }
 
-        if (CapabilityPreset == CapabilityPreset.CoreGateway &&
-            (PromptShieldEnabled || PurviewEnabled))
+        if (CapabilityPreset == CapabilityPreset.CoreGateway && PurviewEnabled)
         {
             yield return new ValidationResult(
-                "Core Gateway does not include Prompt Shields or Purview prerequisites.",
+                "Core Gateway includes shared Prompt Shields, but not Purview prerequisites.",
                 [nameof(CapabilityPreset)]);
         }
 

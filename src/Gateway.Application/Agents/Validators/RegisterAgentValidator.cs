@@ -111,7 +111,8 @@ public class RegisterAgentValidator : AbstractValidator<RegisterAgentCommand>
             .WithMessage("PurviewDlpProfile cannot be selected while Purview is disabled.");
 
         When(
-            x => x.Blueprint?.Mode == "CreateNew" && x.Features?.PurviewEnabled == true,
+            x => x.Blueprint?.Mode == "CreateNew" && x.Features?.PurviewEnabled == true &&
+                x.PurviewConfigurationIntent is null,
             () =>
             {
                 RuleFor(x => x.PurviewPolicyProfile)

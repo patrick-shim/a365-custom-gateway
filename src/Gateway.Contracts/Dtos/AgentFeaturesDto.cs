@@ -11,4 +11,7 @@ public record AgentFeaturesDto(
     bool PurviewEffectivelyEnabled = false,
     ProtectionReadinessDto? PurviewReadiness = null,
     bool PromptShieldEffectivelyEnabled = false,
-    string? PromptShieldCapabilityStatus = null);
+    string? PromptShieldCapabilityStatus = null,
+    string? PurviewPolicyMode = null,
+    Guid? PurviewConfigurationOperationId = null,
+    string? PurviewConfigurationStatus = null);

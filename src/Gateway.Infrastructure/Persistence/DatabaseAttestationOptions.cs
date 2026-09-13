@@ -26,6 +26,8 @@ public sealed class DatabaseAttestationOptions
     public string WorkerPrincipalName { get; set; } = string.Empty;
 
     public string WorkerPrincipalClientId { get; set; } = string.Empty;
+
+    public DatabaseUpgradeAttestationOptions Upgrade { get; set; } = new();
 }
 
 internal sealed partial class DatabaseAttestationOptionsValidator
@@ -36,10 +38,13 @@ internal sealed partial class DatabaseAttestationOptionsValidator
         DatabaseAttestationOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        if (!options.Enabled && options.Upgrade is { Enabled: true })
+            return ValidateOptionsResult.Fail("Upgrade attestation cannot disable original database attestation.");
         if (!options.Enabled)
             return ValidateOptionsResult.Success;
 
-        if (!TryCanonicalGuid(options.DeploymentOwnershipId) ||
+        if (!DatabaseUpgradeAttestation.HasValidOptions(options.Upgrade) ||
+            !TryCanonicalGuid(options.DeploymentOwnershipId) ||
             !FingerprintPattern().IsMatch(options.AcceptedSourceFingerprint) ||
             !FingerprintPattern().IsMatch(options.ExpectedSchemaFingerprint) ||
             !SqlServerPattern().IsMatch(options.SqlServerFqdn) ||

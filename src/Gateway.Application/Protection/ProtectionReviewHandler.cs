@@ -46,6 +46,7 @@ internal sealed class ProtectionReviewHandler :
     private readonly IUnitOfWork _unitOfWork;
     private readonly ProtectionOperationTokenService _tokens;
     private readonly TimeProvider _timeProvider;
+    private readonly PurviewRuntimeTestService? _runtimeTests;
 
     public ProtectionReviewHandler(
         IProtectionCapabilityRepository capabilities,
@@ -58,7 +59,8 @@ internal sealed class ProtectionReviewHandler :
         IAuditEventRepository auditEvents,
         IUnitOfWork unitOfWork,
         ProtectionOperationTokenService tokens,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        PurviewRuntimeTestService? runtimeTests = null)
     {
         _capabilities = capabilities;
         _connections = connections;
@@ -71,6 +73,7 @@ internal sealed class ProtectionReviewHandler :
         _unitOfWork = unitOfWork;
         _tokens = tokens;
         _timeProvider = timeProvider;
+        _runtimeTests = runtimeTests;
     }
 
     public async Task<ProtectionOperationReviewResponse> Handle(
@@ -221,6 +224,12 @@ internal sealed class ProtectionReviewHandler :
         ReviewPurviewKnowYourDataCommand command,
         CancellationToken cancellationToken)
     {
+        if (command.Request.IngestionEnabled)
+        {
+            throw ProtectionAdministrationRules.Validation(
+                "IngestionEnabled",
+                "Full AI content capture requires All classifiers. This filtered-SIT operation must set IngestionEnabled to false.");
+        }
         await ProtectionAdministrationRules.RequirePurviewCapabilityAsync(
             _capabilities,
             cancellationToken);
@@ -304,24 +313,36 @@ internal sealed class ProtectionReviewHandler :
             now,
             mustBeUsable: true,
             cancellationToken);
-        var selection =
-            await ProtectionAdministrationRules.RequireInventorySelectionAsync(
+        var selections = ProtectionAdministrationRules.NormalizeSelections(
+            command.Request.SensitiveInformationType, command.Request.SensitiveInformationTypes);
+        var validated =
+            await ProtectionAdministrationRules.RequireInventorySelectionsAsync(
                 _inventory,
                 connection,
-                command.Request.SensitiveInformationType,
+                selections,
                 now,
                 cancellationToken);
+        var selection = validated[0];
         ProtectionAdministrationRules.EnsureBoundedDisplayName(
             command.Request.DisplayName);
         var mode = ProtectionAdministrationRules.ParseMode(command.Request.Mode);
+        var policyMode = ProtectionAdministrationRules.ParsePolicyMode(command.Request.PolicyMode, command.Request.Mode);
         var activities = ProtectionAdministrationRules.ParseActivities(
             command.Request.Activities);
         var actions = ProtectionAdministrationRules.ParseActions(
             command.Request.Actions,
             activities);
-        await EnsureBlueprintAsync(
-            command.Request.BlueprintApplicationId,
-            cancellationToken);
+        if (command.Request.DeferredBlueprint is { } deferred)
+        {
+            if (command.Request.BlueprintApplicationId != Guid.Empty || command.Request.ProfileId is not null ||
+                !ProtectionAdministrationRules.IsBoundedText(deferred.ExternalAgentId, 128) ||
+                !ProtectionAdministrationRules.IsBoundedText(deferred.DisplayName, 120))
+                throw ProtectionAdministrationRules.Validation("DeferredBlueprint", "A new blueprint consent must bind exactly one external agent and display name.");
+        }
+        else
+        {
+            await EnsureBlueprintAsync(command.Request.BlueprintApplicationId, cancellationToken);
+        }
 
         PurviewDlpProfile? existing;
         if (command.Request.ProfileId is { } profileId)
@@ -351,7 +372,7 @@ internal sealed class ProtectionReviewHandler :
                     ErrorCodes.PURVIEW_POLICY_PROFILE_CONFLICT);
             }
         }
-        else
+        else if (command.Request.DeferredBlueprint is null)
         {
             existing = await _profiles.GetByBlueprintApplicationIdAsync(
                 new BlueprintApplicationId(
@@ -364,6 +385,17 @@ internal sealed class ProtectionReviewHandler :
                     ErrorCodes.PURVIEW_POLICY_PROFILE_CONFLICT);
             }
         }
+        else
+        {
+            existing = null;
+        }
+
+        if (existing is not null && !command.Request.AcknowledgeSharedPolicyImpact)
+            throw new ConflictException(
+                "Changing this shared policy affects every agent of this blueprint. Explicit impact acknowledgment is required.",
+                ErrorCodes.PURVIEW_POLICY_PROFILE_CONFLICT);
+
+        selections = ProtectionAdministrationRules.NormalizeDlpThresholds(selections, existing);
 
         EnsureExpected(
             command.Request.ExpectedRowVersion,
@@ -392,7 +424,10 @@ internal sealed class ProtectionReviewHandler :
             activities.Select(value => value.ToString()).ToArray(),
             actions.Select(value => new PurviewDlpRuleActionDto(
                 value.Activity.ToString(),
-                value.Action.ToString())).ToArray());
+                value.Action.ToString())).ToArray(),
+            policyMode.ToString(),
+            selections,
+            command.Request.DeferredBlueprint);
         return await PersistReviewAsync(
             operation,
             command.Request.ExpectedRowVersion,
@@ -410,7 +445,15 @@ internal sealed class ProtectionReviewHandler :
                 payload.Actions,
                 PurviewPolicyScopeType.Individual.ToString(),
                 PurviewEnforcementPlane.Application.ToString(),
-                ProtectionAdministrationRules.ReadinessDisclaimer),
+                ProtectionAdministrationRules.ReadinessDisclaimer + " " + ProtectionAdministrationRules.DlpThresholdDisclaimer +
+                (ProtectionAdministrationRules.HasUnverifiedLegacyThresholds(existing)
+                    ? " Existing rule thresholds are unverified. Confirming this review replaces the entire SIT condition with these explicit thresholds."
+                    : string.Empty),
+                PolicyMode: policyMode.ToString(),
+                SensitiveInformationTypes: selections,
+                AffectsAllBlueprintAgents: true,
+                DeferredBlueprint: command.Request.DeferredBlueprint,
+                ReplacesUnverifiedLegacyThresholds: ProtectionAdministrationRules.HasUnverifiedLegacyThresholds(existing)),
             cancellationToken);
     }
 
@@ -429,14 +472,9 @@ internal sealed class ProtectionReviewHandler :
     public Task<ProtectionOperationReviewResponse> Handle(
         ReviewValidatePurviewDlpRuntimeCommand command,
         CancellationToken cancellationToken) =>
-        ReviewExistingDlpActionAsync(
-            command.Actor,
-            command.ProfileId,
-            command.Request.ProfileId,
-            command.Request.ExpectedRowVersion,
-            ProtectionAdminOperationType.ValidateDlpRuntime,
-            command.CorrelationId,
-            cancellationToken);
+        Task.FromException<ProtectionOperationReviewResponse>(new DomainException(
+            "Review an explicit synthetic sample suite with the runtime-test operation.",
+            PurviewRuntimeTestFailureCodes.SamplesRequired));
 
     public async Task<ProtectionOperationConfirmationResponse> Handle(
         ConfirmProtectionOperationReviewCommand command,
@@ -513,6 +551,11 @@ internal sealed class ProtectionReviewHandler :
         var now = UtcNow();
         switch (operation.Type)
         {
+            case ProtectionAdminOperationType.TestDlpRuntime:
+                if (_runtimeTests is null)
+                    throw new DomainException("Runtime-test verification is unavailable.", ErrorCodes.PROTECTION_CONFIRMATION_INVALID);
+                await _runtimeTests.RecheckConfirmationAsync(operation, actor, expectedRowVersion, payload, cancellationToken);
+                break;
             case ProtectionAdminOperationType.ConnectPurviewTenant:
                 {
                     var reviewed =
@@ -608,16 +651,10 @@ internal sealed class ProtectionReviewHandler :
                             now,
                             mustBeUsable: true,
                             cancellationToken);
-                    await RecheckInventoryAsync(
-                        connection,
-                        reviewed.InventoryGenerationId,
-                        reviewed.SensitiveInformationTypeId,
-                        reviewed.SensitiveInformationTypeName,
-                        now,
-                        cancellationToken);
-                    await EnsureBlueprintAsync(
-                        reviewed.BlueprintApplicationId,
-                        cancellationToken);
+                    await ProtectionAdministrationRules.RequireInventorySelectionsAsync(
+                        _inventory, connection, ProtectionAdministrationRules.DlpSelections(reviewed), now, cancellationToken);
+                    if (reviewed.DeferredBlueprint is null)
+                        await EnsureBlueprintAsync(reviewed.BlueprintApplicationId, cancellationToken);
                     var profile = await _profiles.GetByIdAsync(
                         new PurviewDlpProfileId(reviewed.ProfileId),
                         cancellationToken);
@@ -707,6 +744,8 @@ internal sealed class ProtectionReviewHandler :
             profile.UpdatedAtUtc,
             profile.RowVersion);
         var payload = CreateDlpPayload(profile);
+        await ProtectionAdministrationRules.RequireInventorySelectionsAsync(
+            _inventory, connection, ProtectionAdministrationRules.DlpSelections(payload), UtcNow(), cancellationToken);
         ProtectionAdministrationRules.ParseActions(payload.Actions,
             ProtectionAdministrationRules.ParseActivities(payload.Activities));
         if (operationType == ProtectionAdminOperationType.ValidateDlpRuntime && profile.Mode != PurviewMode.Enforce)
@@ -739,7 +778,10 @@ internal sealed class ProtectionReviewHandler :
                 payload.Actions,
                 PurviewPolicyScopeType.Individual.ToString(),
                 PurviewEnforcementPlane.Application.ToString(),
-                ProtectionAdministrationRules.ReadinessDisclaimer),
+                ProtectionAdministrationRules.ReadinessDisclaimer,
+                PolicyMode: payload.PolicyMode,
+                SensitiveInformationTypes: payload.SensitiveInformationTypes,
+                AffectsAllBlueprintAgents: true),
             cancellationToken);
     }
 
@@ -764,7 +806,11 @@ internal sealed class ProtectionReviewHandler :
                 .Select(value => new PurviewDlpRuleActionDto(
                     value.Activity.ToString(),
                     value.Action.ToString()))
-                .ToArray());
+                .ToArray(),
+            profile.EffectivePolicyMode.ToString(),
+            profile.NormalizedSensitiveInformationTypes.Select(value =>
+                new PurviewSensitiveInformationTypeSelectionDto(profile.InventoryGenerationId.Value, value.Id, value.ExactName,
+                    value.MinCount, value.MaxCount, value.MinConfidence, value.MaxConfidence)).ToArray());
 
     private async Task<(
         ProtectionAdminOperation Operation,

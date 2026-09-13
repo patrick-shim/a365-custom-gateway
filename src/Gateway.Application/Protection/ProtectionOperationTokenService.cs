@@ -15,7 +15,7 @@ internal sealed class ProtectionOperationTokenService
     private const int TokenEntropyBytes = 32;
     private const int SaltBytes = 32;
     private const int VerifierBytes = 32;
-    private const int MaximumTokenCharacters = 16_384;
+    internal const int MaximumTokenCharacters = 262_144;
     private static readonly TimeSpan ReviewLifetime = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ConfirmationLifetime = TimeSpan.FromMinutes(5);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)

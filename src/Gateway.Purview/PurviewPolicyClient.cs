@@ -12,7 +12,7 @@ using Microsoft.Extensions.Options;
 
 namespace Gateway.Purview;
 
-public sealed class PurviewPolicyClient : IPurviewPolicyClient
+public sealed partial class PurviewPolicyClient : IPurviewPolicyClient
 {
     private const string UploadText = "uploadText";
     private const string DownloadText = "downloadText";
@@ -29,12 +29,16 @@ public sealed class PurviewPolicyClient : IPurviewPolicyClient
         ILogger<PurviewPolicyClient> logger,
         IOptions<PurviewOptions> options,
         IMemoryCache cache,
-        IPurviewGraphClient graph)
+        IPurviewGraphClient graph,
+        Guid? runtimeProbePrincipalId = null,
+        TimeProvider? runtimeProbeClock = null)
     {
         _logger = logger;
         _options = options.Value;
         _cache = cache;
         _graph = graph;
+        _runtimeProbePrincipalId = runtimeProbePrincipalId;
+        _runtimeProbeClock = runtimeProbeClock ?? TimeProvider.System;
     }
 
     public bool IsEnabled => _options.Enabled;

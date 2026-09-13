@@ -38,7 +38,7 @@ The deployed system includes:
 - Entra applications, app roles, managed identities, federated credentials, and
   the seed Agent ID blueprint;
 - the ordered Gateway database schema; and
-- optional Azure AI Content Safety and its managed-identity RBAC; and
+- shared Azure AI Content Safety for Prompt Shields and its managed-identity RBAC; and
 - optional Purview identity, RBAC, certificate, Key Vault, and runtime
   prerequisites.
 
@@ -130,15 +130,18 @@ and lets you choose one of three deployment-capability presets:
 - **Full evaluation** is recommended and selected by default for Quick development.
   It includes Agent 365 Registry beta, Prompt Shields infrastructure, and Purview
   prerequisites.
-- **Core Gateway** includes no Prompt Shields or Purview dependency. In Quick
+- **Core Gateway** includes shared Prompt Shields, but no Purview dependency. In Quick
   development it retains the deployment-wide Registry beta capability; staging and
   production keep that boundary closed.
-- **Custom** independently includes or excludes Prompt Shields and Purview
-  prerequisites. It cannot open Registry beta in staging or production.
+- **Custom** includes shared Prompt Shields and independently includes or excludes
+  Purview prerequisites. It cannot open Registry beta in staging or production.
 
 Registry beta, Prompt Shields cost/quota, and Purview authority each require their
-applicable explicit acknowledgement before Plan. A checked capability does not
-enable every registration or prove runtime readiness. Core and Purview-disabled
+applicable explicit acknowledgement before Plan. Every new preset, including Core,
+requires Content Safety SKU selection and Prompt Shields cost/quota review; neither
+UI nor terminal Init can silently omit the service or fall back to a paid SKU.
+Shared provisioning does not enable every agent or prove runtime readiness:
+Prompt Shields usage is On/Off per agent at registration or edit. Core and Purview-disabled
 Custom installation run on Windows, macOS, and Linux; Full evaluation and
 Purview-enabled Custom require the Windows packaging prerequisites above.
 Region labels are paired with their canonical Azure
@@ -218,7 +221,7 @@ Configuration selects:
 - SQL service tier;
 - seed blueprint name and reviewed manager-application allowlist;
 - the deployment-wide Agent 365 Registry beta capability; and
-- optional Prompt Shields and Purview capability prerequisites.
+- shared Prompt Shields and independently selected Purview capability prerequisites.
 
 The deployment profile matters. **Quick development** defaults the beta Registry
 path on but requires an explicit acknowledgement before Plan so a registration can
@@ -258,8 +261,14 @@ Bootstrap is a resumable state machine:
    LRS storage path are available in the selected Azure region.
 2. Explicit acceptance binds the exact plan fingerprint, configuration, source,
    target, and What-If prediction for a limited time.
-3. `apply` revalidates that binding before mutation and writes safe checkpoint
-   evidence after each verified action.
+3. `apply` requires acceptance no older than 60 minutes at invocation startup,
+   then revalidates the exact binding and What-If before mutation. The same
+   continuously running invocation may finish long builds, private networking,
+   Admin UI deployment, and verification after that window, while retaining
+   per-step configuration, accepted-source snapshot, and provider checks.
+   This in-memory authorization pins the original acceptance timestamp and is
+   never saved or transferred to another invocation; a new Apply with stale
+   acceptance fails. Safe checkpoint evidence is written after each verified action.
 4. `resume` reconciles completed checkpoints and continues only work that remains
    safe for the same accepted plan.
 5. `verify` reads back the deployed boundary without creating or updating it.
@@ -297,16 +306,26 @@ use the Azure SQL regional capabilities endpoint for the exact configured SQL pa
 an unavailable or unverified path stops safely and asks you to choose another
 dropdown region.
 
-## Optional runtime protections
+## Shared protection capabilities and per-agent usage
 
-Prompt Shields and Purview are optional and independent.
+Prompt Shields infrastructure is included for every new gateway. Prompt Shields
+usage is optional per agent; Purview deployment prerequisites remain independently
+selected.
 
 ### Prompt Shields
 
-Select the Prompt Shields capability to deploy Azure AI Content Safety and authorize
-the Gateway API managed identity. The account has local authentication disabled;
-bootstrap does not provision or store an account key. Registration defaults and
-per-agent enablement belong in Gateway Settings.
+All new UI and terminal Init configurations deploy shared Azure AI Content Safety
+and authorize the Gateway API managed identity. The account has local authentication
+disabled; bootstrap does not provision or store an account key. Explicitly review
+the F0/S0 SKU and cost/quota acknowledgement. Prompt Shields On/Off is selected
+separately for each agent at registration or edit; turning usage Off never removes
+the shared service.
+
+Existing accepted configurations with `promptShield.enabled: false` remain readable
+and verifiable without being rewritten or having their source binding bypassed.
+Setup displays those values as legacy recovery information and directs operators to
+the canonical terminal recovery path; it does not silently upgrade them. Use their
+accepted source and configuration for Plan/Resume/Verify.
 
 ### Microsoft Purview
 
@@ -419,9 +438,10 @@ that looks completely clean can therefore fail every retry with the identical
 `CanNotCreateMultipleFreeAccounts` rejection. List whatever still holds a slot with
 `az cognitiveservices account list-deleted -o table`.
 
-If Plan detects the conflict before checkpoints exist, either choose a paid SKU or
-disable Prompt Shields, then run Plan again. If Apply detects a new conflict after
-checkpoints exist, changing either setting invalidates the accepted plan and cannot
+If Plan detects the conflict before checkpoints exist, explicitly select and review
+a paid SKU, or release the conflicting free-tier slot, then run Plan again. Disabling
+Prompt Shields is not a new-gateway deployment option; there is no silent SKU fallback.
+If Apply detects a new conflict after checkpoints exist, changing the configuration invalidates the accepted plan and cannot
 authorize Resume; preserve the state and use a new isolated deployment identity.
 Keeping the accepted plan and resuming requires the conflicting slot to be released:
 

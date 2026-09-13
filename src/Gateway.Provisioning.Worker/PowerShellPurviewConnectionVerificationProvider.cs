@@ -52,15 +52,18 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
     private readonly PurviewOptions _options;
     private readonly ILogger<PowerShellPurviewConnectionVerificationProvider> _logger;
     private readonly PurviewProcessSafety _processSafety;
+    private readonly PurviewConnectionVerificationDiagnostics? _diagnostics;
 
     public PowerShellPurviewConnectionVerificationProvider(
         IOptions<PurviewOptions> options,
         ILogger<PowerShellPurviewConnectionVerificationProvider> logger,
-        PurviewProcessSafety? processSafety = null)
+        PurviewProcessSafety? processSafety = null,
+        PurviewConnectionVerificationDiagnostics? diagnostics = null)
     {
         _options = options.Value;
         _logger = logger;
         _processSafety = processSafety ?? new PurviewProcessSafety();
+        _diagnostics = diagnostics;
     }
 
     public async Task<PurviewConnectionVerificationEvidence> VerifyAsync(
@@ -75,10 +78,15 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
         var certificatePath = Path.Combine(workingDirectory, "automation.pfx");
         var certificatePassword = Convert.ToBase64String(
             RandomNumberGenerator.GetBytes(48));
+        var stage = PurviewVerificationStage.PrivateDirectory;
+        int? childExitCode = null;
+        int? providerStage = null;
+        var providerError = "";
 
         try
         {
             CreatePrivateDirectory(workingDirectory);
+            stage = PurviewVerificationStage.RequestFile;
             await File.WriteAllTextAsync(
                 inputPath,
                 JsonSerializer.Serialize(new
@@ -97,12 +105,14 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
             Uri? providerCertificateSecretId = null;
             try
             {
+                stage = PurviewVerificationStage.CertificateDownload;
                 var downloadedCertificate = await DownloadCertificateAsync(
                     binding,
                     ct);
                 sourceCertificate = downloadedCertificate.Bytes;
                 providerCertificateSecretId =
                     downloadedCertificate.ProviderSecretId;
+                stage = PurviewVerificationStage.CertificateImport;
                 using var certificate = X509CertificateLoader.LoadPkcs12(
                     sourceCertificate,
                     (string?)null,
@@ -114,9 +124,11 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
                         "PURVIEW_CONNECTION_CERTIFICATE_INVALID");
                 }
 
+                stage = PurviewVerificationStage.CertificateExport;
                 exportedCertificate = certificate.Export(
                     X509ContentType.Pkcs12,
                     certificatePassword);
+                stage = PurviewVerificationStage.CertificateFile;
                 await File.WriteAllBytesAsync(
                     certificatePath,
                     exportedCertificate,
@@ -131,6 +143,7 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
                     CryptographicOperations.ZeroMemory(exportedCertificate);
             }
 
+            stage = PurviewVerificationStage.ChildBinding;
             using var process = new Process
             {
                 StartInfo = CreateStartInfo(
@@ -138,10 +151,12 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
                     certificatePath,
                     request)
             };
+            stage = PurviewVerificationStage.ChildStart;
             if (!process.Start())
                 throw Failure("PURVIEW_CONNECTION_VERIFIER_START_FAILED");
 
             await using var processLease = new PurviewProcessLease(process, _processSafety);
+            stage = PurviewVerificationStage.ChildInput;
             await process.StandardInput.WriteLineAsync(certificatePassword.AsMemory(), ct);
             process.StandardInput.Close();
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -155,6 +170,7 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
                 process.StandardError,
                 StandardErrorLimit,
                 timeout.Token);
+            stage = PurviewVerificationStage.ChildCompletion;
             await WaitForExitOrCancelAsync(
                 new PurviewVerifierProcessControl(process),
                 workingDirectory,
@@ -163,6 +179,9 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
                 _processSafety);
             var standardOutput = await outputTask;
             var standardError = await errorTask;
+            childExitCode = process.ExitCode;
+            providerStage = PurviewConnectionVerificationDiagnostics.ParseProviderStage(standardError.Text);
+            providerError = standardError.Truncated ? "" : standardError.Text;
 
             if (standardOutput.Truncated ||
                 standardError.Truncated ||
@@ -176,6 +195,7 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
                 throw Failure("PURVIEW_CONNECTION_PROVIDER_UNVERIFIED");
             }
 
+            stage = PurviewVerificationStage.EvidenceParsing;
             return ParseEvidence(
                 ExtractResult(standardOutput.Text),
                 request,
@@ -185,14 +205,18 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            _diagnostics?.Record(request.OperationId, stage,
+                new OperationCanceledException(), childExitCode, providerStage, providerError);
             throw;
         }
-        catch (PurviewConnectionVerificationException)
+        catch (PurviewConnectionVerificationException exception)
         {
+            _diagnostics?.Record(request.OperationId, stage, exception, childExitCode, providerStage, providerError);
             throw;
         }
         catch (Exception exception)
         {
+            _diagnostics?.Record(request.OperationId, stage, exception, childExitCode, providerStage, providerError);
             throw Failure(
                 "PURVIEW_CONNECTION_PROVIDER_UNVERIFIED",
                 innerException: exception);
@@ -300,6 +324,7 @@ internal sealed class PowerShellPurviewConnectionVerificationProvider
             info.ArgumentList.Add(argument);
         }
 
+        PurviewPowerShellProcess.ApplyVerifiedPackageIsolation(info, AppContext.BaseDirectory, _options.ExecutorRuntimeManifestDigest);
         return info;
     }
 

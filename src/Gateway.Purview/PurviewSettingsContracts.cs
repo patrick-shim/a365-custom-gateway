@@ -1,5 +1,6 @@
 using Gateway.Domain.Enums;
 using Gateway.Domain.Models;
+using System.Text.Json.Serialization;
 
 namespace Gateway.Purview;
 
@@ -29,7 +30,11 @@ public sealed record PurviewSensitiveInformationTypeProjection(
     Guid Id,
     string ExactName,
     string Publisher,
-    int SortOrder);
+    int SortOrder,
+    int? MinCount = null,
+    int? MaxCount = null,
+    int? MinConfidence = null,
+    int? MaxConfidence = null);
 
 public sealed record PurviewTenantSensitiveInformationTypeInventory(
     Guid GenerationId,
@@ -79,7 +84,18 @@ public sealed record PurviewDlpProfileIntent(
     string? ExpectedPolicyProviderId,
     string? ExpectedRuleProviderId,
     PurviewDlpMutationRecoveryPoint RecoveryPoint =
-        PurviewDlpMutationRecoveryPoint.None);
+        PurviewDlpMutationRecoveryPoint.None,
+    PurviewPolicyMode? PolicyMode = null,
+    IReadOnlyList<PurviewSensitiveInformationTypeProjection>? SensitiveInformationTypes = null,
+    bool AllowUnverifiedThresholdReplacement = false)
+{
+    [JsonIgnore]
+    public PurviewPolicyMode EffectivePolicyMode => PolicyMode ?? PurviewPolicyModeCompatibility.FromLegacy(Mode);
+    [JsonIgnore]
+    public IReadOnlyList<PurviewSensitiveInformationTypeProjection> NormalizedSensitiveInformationTypes =>
+        (SensitiveInformationTypes ?? [new(SensitiveInformationTypeId, SensitiveInformationTypeName, SensitiveInformationTypePublisher, 0)])
+        .OrderBy(value => value.Id).ToArray();
+}
 
 public enum PurviewDlpMutationRecoveryPoint
 {
@@ -117,7 +133,17 @@ public sealed record PurviewDlpProfileReadback(
     IReadOnlyList<PurviewDlpRuleAction> Actions,
     bool HasExclusions,
     bool HasBypass,
-    DateTimeOffset ObservedAtUtc);
+    DateTimeOffset ObservedAtUtc,
+    PurviewPolicyMode? PolicyMode = null,
+    IReadOnlyList<PurviewSensitiveInformationTypeProjection>? SensitiveInformationTypes = null,
+    string? SensitiveInformationTypesOperator = null)
+{
+    [JsonIgnore]
+    public PurviewPolicyMode EffectivePolicyMode => PolicyMode ?? PurviewPolicyModeCompatibility.FromLegacy(Mode);
+    [JsonIgnore]
+    public IReadOnlyList<PurviewSensitiveInformationTypeProjection> NormalizedSensitiveInformationTypes =>
+        SensitiveInformationTypes ?? [new(SensitiveInformationTypeId, SensitiveInformationTypeName, SensitiveInformationTypePublisher, 0)];
+}
 
 public enum PurviewProviderObjectState
 {

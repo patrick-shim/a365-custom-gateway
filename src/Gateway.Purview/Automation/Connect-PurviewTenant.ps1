@@ -28,6 +28,19 @@ function ConvertTo-CanonicalGuid {
     return $parsed.ToString('D')
 }
 
+function ConvertFrom-ProviderGuid {
+    param(
+        [Parameter(Mandatory)][string]$Value,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    $parsed = [Guid]::Empty
+    if (-not [Guid]::TryParse($Value, [ref]$parsed) -or $parsed -eq [Guid]::Empty) {
+        throw "$Label must be a valid non-empty GUID."
+    }
+    return $parsed.ToString('D')
+}
+
 function Get-ExactProperty {
     param(
         [Parameter(Mandatory)]$InputObject,
@@ -119,7 +132,7 @@ try {
     }
 
     $connection = $activeConnections[0]
-    $actualTenant = ConvertTo-CanonicalGuid `
+    $actualTenant = ConvertFrom-ProviderGuid `
         -Value ([string](Get-ExactProperty -InputObject $connection -Name 'TenantID')) `
         -Label 'Connected tenant'
     if ($actualTenant -cne $tenantIdValue) {
@@ -161,7 +174,7 @@ try {
         -Value ([string](Get-ExactProperty -InputObject $users[0] -Name 'UserPrincipalName')) `
         -MaximumLength 320 `
         -Label 'Resolved user'
-    $resolvedObjectId = ConvertTo-CanonicalGuid `
+    $resolvedObjectId = ConvertFrom-ProviderGuid `
         -Value ([string](Get-ExactProperty `
             -InputObject $users[0] -Name 'ExternalDirectoryObjectId')) `
         -Label 'Resolved user object ID'
@@ -181,7 +194,7 @@ try {
     $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $inventory = [Collections.Generic.List[object]]::new()
     foreach ($providerItem in $providerItems) {
-        $id = ConvertTo-CanonicalGuid `
+        $id = ConvertFrom-ProviderGuid `
             -Value ([string](Get-ExactProperty -InputObject $providerItem -Name 'Id')) `
             -Label 'Sensitive information type ID'
         $name = Assert-BoundedText `

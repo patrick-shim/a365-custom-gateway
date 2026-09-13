@@ -9,7 +9,9 @@ internal sealed class AgentRegistrationConfiguration : IEntityTypeConfiguration<
 {
     public void Configure(EntityTypeBuilder<AgentRegistration> builder)
     {
-        builder.ToTable("AgentRegistrations");
+        builder.ToTable("AgentRegistrations", table => table.HasCheckConstraint(
+            "CK_AgentRegistrations_ProtectionRevision",
+            "[ProtectionRevision] <> '00000000-0000-0000-0000-000000000000'"));
 
         builder.HasKey(e => e.Id);
 
@@ -41,10 +43,12 @@ internal sealed class AgentRegistrationConfiguration : IEntityTypeConfiguration<
             .IsRequired();
         builder.Property(e => e.RequestedPurviewPolicyDisplayName).HasMaxLength(200);
         builder.Property(e => e.RequestedPurviewPolicyTemplate).HasMaxLength(64);
+        builder.Property(e => e.RequestedPurviewPolicyMode).HasConversion<string>().HasMaxLength(32);
         builder.Property(e => e.LastProvisioningErrorCode).HasMaxLength(64);
         builder.Property(e => e.LastProvisioningErrorSummary).HasMaxLength(2000);
         builder.Property(e => e.IsDeleted).HasDefaultValue(false);
         builder.Property(e => e.RowVersion).IsRowVersion();
+        builder.Property(e => e.ProtectionRevision).HasDefaultValueSql("(NEWID())").IsRequired();
 
         builder.HasIndex(e => e.ExternalAgentId)
             .IsUnique()

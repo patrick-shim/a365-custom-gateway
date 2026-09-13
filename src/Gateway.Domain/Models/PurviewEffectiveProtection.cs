@@ -15,7 +15,8 @@ public sealed record PurviewEffectiveProtection(
         BlueprintApplicationId? registrationBlueprintApplicationId,
         PurviewDlpProfileId? selectedProfileId,
         PurviewDlpProfile? profile,
-        DateTime utcNow)
+        DateTime utcNow,
+        bool runtimeCertificationCurrent = false)
     {
         if (!requested)
             return new(false, false, PurviewEffectiveEnablementStatus.Disabled, selectedProfileId);
@@ -26,7 +27,7 @@ public sealed record PurviewEffectiveProtection(
         if (profile.Id != selectedProfileId ||
             profile.BlueprintApplicationId != registrationBlueprintApplicationId)
             return new(true, false, PurviewEffectiveEnablementStatus.ProfileMismatch, selectedProfileId);
-        if (!profile.IsExactlyReadyFor(registrationBlueprintApplicationId.Value, utcNow))
+        if (!profile.IsExactlyReadyFor(registrationBlueprintApplicationId.Value, utcNow, runtimeCertificationCurrent))
             return new(true, false, PurviewEffectiveEnablementStatus.ProfileNotReady, selectedProfileId);
 
         return new(true, true, PurviewEffectiveEnablementStatus.Ready, selectedProfileId);

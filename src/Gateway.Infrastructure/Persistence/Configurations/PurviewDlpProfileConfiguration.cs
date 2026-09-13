@@ -23,6 +23,13 @@ internal sealed class PurviewDlpProfileConfiguration
                 table.HasCheckConstraint(
                     "CK_PurviewDlpProfiles_EnforcementPlane",
                     "[EnforcementPlane] = N'Application'");
+                table.HasCheckConstraint(
+                    "CK_PurviewDlpProfiles_PolicyModeCompatibility",
+                    "(Mode = N'Enforce' AND PolicyMode = N'Enforce') OR " +
+                    "(Mode = N'AuditOnly' AND PolicyMode IN (N'SimulationWithTips', N'SimulationWithoutTips', N'Disabled'))");
+                table.HasCheckConstraint(
+                    "CK_PurviewDlpProfiles_SensitiveInformationTypesJson",
+                    "ISJSON(SensitiveInformationTypesJson) = 1 AND LEFT(LTRIM(SensitiveInformationTypesJson), 1) = N'['");
             });
         builder.HasKey(profile => profile.Id);
 
@@ -54,6 +61,21 @@ internal sealed class PurviewDlpProfileConfiguration
             .HasConversion<string>()
             .HasMaxLength(16)
             .IsRequired();
+        builder.Property(profile => profile.PolicyMode).HasConversion<string>().HasMaxLength(32);
+        builder.Ignore(profile => profile.EffectivePolicyMode);
+        builder.Ignore(profile => profile.HasVerifiedNonEnforcingConfiguration);
+        builder.Ignore(profile => profile.NormalizedSensitiveInformationTypes);
+        var sensitiveTypes = builder.Property(profile => profile.SensitiveInformationTypes)
+            .HasConversion(
+                value => ProtectionPersistenceSerialization.SerializeSensitiveInformationTypes(value),
+                value => ProtectionPersistenceSerialization.DeserializeSensitiveInformationTypes(value))
+            .HasColumnName("SensitiveInformationTypesJson")
+            .HasDefaultValueSql("(N'[]')")
+            .IsRequired();
+        sensitiveTypes.Metadata.SetValueComparer(new ValueComparer<ICollection<PurviewSelectedSensitiveInformationType>>(
+            (first, second) => first != null && second != null && first.SequenceEqual(second),
+            value => value.Aggregate(0, (hash, item) => HashCode.Combine(hash, item)),
+            value => value.ToList()));
         var activities = builder.Property(profile => profile.Activities)
             .HasConversion(
                 value => ProtectionPersistenceSerialization.SerializeActivities(value),
@@ -110,6 +132,11 @@ internal sealed class PurviewDlpProfileConfiguration
         builder.Property(profile => profile.DlpPolicyProviderId).HasMaxLength(256);
         builder.Property(profile => profile.DlpRuleProviderId).HasMaxLength(256);
         builder.Property(profile => profile.LastFailureCode).HasMaxLength(64);
+        builder.Property(profile => profile.RuntimeBehaviorSuiteHash).HasMaxLength(71);
+        builder.Property(profile => profile.RuntimeBehaviorCertificationOperationId);
+        builder.Property(profile => profile.RuntimeBehaviorVerifiedUntilUtc).HasConversion(
+            value => value,
+            value => value.HasValue ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc) : (DateTime?)null);
         builder.Property(profile => profile.RowVersion).IsRowVersion();
 
         builder.HasIndex(profile => profile.BlueprintApplicationId).IsUnique();

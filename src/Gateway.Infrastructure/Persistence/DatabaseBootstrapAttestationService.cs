@@ -35,13 +35,14 @@ internal sealed class DatabaseBootstrapAttestationService(
     {
         if (!options.Value.Enabled)
             return false;
-        if (cache.TryGetValue(CacheKey, out bool cached))
+        var cacheKey = CacheKey + ":" + DatabaseUpgradeAttestation.Fingerprint(JsonSerializer.Serialize(options.Value));
+        if (cache.TryGetValue(cacheKey, out bool cached))
             return cached;
 
         await AttestationGate.WaitAsync(cancellationToken);
         try
         {
-            if (cache.TryGetValue(CacheKey, out cached))
+            if (cache.TryGetValue(cacheKey, out cached))
                 return cached;
 
             bool attested;
@@ -61,7 +62,7 @@ internal sealed class DatabaseBootstrapAttestationService(
 
             // The anonymous surface is deliberately rate-bounded while keeping
             // successful evidence fresh enough for standalone bootstrap Verify.
-            cache.Set(CacheKey, attested, TimeSpan.FromSeconds(5));
+            cache.Set(cacheKey, attested, TimeSpan.FromSeconds(5));
             return attested;
         }
         finally
@@ -111,6 +112,13 @@ internal sealed class DatabaseBootstrapAttestationProbe(GatewayDbContext dbConte
                 cancellationToken);
             if (!schemaFingerprint.Equals(options.ExpectedSchemaFingerprint, StringComparison.Ordinal))
                 return false;
+
+            if (options.Upgrade.Enabled)
+            {
+                if (!DatabaseUpgradeAttestation.Matches(
+                        DatabaseUpgradeAttestation.Parse(options.Upgrade.ReceiptJson), options, expectedMarker, schemaFingerprint))
+                    return false;
+            }
 
             return await HasExactRuntimeAuthorityAsync(connection, options, cancellationToken);
         }

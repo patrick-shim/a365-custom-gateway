@@ -31,6 +31,7 @@ param runtimeManifestDigest string
 param executionBinding object
 param organization string
 
+var executorSku = 'B2'
 var suffix = '${projectName}-${environmentName}'
 var executorName = 'app-${suffix}-purview-${take(uniqueString(resourceGroup().id), 6)}'
 var tags = {
@@ -101,7 +102,7 @@ resource plan 'Microsoft.Web/serverfarms@2024-11-01' = {
   location: location
   tags: tags
   kind: 'app'
-  sku: { name: 'B1', tier: 'Basic', capacity: 1 }
+  sku: { name: executorSku, tier: 'Basic', capacity: 1 }
   properties: { reserved: false, perSiteScaling: false, zoneRedundant: false }
 }
 resource executor 'Microsoft.Web/sites@2024-11-01' = {
@@ -229,6 +230,7 @@ resource settings 'Microsoft.Web/sites/config@2024-11-01' = if (enableRuntime) {
   properties: union({
     WEBSITE_RUN_FROM_PACKAGE: '${storage.properties.primaryEndpoints.blob}${packages.name}/${packageSha256}.zip'
     WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID: 'SystemAssigned'
+    WEBSITE_LOAD_USER_PROFILE: '1'
     SCM_DO_BUILD_DURING_DEPLOYMENT: 'false'
     DOTNET_EnableDiagnostics: '0'
     ASPNETCORE_ENVIRONMENT: 'Production'
@@ -245,6 +247,7 @@ resource settings 'Microsoft.Web/sites/config@2024-11-01' = if (enableRuntime) {
 }
 
 output executorId string = executor.id
+output executorPlanSku string = executorSku
 output executorPrincipalId string = executor.identity.principalId
 output executorEndpoint string = 'https://${executor.properties.defaultHostName}'
 output executorBinding object = binding

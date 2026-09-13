@@ -125,7 +125,7 @@ function Get-GatewayPurviewCapabilityEvidence {
         automationApplicationObjectId = [string]$Automation.automationApplicationObjectId
         automationApplicationId = [string]$Automation.automationApplicationId
         automationServicePrincipalId = [string]$Automation.automationServicePrincipalId
-        exchangeOnlineProtectionApplicationId = [string]$Automation.exchangeOnlineProtectionApplicationId
+        exchangeOnlineApplicationId = [string]$Automation.exchangeOnlineApplicationId
         exchangeManageAsAppRoleId = [string]$Automation.exchangeManageAsAppRoleId
         complianceAdministratorRoleDefinitionId = [string]$Automation.complianceAdministratorRoleDefinitionId
         keyCredentialId = [string]$Automation.keyCredentialId
@@ -1080,6 +1080,97 @@ function Get-GatewaySetupIdentityDefaults {
     }
 }
 
+function Read-GatewayBootstrapCapabilities {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('dev', 'staging', 'prod')][string]$Environment)
+
+    Write-Host ''
+    Write-Host 'Capabilities to install' -ForegroundColor Cyan
+    $capabilityChoices = @()
+    if ($Environment -eq 'dev') {
+        $capabilityChoices += [ordered]@{
+            label = 'Full evaluation'
+            description = 'Recommended. Includes Agent 365 Registry beta, shared Prompt Shields, and Purview prerequisites.'
+            value = 'fullEvaluation'
+        }
+    }
+    $capabilityChoices += @(
+        [ordered]@{
+            label = 'Core Gateway'
+            description = 'Includes shared Prompt Shields without Purview prerequisites. Registry beta is available only in development.'
+            value = 'coreGateway'
+        },
+        [ordered]@{
+            label = 'Custom'
+            description = 'Includes shared Prompt Shields; choose Purview prerequisites independently. Registry beta remains closed outside development.'
+            value = 'custom'
+        }
+    )
+    $capabilityPreset = [string](Read-GatewayChoice `
+        -Prompt 'Choose capabilities to install' `
+        -Choices $capabilityChoices `
+        -DefaultIndex 0).value
+    $registryPreview = $Environment -eq 'dev'
+    $purviewEnabled = $capabilityPreset -eq 'fullEvaluation'
+    if ($capabilityPreset -eq 'custom') {
+        $purviewEnabled = Read-GatewayYesNo `
+            -Prompt 'Prepare Microsoft Purview identities, RBAC, certificate path, and runtime wiring' `
+            -Default $false
+    }
+
+    $registryBetaAcknowledged = $false
+    if ($registryPreview) {
+        Write-Host ''
+        Write-Host 'Agent 365 Registry is a beta, Global-cloud-only dependency that Microsoft does not support for production. Each registration still requires a signed-in Gateway Administrator OBO action.' -ForegroundColor Yellow
+        $registryBetaAcknowledged = Read-GatewayYesNo `
+            -Prompt 'Acknowledge the Agent 365 Registry beta boundary' `
+            -Default $false
+        if (-not $registryBetaAcknowledged) {
+            throw 'Agent 365 Registry beta was not acknowledged.'
+        }
+    }
+
+    Write-Host 'Every new gateway includes shared Azure AI Content Safety Prompt Shields. Turn usage On or Off for each agent at registration or edit; Off does not remove this shared service.' -ForegroundColor Cyan
+    Write-Host 'F0 has limited subscription quota, soft-deleted accounts can retain that quota, and S0 plus service usage can incur Azure cost. If unavailable, setup stops for review; it never silently changes SKU or omits Prompt Shields.' -ForegroundColor Yellow
+    $skuChoice = Read-GatewayChoice -Prompt 'Choose the Content Safety SKU' -Choices @(
+        [ordered]@{ label = 'F0'; description = 'Requests the free tier, subject to regional availability and subscription limits.'; value = 'F0' },
+        [ordered]@{ label = 'S0'; description = 'Uses the paid standard tier; Azure charges apply.'; value = 'S0' }
+    ) -DefaultIndex 0
+    $promptShieldCostAndQuotaAcknowledged = Read-GatewayYesNo `
+        -Prompt "Acknowledge the Prompt Shields quota and cost boundary for $($skuChoice.value)" `
+        -Default $false
+    if (-not $promptShieldCostAndQuotaAcknowledged) {
+        throw 'Prompt Shields quota and cost requirements were not acknowledged.'
+    }
+
+    $purviewAuthorityRequirementsAcknowledged = $false
+    if ($purviewEnabled) {
+        Write-Host 'Purview capability preparation requires tenant-approved identity, Graph/compliance RBAC, certificate, and Key Vault authority. Bootstrap does not connect a compliance session, select a sensitive information type, author policy, or claim readiness.' -ForegroundColor Yellow
+        Write-Host 'After deployment, a Gateway Administrator completes tenant connection and policy work in Settings. Any required Security & Compliance PowerShell companion remains interactive and Windows-only.' -ForegroundColor DarkGray
+        $purviewAuthorityRequirementsAcknowledged = Read-GatewayYesNo `
+            -Prompt 'Acknowledge the Purview authority and post-deployment administration requirements' `
+            -Default $false
+        if (-not $purviewAuthorityRequirementsAcknowledged) {
+            throw 'Microsoft Purview authority requirements were not acknowledged.'
+        }
+    }
+
+    return [ordered]@{
+        capabilityPreset = $capabilityPreset
+        registryPreview = $registryPreview
+        registryBetaAcknowledged = $registryBetaAcknowledged
+        promptShield = [ordered]@{
+            enabled = $true
+            skuName = [string]$skuChoice.value
+            costAndQuotaAcknowledged = $promptShieldCostAndQuotaAcknowledged
+        }
+        purview = [ordered]@{
+            enabled = $purviewEnabled
+            authorityRequirementsAcknowledged = $purviewAuthorityRequirementsAcknowledged
+        }
+    }
+}
+
 function New-GatewayBootstrapConfiguration {
     [CmdletBinding()]
     param(
@@ -1198,97 +1289,15 @@ function New-GatewayBootstrapConfiguration {
         catch { Write-Host $_.Exception.Message -ForegroundColor Yellow }
     }
 
-    Write-Host ''
-    Write-Host 'Capabilities to install' -ForegroundColor Cyan
-    $capabilityChoices = if ($environment -eq 'dev') {
-        @(
-            [ordered]@{
-                label = 'Full evaluation'
-                description = 'Recommended. Includes Agent 365 Registry beta, Prompt Shields infrastructure, and Purview prerequisites.'
-                value = 'fullEvaluation'
-            },
-            [ordered]@{
-                label = 'Core Gateway'
-                description = 'Includes the development registration capability without Prompt Shields or Purview prerequisites.'
-                value = 'coreGateway'
-            },
-            [ordered]@{
-                label = 'Custom'
-                description = 'Choose Prompt Shields and Purview prerequisites independently.'
-                value = 'custom'
-            }
-        )
-    }
-    else {
-        @(
-            [ordered]@{
-                label = 'Core Gateway'
-                description = 'Installs the Gateway with Agent 365 Registry beta closed.'
-                value = 'coreGateway'
-            },
-            [ordered]@{
-                label = 'Custom'
-                description = 'Choose Prompt Shields and Purview prerequisites independently; Registry beta remains closed.'
-                value = 'custom'
-            }
-        )
-    }
-    $capabilityPreset = [string](Read-GatewayChoice `
-        -Prompt 'Choose capabilities to install' `
-        -Choices $capabilityChoices `
-        -DefaultIndex 0).value
-    $registryPreview = $environment -eq 'dev'
-    $promptShieldEnabled = $capabilityPreset -eq 'fullEvaluation'
-    $purviewEnabled = $capabilityPreset -eq 'fullEvaluation'
-    if ($capabilityPreset -eq 'custom') {
-        $promptShieldEnabled = Read-GatewayYesNo `
-            -Prompt 'Install shared Azure AI Content Safety Prompt Shields infrastructure' `
-            -Default $false
-        $purviewEnabled = Read-GatewayYesNo `
-            -Prompt 'Prepare Microsoft Purview identities, RBAC, certificate path, and runtime wiring' `
-            -Default $false
-    }
-
-    $registryBetaAcknowledged = $false
-    if ($registryPreview) {
-        Write-Host ''
-        Write-Host 'Agent 365 Registry is a beta, Global-cloud-only dependency that Microsoft does not support for production. Each registration still requires a signed-in Gateway Administrator OBO action.' -ForegroundColor Yellow
-        $registryBetaAcknowledged = Read-GatewayYesNo `
-            -Prompt 'Acknowledge the Agent 365 Registry beta boundary' `
-            -Default $false
-        if (-not $registryBetaAcknowledged) {
-            throw 'Agent 365 Registry beta was not acknowledged.'
-        }
-    }
-
-    $promptShieldSku = 'F0'
-    $promptShieldCostAndQuotaAcknowledged = $false
-    if ($promptShieldEnabled) {
-        Write-Host 'Prompt Shields uses Azure AI Content Safety. F0 has limited subscription quota, soft-deleted accounts can retain that quota, and S0 plus service usage can incur Azure cost.' -ForegroundColor Yellow
-        $skuChoice = Read-GatewayChoice -Prompt 'Choose the Content Safety SKU' -Choices @(
-            [ordered]@{ label = 'F0'; description = 'Requests the free tier, subject to regional availability and subscription limits.'; value = 'F0' },
-            [ordered]@{ label = 'S0'; description = 'Uses the paid standard tier; Azure charges apply.'; value = 'S0' }
-        ) -DefaultIndex 0
-        $promptShieldSku = [string]$skuChoice.value
-        $promptShieldCostAndQuotaAcknowledged = Read-GatewayYesNo `
-            -Prompt 'Acknowledge the Prompt Shields quota and cost boundary' `
-            -Default $false
-        if (-not $promptShieldCostAndQuotaAcknowledged) {
-            throw 'Prompt Shields quota and cost requirements were not acknowledged.'
-        }
-    }
-
-    $purviewAuthorityRequirementsAcknowledged = $false
-    if ($purviewEnabled) {
-        Write-Host 'Purview capability preparation requires tenant-approved identity, Graph/compliance RBAC, certificate, and Key Vault authority. Bootstrap does not connect a compliance session, select a sensitive information type, author policy, or claim readiness.' -ForegroundColor Yellow
-        Write-Host 'After deployment, a Gateway Administrator completes tenant connection and policy work in Settings. Any required Security & Compliance PowerShell companion remains interactive and Windows-only.' -ForegroundColor DarkGray
-        $purviewAuthorityRequirementsAcknowledged = Read-GatewayYesNo `
-            -Prompt 'Acknowledge the Purview authority and post-deployment administration requirements' `
-            -Default $false
-        if (-not $purviewAuthorityRequirementsAcknowledged) {
-            throw 'Microsoft Purview authority requirements were not acknowledged.'
-        }
-    }
+    $capabilities = Read-GatewayBootstrapCapabilities -Environment $environment
+    $capabilityPreset = $capabilities.capabilityPreset
+    $registryPreview = $capabilities.registryPreview
+    $registryBetaAcknowledged = $capabilities.registryBetaAcknowledged
+    $promptShieldEnabled = $capabilities.promptShield.enabled
+    $promptShieldSku = $capabilities.promptShield.skuName
+    $promptShieldCostAndQuotaAcknowledged = $capabilities.promptShield.costAndQuotaAcknowledged
+    $purviewEnabled = $capabilities.purview.enabled
+    $purviewAuthorityRequirementsAcknowledged = $capabilities.purview.authorityRequirementsAcknowledged
 
     $root = Get-RepositoryRoot
     $schemaPath = Join-Path $root 'bootstrap/config.schema.json'
@@ -1637,7 +1646,7 @@ function Get-GatewayPlanDescriptor {
     if ($Config.promptShield.enabled -eq $true) { $azureResources.Add('Azure AI Content Safety account with local authentication disabled') }
     if ($Config.purview.enabled -eq $true) {
         $azureResources.Add('Dedicated gateway-protection-admin-v1 queue with exact API sender and worker receiver roles')
-        $azureResources.Add('Private Windows B1 App Service executor, dedicated integration subnet, private endpoint and app/SCM DNS; private package/claim containers and exact system-identity roles')
+        $azureResources.Add('Private Windows B2 App Service executor, dedicated integration subnet, private endpoint and app/SCM DNS; private package/claim containers and exact system-identity roles')
     }
 
     $imperative = [Collections.Generic.List[object]]::new()

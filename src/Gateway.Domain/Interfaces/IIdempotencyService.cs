@@ -4,11 +4,17 @@ namespace Gateway.Domain.Interfaces;
 
 public interface IIdempotencyService
 {
+    Task<IIdempotencyScopeLease> AcquireDataPlaneScopeAsync(
+        Guid agentRegistrationId, string endpoint, string key, CancellationToken ct);
+
     Task<IIdempotencyScopeLease> AcquireScopeAsync(
         Guid agentRegistrationId,
         string endpoint,
         string key,
         CancellationToken ct);
+
+    Task<IIdempotencyScopeLease> AcquireScopeInExistingTransactionAsync(
+        Guid agentRegistrationId, string endpoint, string key, CancellationToken ct);
 
     Task<IdempotencyRecord?> GetAsync(
         Guid agentRegistrationId,
@@ -22,5 +28,6 @@ public interface IIdempotencyService
 
 public interface IIdempotencyScopeLease : IAsyncDisposable
 {
+    Task BeginCommitAsync(CancellationToken ct);
     Task CompleteAsync(CancellationToken ct);
 }

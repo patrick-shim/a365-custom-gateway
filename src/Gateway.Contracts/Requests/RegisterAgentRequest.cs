@@ -11,4 +11,5 @@ public record RegisterAgentRequest(
     AgentFeaturesDto? Features,
     AgentBlueprintSelectionDto? Blueprint = null,
     PurviewPolicyProfileSelectionDto? PurviewPolicyProfile = null,
-    PurviewDlpProfileSelectionDto? PurviewDlpProfile = null);
+    PurviewDlpProfileSelectionDto? PurviewDlpProfile = null,
+    PurviewConfigurationIntentDto? PurviewConfigurationIntent = null);

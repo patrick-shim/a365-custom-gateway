@@ -21,6 +21,7 @@ var purviewOptions = builder.Configuration.GetSection(PurviewOptions.SectionName
 // Deployment config supplies authority; requests cannot replace these bindings.
 var binding = hostOptions.Binding ?? throw new InvalidOperationException("Executor binding is missing.");
 purviewOptions.PolicyProvisioningPowerShellPath = Path.Combine(AppContext.BaseDirectory, "PowerShell", "pwsh.exe");
+purviewOptions.ExecutorRuntimeManifestDigest = hostOptions.RuntimeManifestDigest;
 using (var startupDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(3)))
     await ExecutorRuntimeAttestation.VerifyAsync(AppContext.BaseDirectory, hostOptions,
         purviewOptions, startupDeadline.Token);
@@ -35,6 +36,10 @@ builder.Services.AddSingleton(Options.Create(hostOptions));
 builder.Services.AddSingleton(Options.Create(purviewOptions));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<PurviewProcessSafety>();
+builder.Services.AddSingleton<PurviewConnectionVerificationDiagnostics>();
+builder.Services.AddSingleton<PurviewSettingsFailureDiagnostics>();
+builder.Services.AddSingleton<IPurviewSettingsFailureObserver>(services =>
+    services.GetRequiredService<PurviewSettingsFailureDiagnostics>());
 builder.Services.AddSingleton<IExecutorClaimStore>(_ => new BlobExecutorClaimStore(
     new BlobContainerClient(claimsUri, new ManagedIdentityCredential(), new BlobClientOptions
     {
@@ -75,12 +80,16 @@ builder.Services.AddAuthorization(options => options.AddPolicy("WorkerOnly", pol
 var app = builder.Build();
 app.UseAuthentication();
 app.UseAuthorization();
-app.MapGet("/health/ready", (PurviewProcessSafety safety) =>
+app.MapGet("/health/ready", (PurviewProcessSafety safety,
+    PurviewConnectionVerificationDiagnostics diagnostics,
+    PurviewSettingsFailureDiagnostics settingsDiagnostics) =>
     safety.CanMutate ? Results.Ok(new
     {
         status = "Ready",
         binding.PackageDigest,
-        binding.ExecutionSourceFingerprint
+        binding.ExecutionSourceFingerprint,
+        verificationDiagnostic = diagnostics.Read(),
+        settingsDiagnostic = settingsDiagnostics.Read()
     }) : Results.StatusCode(503)).RequireAuthorization("WorkerOnly");
 app.MapPost("/executor/v1/execute", async (HttpContext context, ExecutorDispatcher dispatcher,
     PurviewProcessSafety safety, SemaphoreSlim admission) =>

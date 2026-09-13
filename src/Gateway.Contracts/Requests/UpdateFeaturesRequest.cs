@@ -11,4 +11,5 @@ public record UpdateFeaturesRequest(
     bool? PromptShieldEnabled = null,
     PurviewDlpProfileSelectionDto? PurviewDlpProfile = null,
     Guid? IdempotencyKey = null,
-    string? ExpectedRowVersion = null);
+    string? ExpectedRowVersion = null,
+    PurviewConfigurationIntentDto? PurviewConfigurationIntent = null);

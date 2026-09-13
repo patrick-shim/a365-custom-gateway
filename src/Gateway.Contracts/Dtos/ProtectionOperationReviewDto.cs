@@ -16,4 +16,9 @@ public sealed record ProtectionOperationReviewSummaryDto(
     string ReadinessDisclaimer,
     Guid? SourceOperationId = null,
     Guid? InventoryGenerationId = null,
-    string? EvidenceDigest = null);
+    string? EvidenceDigest = null,
+    string? PolicyMode = null,
+    IReadOnlyList<PurviewSensitiveInformationTypeSelectionDto>? SensitiveInformationTypes = null,
+    bool AffectsAllBlueprintAgents = false,
+    PurviewDeferredBlueprintDto? DeferredBlueprint = null,
+    bool ReplacesUnverifiedLegacyThresholds = false);

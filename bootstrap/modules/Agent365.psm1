@@ -375,18 +375,18 @@ function Assert-Agent365SeedBlueprintSurface {
         Assert-GuidValue -Value $gatewayWorkerApplicationId -Label 'Gateway worker service-principal application ID'
         $typedPrincipal = Invoke-AzJson -Arguments @(
             'rest', '--method', 'GET', '--url',
-            "https://graph.microsoft.com/v1.0/servicePrincipals/$principalObjectId/microsoft.graph.agentIdentityBlueprintPrincipal?`$select=id,appId,appDisplayName,appOwnerOrganizationId,accountEnabled,appRoleAssignmentRequired,appRoles,createdByAppId,disabledByMicrosoftStatus,displayName,keyCredentials,passwordCredentials,publishedPermissionScopes,servicePrincipalNames,servicePrincipalType,signInAudience,tags"
+            "https://graph.microsoft.com/v1.0/servicePrincipals/$principalObjectId/microsoft.graph.agentIdentityBlueprintPrincipal?`$select=id,appId,appDisplayName,appOwnerOrganizationId,accountEnabled,appRoleAssignmentRequired,appRoles,createdByAppId,disabledByMicrosoftStatus,displayName,keyCredentials,passwordCredentials,oauth2PermissionScopes,servicePrincipalNames,servicePrincipalType,signInAudience,tags"
         )
         foreach ($property in @(
             'id', 'appId', 'appDisplayName', 'appOwnerOrganizationId', 'accountEnabled',
             'appRoleAssignmentRequired', 'appRoles', 'createdByAppId',
             'disabledByMicrosoftStatus', 'displayName', 'keyCredentials',
-            'passwordCredentials', 'publishedPermissionScopes',
+            'passwordCredentials', 'oauth2PermissionScopes',
             'servicePrincipalNames', 'servicePrincipalType', 'signInAudience', 'tags'
         )) {
             $null = Get-Agent365RequiredProperty -InputObject $typedPrincipal -Name $property -Label 'Agent ID blueprint principal'
         }
-        foreach ($property in @('appRoles', 'keyCredentials', 'passwordCredentials', 'publishedPermissionScopes', 'tags')) {
+        foreach ($property in @('appRoles', 'keyCredentials', 'passwordCredentials', 'oauth2PermissionScopes', 'tags')) {
             $values = @(Get-Agent365RequiredCollectionItems `
                 -InputObject $typedPrincipal `
                 -Name $property `
@@ -415,8 +415,13 @@ function Assert-Agent365SeedBlueprintSurface {
             throw 'The sole blueprint principal did not pass exact typed Microsoft Graph readback.'
         }
 
+        # Graph automatically grants this non-revocable role to blueprint principals.
+        # Check the exact resource, subject and role set; assignment IDs are opaque strings.
+        Assert-ExactGraphApplicationRoleAssignments `
+            -PrincipalId $principalObjectId `
+            -ExpectedRoleValues @('AgentIdentity.CreateAsManager') | Out-Null
+
         foreach ($relationship in @(
-            [ordered]@{ name = 'appRoleAssignments'; path = "/v1.0/servicePrincipals/$principalObjectId/appRoleAssignments"; expected = @() },
             [ordered]@{ name = 'appRoleAssignedTo'; path = "/v1.0/servicePrincipals/$principalObjectId/appRoleAssignedTo"; expected = @() },
             [ordered]@{ name = 'oauth2PermissionGrants'; path = "/v1.0/servicePrincipals/$principalObjectId/oauth2PermissionGrants"; expected = @() },
             [ordered]@{ name = 'memberOf'; path = "/v1.0/servicePrincipals/$principalObjectId/memberOf"; expected = @() },
@@ -432,6 +437,8 @@ function Assert-Agent365SeedBlueprintSurface {
                     Get-Agent365RequiredProperty -InputObject $_ -Name 'id' -Label "Agent ID blueprint principal $($relationship.name) member"
                 }) `
                 -Label "Agent ID blueprint principal $($relationship.name)")
+            # No owners adds no authority; createdByAppId is independently verified above.
+            if ($relationship.name -ceq 'owners' -and $actualIds.Count -eq 0) { continue }
             $expectedIds = @($relationship.expected | ForEach-Object { ([guid][string]$_).ToString('D') } | Sort-Object -Unique)
             if (($actualIds -join '|') -cne ($expectedIds -join '|')) {
                 throw "The Agent ID blueprint principal $($relationship.name) relationship is outside the exact reviewed authority boundary."

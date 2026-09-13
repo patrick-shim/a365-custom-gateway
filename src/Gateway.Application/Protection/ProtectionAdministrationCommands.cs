@@ -60,7 +60,9 @@ public sealed record StartPurviewKnowYourDataCommand(
 
 public sealed record StartPurviewDlpProfileCommand(
     ProtectionActor Actor,
-    StartPurviewDlpProfileOperationRequest Request)
+    StartPurviewDlpProfileOperationRequest Request,
+    Gateway.Domain.Entities.AgentRegistration? Registration = null,
+    Guid? ResolvedBlueprintApplicationId = null)
     : IRequest<ProtectionOperationAcceptedResponse>;
 
 public sealed record ReconcilePurviewDlpProfileCommand(
@@ -101,4 +103,7 @@ internal sealed record PurviewDlpProfileReviewPayload(
     string SensitiveInformationTypeName,
     string Mode,
     IReadOnlyList<string> Activities,
-    IReadOnlyList<Contracts.Dtos.PurviewDlpRuleActionDto> Actions);
+    IReadOnlyList<Contracts.Dtos.PurviewDlpRuleActionDto> Actions,
+    string? PolicyMode = null,
+    IReadOnlyList<Contracts.Dtos.PurviewSensitiveInformationTypeSelectionDto>? SensitiveInformationTypes = null,
+    Contracts.Dtos.PurviewDeferredBlueprintDto? DeferredBlueprint = null);

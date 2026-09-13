@@ -95,7 +95,9 @@ public sealed class ProtectionOperationReviewTicket
         review with
         {
             Activities = Array.AsReadOnly(review.Activities.ToArray()),
-            Actions = Array.AsReadOnly(review.Actions.ToArray())
+            Actions = Array.AsReadOnly(review.Actions.ToArray()),
+            SensitiveInformationTypes = review.SensitiveInformationTypes is { } types
+                ? Array.AsReadOnly(types.ToArray()) : null
         };
 
     public override string ToString() =>
@@ -145,7 +147,9 @@ public sealed class ProtectionOperationConfirmationTicket
         Review = review with
         {
             Activities = Array.AsReadOnly(review.Activities.ToArray()),
-            Actions = Array.AsReadOnly(review.Actions.ToArray())
+            Actions = Array.AsReadOnly(review.Actions.ToArray()),
+            SensitiveInformationTypes = review.SensitiveInformationTypes is { } types
+                ? Array.AsReadOnly(types.ToArray()) : null
         };
         ExpectedRowVersion = expectedRowVersion;
         _confirmationToken = response.ConfirmationToken;
@@ -171,6 +175,17 @@ public sealed class ProtectionOperationConfirmationTicket
         return token ??
             throw new InvalidOperationException(
                 "This protection operation confirmation has already been used.");
+    }
+
+    internal PurviewConfigurationIntentDto ConsumePurviewIntent(Guid idempotencyKey)
+    {
+        if (idempotencyKey == Guid.Empty || ExpiresAtUtc <= DateTime.UtcNow ||
+            Review.OperationType != "CreateOrUpdateDlpProfile")
+        {
+            Discard();
+            throw new InvalidOperationException("Review and confirm the Purview configuration again before saving.");
+        }
+        return new(ConfirmationTokenId, Consume(), idempotencyKey, ExpectedRowVersion);
     }
 
     public override string ToString() =>

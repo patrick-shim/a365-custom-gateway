@@ -59,8 +59,9 @@ internal static class ProtectionAcceptedRequestHasher
         ComputeMutation("StartPurviewKnowYourData", request);
 
     public static string Compute(
-        StartPurviewDlpProfileOperationRequest request) =>
-        ComputeMutation("StartPurviewDlpProfile", request);
+        StartPurviewDlpProfileOperationRequest request,
+        Guid? registrationId = null) =>
+        ComputeMutation("StartPurviewDlpProfile", request, registrationId);
 
     public static string Compute(
         Guid profileId,

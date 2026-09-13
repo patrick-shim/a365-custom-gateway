@@ -165,10 +165,55 @@ dotnet run --project src/ExternalAgent.Sample -- \
   --message "Hello through the Gateway"
 ```
 
-The sample evaluates the prompt, submits Agent 365 activity/OTel data, and submits
-the completed prompt/response interaction. A successful run prints only safe
-decisions and correlation identifiers; it does not print provider response bodies
-or the Gateway key.
+For every interaction, the sample calls `POST /api/v1/prompts:evaluate` first.
+Generation requires HTTP 200 with `allowed: true`, a non-empty
+`evaluationReceiptId`, and a well-formed, future `expiresAtUtc`. A denied,
+unavailable, malformed, expired, or failed evaluation stops the flow.
+The sample then submits Agent 365 activity/OTel data, invokes a fixed-response
+**stub** (not a real model), and submits the completed interaction with that exact
+receipt as `promptEvaluationReceiptId`. Replace only the stub callback in
+`src/ExternalAgent.Sample/Program.cs` with your model call; keep it inside the
+runner's gate. The deadline is checked again immediately before the callback,
+after activity ingestion, using the server timestamp and the current clock rather
+than a fixed client lifetime. No automatic retry occurs if it has expired.
+This local guard cannot guarantee acceptance after generation; the server still
+validates expiry and configuration at ingestion. Keep the client clock accurate.
+HTTP 202 alone is not successful processing or proven downstream delivery;
+inspect the processing receipt.
+
+Clients do not need local Prompt Shields/Purview switches, Azure credentials, or a
+redeployment when an administrator edits the registration's protection settings.
+Always evaluate through the Gateway, even when both protections were previously
+off. The Gateway uses the current registration: turning Prompt Shields off skips
+Azure AI Content Safety, **not** the Gateway evaluation request. Purview DLP can
+still require pre-model evaluation with Prompt Shields off. An allowed
+`SimulationUnavailable` result is reported as a warning, not as disabled or proven
+protection; the sample does not fabricate policy tips.
+
+Evaluation proves a snapshot, not a configuration lock spanning the model call.
+Receipts bind the registration's protection revision and effective protection
+context, including active profile/capability evidence. A receipt issued with Prompt
+Shields off or Purview in simulation cannot satisfy ingestion after enabling Prompt
+Shields or enforcing Purview. Relevant protection changes, receipt expiry, or
+consumption reject the supplied receipt; telemetry-only updates do not invalidate
+it. Every supplied receipt is validated, including when protections are off.
+Disabling and re-enabling an agent, or changing its downstream identity, advances
+the protection revision; restoring the previous state does not revive old receipts.
+Historical receipts without this binding are not upgraded into proof and are
+rejected when supplied after the server upgrade.
+
+The Gateway cannot retroactively stop external generation that already started.
+The sample reports failure and never automatically re-evaluates, repeats generation,
+or retries ingestion. Reconcile any uncertain outcome before deciding on a new
+interaction; do not obtain a replacement receipt after the model call to bypass
+rejection. See the [receipt contract](docs/api/api-contract.md#prompt-evaluation-and-receipt-bound-interaction).
+
+Output is limited to fixed diagnostics, recognized processing states, and validated
+correlation identifiers. The sample never logs the key, prompt, generated response,
+receipt, provider bodies, or exception details. Use synthetic text in `--message`,
+since command-line arguments may be visible to local process inspection or shell
+history. Keep the one-time key in the existing non-echoing prompt, or securely
+redirect stdin from a secret store without echoing it or putting it in arguments.
 
 The complete HTTP contract is in [OpenAPI](docs/api/openapi.yaml).
 

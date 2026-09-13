@@ -606,6 +606,51 @@ function Get-GatewayResumeExecutionSource {
     }
 }
 
+function Copy-GatewayResumeConfiguration {
+    param([AllowNull()]$Value, [int]$Depth = 0)
+    if ($Depth -gt 30) { throw 'Resume configuration exceeds the supported JSON depth.' }
+    if ($null -eq $Value) { return $null }
+    # Canonicalization is for hashing, not runtime configuration. Keep the reader's
+    # object/array/scalar types and isolate every mutable child before validators run.
+    if ($Value -is [Collections.IDictionary]) {
+        if ($Value -is [hashtable]) { $copy = $Value.Clone() }
+        elseif ($Value.GetType() -eq [Collections.Specialized.OrderedDictionary]) { $copy = [ordered]@{} }
+        else { throw 'Resume configuration contains an unsupported dictionary type.' }
+        foreach ($key in $Value.Keys) {
+            $copy[$key] = Copy-GatewayResumeConfiguration -Value $Value[$key] -Depth ($Depth + 1)
+        }
+        return ,$copy
+    }
+    if ($Value.GetType() -eq [System.Management.Automation.PSCustomObject]) {
+        $copy = $Value.PSObject.Copy()
+        foreach ($property in $Value.PSObject.Properties) {
+            if ($property.MemberType -ne 'NoteProperty') { throw 'Resume configuration must contain JSON properties only.' }
+            $copy.PSObject.Properties[$property.Name].Value =
+                Copy-GatewayResumeConfiguration -Value $property.Value -Depth ($Depth + 1)
+        }
+        return ,$copy
+    }
+    if ($Value -is [array] -and $Value.Rank -eq 1) {
+        $copy = $Value.Clone()
+        for ($i = $Value.GetLowerBound(0); $i -le $Value.GetUpperBound(0); $i++) {
+            $copy.SetValue((Copy-GatewayResumeConfiguration -Value $Value.GetValue($i) -Depth ($Depth + 1)), $i)
+        }
+        return ,$copy
+    }
+    if ($Value -is [string] -or $Value.GetType().IsPrimitive -or $Value -is [decimal] -or
+        $Value -is [datetime] -or $Value -is [datetimeoffset]) { return $Value }
+    throw 'Resume configuration contains an unsupported runtime type.'
+}
+
+function Get-GatewayCheckpointResumeStableState {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State)
+    $value = ConvertTo-BootstrapCanonicalValue -Value $State
+    $value.Remove('updatedAtUtc')
+    $value.source.Remove('lastWritten')
+    foreach ($name in @('Prerequisites', 'Azure authentication')) { $value.steps.Remove($name) }
+    return Get-BootstrapObjectFingerprint -InputObject $value
+}
+
 function Invoke-GatewayResumePreflight {
     [CmdletBinding()]
     param(
@@ -619,6 +664,21 @@ function Invoke-GatewayResumePreflight {
         [Parameter()][string]$ExpectedResumeAuthorizationFingerprint = ''
     )
 
+    # A review, failed authorization, or another preflight always revokes the old
+    # invocation's capability. Nothing serialized in the returned review grants reuse.
+    $script:GatewayPreflightPrefixReuse = $null
+    $script:GatewayCheckpointResumeAuthorization = $null
+    $checkpointAware = $State.Contains('checkpointResumeAmendment')
+    $baselineState = $State
+    $baselineConfiguration = $Configuration
+    if ($checkpointAware) {
+        $baselineFingerprint = Get-BootstrapObjectFingerprint -InputObject $State
+        $baselineConfigurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $Configuration
+        # Validators may enrich their local discovery objects, never the accepted
+        # retained baseline which subsequent receipt validation must still bind.
+        $State = ConvertTo-BootstrapCanonicalValue -Value $State
+        $Configuration = Copy-GatewayResumeConfiguration -Value $Configuration
+    }
     $script:GatewayFailureStage = 'Resume preflight'
     $script:GatewayFailureCode = 'resume_preflight'
     $eventBase = [ordered]@{
@@ -950,6 +1010,13 @@ function Invoke-GatewayResumePreflight {
         }
     }
 
+    if ($checkpointAware -and (
+        (Get-BootstrapObjectFingerprint -InputObject $baselineState) -cne $baselineFingerprint -or
+        (Get-BootstrapObjectFingerprint -InputObject $State) -cne $baselineFingerprint -or
+        (Get-BootstrapConfigurationFingerprint -Config $baselineConfiguration) -cne $baselineConfigurationFingerprint -or
+        (Get-BootstrapConfigurationFingerprint -Config $Configuration) -cne $baselineConfigurationFingerprint)) {
+        throw 'Checkpoint Resume baseline changed during preflight.'
+    }
     $resumeAuthorizationFingerprint = Get-BootstrapObjectFingerprint -InputObject ([ordered]@{
         schemaVersion = 2
         acceptedPlanFingerprint = [string]$binding.acceptedPlanFingerprint
@@ -970,6 +1037,86 @@ function Invoke-GatewayResumePreflight {
         resumeAuthorizationFingerprint = $resumeAuthorizationFingerprint; authorized = $false
     }) -OutputFormat $Format
 
+    $mintCheckpointCapability = {
+        if ($checkpointAware) {
+            # Executed below only after all gates and explicit authorization.
+            # The capability is neither returned nor persisted.
+            $pinned = Assert-BootstrapCheckpointResumeAmendment -State $baselineState
+            Assert-BootstrapPublisherOperator -Actual $azureIdentity -Expected $baselineState.publisherMetadataReconciliation.plan.operator
+            $retained = @(Get-GatewayBootstrapStepNames)[2..13]
+            $canReuse = @($checkpoint.completedSteps).Count -eq 14
+            $position = @{ next = 0; callbacks = 0 }
+            $stableFingerprint = Get-GatewayCheckpointResumeStableState -State $baselineState
+            $stableProjector = ${function:Get-GatewayCheckpointResumeStableState}
+            $proofStatePath = [IO.Path]::GetFullPath((Get-BootstrapStatePath -Config $baselineConfiguration))
+            $proofAuthorization = $resumeAuthorizationFingerprint
+            $proofCheckpoint = [string]$checkpoint.checkpointFingerprint
+            $proofExecution = [string]$binding.executionSourceFingerprint
+            $proofDeployment = [string]$binding.deploymentSourceFingerprint
+            $proofAccepted = [string]$binding.acceptedPlanFingerprint
+            $proofOperator = ConvertTo-BootstrapCanonicalValue -Value $azureIdentity
+            $proofProcess = [Environment]::ProcessId
+            $proofRoots = @{}
+            $proofRoots[(Get-RepositoryRoot)] = $proofExecution
+            $proofRoots[(Resolve-BootstrapAcceptedSourceRoot -State $baselineState)] = $proofDeployment
+            foreach ($name in @('publisherMetadataReconciliation', 'hostSettingsAmendment', 'readResilienceAmendment', 'checkpointResumeAmendment')) {
+                $proofRoots[(Join-Path (Get-RepositoryRoot) $baselineState[$name].executionSource)] = [string]$baselineState[$name].plan.correctedSourceFingerprint
+            }
+            Set-BootstrapExecutionSourceRoot -Path $pinned
+            $script:GatewayCheckpointResumeAuthorization = {
+                param($CurrentState, $CurrentConfiguration, $CurrentStatePath, $Name, $CurrentAuthorization,
+                    $CurrentCheckpoint, $CurrentAccepted, $CurrentExecution, $CurrentDeployment, $CurrentRoot,
+                    [bool]$BeforeCallback = $false)
+                if (-not [object]::ReferenceEquals($CurrentState, $baselineState) -or
+                    -not [object]::ReferenceEquals($CurrentConfiguration, $baselineConfiguration) -or
+                    [Environment]::ProcessId -ne $proofProcess -or
+                    $CurrentAuthorization -cne $proofAuthorization -or $CurrentCheckpoint -cne $proofCheckpoint -or
+                    $CurrentAccepted -cne $proofAccepted -or $CurrentExecution -cne $proofExecution -or
+                    $CurrentDeployment -cne $proofDeployment -or
+                    [IO.Path]::GetFullPath($CurrentStatePath) -cne $proofStatePath -or
+                    [IO.Path]::GetFullPath($CurrentRoot) -cne [IO.Path]::GetFullPath($pinned) -or
+                    (Get-BootstrapConfigurationFingerprint -Config $CurrentConfiguration) -cne $baselineConfigurationFingerprint -or
+                    ((-not $BeforeCallback -or $position.callbacks -eq 0) -and
+                        (& $stableProjector -State $CurrentState) -cne $stableFingerprint) -or
+                    [string]$CurrentState.source.lastWritten.bootstrapSourceFingerprint -cne $proofDeployment) {
+                    throw 'Checkpoint Resume invocation, authorization, configuration or retained state changed.'
+                }
+                foreach ($sessionName in @('Prerequisites', 'Azure authentication')) {
+                    if ([string]$CurrentState.steps[$sessionName].status -cne 'Completed' -or
+                        [string]$CurrentState.steps[$sessionName].sourceFingerprint -cne $proofDeployment) {
+                        throw 'Checkpoint Resume session checks are not complete.'
+                    }
+                }
+                Assert-BootstrapPublisherOperator -Actual $CurrentState.steps['Azure authentication'].evidence -Expected $proofOperator
+                $diskState = Read-BootstrapState -Path $proofStatePath -Config $CurrentConfiguration
+                if ((Get-BootstrapObjectFingerprint -InputObject $diskState) -cne
+                    (Get-BootstrapObjectFingerprint -InputObject $CurrentState)) { throw 'Checkpoint Resume persisted state changed.' }
+                # Fresh linear content hashes of current tooling and every immutable
+                # snapshot. No receipt-chain recursion or provider proof per reused stage.
+                foreach ($root in $proofRoots.Keys) {
+                    if ((Get-BootstrapSourceFingerprint -Root $root) -cne $proofRoots[$root]) {
+                        throw 'Checkpoint Resume current source or immutable snapshot changed.'
+                    }
+                }
+                if ($BeforeCallback) {
+                    if ($canReuse -and $position.next -ne $retained.Count) {
+                        throw 'Checkpoint Resume retained prefix has not been consumed.'
+                    }
+                    # Retain invocation authorization, not provider authority.
+                    # The caller obtains full fresh proof after this guard.
+                    $position.callbacks++
+                    return
+                }
+                if (-not $canReuse -or $position.callbacks -ne 0 -or
+                    $position.next -ge $retained.Count -or $Name -cne $retained[$position.next]) {
+                    throw 'Checkpoint Resume retained prefix was reordered or repeated.'
+                }
+                $position.next++
+                return ConvertTo-BootstrapCanonicalValue -Value $CurrentState.steps[$Name].evidence
+            }.GetNewClosure()
+            if ($canReuse) { $script:GatewayPreflightPrefixReuse = $script:GatewayCheckpointResumeAuthorization }
+        }
+    }
     if ($NonInteractive -and -not $ExplicitlyAuthorized) {
         return [ordered]@{
             acceptedPlanFingerprint = [string]$binding.acceptedPlanFingerprint
@@ -1008,6 +1155,7 @@ function Invoke-GatewayResumePreflight {
         resumeAuthorizationFingerprint = $resumeAuthorizationFingerprint
     }) -OutputFormat $Format
 
+    . $mintCheckpointCapability
     return [ordered]@{
         acceptedPlanFingerprint = [string]$binding.acceptedPlanFingerprint
         acceptedSourceFingerprint = [string]$binding.acceptedSourceFingerprint
@@ -1269,6 +1417,47 @@ $activeAcceptedPlanFingerprint = ''
 $activeAcceptedSourceFingerprint = ''
 $activeExecutionSourceFingerprint = ''
 $activeDeploymentSourceFingerprint = ''
+$script:GatewayApplyAuthorization = $null
+
+function New-GatewayApplyAuthorization {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
+        [Parameter(Mandatory)]$Configuration,
+        [Parameter(Mandatory)][string]$StatePath,
+        [Parameter(Mandatory)][string]$PlanFingerprint
+    )
+
+    $configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $Configuration
+    $sourceFingerprint = [string]$State.acceptedPlan.sourceFingerprint
+    Assert-BootstrapAcceptedPlan -State $State -PlanFingerprint $PlanFingerprint `
+        -ConfigurationFingerprint $configurationFingerprint -SourceFingerprint $sourceFingerprint | Out-Null
+    $acceptedPlanFingerprint = Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan
+    $ownershipId = [string]$State.deploymentOwnershipId
+    $pinnedStatePath = [IO.Path]::GetFullPath($StatePath)
+    $processId = [Environment]::ProcessId
+
+    # Only this invocation may outlive the approval window. Pin the entire
+    # acceptance (including acceptedAtUtc); never refresh or persist authority.
+    return {
+        param($CurrentState, $CurrentConfiguration, $CurrentStatePath, $CurrentPlanFingerprint)
+        if ([Environment]::ProcessId -ne $processId -or
+            -not [object]::ReferenceEquals($CurrentState, $State) -or
+            -not [object]::ReferenceEquals($CurrentConfiguration, $Configuration) -or
+            [IO.Path]::GetFullPath($CurrentStatePath) -cne $pinnedStatePath -or
+            $CurrentPlanFingerprint -cne $PlanFingerprint -or
+            [string]$CurrentState.deploymentOwnershipId -cne $ownershipId -or
+            (Get-BootstrapConfigurationFingerprint -Config $CurrentConfiguration) -cne $configurationFingerprint -or
+            (Get-BootstrapObjectFingerprint -InputObject $CurrentState.acceptedPlan) -cne $acceptedPlanFingerprint) {
+            throw 'Fresh Apply invocation, accepted plan, or configuration binding changed.'
+        }
+        # Freshness was proved above. Keep the full provenance/snapshot assertion
+        # and all dispatcher/provider guards at every later synchronous boundary.
+        Assert-BootstrapAcceptedPlan -State $CurrentState -PlanFingerprint $PlanFingerprint `
+            -ConfigurationFingerprint $configurationFingerprint -SourceFingerprint $sourceFingerprint `
+            -MaximumAge ([TimeSpan]::MaxValue) | Out-Null
+    }.GetNewClosure()
+}
 
 function Get-Evidence {
     param([string]$Step)
@@ -1294,25 +1483,71 @@ function Invoke-GatewayStateStep {
         [switch]$AlwaysRun
     )
 
-    if ($Mode -in @('Apply', 'Resume')) {
+    $prefixCapability = Get-Variable -Name GatewayPreflightPrefixReuse -Scope Script -ErrorAction SilentlyContinue
+    if ($Mode -ceq 'Resume' -and $state.Contains('checkpointResumeAmendment') -and
+        $Name -cin @(Get-GatewayBootstrapStepNames)[2..13] -and $null -ne $prefixCapability -and
+        $prefixCapability.Value -is [scriptblock]) {
+        $evidence = & $prefixCapability.Value $state $configuration $statePath $Name `
+            $resumePreflight.resumeAuthorizationFingerprint $resumePreflight.checkpoint.checkpointFingerprint `
+            $activeAcceptedPlanFingerprint $activeExecutionSourceFingerprint $activeDeploymentSourceFingerprint $executionSourceRoot
+        Write-GatewayExperienceEvent -Type PhaseCompleted -Message "Preflight-revalidated: $Name (same authorized invocation)." `
+            -Data ([ordered]@{ step = $Name; index = [Array]::IndexOf($stepNames, $Name) + 1; total = $stepNames.Count
+                category = 'resumePreflightReuse'; reused = $true; authority = 'SameInvocationPreflight' }) -OutputFormat $OutputFormat
+        return $evidence
+    }
+    if ($Mode -ceq 'Resume' -and $state.Contains('checkpointResumeAmendment')) {
+        if ($Name -cnotin @('Prerequisites', 'Azure authentication')) {
+            $authorization = Get-Variable -Name GatewayCheckpointResumeAuthorization -Scope Script -ErrorAction SilentlyContinue
+            if ($null -eq $authorization -or $authorization.Value -isnot [scriptblock]) {
+                throw 'Checkpoint Resume requires fresh same-invocation authorization.'
+            }
+            & $authorization.Value $state $configuration $statePath $Name `
+                $resumePreflight.resumeAuthorizationFingerprint $resumePreflight.checkpoint.checkpointFingerprint `
+                $activeAcceptedPlanFingerprint $activeExecutionSourceFingerprint $activeDeploymentSourceFingerprint $executionSourceRoot $true
+            $script:GatewayPreflightPrefixReuse = $null
+        }
+        # One full local receipt/source derivation at this synchronous boundary,
+        # followed by fresh exact provider proof before each unfinished callback.
+        Assert-BootstrapAcceptedPlan -State $state -PlanFingerprint $activeAcceptedPlanFingerprint `
+            -ConfigurationFingerprint (Get-BootstrapConfigurationFingerprint -Config $configuration) `
+            -SourceFingerprint ([string]$state.acceptedPlan.sourceFingerprint) -MaximumAge ([TimeSpan]::MaxValue) | Out-Null
+        $pinnedRoot = Assert-BootstrapCheckpointResumeAmendment -State $state
+        if ($activeExecutionSourceFingerprint -cne [string]$state.checkpointResumeAmendment.plan.correctedSourceFingerprint -or
+            $activeDeploymentSourceFingerprint -cne [string]$state.acceptedPlan.sourceFingerprint -or
+            [IO.Path]::GetFullPath($executionSourceRoot) -cne [IO.Path]::GetFullPath($pinnedRoot)) {
+            throw 'Checkpoint Resume execution binding changed.'
+        }
+        Set-BootstrapExecutionSourceRoot -Path $pinnedRoot
+        if ($Name -cnotin @('Prerequisites', 'Azure authentication')) {
+            $null = Get-BootstrapHostSettingsProof -State $state -Config $configuration
+            Assert-BootstrapAzureContext -Config $configuration | Out-Null
+        }
+    }
+    elseif ($Mode -in @('Apply', 'Resume')) {
         if ([string]::IsNullOrWhiteSpace($activeAcceptedPlanFingerprint)) {
             throw 'No active accepted plan is bound to this mutation sequence.'
         }
-        $acceptedPlanMaximumAge = if ($Mode -eq 'Resume') {
+        if ($Mode -eq 'Apply') {
+            $authorization = Get-Variable -Name GatewayApplyAuthorization -Scope Script -ErrorAction SilentlyContinue
+            if ($null -eq $authorization -or $authorization.Value -isnot [scriptblock]) {
+                throw 'Fresh Apply requires fresh same-invocation authorization.'
+            }
+            & $authorization.Value $state $configuration $statePath $activeAcceptedPlanFingerprint
+        }
+        else {
             # Dedicated Resume preflight obtained a new explicit confirmation over
             # the immutable accepted authorization before any mutation step. At
             # this point the accepted-plan assertion is provenance-only; the
             # process-local Resume fingerprint is the current authorization.
-            [TimeSpan]::MaxValue
+            Assert-BootstrapAcceptedPlan `
+                -State $state `
+                -PlanFingerprint $activeAcceptedPlanFingerprint `
+                -ConfigurationFingerprint (Get-BootstrapConfigurationFingerprint -Config $configuration) `
+                -SourceFingerprint ([string]$state.acceptedPlan.sourceFingerprint) `
+                -MaximumAge ([TimeSpan]::MaxValue) | Out-Null
         }
-        else { [TimeSpan]::FromMinutes(60) }
-        Assert-BootstrapAcceptedPlan `
-            -State $state `
-            -PlanFingerprint $activeAcceptedPlanFingerprint `
-            -ConfigurationFingerprint (Get-BootstrapConfigurationFingerprint -Config $configuration) `
-            -SourceFingerprint ([string]$state.acceptedPlan.sourceFingerprint) `
-            -MaximumAge $acceptedPlanMaximumAge | Out-Null
-        if ($Mode -eq 'Resume' -and ($state.Contains('purviewPrerequisiteRecoveryPlan') -or
+        if ($Mode -eq 'Resume' -and ($state.Contains('databaseRecoveryPlan') -or
+            $state.Contains('purviewPrerequisiteRecoveryPlan') -or
             $state.Contains('purviewPrerequisiteReconciliation') -or $state.Contains('publisherMetadataReconciliation'))) {
             # Accepted-plan validation restores the original snapshot. Restore the
             # independently completed tooling recovery only after rechecking all
@@ -1321,7 +1556,7 @@ function Invoke-GatewayStateStep {
             if ([string]$stepExecution.executionSourceFingerprint -cne $activeExecutionSourceFingerprint -or
                 [string]$stepExecution.deploymentSourceFingerprint -cne $activeDeploymentSourceFingerprint -or
                 [IO.Path]::GetFullPath([string]$stepExecution.executionSourceRoot) -cne [IO.Path]::GetFullPath($executionSourceRoot)) {
-                throw 'Purview prerequisite recovery execution binding changed after Resume preflight.'
+                throw 'Recovery execution binding changed after Resume preflight.'
             }
             if ($state.Contains('publisherMetadataReconciliation')) {
                 $pinnedRoot = Assert-BootstrapPublisherRecoveryReceipt -State $state
@@ -2000,12 +2235,11 @@ try {
             if ((Get-BootstrapSourceFingerprint) -cne $activeAcceptedSourceFingerprint) {
                 throw 'The running bootstrap engine does not match the accepted source snapshot. Restore the reviewed checkout before Apply; no mutation was started.'
             }
-            # Apply retains its original time-bounded accepted What-If contract.
-            Assert-BootstrapAcceptedPlan `
+            $script:GatewayApplyAuthorization = New-GatewayApplyAuthorization `
                 -State $state `
                 -PlanFingerprint $recordedPlanFingerprint `
-                -ConfigurationFingerprint (Get-BootstrapConfigurationFingerprint -Config $configuration) `
-                -SourceFingerprint $activeAcceptedSourceFingerprint | Out-Null
+                -Configuration $configuration `
+                -StatePath $statePath
             $executionSourceRoot = Resolve-BootstrapAcceptedSourceRoot -State $state
         }
         Set-BootstrapExecutionSourceRoot -Path $executionSourceRoot
@@ -2033,7 +2267,7 @@ try {
             }
             if (-not $applyWhatIf.applyReady) { throw 'Accepted plan revalidation could not run authenticated Azure What-If. No mutation was started.' }
             $expectedPlanFingerprint = Get-GatewayPlanContractFingerprint -Descriptor $descriptor -WhatIf $applyWhatIf -ConfigurationFingerprint $configurationFingerprint -SourceFingerprint $activeAcceptedSourceFingerprint -DeploymentSourceFingerprint $activeDeploymentSourceFingerprint
-            Assert-BootstrapAcceptedPlan -State $state -PlanFingerprint $expectedPlanFingerprint -SourceFingerprint $activeAcceptedSourceFingerprint | Out-Null
+            & $script:GatewayApplyAuthorization $state $configuration $statePath $expectedPlanFingerprint
             $activeAcceptedPlanFingerprint = $expectedPlanFingerprint
         }
     }
@@ -2514,6 +2748,9 @@ try {
     }
 }
 finally {
+    $script:GatewayApplyAuthorization = $null
+    $script:GatewayPreflightPrefixReuse = $null
+    $script:GatewayCheckpointResumeAuthorization = $null
     Set-BootstrapEventWriter -Writer $null
     $stopwatch.Stop()
     if ($lock) { $lock.Dispose() }

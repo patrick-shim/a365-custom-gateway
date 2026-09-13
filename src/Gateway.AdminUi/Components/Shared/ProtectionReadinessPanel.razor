@@ -23,16 +23,24 @@
             <dd><StatusPill Value="@TokenRoleStatus" /></dd>
         </div>
         <div>
-            <dt>Runtime allow and block check</dt>
+            <dt>@(IsSimulation ? "Enforcement certification" : PolicyMode == "Disabled" ? "Policy enforcement" : "Approved sample behavior check")</dt>
             <dd><StatusPill Value="@RuntimeStatus" /></dd>
         </div>
     </dl>
-    @if (!Readiness.IsReady && Readiness.Blockers.Count > 0)
+    @if (!IsSimulation && PolicyMode != "Disabled" && EvidenceExpiresAtUtc is { } expires)
+    {
+        <p class="field-help">Approved behavioral evidence expires <time datetime="@expires.ToUniversalTime().ToString("O")">@expires.ToUniversalTime().ToString("u")</time>. Historical reports do not extend this validity.</p>
+    }
+    @if (IsSimulation)
+    {
+        <p class="field-help">Configured simulation is non-enforcing. The Gateway's IsReady flag describes enforcement readiness; blocking samples and enforcement certification are not prerequisites for using simulation.</p>
+    }
+    @if (!Readiness.IsReady && ActionableBlockers.Count > 0)
     {
         <div class="readiness-blockers" role="status">
             <strong>What still needs attention</strong>
             <ul>
-                @foreach (var blocker in Readiness.Blockers.Select(ExplainBlocker).Distinct())
+                @foreach (var blocker in ActionableBlockers.Select(ExplainBlocker).Distinct())
                 {
                     <li>@blocker</li>
                 }
@@ -44,8 +52,19 @@
 @code {
     [Parameter, EditorRequired] public ProtectionReadinessDto Readiness { get; set; } = default!;
     [Parameter] public string Label { get; set; } = "Profile";
+    [Parameter] public string? PolicyMode { get; set; }
+    [Parameter] public string? ProfileStatus { get; set; }
+    [Parameter] public DateTime? EvidenceExpiresAtUtc { get; set; }
+    private bool IsSimulation => AgentProtectionUiMapping.IsSimulation(PolicyMode);
+    private bool IsNonEnforcing => IsSimulation || PolicyMode == "Disabled";
+    private IReadOnlyList<string> ActionableBlockers => AgentProtectionUiMapping.ActionableReadinessBlockers(Readiness, PolicyMode);
 
-    private string OverallStatus => Readiness.IsReady
+    private string OverallStatus => PolicyMode == "Disabled" ? "Configured off" :
+        IsSimulation && AgentProtectionUiMapping.SimulationCapabilityUnavailable(Readiness) ? "Simulation unavailable" :
+        AgentProtectionUiMapping.ConfiguredSimulationFacts(Readiness, ProfileStatus, PolicyMode) ? "Configured simulation" :
+        IsSimulation ? "Simulation gap" :
+        !IsSimulation && EvidenceExpiresAtUtc <= DateTime.UtcNow ? "Expired" :
+        Readiness.IsReady && !IsSimulation
         ? "Ready"
         : IsUnavailable(Readiness.Capability)
             ? "Unavailable"
@@ -70,7 +89,8 @@
         _ => "Failed"
     };
 
-    private string PropagationStatus => Readiness.Propagation switch
+    private string PropagationStatus => IsNonEnforcing && Readiness.Propagation == "NotChecked"
+        ? "Not required for this mode" : Readiness.Propagation switch
     {
         "Ready" => "Ready",
         "Pending" => "Pending propagation",
@@ -78,7 +98,8 @@
         _ => "Failed"
     };
 
-    private string TokenRoleStatus => Readiness.TokenRoles switch
+    private string TokenRoleStatus => IsNonEnforcing && Readiness.TokenRoles == "NotChecked"
+        ? "Not required for this mode" : Readiness.TokenRoles switch
     {
         "Ready" => "Ready",
         "PendingRefresh" => "Pending propagation",
@@ -86,7 +107,11 @@
         _ => "Failed"
     };
 
-    private string RuntimeStatus => Readiness.RuntimeVerdict switch
+    private string RuntimeStatus => PolicyMode == "Disabled" ? "Off" :
+        IsSimulation ? "Not required for simulation" :
+        EvidenceExpiresAtUtc <= DateTime.UtcNow ? "Expired" :
+        !Readiness.IsReady && Readiness.RuntimeVerdict == "Ready" ? "Reverification required" :
+        Readiness.RuntimeVerdict switch
     {
         "Ready" => "Ready",
         "Pending" => "Pending",
@@ -111,26 +136,34 @@
         readiness.TokenRoles is "MissingRequiredRoles" or "Failed" ||
         readiness.RuntimeVerdict == "Failed";
 
-    private static string ExplainBlocker(string blocker) => blocker switch
+    private string ExplainBlocker(string blocker) => blocker switch
     {
-        "CapabilityNotInstalled" or "CapabilityUnavailable" =>
+        "CapabilityNotInstalled" or "CapabilityUnavailable" or "PROTECTION_CAPABILITY_UNAVAILABLE" =>
             "The shared Purview capability is not available in this deployment.",
-        "PolicyReadbackPending" =>
+        "PURVIEW_RUNTIME_PROVIDER_UNAVAILABLE" =>
+            "Provider evaluation is unavailable. The configured simulation mode has not become Disabled or enforcing protection.",
+        "PolicyReadbackPending" or "PURVIEW_POLICY_READBACK_NOT_READY" =>
             "The Gateway has not finished checking the exact policy.",
         "PolicyReadbackMismatch" or "PolicyMismatch" =>
             "The exact policy no longer matches the reviewed settings.",
-        "PropagationPending" =>
+        "PropagationPending" or "PURVIEW_POLICY_PROPAGATION_NOT_READY" =>
             "Microsoft Purview has not made the reviewed change available everywhere yet.",
-        "TokenRolesPending" or "TokenRefreshPending" =>
+        "TokenRolesPending" or "TokenRefreshPending" or "PURVIEW_TOKEN_ROLES_NOT_READY" =>
             "The Gateway runtime is waiting for its updated permissions.",
         "MissingRequiredRoles" =>
             "The Gateway runtime does not currently have all required permissions.",
         "RuntimeValidationRequired" or "RuntimeNotTested" =>
-            "An approved runtime allow and block check has not completed.",
+            "Approved sample behavior has not been verified in the effective policy scope.",
+        "PURVIEW_RUNTIME_CONTEXT_CHANGED" or "PURVIEW_RUNTIME_SAMPLES_REQUIRED" or "RuntimeBindingChanged" =>
+            IsSimulation
+                ? "The runtime context changed. Refresh the current configuration and evaluation availability; simulation does not require enforcement certification."
+                : "The current runtime context requires fresh approved-sample verification. A previous completed operation does not establish current readiness.",
         "RuntimeValidationFailed" =>
             "The latest approved runtime check did not pass.",
-        "InventoryExpired" or "SensitiveInformationTypeStale" =>
+        "InventoryExpired" or "SensitiveInformationTypeStale" or "PURVIEW_INVENTORY_STALE" =>
             "The sensitive information type inventory must be refreshed and reviewed again.",
+        "PURVIEW_SIT_THRESHOLDS_REVIEW_REQUIRED" =>
+            "Review the exact SIT thresholds. Unknown values require an explicitly acknowledged shared-policy replacement, not assumed defaults.",
         _ => "The Gateway reports that this profile still needs administrator attention."
     };
 }

@@ -78,6 +78,15 @@
                 </div>
             </div>
 
+            @if (registration.PurviewConfigurationOperationId is { } protectionOperationId)
+            {
+                <div class="form-section" role="status">
+                    <strong>Purview configuration accepted</strong>
+                    <StatusPill Value="@(registration.PurviewConfigurationStatus ?? "Pending")" />
+                    <p>Configuration is not effective protection yet. A new blueprint's reviewed policy waits for its exact application ID.</p>
+                    <span>Protection operation: <code>@protectionOperationId</code>. Inspect it in Settings after saving this credential.</span>
+                </div>
+            }
             <div class="form-actions">
                 <FluentButton id="continue-to-provisioning"
                               Type="ButtonType.Button"
@@ -106,8 +115,8 @@ else
         <ValidationSummary />
 
         <nav class="form-stepper" aria-label="Registration sections">
-            <a href="#identity-heading"><span>1</span>Identity</a>
-            <a href="#blueprint-heading"><span>2</span>Blueprint</a>
+            <a href="#blueprint-heading"><span>1</span>Blueprint</a>
+            <a href="#identity-heading"><span>2</span>Identity</a>
             <a href="#features-heading"><span>3</span>Features</a>
         </nav>
 
@@ -152,62 +161,6 @@ else
                 </div>
             </div>
         }
-
-        <section class="form-section" aria-labelledby="identity-heading">
-            <h2 id="identity-heading" tabindex="-1">Agent identity</h2>
-            <p>The gateway generates the stable external identifier and assigns the signed-in administrator as owner.</p>
-            <div class="form-grid">
-                <div class="form-field">
-                    <label for="agent-name">Display name</label>
-                    <InputText id="agent-name"
-                               class="form-control"
-                               @bind-Value="form.Name"
-                               @oninput="eventArgs => form.Name = eventArgs.Value?.ToString() ?? string.Empty"
-                               autocomplete="off" />
-                    <ValidationMessage For="@(() => form.Name)" />
-                </div>
-                <div class="form-field">
-                    <label for="external-agent-id">External agent ID <span class="optional-label">Generated</span></label>
-                    <input id="external-agent-id"
-                           class="form-control"
-                           value="@form.ExternalAgentId"
-                           readonly
-                           aria-readonly="true"
-                           aria-describedby="external-agent-id-help" />
-                    <span id="external-agent-id-help" class="field-help">Generated automatically and immutable after registration. This remains separate from the gateway record ID and Agent 365 IDs.</span>
-                    <ValidationMessage For="@(() => form.ExternalAgentId)" />
-                </div>
-                <div class="form-field">
-                    <label for="agent-environment">Environment</label>
-                    <InputSelect id="agent-environment" class="form-control" @bind-Value="form.Environment">
-                        <option value="Development">Development</option>
-                        <option value="Test">Test</option>
-                        <option value="Production">Production</option>
-                    </InputSelect>
-                    <ValidationMessage For="@(() => form.Environment)" />
-                </div>
-                <div class="form-field">
-                    <label for="owner-object-id">Owner object ID <span class="optional-label">Prefilled</span></label>
-                    <InputText id="owner-object-id"
-                               class="form-control"
-                               @bind-Value="form.OwnerObjectId"
-                               @oninput="eventArgs => form.OwnerObjectId = eventArgs.Value?.ToString() ?? string.Empty"
-                               autocomplete="off"
-                               aria-describedby="owner-object-id-help" />
-                    <span id="owner-object-id-help" class="field-help">@(ownerDisplay is null ? "Prefilled from your authenticated Microsoft Entra identity. Change it only when another user is accountable." : $"Prefilled from signed-in owner {ownerDisplay}. Change it only when another user is accountable.")</span>
-                    <ValidationMessage For="@(() => form.OwnerObjectId)" />
-                </div>
-                <div class="form-field full">
-                    <label for="agent-description">Description <span class="optional-label">Optional</span></label>
-                    <InputTextArea id="agent-description"
-                                   class="form-control form-textarea"
-                                   @bind-Value="form.Description"
-                                   @oninput="eventArgs => form.Description = eventArgs.Value?.ToString()" />
-                    <div class="field-counter">@(form.Description?.Length ?? 0) / 2,000</div>
-                    <ValidationMessage For="@(() => form.Description)" />
-                </div>
-            </div>
-        </section>
 
         <section class="form-section" aria-labelledby="blueprint-heading">
             <h2 id="blueprint-heading" tabindex="-1">Reusable Agent ID blueprint</h2>
@@ -350,6 +303,50 @@ else
             </div>
         </section>
 
+        <section class="form-section" aria-labelledby="identity-heading">
+            <h2 id="identity-heading" tabindex="-1">Agent identity</h2>
+            <p>The gateway generates the stable external identifier and assigns the signed-in administrator as owner.</p>
+            <div class="form-grid">
+                <div class="form-field">
+                    <label for="agent-name">Display name</label>
+                    <InputText id="agent-name" class="form-control" @bind-Value="form.Name"
+                               @oninput="eventArgs => form.Name = eventArgs.Value?.ToString() ?? string.Empty" autocomplete="off" />
+                    <ValidationMessage For="@(() => form.Name)" />
+                </div>
+                <div class="form-field">
+                    <label for="external-agent-id">External agent ID <span class="optional-label">Generated</span></label>
+                    <input id="external-agent-id" class="form-control" value="@form.ExternalAgentId" readonly
+                           aria-readonly="true" aria-describedby="external-agent-id-help" />
+                    <span id="external-agent-id-help" class="field-help">Generated automatically and immutable after registration. This remains separate from the gateway record ID and Agent 365 IDs.</span>
+                    <ValidationMessage For="@(() => form.ExternalAgentId)" />
+                </div>
+                <div class="form-field">
+                    <label for="agent-environment">Environment</label>
+                    <InputSelect id="agent-environment" class="form-control" @bind-Value="form.Environment">
+                        <option value="Development">Development</option>
+                        <option value="Test">Test</option>
+                        <option value="Production">Production</option>
+                    </InputSelect>
+                    <ValidationMessage For="@(() => form.Environment)" />
+                </div>
+                <div class="form-field">
+                    <label for="owner-object-id">Owner object ID <span class="optional-label">Prefilled</span></label>
+                    <InputText id="owner-object-id" class="form-control" @bind-Value="form.OwnerObjectId"
+                               @oninput="eventArgs => form.OwnerObjectId = eventArgs.Value?.ToString() ?? string.Empty"
+                               autocomplete="off" aria-describedby="owner-object-id-help" />
+                    <span id="owner-object-id-help" class="field-help">@(ownerDisplay is null ? "Prefilled from your authenticated Microsoft Entra identity. Change it only when another user is accountable." : $"Prefilled from signed-in owner {ownerDisplay}. Change it only when another user is accountable.")</span>
+                    <ValidationMessage For="@(() => form.OwnerObjectId)" />
+                </div>
+                <div class="form-field full">
+                    <label for="agent-description">Description <span class="optional-label">Optional</span></label>
+                    <InputTextArea id="agent-description" class="form-control form-textarea" @bind-Value="form.Description"
+                                   @oninput="eventArgs => form.Description = eventArgs.Value?.ToString()" />
+                    <div class="field-counter">@(form.Description?.Length ?? 0) / 2,000</div>
+                    <ValidationMessage For="@(() => form.Description)" />
+                </div>
+            </div>
+        </section>
+
         <section class="form-section" aria-labelledby="features-heading">
             <h2 id="features-heading" tabindex="-1">Gateway features</h2>
             <p>These settings can be adjusted later from the agent details page.</p>
@@ -373,117 +370,21 @@ else
                     </div>
                 </fieldset>
 
-                <fieldset class="feature-group" aria-describedby="prompt-shield-help">
-                    <legend>Prompt Shields</legend>
-                    <p id="prompt-shield-help">Evaluate each prompt for injection and jailbreak attacks before the external agent calls its model. An allowed check returns a short-lived receipt that the same client sends with its interaction.</p>
-                    <div class="form-grid">
-                        <div class="form-field checkbox-field">
-                            <label class="checkbox-label" for="prompt-shield-enabled">
-                                <InputCheckbox id="prompt-shield-enabled"
-                                               @bind-Value="form.PromptShieldEnabled"
-                                               disabled="@(!promptShieldAvailable)" />
-                                <span><strong>Enable Azure AI Prompt Shields</strong><small>Blocked prompts stop before the model call. Allowed prompts receive a single-use receipt for the matching interaction.</small></span>
-                            </label>
-                            @if (!promptShieldAvailable)
-                            {
-                                <span class="field-help">The Gateway does not currently report the shared Prompt Shields capability ready for agent use.</span>
-                            }
-                        </div>
-                    </div>
-                </fieldset>
-
-                <fieldset class="feature-group" aria-describedby="purview-help">
-                    <legend>Microsoft Purview</legend>
-                    <p id="purview-help">Purview policy evaluation is optional and independent of both observability destinations. It can be selected only for an existing blueprint with an exact Ready DLP profile.</p>
-                    <div class="form-grid">
-                        <div class="form-field checkbox-field">
-                            <label class="checkbox-label" for="purview-enabled">
-                                <InputCheckbox id="purview-enabled"
-                                               @bind-Value="form.PurviewEnabled"
-                                               disabled="@(!CanEnablePurviewForCurrentBlueprint && !form.PurviewEnabled)" />
-                                <span><strong>Enable Microsoft Purview</strong><small>The Gateway rechecks this blueprint's selected Ready profile before accepting the registration.</small></span>
-                            </label>
-                        </div>
-                        @if (form.BlueprintMode == BlueprintModeCreateNew)
-                        {
-                            <div class="form-field full">
-                                <div class="subtle-note" role="status">
-                                    <strong>New blueprints register core identity first.</strong>
-                                    This form does not author hidden policy. After the blueprint and agent are created, a Gateway Administrator can review one Individual DLP profile in Settings, wait until it is Ready, and then enable Purview on the agent.
-                                </div>
-                            </div>
-                        }
-                        else if (!purviewCapabilityAvailable)
-                        {
-                            <div class="form-field full">
-                                <span class="field-help">The Gateway does not currently report the shared Microsoft Purview capability as installed. Core registration remains available without it.</span>
-                            </div>
-                        }
-                        else if (string.IsNullOrWhiteSpace(form.BlueprintObjectId))
-                        {
-                            <div class="form-field full">
-                                <span class="field-help">Choose an existing blueprint to check for an exact Ready DLP profile.</span>
-                            </div>
-                        }
-                        else if (purviewProfilesLoading)
-                        {
-                            <div class="form-field full"><LoadingState Label="Loading Purview readiness…" Detail="Reading blueprint-specific DLP profiles through the Gateway." /></div>
-                        }
-                        else if (purviewProfileLoadError is not null)
-                        {
-                            <div class="form-field full">
-                                <ErrorState Title="Purview readiness is unavailable"
-                                            Message="@purviewProfileLoadError.Message"
-                                            CorrelationId="@purviewProfileLoadError.CorrelationId"
-                                            OnRetry="LoadPurviewProfilesAsync" />
-                            </div>
-                        }
-                        else if (ReadyPurviewProfilesForSelectedBlueprint.Count == 0)
-                        {
-                            <div class="form-field full">
-                                <div class="subtle-note">
-                                    <strong>No Ready DLP profile for this blueprint.</strong>
-                                    Core registration remains available without Purview. A Gateway Administrator can finish the profile in <a href="/settings">Settings</a> and enable it later from the agent page.
-                                </div>
-                            </div>
-                        }
-                        else
-                        {
-                            <div class="form-field full">
-                                <label for="purview-dlp-profile">Ready DLP profile</label>
-                                <select id="purview-dlp-profile"
-                                        class="form-control"
-                                        value="@selectedPurviewProfileIndex"
-                                        @onchange="SelectPurviewProfile">
-                                    <option value="">Choose the Ready profile for this blueprint</option>
-                                    @for (var index = 0; index < ReadyPurviewProfilesForSelectedBlueprint.Count; index++)
-                                    {
-                                        var profile = ReadyPurviewProfilesForSelectedBlueprint[index];
-                                        <option value="@index">@SafeProfileName(profile) — @FormatPurviewMode(profile.Mode)</option>
-                                    }
-                                </select>
-                                <span class="field-help">Only profiles whose exact readback, propagation, runtime permissions, and approved allow/block check are Ready appear here.</span>
-                            </div>
-                            @if (SelectedReadyPurviewProfile is { } selectedProfile)
-                            {
-                                <div class="form-field">
-                                    <span class="detail-label">Profile mode</span>
-                                    <span class="detail-value">@FormatPurviewMode(selectedProfile.Mode)</span>
-                                </div>
-                                <div class="form-field">
-                                    <span class="detail-label">Readiness</span>
-                                    <StatusPill Value="Ready" />
-                                </div>
-                            }
-                        }
-                    </div>
-                </fieldset>
+                <AgentProtectionConfiguration @ref="protectionEditor"
+                    BlueprintApplicationId="@(form.BlueprintMode == BlueprintModeUseExisting ? SelectedBlueprint?.BlueprintClientId : null)"
+                    BlueprintDisplayName="@(form.BlueprintMode == BlueprintModeUseExisting ? SelectedBlueprint?.DisplayName : null)"
+                    DeferredBlueprint="DeferredProtectionBlueprint"
+                    DefaultPromptShieldsEnabled="@(defaultPromptShieldEnabled && promptShieldAvailable)"
+                    PromptRuntimeAvailable="promptShieldServerAvailable"
+                    DefaultPurviewEnabled="defaultPurviewEnabled"
+                    ContextKey="@form.ExternalAgentId"
+                    IsAdministrator="true" Busy="submitting" Changed="ProtectionChanged" />
             </div>
         </section>
 
         <div class="form-actions">
             <FluentAnchor Appearance="Appearance.Neutral" Href="/agents">Cancel</FluentAnchor>
-            <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent" Disabled="@(submitting || !identityReady || !provisioningExecutionEnabled || ExistingBlueprintInventoryUnavailable || ExistingPurviewProfileInventoryUnavailable)">
+            <FluentButton Type="ButtonType.Submit" Appearance="Appearance.Accent" Disabled="@(submitting || !identityReady || !provisioningExecutionEnabled || ExistingBlueprintInventoryUnavailable || protectionEditor?.CanApply != true)">
                 @(submitting
                     ? "Registering…"
                     : !provisioningCapabilityChecked
@@ -520,22 +421,17 @@ else
     private readonly RegistrationForm form = new();
     private readonly List<string> remoteValidationErrors = [];
     private IReadOnlyList<AgentIdentityBlueprintSummaryDto> blueprintOptions = [];
-    private IReadOnlyList<PurviewDlpProfileDto> purviewProfiles = [];
     private GatewayApiResource<ProtectionCapabilitiesResponse>? protectionCapabilities;
     private RegisterAgentResponse? acceptedRegistration;
     private AgentGatewayCredentialDto? gatewayCredential;
     private UiErrorInfo? error;
     private UiErrorInfo? blueprintLoadError;
-    private UiErrorInfo? purviewProfileLoadError;
     private string? identityError;
     private string? ownerDisplay;
     private string blueprintInventoryStatus = string.Empty;
     private string blueprintFilter = string.Empty;
-    private string selectedPurviewProfileIndex = string.Empty;
     private bool blueprintOptionsLoaded;
     private bool blueprintOptionsLoading;
-    private bool purviewProfilesLoaded;
-    private bool purviewProfilesLoading;
     private bool identityReady;
     private bool provisioningCapabilityChecked;
     private bool provisioningCapabilityLoadFailed;
@@ -543,17 +439,19 @@ else
     private bool promptShieldServerAvailable;
     private bool defaultPromptShieldEnabled;
     private bool defaultPurviewEnabled;
-    private string defaultPurviewMode = "AuditOnly";
-    private bool purviewCapabilityAvailable;
     private bool promptShieldAvailable;
     private bool submitting;
+    private AgentProtectionConfiguration? protectionEditor;
+    private PurviewDeferredBlueprintDto? DeferredProtectionBlueprint =>
+        form.BlueprintMode == BlueprintModeCreateNew && !string.IsNullOrWhiteSpace(form.BlueprintDisplayName)
+            ? new(form.ExternalAgentId.Trim(), form.BlueprintDisplayName.Trim()) : null;
+    private void ProtectionChanged() => StateHasChanged();
 
     protected override async Task OnInitializedAsync()
     {
         form.ExternalAgentId = $"agent-{Guid.NewGuid():N}";
         var featureDefaultsTask = LoadFeatureDefaultsAsync();
         var blueprintOptionsTask = LoadBlueprintOptionsAsync();
-        var purviewProfilesTask = LoadPurviewProfilesAsync();
         var protectionCapabilitiesTask = LoadProtectionCapabilitiesAsync();
 
         try
@@ -591,39 +489,7 @@ else
             await Task.WhenAll(
                 featureDefaultsTask,
                 blueprintOptionsTask,
-                purviewProfilesTask,
                 protectionCapabilitiesTask);
-        }
-    }
-
-    private async Task LoadPurviewProfilesAsync()
-    {
-        if (purviewProfilesLoading) return;
-        purviewProfilesLoading = true;
-        purviewProfilesLoaded = false;
-        purviewProfileLoadError = null;
-        try
-        {
-            var response = await Api.GetPurviewDlpProfilesAsync(disposeCts.Token);
-            purviewProfiles = response.Value.Items
-                .Where(profile =>
-                    profile.Status == "Ready" &&
-                    profile.Readiness.IsReady)
-                .OrderBy(profile => profile.DisplayName, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            purviewProfilesLoaded = true;
-            selectedPurviewProfileIndex = string.Empty;
-            ApplyPurviewDefaultForSelectedBlueprint();
-        }
-        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested) { }
-        catch (Exception exception)
-        {
-            purviewProfiles = [];
-            purviewProfileLoadError = UiErrorInfo.FromException(exception);
-        }
-        finally
-        {
-            purviewProfilesLoading = false;
         }
     }
 
@@ -689,7 +555,6 @@ else
                 _ =>
                     $"{blueprintOptions.Count} reusable blueprints loaded; {CompatibleBlueprintCount} compatible with Agent 365 through this Gateway."
             };
-            ApplyPurviewDefaultForSelectedBlueprint();
         }
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
         {
@@ -709,8 +574,6 @@ else
     private Task HandleBlueprintModeChangedAsync()
     {
         remoteValidationErrors.Clear();
-        selectedPurviewProfileIndex = string.Empty;
-        form.PurviewEnabled = false;
 
         if (form.BlueprintMode == BlueprintModeUseExisting &&
             !blueprintOptionsLoaded &&
@@ -719,47 +582,11 @@ else
             return LoadBlueprintOptionsAsync();
         }
 
-        ApplyPurviewDefaultForSelectedBlueprint();
         return Task.CompletedTask;
-    }
-
-    private void SelectPurviewProfile(ChangeEventArgs eventArgs)
-    {
-        selectedPurviewProfileIndex = eventArgs.Value?.ToString() ?? string.Empty;
-        form.PurviewEnabled = SelectedReadyPurviewProfile is not null;
-        remoteValidationErrors.Clear();
-    }
-
-    private void ApplyPurviewDefaultForSelectedBlueprint()
-    {
-        if (!defaultPurviewEnabled ||
-            !purviewCapabilityAvailable ||
-            form.BlueprintMode != BlueprintModeUseExisting ||
-            !purviewProfilesLoaded)
-        {
-            return;
-        }
-
-        var matchingProfiles = ReadyPurviewProfilesForSelectedBlueprint;
-        for (var index = 0; index < matchingProfiles.Count; index++)
-        {
-            if (string.Equals(
-                    matchingProfiles[index].Mode,
-                    defaultPurviewMode,
-                    StringComparison.Ordinal))
-            {
-                selectedPurviewProfileIndex = index.ToString();
-                form.PurviewEnabled = true;
-                return;
-            }
-        }
     }
 
     private void HandleExistingBlueprintChanged()
     {
-        selectedPurviewProfileIndex = string.Empty;
-        form.PurviewEnabled = false;
-        ApplyPurviewDefaultForSelectedBlueprint();
         remoteValidationErrors.Clear();
     }
 
@@ -779,10 +606,6 @@ else
             form.AzureMonitorExportEnabled = config.DefaultAzureMonitorExportEnabled
                 ?? LegacyAzureMonitorExportEnabled(config.DefaultObservabilityMode);
             defaultPurviewEnabled = config.DefaultPurviewEnabled;
-            defaultPurviewMode = config.DefaultPurviewMode is "AuditOnly" or "Enforce"
-                ? config.DefaultPurviewMode
-                : "AuditOnly";
-            ApplyPurviewDefaultForSelectedBlueprint();
             promptShieldServerAvailable = config.PromptShieldAvailable;
             defaultPromptShieldEnabled = config.DefaultPromptShieldEnabled;
             UpdatePromptShieldAvailability();
@@ -812,7 +635,7 @@ else
 
     private async Task SubmitAsync()
     {
-        if (submitting || !identityReady || !provisioningExecutionEnabled)
+        if (submitting || !identityReady || !provisioningExecutionEnabled || protectionEditor?.CanApply != true)
         {
             return;
         }
@@ -832,20 +655,16 @@ else
 
         try
         {
-            var selectedDlpProfile = SelectedReadyPurviewProfile;
-            var dlpSelection = form.PurviewEnabled && selectedDlpProfile is not null
-                ? new PurviewDlpProfileSelectionDto(
-                    selectedDlpProfile.Id,
-                    selectedDlpProfile.BlueprintApplicationId,
-                    selectedDlpProfile.RowVersion)
-                : null;
+            var protection = protectionEditor.Selection;
+            var dlpSelection = protectionEditor.ExistingProfileSelection;
+            var intent = protectionEditor.TakeConfigurationIntent();
             var features = new AgentFeaturesDto(
                 ToLegacyObservabilityMode(form.Agent365ObservabilityEnabled, form.AzureMonitorExportEnabled),
-                form.PurviewEnabled,
-                form.PurviewEnabled ? selectedDlpProfile?.Mode : null,
+                protection.PurviewEnabled,
+                protection.PurviewEnabled ? AgentProtectionUiMapping.LegacyMode(protection.PolicyMode) : null,
                 form.Agent365ObservabilityEnabled,
                 form.AzureMonitorExportEnabled,
-                form.PromptShieldEnabled,
+                protection.PromptShieldsEnabled,
                 PurviewDlpProfile: dlpSelection);
             var request = new RegisterAgentRequest(
                 form.ExternalAgentId.Trim(),
@@ -863,7 +682,8 @@ else
                         ? NullIfEmpty(form.BlueprintDisplayName)
                         : null),
                 PurviewPolicyProfile: null,
-                PurviewDlpProfile: dlpSelection);
+                PurviewDlpProfile: dlpSelection,
+                PurviewConfigurationIntent: intent);
 
             var response = await Api.RegisterAgentAsync(request, disposeCts.Token);
             if (response.GatewayCredential is null)
@@ -927,49 +747,12 @@ else
          blueprintLoadError is not null ||
          CompatibleBlueprintCount == 0);
 
-    private bool ExistingPurviewProfileInventoryUnavailable =>
-        form.PurviewEnabled &&
-        (form.BlueprintMode != BlueprintModeUseExisting ||
-         purviewProfilesLoading ||
-         !purviewProfilesLoaded ||
-         purviewProfileLoadError is not null ||
-         SelectedReadyPurviewProfile is null);
-
-    private IReadOnlyList<PurviewDlpProfileDto> ReadyPurviewProfilesForSelectedBlueprint
-    {
-        get
-        {
-            var blueprint = SelectedBlueprint;
-            return blueprint is null
-                ? []
-                : purviewProfiles
-                    .Where(profile =>
-                        profile.BlueprintApplicationId == blueprint.BlueprintClientId &&
-                        profile.Status == "Ready" &&
-                        profile.Readiness.IsReady)
-                    .ToArray();
-        }
-    }
-
-    private PurviewDlpProfileDto? SelectedReadyPurviewProfile =>
-        int.TryParse(selectedPurviewProfileIndex, out var index) &&
-        index >= 0 &&
-        index < ReadyPurviewProfilesForSelectedBlueprint.Count
-            ? ReadyPurviewProfilesForSelectedBlueprint[index]
-            : null;
-
     private AgentIdentityBlueprintSummaryDto? SelectedBlueprint =>
         Guid.TryParse(form.BlueprintObjectId, out var selectedObjectId)
             ? blueprintOptions.FirstOrDefault(item =>
                 item.BlueprintObjectId == selectedObjectId &&
                 item.IsAgent365Compatible)
             : null;
-
-    private bool CanEnablePurviewForCurrentBlueprint =>
-        form.BlueprintMode == BlueprintModeUseExisting &&
-        purviewCapabilityAvailable &&
-        SelectedBlueprint is not null &&
-        ReadyPurviewProfilesForSelectedBlueprint.Count > 0;
 
     private int CompatibleBlueprintCount =>
         blueprintOptions.Count(item => item.IsAgent365Compatible);
@@ -1060,25 +843,12 @@ else
         return $"{displayName} — Graph ID {blueprint.BlueprintObjectId:D}{compatibility}";
     }
 
-    private static string SafeProfileName(PurviewDlpProfileDto profile) =>
-        string.IsNullOrWhiteSpace(profile.DisplayName)
-            ? "Unnamed DLP profile"
-            : profile.DisplayName.Trim();
-
-    private static string FormatPurviewMode(string mode) =>
-        mode == "Enforce" ? "Enforce uploads" : "Audit only";
-
     private void UpdatePromptShieldAvailability()
     {
         var capabilityReady = protectionCapabilities?.Value.Items.Any(item =>
             string.Equals(item.Capability, "PromptShields", StringComparison.OrdinalIgnoreCase) &&
             string.Equals(item.Status, "Installed", StringComparison.OrdinalIgnoreCase)) == true;
-        purviewCapabilityAvailable = protectionCapabilities?.Value.Items.Any(item =>
-            string.Equals(item.Capability, "Purview", StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(item.Status, "Installed", StringComparison.OrdinalIgnoreCase)) == true;
         promptShieldAvailable = promptShieldServerAvailable && capabilityReady;
-        form.PromptShieldEnabled = defaultPromptShieldEnabled && promptShieldAvailable;
-        ApplyPurviewDefaultForSelectedBlueprint();
     }
 
     private static string ToLegacyObservabilityMode(bool agent365Enabled, bool azureMonitorEnabled) =>
@@ -1147,8 +917,6 @@ else
 
         public bool Agent365ObservabilityEnabled { get; set; } = true;
         public bool AzureMonitorExportEnabled { get; set; }
-        public bool PurviewEnabled { get; set; }
-        public bool PromptShieldEnabled { get; set; }
 
         public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
         {
@@ -1181,13 +949,6 @@ else
                 yield return new ValidationResult(
                     "Select whether to use an existing blueprint or create a new one.",
                     [nameof(BlueprintMode)]);
-            }
-
-            if (PurviewEnabled && BlueprintMode == BlueprintModeCreateNew)
-            {
-                yield return new ValidationResult(
-                    "Register the new blueprint first, then configure its DLP profile in Settings.",
-                    [nameof(PurviewEnabled)]);
             }
 
         }

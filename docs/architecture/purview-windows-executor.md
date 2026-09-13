@@ -31,6 +31,42 @@ with Microsoft-signed PowerShell 7.6.5 and ExchangeOnlineManagement 3.10.1. Star
 verifies the complete runtime file manifest and imports the pinned module before
 serving requests. Startup does not connect to the compliance provider.
 
+### Console-free interpreter child
+
+Windows App Service does not provide a console. PowerShell 7.6.5's Windows
+`ConsoleHost` constructs a raw UI using `CONOUT$`; its entry point can silently
+return exit zero for native invalid-handle errors before running a command.
+Redirecting stdout or using `-NonInteractive` does not remove that dependency.
+
+The executor therefore starts a dedicated `Gateway.Purview.PowerShellHost.exe`
+OS child, never an in-process web-host runspace. It hosts the exact packaged
+7.6.5 `System.Management.Automation` engine through the supported `PSHost` and
+runspace APIs, with no raw console UI. Only a fixed probe or the three existing
+allowlisted scripts/parameters are accepted; arbitrary command text, script URLs,
+plugins and interactive prompts are not accepted. The configured manifest digest
+is passed separately from operation data, and the child rechecks the complete
+manifest before loading the engine. Module selection, signatures, exact version
+output and all parent process/output/termination gates remain mandatory.
+
+The child retains stdin exclusively for the certificate password and leaves the
+existing result envelopes on stdout. Pipeline-object output is rejected without
+unbounded collection or formatting. Errors expose only fixed failure markers,
+not exception messages or provider data. The parent still owns cancellation,
+whole-process-tree termination and its existing mutation fence.
+
+Canonical packaging compiles against the already Microsoft-signed, version-checked
+engine using `PurviewPowerShellReferencePath`. Ordinary builds use the exact
+`System.Management.Automation` 7.6.5 compile-only reference; no NuGet SDK runtime
+copy may replace the packaged engine. PowerShell's approved `ref` directory is
+also copied beside the child entry assembly because `Add-Type` resolves reference
+assemblies there. Those files are included in the same runtime hash inventory.
+The child shares the executor's existing .NET runtime; no runtime or platform
+upgrade is introduced.
+
+Local detached/no-console execution and offline tests do not establish cloud
+readiness or tenant connectivity. A separately approved artifact release still
+requires actual worker-identity health and subsequent authorized provider proof.
+
 A dedicated single-tenant API application publishes only the application role
 `Purview.Executor.Invoke`. Only the exact Linux worker system managed identity
 receives it. App Service authentication and application authorization independently
@@ -43,6 +79,19 @@ package container and writes its separate durable claim container. It receives n
 SQL, Service Bus, Graph or Registry permissions. Its identity is distinct from the
 Gateway API, worker and Purview runtime managed identities. Certificate bytes stay
 inside the Windows provider and are never returned through the transport.
+
+The Windows App Service sets `WEBSITE_LOAD_USER_PROFILE=1`, as required by
+[Microsoft's certificate-loading guidance](https://learn.microsoft.com/azure/app-service/configure-ssl-certificate-in-code#load-a-certificate-from-a-file).
+This supports .NET private-certificate import; it does not add certificate-store
+deployment, change ephemeral-key handling, grant permissions, or prove tenant
+connectivity. Bootstrap requires the exact setting in its host readback.
+
+The existing worker-only private health response may include one verification
+failure receipt for at most five minutes: operation ID, timestamp, fixed execution
+stage, fixed failure category, and numeric child exit/provider stage when known.
+It never includes exception messages, provider bodies, certificate material, or
+credentials. This diagnostic receipt is not connection or enforcement evidence;
+the normal reviewed operation and all independent authority checks remain required.
 
 ## Private package delivery
 

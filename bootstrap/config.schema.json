@@ -41,7 +41,8 @@
     },
     "alertEmail": { "type": "string", "format": "email" },
     "capabilityPreset": {
-      "enum": ["fullEvaluation", "coreGateway", "custom"]
+      "enum": ["fullEvaluation", "coreGateway", "custom"],
+      "description": "Every new gateway preset includes shared Prompt Shields. Purview prerequisites remain independently selected."
     },
     "sql": {
       "type": "object",
@@ -100,10 +101,11 @@
     },
     "promptShield": {
       "type": "object",
+      "description": "Shared Azure AI Content Safety infrastructure, included for every new gateway. Agent-level usage is selected separately at registration or edit; disabled legacy configurations remain supported for source-bound recovery.",
       "additionalProperties": false,
       "required": ["enabled", "skuName", "costAndQuotaAcknowledged"],
       "properties": {
-        "enabled": { "type": "boolean" },
+        "enabled": { "type": "boolean", "default": true },
         "skuName": { "enum": ["F0", "S0"] },
         "costAndQuotaAcknowledged": { "type": "boolean" }
       }

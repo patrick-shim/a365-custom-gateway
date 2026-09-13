@@ -76,7 +76,12 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
             request.UserContext?.TenantUserObjectId,
             "UserContext.TenantUserObjectId");
 
-        if (agent.FeatureConfiguration.PurviewEnabled)
+        var purviewPolicyMode = _protectionFeatures is null
+            ? agent.FeatureConfiguration.PurviewEnabled
+                ? agent.RequestedPurviewPolicyMode ?? PurviewPolicyModeCompatibility.FromLegacy(agent.FeatureConfiguration.PurviewMode ?? PurviewMode.Enforce)
+                : PurviewPolicyMode.Disabled
+            : await _protectionFeatures.GetRuntimePolicyModeAsync(agent, ct);
+        if (purviewPolicyMode == PurviewPolicyMode.Enforce)
         {
             if (_protectionFeatures is null)
             {
@@ -124,7 +129,7 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
         if (request.IdempotencyKey is not null)
         {
             requestBodyHash = IdempotencyRequestHasher.Compute(request);
-            idempotencyScope = await _idempotencyService.AcquireScopeAsync(
+            idempotencyScope = await _idempotencyService.AcquireDataPlaneScopeAsync(
                 agent.Id,
                 IdempotencyRequestHasher.InteractionEndpoint,
                 request.IdempotencyKey,
@@ -157,22 +162,25 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
                 }
             }
 
-            if (agent.FeatureConfiguration.PromptShieldEnabled || agent.FeatureConfiguration.PurviewEnabled)
+            var protectionContext = await _promptEvaluationRepository.GetProtectionContextAsync(agent.Id, ct);
+            if (protectionContext is null || !protectionContext.MatchesAgent(agent) ||
+                protectionContext.PurviewMode != purviewPolicyMode)
+                throw new DomainException("The interaction protection context changed before ingestion.", ErrorCodes.PROMPT_EVALUATION_INVALID);
+            var requiresReceipt = protectionContext.RequiresReceipt;
+            PromptEvaluationRecord? receipt = null;
+            if (requiresReceipt || request.PromptEvaluationReceiptId is not null)
             {
                 if (request.PromptEvaluationReceiptId is not { } receiptId || receiptId == Guid.Empty)
                 {
                     throw new DomainException(
                         "A successful prompt evaluation receipt is required for this protected registration.",
-                        ErrorCodes.PROMPT_EVALUATION_REQUIRED);
+                        request.PromptEvaluationReceiptId is null ? ErrorCodes.PROMPT_EVALUATION_REQUIRED : ErrorCodes.PROMPT_EVALUATION_INVALID);
                 }
 
-                var receipt = await _promptEvaluationRepository.GetByIdAsync(receiptId, ct);
+                receipt = await _promptEvaluationRepository.GetByIdAsync(receiptId, ct);
                 var now = DateTime.UtcNow;
                 if (receipt is null
-                    || receipt.AgentRegistrationId != agent.Id
-                    || receipt.Outcome != PromptEvaluationOutcome.Allowed
-                    || receipt.ConsumedAtUtc is not null
-                    || receipt.ExpiresAtUtc <= now
+                    || !protectionContext.MatchesReceipt(receipt, now)
                     || !string.Equals(receipt.ExternalInteractionId, request.InteractionId, StringComparison.Ordinal)
                     || !string.Equals(receipt.TenantUserObjectId, request.UserContext?.TenantUserObjectId ?? string.Empty, StringComparison.Ordinal)
                     || !PromptReceiptSecurity.Verify(
@@ -182,23 +190,20 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
                         request.Prompt.Content))
                 {
                     throw new DomainException(
-                        "The prompt evaluation receipt is missing, expired, consumed, or does not match this interaction.",
+                        "The prompt evaluation receipt is unbound, stale, expired, consumed, or does not match this interaction and its protection context.",
                         ErrorCodes.PROMPT_EVALUATION_INVALID);
                 }
 
-                if (!await _promptEvaluationRepository.TryConsumeAsync(receipt.Id, now, ct))
-                {
-                    throw new DomainException(
-                        "The prompt evaluation receipt is missing, expired, consumed, or does not match this interaction.",
-                        ErrorCodes.PROMPT_EVALUATION_INVALID);
-                }
             }
 
             var correlationId = Guid.NewGuid().ToString();
             var recordId = Guid.NewGuid();
 
             PurviewEvaluationResult? evaluation = null;
-            if (agent.FeatureConfiguration.PurviewEnabled)
+            if (purviewPolicyMode != PurviewPolicyMode.Disabled && _purviewPolicyClient.IsEnabled &&
+                Guid.TryParse(request.UserContext?.TenantUserObjectId, out var purviewUserId) && purviewUserId != Guid.Empty &&
+                Guid.TryParse(agent.Agent365AgentId, out var purviewAgentId) && purviewAgentId != Guid.Empty &&
+                Guid.TryParse(agent.BlueprintId, out var purviewBlueprintId) && purviewBlueprintId != Guid.Empty)
             {
                 var purviewInteraction = new PurviewInteraction(
                     agent.Id,
@@ -214,9 +219,7 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
                     agent.BlueprintId!,
                     agent.Name,
                     request.OccurredAtUtc,
-                    agent.FeatureConfiguration.PurviewMode == PurviewMode.Enforce
-                        ? PurviewExecutionMode.EvaluateInline
-                        : PurviewExecutionMode.EvaluateOffline,
+                    purviewPolicyMode.ToExecutionMode(),
                     correlationId);
 
                 try
@@ -232,7 +235,8 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
                         agent.Id,
                         correlationId,
                         exception.FailureCode);
-                    throw new DomainException(
+                    if (purviewPolicyMode == PurviewPolicyMode.Enforce)
+                        throw new DomainException(
                         "Purview could not return a trusted policy decision; the interaction was not accepted.",
                         ErrorCodes.PURVIEW_DEPENDENCY_UNAVAILABLE);
                 }
@@ -247,6 +251,32 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
                 request.Response.ContentType,
                 ct);
 
+            if (idempotencyScope is not null)
+                await idempotencyScope.BeginCommitAsync(ct);
+            var contextAccepted = receipt is not null
+                ? await _promptEvaluationRepository.TryConsumeAsync(receipt, protectionContext, ct)
+                : await _promptEvaluationRepository.IsProtectionContextCurrentAsync(protectionContext, ct);
+            if (!contextAccepted)
+            {
+                if (idempotencyScope is not null)
+                    await idempotencyScope.DisposeAsync();
+                // Compensation is only for a known pre-commit rejection, never an ambiguous commit.
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try
+                {
+                    await _interactionContentStore.DiscardStagedAsync(agent.Id, recordId, contentBlobUri, cleanup.Token);
+                }
+                catch (Exception)
+                {
+                    _logger.LogWarning(
+                        "Staged interaction cleanup was not confirmed for record {RecordId}, correlation {CorrelationId}",
+                        recordId, correlationId);
+                }
+                throw new DomainException(
+                    "The prompt evaluation receipt is unbound, stale, expired, consumed, or does not match this interaction and its protection context.",
+                    ErrorCodes.PROMPT_EVALUATION_INVALID);
+            }
+
             var interaction = new AiInteractionRecord
             {
                 Id = recordId,
@@ -258,7 +288,8 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
                 ModelProvider = request.Model?.Provider,
                 ModelName = request.Model?.Name,
                 ProcessingStatus = ProcessingStatus.Accepted,
-                PurviewStatus = PurviewDecisionType.PurviewDisabled,
+                PurviewStatus = purviewPolicyMode == PurviewPolicyMode.Disabled
+                    ? PurviewDecisionType.PurviewDisabled : PurviewDecisionType.SimulationUnavailable,
                 ObservabilityStatus = "Pending",
                 CorrelationId = correlationId,
                 OccurredAtUtc = request.OccurredAtUtc,
@@ -274,9 +305,7 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
                     AiInteractionRecordId = recordId,
                     Decision = evaluation.Decision,
                     PolicyAction = evaluation.PolicyAction,
-                    ExecutionMode = agent.FeatureConfiguration.PurviewMode == PurviewMode.Enforce
-                        ? PurviewExecutionMode.EvaluateInline
-                        : PurviewExecutionMode.EvaluateOffline,
+                    ExecutionMode = purviewPolicyMode.ToExecutionMode(),
                     // The legacy column name is retained for schema compatibility;
                     // Graph returns a protectionScopeState, not a scope ID.
                     ProtectionScopeId = evaluation.ProtectionScopeState,
@@ -287,14 +316,9 @@ internal sealed class SubmitInteractionHandler : IRequestHandler<SubmitInteracti
                 interaction.PurviewStatus = evaluation.Decision;
                 interaction.PurviewDecision = purviewDecision;
 
-                if (agent.FeatureConfiguration.PurviewMode == PurviewMode.Enforce && !evaluation.IsAllowed)
+                if (purviewPolicyMode == PurviewPolicyMode.Enforce && !evaluation.IsAllowed)
                     interaction.ProcessingStatus = ProcessingStatus.Failed;
             }
-            else
-            {
-                interaction.PurviewStatus = PurviewDecisionType.PurviewDisabled;
-            }
-
             await _aiInteractionRepository.AddAsync(interaction, ct);
 
             if (agent.FeatureConfiguration.ObservabilityMode != ObservabilityMode.Disabled

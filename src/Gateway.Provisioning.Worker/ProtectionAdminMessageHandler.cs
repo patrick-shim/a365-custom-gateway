@@ -255,7 +255,9 @@ internal sealed class ProtectionAdminMessageHandler
         try
         {
             context = await LoadExecutionContextAsync(operation, now, ct);
-            var skipped = ShouldSkip(operation.Type, step.StepType);
+            var skipped = ShouldSkip(operation.Type, step.StepType) ||
+                (context.DlpProfile is { EffectivePolicyMode: not PurviewPolicyMode.Enforce } &&
+                 step.StepType is ProtectionAdminStepType.VerifyPropagation or ProtectionAdminStepType.AttestTokenRoles);
             if (!skipped)
             {
                 await ExecuteStepAsync(
@@ -1088,6 +1090,8 @@ internal sealed class ProtectionAdminMessageHandler
         bool wasAlreadyRunning,
         CancellationToken ct)
     {
+        if (operation.Type == ProtectionAdminOperationType.ValidateDlpRuntime)
+            throw Failure(PurviewRuntimeTestFailureCodes.SamplesRequired);
         var profile = context.DlpProfile!;
         if (profile.Mode != PurviewMode.Enforce)
             throw Failure("PURVIEW_RUNTIME_ENFORCEMENT_REQUIRED");
@@ -1271,9 +1275,15 @@ internal sealed class ProtectionAdminMessageHandler
                 inventory,
                 profile.SensitiveInformationTypeId,
                 profile.SensitiveInformationTypeName);
+            foreach (var sensitiveType in profile.NormalizedSensitiveInformationTypes)
+                RequireSelectedInformationType(inventory, new SensitiveInformationTypeId(sensitiveType.Id), sensitiveType.ExactName);
         }
 
         VerifyReviewedPayloadHash(operation, knowYourData, profile);
+        if (profile is not null && profile.NormalizedSensitiveInformationTypes.Any(value =>
+                !Gateway.Domain.Models.PurviewSensitiveInformationTypeThresholds.AreValid(
+                    value.MinCount, value.MaxCount, value.MinConfidence, value.MaxConfidence)))
+            throw Failure("PURVIEW_SIT_THRESHOLDS_REVIEW_REQUIRED");
         return new(
             capability,
             connection,
@@ -1306,7 +1316,8 @@ internal sealed class ProtectionAdminMessageHandler
         if (!string.Equals(
                 actual,
                 operation.ReviewedPayloadHash,
-                StringComparison.Ordinal))
+                StringComparison.Ordinal) &&
+            !(profile is not null && ProtectionAdminIntentFingerprint.MatchesLegacyDlpProfile(profile, operation.ReviewedPayloadHash)))
         {
             throw Failure("PROTECTION_ADMIN_REVIEWED_INTENT_CHANGED");
         }
@@ -1543,6 +1554,9 @@ internal sealed class ProtectionAdminMessageHandler
             profile.TokenRolesVerifiedAtUtc = null;
             profile.RuntimeAllowVerifiedAtUtc = null;
             profile.RuntimeBlockVerifiedAtUtc = null;
+            profile.RuntimeBehaviorSuiteHash = null;
+            profile.RuntimeBehaviorVerifiedUntilUtc = null;
+            profile.RuntimeBehaviorCertificationOperationId = null;
         }
 
         profile.Readiness = resetReadiness
@@ -1658,7 +1672,16 @@ internal sealed class ProtectionAdminMessageHandler
             context.DlpProfile.Actions.ToArray(),
             context.DlpProfile.DlpPolicyProviderId,
             context.DlpProfile.DlpRuleProviderId,
-            recoveryPoint);
+            recoveryPoint,
+            context.DlpProfile.EffectivePolicyMode,
+            context.DlpProfile.NormalizedSensitiveInformationTypes.Select((value, index) =>
+            {
+                var item = RequireSelectedInformationType(context.Inventory, new SensitiveInformationTypeId(value.Id), value.ExactName);
+                return new PurviewSensitiveInformationTypeProjection(value.Id, value.ExactName, item.Publisher, index,
+                    value.MinCount, value.MaxCount, value.MinConfidence, value.MaxConfidence);
+            }).ToArray(),
+            AllowUnverifiedThresholdReplacement: operation.Type == ProtectionAdminOperationType.CreateOrUpdateDlpProfile &&
+                context.DlpProfile.DlpPolicyProviderId is not null && context.DlpProfile.DlpRuleProviderId is not null);
 
     private void VerifyConnectionEvidence(
         ProtectionAdminExecutionContext context,
@@ -1708,6 +1731,9 @@ internal sealed class ProtectionAdminMessageHandler
                 {
                     throw Failure("PURVIEW_DLP_READBACK_NOT_READY");
                 }
+                if (context.DlpProfile.EffectivePolicyMode != PurviewPolicyMode.Enforce)
+                    context.DlpProfile.Status = context.DlpProfile.EffectivePolicyMode == PurviewPolicyMode.Disabled
+                        ? PurviewDlpProfileStatus.Disabled : PurviewDlpProfileStatus.SimulationReady;
                 break;
             case ProtectionAdminOperationType.ValidateDlpRuntime:
                 if (!context.DlpProfile!.Readiness.IsReady ||
@@ -1808,6 +1834,7 @@ internal sealed class ProtectionAdminMessageHandler
         ProtectionAdminExecutionContext context) =>
         (operation.Type is ProtectionAdminOperationType.CreateOrUpdateDlpProfile or
             ProtectionAdminOperationType.ReconcileDlpProfile) &&
+        context.DlpProfile?.EffectivePolicyMode == PurviewPolicyMode.Enforce &&
         context.DlpProfile?.Readiness.IsReady != true
             ? RequiredActionValidateRuntime
             : null;

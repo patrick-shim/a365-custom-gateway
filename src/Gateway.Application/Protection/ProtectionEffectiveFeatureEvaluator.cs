@@ -17,6 +17,8 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
     private readonly IBootstrapPurviewRuntimeBinding? _purviewBinding;
     private readonly IPurviewTenantConnectionRepository? _connections;
     private readonly IPurviewSensitiveInformationTypeSnapshotRepository? _inventory;
+    private readonly IProtectionAdminOperationRepository? _operations;
+    private readonly IPurviewRuntimeCertificationVerifier? _runtimeCertification;
 
     public ProtectionEffectiveFeatureEvaluator(
         IProtectionCapabilityRepository capabilities,
@@ -25,7 +27,9 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
         IBootstrapPromptShieldRuntimeBinding? promptShieldBinding = null,
         IBootstrapPurviewRuntimeBinding? purviewBinding = null,
         IPurviewTenantConnectionRepository? connections = null,
-        IPurviewSensitiveInformationTypeSnapshotRepository? inventory = null)
+        IPurviewSensitiveInformationTypeSnapshotRepository? inventory = null,
+        IProtectionAdminOperationRepository? operations = null,
+        IPurviewRuntimeCertificationVerifier? runtimeCertification = null)
     {
         _capabilities = capabilities;
         _profiles = profiles;
@@ -34,6 +38,8 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
         _purviewBinding = purviewBinding;
         _connections = connections;
         _inventory = inventory;
+        _operations = operations;
+        _runtimeCertification = runtimeCertification;
     }
 
     public async Task<bool> HasPurviewCapabilityRecordAsync(
@@ -67,7 +73,7 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
         var now = UtcNow();
         foreach (var profile in await _profiles.ListAsync(cancellationToken))
         {
-            if (profile.IsExactlyReadyFor(profile.BlueprintApplicationId, now) &&
+            if (await HasCurrentCertificationAsync(profile, cancellationToken) &&
                 await IsCurrentInventoryAsync(profile, now, cancellationToken))
                 return true;
         }
@@ -97,9 +103,8 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
         if (profile is null ||
             profile.BlueprintApplicationId.Value !=
                 blueprintApplicationId ||
-            !profile.IsExactlyReadyFor(
-                new BlueprintApplicationId(blueprintApplicationId),
-                UtcNow()) ||
+            (!profile.HasVerifiedNonEnforcingConfiguration &&
+                !await HasCurrentCertificationAsync(profile, cancellationToken)) ||
             !await IsCurrentInventoryAsync(profile, UtcNow(), cancellationToken))
         {
             throw NotReady();
@@ -124,6 +129,8 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
     {
         if (!agent.FeatureConfiguration.PurviewEnabled)
             return;
+        if (await GetRuntimePolicyModeAsync(agent, cancellationToken) != PurviewPolicyMode.Enforce)
+            return;
 
         var capability = await _capabilities.GetByKindAsync(
             ProtectionCapabilityKind.Purview,
@@ -141,13 +148,26 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
             new BlueprintApplicationId(blueprintApplicationId),
             cancellationToken);
         if (profile is null ||
-            !profile.IsExactlyReadyFor(
-                new BlueprintApplicationId(blueprintApplicationId),
-                UtcNow()) ||
+            !await HasCurrentCertificationAsync(profile, cancellationToken) ||
             !await IsCurrentInventoryAsync(profile, UtcNow(), cancellationToken))
         {
             throw NotReady();
         }
+    }
+
+    public async Task<PurviewPolicyMode> GetRuntimePolicyModeAsync(AgentRegistration agent, CancellationToken ct)
+    {
+        if (!agent.FeatureConfiguration.PurviewEnabled)
+            return PurviewPolicyMode.Disabled;
+        if (Guid.TryParse(agent.BlueprintId, out var blueprintId) && blueprintId != Guid.Empty)
+        {
+            var profile = await _profiles.GetByBlueprintApplicationIdAsync(new BlueprintApplicationId(blueprintId), ct);
+            if (profile is not null)
+                return profile.EffectivePolicyMode;
+        }
+        // Missing/pending bindings retain requested enforcement rather than silently turning it off.
+        return agent.RequestedPurviewPolicyMode ??
+            PurviewPolicyModeCompatibility.FromLegacy(agent.FeatureConfiguration.PurviewMode ?? PurviewMode.Enforce);
     }
 
     public async Task<AgentFeaturesDto> ToDtoAsync(
@@ -177,16 +197,18 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
         var capabilityReady = IsPurviewCapabilityReady(purviewCapability);
         var inventoryReady = profile is not null &&
             await IsCurrentInventoryAsync(profile, UtcNow(), cancellationToken);
+        var certificationReady = profile is not null && capabilityReady && inventoryReady &&
+            await HasCurrentCertificationAsync(profile, cancellationToken);
         var purviewReady =
             agent.FeatureConfiguration.PurviewEnabled &&
             capabilityReady && inventoryReady &&
             profile is not null &&
-            profile.IsExactlyReadyFor(
-                profile.BlueprintApplicationId,
-                UtcNow());
+            certificationReady;
         var promptReady =
             agent.FeatureConfiguration.PromptShieldEnabled &&
             IsPromptShieldReady(promptCapability);
+        var operation = agent.PurviewConfigurationOperationId is { } operationId && _operations is not null
+            ? await _operations.GetByIdAsync(operationId, cancellationToken) : null;
         return new AgentFeaturesDto(
             agent.FeatureConfiguration.ObservabilityMode.ToString(),
             agent.FeatureConfiguration.PurviewEnabled,
@@ -206,10 +228,14 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
             PurviewEffectivelyEnabled: purviewReady,
             PurviewReadiness: profile is null
                 ? null
-                : ToReadinessDto(profile, purviewCapability, capabilityReady, inventoryReady),
+                : ToReadinessDto(profile, purviewCapability, capabilityReady, inventoryReady, certificationReady),
             PromptShieldEffectivelyEnabled: promptReady,
             PromptShieldCapabilityStatus:
-                promptCapability?.Status.ToString());
+                promptCapability?.Status.ToString(),
+            PurviewPolicyMode: profile?.EffectivePolicyMode.ToString() ?? operation?.DeferredConfiguration?.PolicyMode.ToString() ??
+                agent.RequestedPurviewPolicyMode?.ToString(),
+            PurviewConfigurationOperationId: agent.PurviewConfigurationOperationId,
+            PurviewConfigurationStatus: operation?.Status.ToString());
     }
 
     private static bool IsInstalled(ProtectionCapability? capability) =>
@@ -245,27 +271,30 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
         return inventory is not null && inventory.Id == profile.InventoryGenerationId &&
             inventory.PurviewTenantConnectionId == connection.Id && inventory.TenantId == connection.TenantId &&
             !inventory.IsExpired(now) && inventory.ExpiresAtUtc == profile.SensitiveInformationTypeSnapshotExpiresAtUtc &&
-            inventory.Items.Count(item => item.GenerationId == inventory.Id &&
-                item.SensitiveInformationTypeId == profile.SensitiveInformationTypeId &&
-                string.Equals(item.ExactName, profile.SensitiveInformationTypeName, StringComparison.Ordinal)) == 1;
+            profile.NormalizedSensitiveInformationTypes.All(selected =>
+                inventory.Items.Count(item => item.GenerationId == inventory.Id &&
+                    item.SensitiveInformationTypeId.Value == selected.Id &&
+                    string.Equals(item.ExactName, selected.ExactName, StringComparison.Ordinal)) == 1);
     }
 
     public async Task<PurviewDlpProfileDto> ToProfileDtoAsync(
         PurviewDlpProfile profile, CancellationToken cancellationToken)
     {
         var capability = await _capabilities.GetByKindAsync(ProtectionCapabilityKind.Purview, cancellationToken);
-        var dto = ProtectionAdministrationMapper.ToDto(profile, UtcNow());
+        var certificationReady = await HasCurrentCertificationAsync(profile, cancellationToken);
+        var dto = ProtectionAdministrationMapper.ToDto(profile, UtcNow(), certificationReady);
         return dto with
         {
             Readiness = ToReadinessDto(profile, capability, IsPurviewCapabilityReady(capability),
-                await IsCurrentInventoryAsync(profile, UtcNow(), cancellationToken))
+                await IsCurrentInventoryAsync(profile, UtcNow(), cancellationToken), certificationReady)
         };
     }
 
     private ProtectionReadinessDto ToReadinessDto(
-        PurviewDlpProfile profile, ProtectionCapability? capability, bool capabilityReady, bool inventoryReady)
+        PurviewDlpProfile profile, ProtectionCapability? capability, bool capabilityReady, bool inventoryReady,
+        bool certificationReady)
     {
-        var readiness = ProtectionAdministrationMapper.ToDto(profile, UtcNow()).Readiness;
+        var readiness = ProtectionAdministrationMapper.ToDto(profile, UtcNow(), certificationReady).Readiness;
         return readiness with
         {
             Capability = capabilityReady ? readiness.Capability : ProtectionCapabilityStatus.Unavailable.ToString(),
@@ -279,6 +308,11 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
     }
 
     private DateTime UtcNow() => _timeProvider.GetUtcNow().UtcDateTime;
+
+    private async Task<bool> HasCurrentCertificationAsync(PurviewDlpProfile profile, CancellationToken cancellationToken) =>
+        profile.HasRuntimeEvidenceFor(profile.BlueprintApplicationId, UtcNow()) &&
+        _runtimeCertification is not null &&
+        await _runtimeCertification.IsCurrentAsync(profile, cancellationToken);
 
     private static DomainException NotReady() =>
         new(

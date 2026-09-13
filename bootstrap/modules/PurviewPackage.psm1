@@ -139,6 +139,14 @@ function Read-PurviewExecutorPackage {
                 'PowerShellModules/ExchangeOnlineManagement/3.10.1/ExchangeOnlineManagement.psd1')) {
                 if (-not $names.Contains($required)) { throw 'Executor package is missing a required runtime file.' }
             }
+            # Keep historical receipts readable, but never accept a partial console-free host.
+            $childFiles = @('Gateway.Purview.PowerShellHost.exe', 'Gateway.Purview.PowerShellHost.dll',
+                'Gateway.Purview.PowerShellHost.deps.json', 'Gateway.Purview.PowerShellHost.runtimeconfig.json')
+            if (@($childFiles | Where-Object { $names.Contains($_) }).Count -gt 0) {
+                foreach ($required in ($childFiles + @('PowerShell/System.Management.Automation.dll', 'ref/System.Runtime.dll'))) {
+                    if (-not $names.Contains($required)) { throw 'Executor package is missing a required console-free runtime file.' }
+                }
+            }
         }
         finally { $zip.Dispose() }
     }

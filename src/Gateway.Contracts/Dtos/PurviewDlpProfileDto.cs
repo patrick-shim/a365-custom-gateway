@@ -23,4 +23,8 @@ public sealed record PurviewDlpProfileDto(
     string? DlpPolicyProviderId,
     string? DlpRuleProviderId,
     DateTime? LastReadbackAtUtc,
-    string RowVersion);
+    string RowVersion,
+    string? PolicyMode = null,
+    IReadOnlyList<PurviewSensitiveInformationTypeSelectionDto>? SensitiveInformationTypes = null,
+    string? RuntimeBehaviorSuiteHash = null,
+    DateTime? RuntimeBehaviorVerifiedUntilUtc = null);

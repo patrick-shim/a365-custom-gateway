@@ -98,11 +98,22 @@ internal sealed class BootstrapConfigLoader(RepositoryLayout repository) : IBoot
                 return Rejected("The existing configuration failed safe public-field validation.");
             }
 
-            var migrationNotice = configuration.Purview.HasLegacyPolicyConfiguration
+            string? migrationNotice = configuration.Purview.HasLegacyPolicyConfiguration
                 ? "This configuration contains legacy Purview policy or sensitive-information-type fields. " +
                   "Bootstrap will preserve the file for recovery but treats those values only as migration information. " +
                   "After deployment, review Purview authority, sensitive information types, policies, and readiness in Gateway Settings."
                 : null;
+            if (!configuration.PromptShield.Enabled)
+            {
+                migrationNotice = string.Join(" ", new[]
+                {
+                    migrationNotice,
+                    "This legacy deployment did not provision shared Prompt Shields. " +
+                    "Setup preserves its configuration and source-bound state without enabling or rewriting it. " +
+                    "Use the canonical terminal Plan/Resume/Verify recovery path for this deployment. " +
+                    "New gateways include shared Prompt Shields; agent-level On/Off is selected at registration or edit."
+                }.Where(notice => notice is not null));
+            }
             return new ExistingConfigurationResult(
                 ExistingConfigurationStatus.Loaded,
                 form,

@@ -1,3 +1,4 @@
+using System.Data;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Models;
@@ -51,15 +52,28 @@ public class GatewayDbContext : DbContext
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         ApplyPersistenceInvariants();
-        return base.SaveChanges(acceptAllChangesOnSuccess);
+        var guard = new AgentProtectionWriteGuard(this);
+        using var transaction = guard.RequiresSqlTransaction && Database.CurrentTransaction is null
+            ? Database.BeginTransaction(IsolationLevel.ReadCommitted) : null;
+        guard.Prepare();
+        var result = base.SaveChanges(acceptAllChangesOnSuccess);
+        transaction?.Commit();
+        return result;
     }
 
-    public override Task<int> SaveChangesAsync(
+    public override async Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess,
         CancellationToken cancellationToken = default)
     {
         ApplyPersistenceInvariants();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        var guard = new AgentProtectionWriteGuard(this);
+        await using var transaction = guard.RequiresSqlTransaction && Database.CurrentTransaction is null
+            ? await Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken) : null;
+        await guard.PrepareAsync(cancellationToken);
+        var result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        if (transaction is not null)
+            await transaction.CommitAsync(cancellationToken);
+        return result;
     }
 
     private void ApplyPersistenceInvariants()

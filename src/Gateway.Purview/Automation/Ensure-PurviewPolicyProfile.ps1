@@ -387,8 +387,10 @@ function Assert-TenantApplicationLocations {
             [string](Get-ExactProperty -InputObject $inclusions[0] -Names @('Identity')) -cne 'All') {
             throw "Purview resource '$ResourceName' does not have the exact tenant-wide Application inclusion."
         }
+        Assert-ProviderTenantInclusion -Inclusion $inclusions[0]
         Assert-NoUnknownMeaningfulProperties -Resource $inclusions[0] `
-            -AllowedNames @('Type', 'Identity') -Label "$ResourceName location inclusion"
+            -AllowedNames @('Type', 'Identity', 'DisplayName', 'Name', 'ScopingGroup', 'LocationType', 'LocationSource') `
+            -Label "$ResourceName location inclusion"
         Assert-NoNamedValues -Resource $location -Names @(
             'Exclusions', 'ExcludedLocations', 'Exceptions', 'Bypass', 'BypassRules'
         ) -Label "$ResourceName location"
@@ -501,7 +503,10 @@ function Assert-NoExtraRuleBehavior {
         'WhenChangedUTC', 'ExchangeVersion', 'ObjectState', 'OrganizationId',
         'DistinguishedName', 'IsValid', 'ObjectCategory', 'ObjectClass', 'Status',
         'Workload', 'Version', 'RunspaceId', 'PSComputerName', 'PSShowComputerName',
-        'PSSourceJobInstanceId', 'SerializationData'
+        'PSSourceJobInstanceId', 'SerializationData',
+        'Id', 'ObjectVersion', 'DirectoryObjectVersion', 'ExchangeObjectId', 'OrganizationalUnitRoot',
+        'CreationTimeUtc', 'ModificationTimeUtc', 'ExpectedLocations', 'CompletedLocations',
+        'FailedLocations', 'DistributionStatus', 'DistributionSyncStatus', 'DistributionResults'
     )
     Assert-NoUnknownMeaningfulProperties -Resource $Rule -AllowedNames @(
         $metadataProperties
@@ -564,7 +569,10 @@ function Assert-ExactReadback {
         'ObjectState', 'OrganizationId', 'DistinguishedName', 'IsValid',
         'ObjectCategory', 'ObjectClass', 'Status', 'Workload', 'Version',
         'RunspaceId', 'PSComputerName', 'PSShowComputerName',
-        'PSSourceJobInstanceId', 'SerializationData'
+        'PSSourceJobInstanceId', 'SerializationData',
+        'Id', 'ObjectVersion', 'DirectoryObjectVersion', 'ExchangeObjectId', 'OrganizationalUnitRoot',
+        'CreationTimeUtc', 'ModificationTimeUtc', 'ExpectedLocations', 'CompletedLocations',
+        'FailedLocations', 'DistributionStatus', 'DistributionSyncStatus', 'DistributionResults'
     )
     Assert-NoUnknownMeaningfulProperties -Resource $Collection -AllowedNames @(
         $providerMetadataProperties
@@ -621,11 +629,19 @@ function Assert-ExactReadback {
             throw "Purview DLP policy contains unreviewed exclusion or bypass '$($property.Name)'."
         }
     }
+    Assert-ProviderDlpMetadata -Policy $Policy -ExpectedIds $policyApplicationIds `
+        -ExpectedType Individual -ExpectedProviderMode $ExpectedDlpMode
     Assert-NoUnknownMeaningfulProperties -Resource $Policy -AllowedNames @(
         $providerMetadataProperties
         'Mode'
         'Locations'
         'EnforcementPlanes'
+        'Type'
+        'PolicyCategory'
+        'PolicyConstraints'
+        'PolicyRulesMetaData'
+        'Enabled'
+        'LocationInclusions'
         'Exclusions'
         'ExcludedLocations'
         'Exceptions'
@@ -790,7 +806,7 @@ function Invoke-ExactPurviewProfile {
                 -Label ([string]$InputObject.dlpPolicyName))
             $policyLocationsJson = Merge-DlpApplicationLocation -Locations $policyLocations `
                 -ApplicationId $applicationIdText -DisplayName $displayName |
-                ConvertTo-Json -Depth 10 -Compress
+                ConvertTo-Json -Depth 10 -Compress -AsArray
             Set-DlpCompliancePolicy -Identity $policy.Identity `
                 -Locations $policyLocationsJson -Mode $ExpectedDlpMode `
                 -EnforcementPlanes @('Application') -Confirm:$false | Out-Null
@@ -807,10 +823,10 @@ function Invoke-ExactPurviewProfile {
             throw 'Persisted Purview authority refers to provider resources that are absent.'
         }
         $collectionLocationsJson = @((New-CollectionLocation)) |
-            ConvertTo-Json -Depth 10 -Compress
+            ConvertTo-Json -Depth 10 -Compress -AsArray
         $dlpLocationsJson = @((New-DlpApplicationLocation -ApplicationId $applicationIdText `
             -DisplayName ([string]$InputObject.blueprintDisplayName))) |
-            ConvertTo-Json -Depth 10 -Compress
+            ConvertTo-Json -Depth 10 -Compress -AsArray
         New-FeatureConfiguration -FeatureScenario KnowYourData `
             -Name ([string]$InputObject.collectionPolicyName) -Mode Enable `
             -ScenarioConfig $scenarioConfig -Locations $collectionLocationsJson -Confirm:$false | Out-Null
@@ -835,6 +851,17 @@ function Invoke-ExactPurviewProfile {
         -ExpectedDlpApplicationIds $expectedDlpApplicationIds
 }
 
+$metadataTokens=$null; $metadataErrors=$null
+$metadataAst=[Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $PSScriptRoot 'Invoke-PurviewSettingsOperation.ps1'),[ref]$metadataTokens,[ref]$metadataErrors)
+if ($metadataErrors.Count) { throw 'The attested provider metadata helper source is invalid.' }
+foreach ($helperName in @('Get-ProviderReadbackMember','Assert-ProviderTenantInclusion','Assert-ProviderDlpMetadata')) {
+    $helpers=@($metadataAst.FindAll({param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst]
+    },$false) | Where-Object Name -CEQ $helperName)
+    if ($helpers.Count -ne 1) { throw 'The attested provider metadata helper is missing or ambiguous.' }
+    . ([scriptblock]::Create($helpers[0].Extent.Text))
+}
 $passwordText = [Console]::In.ReadLine()
 if ([string]::IsNullOrWhiteSpace($passwordText)) { throw 'Certificate password was not supplied.' }
 $securePassword = ConvertTo-SecureString $passwordText -AsPlainText -Force
@@ -856,14 +883,16 @@ try {
     }
 
     Import-Module ExchangeOnlineManagement -MinimumVersion 3.10.1 -ErrorAction Stop
-    Connect-IPPSSession -AppId $AutomationApplicationId -Certificate $certificate `
-        -Organization $Organization -ShowBanner:$false
-
-    foreach ($command in @(
+    $requiredProviderCommands = @(
         'Get-FeatureConfiguration', 'New-FeatureConfiguration',
         'Get-DlpCompliancePolicy', 'New-DlpCompliancePolicy', 'Set-DlpCompliancePolicy',
-        'Get-DlpComplianceRule', 'New-DlpComplianceRule',
-        'Get-DlpSensitiveInformationType')) {
+        'Get-DlpComplianceRule', 'New-DlpComplianceRule', 'Get-DlpSensitiveInformationType')
+    $providerWorkspace = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($InputPath))
+    Connect-IPPSSession -AppId $AutomationApplicationId -Certificate $certificate `
+        -Organization $Organization -EXOModuleBasePath $providerWorkspace `
+        -LogDirectoryPath $providerWorkspace -CommandName $requiredProviderCommands -ShowBanner:$false
+
+    foreach ($command in $requiredProviderCommands) {
         try { Get-Command $command -ErrorAction Stop | Out-Null }
         catch { throw "Required Security & Compliance cmdlet '$command' is unavailable." }
     }

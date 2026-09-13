@@ -40,6 +40,7 @@ internal sealed class DeleteAgentHandler : IRequestHandler<DeleteAgentCommand, D
             throw new InvalidStateTransitionException(agent.Status.ToString(), "Delete");
 
         agent.Status = AgentStatus.Deleting;
+        agent.ProtectionRevision = Guid.NewGuid();
         agent.UpdatedAtUtc = DateTime.UtcNow;
         agent.UpdatedByObjectId = request.CallerObjectId;
 

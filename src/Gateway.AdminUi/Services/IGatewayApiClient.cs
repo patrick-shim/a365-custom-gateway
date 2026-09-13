@@ -125,24 +125,15 @@ public interface IGatewayApiClient
             string expectedRowVersion,
             CancellationToken cancellationToken = default);
 
-    Task<GatewayApiResource<ProtectionOperationAcceptedResponse>>
-        ValidatePurviewDlpProfileRuntimeAsync(
-            Guid profileId,
-            ProtectionOperationConfirmationTicket confirmation,
-            Guid idempotencyKey,
-            string expectedRowVersion,
-            CancellationToken cancellationToken = default);
-
-    Task<GatewayApiResource<ProtectionOperationReviewTicket>>
-        ReviewValidatePurviewDlpRuntimeAsync(
-            Guid profileId,
-            string expectedRowVersion,
-            CancellationToken cancellationToken = default);
-
     Task<GatewayApiResource<ProtectionAdminOperationResponse>>
         GetProtectionAdminOperationAsync(
             Guid operationId,
             CancellationToken cancellationToken = default);
+
+    Task<PurviewRuntimeReviewTicket> ReviewPurviewRuntimeTestAsync(
+        ReviewPurviewDlpRuntimeTestRequest request, CancellationToken cancellationToken = default);
+    Task<PurviewRuntimeTestResultResponse> GetPurviewRuntimeTestAsync(
+        Guid operationId, CancellationToken cancellationToken = default);
 
     Task<RegisterAgentResponse> RegisterAgentAsync(
         RegisterAgentRequest request,

@@ -17,6 +17,7 @@ var options = ParseArguments(args);
 var server = Required(options, "server");
 var database = Required(options, "database");
 var phase = Required(options, "phase").ToLowerInvariant();
+var isUpgrade = phase is "upgrade" or "upgrade-verify" or "upgrade-observe";
 var repositoryRoot = ResolveRepositoryRoot(ReadOption(options, "repository-root"));
 var principalName = ReadOption(options, "principal-name");
 var principalClientIdValue = ReadOption(options, "principal-client-id");
@@ -65,10 +66,31 @@ if (string.IsNullOrWhiteSpace(database) ||
     throw new ArgumentException("--database must identify a non-system database.");
 }
 
-if (phase is not ("initialize" or "bootstrap" or "baseline" or "prepare" or "finalize" or "verify" or "principal"))
+if (phase == "upgrade-schema-plan")
+{
+    var modelFingerprint = GetUpgradeTargetModelFingerprint();
+    Console.WriteLine("A365GW_UPGRADE_SCHEMA:" + modelFingerprint);
+    return;
+}
+
+if (phase == "capability-preparation-plan")
+{
+    var receiptJson = CapabilityPreparationBuilder.Build(Required(options, "capability-preparation-input-json"));
+    Console.WriteLine("A365GW_CAPABILITY_PREPARATION:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(receiptJson)));
+    return;
+}
+
+if (phase == "capability-graph-role-id")
+{
+    Console.WriteLine("A365GW_GRAPH_APPLICATION_ROLE:" +
+        CapabilityPreparationBuilder.GetGraphApplicationRoleId(Required(options, "graph-role-name")));
+    return;
+}
+
+if (phase is not ("initialize" or "bootstrap" or "baseline" or "prepare" or "finalize" or "verify" or "principal" or "upgrade" or "upgrade-verify" or "upgrade-observe"))
 {
     throw new ArgumentException(
-        "--phase must be initialize, bootstrap, baseline, prepare, finalize, verify, or principal.");
+        "--phase must be initialize, bootstrap, baseline, prepare, finalize, verify, principal, upgrade, upgrade-verify, or upgrade-observe.");
 }
 
 if (pristineDiagnosticOnly &&
@@ -95,21 +117,21 @@ if (requiredRecoveryModeWasProvided)
 }
 
 Guid? executionIntentId = null;
-if (phase == "bootstrap")
+if (phase == "bootstrap" || isUpgrade)
 {
     if (!Guid.TryParseExact(executionIntentIdValue, "D", out var parsedExecutionIntentId) ||
         parsedExecutionIntentId == Guid.Empty ||
         executionIntentIdValue != parsedExecutionIntentId.ToString("D"))
     {
         throw new ArgumentException(
-            "--execution-intent-id must be the canonical lowercase non-empty GUID for this bootstrap execution.");
+            "--execution-intent-id must be the canonical lowercase non-empty GUID for this bootstrap execution or maintenance upgrade.");
     }
     executionIntentId = parsedExecutionIntentId;
 }
 else if (options.ContainsKey("execution-intent-id") ||
          !string.IsNullOrWhiteSpace(executionIntentIdValue))
 {
-    throw new ArgumentException("--execution-intent-id is allowed only for the bootstrap phase.");
+    throw new ArgumentException("--execution-intent-id is allowed only for the bootstrap phase or maintenance upgrade.");
 }
 
 Guid? deploymentOwnershipId = null;
@@ -131,7 +153,7 @@ if (!string.IsNullOrWhiteSpace(deploymentOwnershipIdValue) ||
     }
     deploymentOwnershipId = parsedDeploymentOwnershipId;
 }
-if (phase is "initialize" or "bootstrap" &&
+if ((phase is "initialize" or "bootstrap" || isUpgrade) &&
     (deploymentOwnershipId is null || string.IsNullOrWhiteSpace(acceptedSourceFingerprint)))
 {
     throw new ArgumentException(
@@ -175,7 +197,7 @@ if (deploymentOwnershipId is not null && expectedRuntimePrincipals.Count != 2)
         "Bootstrap-bound database work requires both exact expected Gateway runtime principals.");
 }
 
-if (phase == "bootstrap" &&
+if ((phase == "bootstrap" || isUpgrade) &&
     (!string.IsNullOrWhiteSpace(principalName) || !string.IsNullOrWhiteSpace(principalClientIdValue)))
 {
     throw new ArgumentException(
@@ -210,14 +232,18 @@ if (repeat is < 1 or > 2)
     throw new ArgumentException("--repeat must be 1 or 2.");
 if (phase == "bootstrap" && repeat != 1)
     throw new ArgumentException("The bootstrap phase requires --repeat 1.");
+if (isUpgrade && repeat != 1)
+    throw new ArgumentException("A maintenance upgrade requires --repeat 1.");
 var stayAliveRequested = bool.TryParse(
     ReadOption(options, "stay-alive") ?? "false",
     out var stayAlive) && stayAlive;
 if (phase == "bootstrap" && stayAliveRequested)
     throw new ArgumentException("The one-shot bootstrap phase does not allow --stay-alive true.");
+if (isUpgrade && stayAliveRequested)
+    throw new ArgumentException("A maintenance upgrade never permits --stay-alive true.");
 
 System.Net.IPAddress? expectedPrivateEndpointIp = null;
-if (phase == "bootstrap")
+if (phase == "bootstrap" || isUpgrade)
 {
     expectedPrivateEndpointIp =
         SqlPrivateEndpointDnsConvergence.ParseCanonicalPrivateIpv4(expectedPrivateEndpointIpValue);
@@ -226,7 +252,45 @@ else if (options.ContainsKey("expected-private-endpoint-ip") ||
          !string.IsNullOrWhiteSpace(expectedPrivateEndpointIpValue))
 {
     throw new ArgumentException(
-        "--expected-private-endpoint-ip is allowed only for the bootstrap phase.");
+        "--expected-private-endpoint-ip is allowed only for the bootstrap phase or maintenance upgrade.");
+}
+
+DatabaseUpgradeManifest? upgradeManifest = null;
+IReadOnlyDictionary<string, string>? upgradeScripts = null;
+DatabaseUpgradeRollbackObservation? rollbackObservation = null;
+if (isUpgrade)
+{
+    var allowedArguments = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "server", "database", "phase", "repository-root", "deployment-ownership-id", "accepted-source-fingerprint",
+        "expected-api-principal-name", "expected-api-principal-client-id", "expected-worker-principal-name",
+        "expected-worker-principal-client-id", "expected-private-endpoint-ip", "execution-intent-id",
+        "repeat", "stay-alive", "upgrade-manifest-json", "upgrade-manifest-fingerprint", "upgrade-plan-fingerprint"
+    };
+    if (phase == "upgrade-observe")
+    {
+        allowedArguments.Add("rollback-observation-json");
+        allowedArguments.Add("rollback-observation-fingerprint");
+    }
+    if (options.Keys.Any(key => !allowedArguments.Contains(key)))
+        throw new ArgumentException("An unsupported maintenance upgrade argument was supplied.");
+    upgradeManifest = DatabaseUpgradeExecution.ParseManifest(
+        Required(options, "upgrade-manifest-json"),
+        Required(options, "upgrade-manifest-fingerprint"),
+        GetPrepareScriptNames());
+    if (upgradeManifest.Server != server || upgradeManifest.Database != database ||
+        upgradeManifest.DeploymentOwnershipId != deploymentOwnershipIdValue ||
+        upgradeManifest.OriginalAcceptedSourceFingerprint != acceptedSourceFingerprint ||
+        upgradeManifest.ExecutionIntentId != executionIntentId!.Value.ToString("D") ||
+        upgradeManifest.PlanFingerprint != Required(options, "upgrade-plan-fingerprint"))
+        throw new ArgumentException("The upgrade manifest differs from the exact invocation target, original context or approved plan.");
+    if (upgradeManifest.TargetModelFingerprint is { } targetModelFingerprint &&
+        targetModelFingerprint != GetUpgradeTargetModelFingerprint())
+        throw new ArgumentException("The approved target EF-model fingerprint differs from this exact migrator image.");
+    upgradeScripts = DatabaseUpgradeExecution.LoadScripts(upgradeManifest, Path.Combine(repositoryRoot, "infrastructure", "sql"));
+    if (phase == "upgrade-observe")
+        rollbackObservation = DatabaseUpgradeRollbackObservation.Parse(
+            Required(options, "rollback-observation-json"), Required(options, "rollback-observation-fingerprint"), upgradeManifest);
 }
 
 var scripts = phase switch
@@ -249,6 +313,19 @@ var scriptEvidence = scripts.Select(name =>
         Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
         File.ReadAllText(path));
 }).ToArray();
+
+if (isUpgrade)
+{
+    var receipt = await DatabaseUpgradeExecution.RunPrivateAsync(
+        upgradeManifest!, upgradeScripts!, expectedPrivateEndpointIp!, phase != "upgrade",
+        upgradeConnection => AssertDatabaseInitializationMarkerBindingAsync(upgradeConnection, server, database,
+            deploymentOwnershipId!.Value, acceptedSourceFingerprint!),
+        upgradeConnection => AssertCurrentEfModelSchemaAsync(upgradeConnection, expectedRuntimePrincipals, requireAllExpectedPrincipals: true),
+        rollbackObservation);
+    var receiptJson = DatabaseUpgradeAttestation.Serialize(receipt);
+    Console.WriteLine($"A365GW_UPGRADE_EVIDENCE|{upgradeManifest!.ExecutionIntentId}|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(receiptJson)));
+    return;
+}
 
 var managedIdentityEndpoint = Environment.GetEnvironmentVariable("IDENTITY_ENDPOINT");
 if (phase == "bootstrap" && string.IsNullOrWhiteSpace(managedIdentityEndpoint))
@@ -574,11 +651,9 @@ static async Task<IReadOnlyList<MigrationEvidence>> BootstrapDatabaseAsync(
             deploymentOwnershipId,
             acceptedSourceFingerprint);
         await ApplyMigrationScriptsAsync(connection, prepareScripts, repeat: 1);
-        await AssertExpectedDatabaseAuthorityAsync(
+        await AssertCurrentEfModelSchemaAsync(
             connection,
             expectedRuntimePrincipals,
-            recoverableIncompletePrincipalName: null,
-            allowAllRecoverablePrincipalPrefixes: false,
             requireAllExpectedPrincipals: true);
 
         var currentSchemaFingerprint =
@@ -2162,7 +2237,7 @@ static ExactDatabaseSchemaSnapshot GetExpectedSchemaContract(
         foreach (var checkConstraint in table.CheckConstraints)
         {
             checkConstraints.Add(
-                $"{tableKey}|{checkConstraint.Name}|{NormalizeSqlExpression(checkConstraint.Sql)}|disabled:0|untrusted:0");
+                $"{tableKey}|{checkConstraint.Name}|{SqlCheckConstraintCanonicalizer.Normalize(checkConstraint.Sql)}|disabled:0|untrusted:0");
         }
 
         foreach (var index in table.Indexes)
@@ -2197,6 +2272,13 @@ static ExactDatabaseSchemaSnapshot GetExpectedSchemaContract(
 }
 
 static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync(SqlConnection connection)
+{
+    var relationalSchema = await ReadRelationalSchemaContractAsync(connection);
+    var unexpectedSurfaceCount = await ReadUnexpectedSchemaSurfaceCountAsync(connection);
+    return relationalSchema with { UnexpectedSurfaceCount = unexpectedSurfaceCount };
+}
+
+static async Task<ExactDatabaseSchemaSnapshot> ReadRelationalSchemaContractAsync(SqlConnection connection)
 {
     var tables = new List<string>();
     await using (var command = connection.CreateCommand())
@@ -2475,7 +2557,7 @@ static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync(SqlC
         {
             checkConstraints.Add(
                 $"{reader.GetString(0)}.{reader.GetString(1)}|{reader.GetString(2)}|" +
-                $"{NormalizeSqlExpression(reader.GetString(3))}|disabled:{(reader.GetBoolean(4) ? 1 : 0)}|" +
+                $"{SqlCheckConstraintCanonicalizer.Normalize(reader.GetString(3))}|disabled:{(reader.GetBoolean(4) ? 1 : 0)}|" +
                 $"untrusted:{(reader.GetBoolean(5) ? 1 : 0)}");
         }
     }
@@ -2568,6 +2650,20 @@ static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync(SqlC
         $"{string.Join(',', entry.Value.Keys.Select(value => $"K:{value}").Concat(entry.Value.Includes.Order(StringComparer.Ordinal).Select(name => $"I:{name}")))}")
         .ToArray();
 
+    // An unassessed platform surface must never pass the full Azure schema assertion.
+    return new ExactDatabaseSchemaSnapshot(
+        tables.Distinct(StringComparer.Ordinal).ToArray(),
+        columns.ToArray(),
+        primaryKeys,
+        uniqueConstraints,
+        foreignKeys,
+        checkConstraints,
+        indexes,
+        UnexpectedSurfaceCount: -1);
+}
+
+static async Task<int> ReadUnexpectedSchemaSurfaceCountAsync(SqlConnection connection)
+{
     var catalogSurface = await ReadUnexpectedDatabaseSurfaceTelemetryAsync(connection);
     int supplementalUnexpectedSurfaceCount;
     await using (var command = connection.CreateCommand())
@@ -2636,18 +2732,7 @@ static async Task<ExactDatabaseSchemaSnapshot> GetActualSchemaContractAsync(SqlC
             """;
         supplementalUnexpectedSurfaceCount = Convert.ToInt32(await command.ExecuteScalarAsync());
     }
-    var unexpectedSurfaceCount = checked(
-        catalogSurface.TotalCount + supplementalUnexpectedSurfaceCount);
-
-    return new ExactDatabaseSchemaSnapshot(
-        tables.Distinct(StringComparer.Ordinal).ToArray(),
-        columns.ToArray(),
-        primaryKeys,
-        uniqueConstraints,
-        foreignKeys,
-        checkConstraints,
-        indexes,
-        unexpectedSurfaceCount);
+    return checked(catalogSurface.TotalCount + supplementalUnexpectedSurfaceCount);
 }
 
 static IReadOnlyCollection<string> GetExpectedIncludedIndexColumns(ITableIndex index)
@@ -3239,8 +3324,22 @@ static string[] GetPrepareScriptNames() =>
     "20260829_prompt_protection.sql",
     "20260903_prompt_evaluation_agent_identity.sql",
     "20260905_active_agent_identity_uniqueness.sql",
-    "20260905_protection_governance_v1.sql"
+    "20260905_protection_governance_v1.sql",
+    "20260910_capability_preparation_receipts.sql",
+    "20260910_purview_configuration_intent.sql",
+    "20260910_purview_runtime_tests.sql",
+    "20260911_prompt_receipt_protection_context.sql"
 ];
+
+static string GetUpgradeTargetModelFingerprint()
+{
+    var options = new DbContextOptionsBuilder<GatewayDbContext>()
+        .UseSqlServer("Server=sql-model-only.database.windows.net;Database=GatewayDb;Encrypt=True;")
+        .Options;
+    using var context = new GatewayDbContext(options);
+    var schema = GetExpectedSchemaContract(context, "SQL_Latin1_General_CP1_CI_AS");
+    return DatabaseUpgradeAttestation.Fingerprint(JsonSerializer.Serialize(schema));
+}
 
 static string Required(IReadOnlyDictionary<string, string> options, string key) =>
     ReadOption(options, key) is { Length: > 0 } value

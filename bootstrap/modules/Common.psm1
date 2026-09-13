@@ -866,6 +866,32 @@ function Test-BootstrapExactAcrManifestRead {
         $values['--subscription'] -ceq $script:BootstrapAzureSubscriptionId
 }
 
+function Test-BootstrapExactPublisherExecutionRead {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Arguments)
+    if ([string]::IsNullOrWhiteSpace($script:BootstrapAzureSubscriptionId) -or
+        [string]::IsNullOrWhiteSpace($script:BootstrapAzureTenantId) -or $Arguments.Count -ne 15 -or
+        ($Arguments[0..2] -join ' ') -cne 'containerapp job execution' -or
+        $Arguments[3] -cnotin @('list', 'show')) { return $false }
+    $selector = if ($Arguments[3] -ceq 'list') { '--query' } else { '--job-execution-name' }
+    $values = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    for ($i = 4; $i -lt $Arguments.Count; $i++) {
+        $flag = $Arguments[$i]
+        if ($flag -ceq '--only-show-errors') {
+            if (-not $values.TryAdd($flag, '')) { return $false }
+            continue
+        }
+        if ($flag -cnotin @('--subscription', '--resource-group', '--name', '--output', $selector) -or
+            ++$i -ge $Arguments.Count -or -not $values.TryAdd($flag, $Arguments[$i])) { return $false }
+    }
+    if ($values.Count -ne 6 -or $values['--subscription'] -cne $script:BootstrapAzureSubscriptionId -or
+        $values['--resource-group'] -cnotmatch '^[A-Za-z0-9_().-]{1,90}\z' -or
+        $values['--resource-group'].EndsWith('.') -or
+        $values['--name'] -cnotmatch '^[a-z][a-z0-9-]{0,30}[a-z0-9]\z' -or
+        $values['--output'] -cne 'json') { return $false }
+    if ($selector -ceq '--query') { return $values[$selector] -ceq '[].{name:name}' }
+    return $values[$selector] -cmatch '^[a-z0-9-]{1,80}\z'
+}
+
 function Invoke-BootstrapCommand {
     [CmdletBinding()]
     param(
@@ -889,7 +915,8 @@ function Invoke-BootstrapCommand {
         $guardedArguments = @(Get-BootstrapAzureCliArguments -Arguments $guardedArguments)
     }
     $exactRead = $FilePath -ceq 'az' -and -not $AllowFailure -and -not $NoCapture -and
-        (Test-BootstrapExactAcrManifestRead -Arguments $guardedArguments)
+        ((Test-BootstrapExactAcrManifestRead -Arguments $guardedArguments) -or
+         (Test-BootstrapExactPublisherExecutionRead -Arguments $guardedArguments))
     $readTenant = $script:BootstrapAzureTenantId
     $maximumAttempts = if ($exactRead) { 3 } else { 1 }
     for ($attempt = 1; $attempt -le $maximumAttempts; $attempt++) {
@@ -899,7 +926,8 @@ function Invoke-BootstrapCommand {
         $effectiveArguments = @(Get-BootstrapAzureCliArguments -Arguments $effectiveArguments)
     }
     if ($exactRead -and (
-        -not (Test-BootstrapExactAcrManifestRead -Arguments $effectiveArguments) -or
+        -not ((Test-BootstrapExactAcrManifestRead -Arguments $effectiveArguments) -or
+              (Test-BootstrapExactPublisherExecutionRead -Arguments $effectiveArguments)) -or
         $readTenant -cne $script:BootstrapAzureTenantId -or
         ($effectiveArguments -join "`n") -cne ($guardedArguments -join "`n"))) {
         throw 'Exact ACR read context or arguments changed between native attempts.'
@@ -1263,6 +1291,21 @@ function Invoke-BootstrapGraphAzRest {
     }
 }
 
+function ConvertFrom-BootstrapJson {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Json)
+
+    $convertParameters = @{ Depth = 100; NoEnumerate = $true; ErrorAction = 'Stop' }
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        $convertParameters.DateKind = 'String'
+    }
+    # The wrapper also normalizes a root timestamp on PowerShell 7.0-7.4,
+    # without changing JSON objects into hashtables or losing nested arrays.
+    $parsed = @{ value = ConvertFrom-Json -InputObject $Json @convertParameters }
+    Convert-BootstrapParsedJsonDatesToStrings -Value $parsed
+    return $parsed.value
+}
+
 function Invoke-AzJson {
     [CmdletBinding()]
     param(
@@ -1283,10 +1326,10 @@ function Invoke-AzJson {
     $raw = Invoke-BootstrapCommand @command
     if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
     if (-not $CaptureStdoutOnly) {
-        return $raw | ConvertFrom-Json -Depth 100
+        return ConvertFrom-BootstrapJson -Json $raw
     }
     try {
-        return $raw | ConvertFrom-Json -Depth 100 -ErrorAction Stop
+        return ConvertFrom-BootstrapJson -Json $raw
     }
     catch {
         throw 'Azure CLI returned malformed JSON; provider output was suppressed.'
@@ -2957,8 +3000,8 @@ function Read-BootstrapConfig {
         throw 'The Full evaluation capability preset requires Quick development with Registry beta, Prompt Shields, and Purview prerequisites selected.'
     }
     if ([string]$config.capabilityPreset -ceq 'coreGateway' -and
-        ($config.promptShield.enabled -eq $true -or $config.purview.enabled -eq $true)) {
-        throw 'The Core Gateway capability preset cannot include Prompt Shields or Purview prerequisites.'
+        $config.purview.enabled -eq $true) {
+        throw 'The Core Gateway capability preset does not include Purview prerequisites.'
     }
     return $config
 }
@@ -3081,6 +3124,7 @@ function Add-BootstrapConfigurationChangeRecord {
 function Assert-BootstrapStateAllowsSourcePlan {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$State)
 
+    if ($State.Contains('checkpointResumeAmendment') -and -not $State.Contains('readResilienceAmendment')) { throw 'Checkpoint Resume requires its completed read resilience receipt.' }
     if ($State.Contains('readResilienceAmendment') -and -not $State.Contains('hostSettingsAmendment')) { throw 'Read resilience amendment requires its historical host settings receipt.' }
     if ($State.Contains('hostSettingsAmendment') -and -not $State.Contains('publisherMetadataReconciliation')) { throw 'Host settings amendment requires its original completed publisher receipt.' }
     if ($State.Contains('publisherMetadataReconciliation')) {
@@ -3205,8 +3249,23 @@ function Convert-BootstrapParsedJsonDatesToStrings {
             elseif ($child -is [DateTimeOffset]) {
                 $Value[$key] = $child.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
             }
-            elseif ($child -is [System.Collections.IDictionary] -or
+            elseif ($child -is [System.Collections.IDictionary] -or $child -is [pscustomobject] -or
                 ($child -is [System.Collections.IList] -and $child -isnot [string])) {
+                Convert-BootstrapParsedJsonDatesToStrings -Value $child
+            }
+        }
+        return
+    }
+    if ($Value -is [pscustomobject]) {
+        foreach ($property in $Value.PSObject.Properties) {
+            $child = $property.Value
+            if ($child -is [DateTime]) {
+                $property.Value = ([DateTimeOffset]$child).ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+            }
+            elseif ($child -is [DateTimeOffset]) {
+                $property.Value = $child.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
+            }
+            else {
                 Convert-BootstrapParsedJsonDatesToStrings -Value $child
             }
         }
@@ -3221,7 +3280,7 @@ function Convert-BootstrapParsedJsonDatesToStrings {
             elseif ($child -is [DateTimeOffset]) {
                 $Value[$index] = $child.ToUniversalTime().ToString('O', [Globalization.CultureInfo]::InvariantCulture)
             }
-            elseif ($child -is [System.Collections.IDictionary] -or
+            elseif ($child -is [System.Collections.IDictionary] -or $child -is [pscustomobject] -or
                 ($child -is [System.Collections.IList] -and $child -isnot [string])) {
                 Convert-BootstrapParsedJsonDatesToStrings -Value $child
             }
@@ -4210,7 +4269,7 @@ function Assert-BootstrapAcceptedPlan {
         [ref]$acceptedAt)) {
         throw 'The accepted deployment plan has invalid acceptance-time metadata. Generate and accept a fresh plan before applying.'
     }
-    $age = [DateTimeOffset]::UtcNow - $acceptedAt.ToUniversalTime()
+    $age = [DateTimeOffset](Get-Date -AsUTC) - $acceptedAt.ToUniversalTime()
     if ($age -lt [TimeSpan]::FromMinutes(-5) -or $age -gt $MaximumAge) {
         throw "The accepted deployment plan is outside its $([int][Math]::Ceiling($MaximumAge.TotalMinutes))-minute validity window. Generate and accept a fresh plan before applying."
     }

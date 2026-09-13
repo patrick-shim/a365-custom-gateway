@@ -3195,16 +3195,29 @@ function Invoke-GatewayAcrExactStringArray {
     }
 }
 
+function Test-GatewayAcrTagContract {
+    param(
+        [Parameter(Mandatory)][string]$Tag,
+        [ValidateSet('Bootstrap', 'MaintenanceV1')][string]$TagContract = 'Bootstrap'
+    )
+
+    if ($TagContract -eq 'MaintenanceV1') {
+        return $Tag -cmatch '\Amaintenance-[0-9a-f]{24}-(api|worker|adminui|databasemigrator|publisher)\z'
+    }
+    return $Tag -cmatch '^bootstrap-[0-9a-f]{32}-[0-9a-f]{32}-[0-9a-f]{32}$'
+}
+
 function Get-GatewayAcrExactTagDigest {
     param(
         [Parameter(Mandatory)][string]$Registry,
         [Parameter(Mandatory)][string]$Repository,
-        [Parameter(Mandatory)][string]$Tag
+        [Parameter(Mandatory)][string]$Tag,
+        [ValidateSet('Bootstrap', 'MaintenanceV1')][string]$TagContract = 'Bootstrap'
     )
 
     if ($Registry -cnotmatch '^[a-z0-9]{5,50}$' -or
         $Repository -cnotmatch '^[a-z0-9]+(?:[._/-][a-z0-9]+)*$' -or
-        $Tag -cnotmatch '^bootstrap-[0-9a-f]{32}-[0-9a-f]{32}-[0-9a-f]{32}$') {
+        -not (Test-GatewayAcrTagContract -Tag $Tag -TagContract $TagContract)) {
         throw 'The exact ACR discovery target is malformed.'
     }
 
@@ -3233,12 +3246,13 @@ function Get-GatewayAcrExactImageRuns {
     param(
         [Parameter(Mandatory)][string]$Registry,
         [Parameter(Mandatory)][string]$Repository,
-        [Parameter(Mandatory)][string]$Tag
+        [Parameter(Mandatory)][string]$Tag,
+        [ValidateSet('Bootstrap', 'MaintenanceV1')][string]$TagContract = 'Bootstrap'
     )
 
     if ($Registry -cnotmatch '^[a-z0-9]{5,50}$' -or
         $Repository -cnotmatch '^[a-z0-9]+(?:[._/-][a-z0-9]+)*$' -or
-        $Tag -cnotmatch '^bootstrap-[0-9a-f]{32}-[0-9a-f]{32}-[0-9a-f]{32}$') {
+        -not (Test-GatewayAcrTagContract -Tag $Tag -TagContract $TagContract)) {
         throw 'The exact ACR run-discovery target is malformed.'
     }
     # `az acr task list-runs --image` resolves the tag through the repository
@@ -3332,12 +3346,13 @@ function Get-GatewayAcrExactRunById {
         [Parameter(Mandatory)][string]$Registry,
         [Parameter(Mandatory)][string]$Repository,
         [Parameter(Mandatory)][string]$Tag,
-        [Parameter(Mandatory)][string]$RunId
+        [Parameter(Mandatory)][string]$RunId,
+        [ValidateSet('Bootstrap', 'MaintenanceV1')][string]$TagContract = 'Bootstrap'
     )
 
     if ($Registry -cnotmatch '^[a-z0-9]{5,50}$' -or
         $Repository -cnotmatch '^[a-z0-9]+(?:[._/-][a-z0-9]+)*$' -or
-        $Tag -cnotmatch '^bootstrap-[0-9a-f]{32}-[0-9a-f]{32}-[0-9a-f]{32}$' -or
+        -not (Test-GatewayAcrTagContract -Tag $Tag -TagContract $TagContract) -or
         $RunId -cnotmatch '^[A-Za-z0-9-]{1,64}$') {
         throw 'The exact ACR run readback target is malformed.'
     }
@@ -3392,9 +3407,14 @@ function Assert-GatewayAcrCompletedBuildContract {
     param(
         [Parameter(Mandatory)][AllowNull()]$Run,
         [Parameter(Mandatory)][string]$Repository,
-        [Parameter(Mandatory)][string]$Tag
+        [Parameter(Mandatory)][string]$Tag,
+        [ValidateSet('Bootstrap', 'MaintenanceV1')][string]$TagContract = 'Bootstrap'
     )
 
+    if ($TagContract -eq 'MaintenanceV1' -and
+        -not (Test-GatewayAcrTagContract -Tag $Tag -TagContract $TagContract)) {
+        throw 'The submitted ACR build tag does not match the maintenance tag contract.'
+    }
     if ($Run -isnot [pscustomobject]) {
         throw 'The submitted ACR build did not return one exact successful QuickRun contract.'
     }

@@ -34,6 +34,7 @@ internal sealed class EnableAgentHandler : IRequestHandler<EnableAgentCommand, A
         }
 
         agent.Status = AgentStatus.Active;
+        agent.ProtectionRevision = Guid.NewGuid();
         agent.UpdatedAtUtc = DateTime.UtcNow;
         agent.UpdatedByObjectId = request.CallerObjectId;
 

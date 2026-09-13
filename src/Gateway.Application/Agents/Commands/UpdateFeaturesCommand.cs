@@ -15,5 +15,7 @@ public record UpdateFeaturesCommand(
     bool? PromptShieldEnabled = null,
     PurviewDlpProfileSelectionDto? PurviewDlpProfile = null,
     Guid? IdempotencyKey = null,
-    string? ExpectedRowVersion = null)
+    string? ExpectedRowVersion = null,
+    PurviewConfigurationIntentDto? PurviewConfigurationIntent = null,
+    Guid? CallerTenantId = null)
     : IRequest<UpdateFeaturesResponse>;

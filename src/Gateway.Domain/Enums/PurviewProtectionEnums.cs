@@ -38,7 +38,9 @@ public enum PurviewDlpProfileStatus
     Pending,
     PendingPropagation,
     VerificationFailed,
-    Ready
+    Ready,
+    SimulationReady,
+    Disabled
 }
 
 public enum PurviewPolicyActivity

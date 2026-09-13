@@ -44,4 +44,18 @@ internal sealed class BlobInteractionContentStore : IInteractionContentStore
 
         return blobClient.Uri.ToString();
     }
+
+    public async Task DiscardStagedAsync(Guid agentRegistrationId, Guid interactionRecordId, string contentReference, CancellationToken ct)
+    {
+        var container = _blobServiceClient.GetBlobContainerClient(_options.ContainerName);
+        var containerUri = new Uri(container.Uri.AbsoluteUri.TrimEnd('/') + "/");
+        if (!Uri.TryCreate(contentReference, UriKind.Absolute, out var contentUri) ||
+            !containerUri.IsBaseOf(contentUri) || contentUri.UserInfo.Length != 0 ||
+            contentUri.Query.Length != 0 || contentUri.Fragment.Length != 0)
+            throw new InvalidOperationException("The staged content reference does not belong to this content store.");
+        var path = Uri.UnescapeDataString(containerUri.MakeRelativeUri(contentUri).OriginalString);
+        if (!path.EndsWith($"/{agentRegistrationId}/{interactionRecordId}.json", StringComparison.Ordinal))
+            throw new InvalidOperationException("The staged content reference does not match this interaction attempt.");
+        await container.GetBlobClient(path).DeleteIfExistsAsync(cancellationToken: ct);
+    }
 }

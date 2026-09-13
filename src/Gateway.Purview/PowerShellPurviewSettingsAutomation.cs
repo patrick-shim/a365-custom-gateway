@@ -27,15 +27,18 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
     private readonly PurviewOptions _options;
     private readonly ILogger<PowerShellPurviewSettingsAutomation> _logger;
     private readonly PurviewProcessSafety _processSafety;
+    private readonly IPurviewSettingsFailureObserver? _failureObserver;
 
     public PowerShellPurviewSettingsAutomation(
         IOptions<PurviewOptions> options,
         ILogger<PowerShellPurviewSettingsAutomation> logger,
-        PurviewProcessSafety? processSafety = null)
+        PurviewProcessSafety? processSafety = null,
+        IPurviewSettingsFailureObserver? failureObserver = null)
     {
         _options = options.Value;
         _logger = logger;
         _processSafety = processSafety ?? new PurviewProcessSafety();
+        _failureObserver = failureObserver;
     }
 
     public async Task<PurviewProviderReadback<PurviewKnowYourDataReadback>>
@@ -47,14 +50,19 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
             "ReadKnowYourData",
             KydInput(intent),
             isMutation: false,
-            cancellationToken);
-        return ParseKnowYourData(result);
+            cancellationToken, intent.OperationId);
+        try { return ParseKnowYourData(result); }
+        catch (Exception exception)
+        {
+            ObserveFailure(intent.OperationId, "ReadKnowYourData", "ResultParsing", exception);
+            throw;
+        }
     }
 
     public Task CreateKnowYourDataAsync(
         PurviewKnowYourDataIntent intent,
         CancellationToken cancellationToken) =>
-        ExecuteMutationAsync("CreateKnowYourData", KydInput(intent), cancellationToken);
+        ExecuteMutationAsync("CreateKnowYourData", KydInput(intent), intent.OperationId, cancellationToken);
 
     public async Task<PurviewProviderReadback<PurviewDlpProfileReadback>>
         ReadDlpProfileAsync(
@@ -65,33 +73,40 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
             "ReadDlpProfile",
             DlpInput(intent),
             isMutation: false,
-            cancellationToken);
-        return ParseDlpProfile(result);
+            cancellationToken, intent.OperationId);
+        try { return ParseDlpProfile(result); }
+        catch (Exception exception)
+        {
+            ObserveFailure(intent.OperationId, "ReadDlpProfile", "ResultParsing", exception);
+            throw;
+        }
     }
 
     public Task CreateDlpPolicyAsync(
         PurviewDlpProfileIntent intent,
         CancellationToken cancellationToken) =>
-        ExecuteMutationAsync("CreateDlpPolicy", DlpInput(intent), cancellationToken);
+        ExecuteMutationAsync("CreateDlpPolicy", DlpInput(intent), intent.OperationId, cancellationToken);
 
     public Task CreateDlpRuleAsync(
         PurviewDlpProfileIntent intent,
         CancellationToken cancellationToken) =>
-        ExecuteMutationAsync("CreateDlpRule", DlpInput(intent), cancellationToken);
+        ExecuteMutationAsync("CreateDlpRule", DlpInput(intent), intent.OperationId, cancellationToken);
 
     private async Task ExecuteMutationAsync(
         string command,
         object input,
+        Guid operationId,
         CancellationToken cancellationToken)
     {
-        _ = await ExecuteAsync(command, input, isMutation: true, cancellationToken);
+        _ = await ExecuteAsync(command, input, isMutation: true, cancellationToken, operationId);
     }
 
     private async Task<string> ExecuteAsync(
         string command,
         object input,
         bool isMutation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid operationId)
     {
         if (!_options.PolicyProvisioningEnabled)
         {
@@ -107,6 +122,7 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
         var certificatePath = Path.Combine(workingDirectory, "automation.pfx");
         var certificatePassword = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
 
+        var failureStage = "HostPreparation";
         try
         {
             Directory.CreateDirectory(workingDirectory);
@@ -189,6 +205,7 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
             }
 
             await using var processLease = new PurviewProcessLease(process, _processSafety);
+            failureStage = "ChildInput";
             await process.StandardInput.WriteLineAsync(certificatePassword.AsMemory(), cancellationToken);
             process.StandardInput.Close();
 
@@ -196,6 +213,7 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
             timeout.CancelAfter(TimeSpan.FromSeconds(_options.PolicyProvisioningTimeoutSeconds));
             PowerShellPurviewPolicyProvisioningClient.BoundedTextCapture standardOutput;
             PowerShellPurviewPolicyProvisioningClient.BoundedTextCapture standardError;
+            failureStage = "ChildCompletion";
             try
             {
                 var outputTask = PowerShellPurviewPolicyProvisioningClient.ReadBoundedAsync(
@@ -212,6 +230,7 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
+                ObserveFailure(operationId, command, "ChildTimeout", new OperationCanceledException());
                 if (isMutation)
                 {
                     throw new PurviewMutationOutcomeUnknownException(
@@ -226,6 +245,7 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
 
             if (standardOutput.Truncated || standardError.Truncated)
             {
+                ObserveFailure(operationId, command, "OutputBound", new InvalidDataException(), process.ExitCode);
                 _logger.LogWarning(
                     "Purview Settings automation exceeded a bounded output limit. ExitCode: {ExitCode}; StdoutCharacters: {StdoutCharacters}; StderrCharacters: {StderrCharacters}",
                     process.ExitCode,
@@ -244,6 +264,8 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
 
             if (process.ExitCode != 0)
             {
+                ObserveFailure(operationId, command, failureStage,
+                    new InvalidOperationException(), process.ExitCode, standardError.Text);
                 _logger.LogWarning(
                     "Purview Settings automation failed. ExitCode: {ExitCode}; StdoutCharacters: {StdoutCharacters}; StderrCharacters: {StderrCharacters}",
                     process.ExitCode,
@@ -260,7 +282,8 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
                     "Purview Settings readback failed closed.");
             }
 
-            return ExtractTypedResult(standardOutput.Text);
+            failureStage = "ResultParsing";
+            return ParseChildOutput(operationId, command, standardOutput.Text);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -282,6 +305,7 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
         }
         catch (Exception exception)
         {
+            ObserveFailure(operationId, command, failureStage, exception);
             if (isMutation)
             {
                 throw new PurviewMutationOutcomeUnknownException(
@@ -307,6 +331,23 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
 
             PowerShellPurviewPolicyProvisioningClient.EnsureCleanupProven(cleanupProven);
         }
+    }
+
+    private string ParseChildOutput(Guid operationId, string command, string output)
+    {
+        try { return ExtractTypedResult(output); }
+        catch (Exception exception)
+        {
+            ObserveFailure(operationId, command, "ResultParsing", exception);
+            throw;
+        }
+    }
+
+    private void ObserveFailure(Guid operationId, string command, string stage,
+        Exception exception, int? childExitCode = null, string standardError = "")
+    {
+        try { _failureObserver?.Record(operationId, command, stage, exception, childExitCode, standardError); }
+        catch { }
     }
 
     private ProcessStartInfo CreateStartInfo(
@@ -346,6 +387,7 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
             info.ArgumentList.Add(argument);
         }
 
+        PurviewPowerShellProcess.ApplyVerifiedPackageIsolation(info, AppContext.BaseDirectory, _options.ExecutorRuntimeManifestDigest);
         return info;
     }
 
@@ -413,6 +455,9 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
         policyName = intent.PolicyName,
         ruleName = intent.RuleName,
         mode = intent.Mode.ToString(),
+        policyMode = intent.EffectivePolicyMode.ToString(),
+        sensitiveInformationTypes = intent.NormalizedSensitiveInformationTypes,
+        allowUnverifiedThresholdReplacement = intent.AllowUnverifiedThresholdReplacement,
         activities = intent.Activities.Select(value => value.ToString()).ToArray(),
         actions = intent.Actions.Select(action => new
         {
@@ -476,7 +521,10 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
                 throw InvalidResult(),
             result.HasBypass ??
                 throw InvalidResult(),
-            ParseTimestamp(result.ObservedAtUtc)));
+            ParseTimestamp(result.ObservedAtUtc),
+            result.PolicyMode is null ? null : ParseEnum<PurviewPolicyMode>(result.PolicyMode),
+            result.SensitiveInformationTypes,
+            result.SensitiveInformationTypesOperator));
     }
 
     private static AutomationResult Deserialize(string json)
@@ -660,7 +708,10 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
         bool? IngestionEnabled,
         bool? HasExclusions,
         bool? HasBypass,
-        DateTimeOffset? ObservedAtUtc);
+        DateTimeOffset? ObservedAtUtc,
+        string? PolicyMode = null,
+        PurviewSensitiveInformationTypeProjection[]? SensitiveInformationTypes = null,
+        string? SensitiveInformationTypesOperator = null);
 
     private sealed record AutomationAction(
         string Activity,

@@ -277,6 +277,7 @@ internal sealed class PowerShellPurviewPolicyProvisioningClient : IPurviewPolicy
         AddArgument(info, "-Organization", _options.PolicyProvisioningOrganization!);
         if (verifyOnly)
             info.ArgumentList.Add("-VerifyOnly");
+        PurviewPowerShellProcess.ApplyVerifiedPackageIsolation(info, AppContext.BaseDirectory, _options.ExecutorRuntimeManifestDigest);
         return info;
     }
 

@@ -9,7 +9,7 @@ Only a later independently authorized normal Resume may continue deployment.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet('Plan', 'Execute', 'AmendmentPlan', 'AmendmentExecute', 'ReadResiliencePlan', 'ReadResilienceExecute')][string]$Mode,
+    [Parameter(Mandatory)][ValidateSet('Plan', 'Execute', 'AmendmentPlan', 'AmendmentExecute', 'ReadResiliencePlan', 'ReadResilienceExecute', 'CheckpointResumePlan', 'CheckpointResumeExecute')][string]$Mode,
     [string]$Config = (Join-Path $PSScriptRoot 'config.json'),
     [string]$ExpectedPlanFingerprint = '',
     [switch]$Yes
@@ -21,7 +21,12 @@ try {
         Import-Module (Join-Path $PSScriptRoot "modules/$module.psm1") -Force -DisableNameChecking
     }
     $configuration = Read-BootstrapConfig -Path $Config
-    if ($Mode -cin @('ReadResiliencePlan', 'ReadResilienceExecute')) {
+    if ($Mode -cin @('CheckpointResumePlan', 'CheckpointResumeExecute')) {
+        Invoke-BootstrapCheckpointResumeAmendment -Mode $Mode.Substring(16) -Config $configuration `
+            -StatePath (Get-BootstrapStatePath -Config $configuration) -ExpectedPlanFingerprint $ExpectedPlanFingerprint -Yes:$Yes |
+            ConvertTo-Json -Depth 5
+    }
+    elseif ($Mode -cin @('ReadResiliencePlan', 'ReadResilienceExecute')) {
         Invoke-BootstrapReadResilienceAmendment -Mode $Mode.Substring(14) -Config $configuration `
             -StatePath (Get-BootstrapStatePath -Config $configuration) -ExpectedPlanFingerprint $ExpectedPlanFingerprint -Yes:$Yes |
             ConvertTo-Json -Depth 5

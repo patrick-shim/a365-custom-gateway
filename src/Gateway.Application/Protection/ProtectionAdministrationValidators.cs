@@ -66,23 +66,25 @@ public sealed class ReviewPurviewDlpProfileCommandValidator
     public ReviewPurviewDlpProfileCommandValidator()
     {
         RuleFor(command => command.Request.TenantConnectionId).NotEmpty();
-        RuleFor(command => command.Request.BlueprintApplicationId).NotEmpty();
+        RuleFor(command => command.Request.BlueprintApplicationId).NotEmpty()
+            .When(command => command.Request.DeferredBlueprint is null);
         RuleFor(command => command.Request.DisplayName)
             .NotEmpty()
             .MaximumLength(120);
-        RuleFor(command => command.Request.SensitiveInformationType).NotNull();
+        RuleFor(command => command.Request.SensitiveInformationType).NotNull()
+            .When(command => command.Request.SensitiveInformationTypes is null);
         When(
             command => command.Request.SensitiveInformationType is not null,
             () =>
             {
                 RuleFor(command =>
-                        command.Request.SensitiveInformationType.InventoryGenerationId)
+                        command.Request.SensitiveInformationType!.InventoryGenerationId)
                     .NotEmpty();
                 RuleFor(command =>
-                        command.Request.SensitiveInformationType.SensitiveInformationTypeId)
+                        command.Request.SensitiveInformationType!.SensitiveInformationTypeId)
                     .NotEmpty();
                 RuleFor(command =>
-                        command.Request.SensitiveInformationType.ExactName)
+                        command.Request.SensitiveInformationType!.ExactName)
                     .NotEmpty()
                     .MaximumLength(255);
             });
@@ -130,7 +132,7 @@ public sealed class ConfirmProtectionOperationReviewCommandValidator
         RuleFor(command => command.Request.ReviewTokenId).NotEmpty();
         RuleFor(command => command.Request.ReviewToken)
             .NotEmpty()
-            .MaximumLength(16_384);
+            .MaximumLength(ProtectionOperationTokenService.MaximumTokenCharacters);
     }
 }
 
@@ -226,7 +228,7 @@ internal static class ProtectionValidatorRules
         System.Linq.Expressions.Expression<Func<T, string>> expectedRowVersion)
     {
         validator.RuleFor(tokenId).NotEmpty();
-        validator.RuleFor(token).NotEmpty().MaximumLength(16_384);
+        validator.RuleFor(token).NotEmpty().MaximumLength(ProtectionOperationTokenService.MaximumTokenCharacters);
         validator.RuleFor(idempotencyKey)
             .Must(value =>
             {

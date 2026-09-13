@@ -64,6 +64,10 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
             request.UserContext?.TenantUserObjectId,
             "UserContext.TenantUserObjectId");
 
+        var protectionContext = await _promptEvaluationRepository.GetProtectionContextAsync(agent.Id, cancellationToken);
+        if (protectionContext is null || !protectionContext.MatchesAgent(agent))
+            throw InvalidProtectionContext();
+
         if (agent.FeatureConfiguration.PromptShieldEnabled && !_promptShieldClient.IsEnabled)
             throw new DomainException("Prompt Shields is not configured for this Gateway deployment.", ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE);
         if (agent.FeatureConfiguration.PromptShieldEnabled &&
@@ -78,16 +82,17 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
             await _protectionFeatures!.EnsurePromptShieldReadyAsync(
                 cancellationToken);
         }
-        if (agent.FeatureConfiguration.PurviewEnabled && !_purviewPolicyClient.IsEnabled)
+        var purviewPolicyMode = protectionContext.PurviewMode;
+        if (purviewPolicyMode == PurviewPolicyMode.Enforce && !_purviewPolicyClient.IsEnabled)
             throw new DomainException("Purview is not configured for this Gateway deployment.", ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE);
-        if (agent.FeatureConfiguration.PurviewEnabled &&
+        if (purviewPolicyMode == PurviewPolicyMode.Enforce &&
             _protectionFeatures is null)
         {
             throw new DomainException(
                 "Purview capability and profile readiness cannot be verified.",
                 ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE);
         }
-        if (agent.FeatureConfiguration.PurviewEnabled)
+        if (purviewPolicyMode == PurviewPolicyMode.Enforce)
         {
             await _protectionFeatures!.EnsureRuntimeReadyAsync(
                 agent,
@@ -95,7 +100,7 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         }
 
         var tenantUserObjectId = request.UserContext?.TenantUserObjectId;
-        if (agent.FeatureConfiguration.PurviewEnabled
+        if (purviewPolicyMode == PurviewPolicyMode.Enforce
             && (!Guid.TryParse(tenantUserObjectId, out var userId) || userId == Guid.Empty))
         {
             throw new ValidationException(new Dictionary<string, string[]>
@@ -105,7 +110,7 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         }
 
         var requestBodyHash = IdempotencyRequestHasher.Compute(request);
-        await using var idempotencyScope = await _idempotencyService.AcquireScopeAsync(
+        await using var idempotencyScope = await _idempotencyService.AcquireDataPlaneScopeAsync(
             agent.Id,
             IdempotencyRequestHasher.PromptEvaluationEndpoint,
             request.IdempotencyKey,
@@ -121,19 +126,38 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         {
             if (!string.Equals(existing.RequestBodyHash, requestBodyHash, StringComparison.Ordinal))
                 throw new ConflictException("The Idempotency-Key was already used for a different prompt evaluation.", ErrorCodes.IDEMPOTENCY_CONFLICT);
-            return JsonSerializer.Deserialize<PromptEvaluationResultDto>(existing.ResponseBody)!;
+            var replay = JsonSerializer.Deserialize<PromptEvaluationResultDto>(existing.ResponseBody)!;
+            if (replay.Allowed)
+            {
+                await idempotencyScope.BeginCommitAsync(cancellationToken);
+                if (!await _promptEvaluationRepository.IsProtectionContextCurrentAsync(protectionContext, cancellationToken))
+                    throw InvalidProtectionContext();
+                var receipt = replay.EvaluationReceiptId is { } receiptId
+                    ? await _promptEvaluationRepository.GetByIdAsync(receiptId, cancellationToken) : null;
+                if (receipt is null || !protectionContext.MatchesReceipt(receipt, _timeProvider.GetUtcNow().UtcDateTime))
+                    throw InvalidProtectionContext();
+                replay = replay with { ExpiresAtUtc = DateTime.SpecifyKind(receipt.ExpiresAtUtc, DateTimeKind.Utc) };
+            }
+            return replay;
         }
 
         var correlationId = Guid.NewGuid().ToString("D");
         var subject = CreatePromptShieldSubject(agent, correlationId);
         var promptShieldTask = EvaluatePromptShieldAsync(agent, request.Prompt.Content, subject, cancellationToken);
-        var purviewTask = EvaluatePurviewAsync(agent, request, correlationId, cancellationToken);
+        var purviewTask = EvaluatePurviewAsync(agent, request, correlationId, purviewPolicyMode, cancellationToken);
         await Task.WhenAll(promptShieldTask, purviewTask);
         var promptShieldDecision = await promptShieldTask;
         var purviewDecision = await purviewTask;
+        await idempotencyScope.BeginCommitAsync(cancellationToken);
+        if (!protectionContext.MatchesAgent(agent) ||
+            !await _promptEvaluationRepository.IsProtectionContextCurrentAsync(protectionContext, cancellationToken))
+            throw InvalidProtectionContext();
         var blockedByShield = promptShieldDecision == PromptShieldDecisionType.Blocked;
-        var blockedByPurview = purviewDecision == PurviewDecisionType.Blocked;
+        var blockedByPurview = purviewPolicyMode == PurviewPolicyMode.Enforce && purviewDecision == PurviewDecisionType.Blocked;
         var allowed = !blockedByShield && !blockedByPurview;
+        if (allowed && ((protectionContext.PromptShieldRequired && promptShieldDecision != PromptShieldDecisionType.Allowed) ||
+            (purviewPolicyMode == PurviewPolicyMode.Enforce && purviewDecision != PurviewDecisionType.Allowed)))
+            throw new DomainException("A required protection did not return a trusted allow decision.", ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE);
         var decisionCode = blockedByShield && blockedByPurview
             ? ErrorCodes.PROMPT_BLOCKED_BY_MULTIPLE_CONTROLS
             : blockedByShield
@@ -148,10 +172,19 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
             ErrorCodes.PROMPT_BLOCKED_BY_MULTIPLE_CONTROLS => "Your message was not sent because it was blocked by the configured prompt protection policies.",
             _ => "The prompt passed the configured Gateway protection checks."
         };
+        if (allowed && purviewPolicyMode == PurviewPolicyMode.SimulationWithTips &&
+            purviewDecision == PurviewDecisionType.SimulatedBlock)
+            userMessage = "Simulation: this prompt matches the data protection policy. It was not blocked.";
 
         var evaluationId = Guid.NewGuid();
         var (salt, hash) = PromptReceiptSecurity.Create(request.Prompt.ContentType, request.Prompt.Content);
         var expiresAtUtc = now.Add(_promptShieldClient.ReceiptLifetime);
+        if (protectionContext.ValidUntilUtc is { } validUntil && validUntil < expiresAtUtc)
+            expiresAtUtc = validUntil;
+        // SQL datetime2 drops Kind, but these persistence deadlines already contain UTC ticks.
+        expiresAtUtc = DateTime.SpecifyKind(expiresAtUtc, DateTimeKind.Utc);
+        if (allowed && expiresAtUtc <= _timeProvider.GetUtcNow().UtcDateTime)
+            throw InvalidProtectionContext();
         var record = new PromptEvaluationRecord
         {
             Id = evaluationId,
@@ -165,6 +198,10 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
             Outcome = allowed ? PromptEvaluationOutcome.Allowed : PromptEvaluationOutcome.Blocked,
             PromptShieldDecision = promptShieldDecision,
             PurviewDecision = purviewDecision,
+            ProtectionRevision = protectionContext.ProtectionRevision,
+            ProtectionContextHash = protectionContext.Hash,
+            PromptShieldRequired = protectionContext.PromptShieldRequired,
+            EvaluatedPurviewPolicyMode = protectionContext.PurviewMode,
             CorrelationId = correlationId,
             CreatedAtUtc = now,
             ExpiresAtUtc = expiresAtUtc
@@ -206,6 +243,10 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         await idempotencyScope.CompleteAsync(cancellationToken);
         return response;
     }
+
+    private static DomainException InvalidProtectionContext() => new(
+        "The prompt evaluation protection context changed or is no longer valid. No current evaluation proof was issued.",
+        ErrorCodes.PROMPT_EVALUATION_INVALID);
 
     // Prompt Shields is scoped to one agent, not to the blueprint its siblings share,
     // so every verdict is attributed to a single Agent 365 identity. An agent whose
@@ -260,10 +301,17 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
         AgentRegistration agent,
         EvaluatePromptCommand request,
         string correlationId,
+        PurviewPolicyMode policyMode,
         CancellationToken cancellationToken)
     {
-        if (!agent.FeatureConfiguration.PurviewEnabled)
+        if (!agent.FeatureConfiguration.PurviewEnabled || policyMode == PurviewPolicyMode.Disabled)
             return PurviewDecisionType.PurviewDisabled;
+        if (policyMode != PurviewPolicyMode.Enforce &&
+            (!_purviewPolicyClient.IsEnabled ||
+             !Guid.TryParse(request.UserContext?.TenantUserObjectId, out var userId) || userId == Guid.Empty ||
+             !Guid.TryParse(agent.Agent365AgentId, out var simulationAgentId) || simulationAgentId == Guid.Empty ||
+             !Guid.TryParse(agent.BlueprintId, out var simulationBlueprintId) || simulationBlueprintId == Guid.Empty))
+            return PurviewDecisionType.SimulationUnavailable;
         if (!Guid.TryParse(agent.Agent365AgentId, out var agentIdentityId) || agentIdentityId == Guid.Empty
             || !Guid.TryParse(agent.BlueprintId, out var blueprintId) || blueprintId == Guid.Empty)
         {
@@ -284,16 +332,18 @@ internal sealed class EvaluatePromptHandler : IRequestHandler<EvaluatePromptComm
             agent.BlueprintId!,
             agent.Name,
             request.OccurredAtUtc,
-            agent.FeatureConfiguration.PurviewMode == PurviewMode.Enforce
-                ? PurviewExecutionMode.EvaluateInline
-                : PurviewExecutionMode.EvaluateOffline,
+            policyMode.ToExecutionMode(),
             correlationId);
         try
         {
-            return (await _purviewPolicyClient.EvaluatePromptAsync(interaction, cancellationToken)).Decision;
+            var decision = (await _purviewPolicyClient.EvaluatePromptAsync(interaction, cancellationToken)).Decision;
+            return policyMode != PurviewPolicyMode.Enforce && decision == PurviewDecisionType.Blocked
+                ? PurviewDecisionType.SimulatedBlock : decision;
         }
         catch (PurviewPolicyException exception)
         {
+            if (policyMode != PurviewPolicyMode.Enforce)
+                return PurviewDecisionType.SimulationUnavailable;
             _logger.LogWarning(
                 "Purview prompt evaluation failed closed for agent registration {AgentRegistrationId}, correlation {CorrelationId}, failure {FailureCode}",
                 agent.Id,

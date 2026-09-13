@@ -5,6 +5,9 @@ using Gateway.Application.Agents.Commands;
 using Gateway.Application.Agents.Queries;
 using Gateway.Application.Audit.Queries;
 using Gateway.Application.Protection;
+using Gateway.Contracts.Dtos;
+using Gateway.Domain.ValueObjects;
+using Gateway.Infrastructure.Services;
 using Gateway.Contracts.Requests;
 using Gateway.Contracts.Responses;
 using MediatR;
@@ -19,13 +22,16 @@ public class AgentsController : ControllerBase
 {
     private readonly ISender _sender;
     private readonly ProvisioningAdmissionGate _provisioningAdmissionGate;
+    private readonly IProtectionAdminOperationLockProvider? _protectionLocks;
 
     public AgentsController(
         ISender sender,
-        ProvisioningAdmissionGate provisioningAdmissionGate)
+        ProvisioningAdmissionGate provisioningAdmissionGate,
+        IProtectionAdminOperationLockProvider? protectionLocks = null)
     {
         _sender = sender;
         _provisioningAdmissionGate = provisioningAdmissionGate;
+        _protectionLocks = protectionLocks;
     }
 
     [HttpPost]
@@ -41,7 +47,8 @@ public class AgentsController : ControllerBase
         CancellationToken cancellationToken)
     {
         _provisioningAdmissionGate.EnsureRegistrationOpen();
-        var callerObjectId = User.GetProtectionActor().ObjectId;
+        var actor = User.GetProtectionActor();
+        var callerObjectId = actor.ObjectId;
 
         var command = new RegisterAgentCommand(
             request.ExternalAgentId,
@@ -53,9 +60,12 @@ public class AgentsController : ControllerBase
             callerObjectId,
             request.Blueprint,
             request.PurviewPolicyProfile,
-            request.PurviewDlpProfile);
+            request.PurviewDlpProfile,
+            request.PurviewConfigurationIntent,
+            actor.TenantId);
 
-        var result = await _sender.Send(command, cancellationToken);
+        var result = await ExecuteConfigurationMutationAsync(request.PurviewConfigurationIntent, actor,
+            () => _sender.Send(command, cancellationToken), cancellationToken);
 
         Response.Headers.CacheControl = "no-store";
         Response.Headers.Pragma = "no-cache";
@@ -171,6 +181,7 @@ public class AgentsController : ControllerBase
             request.PurviewMode is not null ||
             request.PromptShieldEnabled is not null ||
             request.PurviewDlpProfile is not null ||
+            request.PurviewConfigurationIntent is not null ||
             request.IdempotencyKey is not null ||
             request.ExpectedRowVersion is not null;
         ProtectionActor? protectionActor = null;
@@ -205,11 +216,36 @@ public class AgentsController : ControllerBase
             request.PromptShieldEnabled,
             request.PurviewDlpProfile,
             request.IdempotencyKey,
-            request.ExpectedRowVersion);
+            request.ExpectedRowVersion,
+            request.PurviewConfigurationIntent,
+            protectionActor?.TenantId);
 
-        var result = await _sender.Send(command, cancellationToken);
+        var result = await ExecuteConfigurationMutationAsync(request.PurviewConfigurationIntent, protectionActor,
+            () => _sender.Send(command, cancellationToken), cancellationToken);
 
         return Ok(result);
+    }
+
+    private async Task<T> ExecuteConfigurationMutationAsync<T>(PurviewConfigurationIntentDto? intent,
+        ProtectionActor? actor, Func<Task<T>> action, CancellationToken ct)
+    {
+        if (intent is null)
+            return await action();
+        if (intent.ConfirmationTokenId == Guid.Empty || intent.IdempotencyKey == Guid.Empty ||
+            string.IsNullOrWhiteSpace(intent.ConfirmationToken) ||
+            string.IsNullOrWhiteSpace(intent.ExpectedRowVersion))
+            throw new Gateway.Application.Exceptions.ValidationException(new Dictionary<string, string[]>
+            {
+                ["PurviewConfigurationIntent"] = ["A complete confirmed operation and idempotency binding is required."]
+            });
+        if (_protectionLocks is null || actor is null)
+            throw new Gateway.Application.Exceptions.ProtectionAccessDeniedException();
+        await using var execution = await _protectionLocks.AcquireExecutionAsync(intent.ConfirmationTokenId, ct);
+        await using var idempotency = await _protectionLocks.AcquireIdempotencyAsync(
+            new EntraTenantId(actor.TenantId), new ProtectionIdempotencyKey(intent.IdempotencyKey), ct);
+        var result = await action();
+        await idempotency.CompleteAsync(ct);
+        return result;
     }
 
     [HttpPost("{agentId:guid}:enable")]

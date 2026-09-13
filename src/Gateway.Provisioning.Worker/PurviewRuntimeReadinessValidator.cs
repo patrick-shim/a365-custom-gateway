@@ -72,8 +72,6 @@ internal sealed class PurviewRuntimeReadinessValidator : IPurviewRuntimeReadines
     private const int MaximumActiveRegistrationsToInspect = 1000;
     private const string BenignValidationInput =
         "A365 Gateway synthetic benign readiness validation.";
-    private const string SensitiveValidationInput =
-        "A365 Gateway approved synthetic card 4111 1111 1111 1111.";
 
     private readonly IAgentRepository _agentRepository;
     private readonly IPurviewPolicyClient _policyClient;
@@ -121,15 +119,8 @@ internal sealed class PurviewRuntimeReadinessValidator : IPurviewRuntimeReadines
         string administratorObjectId,
         PurviewDlpProfile profile,
         CancellationToken ct) =>
-        EvaluateAsync(
-            operationId,
-            administratorObjectId,
-            profile,
-            "block",
-            SensitiveValidationInput,
-            expectAllowed: false,
-            propagationProbe: false,
-            ct);
+        Task.FromResult(PurviewRuntimeValidationResult.Unsupported(
+            DateTimeOffset.UtcNow, PurviewRuntimeTestFailureCodes.SamplesRequired));
 
     private async Task<PurviewRuntimeValidationResult> EvaluateAsync(
         Guid operationId,

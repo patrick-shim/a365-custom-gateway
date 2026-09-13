@@ -10,11 +10,11 @@
     {
         "active" or "healthy" or "ready" or "completed" or "succeeded" or
             "connected" or "installed" => "status-positive",
-        "failed" or "unavailable" or "verificationfailed" or
+        "failed" or "expired" or "unavailable" or "simulationunavailable" or "verificationfailed" or
             "requiresmanualintervention" => "status-negative",
         "disabled" or "deleted" or "cancelled" or "notconnected" or
             "notinstalled" or "notready" => "status-neutral",
-        "provisioning" or "running" or "pending" or "deleting" or
+        "provisioning" or "running" or "pending" or "awaitingblueprint" or "deleting" or
             "awaitingadmin" or "awaitingadminapproval" or "awaitingadministrator" or
             "awaitingadministratoraction" or "pendingpropagation" or "pendingverification" or
             "waitingforpropagation" =>
@@ -34,6 +34,9 @@
         "PendingVerification" => "Pending verification",
         "WaitingForPropagation" => "Pending propagation",
         "VerificationFailed" => "Failed",
+        "AwaitingBlueprint" => "Awaiting blueprint",
+        "SimulationReady" => "Simulation ready",
+        "SimulationUnavailable" => "Simulation unavailable",
         _ => value
     };
 

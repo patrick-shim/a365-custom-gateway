@@ -34,6 +34,7 @@ internal sealed class DisableAgentHandler : IRequestHandler<DisableAgentCommand,
         }
 
         agent.Status = AgentStatus.Disabled;
+        agent.ProtectionRevision = Guid.NewGuid();
         agent.UpdatedAtUtc = DateTime.UtcNow;
         agent.UpdatedByObjectId = request.CallerObjectId;
 

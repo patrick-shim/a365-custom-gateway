@@ -10,6 +10,22 @@ internal static class ProtectionPersistenceSerialization
 {
     private static readonly JsonSerializerOptions JsonOptions = CreateOptions();
 
+    public static string SerializeSensitiveInformationTypes(ICollection<PurviewSelectedSensitiveInformationType> values) =>
+        JsonSerializer.Serialize(values.OrderBy(value => value.Id).ToArray(), JsonOptions);
+
+    public static ICollection<PurviewSelectedSensitiveInformationType> DeserializeSensitiveInformationTypes(string value) =>
+        JsonSerializer.Deserialize<List<PurviewSelectedSensitiveInformationType>>(value, JsonOptions) ?? [];
+
+    public static string SerializeDeferredConfiguration(PurviewDeferredConfigurationIntent value) =>
+        JsonSerializer.Serialize(value with
+        {
+            SensitiveInformationTypes = value.SensitiveInformationTypes.OrderBy(type => type.Id).ToArray()
+        }, JsonOptions);
+
+    public static PurviewDeferredConfigurationIntent DeserializeDeferredConfiguration(string value) =>
+        JsonSerializer.Deserialize<PurviewDeferredConfigurationIntent>(value, JsonOptions)
+        ?? throw new InvalidOperationException("Deferred configuration is malformed.");
+
     public static string SerializeResourceIdentifiers(
         ProtectionCapabilityResourceIdentifiers value) =>
         JsonSerializer.Serialize(

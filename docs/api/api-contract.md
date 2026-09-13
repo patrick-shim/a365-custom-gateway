@@ -108,7 +108,8 @@ scoped by registration and endpoint under a SQL application lock.
 
 ## Prompt evaluation and receipt-bound interaction
 
-When a registration enables Prompt Shields or prompt-side Purview, clients call:
+Before **every** model interaction, clients call this route regardless of locally
+remembered Prompt Shields or Purview settings:
 
 ```http
 POST /api/v1/prompts:evaluate
@@ -116,22 +117,134 @@ Authorization: Bearer {gateway-key}
 Idempotency-Key: {uuid-v4}
 ```
 
-An allowed result contains a short-lived evaluation receipt. The client sends it
-with the matching AI interaction. The receipt is single-use and bound to the
-registration, interaction ID, tenant user, content type, and salted prompt hash.
-Blocked prompts return RFC 9457 Problem Details and no receipt.
+The Gateway determines which services apply using the current registration.
+Disabling Prompt Shields skips its Azure AI Content Safety call; it does not skip
+this Gateway route. Purview DLP can still require prompt-side evaluation while
+Prompt Shields is off. Operators can change either protection without changing
+client flags, keys, or deployment. Clients must not guess the effective policy from
+cached registration settings or a previous evaluation.
 
-The Gateway is not a model proxy. The client must prevent the model call when
-evaluation blocks or fails.
+Only HTTP 200 with `allowed: true`, a non-empty `evaluationReceiptId`, and a
+well-formed future `expiresAtUtc` authorizes the model call. Parse the returned
+deadline as a timestamp with an explicit time zone and compare its instant against
+an accurate current clock immediately before invoking the model, including after
+any intervening activity I/O. The sample injects its clock for tests and does not
+substitute a fixed lifetime. Missing, malformed, or expired deadlines stop
+generation without automatic retry; local validation does not replace the server's
+later expiry/context checks or reserve the remaining time.
+
+A receipt is returned even when both services are disabled. Forward
+it as `promptEvaluationReceiptId` in the matching AI interaction, retaining the
+same external agent ID, interaction ID, tenant user, prompt content type, and exact
+prompt content. Every supplied receipt is short-lived, single-use, and bound to the
+registration, interaction ID, tenant user, content type, salted prompt hash, and
+effective protection context. Never reuse it for another interaction or change the
+prompt after evaluation.
+
+Blocked prompts return HTTP 403 Problem Details and no receipt. An unavailable
+enforcing Purview path, Prompt Shields failure, unexpected HTTP status, timeout,
+or missing/malformed allow response must stop generation rather than falling back
+to an unprotected model call. For non-enforcing simulation the Gateway may return
+an allowed result with `purviewProcessing: "SimulationUnavailable"`; preserve that
+distinction and warn that evaluation was unavailable, not disabled or proof of
+protection. Neither that status nor `SimulatedBlock` is a Microsoft-native policy
+tip. The sample does not fabricate tips from either result.
+
+The Gateway is not a model proxy. Client code owns the pre-model boundary and
+must await a successful allowed evaluation before invoking the model. The sample's
+fixed-response callback demonstrates this boundary without a model dependency;
+production integrations replace the callback, not the gate.
+
+The receipt binds a dedicated registration protection revision, current protection
+flags/mode and identity binding, the effective blueprint profile (including SIT
+thresholds, actions, and evidence revision), and active capability/readiness
+bindings. Required Prompt Shields and enforcing-Purview decisions must each be
+`Allowed`; an overall allow or a matching hash alone is insufficient. An Off-issued
+or simulation-era receipt cannot satisfy ingestion under newly enabled Prompt
+Shields or enforcing Purview.
+
+The Gateway rechecks this context before issuing favorable proof and again at
+ingestion. Current enforcing certification is validated in the same database
+scope, including the certified test agent even when it differs from the caller.
+The SQL commit phase takes ordered registration shared locks first (caller and
+certified test agent), then locks feature/profile and shared
+capability/inventory/certification evidence, and finally the receipt.
+Existing-agent EF writers take registration **exclusive** locks in the same ID
+order before any feature/registration writes, in that same save transaction.
+An update lock is not sufficient: it is compatible with the reader's shared lock
+and can create a conversion deadlock after a feature write. The registration-first
+reader/writer protocol prevents that feature/registration lock inversion.
+These row/range locks remain held through commit, so a concurrent protection edit
+cannot slip between the check and consumption. Agent last-activity timestamps, unrelated
+telemetry changes, and no-op feature updates do not invalidate receipts. Active
+profile/capability evidence revisions can invalidate them even when an operator
+has not changed the client configuration.
+
+Meaningful lifecycle and downstream-identity changes also advance the protection
+revision. In particular, Active -> Disabled -> Active does not resurrect an
+unexpired receipt, including when the roundtrip happens during provider work.
+These revision updates happen on explicit commands/persisted changes, not during
+EF materialization; reading an agent or updating descriptive/telemetry fields does
+not advance its protection revision.
+
+Omitting a receipt remains allowed only when current Prompt Shields is off and
+Purview is not enforcing. **Any supplied receipt is validated and consumed**, even
+when optional. Missing required proof returns HTTP 403
+`PROMPT_EVALUATION_REQUIRED`; a supplied unbound, stale, expired, used, or mismatched
+receipt returns HTTP 403 `PROMPT_EVALUATION_INVALID`. Context drift detected during
+evaluation also returns `PROMPT_EVALUATION_INVALID`, without favorable proof.
+Receipt lifetime is bounded by the relevant enforcing-readiness expiry as well
+as the configured receipt lifetime.
+Evaluation responses and allowed replays serialize that expiry with an explicit
+UTC `Z`. SQL `datetime2` deadlines retain their known-UTC ticks when clamped;
+they are not interpreted or shifted as machine-local time.
+
+The additive upgrade leaves historical receipts unbound rather than manufacturing
+new evidence. Such receipts are rejected when supplied to the upgraded ingestion
+path, even if protection is currently off. A cached favorable evaluation is also
+rechecked before replay; an already-recorded identical ingestion response remains
+an idempotent replay, not a new consumption or evaluation.
+
+A receipt proves an evaluation snapshot, not a configuration lock spanning the
+external model call or a guarantee of later acceptance. The Gateway cannot
+retroactively stop generation that has already started. Do not silently re-evaluate
+to mint replacement proof for already-generated content, repeat a model call, or
+blindly retry ingestion. Preserve the original operation identifiers and reconcile
+uncertain results before explicitly starting a new interaction. The sample makes
+no automatic retries. Ingestion HTTP semantics are unchanged: inspect the
+processing fields in an HTTP 202 receipt; a post-model enforcing-Purview block can
+record `status: "Failed"` without exporting the interaction.
+
+Data-plane idempotency serialization spans the request using an opaque SQL
+session-owned application lock on an unpooled connection, not a long SQL
+transaction. Initial receipt/context validation precedes provider work.
+Prompt evaluation performs its provider calls before opening the commit
+transaction. Interaction ingestion performs Purview processing and stages the
+content blob before its short commit transaction rechecks/consumes the receipt and
+persists the interaction, outbox, and idempotent response. No provider or blob I/O
+runs while the protection row/range locks are held.
+
+Consequently, a protection change during ingestion I/O can reject SQL acceptance
+after provider processing or blob staging has already occurred. On a known
+pre-commit context rejection, the Gateway releases its transaction/locks before
+attempting bounded cleanup of only that attempt's staged blob. Cleanup can fail
+and does not claim physical erasure under storage retention/versioning. An
+ambiguous commit never triggers blob deletion or automatic ingestion replay;
+reconcile it instead. Control-plane idempotency transactions are unchanged.
 
 ## Activities and interactions
 
 - `POST /api/v1/agent-activities` accepts sanitized activity events.
 - `POST /api/v1/ai-interactions` accepts completed prompt/response records and
-  requires the evaluation receipt when the registration is protected.
+  requires the evaluation receipt when the registration is protected. Clients
+  should always forward the receipt returned by their pre-model evaluation,
+  including when a protection was off at evaluation time.
 
-Accepted ingestion returns HTTP 202 with a correlation ID. Acceptance proves the
-Gateway queued work; it does not prove downstream Agent 365 or Purview landing.
+Ingestion returns HTTP 202 with a correlation ID and processing receipt, not proof
+of downstream Agent 365 or Purview landing. For interactions, inspect `status`,
+`purviewProcessing`, and `observabilityProcessing`: `Failed` is not successful
+processing, and `Queued` is not confirmed delivery. Disabled observability does
+not queue an export.
 
 ## Errors
 

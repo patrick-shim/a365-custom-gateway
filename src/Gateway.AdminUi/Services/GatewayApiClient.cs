@@ -500,58 +500,6 @@ public sealed class GatewayApiClient : IGatewayApiClient
         return CreateReviewTicket(response, expectedRowVersion);
     }
 
-    public Task<GatewayApiResource<ProtectionOperationAcceptedResponse>>
-        ValidatePurviewDlpProfileRuntimeAsync(
-            Guid profileId,
-            ProtectionOperationConfirmationTicket confirmation,
-            Guid idempotencyKey,
-            string expectedRowVersion,
-            CancellationToken cancellationToken = default)
-    {
-        EnsureNotEmpty(profileId, nameof(profileId));
-        ArgumentNullException.ThrowIfNull(confirmation);
-        ValidateMutationHeaders(idempotencyKey, expectedRowVersion);
-        ValidateConfirmedRowVersion(confirmation, expectedRowVersion);
-
-        var request = new ValidatePurviewDlpProfileRuntimeRequest(
-            confirmation.ConfirmationTokenId,
-            confirmation.Consume(),
-            idempotencyKey,
-            expectedRowVersion);
-        var message = CreateJsonRequest(
-            HttpMethod.Post,
-            $"api/v1/protection/purview/dlp-profiles/{profileId:D}:validate-runtime",
-            request);
-        AddMutationHeaders(message, idempotencyKey, expectedRowVersion);
-
-        return SendAsync<ProtectionOperationAcceptedResponse>(
-            message,
-            requiresAuthentication: true,
-            cancellationToken);
-    }
-
-    public async Task<GatewayApiResource<ProtectionOperationReviewTicket>>
-        ReviewValidatePurviewDlpRuntimeAsync(
-            Guid profileId,
-            string expectedRowVersion,
-            CancellationToken cancellationToken = default)
-    {
-        EnsureNotEmpty(profileId, nameof(profileId));
-        var request = new ReviewValidatePurviewDlpRuntimeRequest(
-            profileId,
-            expectedRowVersion);
-        var message = CreateJsonRequest(
-            HttpMethod.Post,
-            $"api/v1/protection/purview/dlp-profiles/{profileId:D}:review-runtime-validation",
-            request);
-        AddIfMatchHeader(message, expectedRowVersion);
-        var response = await SendAsync<ProtectionOperationReviewResponse>(
-            message,
-            requiresAuthentication: true,
-            cancellationToken);
-        return CreateReviewTicket(response, expectedRowVersion);
-    }
-
     public Task<GatewayApiResource<ProtectionAdminOperationResponse>>
         GetProtectionAdminOperationAsync(
             Guid operationId,
@@ -567,11 +515,34 @@ public sealed class GatewayApiClient : IGatewayApiClient
             cancellationToken);
     }
 
+    public async Task<PurviewRuntimeReviewTicket> ReviewPurviewRuntimeTestAsync(
+        ReviewPurviewDlpRuntimeTestRequest request, CancellationToken cancellationToken = default)
+    {
+        EnsureNotEmpty(request.ProfileId, nameof(request.ProfileId));
+        var message = CreateJsonRequest(HttpMethod.Post,
+            $"api/v1/protection/purview/dlp-profiles/{request.ProfileId:D}:review-runtime-test", request);
+        AddIfMatchHeader(message, request.ExpectedRowVersion);
+        var response = await SendForValueAsync<PurviewRuntimeTestReviewResponse>(message, true, cancellationToken);
+        return new(response, request);
+    }
+
+    public async Task<PurviewRuntimeTestResultResponse> GetPurviewRuntimeTestAsync(
+        Guid operationId, CancellationToken cancellationToken = default)
+    {
+        EnsureNotEmpty(operationId, nameof(operationId));
+        var result = await SendForValueAsync<PurviewRuntimeTestResultResponse>(
+            new(HttpMethod.Get, $"api/v1/protection/runtime-tests/{operationId:D}"), true, cancellationToken);
+        if (!RuntimeTestUiProtocol.IsSafeReport(result, operationId))
+            throw new GatewayApiProtocolException("The runtime report was not recognized.", null);
+        return result;
+    }
+
     public Task<RegisterAgentResponse> RegisterAgentAsync(
         RegisterAgentRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        ValidatePurviewConfigurationIntent(request.PurviewConfigurationIntent);
 
         var message = CreateJsonRequest(HttpMethod.Post, "api/v1/agents", request);
 
@@ -585,6 +556,11 @@ public sealed class GatewayApiClient : IGatewayApiClient
     {
         EnsureNotEmpty(agentId, nameof(agentId));
         ArgumentNullException.ThrowIfNull(request);
+        ValidatePurviewConfigurationIntent(request.PurviewConfigurationIntent);
+        if (request.PurviewConfigurationIntent is not null)
+        {
+            ValidateMutationHeaders(request.IdempotencyKey ?? Guid.Empty, request.ExpectedRowVersion ?? string.Empty);
+        }
 
         var message = CreateJsonRequest(
             HttpMethod.Patch,
@@ -596,6 +572,14 @@ public sealed class GatewayApiClient : IGatewayApiClient
             request.ExpectedRowVersion);
 
         return SendForValueAsync<UpdateFeaturesResponse>(message, true, cancellationToken);
+    }
+
+    private static void ValidatePurviewConfigurationIntent(PurviewConfigurationIntentDto? intent)
+    {
+        if (intent is null) return;
+        EnsureNotEmpty(intent.ConfirmationTokenId, nameof(intent.ConfirmationTokenId));
+        ArgumentException.ThrowIfNullOrWhiteSpace(intent.ConfirmationToken);
+        ValidateMutationHeaders(intent.IdempotencyKey, intent.ExpectedRowVersion);
     }
 
     public Task<AgentStateChangeResponse> EnableAgentAsync(

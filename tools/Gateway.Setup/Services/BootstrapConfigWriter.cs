@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.ComponentModel.DataAnnotations;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -25,6 +26,18 @@ internal sealed class BootstrapConfigWriter(
     {
         ArgumentNullException.ThrowIfNull(planReady);
         var configuration = planReady.Configuration;
+        if (!configuration.PromptShield.Enabled)
+        {
+            throw new ValidationException(
+                "New gateways require shared Prompt Shields infrastructure. " +
+                "Preserve legacy disabled configurations and use the canonical terminal recovery path.");
+        }
+        if (!configuration.PromptShield.CostAndQuotaAcknowledged ||
+            configuration.PromptShield.SkuName is not ("F0" or "S0"))
+        {
+            throw new ValidationException(
+                "Select the Prompt Shields SKU and explicitly acknowledge its quota and Azure cost.");
+        }
         var json = BootstrapConfigurationDocument.Serialize(configuration);
         if (!string.Equals(json, planReady.SerializedJson, StringComparison.Ordinal) ||
             !BootstrapConfigurationDocument.HasFingerprint(

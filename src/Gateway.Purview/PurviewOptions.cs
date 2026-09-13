@@ -16,6 +16,7 @@ public sealed class PurviewOptions
     public string? PolicyProvisioningApplicationId { get; set; }
     public string? PolicyProvisioningCertificateSecretUri { get; set; }
     public string PolicyProvisioningPowerShellPath { get; set; } = "pwsh";
+    public string? ExecutorRuntimeManifestDigest { get; set; }
     public int PolicyProvisioningTimeoutSeconds { get; set; } = 180;
     public string DefaultSensitiveInformationTypeId { get; set; } = string.Empty;
     public string DefaultSensitiveInformationType { get; set; } = string.Empty;

@@ -9,7 +9,8 @@ public enum ProtectionAdminOperationType
     ReconcileDlpProfile,
     ValidateDlpRuntime,
     UpdateProtectionDefaults,
-    CompletePurviewTenantConnection
+    CompletePurviewTenantConnection,
+    TestDlpRuntime
 }
 
 public enum ProtectionAdminTargetType
@@ -32,7 +33,8 @@ public enum ProtectionAdminOperationStatus
     Completed,
     Failed,
     RequiresManualIntervention,
-    Cancelled
+    Cancelled,
+    AwaitingBlueprint
 }
 
 public enum ProtectionAdminStepType

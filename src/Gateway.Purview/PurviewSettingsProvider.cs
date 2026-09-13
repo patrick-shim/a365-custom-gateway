@@ -268,6 +268,26 @@ public sealed class PurviewSettingsProvider : IPurviewSettingsProvider
 
         ValidateProviderId(intent.ExpectedPolicyProviderId);
         ValidateProviderId(intent.ExpectedRuleProviderId);
+        if (intent.AllowUnverifiedThresholdReplacement &&
+            (intent.ExpectedPolicyProviderId is null || intent.ExpectedRuleProviderId is null))
+            throw Failure("PURVIEW_DLP_INTENT_INVALID", "Legacy threshold replacement requires both exact provider object identities.");
+        var selectedTypes = intent.NormalizedSensitiveInformationTypes;
+        if (selectedTypes.Count is < 1 or > 100 ||
+            selectedTypes.Select(value => value.Id).Distinct().Count() != selectedTypes.Count ||
+            !Enum.IsDefined(intent.EffectivePolicyMode) ||
+            !selectedTypes.Any(value => value.Id == intent.SensitiveInformationTypeId &&
+                value.ExactName == intent.SensitiveInformationTypeName && value.Publisher == intent.SensitiveInformationTypePublisher) ||
+            intent.EffectivePolicyMode.ToLegacy() != intent.Mode)
+            throw Failure("PURVIEW_DLP_INTENT_INVALID", "The policy mode or SIT selection is invalid.");
+        foreach (var type in selectedTypes)
+        {
+            ValidateCommon(intent.OperationId, intent.TenantId, intent.InventoryGenerationId, intent.InventoryExpiresAtUtc,
+                type.Id, type.ExactName, type.Publisher, intent.PolicyName, intent.Activities);
+            if (!PurviewSensitiveInformationTypeThresholds.AreValid(
+                    type.MinCount, type.MaxCount, type.MinConfidence, type.MaxConfidence))
+                throw Failure("PURVIEW_SIT_THRESHOLDS_REVIEW_REQUIRED",
+                    "Complete valid count and confidence thresholds must be explicitly reviewed before provider access.");
+        }
     }
 
     private static void ValidateCommon(
@@ -374,6 +394,16 @@ public sealed class PurviewSettingsProvider : IPurviewSettingsProvider
         PurviewDlpProfileReadback readback)
     {
         if (!ExactDlpPolicy(intent, readback) ||
+            readback.SensitiveInformationTypes is null ||
+            readback.SensitiveInformationTypesOperator != "Or" ||
+            readback.NormalizedSensitiveInformationTypes.Any(value =>
+                !PurviewSensitiveInformationTypeThresholds.AreValid(
+                    value.MinCount, value.MaxCount, value.MinConfidence, value.MaxConfidence)) ||
+            !ExactSet(
+                readback.NormalizedSensitiveInformationTypes.Select(value =>
+                    (value.Id, value.ExactName, value.Publisher, value.MinCount, value.MaxCount, value.MinConfidence, value.MaxConfidence)).ToArray(),
+                intent.NormalizedSensitiveInformationTypes.Select(value =>
+                    (value.Id, value.ExactName, value.Publisher, value.MinCount, value.MaxCount, value.MinConfidence, value.MaxConfidence)).ToArray()) ||
             string.IsNullOrWhiteSpace(readback.RuleProviderId) ||
             !MatchesExpectedId(intent.ExpectedRuleProviderId, readback.RuleProviderId) ||
             readback.SensitiveInformationTypeId != intent.SensitiveInformationTypeId ||
@@ -405,6 +435,7 @@ public sealed class PurviewSettingsProvider : IPurviewSettingsProvider
         readback.ScopeType == PurviewPolicyScopeType.Individual &&
         readback.EnforcementPlane == PurviewEnforcementPlane.Application &&
         readback.Mode == intent.Mode &&
+        readback.EffectivePolicyMode == intent.EffectivePolicyMode &&
         !readback.HasExclusions &&
         !readback.HasBypass &&
         MatchesExpectedId(intent.ExpectedPolicyProviderId, readback.PolicyProviderId) &&

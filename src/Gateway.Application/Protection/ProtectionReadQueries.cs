@@ -175,6 +175,9 @@ internal sealed class ProtectionReadQueriesHandler :
         {
             throw new NotFoundException("ProtectionAdminOperation", request.OperationId);
         }
+        if (operation.Type == Gateway.Domain.Enums.ProtectionAdminOperationType.TestDlpRuntime &&
+            operation.ActorObjectId != request.Actor.ObjectId)
+            throw new NotFoundException("ProtectionAdminOperation", request.OperationId);
 
         return new ProtectionAdminOperationResponse(
             ProtectionAdministrationMapper.ToDto(

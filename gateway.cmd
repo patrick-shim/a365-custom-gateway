@@ -354,7 +354,7 @@ exit /b 1
 
 :refresh_setup_tool_paths
 set "GATEWAY_SETUP_PROGRAM_FILES_X86=%ProgramFiles(x86)%"
-set "PATH=%ProgramFiles%\PowerShell\7;%ProgramFiles%\dotnet;%ProgramFiles%\Microsoft SDKs\Azure\CLI2\wbin;%ProgramW6432%\Microsoft SDKs\Azure\CLI2\wbin;%GATEWAY_SETUP_PROGRAM_FILES_X86%\Microsoft SDKs\Azure\CLI2\wbin;%LocalAppData%\Microsoft\WindowsApps;%LocalAppData%\Microsoft\WinGet\Links;%PATH%"
+set "PATH=%PATH%;%ProgramFiles%\PowerShell\7;%ProgramFiles%\dotnet;%ProgramFiles%\Microsoft SDKs\Azure\CLI2\wbin;%ProgramW6432%\Microsoft SDKs\Azure\CLI2\wbin;%GATEWAY_SETUP_PROGRAM_FILES_X86%\Microsoft SDKs\Azure\CLI2\wbin;%LocalAppData%\Microsoft\WindowsApps;%LocalAppData%\Microsoft\WinGet\Links"
 exit /b 0
 
 :parse_upgrade

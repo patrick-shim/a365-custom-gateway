@@ -14,7 +14,7 @@ function Assert-BootstrapPublisherRecoveryGeneration {
 function Get-BootstrapPublisherStableState {
     param([Parameter(Mandatory)][Collections.IDictionary]$State)
     $value = ConvertTo-BootstrapCanonicalValue -Value $State
-    foreach ($name in @('updatedAtUtc', 'steps', 'outputs', 'freshPurviewExecutor', 'publisherMetadataReconciliation', 'hostSettingsAmendment', 'readResilienceAmendment')) {
+    foreach ($name in @('updatedAtUtc', 'steps', 'outputs', 'freshPurviewExecutor', 'publisherMetadataReconciliation', 'hostSettingsAmendment', 'readResilienceAmendment', 'checkpointResumeAmendment')) {
         $value.Remove($name)
     }
     # Save-BootstrapState legitimately refreshes this provenance metadata, not the
@@ -473,6 +473,7 @@ function Assert-BootstrapPublisherParentReceipt {
 
 function Assert-BootstrapPublisherRecoveryPlan {
     param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Recovery)
+    if ($State.Contains('checkpointResumeAmendment')) { return Assert-BootstrapCheckpointResumeAmendment -State $State }
     if ($State.Contains('readResilienceAmendment')) {
         return Assert-BootstrapReadResilienceAmendment -State $State
     }
@@ -488,6 +489,7 @@ function Assert-BootstrapPublisherRecoveryPlan {
 
 function Assert-BootstrapPublisherRecoveryReceipt {
     param([Parameter(Mandatory)][Collections.IDictionary]$State)
+    if ($State.Contains('checkpointResumeAmendment')) { return Assert-BootstrapCheckpointResumeAmendment -State $State }
     $null = Assert-BootstrapPublisherParentReceipt -State $State
     return Assert-BootstrapPublisherRecoveryPlan -State $State -Recovery $State.publisherMetadataReconciliation
 }
@@ -526,6 +528,7 @@ function New-BootstrapPublisherRecoveryPlan {
 function Initialize-BootstrapPublisherRecoveryTooling {
     param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Config,
         [Parameter(Mandatory)][string]$Mode)
+    if ($State.Contains('checkpointResumeAmendment') -and -not $State.Contains('readResilienceAmendment')) { throw 'Checkpoint Resume requires its completed read resilience receipt.' }
     if ($State.Contains('readResilienceAmendment') -and -not $State.Contains('hostSettingsAmendment')) { throw 'Read resilience amendment requires its historical host settings receipt.' }
     if ($State.Contains('hostSettingsAmendment') -and -not $State.Contains('publisherMetadataReconciliation')) { throw 'Host settings amendment requires its original completed publisher receipt.' }
     if (-not $State.Contains('publisherMetadataReconciliation')) { return }
@@ -908,8 +911,7 @@ function Assert-BootstrapReadResiliencePlan {
         [string]$plan.hostReceiptFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.hostSettingsAmendment) -or
         [string]$plan.hostSourceFingerprint -cne [string]$State.hostSettingsAmendment.plan.correctedSourceFingerprint -or
         [string]$plan.originalSourceFingerprint -cne [string]$State.acceptedPlan.sourceFingerprint -or
-        [string]$plan.operationsFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.freshPurviewExecutor.operations) -or
-        [string]$plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) {
+        [string]$plan.operationsFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.freshPurviewExecutor.operations)) {
         throw 'Read resilience original receipts, operations, source or plan changed.'
     }
     $expected = ".bootstrap/accepted-source/$($State.deploymentOwnershipId)/$(([string]$Amendment.planFingerprint).Substring(7))"
@@ -926,6 +928,15 @@ function Assert-BootstrapReadResiliencePlan {
 }
 
 function Assert-BootstrapReadResilienceAmendment {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State)
+    $root = Assert-BootstrapReadResilienceHistoricalReceipt -State $State
+    if ([string]$State.readResilienceAmendment.plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) {
+        throw 'Read resilience current tooling changed; a distinct checkpoint Resume amendment is required.'
+    }
+    return $root
+}
+
+function Assert-BootstrapReadResilienceHistoricalReceipt {
     param([Parameter(Mandatory)][Collections.IDictionary]$State)
     $amendment = $State.readResilienceAmendment
     Assert-PurviewPublisherObjectFields -Object $amendment -Required @('plan', 'planFingerprint', 'executionSource',
@@ -992,6 +1003,7 @@ function Invoke-BootstrapReadResilienceAmendment {
         }
         if ($Mode -ceq 'Execute' -and $ExpectedPlanFingerprint -cne [string]$amendment.planFingerprint) { throw 'Read resilience approval fingerprint does not match.' }
         $null = Assert-BootstrapReadResiliencePlan -State $state -Amendment $amendment
+        if ([string]$amendment.plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) { throw 'Read resilience cannot authorize new tooling.' }
         if (-not $completed -and (Get-BootstrapObjectFingerprint -InputObject $state) -cne [string]$amendment.plan.initialStateFingerprint) {
             throw 'Original entire state changed after read resilience Plan.'
         }
@@ -1008,6 +1020,194 @@ function Invoke-BootstrapReadResilienceAmendment {
             $prior.Remove('readResilienceAmendment')
             if ((Get-BootstrapObjectFingerprint -InputObject $prior) -cne [string]$amendment.plan.initialStateFingerprint -or
                 (Get-FileHash -LiteralPath $StatePath -Algorithm SHA256).Hash -cne $rawHash) { throw 'Read resilience state changed while locked.' }
+            Write-BootstrapPublisherRecoveryJson -Path $StatePath -Value $state -Replace
+            $completed = $true
+        }
+        return [ordered]@{ status = if ($completed) { 'Completed' } else { 'ReviewedReadOnly' }
+            planFingerprint = $amendment.planFingerprint; planPath = $planPath
+            correctedSourceFingerprint = $amendment.plan.correctedSourceFingerprint
+            providerMutations = 0; stageReconciliation = 'NormalResumeOnly' }
+    }
+    finally { $lock.Dispose() }
+}
+
+function Get-BootstrapCheckpointResumeReviewedSources {
+    # This table is itself bound by the complete approved source manifest.
+    return @{
+        'bootstrap/modules/Common.psm1' = @('1dcfcaf4a4c00ec2d3950784627f576cd0e6d5b5c60295fcf0fa33ceb082a2eb', '70c7189baef8d1e0291250594b8949085e67b3d0e2d490892a81f03f89fefed8')
+        'bootstrap/modules/PublisherRecovery.psm1' = @('2e29a97d32835ea08ae1c9a0fe717997b0a70a59a2c31b9eab084a822d94b272', '96cb4eac860fceb0e4f107bd1ab738e743f4ac047305b70ad2946bde3b6dd3ca')
+        'bootstrap/bootstrap.ps1' = @('9521a8f9c11f92a965a75c50dd2ee4760a57b65b2f17cfa6ed5ca6e06b5fad13', '71bd4c491d8692fc502651cf17ae02dc38e70d239b283c1de08b00260e31c9d8')
+        'bootstrap/reconcile-publisher-metadata.ps1' = @('52ff377ca21f4b7713bd21912b2af0b243d0dbca3053b04538d8431da51a522e', 'deb3ffe174630dde5b3f0985c12cc3861fbe1a427b320597db64a66264d7cca3')
+    }
+}
+
+function Get-BootstrapCheckpointResumeSourceSurface {
+    param([Parameter(Mandatory)][string]$Path)
+    $text = [IO.File]::ReadAllText($Path)
+    $errors = $null; $tokens = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput($text, [ref]$tokens, [ref]$errors)
+    if ($errors.Count) { throw 'Checkpoint Resume source cannot be parsed.' }
+    $tables = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $n.Name -ceq 'Get-BootstrapCheckpointResumeReviewedSources' }, $true))
+    if ($tables.Count -gt 1 -or ($tables.Count -eq 1 -and [IO.Path]::GetFileName($Path) -cne 'PublisherRecovery.psm1')) {
+        throw 'Checkpoint Resume review table is outside its exact owner.'
+    }
+    if ($tables.Count -eq 1) { $text = $text.Remove($tables[0].Extent.StartOffset, $tables[0].Extent.EndOffset - $tables[0].Extent.StartOffset) }
+    return Get-BootstrapPublisherTokenFingerprint -Text $text
+}
+
+function Assert-BootstrapCheckpointResumeSourceDelta {
+    param([Parameter(Mandatory)][string]$ReadRoot, [Parameter(Mandatory)][string]$CandidateRoot)
+    $old = @{}; $candidate = @{}
+    foreach ($entry in @(Get-BootstrapSourceManifest -Root $ReadRoot)) { $old[$entry.path] = $entry.sha256 }
+    foreach ($entry in @(Get-BootstrapSourceManifest -Root $CandidateRoot)) { $candidate[$entry.path] = $entry.sha256 }
+    $reviewed = Get-BootstrapCheckpointResumeReviewedSources
+    if ($reviewed.Count -ne 4 -or @($reviewed.Keys | Where-Object {
+        $_ -cnotin @('bootstrap/modules/Common.psm1', 'bootstrap/modules/PublisherRecovery.psm1',
+            'bootstrap/bootstrap.ps1', 'bootstrap/reconcile-publisher-metadata.ps1')
+    }).Count) { throw 'Checkpoint Resume cannot expand its four-file source boundary.' }
+    $delta = [Collections.Generic.List[object]]::new()
+    foreach ($path in @(@($old.Keys) + @($candidate.Keys) | Sort-Object -Unique)) {
+        if (-not $old.ContainsKey($path) -or -not $candidate.ContainsKey($path)) { throw 'Checkpoint Resume cannot add or remove source files.' }
+        if ($old[$path] -ceq $candidate[$path]) { continue }
+        if (-not $reviewed.Contains($path) -or
+            (Get-BootstrapCheckpointResumeSourceSurface -Path (Join-Path $ReadRoot $path)) -cne $reviewed[$path][0] -or
+            (Get-BootstrapCheckpointResumeSourceSurface -Path (Join-Path $CandidateRoot $path)) -cne $reviewed[$path][1]) {
+            throw 'Checkpoint Resume source differs from its exact reviewed delta.'
+        }
+        $delta.Add([ordered]@{ path = $path; original = $old[$path]; corrected = $candidate[$path] })
+    }
+    if ($delta.Count -ne 4) { throw 'The complete distinct checkpoint Resume amendment is required.' }
+    return ,@($delta)
+}
+
+function Get-BootstrapCheckpointResumePriorReceipts {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State)
+    return Get-BootstrapObjectFingerprint -InputObject @{
+        publisher = $State.publisherMetadataReconciliation
+        host = $State.hostSettingsAmendment
+        read = $State.readResilienceAmendment
+    }
+}
+
+function Assert-BootstrapCheckpointResumeEligibility {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Config)
+    if ($State.Contains('checkpointResumeAmendment')) { throw 'Use the existing exact checkpoint Resume receipt.' }
+    $null = Assert-BootstrapReadResilienceHistoricalReceipt -State $State
+    $prior = ConvertTo-BootstrapCanonicalValue -Value $State
+    $prior.Remove('readResilienceAmendment')
+    Assert-BootstrapReadResilienceEligibility -State $prior -Config $Config
+}
+
+function Assert-BootstrapCheckpointResumePlan {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State, [Parameter(Mandatory)]$Amendment)
+    $readRoot = Assert-BootstrapReadResilienceHistoricalReceipt -State $State
+    Assert-PurviewPublisherObjectFields -Object $Amendment -Required @('plan', 'planFingerprint', 'executionSource') `
+        -Optional @('status', 'completedAtUtc', 'completionFingerprint')
+    $plan = $Amendment.plan
+    Assert-PurviewPublisherObjectFields -Object $plan -Required @('schemaVersion', 'kind', 'createdAtUtc',
+        'priorReceiptsFingerprint', 'readSourceFingerprint', 'originalSourceFingerprint', 'correctedSourceFingerprint',
+        'initialStateFingerprint', 'operationsFingerprint', 'sourceDelta', 'provider')
+    if ($plan.schemaVersion -ne 1 -or [string]$plan.kind -cne 'PublisherCheckpointResumeAmendment' -or
+        [string]$Amendment.planFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $plan) -or
+        [string]$plan.priorReceiptsFingerprint -cne (Get-BootstrapCheckpointResumePriorReceipts -State $State) -or
+        [string]$plan.readSourceFingerprint -cne [string]$State.readResilienceAmendment.plan.correctedSourceFingerprint -or
+        [string]$plan.originalSourceFingerprint -cne [string]$State.acceptedPlan.sourceFingerprint -or
+        [string]$plan.operationsFingerprint -cne (Get-BootstrapObjectFingerprint -InputObject $State.freshPurviewExecutor.operations) -or
+        [string]$plan.correctedSourceFingerprint -cne (Get-BootstrapSourceFingerprint)) { throw 'Checkpoint Resume receipt, source, plan or operations changed.' }
+    $expected = ".bootstrap/accepted-source/$($State.deploymentOwnershipId)/$(([string]$Amendment.planFingerprint).Substring(7))"
+    if ([string]$Amendment.executionSource -cne $expected) { throw 'Checkpoint Resume snapshot ownership or path changed.' }
+    Assert-BootstrapSourcePathIsRegular -Root (Get-RepositoryRoot) -RelativePath $expected | Out-Null
+    $root = Join-Path (Get-RepositoryRoot) $expected
+    if ((Get-BootstrapSourceFingerprint -Root $root) -cne [string]$plan.correctedSourceFingerprint) { throw 'Checkpoint Resume snapshot changed.' }
+    $delta = Assert-BootstrapCheckpointResumeSourceDelta -ReadRoot $readRoot -CandidateRoot $root
+    Assert-PurviewExecutorEqual -Actual $delta -Expected $plan.sourceDelta -Label 'checkpoint Resume source delta'
+    Assert-PurviewExecutorEqual -Actual $plan.provider -Expected $State.publisherMetadataReconciliation.plan.provider -Label 'checkpoint Resume provider binding'
+    return $root
+}
+
+function Assert-BootstrapCheckpointResumeAmendment {
+    param([Parameter(Mandatory)][Collections.IDictionary]$State)
+    $amendment = $State.checkpointResumeAmendment
+    Assert-PurviewPublisherObjectFields -Object $amendment -Required @('plan', 'planFingerprint', 'executionSource',
+        'status', 'completedAtUtc', 'completionFingerprint')
+    if ([string]$amendment.status -cne 'Completed' -or [string]$amendment.completionFingerprint -cne
+        (Get-BootstrapObjectFingerprint -InputObject @{
+            planFingerprint = $amendment.planFingerprint; completedAtUtc = $amendment.completedAtUtc; status = 'Completed'
+        })) { throw 'Checkpoint Resume receipt is incomplete or changed.' }
+    $time = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParseExact([string]$amendment.completedAtUtc, 'O', [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind, [ref]$time)) { throw 'Checkpoint Resume timestamp is invalid.' }
+    return Assert-BootstrapCheckpointResumePlan -State $State -Amendment $amendment
+}
+
+function Invoke-BootstrapCheckpointResumeAmendment {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Plan', 'Execute')][string]$Mode,
+        [Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$StatePath,
+        [string]$ExpectedPlanFingerprint = '', [switch]$Yes)
+    if ($Mode -ceq 'Execute' -and (-not $Yes -or $ExpectedPlanFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$')) {
+        throw 'Checkpoint Resume Execute requires Yes and the exact separately reviewed fingerprint.'
+    }
+    $repository = Get-RepositoryRoot
+    if ([IO.Path]::GetFullPath($StatePath) -cne [IO.Path]::GetFullPath((Get-BootstrapStatePath -Config $Config)) -or
+        -not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { throw 'Original exact deployment state is required.' }
+    Assert-BootstrapSourcePathIsRegular -Root $repository -RelativePath ([IO.Path]::GetRelativePath($repository, $StatePath)) | Out-Null
+    $lock = Enter-BootstrapLock -StatePath $StatePath
+    try {
+        $state = Read-BootstrapState -Path $StatePath -Config $Config
+        if ((Get-BootstrapConfigurationFingerprint -Config $Config) -cne [string]$state.configurationFingerprint) { throw 'Checkpoint Resume configuration changed.' }
+        $rawHash = (Get-FileHash -LiteralPath $StatePath -Algorithm SHA256).Hash
+        $completed = $state.Contains('checkpointResumeAmendment')
+        if ($completed) { $null = Assert-BootstrapCheckpointResumeAmendment -State $state }
+        else { Assert-BootstrapCheckpointResumeEligibility -State $state -Config $Config }
+        $planPath = Join-Path $repository ".bootstrap/publisher-checkpoint-resume-amendment/$($state.deploymentOwnershipId)/plan.json"
+        Assert-BootstrapSourcePathIsRegular -Root $repository -RelativePath ([IO.Path]::GetRelativePath($repository, $planPath)) | Out-Null
+        $amendment = $null
+        if ($completed) { $amendment = $state.checkpointResumeAmendment }
+        elseif (Test-Path -LiteralPath $planPath -PathType Leaf) {
+            $amendment = [IO.File]::ReadAllText($planPath) | ConvertFrom-Json -AsHashtable -Depth 100
+            Convert-BootstrapParsedJsonDatesToStrings -Value $amendment
+        }
+        elseif ($Mode -ceq 'Execute') { throw 'A separate checkpoint Resume Plan is required.' }
+        if ($null -eq $amendment) {
+            $readRoot = Assert-BootstrapReadResilienceHistoricalReceipt -State $state
+            $delta = Assert-BootstrapCheckpointResumeSourceDelta -ReadRoot $readRoot -CandidateRoot $repository
+            $proof = Get-BootstrapHostSettingsProof -State $state -Config $Config
+            $plan = ConvertTo-BootstrapCanonicalValue -Value @{
+                schemaVersion = 1; kind = 'PublisherCheckpointResumeAmendment'; createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+                priorReceiptsFingerprint = Get-BootstrapCheckpointResumePriorReceipts -State $state
+                readSourceFingerprint = $state.readResilienceAmendment.plan.correctedSourceFingerprint
+                originalSourceFingerprint = $state.acceptedPlan.sourceFingerprint
+                correctedSourceFingerprint = Get-BootstrapSourceFingerprint
+                initialStateFingerprint = Get-BootstrapObjectFingerprint -InputObject $state
+                operationsFingerprint = Get-BootstrapObjectFingerprint -InputObject $state.freshPurviewExecutor.operations
+                sourceDelta = $delta; provider = $proof
+            }
+            $fingerprint = Get-BootstrapObjectFingerprint -InputObject $plan
+            $snapshot = New-BootstrapAcceptedSourceSnapshot -State $state -PlanFingerprint $fingerprint -SourceFingerprint $plan.correctedSourceFingerprint
+            $amendment = [ordered]@{ plan = $plan; planFingerprint = $fingerprint; executionSource = $snapshot }
+            [IO.Directory]::CreateDirectory((Split-Path -Parent $planPath)) | Out-Null
+            Write-BootstrapPublisherRecoveryJson -Path $planPath -Value $amendment
+        }
+        if ($Mode -ceq 'Execute' -and $ExpectedPlanFingerprint -cne [string]$amendment.planFingerprint) { throw 'Checkpoint Resume approval fingerprint does not match.' }
+        $null = Assert-BootstrapCheckpointResumePlan -State $state -Amendment $amendment
+        if (-not $completed -and (Get-BootstrapObjectFingerprint -InputObject $state) -cne [string]$amendment.plan.initialStateFingerprint) {
+            throw 'Original entire state changed after checkpoint Resume Plan.'
+        }
+        $null = Get-BootstrapHostSettingsProof -State $state -Config $Config
+        if ($Mode -ceq 'Execute' -and -not $completed) {
+            $amendment.status = 'Completed'
+            $amendment.completedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+            $amendment.completionFingerprint = Get-BootstrapObjectFingerprint -InputObject @{
+                planFingerprint = $amendment.planFingerprint; completedAtUtc = $amendment.completedAtUtc; status = 'Completed'
+            }
+            $state.checkpointResumeAmendment = $amendment
+            $null = Assert-BootstrapCheckpointResumeAmendment -State $state
+            $prior = ConvertTo-BootstrapCanonicalValue -Value $state
+            $prior.Remove('checkpointResumeAmendment')
+            if ((Get-BootstrapObjectFingerprint -InputObject $prior) -cne [string]$amendment.plan.initialStateFingerprint -or
+                (Get-FileHash -LiteralPath $StatePath -Algorithm SHA256).Hash -cne $rawHash) { throw 'Checkpoint Resume state changed while locked.' }
             Write-BootstrapPublisherRecoveryJson -Path $StatePath -Value $state -Replace
             $completed = $true
         }

@@ -19,6 +19,11 @@ public class ProtectionAdminOperation
     public string ReviewedPayloadHash { get; set; } = string.Empty;
     public string? AcceptedRequestHash { get; set; }
     public string? ResultJson { get; set; }
+    public string? RuntimeTestConsentJson { get; set; }
+    public string? RuntimeTestResultJson { get; set; }
+    public string? RuntimeTestSuiteHash { get; set; }
+    public string? RuntimeTestConfigurationFingerprint { get; set; }
+    public PurviewDeferredConfigurationIntent? DeferredConfiguration { get; set; }
     public ProtectionIdempotencyKey IdempotencyKey { get; set; }
     public byte[] ExpectedRowVersion { get; set; } = [];
     public ProtectionConfirmationVerifier? ConfirmationVerifier { get; set; }

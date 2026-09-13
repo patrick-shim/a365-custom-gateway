@@ -527,6 +527,13 @@ function Assert-PurviewExecutorRoles {
     }
 }
 
+function Get-PurviewExecutorExpectedPlanSku {
+    param([Parameter(Mandatory)][Collections.IDictionary]$Outputs)
+    $sku = if ($Outputs.Contains('executorPlanSku')) { [string]$Outputs.executorPlanSku.value } else { 'B1' }
+    if ($sku -cnotin @('B1','B2')) { throw 'The recorded executor plan SKU is not supported.' }
+    return $sku
+}
+
 function Assert-PurviewExecutorHost {
     param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$Foundation,
         [Parameter(Mandatory)][Collections.IDictionary]$Record, [switch]$Enabled)
@@ -548,8 +555,10 @@ function Assert-PurviewExecutorHost {
     $planId = "/subscriptions/$($Config.subscriptionId)/resourceGroups/$($Config.resourceGroupName)/providers/Microsoft.Web/serverfarms/asp-$($Config.projectName)-$($Config.environment)-purview"
     $plan = Get-PurviewExecutorArmResource -Id $planId -ApiVersion '2024-11-01'
     Assert-PurviewExecutorOwnedResource -Resource $plan -Id $planId -Context $context
+    $expectedSku = Get-PurviewExecutorExpectedPlanSku -Outputs $outputs
     if (-not ([string]$site.properties.serverFarmId).Equals($planId, [StringComparison]::OrdinalIgnoreCase) -or
-        $plan.properties.reserved -ne $false -or [string]$plan.sku.name -cne 'B1' -or $plan.sku.capacity -ne 1 -or
+        $expectedSku -cnotin @('B1','B2') -or
+        $plan.properties.reserved -ne $false -or [string]$plan.sku.name -cne $expectedSku -or $plan.sku.capacity -ne 1 -or
         $site.properties.outboundVnetRouting.allTraffic -ne $true) { throw 'Executor must use the owned Windows plan and private outbound routing.' }
     $subnet = Get-PurviewExecutorArmResource -Id $outputs.integrationSubnetId.value -ApiVersion '2023-11-01'
     if ([string]$subnet.properties.addressPrefix -cne '10.42.3.0/26' -or
@@ -636,6 +645,7 @@ function Assert-PurviewExecutorHost {
         $expectedSettings = [ordered]@{
             WEBSITE_RUN_FROM_PACKAGE = "$($outputs.packageContainerUri.value)/$(([string]$Record.package.receipt.packageDigest).Substring(7)).zip"
             WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID = 'SystemAssigned'; SCM_DO_BUILD_DURING_DEPLOYMENT = 'false'
+            WEBSITE_LOAD_USER_PROFILE = '1'
             DOTNET_EnableDiagnostics = '0'; ASPNETCORE_ENVIRONMENT = 'Production'
             Executor__ClaimsContainerUri = "$($outputs.packageContainerUri.value -replace '/purview-executor-packages$', '/purview-executor-claims')"
             Executor__RuntimeManifestDigest = $Record.package.receipt.runtimeManifestDigest; Executor__OperationTimeoutSeconds = '195'

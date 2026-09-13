@@ -19,6 +19,10 @@ public class PromptEvaluationRecord
     public PromptEvaluationOutcome Outcome { get; set; }
     public PromptShieldDecisionType PromptShieldDecision { get; set; }
     public PurviewDecisionType PurviewDecision { get; set; }
+    public Guid? ProtectionRevision { get; set; }
+    public string? ProtectionContextHash { get; set; }
+    public bool? PromptShieldRequired { get; set; }
+    public PurviewPolicyMode? EvaluatedPurviewPolicyMode { get; set; }
     public string CorrelationId { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; }
     public DateTime ExpiresAtUtc { get; set; }

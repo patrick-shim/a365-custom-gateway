@@ -57,6 +57,21 @@ collection uses the fixed tenant-wide enterprise-AI-apps location as
 application/client ID as `LocationType=Individual`. Both are Application-plane
 locations.
 
+Know Your Data collection enablement is not a DLP simulation mode.
+`New-FeatureConfiguration` and `Set-FeatureConfiguration` support native
+`Enable`/`Disable` only. The Gateway's existing `AuditOnly` and `Enforce`
+collection choices both create an enabled collection policy; the legacy choice
+is retained in Gateway configuration. Blocking and DLP simulation remain
+separately reviewed blueprint-profile settings. Never send
+`TestWithoutNotifications` or `TestWithNotifications` as a collection-policy mode.
+
+For a collection scoped to a specific sensitive information type, keep
+`IsIngestionEnabled=false`: this flag controls full AI content capture, not
+whether the collection policy is enabled. Microsoft requires the **All**
+classifier scope for full AI content capture. The Settings review retains the
+chosen classifier rather than silently widening it to All. The separate legacy
+bootstrap collection already explicitly uses All and may retain full capture.
+
 ## Recovery rules
 
 - Diagnose and reconcile before mutating.

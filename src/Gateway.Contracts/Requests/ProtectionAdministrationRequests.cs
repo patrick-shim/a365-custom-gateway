@@ -48,11 +48,15 @@ public sealed record ReviewPurviewDlpProfileOperationRequest(
     Guid TenantConnectionId,
     Guid BlueprintApplicationId,
     string DisplayName,
-    PurviewSensitiveInformationTypeSelectionDto SensitiveInformationType,
+    PurviewSensitiveInformationTypeSelectionDto? SensitiveInformationType,
     string Mode,
     IReadOnlyList<string> Activities,
     IReadOnlyList<PurviewDlpRuleActionDto> Actions,
-    string ExpectedRowVersion);
+    string ExpectedRowVersion,
+    IReadOnlyList<PurviewSensitiveInformationTypeSelectionDto>? SensitiveInformationTypes = null,
+    string? PolicyMode = null,
+    bool AcknowledgeSharedPolicyImpact = false,
+    PurviewDeferredBlueprintDto? DeferredBlueprint = null);
 
 public sealed record StartPurviewDlpProfileOperationRequest(
     Guid ConfirmationTokenId,

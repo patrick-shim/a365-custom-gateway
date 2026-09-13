@@ -14,7 +14,10 @@ param(
     [Parameter(Mandatory, ParameterSetName = 'Build')][string]$OutputDirectory,
     [Parameter(Mandatory, ParameterSetName = 'Validate')][switch]$ValidateOnly,
     [string]$PowerShellDirectory = $PSHOME,
-    [string]$ExpectedSourceFingerprint = ''
+    [string]$ExpectedSourceFingerprint = '',
+    [string]$PreservedChildSourceRoot = '',
+    [string]$PreservedChildSourceFingerprint = '',
+    [string]$PreservedChildPackageDigest = ''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -118,6 +121,11 @@ if (-not $ValidateOnly) {
 $powerShellRoot = [IO.Path]::GetFullPath($PowerShellDirectory)
 Assert-PurviewDependencyTree -Root $powerShellRoot
 $powerShellPath = Join-Path $powerShellRoot 'pwsh.exe'
+$enginePath = Join-Path $powerShellRoot 'System.Management.Automation.dll'
+$engineSignature = Get-AuthenticodeSignature -LiteralPath $enginePath
+if ($engineSignature.Status -ne 'Valid' -or $engineSignature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') {
+    throw 'Packaged PowerShell engine must have a valid Microsoft Authenticode signature.'
+}
 $signature = Get-AuthenticodeSignature -LiteralPath $powerShellPath
 if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') {
     throw 'Packaged PowerShell must have a valid Microsoft Authenticode signature.'
@@ -135,9 +143,53 @@ if (-not [string]::IsNullOrEmpty($ExpectedSourceFingerprint) -and $sourceFingerp
 $publishDirectory = Join-Path $outputRoot 'publish'
 [IO.Directory]::CreateDirectory($publishDirectory) | Out-Null
 & dotnet publish (Join-Path $repositoryRoot 'src/Gateway.Purview.Executor/Gateway.Purview.Executor.csproj') `
-    -c Release -r win-x64 --self-contained true -o $publishDirectory /p:UseAppHost=true
+    -c Release -r win-x64 --self-contained true -o $publishDirectory /p:UseAppHost=true "/p:PurviewPowerShellReferencePath=$powerShellRoot"
 if ($LASTEXITCODE -ne 0) { throw 'Windows executor publish failed.' }
+if (-not [string]::IsNullOrEmpty($PreservedChildSourceRoot)) {
+    $preservedRoot = [IO.Path]::GetFullPath($PreservedChildSourceRoot)
+    Assert-PurviewDependencyTree -Root $preservedRoot
+    if ((Get-BootstrapSourceFingerprint -Root $preservedRoot) -cne $PreservedChildSourceFingerprint) {
+        throw 'Preserved child source fingerprint does not match.'
+    }
+    $childInputs = {
+        $_.path.StartsWith('src/Gateway.Purview.PowerShellHost/', [StringComparison]::Ordinal) -or
+        $_.path -cin @('src/Gateway.Purview/PurviewChildInvocation.cs', 'src/Gateway.Purview/PurviewRuntimeManifest.cs',
+            'global.json', 'nuget.config', 'Directory.Build.props', 'Directory.Build.targets', 'Directory.Packages.props')
+    }
+    $oldInputs = @(Get-BootstrapSourceManifest -Root $preservedRoot | Where-Object $childInputs)
+    $newInputs = @(Get-BootstrapSourceManifest -Root $repositoryRoot | Where-Object $childInputs)
+    if ((Get-BootstrapObjectFingerprint $oldInputs) -cne (Get-BootstrapObjectFingerprint $newInputs)) {
+        throw 'Preserved child source or build inputs changed.'
+    }
+    Import-Module (Join-Path $repositoryRoot 'bootstrap/modules/PurviewPackage.psm1') -Force -DisableNameChecking
+    $preserved = Read-PurviewExecutorPackage -PackageDirectory (Join-Path $preservedRoot '.bootstrap/hotfix-package') `
+        -ExpectedSourceFingerprint $PreservedChildSourceFingerprint
+    if ($preserved.receipt.packageDigest -cne $PreservedChildPackageDigest) {
+        throw 'Preserved child package digest does not match.'
+    }
+    $archive = [IO.Compression.ZipFile]::OpenRead($preserved.packagePath)
+    try {
+        foreach ($name in @('Gateway.Purview.PowerShellHost.exe', 'Gateway.Purview.PowerShellHost.dll',
+            'Gateway.Purview.PowerShellHost.deps.json', 'Gateway.Purview.PowerShellHost.runtimeconfig.json',
+            'Gateway.Purview.PowerShellHost.pdb')) {
+            $entry = $archive.GetEntry($name)
+            if ($null -eq $entry -or $entry.Length -gt 32MB) { throw 'Preserved child entry is missing or unbounded.' }
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $publishDirectory $name), $true)
+        }
+    } finally { $archive.Dispose() }
+} elseif ($PreservedChildSourceFingerprint -or $PreservedChildPackageDigest) {
+    throw 'Preserved child bindings require their exact source root.'
+}
+foreach ($name in @('Gateway.Purview.PowerShellHost.exe', 'Gateway.Purview.PowerShellHost.dll',
+    'Gateway.Purview.PowerShellHost.deps.json', 'Gateway.Purview.PowerShellHost.runtimeconfig.json')) {
+    if (-not [IO.File]::Exists((Join-Path $publishDirectory $name))) { throw 'The console-free child host is missing from executor publish.' }
+}
+if ([IO.File]::Exists((Join-Path $publishDirectory 'System.Management.Automation.dll'))) {
+    throw 'The child must load only the pinned engine under PowerShell, not an SDK runtime copy.'
+}
 Copy-Item -LiteralPath $powerShellRoot -Destination (Join-Path $publishDirectory 'PowerShell') -Recurse
+# Add-Type resolves reference assemblies beside the entry assembly, not SMA.dll.
+Copy-Item -LiteralPath (Join-Path $powerShellRoot 'ref') -Destination (Join-Path $publishDirectory 'ref') -Recurse
 $moduleDestination = Join-Path $publishDirectory 'PowerShellModules/ExchangeOnlineManagement/3.10.1'
 [IO.Directory]::CreateDirectory((Split-Path -Parent $moduleDestination)) | Out-Null
 Copy-Item -LiteralPath $moduleRoot -Destination $moduleDestination -Recurse

@@ -60,6 +60,11 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 builder.Services.AddFluentUIComponents();
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-Gateway-CSRF";
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+});
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IGatewayAccessTokenProvider, GatewayAccessTokenProvider>();
 
@@ -88,6 +93,13 @@ builder.Services.AddHttpClient<IGatewayApiClient, GatewayApiClient>((services, c
     client.BaseAddress = options.BaseUrl;
     client.Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds);
 });
+builder.Services.AddHttpClient(PurviewRuntimeExecutionClient.ClientName, (services, client) =>
+{
+    var options = services.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayApiOptions>>().Value;
+    client.BaseAddress = options.BaseUrl;
+    client.Timeout = TimeSpan.FromSeconds(120);
+}).RemoveAllLoggers();
+builder.Services.AddScoped<IPurviewRuntimeExecutionClient, PurviewRuntimeExecutionClient>();
 
 builder.Services.AddHealthChecks();
 
@@ -107,6 +119,7 @@ app.UseAuthorization();
 app.UseAntiforgery();
 
 app.MapGatewayAuthenticationEndpoints();
+app.MapPurviewRuntimePortalEndpoints();
 app.MapHealthChecks("/health").AllowAnonymous();
 
 app.MapStaticAssets().AllowAnonymous();

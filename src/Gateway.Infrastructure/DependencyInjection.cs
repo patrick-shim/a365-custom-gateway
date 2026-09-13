@@ -61,6 +61,8 @@ public static class DependencyInjection
             PurviewKnowYourDataConfigurationRepository>();
         services.AddScoped<IPurviewDlpProfileRepository, PurviewDlpProfileRepository>();
         services.AddScoped<IProtectionAdminOperationRepository, ProtectionAdminOperationRepository>();
+        services.AddScoped<IPurviewRuntimeTestRepository, PurviewRuntimeTestRepository>();
+        services.AddScoped<IProtectionProfileMutationGuard, ProtectionProfileMutationGuard>();
         services.AddScoped<
             IProtectionAdminOperationLockProvider,
             ProtectionAdminOperationLockProvider>();

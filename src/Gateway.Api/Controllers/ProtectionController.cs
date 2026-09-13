@@ -83,6 +83,13 @@ public sealed class ProtectionController : ControllerBase
         CancellationToken cancellationToken)
     {
         var actor = User.GetProtectionActor();
+        if (request.ReviewTokenId == Guid.Empty)
+            throw new Gateway.Application.Exceptions.ValidationException(
+                new Dictionary<string, string[]> { ["ReviewTokenId"] = ["A review identifier is required."] });
+        await using var operationLock = await _locks.AcquireExecutionAsync(request.ReviewTokenId, cancellationToken);
+        var reviewed = await _sender.Send(new GetProtectionAdminOperationQuery(actor, request.ReviewTokenId), cancellationToken);
+        if (reviewed?.Operation.Type == "TestDlpRuntime" && !Request.IsHttps)
+            throw new Gateway.Application.Exceptions.ProtectionAccessDeniedException();
         var result = await _sender.Send(
             new ConfirmProtectionOperationReviewCommand(actor, request),
             cancellationToken);

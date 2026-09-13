@@ -7,6 +7,8 @@
   <Project Path="Gateway.Purview.PackagePublisher/Gateway.Purview.PackagePublisher.csproj" />
   <Project Path="Gateway.Purview/Gateway.Purview.csproj" />
   <Project Path="Gateway.Purview.Executor/Gateway.Purview.Executor.csproj" />
+  <Project Path="Gateway.Purview.Executor.StartupDiagnostics/Gateway.Purview.Executor.StartupDiagnostics.csproj" />
+  <Project Path="Gateway.Purview.PowerShellHost/Gateway.Purview.PowerShellHost.csproj" />
   <Project Path="Gateway.ContentSafety/Gateway.ContentSafety.csproj" />
   <Project Path="Gateway.Observability/Gateway.Observability.csproj" />
   <Project Path="Gateway.Api/Gateway.Api.csproj" />

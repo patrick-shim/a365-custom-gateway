@@ -3,8 +3,10 @@ $ErrorActionPreference = 'Stop'
 
 $script:GraphAppId = '00000003-0000-0000-c000-000000000000'
 $script:KeyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
-$script:PurviewExchangeOnlineProtectionAppId = '00000007-0000-0ff1-ce00-000000000000'
-$script:PurviewExchangeManageAsAppRoleId = '455e5cd2-84e8-4751-8344-5672145dfa17'
+$script:PurviewExchangeOnlineAppId = '00000002-0000-0ff1-ce00-000000000000'
+$script:PurviewExchangeManageAsAppRoleId = 'dc50a0fb-09a3-484d-be87-e023b12c6440'
+$script:PurviewLegacyProtectionAppId = '00000007-0000-0ff1-ce00-000000000000'
+$script:PurviewLegacyProtectionRoleId = '455e5cd2-84e8-4751-8344-5672145dfa17'
 $script:PurviewComplianceAdministratorRoleDefinitionId = '17315797-102d-40b4-93e0-432062caca18'
 $script:PurviewCertificateCredentialDays = 364
 
@@ -704,9 +706,11 @@ function Get-BootstrapInitialTenantDomain {
 }
 
 function Get-BootstrapPurviewExchangeRole {
-    $exchange = Get-ServicePrincipalByAppId -AppId $script:PurviewExchangeOnlineProtectionAppId
-    if (-not $exchange) {
-        throw 'Microsoft Exchange Online Protection service principal was not found in the tenant.'
+    # The compliance endpoint's resource is Exchange Online; EOP's similarly named role is a different grant.
+    $exchange = Get-ServicePrincipalByAppId -AppId $script:PurviewExchangeOnlineAppId
+    if (-not $exchange -or [string]$exchange.appId -cne $script:PurviewExchangeOnlineAppId -or
+        @($exchange.servicePrincipalNames) -cnotcontains 'https://ps.compliance.protection.outlook.com') {
+        throw 'The exact Exchange Online resource for Security and Compliance PowerShell was not found in the tenant.'
     }
     $roles = @($exchange.appRoles | Where-Object {
         [string]$_.id -ceq $script:PurviewExchangeManageAsAppRoleId -and
@@ -715,7 +719,7 @@ function Get-BootstrapPurviewExchangeRole {
         @($_.allowedMemberTypes) -contains 'Application'
     })
     if ($roles.Count -ne 1) {
-        throw 'Microsoft Exchange Online Protection Exchange.ManageAsApp was not uniquely available.'
+        throw 'Exchange Online Exchange.ManageAsApp was not uniquely available.'
     }
     return [ordered]@{
         servicePrincipalId = ([guid][string]$exchange.id).ToString('D')
@@ -757,12 +761,18 @@ function Assert-BootstrapPurviewAutomationApplication {
         throw 'Purview automation application authentication and local permission surfaces are not exact.'
     }
     $requirements = @($Application.requiredResourceAccess)
-    $access = if ($requirements.Count -eq 1) { @($requirements[0].resourceAccess) } else { @() }
-    if ($requirements.Count -ne 1 -or
-        [string]$requirements[0].resourceAppId -cne $script:PurviewExchangeOnlineProtectionAppId -or
+    $requiredExchange = @($requirements | Where-Object { [string]$_.resourceAppId -ceq $script:PurviewExchangeOnlineAppId })
+    $legacy = @($requirements | Where-Object { [string]$_.resourceAppId -ceq $script:PurviewLegacyProtectionAppId })
+    $access = if ($requiredExchange.Count -eq 1) { @($requiredExchange[0].resourceAccess) } else { @() }
+    $legacyAccess = if ($legacy.Count -eq 1) { @($legacy[0].resourceAccess) } else { @() }
+    if ($requiredExchange.Count -ne 1 -or $legacy.Count -gt 1 -or
+        $requirements.Count -ne 1 + $legacy.Count -or
         $access.Count -ne 1 -or
         [string]$access[0].id -cne [string]$ExchangeRole.roleId -or
-        [string]$access[0].type -cne 'Role') {
+        [string]$access[0].type -cne 'Role' -or
+        ($legacy.Count -eq 1 -and ($legacyAccess.Count -ne 1 -or
+            [string]$legacyAccess[0].id -cne $script:PurviewLegacyProtectionRoleId -or
+            [string]$legacyAccess[0].type -cne 'Role'))) {
         throw 'Purview automation application requiredResourceAccess is not the exact Security and Compliance app-only permission.'
     }
     if (-not $AllowMissingCertificate -and @($Application.keyCredentials).Count -ne 1) {
@@ -819,6 +829,17 @@ function Assert-BootstrapPurviewAutomationServicePrincipal {
         [string]$_.resourceId -ceq [string]$ExchangeRole.servicePrincipalId -and
         [string]$_.appRoleId -ceq [string]$ExchangeRole.roleId
     })
+    $matchingLegacy = @()
+    if ($assignments.Count -ne $matchingExchange.Count) {
+        $legacy = Get-ServicePrincipalByAppId -AppId $script:PurviewLegacyProtectionAppId
+        if ($legacy -and [string]$legacy.appId -ceq $script:PurviewLegacyProtectionAppId -and
+            ([guid][string]$legacy.id) -ne [guid]::Empty) {
+            $matchingLegacy = @($assignments | Where-Object {
+                [string]$_.resourceId -ceq [string]$legacy.id -and
+                [string]$_.appRoleId -ceq $script:PurviewLegacyProtectionRoleId
+            })
+        }
+    }
     $directoryAssignments = @(Get-BootstrapPurviewDirectoryRoleAssignments -PrincipalId $principalId)
     $matchingCompliance = @($directoryAssignments | Where-Object {
         [string]$_.principalId -ceq $principalId -and
@@ -826,15 +847,17 @@ function Assert-BootstrapPurviewAutomationServicePrincipal {
         [string]$_.directoryScopeId -ceq '/'
     })
     $minimum = if ($AllowMissingAssignments) { 0 } else { 1 }
-    if ($assignments.Count -gt 1 -or $assignments.Count -lt $minimum -or
-        $matchingExchange.Count -ne $assignments.Count -or
+    if ($matchingExchange.Count -gt 1 -or $matchingExchange.Count -lt $minimum -or
+        $matchingLegacy.Count -gt 1 -or
+        $matchingExchange.Count + $matchingLegacy.Count -ne $assignments.Count -or
         $directoryAssignments.Count -gt 1 -or
         $directoryAssignments.Count -lt $minimum -or
         $matchingCompliance.Count -ne $directoryAssignments.Count) {
         throw 'Purview automation principal app-only or Compliance Administrator assignments are outside the exact reviewed boundary.'
     }
     return [ordered]@{
-        exchangeAssignments = @($assignments)
+        exchangeAssignments = @($matchingExchange)
+        legacyProtectionAssignments = @($matchingLegacy)
         complianceAssignments = @($directoryAssignments)
     }
 }
@@ -933,7 +956,7 @@ function Get-BootstrapPurviewAutomationIdentityEvidence {
         automationApplicationObjectId = ([guid][string]$application.id).ToString('D')
         automationApplicationId = ([guid][string]$application.appId).ToString('D')
         automationServicePrincipalId = ([guid][string]$principal.id).ToString('D')
-        exchangeOnlineProtectionApplicationId = $script:PurviewExchangeOnlineProtectionAppId
+        exchangeOnlineApplicationId = $script:PurviewExchangeOnlineAppId
         exchangeManageAsAppRoleId = $script:PurviewExchangeManageAsAppRoleId
         complianceAdministratorRoleDefinitionId = $script:PurviewComplianceAdministratorRoleDefinitionId
         keyCredentialId = [string]$certificate.keyCredentialId
@@ -1135,7 +1158,7 @@ function Ensure-BootstrapPurviewAutomationIdentity {
             api = @{ acceptMappedClaims = $false; preAuthorizedApplications = @(); knownClientApplications = @(); oauth2PermissionScopes = @() }
             appRoles = @()
             requiredResourceAccess = @(@{
-                resourceAppId = $script:PurviewExchangeOnlineProtectionAppId
+                resourceAppId = $script:PurviewExchangeOnlineAppId
                 resourceAccess = @(@{
                     id = $script:PurviewExchangeManageAsAppRoleId
                     type = 'Role'

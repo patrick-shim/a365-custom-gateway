@@ -28,6 +28,7 @@ internal sealed class ProvisioningMessageHandler
     private readonly IProvisioningExecutionLockProvider _provisioningExecutionLockProvider;
     private readonly ProvisioningWorkerOptions _options;
     private readonly ILogger<ProvisioningMessageHandler> _logger;
+    private readonly MediatR.ISender? _sender;
 
     public ProvisioningMessageHandler(
         IAgent365ProvisioningClient provisioningClient,
@@ -41,7 +42,8 @@ internal sealed class ProvisioningMessageHandler
         IUnitOfWork unitOfWork,
         IProvisioningExecutionLockProvider provisioningExecutionLockProvider,
         IOptions<ProvisioningWorkerOptions> options,
-        ILogger<ProvisioningMessageHandler> logger)
+        ILogger<ProvisioningMessageHandler> logger,
+        MediatR.ISender? sender = null)
     {
         _provisioningClient = provisioningClient;
         _agentRepository = agentRepository;
@@ -55,6 +57,7 @@ internal sealed class ProvisioningMessageHandler
         _provisioningExecutionLockProvider = provisioningExecutionLockProvider;
         _options = options.Value;
         _logger = logger;
+        _sender = sender;
     }
 
     public async Task<MessageHandlingResult> HandleAsync(
@@ -1476,6 +1479,12 @@ internal sealed class ProvisioningMessageHandler
             agent.Status = AgentStatus.Active;
             agent.LastProvisioningErrorCode = null;
             agent.LastProvisioningErrorSummary = null;
+        }
+        if (agent.PurviewConfigurationOperationId is not null)
+        {
+            if (_sender is null)
+                throw new InvalidOperationException("Deferred protection continuation is unavailable.");
+            await _sender.Send(new Gateway.Application.Protection.ResolveDeferredPurviewConfigurationCommand(agent.Id), ct);
         }
 
         await _auditEventRepository.AddAsync(new AuditEvent

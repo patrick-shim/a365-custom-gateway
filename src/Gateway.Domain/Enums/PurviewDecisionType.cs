@@ -8,5 +8,7 @@ public enum PurviewDecisionType
     AuditLogged,
     PurviewSkipped_NoUserContext,
     PurviewSkipped_InvalidUser,
-    PurviewDisabled
+    PurviewDisabled,
+    SimulationUnavailable,
+    SimulatedBlock
 }

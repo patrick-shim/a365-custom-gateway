@@ -40,7 +40,7 @@
                         }
                     </dd>
                 </div>
-                <div><dt>Prompt Shields</dt><dd>@(State.Form.PromptShieldEnabled ? $"Enabled · {State.Form.PromptShieldSkuName}" : "Off")</dd></div>
+                <div><dt>Shared Prompt Shields</dt><dd>@(State.Form.PromptShieldEnabled ? $"Included for provisioning · {State.Form.PromptShieldSkuName} · usage selected per agent at registration/edit" : "Not provisioned · legacy configuration preserved")</dd></div>
                 <div><dt>Purview</dt><dd>@(State.Form.PurviewEnabled ? "Prerequisite capability selected" : "Off")</dd></div>
                 <div><dt>Registry beta</dt><dd>@(State.Form.AllowDevelopmentRegistryPreview ? "Development only · acknowledged" : "Closed")</dd></div>
             </dl>

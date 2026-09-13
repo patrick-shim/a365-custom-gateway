@@ -43,4 +43,5 @@ public sealed record ProtectionAdminOperationDto(
     DateTime? CompletedAtUtc,
     DateTime UpdatedAtUtc,
     IReadOnlyList<ProtectionAdminOperationStepDto> Steps,
-    string RowVersion);
+    string RowVersion,
+    Gateway.Contracts.Responses.PurviewRuntimeTestResultResponse? RuntimeTest = null);

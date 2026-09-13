@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Models;
 using Gateway.Domain.ValueObjects;
+using Gateway.Infrastructure.Services;
 using Microsoft.Extensions.Options;
 
 namespace Gateway.Api.Options;
@@ -17,6 +18,7 @@ public sealed class BootstrapCapabilitiesOptions
     public BootstrapCapabilityFactOptions Agent365RegistrationBeta { get; set; } = new();
     public BootstrapCapabilityFactOptions PromptShields { get; set; } = new();
     public BootstrapCapabilityFactOptions Purview { get; set; } = new();
+    public CapabilityPreparationOptions Preparation { get; set; } = new();
 }
 
 public sealed class BootstrapCapabilityFactOptions
@@ -84,6 +86,19 @@ public sealed partial class BootstrapCapabilitiesOptionsValidator
                 "Prompt Shields and Purview must attest the same Gateway API managed identity.");
         }
 
+        if (options.Preparation is null)
+            return ValidateOptionsResult.Fail("Capability preparation options are missing.");
+        if (options.Preparation.IsConfigured)
+        {
+            try
+            {
+                CapabilityPreparationContract.Authorize(options.Preparation, CreateAttestationCore(options), DateTime.UtcNow);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or System.Text.Json.JsonException)
+            {
+                return ValidateOptionsResult.Fail("Capability preparation receipt is incomplete, invalid, or does not match configured facts.");
+            }
+        }
         return ValidateOptionsResult.Success;
     }
 
@@ -100,6 +115,11 @@ public sealed partial class BootstrapCapabilitiesOptionsValidator
                 validation.FailureMessage);
         }
 
+        return CreateAttestationCore(options);
+    }
+
+    private static BootstrapProtectionCapabilityAttestation CreateAttestationCore(BootstrapCapabilitiesOptions options)
+    {
         var ownershipId = Guid.ParseExact(
             options.DeploymentOwnershipId,
             "D");
@@ -266,6 +286,7 @@ public sealed partial class BootstrapCapabilitiesOptionsValidator
 
     private static bool HasAnyConfiguredValue(
         BootstrapCapabilitiesOptions options) =>
+        options.Preparation is null || options.Preparation.IsConfigured ||
         !string.IsNullOrEmpty(options.DeploymentOwnershipId) ||
         !string.IsNullOrEmpty(options.AcceptedSourceFingerprint) ||
         options.AttestedAtUtc != default ||

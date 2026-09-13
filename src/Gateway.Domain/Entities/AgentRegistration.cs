@@ -23,6 +23,8 @@ public class AgentRegistration
     public string? RequestedBlueprintDisplayName { get; set; }
     public string PurviewPolicySelectionMode { get; set; } = "NotRequested";
     public Guid? RequestedPurviewPolicyProfileId { get; set; }
+    public Guid? PurviewConfigurationOperationId { get; set; }
+    public PurviewPolicyMode? RequestedPurviewPolicyMode { get; set; }
     public string? RequestedPurviewPolicyDisplayName { get; set; }
     public string? RequestedPurviewPolicyTemplate { get; set; }
     public Guid? PurviewPolicyProfileId { get; set; }
@@ -36,6 +38,7 @@ public class AgentRegistration
     public DateTime UpdatedAtUtc { get; set; }
     public string UpdatedByObjectId { get; set; } = string.Empty;
     public byte[] RowVersion { get; set; } = [];
+    public Guid ProtectionRevision { get; set; } = Guid.NewGuid();
 
     public AgentFeatureConfiguration FeatureConfiguration { get; set; } = null!;
     public ICollection<ProvisioningJob> ProvisioningJobs { get; set; }

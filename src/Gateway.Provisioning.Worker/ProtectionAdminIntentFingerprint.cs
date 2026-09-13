@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using Gateway.Domain.Entities;
+using Gateway.Domain.Enums;
 
 namespace Gateway.Provisioning.Worker;
 
@@ -46,7 +47,30 @@ internal static class ProtectionAdminIntentFingerprint
                 .Select(value => new PurviewDlpRuleActionPayload(
                     value.Activity.ToString(),
                     value.Action.ToString()))
-                .ToArray()));
+                .ToArray(),
+            profile.EffectivePolicyMode.ToString(),
+            profile.NormalizedSensitiveInformationTypes.Select(value =>
+                new SensitiveTypePayload(profile.InventoryGenerationId.Value, value.Id, value.ExactName,
+                    value.MinCount, value.MaxCount, value.MinConfidence, value.MaxConfidence)).ToArray(),
+            null));
+
+    public static bool MatchesLegacyDlpProfile(PurviewDlpProfile profile, string expectedHash)
+    {
+        if (profile.NormalizedSensitiveInformationTypes.Any(value =>
+                value.MinCount is not null || value.MaxCount is not null ||
+                value.MinConfidence is not null || value.MaxConfidence is not null) ||
+            profile.EffectivePolicyMode != PurviewPolicyModeCompatibility.FromLegacy(profile.Mode) ||
+            profile.NormalizedSensitiveInformationTypes.Count != 1 ||
+            profile.NormalizedSensitiveInformationTypes[0].Id != profile.SensitiveInformationTypeId.Value ||
+            profile.NormalizedSensitiveInformationTypes[0].ExactName != profile.SensitiveInformationTypeName)
+            return false;
+        return Compute(new LegacyDlpPayload(profile.Id.Value, profile.PurviewTenantConnectionId,
+            profile.BlueprintApplicationId.Value, profile.DisplayName, profile.InventoryGenerationId.Value,
+            profile.SensitiveInformationTypeId.Value, profile.SensitiveInformationTypeName, profile.Mode.ToString(),
+            profile.Activities.OrderBy(value => value).Select(value => value.ToString()).ToArray(),
+            profile.Actions.OrderBy(value => value.Activity).ThenBy(value => value.Action)
+                .Select(value => new PurviewDlpRuleActionPayload(value.Activity.ToString(), value.Action.ToString())).ToArray())) == expectedHash;
+    }
 
     private static string Compute<T>(T payload)
     {
@@ -82,7 +106,17 @@ internal static class ProtectionAdminIntentFingerprint
         string SensitiveInformationTypeName,
         string Mode,
         IReadOnlyList<string> Activities,
-        IReadOnlyList<PurviewDlpRuleActionPayload> Actions);
+        IReadOnlyList<PurviewDlpRuleActionPayload> Actions,
+        string PolicyMode,
+        IReadOnlyList<SensitiveTypePayload> SensitiveInformationTypes,
+        Gateway.Contracts.Dtos.PurviewDeferredBlueprintDto? DeferredBlueprint);
+
+    private sealed record SensitiveTypePayload(Guid InventoryGenerationId, Guid SensitiveInformationTypeId, string ExactName,
+        int? MinCount, int? MaxCount, int? MinConfidence, int? MaxConfidence);
+
+    private sealed record LegacyDlpPayload(Guid ProfileId, Guid TenantConnectionId, Guid BlueprintApplicationId,
+        string DisplayName, Guid InventoryGenerationId, Guid SensitiveInformationTypeId, string SensitiveInformationTypeName,
+        string Mode, IReadOnlyList<string> Activities, IReadOnlyList<PurviewDlpRuleActionPayload> Actions);
 
     private sealed record PurviewDlpRuleActionPayload(
         string Activity,

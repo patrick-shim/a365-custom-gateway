@@ -22,7 +22,7 @@
     @if (State.ExistingConfigurationMigrationNotice is not null)
     {
         <div class="notice warning" role="status">
-            <strong>Legacy Purview fields are migration information only.</strong>
+            <strong>Legacy configuration requires the recovery path.</strong>
             <span>@State.ExistingConfigurationMigrationNotice Preserve this configuration and its <code>.bootstrap/</code> state; use the recovery path shown on Progress rather than rewriting it here.</span>
         </div>
     }
@@ -167,11 +167,11 @@
             </label>
             <label class="feature-card @(State.Form.CapabilityPreset == CapabilityPreset.CoreGateway ? "selected" : string.Empty)">
                 <input type="radio" name="capability-preset" value="@CapabilityPreset.CoreGateway" checked="@(State.Form.CapabilityPreset == CapabilityPreset.CoreGateway)" @onchange="ChangeCapabilityPreset" disabled="@State.ExistingConfigurationLoaded" />
-                <span><strong>Core Gateway</strong><small>Installs the Gateway and, for Quick development only, its explicitly acknowledged registration beta capability. It does not install Prompt Shields or Purview prerequisites.</small></span>
+                <span><strong>Core Gateway</strong><small>Installs the Gateway with shared Prompt Shields and, for Quick development only, its explicitly acknowledged registration beta capability. It does not install Purview prerequisites.</small></span>
             </label>
             <label class="feature-card @(State.Form.CapabilityPreset == CapabilityPreset.Custom ? "selected" : string.Empty)">
                 <input type="radio" name="capability-preset" value="@CapabilityPreset.Custom" checked="@(State.Form.CapabilityPreset == CapabilityPreset.Custom)" @onchange="ChangeCapabilityPreset" disabled="@State.ExistingConfigurationLoaded" />
-                <span><strong>Custom</strong><small>Independently include or exclude Prompt Shields infrastructure and Purview prerequisites. Registry beta remains impossible in staging and production.</small></span>
+                <span><strong>Custom</strong><small>Includes shared Prompt Shields; independently choose whether to install Purview prerequisites. Registry beta remains impossible in staging and production.</small></span>
             </label>
         </div>
 
@@ -181,8 +181,8 @@
                 <span><strong>Agent 365 Registry beta</strong><small>Development only. Microsoft does not support this beta for production, and every registration still requires a signed-in Gateway Administrator OBO action.</small></span>
             </label>
             <label class="feature-card @(State.Form.PromptShieldEnabled ? "selected" : string.Empty)">
-                <input type="checkbox" checked="@State.Form.PromptShieldEnabled" @onchange="ChangePromptShieldEnabled" disabled="@(State.ExistingConfigurationLoaded || State.Form.CapabilityPreset != CapabilityPreset.Custom)" />
-                <span><strong>Prompt Shields infrastructure</strong><small>Creates Azure AI Content Safety with local keys disabled and managed-identity RBAC. F0 has limited subscription quota; S0 and usage can incur Azure cost. Per-agent enablement happens later in Gateway Settings.</small></span>
+                <input type="checkbox" checked="@State.Form.PromptShieldEnabled" disabled />
+                <span><strong>Shared Prompt Shields infrastructure</strong><small>Included for every new gateway. Creates Azure AI Content Safety with local keys disabled and managed-identity RBAC. Turn usage On or Off for each agent at registration or edit; turning an agent Off does not remove the shared service. Legacy imported deployments retain their recorded selection.</small></span>
             </label>
             <label class="feature-card @(State.Form.PurviewEnabled ? "selected" : string.Empty)">
                 <input type="checkbox" checked="@State.Form.PurviewEnabled" @onchange="ChangePurviewEnabled" disabled="@(State.ExistingConfigurationLoaded || State.Form.CapabilityPreset != CapabilityPreset.Custom)" />
@@ -209,7 +209,7 @@
             </div>
             <label class="confirm-check">
                 <InputCheckbox @bind-Value="State.Form.PromptShieldCostAndQuotaAcknowledged" disabled="@State.ExistingConfigurationLoaded" />
-                <span><strong>I reviewed Prompt Shields quota and cost.</strong><small>F0 is limited to one available free Content Safety account per subscription and soft-deleted accounts can retain that quota; S0 and service usage incur Azure charges.</small></span>
+                <span><strong>I reviewed Prompt Shields quota and cost.</strong><small>F0 has limited subscription quota and soft-deleted accounts can retain that quota; S0 and service usage incur Azure charges. If the selected SKU is unavailable, setup stops for your review; it never silently changes SKU or omits the service.</small></span>
             </label>
         }
 
@@ -304,16 +304,6 @@
             State.Form.ApplyCapabilityPreset(preset);
             Activity.Touch();
         }
-    }
-
-    private void ChangePromptShieldEnabled(ChangeEventArgs args)
-    {
-        State.Form.PromptShieldEnabled = args.Value is bool value && value;
-        if (!State.Form.PromptShieldEnabled)
-        {
-            State.Form.PromptShieldCostAndQuotaAcknowledged = false;
-        }
-        Activity.Touch();
     }
 
     private void ProjectNameChanged(ChangeEventArgs args)

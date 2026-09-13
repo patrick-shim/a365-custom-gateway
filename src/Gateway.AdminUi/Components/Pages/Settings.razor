@@ -407,7 +407,7 @@
                 <div class="protection-section-heading">
                     <div>
                         <h2 id="dlp-profile-form-heading">Blueprint DLP profiles</h2>
-                        <p>Each profile belongs to exactly one resolved blueprint and its Individual scope. New blueprints finish core registration first; policy setup happens here afterward.</p>
+                        <p>Each profile is shared by agents using the blueprint's Application / Individual scope. New registrations can authorize deferred configuration; existing profiles can be reviewed and changed here.</p>
                     </div>
                 </div>
 
@@ -439,15 +439,29 @@
                                     <div class="profile-card-header">
                                         <div>
                                             <h3>@SafeProfileName(profile)</h3>
-                                            <span class="section-caption">@BlueprintName(profile.BlueprintApplicationId) · @FormatMode(profile.Mode)</span>
+                                            <span class="section-caption">@BlueprintName(profile.BlueprintApplicationId) · @AgentProtectionUiMapping.PolicyLabel(profile.PolicyMode, profile.Mode)</span>
                                         </div>
                                         <StatusPill Value="@ProfileDisplayStatus(profile)" />
                                     </div>
-                                    <p class="profile-summary">Sensitive information: @profile.SensitiveInformationTypeName. This profile is separate from the tenant-wide Know Your Data Group.</p>
-                                    <ProtectionReadinessPanel Readiness="profile.Readiness" Label="@SafeProfileName(profile)" />
-                                    @if (profile.Mode == "AuditOnly")
+                                    <p class="profile-summary">Match ANY selected SIT (OR): @string.Join(", ", AgentProtectionUiMapping.Types(profile).Select(item => item.ExactName)). Per-SIT thresholds are retained, not summed. This shared profile is separate from the tenant-wide Know Your Data Group.</p>
+                                    @if (!AgentProtectionUiMapping.Types(profile).All(AgentProtectionUiMapping.HasExplicitThresholds))
                                     {
-                                        <p class="profile-summary">Audit-only profiles cannot complete the allow and block runtime check. Review settings and choose Enforce uploads before checking runtime readiness.</p>
+                                        <p class="readiness-blockers">Legacy threshold evidence is incomplete or invalid; safe legacy provider import is not available. Use Review settings to explicitly supply all four threshold values per SIT and acknowledge shared-policy replacement. Reconcile that newly authorized configuration afterward; reconciliation alone cannot recover missing legacy thresholds.</p>
+                                    }
+                                    <ProtectionReadinessPanel Readiness="profile.Readiness" Label="@SafeProfileName(profile)"
+                                        PolicyMode="@(profile.PolicyMode ?? (profile.Mode == "Enforce" ? "Enforce" : "SimulationWithoutTips"))"
+                                        ProfileStatus="@profile.Status" EvidenceExpiresAtUtc="profile.RuntimeBehaviorVerifiedUntilUtc" />
+                                    @if (RuntimeTestUiProtocol.IsHash(profile.RuntimeBehaviorSuiteHash))
+                                    {
+                                        <p class="field-help">Behavioral evidence suite: <code>@profile.RuntimeBehaviorSuiteHash</code></p>
+                                    }
+                                    @if (AgentProtectionUiMapping.PolicyMode(profile.PolicyMode, profile.Mode) != PurviewPolicyMode.Enforce)
+                                    {
+                                        <p class="profile-summary">Simulation readiness does not require actual blocking. A disabled policy remains configured/off, never enforced-ready.</p>
+                                    }
+                                    else
+                                    {
+                                        <p class="profile-summary">Configuration does not prove enforcement. Use Test protection to review one approved example per intended SIT plus a clean negative. Only complete approved sample behavior in effective policy scope can unlock enforcement readiness; Graph does not identify which SIT matched.</p>
                                     }
                                     @if (isAdministrator)
                                     {
@@ -458,10 +472,10 @@
                                             <FluentButton Appearance="Appearance.Stealth"
                                                           OnClick="@(() => ReviewExistingProfileActionAsync(profile, ProtectionAction.ReconcileProfile))"
                                                           Disabled="@(!CanReconcile(profile))">Review reconcile</FluentButton>
-                                            <FluentButton Appearance="Appearance.Neutral"
-                                                          OnClick="@(() => ReviewExistingProfileActionAsync(profile, ProtectionAction.ValidateRuntime))"
-                                                          Disabled="@(!CanValidateRuntime(profile))">Review runtime check</FluentButton>
                                         </div>
+                                        <PurviewRuntimeTestPanel ProfileId="profile.Id" ContextKey="@profile.RowVersion"
+                                            ExpectedProfileRowVersion="@profile.RowVersion"
+                                            IsAdministrator="isAdministrator" Disabled="protectionActionBusy" />
                                     }
                                 </article>
                             }
@@ -471,8 +485,8 @@
                     @if (isAdministrator)
                     {
                         <section class="journey-card settings-block" aria-labelledby="dlp-review-form-heading">
-                            <h3 id="dlp-review-form-heading">@(editingProfile is null ? "Review a new blueprint profile" : $"Review changes to {SafeProfileName(editingProfile)}")</h3>
-                            <p>Choose one resolved blueprint and the current tenant item. The confirmation panel will show the high-level scope, activities, and outcome before anything is queued.</p>
+                            <h3 id="dlp-review-form-heading">@(editingProfile is null ? "Review blueprint protection" : $"Review changes to {SafeProfileName(editingProfile)}")</h3>
+                            <p>Choose a blueprint, then review the complete shared policy, its ANY/OR SIT list, and policy lifecycle mode before anything is queued.</p>
                             @if (blueprintsLoading)
                             {
                                 <LoadingState Label="Loading resolved blueprints…" />
@@ -501,37 +515,23 @@
                                             }
                                         </select>
                                     </div>
-                                    <div class="form-field">
-                                        <label for="dlp-display-name">Profile name</label>
-                                        <input id="dlp-display-name"
-                                               class="form-control"
-                                               maxlength="120"
-                                               autocomplete="off"
-                                               @bind="dlpDisplayName" />
-                                    </div>
-                                    <div class="form-field">
-                                        <label for="dlp-mode">Policy mode</label>
-                                        <select id="dlp-mode" class="form-control" @bind="dlpMode">
-                                            <option value="AuditOnly">Audit only</option>
-                                            <option value="Enforce">Enforce uploads</option>
-                                        </select>
-                                        <small>Audit only evaluates the upload rule without enforcement. Enforce uploads is required for the allow and block runtime check.</small>
-                                    </div>
-                                    <div class="form-field">
-                                        <span class="detail-label">Sensitive information</span>
-                                        <span class="detail-value">@(SelectedSensitiveInformationType?.ExactName ?? "Choose a current tenant item above")</span>
-                                    </div>
                                 </div>
+                                @if (SelectedBlueprint is not null)
+                                {
+                                <AgentProtectionConfiguration
+                                    BlueprintApplicationId="@SelectedBlueprint?.BlueprintClientId"
+                                    BlueprintDisplayName="@SelectedBlueprint?.DisplayName"
+                                    ProfileId="@editingProfile?.Id"
+                                    ContextKey="@($"settings|{editingProfile?.Id}|{editingProfile?.RowVersion}")"
+                                    IsAdministrator="isAdministrator" Busy="protectionActionBusy"
+                                    PolicyOnly="true" StartOnConfirm="true"
+                                    OnConfigured="OnEditorConfiguredAsync" />
+                                }
                                 <div class="journey-actions">
                                     @if (editingProfile is not null)
                                     {
                                         <FluentButton Appearance="Appearance.Stealth" OnClick="ClearProfileEditor">Cancel edit</FluentButton>
                                     }
-                                    <FluentButton Appearance="Appearance.Accent"
-                                                  OnClick="ReviewDlpProfileAsync"
-                                                  Disabled="@(!CanReviewDlpProfile)">
-                                        @(editingProfile is null ? "Review new profile" : "Review profile update")
-                                    </FluentButton>
                                 </div>
                             }
                         </section>
@@ -669,29 +669,30 @@
 
                     <fieldset class="feature-group full" aria-describedby="default-purview-help">
                         <legend>Microsoft Purview defaults</legend>
-                        <p id="default-purview-help">A default never creates policy. A registration can use Purview only when its exact blueprint has a Ready DLP profile.</p>
+                        <p id="default-purview-help">A default never creates or overwrites policy. Registration still requires an existing matching profile or explicit review and confirmation of new configuration.</p>
                         <div class="form-grid">
                             <div class="form-field checkbox-field">
                                 <label class="checkbox-label" for="default-purview-enabled">
                                     <InputCheckbox id="default-purview-enabled"
                                                    @bind-Value="form.DefaultPurviewEnabled"
                                                    disabled="@(!CanChangePurviewDefault)" />
-                                    <span><strong>Offer Purview by default</strong><small>The registration page still requires an exact Ready profile for the selected blueprint.</small></span>
+                                    <span><strong>Offer Purview by default</strong><small>The registration page reviews the exact selected blueprint and policy; incomplete enabled configuration is blocked.</small></span>
                                 </label>
-                                @if (!HasReadyProfile)
+                                @if (!HasSelectableProfile)
                                 {
-                                    <span class="field-help">Unavailable for a new default until at least one blueprint profile is Ready. A stored enabled value can be turned off.</span>
+                                    <span class="field-help">Unavailable for a new default until a blueprint has current enforcing readiness or a verified non-enforcing configuration. A stored enabled value can be turned off.</span>
                                 }
                             </div>
                             <div class="form-field">
-                                <label for="default-purview-mode">Default Purview mode</label>
+                                <label for="default-purview-mode">Legacy Gateway runtime default</label>
                                 <InputSelect id="default-purview-mode"
                                              class="form-control"
                                              @bind-Value="form.DefaultPurviewMode"
-                                             disabled="@(!form.DefaultPurviewEnabled || !HasReadyProfile)">
+                                             disabled="@(!form.DefaultPurviewEnabled || !HasSelectableProfile)">
                                     <option value="AuditOnly">Audit only</option>
                                     <option value="Enforce">Enforce</option>
                                 </InputSelect>
+                                <span class="field-help">This compatibility setting is not the shared policy lifecycle mode. Use the blueprint profile editor above for Enforce, either simulation mode, or configured/off.</span>
                             </div>
                         </div>
                     </fieldset>
@@ -736,7 +737,9 @@
     }
 }
 
-<ConfirmPanel Visible="@(dialogKind != ConfirmationDialogKind.None)"
+@if (dialogKind != ConfirmationDialogKind.None)
+{
+<ConfirmPanel Visible="true"
               Busy="@(saving || protectionActionBusy)"
               Title="@ConfirmationTitle"
               Message="@ConfirmationMessage"
@@ -793,11 +796,16 @@
                     <div><dt>Outcomes</dt><dd>@FormatActions(review.Review.Actions)</dd></div>
                 }
             </dl>
+            @if (review.Review.TargetType == "KnowYourDataConfiguration")
+            {
+                <p class="field-help">Full AI content capture is off. Classification is limited to the selected sensitive information type; the broader full-content setting requires All classifiers.</p>
+            }
             <div class="subtle-note">@review.Review.ReadinessDisclaimer</div>
             <p class="field-help">This short review expires at <time datetime="@AsUtc(review.ExpiresAtUtc).ToString("O")">@FormatLocal(review.ExpiresAtUtc)</time>. Confirmation queues only this reviewed action.</p>
         }
     </AdditionalContent>
 </ConfirmPanel>
+}
 
 @code {
     private static readonly string[] PurviewActivities = ["UploadText", "DownloadText"];
@@ -863,8 +871,6 @@
     private Guid signedInObjectId;
     private string selectedSitIndex = string.Empty;
     private string selectedBlueprintIndex = string.Empty;
-    private string dlpDisplayName = string.Empty;
-    private string dlpMode = "AuditOnly";
     private string kydMode = "AuditOnly";
     private string? protectionAnnouncement;
     private string? companionEvidenceError;
@@ -899,6 +905,9 @@
     private string PendingTargetLabel => pendingTargetLabel;
     private int ReadyProfileCount => profilesResource?.Value.Items.Count(ProfileIsReady) ?? 0;
     private bool HasReadyProfile => ReadyProfileCount > 0;
+    private bool HasSelectableProfile => profilesResource?.Value.Items.Any(profile =>
+        ProfileIsReady(profile) || AgentProtectionUiMapping.VerifiedNonEnforcingConfiguration(profile) &&
+        profile.Readiness.Capability == "Installed" && !profile.Readiness.Blockers.Contains("PURVIEW_INVENTORY_STALE")) == true;
     private bool PromptShieldReady =>
         string.Equals(PromptShieldCapability?.Status, "Installed", StringComparison.OrdinalIgnoreCase) &&
         form?.PromptShieldAvailable == true;
@@ -909,11 +918,11 @@
     private bool ProtectionDefaultsAreReady =>
         form is null ||
         (!form.DefaultPromptShieldEnabled || PromptShieldReady) &&
-        (!form.DefaultPurviewEnabled || HasReadyProfile);
+        (!form.DefaultPurviewEnabled || HasSelectableProfile);
     private bool CanChangePromptShieldDefault =>
         form is not null && (PromptShieldReady || form.DefaultPromptShieldEnabled);
     private bool CanChangePurviewDefault =>
-        form is not null && (HasReadyProfile || form.DefaultPurviewEnabled);
+        form is not null && (HasSelectableProfile || form.DefaultPurviewEnabled);
     private bool CanReviewConnection =>
         isAdministrator &&
         !protectionActionBusy &&
@@ -950,18 +959,6 @@
         TryGetExpectedRowVersion(
             knowYourDataResource is not null,
             KnowYourData?.RowVersion,
-            out _);
-    private bool CanReviewDlpProfile =>
-        isAdministrator &&
-        !protectionActionBusy &&
-        ConnectionIsReady &&
-        SelectedSensitiveInformationType is not null &&
-        SelectedBlueprint is not null &&
-        !string.IsNullOrWhiteSpace(dlpDisplayName) &&
-        (editingProfile is not null || !BlueprintAlreadyHasProfile(SelectedBlueprint.BlueprintClientId)) &&
-        TryGetExpectedRowVersion(
-            profilesResource is not null,
-            editingProfile?.RowVersion,
             out _);
 
     private bool RequiresCompanionCompletion =>
@@ -1072,9 +1069,6 @@
         ConfirmationDialogKind.ProtectionReview
             when pendingProtectionAction == ProtectionAction.ReconcileProfile =>
                 "Reconcile this DLP profile?",
-        ConfirmationDialogKind.ProtectionReview
-            when pendingProtectionAction == ProtectionAction.ValidateRuntime =>
-                "Run the runtime readiness check?",
         ConfirmationDialogKind.ProtectionReview => $"Confirm {FriendlyOperation(protectionReview?.Review.OperationType)}?",
         _ => "Confirm action"
     };
@@ -1089,9 +1083,6 @@
         ConfirmationDialogKind.ProtectionReview
             when pendingProtectionAction == ProtectionAction.ReconcileProfile =>
                 "Re-read the exact Microsoft Purview state for this profile. Reconciliation does not silently rewrite policy or make runtime readiness Ready.",
-        ConfirmationDialogKind.ProtectionReview
-            when pendingProtectionAction == ProtectionAction.ValidateRuntime =>
-                "Start the approved bounded synthetic allow and block check. This is a runtime readiness operation, not a policy update.",
         ConfirmationDialogKind.ProtectionReview =>
             "Check this Gateway-reviewed summary before queuing the operation. The API will recheck your role, tenant, target, choices, and current version.",
         _ => string.Empty
@@ -1106,9 +1097,6 @@
         ConfirmationDialogKind.ProtectionReview
             when pendingProtectionAction == ProtectionAction.ReconcileProfile =>
                 "Start reconciliation",
-        ConfirmationDialogKind.ProtectionReview
-            when pendingProtectionAction == ProtectionAction.ValidateRuntime =>
-                "Start runtime check",
         ConfirmationDialogKind.ProtectionReview => "Confirm and start",
         _ => "Confirm"
     };
@@ -1465,7 +1453,7 @@
                 selected.ExactName),
             kydMode,
             PurviewActivities,
-            IngestionEnabled: true,
+            IngestionEnabled: false,
             ExpectedRowVersion: rowVersion);
 
         await RunReviewAsync(
@@ -1474,40 +1462,13 @@
             () => Api.ReviewPurviewKnowYourDataOperationAsync(request, disposeCts.Token));
     }
 
-    private async Task ReviewDlpProfileAsync()
+    private async Task OnEditorConfiguredAsync(ProtectionOperationAcceptedResponse accepted)
     {
-        var selectedSit = SelectedSensitiveInformationType;
-        var selectedBlueprint = SelectedBlueprint;
-        if (!CanReviewDlpProfile ||
-            selectedSit is null ||
-            selectedBlueprint is null ||
-            Connection is null ||
-            inventoryResource is null ||
-            !TryGetExpectedRowVersion(
-                profilesResource is not null,
-                editingProfile?.RowVersion,
-                out var rowVersion))
-        {
-            return;
-        }
-
-        var action = editingProfile is null
-            ? ProtectionAction.CreateProfile
-            : ProtectionAction.UpdateProfile;
-        var request = CreateDlpReviewRequest(
-            editingProfile?.Id,
-            Connection.Id,
-            selectedBlueprint.BlueprintClientId,
-            dlpDisplayName.Trim(),
-            selectedSit,
-            inventoryResource.Value.GenerationId,
-            dlpMode,
-            rowVersion);
-
-        await RunReviewAsync(
-            action,
-            $"{SafeBlueprintName(selectedBlueprint)} Individual DLP profile",
-            () => Api.ReviewPurviewDlpProfileOperationAsync(request, disposeCts.Token));
+        activeOperationId = accepted.OperationId;
+        PersistActiveOperationInLocation(accepted.OperationId);
+        protectionAnnouncement = "The Gateway accepted the explicitly reviewed shared policy. Inspect persisted progress and required action.";
+        await LoadActiveOperationAsync();
+        await LoadProfilesAsync();
     }
 
     private async Task ReviewExistingProfileActionAsync(
@@ -1516,10 +1477,8 @@
     {
         if (!isAdministrator ||
             protectionActionBusy ||
-            action is not (
-                ProtectionAction.ReconcileProfile or
-                ProtectionAction.ValidateRuntime) ||
-            action == ProtectionAction.ValidateRuntime && !CanValidateRuntime(profile))
+            action != ProtectionAction.ReconcileProfile ||
+            action == ProtectionAction.ReconcileProfile && !CanReconcile(profile))
         {
             return;
         }
@@ -1528,40 +1487,10 @@
         await RunReviewAsync(
             action,
             $"{SafeProfileName(profile)} for {BlueprintName(profile.BlueprintApplicationId)}",
-            () => action == ProtectionAction.ReconcileProfile
-                ? Api.ReviewReconcilePurviewDlpProfileAsync(
-                    profile.Id,
-                    profile.RowVersion,
-                    disposeCts.Token)
-                : Api.ReviewValidatePurviewDlpRuntimeAsync(
+            () => Api.ReviewReconcilePurviewDlpProfileAsync(
                     profile.Id,
                     profile.RowVersion,
                     disposeCts.Token));
-    }
-
-    private static ReviewPurviewDlpProfileOperationRequest CreateDlpReviewRequest(
-        Guid? profileId,
-        Guid connectionId,
-        Guid blueprintApplicationId,
-        string displayName,
-        PurviewSensitiveInformationTypeDto sit,
-        Guid inventoryGenerationId,
-        string mode,
-        string rowVersion)
-    {
-        return new ReviewPurviewDlpProfileOperationRequest(
-            profileId,
-            connectionId,
-            blueprintApplicationId,
-            displayName,
-            new PurviewSensitiveInformationTypeSelectionDto(
-                inventoryGenerationId,
-                sit.Id,
-                sit.ExactName),
-            mode,
-            PurviewActivities,
-            [new PurviewDlpRuleActionDto("UploadText", "Block")],
-            rowVersion);
     }
 
     private async Task RunReviewAsync(
@@ -1680,13 +1609,6 @@
                             idempotencyKey,
                             rowVersion,
                             disposeCts.Token),
-                    ProtectionAction.ValidateRuntime when pendingProfileId is { } profileId =>
-                        await Api.ValidatePurviewDlpProfileRuntimeAsync(
-                            profileId,
-                            confirmation.Value,
-                            idempotencyKey,
-                            rowVersion,
-                            disposeCts.Token),
                     _ => throw new InvalidOperationException("The reviewed protection action is no longer available.")
                 };
 
@@ -1777,8 +1699,6 @@
     private void EditProfile(PurviewDlpProfileDto profile)
     {
         editingProfile = profile;
-        dlpDisplayName = profile.DisplayName;
-        dlpMode = profile.Mode is "AuditOnly" or "Enforce" ? profile.Mode : "AuditOnly";
         selectedBlueprintIndex = IndexOfBlueprint(profile.BlueprintApplicationId);
         selectedSitIndex = IndexOfSensitiveInformationType(
             profile.SensitiveInformationTypeId,
@@ -1789,8 +1709,6 @@
     private void ClearProfileEditor()
     {
         editingProfile = null;
-        dlpDisplayName = string.Empty;
-        dlpMode = "AuditOnly";
         selectedBlueprintIndex = string.Empty;
     }
 
@@ -2232,7 +2150,13 @@
         };
 
     private string ProfileDisplayStatus(PurviewDlpProfileDto profile) =>
-        profile.Readiness.IsReady ? "Ready" : profile.Status switch
+        profile.PolicyMode == "Disabled" ? "Configured off" :
+        AgentProtectionUiMapping.IsSimulation(profile.PolicyMode, profile.Mode) &&
+            AgentProtectionUiMapping.SimulationCapabilityUnavailable(profile.Readiness) ? "Simulation unavailable" :
+        AgentProtectionUiMapping.ConfiguredSimulationFacts(profile.Readiness, profile.Status,
+            profile.PolicyMode ?? (profile.Mode == "AuditOnly" ? "SimulationWithoutTips" : profile.Mode)) ? "Configured simulation" :
+        profile.RuntimeBehaviorVerifiedUntilUtc <= DateTime.UtcNow ? "Expired" :
+        AgentProtectionUiMapping.CurrentReadiness(profile) ? "Ready" : profile.Status switch
         {
             "Pending" or "PendingPropagation" => "Pending propagation",
             "VerificationFailed" => "Failed",
@@ -2241,7 +2165,7 @@
         };
 
     private static bool ProfileIsReady(PurviewDlpProfileDto profile) =>
-        profile.Readiness.IsReady &&
+        AgentProtectionUiMapping.CurrentReadiness(profile) &&
         string.Equals(profile.Status, "Ready", StringComparison.OrdinalIgnoreCase);
 
     private static bool ProfileIsPending(PurviewDlpProfileDto profile) =>
@@ -2261,16 +2185,8 @@
         isAdministrator &&
         !protectionActionBusy &&
         ConnectionIsReady &&
+        AgentProtectionUiMapping.Types(profile).All(AgentProtectionUiMapping.HasExplicitThresholds) &&
         !string.IsNullOrWhiteSpace(profile.RowVersion);
-
-    private bool CanValidateRuntime(PurviewDlpProfileDto profile) =>
-        CanReconcile(profile) &&
-        profile.Mode == "Enforce" &&
-        profile.Readiness.Capability == "Installed" &&
-        profile.Readiness.Readback == "Ready" &&
-        profile.Readiness.Propagation == "Ready" &&
-        profile.Readiness.TokenRoles == "Ready" &&
-        !profile.Readiness.IsReady;
 
     private bool BlueprintAlreadyHasProfile(Guid blueprintApplicationId) =>
         profilesResource?.Value.Items.Any(profile =>
@@ -2369,8 +2285,6 @@
                 operationType == "CreateOrUpdateDlpProfile",
             ProtectionAction.ReconcileProfile =>
                 operationType == "ReconcileDlpProfile",
-            ProtectionAction.ValidateRuntime =>
-                operationType == "ValidateDlpRuntime",
             _ => false
         };
 
@@ -2489,8 +2403,7 @@
         ConfigureKnowYourData,
         CreateProfile,
         UpdateProfile,
-        ReconcileProfile,
-        ValidateRuntime
+        ReconcileProfile
     }
 
     private sealed record PurviewCompanionOutput(

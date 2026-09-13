@@ -28,6 +28,7 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
     private readonly IPromptShieldClient _promptShieldClient;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ProtectionEffectiveFeatureEvaluator _protectionFeatures;
+    private readonly AgentPurviewConfigurationService? _purviewConfiguration;
 
     public RegisterAgentHandler(
         IAgentRepository agentRepository,
@@ -40,7 +41,8 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
         IPurviewPolicyClient purviewPolicyClient,
         IPromptShieldClient promptShieldClient,
         IUnitOfWork unitOfWork,
-        ProtectionEffectiveFeatureEvaluator protectionFeatures)
+        ProtectionEffectiveFeatureEvaluator protectionFeatures,
+        AgentPurviewConfigurationService? purviewConfiguration = null)
     {
         _agentRepository = agentRepository;
         _provisioningJobRepository = provisioningJobRepository;
@@ -53,6 +55,7 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
         _promptShieldClient = promptShieldClient;
         _unitOfWork = unitOfWork;
         _protectionFeatures = protectionFeatures;
+        _purviewConfiguration = purviewConfiguration;
     }
 
     public async Task<RegisterAgentResponse> Handle(RegisterAgentCommand request, CancellationToken cancellationToken)
@@ -77,6 +80,7 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
 
         var agent = new AgentRegistration
         {
+            ProtectionRevision = Guid.NewGuid(),
             Id = Guid.NewGuid(),
             ExternalAgentId = new ExternalAgentId(request.ExternalAgentId),
             Name = request.Name,
@@ -126,7 +130,7 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
                 promptShieldEnabled = request.Features.PromptShieldEnabled.Value;
         }
 
-        if (purviewEnabled && !_purviewPolicyClient.IsEnabled)
+        if (purviewEnabled && request.PurviewConfigurationIntent is null && !_purviewPolicyClient.IsEnabled)
         {
             throw new DomainException(
                 "Purview cannot be enabled because it is not configured for this Gateway deployment.",
@@ -147,7 +151,7 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
                 cancellationToken);
         }
 
-        if (purviewEnabled)
+        if (purviewEnabled && request.PurviewConfigurationIntent is null)
         {
             if (selectedBlueprint is null)
             {
@@ -163,8 +167,8 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
                     selectedBlueprint.BlueprintClientId,
                     selection,
                     cancellationToken);
-            if (purviewMode is not null &&
-                dlpProfile.Mode != purviewMode.Value)
+            if (request.Features?.PurviewMode is not null &&
+                dlpProfile.Mode != purviewMode)
             {
                 throw new DomainException(
                     "The selected DLP profile mode does not match the requested registration mode.",
@@ -172,6 +176,8 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
             }
 
             agent.RequestedPurviewPolicyProfileId = dlpProfile.Id.Value;
+            agent.RequestedPurviewPolicyMode = dlpProfile.EffectivePolicyMode;
+            purviewMode = dlpProfile.Mode;
         }
 
         var features = new AgentFeatureConfiguration
@@ -260,6 +266,17 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
             OccurredAtUtc = agent.CreatedAtUtc
         }, cancellationToken);
 
+        if (request.PurviewConfigurationIntent is { } intent)
+        {
+            if (request.PurviewDlpProfile is not null || request.Features?.PurviewDlpProfile is not null || request.PurviewPolicyProfile is not null)
+                throw new ValidationException(new Dictionary<string, string[]> { ["PurviewConfigurationIntent"] = ["Configuration consent and existing profile selections cannot be combined."] });
+            if (_purviewConfiguration is null)
+                throw new DomainException("Purview configuration processing is unavailable.", ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE);
+            await _purviewConfiguration.ApplyAsync(agent, intent, request.CallerTenantId, request.CallerObjectId,
+                selectedBlueprint?.BlueprintClientId, cancellationToken);
+            if (request.Features?.PurviewMode is { } explicitMode && explicitMode != agent.FeatureConfiguration.PurviewMode?.ToString())
+                throw new ValidationException(new Dictionary<string, string[]> { ["Features.PurviewMode"] = ["The requested mode conflicts with the confirmed shared policy."] });
+        }
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
         return new RegisterAgentResponse(
@@ -273,7 +290,10 @@ internal sealed class RegisterAgentHandler : IRequestHandler<RegisterAgentComman
             new AgentGatewayCredentialDto(
                 issuedCredential.Credential.Id,
                 issuedCredential.ApiKey,
-                issuedCredential.Credential.ExpiresAtUtc));
+                issuedCredential.Credential.ExpiresAtUtc),
+            agent.PurviewConfigurationOperationId,
+            agent.PurviewConfigurationOperationId is null ? null :
+                blueprint.Mode == "CreateNew" ? "AwaitingBlueprint" : "Pending");
     }
 
     private static ObservabilityMode GetDefaultObservabilityMode(SystemConfiguration? config)

@@ -16,5 +16,7 @@
   <ItemGroup>
     <ProjectReference Include="../Gateway.Provisioning.Worker/Gateway.Provisioning.Worker.csproj" />
     <ProjectReference Include="../Gateway.Purview/Gateway.Purview.csproj" />
+    <ProjectReference Include="../Gateway.Purview.Executor.StartupDiagnostics/Gateway.Purview.Executor.StartupDiagnostics.csproj" />
+    <ProjectReference Include="../Gateway.Purview.PowerShellHost/Gateway.Purview.PowerShellHost.csproj" />
   </ItemGroup>
 </Project>

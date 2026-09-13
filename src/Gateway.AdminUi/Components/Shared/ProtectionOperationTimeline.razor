@@ -9,6 +9,10 @@
         </div>
         <StatusPill Value="@DisplayStatus(Operation.Status)" />
     </div>
+    @if (Operation.RuntimeTest is { } runtime && RuntimeTestUiProtocol.IsSafeReport(runtime, Operation.Id))
+    {
+        <PurviewRuntimeTestReport Report="runtime" />
+    }
 
     @if (Operation.Blockers.Count > 0)
     {
@@ -73,7 +77,7 @@
         "AwaitingAdministrator" or "AwaitingAdministratorAction" => "Awaiting admin",
         "WaitingForPropagation" or "PendingPropagation" => "Pending propagation",
         "VerificationFailed" or "RequiresManualIntervention" => "Failed",
-        "Succeeded" or "Completed" => "Ready",
+        "Succeeded" or "Completed" => "Completed",
         _ => SplitWords(status)
     };
 
@@ -96,7 +100,11 @@
             "Reconcile" =>
                 "Ask a Gateway Administrator to run a fresh exact-state check.",
             "ValidateRuntime" =>
-                "Ask a Gateway Administrator to run the approved synthetic runtime check.",
+                "Use Test protection after registration to review approved examples for the saved profile and a clean negative. Results verify behavior in effective policy scope, not matched-SIT attribution.",
+            "ReviewRuntimeSamples" =>
+                "Use Verify shared profile for a fresh approved suite or the remaining reviewed batch; never replay content automatically. For simulation this continues optional diagnostics and is not required to use the configured policy.",
+            "AwaitBlueprint" or "WaitForBlueprint" or "ResolveBlueprint" =>
+                "Wait for this registration's exact blueprint to resolve. Deferred policy configuration is not effective protection yet.",
             "Retry" =>
                 "Retry only when the Gateway enables the reviewed action.",
             _ => "Follow the safe guidance shown by the Gateway or contact a Gateway Administrator."
@@ -112,9 +120,11 @@
         "TokenRefreshPending" or "TokenRolesPending" =>
             "The Gateway runtime is waiting for updated permissions.",
         "RuntimeValidationRequired" =>
-            "The approved runtime allow and block check has not completed.",
+            "Approved sample behavior has not been verified in the effective policy scope.",
         "InventoryExpired" =>
-            "The sensitive information type inventory has expired.",
+            "The sensitive information type inventory has expired. Renew the connection and review the exact configuration again.",
+        "AwaitingBlueprint" =>
+            "The reviewed policy is waiting for this registration's exact new blueprint.",
         _ => "The Gateway reports a blocker that requires administrator review."
     };
 

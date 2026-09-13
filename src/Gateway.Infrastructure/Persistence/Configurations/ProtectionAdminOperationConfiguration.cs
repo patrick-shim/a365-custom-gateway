@@ -23,6 +23,13 @@ internal sealed class ProtectionAdminOperationConfiguration
                 table.HasCheckConstraint(
                     "CK_ProtectionAdminOperations_WorkflowVersion",
                     $"[WorkflowVersion] = {ProtectionAdminWorkflow.CurrentVersion}");
+                table.HasCheckConstraint(
+                    "CK_ProtectionAdminOperations_DeferredConfigurationJson",
+                    "DeferredConfigurationJson IS NULL OR ISJSON(DeferredConfigurationJson) = 1");
+                table.HasCheckConstraint("CK_ProtectionAdminOperations_RuntimeTestConsent",
+                    "RuntimeTestConsentJson IS NULL OR (ISJSON(RuntimeTestConsentJson) = 1 AND DATALENGTH(RuntimeTestConsentJson) <= 524288)");
+                table.HasCheckConstraint("CK_ProtectionAdminOperations_RuntimeTestResult",
+                    "RuntimeTestResultJson IS NULL OR (ISJSON(RuntimeTestResultJson) = 1 AND DATALENGTH(RuntimeTestResultJson) <= 131072)");
             });
         builder.HasKey(operation => operation.Id);
 
@@ -54,6 +61,18 @@ internal sealed class ProtectionAdminOperationConfiguration
             .IsRequired();
         builder.Property(operation => operation.AcceptedRequestHash).HasMaxLength(71);
         builder.Property(operation => operation.ResultJson).HasMaxLength(4000);
+        builder.Property(operation => operation.RuntimeTestConsentJson).HasColumnType("nvarchar(max)")
+            .Metadata.SetAfterSaveBehavior(PropertySaveBehavior.Throw);
+        builder.Property(operation => operation.RuntimeTestSuiteHash).HasMaxLength(71)
+            .Metadata.SetAfterSaveBehavior(PropertySaveBehavior.Throw);
+        builder.Property(operation => operation.RuntimeTestConfigurationFingerprint).HasMaxLength(71)
+            .Metadata.SetAfterSaveBehavior(PropertySaveBehavior.Throw);
+        builder.Property(operation => operation.RuntimeTestResultJson).HasColumnType("nvarchar(max)");
+        builder.Property(operation => operation.DeferredConfiguration)
+            .HasConversion(
+                value => value == null ? null : ProtectionPersistenceSerialization.SerializeDeferredConfiguration(value),
+                value => value == null ? null : ProtectionPersistenceSerialization.DeserializeDeferredConfiguration(value))
+            .HasColumnName("DeferredConfigurationJson");
         builder.Property(operation => operation.IdempotencyKey)
             .HasConversion(
                 value => value.Value,
@@ -97,6 +116,9 @@ internal sealed class ProtectionAdminOperationConfiguration
             operation.IdempotencyKey,
         }).IsUnique();
         builder.HasIndex(operation => operation.CorrelationId).IsUnique();
+        builder.HasIndex(operation => new { operation.RuntimeTestConfigurationFingerprint, operation.RuntimeTestSuiteHash, operation.StartedAtUtc })
+            .HasDatabaseName("IX_ProtectionAdminOperations_RuntimeTestSuite")
+            .HasFilter("[Type] = N'TestDlpRuntime' AND [RuntimeTestSuiteHash] IS NOT NULL");
         builder.HasIndex(operation => new
         {
             operation.Status,

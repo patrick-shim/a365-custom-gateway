@@ -183,6 +183,8 @@ public sealed class ProblemDetailsMiddleware
                 ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY => StatusCodes.Status409Conflict,
                 ErrorCodes.PROTECTION_REVIEW_EXPIRED => StatusCodes.Status410Gone,
                 ErrorCodes.PROTECTION_CONFIRMATION_INVALID => StatusCodes.Status403Forbidden,
+                "PURVIEW_RUNTIME_CONTEXT_CHANGED" => StatusCodes.Status412PreconditionFailed,
+                "PURVIEW_RUNTIME_INVENTORY_EXPIRED" => StatusCodes.Status409Conflict,
                 ErrorCodes.PROMPT_EVALUATION_UNAVAILABLE => StatusCodes.Status503ServiceUnavailable,
                 ErrorCodes.PROMPT_EVALUATION_REQUIRED => StatusCodes.Status403Forbidden,
                 ErrorCodes.PROMPT_EVALUATION_INVALID => StatusCodes.Status403Forbidden,
