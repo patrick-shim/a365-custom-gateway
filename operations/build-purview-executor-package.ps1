@@ -142,9 +142,16 @@ if (-not [string]::IsNullOrEmpty($ExpectedSourceFingerprint) -and $sourceFingerp
 }
 $publishDirectory = Join-Path $outputRoot 'publish'
 [IO.Directory]::CreateDirectory($publishDirectory) | Out-Null
+$webConfigPath = Join-Path $repositoryRoot 'src\Gateway.Purview.Executor\web.config'
+if (-not [IO.File]::Exists($webConfigPath)) { throw 'Executor publish requires its reviewed IIS configuration.' }
+$webConfigHash = (Get-FileHash -LiteralPath $webConfigPath -Algorithm SHA256).Hash
 & dotnet publish (Join-Path $repositoryRoot 'src/Gateway.Purview.Executor/Gateway.Purview.Executor.csproj') `
-    -c Release -r win-x64 --self-contained true -o $publishDirectory /p:UseAppHost=true "/p:PurviewPowerShellReferencePath=$powerShellRoot"
+    -c Release -r win-x64 --self-contained true -o $publishDirectory /p:UseAppHost=true `
+    /p:IsTransformWebConfigDisabled=true "/p:PurviewPowerShellReferencePath=$powerShellRoot"
 if ($LASTEXITCODE -ne 0) { throw 'Windows executor publish failed.' }
+if ((Get-FileHash -LiteralPath (Join-Path $publishDirectory 'web.config') -Algorithm SHA256).Hash -cne $webConfigHash) {
+    throw 'Published executor IIS configuration differs from the reviewed source.'
+}
 if (-not [string]::IsNullOrEmpty($PreservedChildSourceRoot)) {
     $preservedRoot = [IO.Path]::GetFullPath($PreservedChildSourceRoot)
     Assert-PurviewDependencyTree -Root $preservedRoot

@@ -70,9 +70,31 @@ az login
 ./gateway setup
 ```
 
-On Windows, use `.\gateway.cmd setup` instead. Setup opens a temporary browser UI on
-`127.0.0.1`, discovers the subscriptions visible to the current Azure CLI session,
-and loads the selected subscription's physical Azure regions into a dropdown. The
+On Windows, use `.\gateway.cmd setup` instead, from the required PowerShell 7.6.5
+session when Purview is selected. Current executor packaging preserves its reviewed
+IIS configuration automatically. When resuming an older accepted source snapshot
+that fails while transforming its read-only `web.config`, use:
+
+```powershell
+$env:IsTransformWebConfigDisabled = 'true'
+.\gateway.cmd setup
+```
+
+This session-only MSBuild setting preserves the executor's already-authored
+[IIS configuration](src/Gateway.Purview.Executor/web.config). Its self-contained
+executable and hosting model are explicit; automatic transformation otherwise tries
+to rewrite the read-only file copied from the accepted source snapshot. Keep this
+setting when restarting Setup to resume that deployment. It does not change the
+reviewed configuration or relax source/checkpoint verification. See Microsoft's
+[IIS publishing guidance](https://learn.microsoft.com/aspnet/core/host-and-deploy/iis/web-config?view=aspnetcore-10.0).
+
+Keep the root [Directory.Build.props](Directory.Build.props) with the source: the
+Admin UI container build requires it even when a local `dotnet build` succeeds
+without it.
+
+Setup opens a temporary browser UI on `127.0.0.1`, discovers the subscriptions
+visible to the current Azure CLI session, and loads the selected subscription's
+physical Azure regions into a dropdown. The
 dropdown shows the friendly label and exact Azure name together—for example,
 `Korea Central · koreacentral`—and stores only the canonical name. Setup writes the
 reviewed non-secret `bootstrap/config.json`, proves the configured Azure SQL tier is
@@ -146,6 +168,15 @@ Admin UI to:
 4. Wait until the Gateway reports the registration as `Active`.
 5. Copy the external agent ID and one-time Gateway key to the external agent's
    secret store. The clear key is not shown again.
+
+Configuration review is separate from runtime protection readiness. When a saved
+shared profile refers to an older SIT inventory, a current verified tenant
+connection and catalog allow an explicit review of the new binding during
+registration or editing. The shared-policy impact must still be acknowledged and
+the exact choices confirmed before saving; refreshing inventory invalidates an
+older review. Missing or expired authority, invalid selections, and unavailable
+capabilities remain blocking. An `Active` agent with an Enforce policy still cannot
+process prompts until that policy passes its independent runtime readiness checks.
 
 The Gateway creates a distinct child Entra Agent ID for every registration. A
 registration remains bound to its stored registration record, selected blueprint,

@@ -233,10 +233,17 @@ function Assert-ProviderDlpMetadata {
         throw 'Provider policy classification or enabled state differs from the reviewed policy.'
     }
     $ruleMetadata = Get-ProviderReadbackMember $Policy 'PolicyRulesMetaData'
+    if ($ruleMetadata -is [string] -and $ruleMetadata.Length -eq 0) {
+        $ruleMetadata = $null
+    }
     if ($null -ne $ruleMetadata) {
         if ($ruleMetadata -is [string]) {
             if ($ruleMetadata.Length -gt 16384) { throw 'Provider policy rule metadata exceeds its safe bound.' }
-            $ruleMetadata = ConvertFrom-Json -InputObject $ruleMetadata -Depth 4 -ErrorAction Stop
+            $ruleMetadata = ConvertFrom-Json -InputObject $ruleMetadata -Depth 4 -NoEnumerate -ErrorAction Stop
+        }
+        if ($null -eq $ruleMetadata -or $ruleMetadata -is [array] -or
+            $ruleMetadata -is [string] -or $ruleMetadata -is [ValueType]) {
+            throw 'Provider policy rule metadata has unsupported configuration.'
         }
         $names = @(if ($ruleMetadata -is [Collections.IDictionary]) { @($ruleMetadata.Keys) }
             else { @($ruleMetadata.PSObject.Properties.Name) })
