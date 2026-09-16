@@ -5,6 +5,7 @@
 *.pyc
 TestResults/
 .vs/
+/.test-work/
 
 # Local deployment configuration and operational state
 /bootstrap/config.json

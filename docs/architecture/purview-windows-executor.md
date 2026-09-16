@@ -135,8 +135,8 @@ bootstrap state must not be rewritten as evidence for changed source.
 Package integrity, host startup, worker authentication, compliance authorization,
 tenant inventory, exact policy readback and runtime sample behavior are independent
 verification boundaries. The milestone plan tracks their implementation and
-acceptance. Missing tool/test projects must be restored before claiming
-reproducible packaging or release validation.
+acceptance. Restored tool/test sources and local compilation do not replace a
+fresh signed runtime package or frozen-candidate release validation.
 
 The [protection architecture](protection-settings-plan.md) explains reviewed
 registration configuration, multiple SITs and modes, shared scope, approved

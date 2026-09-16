@@ -1,0 +1,16 @@
+<Router AppAssembly="typeof(Program).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData" DefaultLayout="typeof(SetupLayout)" />
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="typeof(SetupLayout)">
+            <section class="setup-card centered">
+                <p class="eyebrow">Setup</p>
+                <h1>Page not found</h1>
+                <p>Return to the guided setup flow.</p>
+                <FluentAnchor Appearance="Appearance.Accent" Href="/setup/welcome">Open setup</FluentAnchor>
+            </section>
+        </LayoutView>
+    </NotFound>
+</Router>

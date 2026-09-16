@@ -16,3 +16,7 @@ Continuation context belongs in [docs/project-state.md](docs/project-state.md).
   attempt, old result or operational receipt does not earn a checkmark.
 - Every milestone includes a whole-project documentation/directive/state/memory
   synchronization and consistency review before closure.
+- Local development uses [Test-LocalBaseline.ps1](tools/Test-LocalBaseline.ps1);
+  real SQL is explicit with `-IncludeSql`, and provider fixtures never use ambient
+  Azure credentials. Keep the isolation and ARM64 LocalDB guidance in
+  [AGENTS.md](AGENTS.md) when extending the suite.

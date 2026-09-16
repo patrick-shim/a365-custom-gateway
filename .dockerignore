@@ -1,0 +1,12 @@
+.git/
+**/bin/
+**/obj/
+**/TestResults/
+.vs/
+.test-work/
+.bootstrap/
+.maintenance/
+.copilot-azure/
+bootstrap/config.json
+**/.env
+**/.env.*

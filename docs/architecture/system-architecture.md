@@ -61,8 +61,9 @@ selected. Setup prepares capabilities; tenant policy configuration belongs to th
 authenticated application.
 
 The guided Setup, DatabaseMigrator and LiveVerification projects referenced by the
-solution are absent, as is the former test directory. Re-establishing reproducible
-tooling is an M1 task. Existing binaries are not replacement source or validation.
+solution are restored from authored source, with a bounded new local test suite.
+M1 owns their reproducible baseline; existing binaries are not replacement source
+or evidence for the later frozen-candidate and hosted acceptance.
 
 Registration and protection are separate lifecycles:
 
@@ -84,6 +85,13 @@ queues final verification rather than repeating creation.
 The source treats Registry beta as a gated development capability; staging and
 production admission remain closed. Current provider availability must be
 verified for the selected tenant when deployment work resumes.
+
+Bootstrap and maintenance authorize different lifecycles. Bootstrap binds its
+19 stages to the accepted source, configuration, ownership and target. A started
+external mutation with an uncertain result becomes readback-only; a new invocation
+does not gain permission to repeat it. Maintenance packages a separate candidate
+and requires its own plan, live baseline and artifact approvals. Neither lifecycle
+can adopt a deliberately deleted environment by changing checkpoint fields.
 
 ## Registration and shared protection
 
@@ -135,10 +143,33 @@ Approved runtime sample tests use a separate synchronous API execution path so r
 samples remain ephemeral. Durable operations retain consent hashes and sanitized
 outcomes for status and recovery.
 
+Telemetry has a narrower delivery guarantee than the SQL outbox. The Azure Monitor
+mirror records a durable attempt marker before creating a local span. Redelivery
+suppresses that attempt, including after a crash between marker persistence and
+emission. A local span or aggregate Processed/Completed status is not remote
+delivery proof. Agent 365 endpoint acceptance likewise does not establish every
+Microsoft 365, DSPM or XDR destination. Keep these current limits visible until the
+delivery/recovery acceptance work addresses them.
+
 Retained [upgrade operations](../../operations/gateway-upgrade.md) support bounded
 existing-installation workflows. They preserve original bootstrap state and bind a
 separate plan to exact source, resources, identities and schema. Their existence
-does not establish a current upgrade target or bypass missing tooling.
+does not establish a current upgrade target or bypass release-tooling validation.
+
+## Current management and ingestion limits
+
+The agent list and overview load at most 100 registrations. Search currently
+filters names even though the UI also advertises external IDs. The list handler
+emits a GUID cursor while its repository expects encoded timestamp/ID data;
+paging is explicitly unavailable in the UI. M3.6 covers the correction and
+fleet-wide summaries; current attention counts are not fleet-wide evidence.
+
+Activity intake accepts fields richer than its stored/exported metadata. Tool
+details and arbitrary attributes do not appear automatically in telemetry.
+Custom activity is supported by the Azure Monitor mirror but not the Agent 365
+exporter. Single and batch validation differ, and duplicate new IDs within one
+batch can reach the database uniqueness constraint. Baseline tests of supported
+journeys do not turn those known limitations into accepted behavior guarantees.
 
 ## Security invariants
 

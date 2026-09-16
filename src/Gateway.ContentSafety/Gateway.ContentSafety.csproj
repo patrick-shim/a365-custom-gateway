@@ -6,6 +6,8 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Gateway.UnitTests" />
+    <InternalsVisibleTo Include="Gateway.IntegrationTests" />
+    <InternalsVisibleTo Include="Gateway.ObservabilityRuntime.Tests" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Gateway.Application\Gateway.Application.csproj" />

@@ -18,8 +18,8 @@ Read [AGENTS.md](AGENTS.md) for project instructions and
 
 ## Main user journey
 
-1. Deploy through the canonical installer once its missing tooling has been
-   restored and validated.
+1. Deploy through the canonical installer using a separately reviewed current
+   plan after the release prerequisites have passed.
 2. Sign in to the Admin UI with the appropriate Gateway role.
 3. Register an external agent using a new or existing compatible blueprint,
    selecting telemetry and protection settings.
@@ -39,28 +39,56 @@ Microsoft identities and other external resources.
 
 ## Installation status
 
-The intended entry point remains `./gateway setup` on macOS/Linux or
-`.\gateway.cmd setup` on Windows. **The complete installation path is not yet
-revalidated runnable after the reset.** The retained launchers and solution
-reference these absent projects:
+The entry point remains `./gateway setup` on macOS/Linux or `.\gateway.cmd setup`
+on Windows. The minimum authored tools and baseline tests are present again.
+**Local source restoration does not establish a newly verified Azure
+installation.** Hosted and platform-specific acceptance remains in the milestone
+plan.
 
-| Missing source | Role in the intended workflow |
+| Source | Role in the workflow |
 |---|---|
-| `tools/Gateway.Setup` | Temporary local setup UI |
-| `tools/Gateway.DatabaseMigrator` | Database initialization and reviewed migration tooling |
-| `tools/Gateway.LiveVerification` | Independent live verification tooling |
-| `tests/` | Former automated test projects |
+| [Gateway.Setup](tools/Gateway.Setup) | Temporary local setup UI |
+| [Gateway.DatabaseMigrator](tools/Gateway.DatabaseMigrator) | Database initialization and reviewed migration tooling |
+| [Gateway.LiveVerification](tools/Gateway.LiveVerification) | Separately authorized live verification tooling |
+| [Tests](tests) | Deterministic source, behavioral, provider/UI and local SQL fixtures |
 
 Generated `bin/` and `obj/` files do not replace those sources or establish a
-clean build. M1 covers the minimum tooling and reproducible behavioral baseline;
+clean build. M1 covers the restored tooling and reproducible behavioral baseline;
 M5 and M6 cover release and hosted acceptance. See the
 [bootstrap guide](bootstrap/README.md) for the retained installer contract.
 
 The retained Registry provisioning path is a Development-only preview; production
 admission remains closed. Pinned build inputs include [global.json](global.json),
-[Directory.Build.props](Directory.Build.props) and [nuget.config](nuget.config).
+[Directory.Build.props](Directory.Build.props), [VERSION](VERSION) and
+[nuget.config](nuget.config).
 Purview executor packaging additionally requires the Windows runtime versions
 described in the bootstrap guide.
+
+## Local source and behavioral validation
+
+The local baseline entry point is:
+
+```powershell
+.\tools\Test-LocalBaseline.ps1 -IncludeSql
+```
+
+It requires Git, PowerShell 7, the SDK selected by [global.json](global.json),
+Pester 5.6.1 and Windows SQL Server LocalDB for the explicit SQL path. Dependency
+restore uses the repository's [NuGet feed configuration](nuget.config). The
+runner copies tracked and untracked authored files into a new isolated source
+directory, excluding generated output and operational state, then builds Release
+and runs the allowlisted test projects. Tests are not discovered by executing
+arbitrary operator scripts. Empty, skipped or partially passing runs fail.
+
+Without `-IncludeSql`, only non-SQL checks run and the output explicitly says SQL
+was not verified. Local SQL uses synthetic data and uniquely owned disposable
+databases, never a supplied Azure database connection or administrator credential.
+Use `-KeepWorkDirectory` only when retaining the isolated source/results for
+diagnosis; otherwise the runner removes only its exact owned run directory.
+
+This command is development validation, not a deployment, signed Windows-package
+verification, or proof of Microsoft provider behavior. The milestone checklist
+records which acceptance conditions have actually passed.
 
 ## External-agent integration
 

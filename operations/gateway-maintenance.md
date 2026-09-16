@@ -10,9 +10,9 @@ configuration, accepted source, SQL initialization marker, identities, endpoints
 registrations and keys. No existing resources are replaced by this v1 scaffold.
 
 Supporting files and related Azure resources were deliberately removed.
-`tools/Gateway.Setup`, `tools/Gateway.DatabaseMigrator`,
-`tools/Gateway.LiveVerification` and the former `tests/` projects are absent.
-The complete installation and maintenance paths are not yet revalidated runnable.
+The minimum Setup, DatabaseMigrator and LiveVerification source projects and a
+bounded local test suite are restored. The complete installation and maintenance
+paths are not yet revalidated against a fresh or preserved Azure environment.
 This guide describes retained contracts for an eligible preserved deployment;
 it does not identify a current target or direct resumption of deleted resources.
 [MILESTONES.md](../MILESTONES.md) is the sole completion and acceptance record.
@@ -93,8 +93,8 @@ schema requires an empty array; a changed fingerprint requires scripts.
 The retained Plan expects each requested SQL file to occur in the candidate migrator's exact literal
 `GetPrepareScriptNames` allowlist. The Plan binds that source file's checksum and
 ordered list as well as the SQL bytes; a new unreferenced SQL file is rejected.
-The absent migrator's manifest and order must be re-established before this
-contract can be validated end to end.
+The restored migrator's manifest and order remain explicit validation inputs;
+local source restoration does not validate this contract end to end.
 `Additive` is a **review assertion**, not a SQL semantic safety proof. The Plan
 does not execute SQL or infer compatible-reader or deployed artifact proof.
 The v2 packaging and private migration implementations referenced below are not
@@ -154,17 +154,17 @@ expanded schema and user writes, using only independently compatible old code.
 The retained SQL directory includes configuration-intent, runtime-test,
 capability-preparation-history and prompt-protection-context schema changes.
 Their existence does not prove they occur in a runnable migration manifest. The
-missing migration tool's ordering, exact script checksums, EF-model comparison,
-preservation transaction and receipt reconciliation must be restored and tested
-against those retained files.
+restored migration tool's ordering, exact script checksums, EF-model comparison,
+preservation transaction and receipt reconciliation must be tested against
+those retained files as part of frozen-candidate validation.
 
 The orchestration expects separate `upgrade`, `upgrade-verify` and
 `upgrade-schema-plan` contracts. Upgrade binds an exact manifest, original
 ownership/source, execution intent, Plan fingerprint, private DNS and job managed
 identity. Verification reconciles an existing receipt without starting SQL.
 Schema planning obtains the compiled target-model fingerprint without opening
-SQL. These are required integration contracts, not evidence that the absent
-runner currently implements or passes them.
+SQL. These are required integration contracts, not evidence that a local build
+or current-schema transaction fixture verifies a complete upgrade.
 
 The target-model fingerprint and actual physical post-migration fingerprint have
 different roles: an additive migration can produce a different physical column
@@ -193,8 +193,8 @@ Dedicated maintenance Bicep templates cover Content Safety, the SQL job,
 protection queue, Windows executor, package publisher and source-only executor
 updates. The v2 pipeline uses
 the shared capability-preparation receipt/history transition instead of rewriting
-original bootstrap facts. Missing migration and verification tooling must be
-restored before claiming this complete path is runnable. Compile/test
+original bootstrap facts. Restored migration and verification tooling must pass
+the applicable release validation before this complete path is accepted. Compile/test
 success and local implementation are not claims of deployed policy readiness,
 licensing, authenticated provider execution or full product acceptance.
 
@@ -217,7 +217,7 @@ acknowledgement is not a spending cap or approval for unrelated resources.
 
 ## Acceptance and continuation
 
-Restoring missing tools and tests belongs to M1; candidate validation and release
+Restoring minimum tools and tests belongs to M1; candidate validation and release
 preparation belong to M5; live provider and preserved-registration acceptance
 belong to M6 in [MILESTONES.md](../MILESTONES.md). This guide is an operational
 contract, not another completion checklist. The detailed v2 lifecycle is in

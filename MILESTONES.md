@@ -71,21 +71,60 @@ wording, selected features, and reproducible validation.
 
 ## M1 — Reproducible source and behavioral baseline
 
-- [ ] **M1.1** Complete the remaining file-by-file source review and record the
+- [x] **M1.1** Complete the remaining file-by-file source review and record the
   current journeys and invariants in the existing product/architecture guides.
-- [ ] **M1.2** Establish a complete source baseline including untracked authored
+  Verified 2026-09-16: remaining bootstrap, maintenance, executor/recovery and
+  operational-wrapper files read through EOF, including initially truncated
+  ranges. Existing architecture/API/bootstrap/operator guides now distinguish
+  current journeys, immutable recovery boundaries, short-lived readiness,
+  telemetry/list/ingestion limits and portable versus historical-artifact tests.
+  Local guide-link and OpenAPI reference/route/scope checks pass; no provider
+  execution was used as source-review evidence.
+- [x] **M1.2** Establish a complete source baseline including untracked authored
   files and required build inputs, excluding generated output from source delivery.
-- [ ] **M1.3** Re-establish the minimum missing Setup, migration, verification and
+  Verified 2026-09-16: 849 tracked/untracked authored files copied into a new clean
+  tree; required VERSION/tool sources restored, 27 project references resolve.
+  Copy/end-of-run hash checks passed; bin/obj, Git and operational state excluded.
+- [x] **M1.3** Re-establish the minimum missing Setup, migration, verification and
   test tooling needed by the retained projects; validate their references and
   entry points without relying on historical environment artifacts.
-- [ ] **M1.4** Build the retained solution from a clean source copy with the pinned
+  Verified 2026-09-16: restored 44 Setup and 23 migration/verification/helper
+  sources from b760553 and source checkpoint 137c6cf, with bounded current-contract
+  adaptations. Clean-run Setup 314 and tooling 65 tests passed; root launcher
+  help, native help/local validation and manifest-v2 admission passed without
+  provider calls. Full migration/deployment acceptance remains M5/M6.
+- [x] **M1.4** Build the retained solution from a clean source copy with the pinned
   toolchain and identify reproducible local test commands.
-- [ ] **M1.5** Add baseline tests for registration, credential lifecycle, prompt
+  Verified 2026-09-16: Test-LocalBaseline.ps1 -IncludeSql built all 27 projects in
+  Release from the clean source with SDK 10.0.401 (10.0.400 latestPatch policy),
+  zero warnings/errors. PowerShell 7.6.6 parsed 59 sources; local commands are in
+  README. No old binaries, configuration or deployment checkpoints were used.
+  Repeated after SQL traits settled: current source/hash checks and owned
+  workspace cleanup passed with the same clean build and test outcomes.
+- [x] **M1.5** Add baseline tests for registration, credential lifecycle, prompt
   receipts, protection states and worker recovery; record actual passing outcomes.
-- [ ] **M1.6** Establish deterministic UI/provider fixtures and a real SQL test
+  Verified 2026-09-16: clean-run .NET results were Source 27, Unit 90, SQL 64,
+  worker/provider 60, Admin UI 22, Setup 314 and tooling 65: 642 passed with
+  zero failed/skipped. Pester 25, portable packaging, abort 106 and policy-metadata
+  30 checks passed. Known later-milestone defects are not claimed fixed.
+- [x] **M1.6** Establish deterministic UI/provider fixtures and a real SQL test
   path for transactional behavior; prove the local suite cannot call live providers.
-- [ ] **M1.7** Synchronize all project documents, directives, continuation state,
+  Verified 2026-09-16: actual adapters use finite terminal HTTP/token fixtures,
+  UI/process/provider guards reject unplanned calls and ambient authentication.
+  All 64 SQL tests ran on uniquely owned LocalDB instances/databases with exact
+  local pipe binding, real locks/rollback/receipt races and verified cleanup.
+  Default runner excludes SQL; IncludeSql and nonempty/all-passed result guards
+  are tested. No live-provider, browser, full migration or OS-firewall claim.
+  Final clean rerun executed all 64 Category=SqlServer cases; no selector mismatch.
+- [x] **M1.7** Synchronize all project documents, directives, continuation state,
   memory and applicable configuration contracts; pass a fresh consistency review.
+  Verified 2026-09-16: all 22 authored Markdown documents reviewed; 147 local links
+  and 3 heading anchors resolve. Source/API checks pass for project/build inputs,
+  configuration, 425 OpenAPI references, unique operations, actual server-relative
+  routes and distinct OAuth scope/role requirements. Directives/memory preserve
+  offline fixtures and owned LocalDB guidance; complete diff/whitespace reviewed.
+  Final clean rerun passed after SQL selector alignment; temporary workspaces
+  removed. M2 remains unstarted and no Azure deployment is claimed.
 
 ## M2 — User journeys, language and acceptance design
 

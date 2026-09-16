@@ -10,22 +10,22 @@ to that lifecycle, not alternate installers.
 
 The user deliberately removed supporting files and related Azure resources. The
 retained application remains the working baseline, but the complete installer is
-**not yet revalidated runnable**. The launchers reference absent
-`tools/Gateway.Setup`; database deployment references absent
-`tools/Gateway.DatabaseMigrator`; the solution also references absent
-`tools/Gateway.LiveVerification`. The former `tests/` projects are absent.
-Generated binaries do not replace these source prerequisites.
+**not yet revalidated against a new Azure environment**. The minimum
+[Setup](../tools/Gateway.Setup), [DatabaseMigrator](../tools/Gateway.DatabaseMigrator)
+and [LiveVerification](../tools/Gateway.LiveVerification) source projects are
+restored, with a new bounded [local test baseline](../tests). Generated binaries
+do not replace these source prerequisites, and local tests do not prove deployment.
 
 [MILESTONES.md](../MILESTONES.md) is the only completion record. M1 covers the
-missing tooling and reproducible tests; later milestones cover a new deployment.
+restored tooling and reproducible tests; later milestones cover a new deployment.
 [AGENTS.md](../AGENTS.md) defines the pinned tenant/subscription, Chrome preference
 and persistent user authorization. Existing configuration, ignored operational
 state and incident-specific scripts do not prove a current installation.
 
 ## Intended installation
 
-Once the missing sources and entry points pass their milestone validation, the
-intended guided commands are:
+The guided commands start the restored local Setup source. Deployment still
+requires current target-bound planning and the applicable milestone validation:
 
 ```bash
 ./gateway setup
@@ -35,9 +35,9 @@ intended guided commands are:
 .\gateway.cmd setup
 ```
 
-The `setup` launcher starts the local Setup project. Because that project is
-absent, its previous screen behavior is not treated as a currently verified UI.
-The retained terminal lifecycle is:
+The `setup` launcher starts the local Setup project. Its fixtures are not a
+substitute for later Chrome and hosted workflow acceptance. The terminal
+lifecycle is:
 
 ```text
 doctor → init → plan → apply → verify
@@ -50,9 +50,11 @@ environment. Do not invoke deployment to discover missing build inputs.
 ## Prerequisites and configuration
 
 Build inputs include Git, the .NET SDK selected by [global.json](../global.json),
-[Directory.Build.props](../Directory.Build.props), [nuget.config](../nuget.config),
+[Directory.Build.props](../Directory.Build.props), [VERSION](../VERSION),
+[nuget.config](../nuget.config),
 PowerShell 7 and Azure CLI. The retained prerequisite checker defines its exact
-requirements; restoring Setup and validating a clean install remain M1 work.
+requirements. M1 validates local source and commands; a clean hosted install
+remains a separate release/live acceptance.
 
 The Purview package contract requires Windows x64, Microsoft-signed PowerShell
 **7.6.5** and ExchangeOnlineManagement **3.10.1**. The package builder pins and
@@ -88,7 +90,7 @@ The retained deployment assets describe:
 - SQL, Service Bus, Blob storage, Key Vault, private networking and monitoring;
 - Entra applications, app roles, managed identities, federation and a seed
   Agent Identity blueprint;
-- database initialization through the missing migrator tool;
+- database initialization through the restored migrator tool;
 - shared Prompt Shields infrastructure and managed-identity access;
 - optional Purview identities, authority prerequisites, certificate, dedicated
   administration queue and Windows executor/package-publisher infrastructure.
@@ -108,7 +110,7 @@ Use `gateway.cmd` in place of `./gateway` on Windows.
 
 | Command | Intended boundary |
 |---|---|
-| `setup` | Local setup UI; blocked by the absent Setup project. |
+| `setup` | Temporary local setup UI; not a claim of deployed resources. |
 | `init` | Create non-secret configuration. |
 | `doctor` | Check tools, configuration and provider readiness; can perform provider reads. |
 | `plan` | Validate inputs, compile Bicep and run authenticated What-If. |
@@ -152,6 +154,26 @@ retained service state were deleted. A deleted environment is a fresh-planning o
 disaster-recovery case, not routine Resume. Namespace/ownership, regional SKU and
 capacity checks require current provider evidence when that work begins. Do not
 change SKUs, purge resources or relabel identities to force an old plan forward.
+
+Source discovery rejects linked paths and excludes credentials, generated output
+and local operational configuration. Accepted deployment source and a separately
+approved recovery execution source are distinct bindings; a corrected script
+does not relabel the original deployment. Native/Graph command boundaries enforce
+the reviewed tenant, subscription, methods and targets. Diagnostics retain bounded
+error signatures and mismatch identifiers, not provider bodies.
+
+Image builds persist intent before ACR submission and independently bind a single
+successful run to its immutable digest. An uncertain submitted build is not
+automatically repeated. Private database initialization similarly records intent
+before job start and verifies the exact private NIC/DNS tuple. Its bounded
+compensation path must prove restoration of the original SQL Entra administrator;
+unavailable or mismatched readback remains a failure, not a restored-state claim.
+Automatic database recovery has two distinct attempts; manual repair requires
+the preserved exhausted failure chain rather than a fresh generic retry.
+
+Quota discovery includes soft-deleted Content Safety accounts when checking the
+single free-tier slot. Deleting a resource does not prove that slot is available.
+Fresh planning must report that distinction without silently upgrading the SKU.
 
 ## After a verified installation
 

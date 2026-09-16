@@ -47,3 +47,21 @@ The milestone checklist is the sole project completion record.
   they do not establish milestone completion by themselves.
 - Subagents must use scoped file ownership, keep the same source of truth, avoid
   credentials in delegation messages, and report actual verification limits.
+
+## Local baseline learnings
+
+- Use [the local baseline runner](tools/Test-LocalBaseline.ps1) for a clean
+  authored-source copy and allowlisted tests; `-IncludeSql` explicitly adds the
+  real SQL path. Empty/skipped results, old bin/obj files and historical deployment
+  artifacts are not baseline evidence.
+- Provider/UI fixtures must use terminal deny-by-default transports and synthetic
+  credentials, not production host configuration or ambient Azure authentication.
+  Do not discover tests by executing every script under operations.
+- On Windows ARM64, resolving a named LocalDB instance through SqlClient can fail
+  when its user-instance DLL is x64. Reuse the
+  [owned LocalDB fixture](tests/Gateway.TestSupport/LocalSqlInstance.cs), which
+  reads the exact local named pipe from the instance it just created; never fall
+  back to remote SQL, a shared instance or an arbitrary supplied pipe.
+- LocalDB tests exercise the current EF schema and real transactions. They do not
+  validate Azure identity/private networking or the complete migration/receipt
+  protocol, which retain their separate release and live acceptance.

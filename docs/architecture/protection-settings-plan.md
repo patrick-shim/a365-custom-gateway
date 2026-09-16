@@ -23,8 +23,8 @@ change SKU or remove the service from a fresh guided plan.
 
 Bootstrap prepares capabilities and verifies their exact resource/identity
 bindings. It does not select sensitive information types or author tenant policies.
-The retained guided Setup project is absent; its references and reproducible
-execution are addressed in M1.
+The guided Setup source and deterministic fixtures are restored under M1.
+Local configuration tests do not establish provider or hosted workflow readiness.
 
 ## Shared scope and independent usage
 
@@ -55,6 +55,19 @@ Sensitive information types (SITs) come from the current tenant inventory. A
 selection binds GUID, exact Unicode name and inventory generation; it does not
 come from a static catalog or free-text name. Expired inventory, missing/renamed
 types or changed authority requires renewed review.
+
+The current verifier gives connection and inventory evidence a 15-minute lifetime.
+Runtime certification is bounded by that inventory expiry as well as the maximum
+30-minute sample-evidence age, so effective readiness can last less than 15 minutes.
+An expired connection is not usable. Refresh produces a new inventory generation;
+it does not silently rebind or reauthorize a saved shared profile. The UI supports
+explicit current-inventory re-review. There is no unattended renewal promise.
+
+The automation identity also needs the exact Security & Compliance service-principal
+reference checked by the executor. Entra application/role/certificate preparation
+does not itself create that separate provider reference in the retained flow.
+Treat its absence as an explicit connection prerequisite, not permission to
+remove verification or broaden roles.
 
 The DLP profile supports multiple selected SITs with OR semantics: any selected
 type can match. Each type keeps its own count and confidence thresholds; counts
@@ -197,7 +210,7 @@ and legacy request fields. They do not establish readiness. Bounded
 older review-only maintenance surface; original bootstrap state and separately
 bound upgrade receipts serve different operational purposes.
 
-The former tests and three referenced tool projects are absent. Reproducible
-builds, regression tests, Chrome journeys and fresh hosted acceptance are tracked
-in M1 through M6, with whole-project documentation synchronization at each closure.
+The minimum referenced tools and local test projects are present again. Reproducible
+builds, regression tests, Chrome journeys and fresh hosted acceptance remain
+distinct in M1 through M6, with whole-project synchronization at each closure.
 No historical pass total or runtime receipt substitutes for those checklist items.

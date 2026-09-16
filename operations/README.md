@@ -5,10 +5,10 @@ The user deliberately removed the related Azure resources; there is no current
 deployment asserted by these documents. For a new installation, start with the
 [bootstrap guide](../bootstrap/README.md).
 
-The full installation and maintenance paths are **not yet revalidated runnable**.
-`tools/Gateway.Setup`, `tools/Gateway.DatabaseMigrator`,
-`tools/Gateway.LiveVerification` and the former `tests/` projects are absent.
-Retained scripts and old output directories do not replace that source.
+The full installation and maintenance paths are **not yet revalidated against a
+fresh or preserved Azure environment**. The minimum Setup, DatabaseMigrator and
+LiveVerification sources and local test fixtures are restored. Retained scripts
+and old output directories do not establish a current deployment or release.
 
 [MILESTONES.md](../MILESTONES.md) is the sole completion and acceptance record.
 Follow [AGENTS.md](../AGENTS.md) for authorization, the selected Azure target,
@@ -47,6 +47,22 @@ Some `operations/test-*` scripts call real providers or exercise mutable workflo
 Review their source and target requirements before running them; their names do
 not imply offline tests. The old `gw0911g` hotfix and repair scripts are retained
 incident-specific source, **not current setup, upgrade or recovery steps**.
+
+The [local baseline runner](../tools/Test-LocalBaseline.ps1) explicitly includes
+only the portable packaging, abort-journal and Purview-metadata scripts below,
+each in a separate PowerShell process. It does not discover all operator scripts.
+
+| Retained test script | Boundary and prerequisites |
+|---|---|
+| [Packaging boundary](test-gateway-upgrade-packaging.ps1) | Local source fixture files; no provider or package build. |
+| [Abort lifecycle](test-gateway-upgrade-abort.ps1) | Synthetic local journal/authority fixtures; no provider or lease calls. |
+| [Purview policy metadata](test-purview-policy-metadata.ps1) | Loads only validator functions from the parsed authored script; no provider calls. |
+| [Source-only maintenance](test-gateway-upgrade-source-only.ps1) | Reads preserved bootstrap/configuration inputs; excluded from the clean M1 suite because it requires historical environment artifacts. |
+| [Startup diagnostic package](test-gw0911g-startup-diagnostic-package.ps1) | Inspects previously published package bytes; excluded from M1 source-only verification. |
+
+All retained hotfix/repair wrappers, executor-capacity repair and Admin UI promotion
+have provider-mutating modes. A locally displayed Plan or an offline test of a
+validator does not make their Apply/Execute modes safe to run as unit tests.
 
 ## Protection operations
 

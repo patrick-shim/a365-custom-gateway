@@ -4,7 +4,7 @@ Azure SQL is the authoritative store for Gateway registrations, provisioning,
 credentials, protection configuration, audit, idempotency and dispatch state.
 This guide describes the retained EF model, not a deployed database.
 [MILESTONES.md](../../MILESTONES.md) is the sole completion record; see
-[project state](../project-state.md) for the deleted tooling and current context.
+[project state](../project-state.md) for source restoration and current context.
 
 ## Core relationships
 
@@ -71,6 +71,11 @@ Its safe payload identifies workflow work; it has no job/registration foreign ke
 Persistence derives the destination from the message type. Registration and
 protection queues remain separate, and consumers tolerate duplicate delivery.
 
+The `AzureMonitorMirrorScheduled` audit event is an attempt-suppression marker,
+not a per-destination delivery receipt. It precedes span emission and can therefore
+survive a crash without a delivered span. The current data model does not retain
+independently confirmed landing for every downstream telemetry destination.
+
 Protection operations also bind actor, tenant, target, reviewed payload, accepted
 request, confirmation verifier, idempotency key and row version. Provider work
 does not hold the runtime-test acceptance transaction open.
@@ -106,9 +111,9 @@ runtime certification for the exact profile and test registration.
 
 Legacy combined profiles and review-required candidates remain in the model.
 Their existence or provider IDs do not establish current readiness. The source
-retains database bootstrap/upgrade attestation contracts, but the referenced
-DatabaseMigrator project is absent; schema application must be re-established
-and verified under the milestone plan.
+retains database bootstrap/upgrade attestation contracts and the restored
+DatabaseMigrator source. Schema application, ordered migration, preservation and
+cloud attestation retain separate acceptance under the milestone plan.
 
 ## Runtime tests and prompt receipts
 

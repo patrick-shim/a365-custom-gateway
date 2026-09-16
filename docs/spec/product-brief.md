@@ -29,9 +29,9 @@ An administrator should be able to:
    model, then submit activity and the completed interaction with that evaluation
    receipt.
 
-The guided installer is the intended product entry point. Re-establishing its
-deleted supporting tool projects and the test harness is part of the milestone
-plan; these audience outcomes are not a claim of a currently verified fresh install.
+The guided installer is the product entry point. Its minimum supporting source
+projects and a bounded local test harness are restored under the milestone plan;
+these audience outcomes are not a claim of a currently verified fresh install.
 
 An operator should inspect health, registrations, operations, credential lifecycle,
 and safe correlation evidence without seeing secrets or content.

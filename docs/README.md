@@ -31,9 +31,10 @@ synchronization of the entire project's documents, directives, state and memory.
 | Earlier maintenance scaffold and its limits | [Maintenance guide](../operations/gateway-maintenance.md) |
 
 Supporting tools/tests and related Azure resources were deliberately removed.
-Read the source-availability notes in these guides before using an installer or
-operational command. Existing checkpoint-bound recovery code describes recovery
-for an intact deployment; it does not reconstruct the deleted environment.
+The minimum tooling source and local fixtures are present again; use the
+[local baseline command](../README.md#local-source-and-behavioral-validation)
+without treating its result as cloud acceptance. Existing checkpoint-bound recovery
+code describes an intact deployment; it does not reconstruct the deleted environment.
 
 ## Architecture and integration
 

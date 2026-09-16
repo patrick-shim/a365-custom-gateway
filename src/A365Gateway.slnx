@@ -15,6 +15,14 @@
   <Project Path="Gateway.AdminUi/Gateway.AdminUi.csproj" />
   <Project Path="Gateway.Provisioning.Worker/Gateway.Provisioning.Worker.csproj" />
   <Project Path="ExternalAgent.Sample/ExternalAgent.Sample.csproj" />
+  <Project Path="../tests/Gateway.AdminUi.Tests/Gateway.AdminUi.Tests.csproj" />
+  <Project Path="../tests/Gateway.IntegrationTests/Gateway.IntegrationTests.csproj" />
+  <Project Path="../tests/Gateway.ObservabilityRuntime.Tests/Gateway.ObservabilityRuntime.Tests.csproj" />
+  <Project Path="../tests/Gateway.Setup.Tests/Gateway.Setup.Tests.csproj" />
+  <Project Path="../tests/Gateway.SourceTests/Gateway.SourceTests.csproj" />
+  <Project Path="../tests/Gateway.TestSupport/Gateway.TestSupport.csproj" />
+  <Project Path="../tests/Gateway.Tooling.Tests/Gateway.Tooling.Tests.csproj" />
+  <Project Path="../tests/Gateway.UnitTests/Gateway.UnitTests.csproj" />
   <Project Path="../tools/Gateway.DatabaseMigrator/Gateway.DatabaseMigrator.csproj" />
   <Project Path="../tools/Gateway.LiveVerification/Gateway.LiveVerification.csproj" />
   <Project Path="../tools/Gateway.Setup/Gateway.Setup.csproj" />

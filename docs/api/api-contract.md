@@ -6,8 +6,8 @@ miss when reading individual operations.
 
 This guide describes the retained source contract, not a currently deployed or
 tested environment. [MILESTONES.md](../../MILESTONES.md) is the sole project
-completion and acceptance record. The deleted test projects and supporting tools
-must be restored under that plan before reproducible validation can be claimed.
+completion and acceptance record. The restored tools and local test fixtures
+provide bounded development validation, not a deployed API or provider result.
 
 ## API surfaces
 
@@ -31,6 +31,13 @@ the exact routes.
 The API validates tenant, audience, issuer, user object ID, delegated
 `access_as_user`, and Gateway role. Roles are `Gateway.Administrator`,
 `Gateway.Operator`, `Gateway.Auditor`, and `Gateway.SupportReader`.
+
+OAuth clients request the resource-qualified
+`api://<Gateway API application ID>/access_as_user` scope. Gateway role names are
+not OAuth scopes. The static OpenAPI uses `x-gateway-roles-any-of` to document
+alternative allowed roles separately; replace its tenant and API application
+placeholders with verified deployment values before configuring OAuth tooling.
+Public health routes are at `/health` and `/health/ready`, not under `/api/v1`.
 
 Mutating registration and Registry-completion actions require
 `Gateway.Administrator`. The Registry action is user-only and acquires downstream
@@ -337,6 +344,18 @@ of downstream Agent 365 or Purview landing. For interactions, inspect `status`,
 `purviewProcessing`, and `observabilityProcessing`: `Failed` is not successful
 processing, and `Queued` is not confirmed delivery. Disabled observability does
 not queue an export.
+
+The current activity DTO also accepts tool details and custom attributes that
+are not retained by the receipt/outbox telemetry projection. Custom activity has
+an Azure Monitor mapping but no Agent 365 mapping. Single-activity validation is
+not yet identical to batch validation; duplicate new IDs in the same batch can
+fail at SQL uniqueness enforcement rather than return per-item rejection.
+Do not infer rich tool analytics or all-destination delivery from acceptance.
+
+Agent list cursors currently do not round-trip: the handler returns a GUID and
+the repository expects encoded timestamp/ID data. Search is name-only, and the
+Admin UI limits list/overview results to 100. These known behavior limits remain
+in the milestone plan; clients must not interpret a partial list as fleet totals.
 
 ## Errors
 

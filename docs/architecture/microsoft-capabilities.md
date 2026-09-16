@@ -43,6 +43,12 @@ POST https://agent365.svc.cloud.microsoft/observabilityService/tenants/{tenantId
 The route's agent ID is the child Agent Identity application ID. The app-only
 token must bind to that child and carry Agent365.Observability.OtelWrite.
 
+The accepted operation names are `invoke_agent`, `execute_tool`, `chat` and
+`output_messages`. The public activity contract also retains Custom, which does
+not have an Agent 365 export mapping. Optional OTLP result details and a `sent`
+sink indicate only the evidence reported by that endpoint; an absent or unrouted
+destination is not independently verified portal landing.
+
 Provider references:
 [Agent 365 registration](https://learn.microsoft.com/microsoft-365/copilot/extensibility/api/admin-settings/agent-registration/agentregistration-create),
 [direct OpenTelemetry integration](https://learn.microsoft.com/microsoft-agent-365/developer/direct-open-telemetry-integration),
@@ -91,6 +97,13 @@ administration uses the private [Windows executor](purview-windows-executor.md).
 Both are part of the retained execution design; no active deployment is inferred.
 Registration and Settings can submit reviewed configuration through the same
 application service, including deferred consent for a newly created blueprint.
+
+The connection verifier requires the automation identity's separate Security &
+Compliance service-principal reference to match both ObjectId and AppId. Retained
+Entra preparation and the interactive companion do not create that reference.
+Connection/inventory proof currently expires after 15 minutes; certification
+cannot outlive it. These are source prerequisites and lifetime constraints, not
+current tenant observations.
 
 Provider references:
 [custom AI configuration](https://learn.microsoft.com/purview/developer/configurepurview),

@@ -7,10 +7,10 @@ files are inputs to those workflows, not independent installation instructions.
 
 The related Azure resources and supporting tools were deliberately removed.
 Retained assets do not prove a current deployment. The complete installation
-command is **not yet revalidated runnable**: `tools/Gateway.Setup`,
-`tools/Gateway.DatabaseMigrator`, `tools/Gateway.LiveVerification` and the former
-`tests/` projects are absent. [MILESTONES.md](../MILESTONES.md) is the sole
-completion and acceptance record.
+command is **not yet revalidated against a fresh Azure environment**. The three
+required tooling source projects and a bounded local test suite are present again;
+see the [local baseline command](../README.md#local-source-and-behavioral-validation).
+[MILESTONES.md](../MILESTONES.md) is the sole completion and acceptance record.
 
 ## Layout
 
@@ -49,9 +49,10 @@ configuration or effective protection.
 ## SQL boundary
 
 The retained orchestration expects `tools/Gateway.DatabaseMigrator` to apply
-source-bound schema changes and verify the database. That tool's source is absent,
-so its complete manifest, ordering and execution must be restored and checked
-against the retained schema before claiming a runnable migration path.
+source-bound schema changes and verify the database. Its restored source must
+retain exact manifest ordering, checksums and model/readback contracts.
+Local transaction fixtures create the current EF schema; they do not replace
+the complete migration and preserved-environment acceptance.
 
 Empty-database initialization is intended only when SQL reports zero user tables.
 Existing environments require the maintenance lifecycle and exact database
@@ -65,7 +66,7 @@ Source restoration and baseline validation belong to M1; release preparation and
 live acceptance belong to M5 and M6 in [MILESTONES.md](../MILESTONES.md). Validation
 must include template compilation, configuration contracts, migration ordering,
 real schema and preservation checks, and the relevant restored test projects.
-The absent test projects have not been replaced by generated binaries.
+The new local suite uses authored source, not old generated binaries.
 
 An authorized live deployment requires a current target-bound plan and What-If.
 Local compilation or test results do not prove Azure, tenant or database state.

@@ -9,10 +9,10 @@ baseline/contract scaffold, not an execution alternative.
 
 Supporting files and related Azure resources were deliberately removed. This
 guide describes the retained lifecycle contracts, not a current deployment or a
-fully revalidated runnable workflow. `tools/Gateway.Setup`,
-`tools/Gateway.DatabaseMigrator`, `tools/Gateway.LiveVerification` and the former
-`tests/` projects are absent. Restore and validate those prerequisites before
-using a release workflow. Historical `gw0911g` repairs are not current steps.
+fully revalidated live workflow. The minimum Setup, DatabaseMigrator and
+LiveVerification source projects and a bounded local suite are restored.
+Validate the actual frozen candidate and prerequisites before using a release
+workflow. Historical `gw0911g` repairs are not current steps.
 [MILESTONES.md](../MILESTONES.md) is the sole completion and acceptance record.
 
 ## Authority and evidence
@@ -65,7 +65,7 @@ preserves both bindings without that invalid invocation or logging tokens.
 
 ## Commands
 
-These command examples explain the interface once its missing prerequisites and
+These command examples explain the interface once its current prerequisites and
 target eligibility have been verified. They do not authorize resuming deliberately
 deleted resources. Outputs are under the main checkout's `.maintenance` directory;
 retained source/state/configuration are read-only inputs.
@@ -200,8 +200,8 @@ order against the compiled migrator manifest. Never overwrite an older candidate
 validation receipt or Plan to represent newer source.
 
 Prepare expects the candidate migrator to compile and emit its target-model
-fingerprint and executable-bundle evidence. The migrator source is currently
-absent. After restoring it, Prepare still does **not** establish that application
+fingerprint and executable-bundle evidence. The restored migrator source and
+Prepare output still do **not** establish that application
 builds, tests or executor packaging passed. Separately perform fresh API,
 worker and Admin builds, the restored regression suites, real local
 migration-runner tests and signed executor-package validation from isolated
@@ -244,9 +244,9 @@ does not access SQL or Azure, change receipt/options JSON, or include the separa
 Exchange application permission.
 
 The SQL-job behavior below is the contract expected by the retained orchestration.
-Because the migration runner source is absent, its internal transaction, manifest
-and reconciliation behavior must be re-established and tested before this path
-can be accepted as runnable.
+The restored migration runner's internal transaction, manifest and reconciliation
+behavior must be tested on the exact frozen candidate before this live path is
+accepted. Current-EF-schema LocalDB tests alone do not establish that contract.
 
 - In the v1 Core-to-Full route, Content Safety is **S0**, uses the existing API managed identity and disables
   local authentication. Its endpoint remains public with Entra authentication;
@@ -369,12 +369,13 @@ artifact for bounded reconciliation, not authorize automatic deletion.
 
 ## Required migration validation
 
-The migration runner and former test projects are absent. Historical references
-to `MaintenanceUpgradeRunnerSqlTests`, opt-in environment variables, a particular
-Git baseline or past test outcomes are not current validation. M1 restores the
-minimum runnable source and tests; M5 validates the frozen release candidate.
+The migration runner and bounded local fixture projects are restored. Historical
+references to `MaintenanceUpgradeRunnerSqlTests`, old opt-in environment variables,
+a particular Git baseline or past test outcomes are not current validation.
+M1 establishes the minimum source/behavior baseline; M5 validates the exact frozen
+release candidate and its full migration protocol.
 
-The restored test path must exercise the real ordered SQL scripts against an
+The release test path must exercise the real ordered SQL scripts against an
 independently established prior schema with synthetic registrations, credentials
 and receipts. It must check original-marker preservation, transaction rollback,
 unknown outcomes without replay, and a committed migration whose subsequent
