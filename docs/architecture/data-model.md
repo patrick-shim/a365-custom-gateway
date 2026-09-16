@@ -1,8 +1,10 @@
 # Data model
 
 Azure SQL is the authoritative store for Gateway registrations, provisioning,
-credentials, idempotency, audit, and outbox state. The schema is applied by reviewed
-migrations and bootstrap initializes only a database with zero user tables.
+credentials, protection configuration, audit, idempotency and dispatch state.
+This guide describes the retained EF model, not a deployed database.
+[MILESTONES.md](../../MILESTONES.md) is the sole completion record; see
+[project state](../project-state.md) for the deleted tooling and current context.
 
 ## Core relationships
 
@@ -13,10 +15,7 @@ erDiagram
     AGENT_REGISTRATIONS ||--|| AGENT_FEATURE_CONFIGURATIONS : configures
     AGENT_REGISTRATIONS ||--o| AGENT_CREDENTIAL_REFERENCES : references
     AGENT_REGISTRATIONS ||--o{ AGENT_INGRESS_CREDENTIALS : authenticates
-    AGENT_REGISTRATIONS ||--o{ ACTIVITY_RECEIPTS : records
-    AGENT_REGISTRATIONS ||--o{ IDEMPOTENCY_RECORDS : scopes
     AGENT_REGISTRATIONS ||--o{ PROMPT_EVALUATION_RECORDS : protects
-    AGENT_REGISTRATIONS }o--o| PURVIEW_DLP_PROFILES : optionally_uses
     PURVIEW_TENANT_CONNECTIONS ||--o{ SIT_SNAPSHOT_GENERATIONS : owns
     SIT_SNAPSHOT_GENERATIONS ||--o{ SIT_SNAPSHOTS : contains
     PURVIEW_TENANT_CONNECTIONS ||--o| PURVIEW_KYD_CONFIGURATIONS : configures
@@ -24,123 +23,127 @@ erDiagram
     PROTECTION_ADMIN_OPERATIONS ||--o{ PROTECTION_ADMIN_OPERATION_STEPS : contains
 ```
 
-`OutboxMessages` is a transactionally written dispatch table whose payload carries
-safe workflow identifiers; the current schema does not model a foreign key from it
-to a job or registration.
+This diagram shows principal aggregates. Current DLP profiles bind to registrations
+through the resolved blueprint application ID; the registration's legacy
+`PurviewPolicyProfileId` foreign key points to the older combined profile table.
+Do not treat those two profile models as interchangeable.
 
-## Registration aggregate
+## Registration and credentials
 
-`AgentRegistrations` binds the generated external agent ID, selected reusable
-blueprint, distinct child Agent ID, accepted Registry ID, feature settings, status,
-and timestamps. One external ID maps to exactly one registration. A blueprint may
-be reused by many registrations; a child identity may not.
+`AgentRegistrations` records the generated external ID, requested and resolved
+blueprint, child identity, Registry identifiers, lifecycle status, feature choices,
+row version and a nonempty protection revision. Filtered unique indexes prevent
+active registrations from sharing external or child identity bindings.
 
-`AgentIngressCredentials` stores key ID, format and hash metadata, salted verifier,
-creation time, required expiry, revocation time, and the creating administrator's
-object ID. It never stores the clear Gateway key. `AgentCredentialReferences` is a
-separate one-to-one registration reference used by the provisioning aggregate.
+The aggregate also records the requested Purview policy mode and configuration
+operation ID. A reviewed new-blueprint request persists deferred configuration on
+the protection operation until the resolved identity is available. Turning off one
+agent's usage does not remove the blueprint's shared DLP profile.
 
-## Provisioning state
+`AgentIngressCredentials` stores key ID, format/hash metadata, salted verifier,
+expiry, revocation and creating administrator. It never stores the clear key.
+`AgentCredentialReferences` serves the separate provisioning reference.
 
-`ProvisioningJobs` owns ordered `ProvisioningJobSteps`. The current workflow uses
-seven steps selected from the persisted `ProvisioningStepType` enum. Existing enum
-numeric values are compatibility contracts and must not be reordered or reused.
+## Provisioning and Registry recovery
 
-The API-owned `Agent365RegistryAttemptState` is serialized into the `RegisterAgent`
-step's `ResultData`; there is no separate Registry-attempt table. It records the
-authentication mode, creator, start time, planned Registry ID, and optional returned
-Registry ID. It is distinct from the historical serialized compatibility property
-on worker state. Only this API-owned step state authorizes Registry recovery.
+`ProvisioningJobs` owns ordered `ProvisioningJobSteps`. The current workflow has
+seven stages. Persisted enum values are compatibility contracts.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Pending
-    Pending --> Running
-    Running --> AwaitingAdministratorAction
-    AwaitingAdministratorAction --> Running: accepted administrator action
-    Running --> Completed: final verification succeeds
-    Running --> Failed
-    Running --> RequiresManualIntervention
-    AwaitingAdministratorAction --> RequiresManualIntervention
-```
+The API's `Agent365RegistryAttemptState` is serialized into the RegisterAgent
+step's result data. It records the actor, authentication mode, start time, planned
+Registry ID and accepted ID when known. This API-owned state authorizes exact
+Registry recovery; historical worker compatibility fields do not.
 
-Registry acceptance and final verification are step-level facts while the job is
-`Running`; they are not additional `JobStatus` values.
+Jobs can wait for administrator action, complete, fail or require manual
+intervention. Registry acceptance and final verification are step facts, not extra
+job statuses. An unknown POST outcome remains readback-only and never restores
+permission to POST again.
 
-An unknown POST outcome does not return to a POST-capable state. Recovery performs
-exact GET against the persisted planned ID or remains manual.
+## Idempotency, locks and dispatch
 
-## Idempotency and locking
+Data-plane idempotency binds registration, normalized endpoint and canonical
+UUIDv4 key to the request hash. SQL application locks serialize the scope.
+Matching requests can replay a safe stored result; a changed hash conflicts.
+One-time secret responses are not cached for replay.
 
-Data-plane idempotency is scoped by registration, normalized endpoint, and canonical
-UUIDv4 idempotency key. Under a transaction-owned SQL application lock, the API:
+`OutboxMessages` is written with its state transition and dispatched afterward.
+Its safe payload identifies workflow work; it has no job/registration foreign key.
+Persistence derives the destination from the message type. Registration and
+protection queues remain separate, and consumers tolerate duplicate delivery.
 
-1. resolves the authenticated registration;
-2. computes a canonical request hash;
-3. acquires the scoped lock;
-4. reads or creates the idempotency lease;
-5. performs side effects and outbox writes;
-6. commits safe response metadata.
+Protection operations also bind actor, tenant, target, reviewed payload, accepted
+request, confirmation verifier, idempotency key and row version. Provider work
+does not hold the runtime-test acceptance transaction open.
 
-The same key and hash replay the safe recorded result. The same key with a different
-hash returns conflict before side effects. One-time secret responses are never
-cached for replay.
+## Protection state
 
-## Outbox
+| Record | Persisted purpose |
+|---|---|
+| ProtectionCapabilities | Installed/unavailable state, non-secret resource identifiers and exact readback |
+| PurviewTenantConnections | Exact tenant authority, status, expiry and active inventory generation |
+| SIT generations and snapshots | Tenant-backed GUID, exact Unicode name, publisher, bounded generation and expiry |
+| PurviewKnowYourDataConfigurations | Fixed enterprise-AI-apps Group on the Application plane |
+| PurviewDlpProfiles | One Individual/Application profile per blueprint, selected SITs and thresholds, policy mode, provider IDs and readiness |
+| ProtectionAdminOperations and steps | Reviewed intent, deferred binding, durable progress, safe failures, runtime consent/result and recovery disposition |
 
-`OutboxMessages` is written in the same SQL transaction as the state transition.
-Publishers deliver to Service Bus and mark dispatch state afterward. Consumers must
-tolerate duplicate delivery. Final Registry acceptance enqueues only the final
-verification message.
+Capability startup synchronization uses deployment/source/time-bound attestation,
+a SQL application lock and a serializable transaction. The normal bootstrap path
+requires either zero or all three capability rows, preserves unchanged row
+versions and rejects installed-fact drift. A separate preparation-history path
+requires its matching authorization; old bootstrap configuration cannot bypass
+an upgraded projection's receipt requirements.
 
-## Content and observability metadata
+A DLP profile preserves compatibility fields for one SIT and the legacy
+Enforce/AuditOnly mode. Its normalized selection uses the current list when
+present. Each selected SIT carries independent minimum/maximum count and
+confidence values. The four current modes are Enforce, SimulationWithTips,
+SimulationWithoutTips and Disabled.
 
-Raw approved interaction content is kept only in the encrypted Blob content store
-with documented retention. SQL activity receipts contain sanitized identifiers,
-processing decisions, timestamps, and correlation data. Prompt-evaluation receipts
-store a salted content binding and consumption state, never the prompt.
+Exact policy readback, propagation, token-role checks and runtime observations are
+separate facts. SimulationReady and Disabled are not enforced-ready. Enforce
+readiness requires current capability/connection/inventory binding and a valid
+runtime certification for the exact profile and test registration.
 
-## Protection governance
+Legacy combined profiles and review-required candidates remain in the model.
+Their existence or provider IDs do not establish current readiness. The source
+retains database bootstrap/upgrade attestation contracts, but the referenced
+DatabaseMigrator project is absent; schema application must be re-established
+and verified under the milestone plan.
 
-The protection-governance v1 migration implements the
-[protection settings plan](protection-settings-plan.md):
+## Runtime tests and prompt receipts
 
-- `ProtectionCapabilities` stores bootstrap-owned capability kind, status,
-  non-secret resource identifiers, and exact-readback time.
-- `PurviewTenantConnections` stores one exact tenant authority connection and its
-  active expiring inventory generation.
-- `PurviewSensitiveInformationTypeSnapshotGenerations` and
-  `PurviewSensitiveInformationTypeSnapshots` store bounded tenant inventory by
-  canonical GUID, exact Unicode name, publisher, order, and expiry.
-- `PurviewKnowYourDataConfigurations` enforces one fixed
-  `ee1680d0-702f-4090-b26c-c49091e86531` Group on the Application plane.
-- `PurviewDlpProfiles` enforces one Individual/Application profile per blueprint
-  application ID and stores policy/rule readback plus independent capability,
-  propagation, token-role, allow, and block evidence.
-- `ProtectionAdminOperations` and their ordered steps persist reviewed intent,
-  accepted-request hash, confirmation verifier, idempotency key, actor, target,
-  retry/manual-intervention state, safe failure code, and readback references.
+Runtime tests reuse `ProtectionAdminOperations`; there is no dedicated runtime
+test table. Immutable consent and suite/configuration hashes accompany bounded
+sanitized result JSON. Raw sample content is held by disposable ephemeral objects
+and is not queued or persisted as operation content.
 
-Legacy combined `PurviewPolicyProfiles` are preserved. The migration projects them
-into review-required `LegacyProtectionPolicyCandidates`, splitting blueprint
-bindings without declaring them Ready or mutating provider state.
+An execution commits acceptance before calling the provider, then reloads current
+state for finalization. SQL finalization uses a fresh serializable transaction and
+consistent registration-before-profile locking. Unknown or expired executions
+remain explicit outcomes rather than replaying sample submissions.
 
-At verified runtime startup, the API validates bootstrap's complete exact 19-key
-capability attestation and synchronizes all three capability rows under a SQL
-application lock and transaction. The upsert is deterministic,
-restart-idempotent, rowversion-preserving for unchanged rows, clears stale
-NotInstalled identifiers, and rejects partial or drifted state. Inert startup does
-not materialize rows.
+Prompt-evaluation records store the salted content binding, decisions, expiry,
+consumption state, protection revision and context hash. The context binds the
+current shared profile, classifier thresholds, policy mode, capability, inventory,
+registration and certification. Persistence guards coordinate relevant protection
+changes so stale receipts cannot authorize protected ingestion.
 
-Profile assignment remains optional. A registration without a profile follows the
-core path. Purview use fails closed unless the exact profile and inventory remain
-Ready for that registration's resolved blueprint.
+## Content, retention and deletion
 
-## Retention and deletion
+Approved raw interaction content belongs in the Blob content store. SQL and
+outbox data contain bounded operational metadata, hashes and decisions rather
+than clear prompts, responses, credentials or provider bodies.
 
-The idempotency service applies the configured idempotency-record lifetime when it
-creates a record. The repository does not currently implement background cleanup
-for activity receipts, audit events, or outbox rows, so their persisted legacy
-retention columns are not presented as active controls. Identity, Registry, and
-credential cleanup are separate privileged operations and must be based on exact
-ownership evidence. Bootstrap intentionally has no destroy mode.
+Idempotency records receive their configured lifetime. The retained repository
+does not implement background cleanup for activity receipts, audit events or
+outbox rows; legacy retention columns are not active cleanup controls.
+
+Registration deletion is Gateway state management and does not imply removal of
+Microsoft identities, Registry objects or shared policies. Those require exact
+ownership and separate operational handling.
+
+The source contracts are in
+[GatewayDbContext](../../src/Gateway.Infrastructure/Persistence/GatewayDbContext.cs),
+[entity configurations](../../src/Gateway.Infrastructure/Persistence/Configurations),
+[protection context](../../src/Gateway.Domain/Models/PromptProtectionContext.cs) and
+[runtime repository](../../src/Gateway.Infrastructure/Persistence/Repositories/PurviewRuntimeTestRepository.cs).

@@ -1,184 +1,143 @@
 # Purview Windows execution boundary
 
-Status: implementation and offline review in progress, 2026-09-06. This document
-does not establish deployment, provider connectivity or DLP readiness. Follow the
-[current continuation](../agent-continuation.md) for the exact first unfinished
-action. The reviewed host, worker transport, publisher, package inspector, Bicep
-and tests are now in canonical source for model handoff. They are not deployed;
-the integration and acceptance steps below remain unfinished.
+This guide describes the retained executor, worker transport and packaging source.
+Project completion belongs only in [MILESTONES.md](../../MILESTONES.md); see
+[project state](../project-state.md) for current environment and tooling context.
+No current Windows deployment, provider connection or DLP readiness is asserted.
 
-Microsoft's [Exchange Online PowerShell module documentation](https://learn.microsoft.com/en-us/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps)
-does not support Security & Compliance PowerShell on PowerShell 7 for Linux or
-macOS. Both the connection verifier and Settings policy provider use
-`Connect-IPPSSession`. Installing the module in the Linux worker cannot prove that
-either provider works.
+## Responsibilities
 
-## Responsibility and identity
+The Linux worker owns SQL, outbox, dedicated queues and durable protection
+operations. Certificate-backed Security & Compliance PowerShell runs through a
+private Windows App Service. The fixed command set is:
 
-The Linux worker keeps SQL, outbox, both dedicated queues, the seven registration
-stages, its Graph allowlist and its runtime managed identity. A private Windows
-App Service hosts only these six fixed provider operations:
+| Command | Purpose |
+|---|---|
+| VerifyConnection | Verify the prepared Purview automation connection |
+| ReadKnowYourData | Read fixed-scope KYD configuration |
+| CreateKnowYourData | Apply the reviewed fixed-scope KYD operation |
+| ReadDlpProfile | Read the exact blueprint policy/rule |
+| CreateDlpPolicy | Apply the reviewed policy operation |
+| CreateDlpRule | Apply the reviewed rule operation |
 
-- verify the Purview automation connection;
-- read or create fixed-scope Know Your Data policy;
-- read a blueprint DLP profile;
-- create its exact DLP policy; and
-- create its exact DLP rule.
+Requests expose no generic command, script, Graph proxy or remote-reset interface.
+The command names and request binding are defined in
+[PurviewExecutorContracts.cs](../../src/Gateway.Purview/PurviewExecutorContracts.cs).
 
-No public generic PowerShell, script, command, Graph proxy or remote-reset endpoint
-is exposed. The application is self-contained .NET 10 for Windows x64, packaged
-with Microsoft-signed PowerShell 7.6.5 and ExchangeOnlineManagement 3.10.1. Startup
-verifies the complete runtime file manifest and imports the pinned module before
-serving requests. Startup does not connect to the compliance provider.
+The Windows boundary follows the repository's supported execution design for
+Connect-IPPSSession. Installing the module in the Linux worker is not its
+substitute. Recheck the official
+[module support documentation](https://learn.microsoft.com/en-us/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps)
+when validating a deployment.
 
-### Console-free interpreter child
+## Runtime and console-free child
 
-Windows App Service does not provide a console. PowerShell 7.6.5's Windows
-`ConsoleHost` constructs a raw UI using `CONOUT$`; its entry point can silently
-return exit zero for native invalid-handle errors before running a command.
-Redirecting stdout or using `-NonInteractive` does not remove that dependency.
+The package targets self-contained .NET 10 for Windows x64, with pinned PowerShell
+7.6.5 and ExchangeOnlineManagement 3.10.1. Startup verifies the runtime manifest and
+imports the pinned module before serving requests; it does not connect to the
+compliance provider.
 
-The executor therefore starts a dedicated `Gateway.Purview.PowerShellHost.exe`
-OS child, never an in-process web-host runspace. It hosts the exact packaged
-7.6.5 `System.Management.Automation` engine through the supported `PSHost` and
-runspace APIs, with no raw console UI. Only a fixed probe or the three existing
-allowlisted scripts/parameters are accepted; arbitrary command text, script URLs,
-plugins and interactive prompts are not accepted. The configured manifest digest
-is passed separately from operation data, and the child rechecks the complete
-manifest before loading the engine. Module selection, signatures, exact version
-output and all parent process/output/termination gates remain mandatory.
+The web host starts a dedicated Gateway.Purview.PowerShellHost.exe process. That
+child hosts the packaged System.Management.Automation engine through PSHost and
+runspace APIs without a raw console UI. It accepts only a fixed probe or approved
+script/parameter combinations and rejects arbitrary commands or interactive
+prompts.
 
-The child retains stdin exclusively for the certificate password and leaves the
-existing result envelopes on stdout. Pipeline-object output is rejected without
-unbounded collection or formatting. Errors expose only fixed failure markers,
-not exception messages or provider data. The parent still owns cancellation,
-whole-process-tree termination and its existing mutation fence.
+The child independently checks the manifest before loading the engine. Canonical
+packaging compiles against the signed packaged engine through
+PurviewPowerShellReferencePath. Ordinary builds use the exact compile-only 7.6.5
+reference; that reference is not a replacement runtime. Approved reference
+assemblies used by Add-Type are included in the same hash inventory.
 
-Canonical packaging compiles against the already Microsoft-signed, version-checked
-engine using `PurviewPowerShellReferencePath`. Ordinary builds use the exact
-`System.Management.Automation` 7.6.5 compile-only reference; no NuGet SDK runtime
-copy may replace the packaged engine. PowerShell's approved `ref` directory is
-also copied beside the child entry assembly because `Add-Type` resolves reference
-assemblies there. Those files are included in the same runtime hash inventory.
-The child shares the executor's existing .NET runtime; no runtime or platform
-upgrade is introduced.
+The certificate password uses stdin. Typed result envelopes use stdout.
+Unexpected pipeline-object output and unsafe error details are rejected. The
+parent owns cancellation and whole-process-tree termination. Local process
+behavior alone does not establish cloud runtime or provider connectivity.
 
-Local detached/no-console execution and offline tests do not establish cloud
-readiness or tenant connectivity. A separately approved artifact release still
-requires actual worker-identity health and subsequent authorized provider proof.
+## Caller and certificate authority
 
-A dedicated single-tenant API application publishes only the application role
-`Purview.Executor.Invoke`. Only the exact Linux worker system managed identity
-receives it. App Service authentication and application authorization independently
-check the caller. Application checks include signature, issuer, audience, tenant,
-principal, client application, role, lifetime and absence of delegated `scp`.
-No client secret or delegated sign-in fallback is used.
+A dedicated single-tenant API application exposes Purview.Executor.Invoke to the
+exact worker system managed identity. App Service authentication and application
+authorization independently check the caller. The application checks signature,
+issuer, audience, tenant, principal, client application, role and lifetime, and
+rejects delegated scope tokens.
 
-The executor system identity reads only the exact certificate secret, reads its
-package container and writes its separate durable claim container. It receives no
-SQL, Service Bus, Graph or Registry permissions. Its identity is distinct from the
-Gateway API, worker and Purview runtime managed identities. Certificate bytes stay
-inside the Windows provider and are never returned through the transport.
+The executor identity is distinct from API, worker and Purview runtime identities.
+It reads the exact certificate secret and package container, and writes its
+dedicated durable claim container. It has no SQL, Service Bus, Graph or Registry
+authority. Certificate bytes stay within the Windows provider.
 
-The Windows App Service sets `WEBSITE_LOAD_USER_PROFILE=1`, as required by
-[Microsoft's certificate-loading guidance](https://learn.microsoft.com/azure/app-service/configure-ssl-certificate-in-code#load-a-certificate-from-a-file).
-This supports .NET private-certificate import; it does not add certificate-store
-deployment, change ephemeral-key handling, grant permissions, or prove tenant
-connectivity. Bootstrap requires the exact setting in its host readback.
+The Windows host configuration requires WEBSITE_LOAD_USER_PROFILE=1 and verifies
+that setting in readback. It supports private-certificate loading; it does not
+establish tenant connection or policy readiness.
 
-The existing worker-only private health response may include one verification
-failure receipt for at most five minutes: operation ID, timestamp, fixed execution
-stage, fixed failure category, and numeric child exit/provider stage when known.
-It never includes exception messages, provider bodies, certificate material, or
-credentials. This diagnostic receipt is not connection or enforcement evidence;
-the normal reviewed operation and all independent authority checks remain required.
+The private worker health response can expose a bounded recent failure receipt:
+operation ID, timestamp, fixed stage/category and numeric child/provider stage.
+It excludes exception messages, provider bodies and secret material. A diagnostic
+receipt is not connection or enforcement proof.
 
 ## Private package delivery
 
-App Service uses a dedicated VNet integration subnet and a private endpoint with
-private DNS for both application and SCM names. Public network access and basic
-publishing credentials remain disabled. The ZIP is addressed by SHA256 in private
-Blob Storage and loaded with the App Service system managed identity; no SAS or
-publishing credential is introduced.
+The source provisions dedicated VNet integration, private endpoint and DNS for
+application/SCM names. Public network access and basic publishing credentials are
+disabled. App Service loads a SHA256-addressed ZIP from private Blob Storage using
+its system identity.
 
-A manual Container Apps job publishes the fixed ZIP embedded in its immutable
-publisher image. It has one replica, no automatic retries, a bounded deadline and
-only package-container Blob Data Contributor permission. That role includes delete
-permission; create-only behavior is enforced by the publisher's conditional write.
-The job has no certificate, claims-container, SQL, queue or Graph authority.
+A manual Container Apps job publishes the fixed ZIP embedded in an immutable
+publisher image. It has one replica, bounded duration, no automatic retries and
+package-container Blob Data Contributor authority only. That role includes
+deletion capability; the publisher implements create-only behavior with a
+conditional write.
 
-Before image construction, the package inspector verifies the source-bound receipt,
-full ZIP digest, exact runtime manifest and every file hash. Counted reads enforce
-actual expanded sizes, including corrupt ZIP size metadata. Windows path rules
-reject traversal, reserved names, aliases, case collisions and file/directory
-conflicts. The build context includes only allowlisted publisher sources, public
-build settings and the independently hashed ZIP.
-The packaging script itself participates in the deployment source fingerprint;
-changing its bytes invalidates package source identity. Two fixture regressions
-and independent review verify this boundary; unrelated operator scripts stay excluded.
+The package inspector verifies the source receipt, archive digest, runtime
+manifest and every file hash. Counted reads bound actual expanded size. Windows
+path validation rejects traversal, reserved names, aliases, collisions and
+file/directory conflicts. The build context contains allowlisted publisher
+sources, public settings and the inspected ZIP.
 
-The publisher requires the expected private storage address before obtaining its
-system-identity credential. Deployment orchestration must independently verify the
-owned network, storage public access, private endpoint and DNS; the process DNS
-check is not socket pinning. Local payload hash and length are checked before any
-storage access. One upload uses `If-None-Match: *`; a lost response allows exact
-readback only. Independent readback uses the observed ETag and hashes all bytes.
-Existing different content is never overwritten or deleted.
+The publisher checks the expected private storage address before obtaining
+credentials, validates the local payload, and writes with If-None-Match: *.
+A lost response allows exact readback only. Independent readback verifies the
+observed ETag and all content bytes. Existing different content is not overwritten
+or deleted.
 
-## Request and mutation contract
+## Request binding and recovery
 
-Both sides independently load the same execution binding from deployed
-configuration. It binds deployment ownership, tenant, original bootstrap source,
-new execution source, package digest, automation application and principal, exact
-vault and certificate, Gateway API and worker principals, runtime identity, and
-executor application and principal. Requests cannot choose this authority.
+Worker and executor independently load an execution binding containing:
 
-Requests also bind operation ID, one fixed command and a short expiration. For
-mutations, a conditional Blob claim is persisted before provider invocation. Its
-key binds deployment, tenant, operation and provider command; its canonical input
-hash excludes the transport expiration. Different content conflicts. A duplicate
-Started or unknown claim never repeats the provider mutation. A completed claim
-replays only the bounded typed result. Provider read operations remain fresh.
+- deployment ownership, tenant and bootstrap/execution source fingerprints;
+- package digest and exact automation application/principal;
+- vault, certificate and secret URI;
+- API, worker and runtime identity bindings;
+- executor application/principal and caller application.
 
-One 195-second server deadline covers credential access, provider execution,
-termination and durable result storage. The client has a separate 215-second
-deadline and no transport retry. Owned child termination is bounded and independently
-checked. If exit cannot be proved, the host rejects later mutations until an owned
-recycle. An HTTP timeout does not prove the provider mutation did not happen.
+A request cannot choose replacement authority. It adds only the operation ID,
+fixed command, bounded input and short expiration.
 
-## Remaining integration and acceptance
+Before a mutation, the executor conditionally writes a Blob claim keyed by
+deployment, tenant, operation and command. The canonical input hash excludes
+transport expiry. Different content conflicts. A duplicate Started or unknown
+claim does not repeat the mutation; a completed claim replays only its bounded
+typed result. Read operations remain fresh.
 
-The host/client boundary has passed independent source review and 66 focused tests.
-The publisher boundary has passed independent source review and 49 tests. The
-package inspector has 29 passing tests and completed independent review. These are
-offline source results. A built package exists, but automatic tool policy blocked
-its local host startup check. No Windows runtime or provider success is claimed.
+The server uses one 195-second deadline covering credential access, provider work,
+termination and durable result storage. The client deadline is 215 seconds, with
+no transport retry. If child exit cannot be proved, later mutations are fenced
+until an owned recycle. Timeout does not prove that a mutation did not occur.
 
-The first deployment still needs these concrete pieces:
+## Lifecycle and verification limits
 
-1. A preserved, reviewed plan and separate receipt binding the completed bootstrap
-   plan, configuration, original source, exact API/worker/runtime identity and SQL
-   evidence to the new executor source and package.
-2. Durable creation and exact readback of the dedicated API application, service
-   principal and worker role assignment, without ambiguous adoption or repeated
-   mutations after unknown outcomes.
-3. Source-bound publisher image construction, private network and identity
-   readback, exact manual job execution and independent package verification.
-4. Private Windows host deployment and runtime attestation, followed by an exact
-   worker image/configuration upgrade that preserves its original identities,
-   queues, SQL markers and bootstrap capability binding.
-5. Verification that understands the separate completed upgrade receipt, plus
-   fresh-bootstrap integration when Purview prerequisites are selected. A completed
-   deployment's original accepted plan and stage evidence must not be rewritten.
-6. Full source/export gates, independent integration review, authorized Windows
-   runtime/provider proof, and Settings connection, SIT, KYD and DLP acceptance.
+Fresh bootstrap contains executor integration when Purview prerequisites are
+selected. Retained [upgrade operations](../../operations/gateway-upgrade.md)
+provide separately bound existing-installation workflows. Original accepted
+bootstrap state must not be rewritten as evidence for changed source.
 
-The operator stopped live delivery for a model handoff. The Entra public-key
-rejection is now corrected in source and proven by live readback, but the active
-deployment cannot yet adopt the corrected source, and a retained earlier target
-still holds a partial certificate needing a separate exact repair. Source was
-promoted for handoff only; promotion does not extend its source authorization.
-Complete core bootstrap independently before any live Windows upgrade. DLP remains fail closed until capability,
-policy readback, propagation, runtime token roles and exact allow/block evidence
-are independently verified. The [Purview runbook](../operations/purview-setup-runbook.md)
-owns those readiness rules. Core registration remains independent of optional DLP.
+Package integrity, host startup, worker authentication, compliance authorization,
+tenant inventory, exact policy readback and runtime sample behavior are independent
+verification boundaries. The milestone plan tracks their implementation and
+acceptance. Missing tool/test projects must be restored before claiming
+reproducible packaging or release validation.
+
+The [protection architecture](protection-settings-plan.md) explains reviewed
+registration configuration, multiple SITs and modes, shared scope, approved
+runtime samples and fail-closed enforcement.

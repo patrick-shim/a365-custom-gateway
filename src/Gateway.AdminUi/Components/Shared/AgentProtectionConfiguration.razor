@@ -1,0 +1,788 @@
+@implements IDisposable
+@inject IGatewayApiClient Api
+
+@if (profileSynchronizing)
+{
+    <LoadingState Label="Refreshing the saved shared profile…" Detail="Further saves are blocked until the current profile version and policy mode are verified." />
+}
+@if (profileSyncError is not null)
+{
+    <ErrorState Title="The shared profile snapshot is not current" Message="@profileSyncError"
+                OnRetry="RetryAgentSnapshotAsync" />
+}
+<p class="field-help">This form never collects or requires sample content. Runtime testing is a separate, optional post-registration action, not a prerequisite for saving configuration.</p>
+<p class="field-help">Runtime verification means approved sample behavior verified in effective policy scope. Graph does not expose matched-SIT or rule attribution.</p>
+
+@if (loadError is not null && (selection.PurviewEnabled || PolicyOnly))
+{
+    <ErrorState Title="Protection inventory is unavailable" Message="@loadError.Message"
+                CorrelationId="@loadError.CorrelationId" OnRetry="RefreshAsync" />
+}
+@if (selection.PurviewEnabled && SavedInventoryBindingIsStale && CanReviewCurrentInventoryBinding)
+{
+    <p class="subtle-note" role="status">The saved profile uses an older inventory binding. Review the current choices and acknowledge the shared-policy impact to authorize a fresh binding. This does not make runtime protection ready.</p>
+}
+@if (!PurviewConnected)
+{
+    <div class="deployment-callout" role="status">
+        <strong>Microsoft Purview connection needed</strong>
+        <span>@ConnectionGuidance Core registration and Prompt Shields do not require Purview.</span>
+        <a href="/settings">Open Settings to connect or renew Purview authority</a>
+    </div>
+}
+@if (!PromptAvailable && !PolicyOnly)
+{
+    <p class="subtle-note">Prompt Shields is unavailable until the Gateway reports the shared capability installed and ready.</p>
+}
+@if (matchingProfiles.Count > 1 && ProfileId is null)
+{
+    <p role="alert" class="validation-summary-errors">More than one shared profile exists for this blueprint. Select and review the intended profile in Settings; this form will not overwrite one silently.</p>
+}
+@if (selection.PurviewEnabled && NeedsIntent)
+{
+    <div class="form-field">
+        <label for="@($"{instanceId}-profile-name")">Shared Purview profile name</label>
+        <input id="@($"{instanceId}-profile-name")" class="form-control" maxlength="120" value="@profileName"
+               disabled="@(!IsAdministrator || Busy || working)" @oninput="ChangeProfileName" />
+    </div>
+}
+@if (selection.PurviewEnabled && profile is not null && !AgentProtectionUiMapping.Types(profile).All(AgentProtectionUiMapping.HasExplicitThresholds))
+{
+    <div class="deployment-callout" role="status">
+        <strong>Existing threshold evidence is unknown or invalid</strong>
+        <span>Unknown values stay blank. Enter all four threshold values for every selected SIT to review an explicit replacement of this shared policy. This creates newly authorized configuration; it does not recover or verify the previous thresholds. Reconciliation alone cannot supply the missing evidence.</span>
+    </div>
+}
+<AgentProtectionEditor @ref="editor"
+                       Value="selection" ValueChanged="ChangeSelection"
+                       PromptShieldsChoiceChanged="PromptChoiceChanged"
+                       Blueprints="EditorBlueprints" SensitiveInformationTypes="EditorTypes" Readiness="CurrentReportedReadiness"
+                       IsAdministrator="IsAdministrator" Busy="@(Busy || working || profileSynchronizing || profileSnapshotBlocked)"
+                       LockBlueprintSelection="true" DeferredBlueprintName="@DeferredBlueprint?.DisplayName"
+                       PolicyOnly="PolicyOnly" PromptShieldsAvailable="PromptAvailable" PurviewAvailable="PurviewConnected"
+                       AdditionalValidationErrors="EditorErrors"
+                       AllowThresholdEditing="true" RequireExplicitThresholds="@(profile is not null && NeedsIntent)"
+                       RequiresSharedPolicyAcknowledgment="@(NeedsIntent && profile is not null)"
+                       SharedPolicyImpact="@($"This policy is shared by every agent using blueprint {BlueprintApplicationId}. Review the complete SIT list and mode before replacing it.")"
+                       SharedPolicyReviewKey="@($"{ContextKey}|{profile?.Id}|{profile?.RowVersion}|{DeferredBlueprint}")"
+                       OnReview="@(NeedsIntent ? EventCallback.Factory.Create<AgentProtectionReview>(this, ReviewAsync) : default)"
+                       CanContinueChanged="EditorValidityChanged"
+                       OnRefreshSensitiveInformationTypes="RefreshAsync" />
+@if (LatestReadiness is { IsReady: false } latestReadiness && selection.PurviewEnabled)
+{
+    <ProtectionReadinessPanel Readiness="latestReadiness" Label="Latest Gateway protection verdict"
+        PolicyMode="@SavedPolicyMode" ProfileStatus="@profile?.Status"
+        EvidenceExpiresAtUtc="@profile?.RuntimeBehaviorVerifiedUntilUtc" />
+    @if (SavedPolicyMode == "Enforce" || AgentProtectionUiMapping.ActionableReadinessBlockers(latestReadiness, SavedPolicyMode).Count > 0)
+    {
+        <p class="readiness-blockers">Follow the Gateway's required action for this mode and current context. Persisted profile status and historical completed operations do not override this verdict.</p>
+    }
+}
+@if (selection.PurviewEnabled && !NeedsIntent && profile is not null)
+{
+    <p class="subtle-note" role="status">Using the existing shared profile without changing its policy: @profile.DisplayName. Saving this agent does not overwrite the shared policy.</p>
+}
+@if (confirmation is not null)
+{
+    <div class="deployment-callout" role="status">
+        <strong>@(ConfirmationAvailable ? "Protection configuration authorized" : "Protection authorization expired or used")</strong>
+        <span>@(ConfirmationAvailable ? "Save this agent to queue the exact reviewed configuration. No policy change has been sent yet." : "Review and explicitly confirm again. Expired or used authorization is never retried automatically.")</span>
+    </div>
+}
+@if (actionError is not null)
+{
+    <ErrorState Title="Protection configuration needs attention" Message="@actionError.Message" CorrelationId="@actionError.CorrelationId" />
+}
+@if (SelectionStatus is { Length: > 0 } status)
+{
+    <div class="readiness-panel" role="status">
+        <strong>Persisted Purview configuration</strong> <StatusPill Value="@status" />
+        @if (OperationId is { } operationId)
+        {
+            <a href="@($"/settings?operation={operationId:D}")">Inspect protection operation and required action</a>
+        }
+        <p>@StatusGuidance(status)</p>
+    </div>
+}
+
+@if (review is not null)
+{
+<ConfirmPanel Visible="true" Busy="working"
+              Title="Review shared Purview configuration"
+              Message="Confirm only after reviewing the exact scope, ANY/OR sensitive information types, and policy mode. This can affect other agents using the blueprint."
+              ConfirmLabel="@(StartOnConfirm ? "Confirm and queue shared policy" : "Authorize configuration with this agent")"
+              OnConfirm="ConfirmAsync" OnCancel="CancelReview">
+    <AdditionalContent>
+        @if (review is { } ticket)
+        {
+            @if (profile is null)
+            {
+                <p class="subtle-note">For a new policy, the Gateway supplies explicit example thresholds when none were requested. They are not universally safe defaults: review every SIT's values before authorizing the policy.</p>
+            }
+            @if (ticket.Review.ReplacesUnverifiedLegacyThresholds)
+            {
+                <div class="deployment-callout" role="alert">
+                    <strong>Explicit replacement of unverified legacy thresholds</strong>
+                    <span>The Gateway confirms this review replaces unknown legacy thresholds with the exact values below. Shared-policy impact is acknowledged, but previous thresholds were not recovered or verified. Reconcile the replacement and complete the required runtime checks before relying on protection.</span>
+                </div>
+            }
+            <p class="field-help">A maximum count of -1 means Any. Confidence bounds are inclusive.</p>
+            <dl class="review-summary">
+                <div><dt>Tenant</dt><dd>@ticket.Review.TenantId</dd></div>
+                <div><dt>Exact profile target</dt><dd>@ticket.Review.TargetIdentifier</dd></div>
+                <div><dt>Scope</dt><dd>Blueprint / @ticket.Review.EnforcementPlane / @ticket.Review.ScopeType</dd></div>
+                <div><dt>Blueprint application</dt><dd>@ticket.Review.BlueprintApplicationId</dd></div>
+                @if (ticket.Review.DeferredBlueprint is { } deferred)
+                {
+                    <div><dt>Deferred registration</dt><dd>@deferred.ExternalAgentId</dd></div>
+                    <div><dt>Exact new blueprint name</dt><dd>@deferred.DisplayName</dd></div>
+                }
+                <div><dt>Shared policy impact</dt><dd>@(ticket.Review.AffectsAllBlueprintAgents ? "All agents using this blueprint can be affected." : "New shared blueprint policy; future agents using this scope can be affected.")</dd></div>
+                <div><dt>Policy mode</dt><dd>@AgentProtectionUiMapping.PolicyLabel(ticket.Review.PolicyMode, ticket.Review.Mode)</dd></div>
+                <div><dt>Match</dt><dd>ANY selected SIT (OR), each with its own thresholds; never sum across types.</dd></div>
+                <div><dt>Sensitive information types</dt><dd><ul>
+                    @foreach (var sit in ticket.Review.SensitiveInformationTypes ?? [])
+                    {
+                        <li>@sit.ExactName <code>@sit.SensitiveInformationTypeId</code>
+                            — min count: @sit.MinCount; max count: @sit.MaxCount;
+                            confidence: @sit.MinConfidence–@sit.MaxConfidence</li>
+                    }
+                </ul></dd></div>
+                <div><dt>Activities / actions</dt><dd>@string.Join(", ", ticket.Review.Activities) / @string.Join(", ", ticket.Review.Actions.Select(item => $"{item.Activity}: {item.Action}"))</dd></div>
+                <div><dt>Readiness</dt><dd>@ticket.Review.ReadinessDisclaimer</dd></div>
+                <div><dt>Authorization expires</dt><dd>@ticket.ExpiresAtUtc.ToString("u")</dd></div>
+            </dl>
+        }
+    </AdditionalContent>
+</ConfirmPanel>
+}
+
+@code {
+    [Parameter] public Guid? BlueprintApplicationId { get; set; }
+    [Parameter] public string? BlueprintDisplayName { get; set; }
+    [Parameter] public PurviewDeferredBlueprintDto? DeferredBlueprint { get; set; }
+    [Parameter] public AgentFeaturesDto? Features { get; set; }
+    [Parameter] public Guid? ProfileId { get; set; }
+    [Parameter] public string ContextKey { get; set; } = string.Empty;
+    [Parameter] public bool DefaultPromptShieldsEnabled { get; set; }
+    [Parameter] public bool? PromptRuntimeAvailable { get; set; }
+    [Parameter] public bool DefaultPurviewEnabled { get; set; }
+    [Parameter] public bool IsAdministrator { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public bool PolicyOnly { get; set; }
+    [Parameter] public bool StartOnConfirm { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+    [Parameter] public EventCallback OnRefreshAgent { get; set; }
+    [Parameter] public EventCallback<ProtectionOperationAcceptedResponse> OnConfigured { get; set; }
+
+    public AgentProtectionSelection Selection => selection.Snapshot();
+    public bool CanApply => IsAdministrator && !working && !profileSynchronizing && !profileSnapshotBlocked && ConfigurationValid &&
+        (!NeedsIntent || ConfirmationAvailable);
+    public PurviewDlpProfileSelectionDto? ExistingProfileSelection =>
+        selection.PurviewEnabled && !NeedsIntent && profile is not null
+            ? new(profile.Id, profile.BlueprintApplicationId, profile.RowVersion) : null;
+
+    public PurviewConfigurationIntentDto? TakeConfigurationIntent()
+    {
+        if (!CanApply)
+        {
+            InvalidateAuthorization();
+            throw new InvalidOperationException("Complete and confirm the current protection configuration before saving.");
+        }
+        if (!NeedsIntent)
+        {
+            InvalidateAuthorization();
+            return null;
+        }
+        return confirmation!.ConsumePurviewIntent(Guid.NewGuid());
+    }
+
+    private readonly CancellationTokenSource disposeCts = new();
+    private readonly string instanceId = $"protection-configuration-{Guid.NewGuid():N}";
+    private AgentProtectionEditor? editor;
+    private AgentProtectionSelection selection = new();
+    private AgentProtectionReadiness? reportedReadiness;
+    private IReadOnlyList<PurviewDlpProfileDto> profiles = [];
+    private IReadOnlyList<PurviewDlpProfileDto> matchingProfiles = [];
+    private PurviewDlpProfileDto? profile;
+    private ProtectionCapabilitiesResponse? capabilities;
+    private PurviewTenantConnectionDto? connection;
+    private PurviewSensitiveInformationTypeListResponse? inventory;
+    private ProtectionOperationReviewTicket? review;
+    private ProtectionOperationConfirmationTicket? confirmation;
+    private UiErrorInfo? loadError;
+    private UiErrorInfo? actionError;
+    private HostBinding? lastBinding;
+    private string? lastContext;
+    private AgentSnapshot? lastAgentSnapshot;
+    private AgentProtectionSelection? authorizedSelection;
+    private DraftContext? authorizedContext;
+    private string profileName = string.Empty;
+    private bool initialized;
+    private bool loading;
+    private bool working;
+    private bool profilesLoaded;
+    private bool editorValid;
+    private bool reportedPromptRuntimeAvailable;
+    private bool promptChoiceTouched;
+    private bool profileSynchronizing;
+    private bool profileSnapshotBlocked;
+    private string? profileSyncError;
+    private int profileRefreshRevision;
+    private int authorityRevision;
+    private Guid? acceptedOperationId;
+    private string? acceptedStatus;
+
+    private bool PromptAvailable => (PromptRuntimeAvailable ?? reportedPromptRuntimeAvailable) &&
+        capabilities?.Items.Any(item => item.Capability == "PromptShields" && item.Status == "Installed") == true;
+    private bool PurviewInstalled => capabilities?.Items.Any(item => item.Capability == "Purview" && item.Status == "Installed") == true;
+    private bool PurviewConnected => PurviewInstalled && connection is { Status: "Connected" } &&
+        (connection.ExpiresAtUtc is null || connection.ExpiresAtUtc > DateTime.UtcNow);
+    private bool ConfirmationAvailable => confirmation is { IsAvailable: true } && confirmation.ExpiresAtUtc > DateTime.UtcNow &&
+        MatchesAuthorizedDraft(confirmation.Review, confirmation.ExpectedRowVersion);
+    private bool ProfileBindable => profile is not null &&
+        (profile.Status == "Ready" && AgentProtectionUiMapping.CurrentReadiness(profile) ||
+         AgentProtectionUiMapping.VerifiedNonEnforcingConfiguration(profile));
+    private bool SavedInventoryBindingIsStale =>
+        LatestReadiness?.Blockers.Contains("PURVIEW_INVENTORY_STALE") == true;
+    private bool NeedsIntent => selection.PurviewEnabled && (PolicyOnly || profile is null ||
+        !SameProfileChoices() || SavedInventoryBindingIsStale ||
+        profile.Status is "Failed" or "RequiresManualIntervention" ||
+        (Features?.PurviewEnabled != true || Features?.PurviewDlpProfile?.ProfileId != profile.Id) && !ProfileBindable);
+    private bool CanReviewCurrentInventoryBinding => NeedsIntent && PurviewConnected &&
+        EditorTypes.CurrentState == ProtectionInventoryState.Ready;
+    private bool SelectedThresholdsAreExplicit => selection.SensitiveInformationTypeIds.Count > 0 &&
+        selection.SensitiveInformationTypeIds.All(id => AgentProtectionUiMapping.HasExplicitThresholds(selection.ThresholdsFor(id)));
+    private bool ExistingThresholdEvidenceKnown =>
+        profile is not null && AgentProtectionUiMapping.Types(profile).All(AgentProtectionUiMapping.HasExplicitThresholds);
+    private bool SuppliedThresholdsAreValid =>
+        selection.SensitiveInformationTypeIds.All(id => AgentProtectionUiMapping.HasValidSuppliedThresholds(selection.ThresholdsFor(id)));
+    private bool ConfigurationValid => (!selection.PromptShieldsEnabled || PromptAvailable) &&
+        (BlueprintApplicationId is not null || DeferredBlueprint is not null ||
+            Features is not null && !selection.PurviewEnabled && !selection.PromptShieldsEnabled) &&
+        (!selection.PurviewEnabled || PurviewConnected && profilesLoaded && matchingProfiles.Count <= 1 &&
+            EditorTypes.CurrentState == ProtectionInventoryState.Ready && selection.Validate(EditorBlueprints, EditorTypes, DeferredBlueprint is not null).Count == 0 &&
+            (!NeedsIntent || !string.IsNullOrWhiteSpace(profileName) && profileName.Length <= 120 &&
+                (DeferredBlueprint is null || !string.IsNullOrWhiteSpace(DeferredBlueprint.ExternalAgentId) && DeferredBlueprint.DisplayName.Length <= 120))) &&
+        (!selection.PurviewEnabled || editor is not null && editor.ValidationErrors.Count == 0) &&
+        (!NeedsIntent || SuppliedThresholdsAreValid && (profile is null || SelectedThresholdsAreExplicit));
+    private Guid? OperationId => acceptedOperationId ?? Features?.PurviewConfigurationOperationId;
+    private string? SelectionStatus => acceptedStatus ?? Features?.PurviewConfigurationStatus;
+    private ProtectionReadinessDto? LatestReadiness => Features?.PurviewReadiness ?? profile?.Readiness;
+    private string? SavedPolicyMode => profile is not null
+        ? profile.PolicyMode ?? (profile.Mode == "Enforce" ? "Enforce" : profile.Mode == "AuditOnly" ? "SimulationWithoutTips" : null)
+        : Features?.PurviewPolicyMode ?? (Features?.PurviewMode == "AuditOnly" ? "SimulationWithoutTips" : Features?.PurviewMode);
+    private AgentProtectionReadiness? CurrentReportedReadiness =>
+        reportedReadiness is not null && SavedPolicyMode == "Enforce" && profile?.RuntimeBehaviorVerifiedUntilUtc <= DateTime.UtcNow
+            ? reportedReadiness with { Purview = new(AgentProtectionReadinessState.Unverified,
+                "Approved behavioral evidence expired", "Obtain a fresh suite nonce and explicit runtime review; do not replay old sample requests.") }
+            : reportedReadiness;
+    private string ConnectionGuidance => !PurviewInstalled ? "The shared Purview capability is not installed or could not be verified." :
+        connection?.ExpiresAtUtc <= DateTime.UtcNow ? "Purview authority has expired; renew the connection and inventory before reviewing changes." :
+        "Connect Microsoft Purview and obtain a current tenant SIT inventory before enabling it.";
+    private IReadOnlyList<string> EditorErrors
+    {
+        get
+        {
+            var errors = new List<string>();
+            if (selection.PromptShieldsEnabled && !PromptAvailable)
+                errors.Add("Prompt Shields is not currently available. Restore the shared capability or turn the agent choice off.");
+            if (!selection.PurviewEnabled) return errors;
+            if (!PurviewConnected) errors.Add("Connect or renew Purview authority in Settings before enabling or changing its configuration.");
+            if (LatestReadiness?.Capability is "Unavailable" or "NotInstalled" ||
+                LatestReadiness?.Blockers.Contains("PROTECTION_CAPABILITY_UNAVAILABLE") == true)
+                errors.Add("The Gateway reports the current Purview capability or runtime binding unavailable. Restore it before saving enabled protection; the configured mode is not changed to Off.");
+            // A fresh explicit policy review can replace the saved inventory binding, not its runtime evidence.
+            if (SavedInventoryBindingIsStale && !CanReviewCurrentInventoryBinding)
+                errors.Add("The Gateway reports stale inventory. Refresh the current protection snapshot before saving enabled protection.");
+            if (!profilesLoaded) errors.Add("Refresh the shared profile inventory before reviewing a Purview configuration.");
+            if (ProfileId is not null && profilesLoaded && profile is null)
+                errors.Add("The bound shared profile is no longer available. Refresh or review its binding in Settings; it will not be replaced silently.");
+            if (matchingProfiles.Count > 1) errors.Add("Select the intended shared profile in Settings; multiple profiles will not be overwritten silently.");
+            if (NeedsIntent && profile is not null && !SelectedThresholdsAreExplicit)
+                errors.Add("The existing shared configuration lacks complete, valid per-SIT threshold evidence for these choices. Enter all four values explicitly to review a replacement; unknown thresholds will not be replaced with UI defaults.");
+            if (!SuppliedThresholdsAreValid)
+                errors.Add("Thresholds require a positive minimum count, maximum count -1 (Any) or at least minimum, and ordered confidence bounds from 1 to 100.");
+            if (NeedsIntent && (string.IsNullOrWhiteSpace(profileName) || profileName.Length > 120))
+                errors.Add("Enter a shared profile name between 1 and 120 characters.");
+            if (DeferredBlueprint is not null && DeferredBlueprint.DisplayName.Length > 120)
+                errors.Add("Deferred Purview consent requires the exact new blueprint name to be 120 characters or fewer. Shorten the name or register with Purview off.");
+            return errors;
+        }
+    }
+    private ProtectionInventory<AgentProtectionBlueprint> EditorBlueprints => new()
+    {
+        State = BlueprintApplicationId is null ? ProtectionInventoryState.NotLoaded : ProtectionInventoryState.Ready,
+        Items = BlueprintApplicationId is { } id ? [new(id, BlueprintDisplayName ?? id.ToString("D"))] : []
+    };
+    private ProtectionInventory<AgentProtectionSensitiveInformationType> EditorTypes => new()
+    {
+        State = loading ? ProtectionInventoryState.Loading : inventory is null ? ProtectionInventoryState.Unavailable :
+            inventory.IsExpired ? ProtectionInventoryState.Stale : ProtectionInventoryState.Ready,
+        ExpiresAtUtc = inventory?.ExpiresAtUtc,
+        Items = inventory?.Items.Select(item => new AgentProtectionSensitiveInformationType(item.Id.ToString("D"), item.ExactName, item.Publisher)).ToArray() ?? []
+    };
+
+    protected override async Task OnInitializedAsync() => await RefreshAsync();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!IsAdministrator) InvalidateAuthorization();
+        var binding = CurrentBinding;
+        var incoming = IncomingAgentSnapshot;
+        var hadAgent = lastAgentSnapshot is not null;
+        var bindingChanged = binding != lastBinding;
+        var contextChanged = ContextKey != lastContext;
+        var agentChanged = incoming != lastAgentSnapshot;
+        var refreshProfile = incoming is not null && (incoming.ProfileId is not null || incoming.PurviewEnabled) &&
+            ((hadAgent && (agentChanged || bindingChanged)) ||
+             (!hadAgent && initialized && (!profilesLoaded || !MatchesIncomingProfile(incoming, profiles))));
+        if (agentChanged && incoming is { ProfileId: null, PurviewEnabled: false })
+        {
+            profileRefreshRevision++;
+            profileSynchronizing = false;
+            profileSnapshotBlocked = false;
+            profileSyncError = null;
+        }
+        if (contextChanged && lastContext is not null && Features is null) promptChoiceTouched = false;
+        lastBinding = binding;
+        lastContext = ContextKey;
+        lastAgentSnapshot = incoming;
+        if (bindingChanged || contextChanged || agentChanged)
+        {
+            InvalidateAuthorization();
+            if (!refreshProfile && !profileSynchronizing && !profileSnapshotBlocked)
+                SelectProfile(reset: contextChanged || !initialized || agentChanged);
+        }
+        if (refreshProfile) await SynchronizeAgentProfileAsync(incoming!);
+        if (ApplyUntouchedRegistrationDefaults()) await Changed.InvokeAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (loading || profileSynchronizing || !IsAdministrator) return;
+        var refreshRevision = ++profileRefreshRevision;
+        loading = true;
+        InvalidateAuthorization();
+        loadError = null;
+        try { capabilities = (await Api.GetProtectionCapabilitiesAsync(disposeCts.Token)).Value; }
+        catch (Exception exception) when (exception is not OperationCanceledException) { capabilities = null; loadError = UiErrorInfo.FromException(exception); }
+        if (!PolicyOnly && PromptRuntimeAvailable is null)
+        {
+            try { reportedPromptRuntimeAvailable = (await Api.GetSystemConfigAsync(disposeCts.Token)).PromptShieldAvailable; }
+            catch (Exception exception) when (exception is not OperationCanceledException) { reportedPromptRuntimeAvailable = false; }
+        }
+        IReadOnlyList<PurviewDlpProfileDto> fetchedProfiles = [];
+        var fetchedProfilesLoaded = false;
+        try
+        {
+            fetchedProfiles = (await Api.GetPurviewDlpProfilesAsync(disposeCts.Token)).Value.Items;
+            fetchedProfilesLoaded = true;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            loadError = UiErrorInfo.FromException(exception);
+        }
+        try
+        {
+            connection = (await Api.GetPurviewTenantConnectionAsync(disposeCts.Token)).Value.Connection;
+            inventory = PurviewConnected ? (await Api.GetPurviewSensitiveInformationTypesAsync(disposeCts.Token)).Value : null;
+            if (inventory is not null && (inventory.TenantId != connection?.TenantId || inventory.GenerationId != connection?.ActiveInventoryGenerationId))
+                throw new InvalidOperationException("The sensitive information type inventory does not match the current tenant connection. Refresh the connection in Settings.");
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            inventory = null;
+            loadError = UiErrorInfo.FromException(exception);
+        }
+        loading = false;
+        if (refreshRevision == profileRefreshRevision)
+        {
+            profiles = fetchedProfiles;
+            profilesLoaded = fetchedProfilesLoaded;
+            var incoming = IncomingAgentSnapshot;
+            profileSnapshotBlocked = incoming?.ProfileId is not null &&
+                (!profilesLoaded || !MatchesIncomingProfile(incoming, profiles));
+            profileSyncError = profileSnapshotBlocked
+                ? "The loaded shared profile does not match the agent's current profile version. Refresh the agent and shared profile together before saving."
+                : null;
+            if (!profileSnapshotBlocked) SelectProfile(reset: !initialized);
+        }
+        else
+        {
+            UpdateReportedReadiness();
+        }
+        initialized = true;
+        ApplyUntouchedRegistrationDefaults();
+        await Changed.InvokeAsync();
+    }
+
+    private void SelectProfile(bool reset)
+    {
+        matchingProfiles = profiles.Where(item => item.BlueprintApplicationId == BlueprintApplicationId &&
+            (ProfileId is null || item.Id == ProfileId)).ToArray();
+        profile = matchingProfiles.Count == 1 ? matchingProfiles[0] : null;
+        var baseline = AgentProtectionUiMapping.Selection(BlueprintApplicationId, Features, profile);
+        if (PolicyOnly) baseline = baseline with { PurviewEnabled = true };
+        if (reset || selection.SensitiveInformationTypeIds.Count == 0 && profile is not null)
+        {
+            selection = baseline with
+            {
+                PromptShieldsEnabled = Features is not null ? Features.PromptShieldEnabled == true :
+                    (promptChoiceTouched ? selection.PromptShieldsEnabled : DefaultPromptShieldsEnabled && PromptAvailable),
+                PurviewEnabled = PolicyOnly || (Features is not null ? Features.PurviewEnabled == true : DefaultPurviewEnabled && profile is not null)
+            };
+        }
+        else selection = selection with { BlueprintId = BlueprintApplicationId, PurviewEnabled = PolicyOnly || selection.PurviewEnabled };
+        profileName = profile?.DisplayName ?? $"{BlueprintDisplayName ?? DeferredBlueprint?.DisplayName ?? "Agent"} protection";
+        if (profileName.Length > 120) profileName = profileName[..120];
+        UpdateReportedReadiness();
+    }
+
+    private void UpdateReportedReadiness()
+    {
+        var baseline = AgentProtectionUiMapping.Selection(BlueprintApplicationId, Features, profile);
+        if (PolicyOnly) baseline = baseline with { PurviewEnabled = true };
+        var ready = LatestReadiness?.IsReady == true && profile is not null && AgentProtectionUiMapping.CurrentReadiness(profile);
+        var simulation = AgentProtectionUiMapping.IsSimulation(SavedPolicyMode);
+        var simulationConfigured = simulation && profile is not null && LatestReadiness is { } current &&
+            AgentProtectionUiMapping.VerifiedNonEnforcingConfiguration(profile) &&
+            AgentProtectionUiMapping.ConfiguredSimulationFacts(current, profile.Status, SavedPolicyMode);
+        var purviewState = simulation
+            ? LatestReadiness is { } facts &&
+                AgentProtectionUiMapping.SimulationCapabilityUnavailable(facts)
+                ? AgentProtectionReadinessState.Unavailable
+                : simulationConfigured ? AgentProtectionReadinessState.ConfiguredSimulation : AgentProtectionReadinessState.Unverified
+            : AgentProtectionUiMapping.ReadinessState(Features?.PurviewConfigurationStatus ?? profile?.Status, ready);
+        reportedReadiness = new(baseline,
+            new(PromptAvailable ? AgentProtectionReadinessState.Ready : AgentProtectionReadinessState.Unavailable,
+                Features?.PromptShieldEffectivelyEnabled == true ? "On (reported)" : "Off or not yet verified"),
+            new(purviewState,
+                simulation ? simulationConfigured
+                        ? "Configured for non-enforcing simulation; not an enforcement or blocking claim"
+                        : "Non-enforcing simulation has an availability or context gap; it is not Disabled or verified protection"
+                    : Features?.PurviewEffectivelyEnabled == true && ready ? "On (reported)" : profile?.Status == "Disabled" ? "Policy disabled" : "Not enforcing or not yet verified",
+                "Simulation readiness does not require blocking. Enforce remains pending until approved sample behavior is verified in effective policy scope for the complete intended example suite. Use the separate post-registration Test protection flow; it does not identify which SIT matched."));
+    }
+
+    private void PromptChoiceChanged(bool value)
+    {
+        if (IsAdministrator && !Busy && !working && !profileSynchronizing && !profileSnapshotBlocked)
+            promptChoiceTouched = true;
+    }
+
+    private bool ApplyUntouchedRegistrationDefaults()
+    {
+        if (Features is not null || PolicyOnly || promptChoiceTouched) return false;
+        var enabled = DefaultPromptShieldsEnabled && PromptAvailable;
+        if (selection.PromptShieldsEnabled == enabled) return false;
+        InvalidateAuthorization();
+        selection = selection with { PromptShieldsEnabled = enabled };
+        return true;
+    }
+
+    private AgentSnapshot? IncomingAgentSnapshot => Features is null ? null : new(ContextKey,
+        Features.PurviewDlpProfile?.ProfileId ?? ProfileId, Features.PurviewDlpProfile?.ExpectedProfileRowVersion,
+        Features.PurviewPolicyMode, Features.PurviewEnabled == true, Features.PromptShieldEnabled == true,
+        Features.PurviewEffectivelyEnabled, Features.PurviewConfigurationStatus, ReadinessStamp.From(Features.PurviewReadiness));
+
+    private bool MatchesIncomingProfile(AgentSnapshot incoming, IReadOnlyList<PurviewDlpProfileDto> candidates)
+    {
+        if (incoming.ProfileId is null) return true;
+        var found = candidates.Where(item => item.Id == incoming.ProfileId && item.BlueprintApplicationId == BlueprintApplicationId).ToArray();
+        return found.Length == 1 &&
+            (string.IsNullOrWhiteSpace(incoming.ProfileVersion) || found[0].RowVersion == incoming.ProfileVersion) &&
+            (string.IsNullOrWhiteSpace(incoming.PolicyMode) ||
+             AgentProtectionUiMapping.PolicyMode(found[0].PolicyMode, found[0].Mode) == AgentProtectionUiMapping.PolicyMode(incoming.PolicyMode, null));
+    }
+
+    private async Task SynchronizeAgentProfileAsync(AgentSnapshot incoming)
+    {
+        if (!IsAdministrator) return;
+        var refreshRevision = ++profileRefreshRevision;
+        var binding = CurrentBinding;
+        lastAgentSnapshot = incoming;
+        lastBinding = binding;
+        lastContext = ContextKey;
+        InvalidateAuthorization();
+        profileSynchronizing = true;
+        profileSnapshotBlocked = true;
+        profileSyncError = null;
+        reportedReadiness = null;
+        try
+        {
+            var fetched = (await Api.GetPurviewDlpProfilesAsync(disposeCts.Token)).Value.Items;
+            if (refreshRevision != profileRefreshRevision || incoming != IncomingAgentSnapshot || binding != CurrentBinding ||
+                !IsAdministrator || disposeCts.IsCancellationRequested) return;
+            if (!MatchesIncomingProfile(incoming, fetched))
+            {
+                profilesLoaded = false;
+                profileSyncError = "The shared profile changed again or no longer matches the agent's version. Refresh the agent and profile together; cached choices cannot be saved.";
+                return;
+            }
+            profiles = fetched;
+            profilesLoaded = true;
+            profileSnapshotBlocked = false;
+            SelectProfile(reset: true);
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested) { }
+        catch (Exception)
+        {
+            if (refreshRevision != profileRefreshRevision) return;
+            profilesLoaded = false;
+            profileSyncError = "The current shared profile could not be refreshed. Saving remains blocked; refresh the agent and profile together before retrying.";
+        }
+        finally
+        {
+            if (refreshRevision == profileRefreshRevision)
+            {
+                profileSynchronizing = false;
+                await Changed.InvokeAsync();
+            }
+        }
+    }
+
+    private async Task RetryAgentSnapshotAsync()
+    {
+        if (!IsAdministrator || working || profileSynchronizing) return;
+        lastAgentSnapshot = null;
+        if (OnRefreshAgent.HasDelegate) await OnRefreshAgent.InvokeAsync();
+        else if (IncomingAgentSnapshot is { } incoming) await SynchronizeAgentProfileAsync(incoming);
+        else await RefreshAsync();
+    }
+
+    private sealed record AgentSnapshot(string ContextKey, Guid? ProfileId, string? ProfileVersion,
+        string? PolicyMode, bool PurviewEnabled, bool PromptShieldsEnabled, bool PurviewEffectivelyEnabled,
+        string? ConfigurationStatus, ReadinessStamp? Readiness);
+
+    private sealed record ReadinessStamp(bool Ready, string Capability, string Readback, string Propagation,
+        string TokenRoles, string RuntimeVerdict, string Blockers)
+    {
+        internal static ReadinessStamp? From(ProtectionReadinessDto? value) => value is null ? null :
+            new(value.IsReady, value.Capability, value.Readback, value.Propagation, value.TokenRoles, value.RuntimeVerdict,
+                string.Join("\n", value.Blockers.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)));
+    }
+
+    private bool SameProfileChoices() => profile is not null &&
+        selection.PolicyMode == AgentProtectionUiMapping.PolicyMode(profile.PolicyMode, profile.Mode) &&
+        selection.SensitiveInformationTypeIds.ToHashSet(StringComparer.OrdinalIgnoreCase)
+            .SetEquals(AgentProtectionUiMapping.Types(profile).Select(item => item.SensitiveInformationTypeId.ToString("D"))) &&
+        AgentProtectionUiMapping.Types(profile).All(item =>
+            selection.ThresholdsFor(item.SensitiveInformationTypeId.ToString("D")) ==
+                new AgentProtectionSitThresholds(item.MinCount, item.MaxCount, item.MinConfidence, item.MaxConfidence));
+
+    private async Task ChangeSelection(AgentProtectionSelection value)
+    {
+        if (!IsAdministrator || Busy || working || profileSynchronizing || profileSnapshotBlocked) return;
+        if (selection.PromptShieldsEnabled != value.PromptShieldsEnabled) promptChoiceTouched = true;
+        if (!selection.HasSameChoices(value)) InvalidateAuthorization();
+        selection = value.Snapshot();
+        await Changed.InvokeAsync();
+    }
+
+    private async Task ChangeProfileName(ChangeEventArgs args)
+    {
+        if (!IsAdministrator || Busy || working || profileSynchronizing || profileSnapshotBlocked) return;
+        InvalidateAuthorization();
+        profileName = args.Value?.ToString() ?? string.Empty;
+        await Changed.InvokeAsync();
+    }
+
+    private async Task EditorValidityChanged(bool valid)
+    {
+        if (editorValid == valid) return;
+        editorValid = valid;
+        if (!valid && !working && !Busy && (review is not null || confirmation is not null))
+            InvalidateAuthorization();
+        await Changed.InvokeAsync();
+    }
+
+    private async Task ReviewAsync(AgentProtectionReview choices)
+    {
+        if (!IsAdministrator || Busy || working || profileSynchronizing || profileSnapshotBlocked ||
+            !ConfigurationValid || inventory is null || connection is null ||
+            selection.PolicyMode is null || profile is not null && !choices.SharedPolicyImpactAcknowledged) return;
+        working = true;
+        InvalidateAuthorization();
+        var revision = authorityRevision;
+        var submittedSelection = selection.Snapshot();
+        var submittedContext = CaptureContext();
+        actionError = null;
+        try
+        {
+            var request = BuildReviewRequest(choices.SharedPolicyImpactAcknowledged);
+            var ticket = (await Api.ReviewPurviewDlpProfileOperationAsync(request, disposeCts.Token)).Value;
+            if (revision != authorityRevision || !IsAdministrator || disposeCts.IsCancellationRequested ||
+                submittedContext != CaptureContext() || !submittedSelection.HasSameChoices(selection))
+            {
+                ticket.Discard();
+                return;
+            }
+            if (ticket.Review.SensitiveInformationTypes is not { Count: > 0 } reviewedTypes ||
+                !reviewedTypes.All(AgentProtectionUiMapping.HasExplicitThresholds))
+            {
+                ticket.Discard();
+                actionError = new("The Gateway review lacks complete, valid per-SIT thresholds. Confirmation is blocked until the Gateway returns explicit threshold evidence for every selected SIT; no UI defaults are substituted.");
+                return;
+            }
+            if (ticket.Review.ReplacesUnverifiedLegacyThresholds != (profile is not null && !ExistingThresholdEvidenceKnown))
+            {
+                ticket.Discard();
+                actionError = new("The Gateway review did not confirm the expected legacy-threshold replacement warning. Refresh the profile and obtain a matching explicit review before continuing.");
+                return;
+            }
+            if (!ReviewMatches(ticket.Review, request) || !ticket.IsAvailable || ticket.ExpiresAtUtc <= DateTime.UtcNow)
+            {
+                ticket.Discard();
+                actionError = new("The Gateway review expired or does not match the exact blueprint, SITs, mode, or shared scope. Refresh and review again.");
+                return;
+            }
+            // Publish the reviewed normalization into the visible draft. Every later boundary
+            // compares exact explicit values, never treating a cleared UI field as a wildcard.
+            var normalizedThresholds = new Dictionary<string, AgentProtectionSitThresholds>(
+                selection.SensitiveInformationTypeThresholds, StringComparer.OrdinalIgnoreCase);
+            foreach (var item in reviewedTypes)
+                normalizedThresholds[item.SensitiveInformationTypeId.ToString("D")] =
+                    new(item.MinCount, item.MaxCount, item.MinConfidence, item.MaxConfidence);
+            selection = (selection with { SensitiveInformationTypeThresholds = normalizedThresholds }).Snapshot();
+            authorizedSelection = selection.Snapshot();
+            authorizedContext = CaptureContext();
+            review = ticket;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException) { actionError = UiErrorInfo.FromException(exception); }
+        finally { working = false; await Changed.InvokeAsync(); }
+    }
+
+    private HostBinding CurrentBinding => new(BlueprintApplicationId, BlueprintDisplayName, DeferredBlueprint, ProfileId, PolicyOnly, StartOnConfirm);
+    private DraftContext CaptureContext() =>
+        new(CurrentBinding, ContextKey, profileName, profile?.Id, profile?.RowVersion ?? "*", connection?.Id, inventory?.GenerationId);
+
+    private ReviewPurviewDlpProfileOperationRequest BuildReviewRequest(bool acknowledgeImpact)
+    {
+        if (inventory is null || connection is null || selection.PolicyMode is not { } mode)
+            throw new InvalidOperationException("A current protection selection and inventory are required.");
+        var types = selection.SensitiveInformationTypeIds.Select(id =>
+        {
+            var item = inventory.Items.Single(item => item.Id.ToString("D").Equals(id, StringComparison.OrdinalIgnoreCase));
+            var thresholds = selection.ThresholdsFor(id);
+            return new PurviewSensitiveInformationTypeSelectionDto(inventory.GenerationId, item.Id, item.ExactName,
+                thresholds?.MinCount, thresholds?.MaxCount, thresholds?.MinConfidence, thresholds?.MaxConfidence);
+        }).ToArray();
+        return new(profile?.Id, connection.Id, BlueprintApplicationId ?? Guid.Empty, profileName.Trim(), null,
+            AgentProtectionUiMapping.LegacyMode(mode),
+            profile?.Activities.ToArray() ?? ["UploadText", "DownloadText"],
+            profile?.Actions.ToArray() ?? [new("UploadText", "Block")], profile?.RowVersion ?? "*",
+            types, AgentProtectionUiMapping.ServerPolicyMode(mode), acknowledgeImpact, DeferredBlueprint);
+    }
+
+    private bool MatchesAuthorizedDraft(ProtectionOperationReviewSummaryDto serverReview, string expectedRowVersion)
+    {
+        if (authorizedSelection is null || authorizedContext != CaptureContext() ||
+            !authorizedSelection.HasSameChoices(selection) || !SelectedThresholdsAreExplicit)
+            return false;
+        try
+        {
+            var currentRequest = BuildReviewRequest(profile is not null);
+            return currentRequest.ExpectedRowVersion == expectedRowVersion && ReviewMatches(serverReview, currentRequest);
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private sealed record HostBinding(Guid? BlueprintId, string? BlueprintName, PurviewDeferredBlueprintDto? DeferredBlueprint,
+        Guid? RequestedProfileId, bool PolicyOnly, bool StartOnConfirm);
+    private sealed record DraftContext(HostBinding Binding, string ContextKey, string ProfileName,
+        Guid? ProfileId, string ProfileRowVersion, Guid? ConnectionId, Guid? InventoryGenerationId);
+
+    private bool ReviewMatches(ProtectionOperationReviewSummaryDto response, ReviewPurviewDlpProfileOperationRequest request) =>
+        response.OperationType == "CreateOrUpdateDlpProfile" &&
+        response.TargetType == "DlpProfile" && Guid.TryParse(response.TargetIdentifier, out var targetId) &&
+        targetId != Guid.Empty && (request.ProfileId is null || request.ProfileId == targetId) &&
+        response.TenantId == connection?.TenantId && response.BlueprintApplicationId == request.BlueprintApplicationId &&
+        response.DeferredBlueprint == request.DeferredBlueprint && response.ScopeType == "Individual" &&
+        response.EnforcementPlane == "Application" && response.Mode == request.Mode && response.PolicyMode == request.PolicyMode &&
+        (profile is null || response.AffectsAllBlueprintAgents) &&
+        response.ReplacesUnverifiedLegacyThresholds == (profile is not null && !ExistingThresholdEvidenceKnown) &&
+        response.SensitiveInformationTypes is { } returned && returned.Count == request.SensitiveInformationTypes!.Count &&
+        returned.All(AgentProtectionUiMapping.HasExplicitThresholds) &&
+        request.SensitiveInformationTypes.All(item => returned.Any(actual =>
+            actual.InventoryGenerationId == item.InventoryGenerationId && actual.SensitiveInformationTypeId == item.SensitiveInformationTypeId &&
+            actual.ExactName == item.ExactName && (item.MinCount is null || actual.MinCount == item.MinCount) &&
+            (item.MaxCount is null || actual.MaxCount == item.MaxCount) &&
+            (item.MinConfidence is null || actual.MinConfidence == item.MinConfidence) &&
+            (item.MaxConfidence is null || actual.MaxConfidence == item.MaxConfidence))) &&
+        response.Activities.ToHashSet(StringComparer.Ordinal).SetEquals(request.Activities) &&
+        response.Actions.ToHashSet().SetEquals(request.Actions);
+
+    private async Task ConfirmAsync()
+    {
+        if (!IsAdministrator || Busy || working || review is null) return;
+        if (!review.IsAvailable || review.ExpiresAtUtc <= DateTime.UtcNow || !ConfigurationValid ||
+            !MatchesAuthorizedDraft(review.Review, review.ExpectedRowVersion))
+        {
+            InvalidateAuthorization();
+            actionError = new("The protection draft changed, or review/connection authority expired. Review and confirm the exact current choices again.");
+            return;
+        }
+        working = true;
+        var revision = authorityRevision;
+        try
+        {
+            var confirmed = (await Api.ConfirmProtectionOperationReviewAsync(review, disposeCts.Token)).Value;
+            if (revision != authorityRevision || !IsAdministrator || disposeCts.IsCancellationRequested)
+            {
+                confirmed.Discard();
+                return;
+            }
+            confirmation = confirmed;
+            review = null;
+            if (!ConfirmationAvailable || !ConfigurationValid)
+            {
+                InvalidateAuthorization();
+                actionError = new("Protection confirmation expired or no longer matches the exact reviewed draft. Review and confirm again before saving.");
+                return;
+            }
+            if (StartOnConfirm)
+            {
+                var accepted = await Api.StartPurviewDlpProfileOperationAsync(confirmation, Guid.NewGuid(), confirmation.ExpectedRowVersion, disposeCts.Token);
+                acceptedOperationId = accepted.Value.OperationId;
+                acceptedStatus = accepted.Value.Status;
+                await OnConfigured.InvokeAsync(accepted.Value);
+                await RefreshAsync();
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            InvalidateAuthorization();
+            actionError = UiErrorInfo.FromException(exception);
+        }
+        finally { working = false; await Changed.InvokeAsync(); }
+    }
+
+    private Task CancelReview() { InvalidateAuthorization(); return Changed.InvokeAsync(); }
+    private void InvalidateAuthorization()
+    {
+        authorityRevision++;
+        review?.Discard();
+        review = null;
+        confirmation?.Discard();
+        confirmation = null;
+        authorizedSelection = null;
+        authorizedContext = null;
+    }
+    private string StatusGuidance(string status) => LatestReadiness is { IsReady: false } current &&
+        (SavedPolicyMode == "Enforce" || AgentProtectionUiMapping.ActionableReadinessBlockers(current, SavedPolicyMode).Count > 0) &&
+        status is "Ready" or "SimulationReady" or "Completed" or "Succeeded"
+        ? "This is stored operation/configuration status only. The latest Gateway verdict is not ready; follow its required action and obtain fresh verification."
+        : status switch
+    {
+        "AwaitingBlueprint" => "Registration was accepted. The reviewed policy is waiting for the exact new blueprint; no effective protection is claimed.",
+        "SimulationReady" => "Simulation is ready for evaluation, not policy enforcement.",
+        "Disabled" => "The shared policy is configured but off.",
+        "Failed" or "RequiresManualIntervention" or "VerificationFailed" => "Administrator action is required. Inspect the operation, renew expired authority if needed, and explicitly review any retry.",
+        _ => "Configuration may still be pending. Inspect the operation and exact readiness before relying on protection."
+    };
+    public void Dispose() { disposeCts.Cancel(); InvalidateAuthorization(); disposeCts.Dispose(); }
+}

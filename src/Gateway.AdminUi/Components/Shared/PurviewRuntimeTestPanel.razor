@@ -1,0 +1,565 @@
+@implements IAsyncDisposable
+@inject IGatewayApiClient Api
+@inject IJSRuntime JS
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject NavigationManager Navigation
+
+<section class="form-section" aria-labelledby="@Id("heading")">
+    <h3 id="@Id("heading")">Test protection</h3>
+    <p>Optional, post-registration testing of the saved shared profile. Registration never requires samples, and unsaved editor choices are not tested.</p>
+    @if (!IsAdministrator)
+    {
+        <p class="subtle-note">Only a Gateway Administrator can review and execute a protection test.</p>
+    }
+    else
+    {
+        <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral"
+                      Disabled="@(working || Disabled || ProfileId == Guid.Empty || readinessLoading || readinessRefreshRequired)"
+                      OnClick="OpenAsync">Verify shared profile</FluentButton>
+        @if (OriginAgentId is not null)
+        {
+            <p class="field-help">This verifies the shared profile using the backend-selected active registration. It is not automatically a test of the agent on this page; review the actual agent and child application before approving execution.</p>
+        }
+    }
+    @if (error is not null)
+    {
+        <ErrorState Title="Protection test needs attention" Message="@error" />
+    }
+    @if (open && savedProfile is not null)
+    {
+        @if (PolicyMode == "Disabled")
+        {
+            <div class="subtle-note" role="status">This shared policy is configured/off. No samples are collected or sent.</div>
+        }
+        else
+        {
+            <div @ref="sampleRoot" data-policy-mode="@PolicyMode" data-profile-id="@ProfileId.ToString("D")" data-profile-version="@savedProfile.RowVersion">
+                <p id="@Id("privacy-help")" class="deployment-callout">
+                    Use only operator-approved synthetic examples, never real personal or confidential data.
+                    Text stays in this browser tab until explicit execution. It is never bound to the Blazor circuit, stored in browser storage, logged, or placed in a URL.
+                    Closing, resetting, or leaving this page erases browser-held samples.
+                </p>
+                <p>Provide one distinct positive example for each intended SIT and one clean negative. These are intended associations, not detected-SIT attribution. Each sample is limited to 8 KiB exact UTF-8; each reviewed batch contains at most 8 positives and 64 KiB including its negative.</p>
+                @foreach (var sit in AgentProtectionUiMapping.Types(savedProfile))
+                {
+                    <div class="form-field" @key="sit.SensitiveInformationTypeId">
+                        <label for="@Id(sit.SensitiveInformationTypeId.ToString("D"))">Approved positive example intended for @sit.ExactName</label>
+                        <textarea id="@Id(sit.SensitiveInformationTypeId.ToString("D"))" class="form-control form-textarea"
+                                  data-runtime-sample data-runtime-positive data-sit-id="@sit.SensitiveInformationTypeId.ToString("D")"
+                                  maxlength="8192" autocomplete="off" spellcheck="false" aria-describedby="@Id("privacy-help")"></textarea>
+                    </div>
+                }
+                <div class="form-field">
+                    <label for="@Id("negative")">Mandatory clean negative example</label>
+                    <textarea id="@Id("negative")" class="form-control form-textarea" data-runtime-sample data-runtime-negative
+                              maxlength="8192" autocomplete="off" spellcheck="false" aria-describedby="@Id("privacy-help")"></textarea>
+                </div>
+            </div>
+            <label class="checkbox-label" for="@Id("synthetic")">
+                <input id="@Id("synthetic")" type="checkbox" @bind="syntheticApproved" disabled="@working" />
+                I approve all entered examples as synthetic and consent to the displayed batch being sent for backend evaluation only after confirmation.
+            </label>
+            @if (prepared is not null)
+            {
+                <p role="status">Frozen suite: @prepared.Suite.PositiveSamples.Count intended-SIT examples. Batch @(batchIndex + 1) of @prepared.Batches.Count. Editing examples requires reset and a new full-suite review.</p>
+            }
+            <div class="form-actions">
+                <FluentButton Type="ButtonType.Button" Appearance="Appearance.Accent"
+                              Disabled="@(working || !browserReady || !syntheticApproved || review is not null || completed || transportUnknown || report?.Status == "Running")"
+                              OnClick="ReviewBatchAsync">Review test batch</FluentButton>
+                <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" OnClick="ResetAsync">Reset and erase samples</FluentButton>
+                <FluentButton Type="ButtonType.Button" Appearance="Appearance.Stealth" OnClick="CloseAsync">Close and erase samples</FluentButton>
+            </div>
+        }
+    }
+    @if (operationId is { } id)
+    {
+        <div class="subtle-note" role="status">
+            <span>Safe recovery operation: <code>@id</code>.</span>
+            <FluentButton Type="ButtonType.Button" Appearance="Appearance.Stealth" Disabled="working" OnClick="RecoverAsync">Recover safe report</FluentButton>
+            <a href="@($"/protection/runtime-tests/{id:D}")">Open saved report</a>
+        </div>
+    }
+    @if (transportUnknown)
+    {
+        <p class="readiness-blockers" role="alert">The transport outcome is unknown. This is not a provider verdict. Recover the safe report by GET; do not resubmit the previous content or confirmation.</p>
+    }
+    @if (report is not null)
+    {
+        @if (receiptContext is not null)
+        {
+            <p class="subtle-note">Historical receipt profile: <code>@receiptContext.ProfileId</code>. Actual tested registration: <code>@receiptContext.AgentRegistrationId</code>; child application: <code>@receiptContext.ChildApplicationId</code>. Results apply to this recorded identity and shared policy scope, not automatically to the current or originating agent.</p>
+        }
+        else if (OriginAgentId is not null)
+        {
+            <p class="subtle-note">The effective test identity cannot be inferred from this originating agent page. This is a recovered historical receipt only.</p>
+        }
+        <PurviewRuntimeTestReport Report="report" />
+        @if (currentProfile is not null)
+        {
+            <p class="field-help">Current saved profile: <code>@currentProfile.Id</code>, version <code>@currentProfile.RowVersion</code>.</p>
+            <ProtectionReadinessPanel Readiness="currentProfile.Readiness" Label="Current saved protection"
+                PolicyMode="@currentProfile.PolicyMode" ProfileStatus="@currentProfile.Status"
+                EvidenceExpiresAtUtc="currentProfile.RuntimeBehaviorVerifiedUntilUtc" />
+        }
+        @if (CanAdvanceBatch)
+        {
+            <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" Disabled="working" OnClick="NextBatch">
+                Prepare next batch for explicit review
+            </FluentButton>
+        }
+    }
+    @if (readinessLoading)
+    {
+        <LoadingState Label="Refreshing current protection readiness…" Detail="Historical receipts do not establish readiness for the changed saved binding." />
+    }
+    @if (currentReadinessError is not null)
+    {
+        <p class="readiness-blockers" role="status">@currentReadinessError</p>
+        <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral"
+                      Disabled="@(working || readinessLoading || !IsAdministrator || Disabled)"
+                      OnClick="RefreshCurrentBindingAsync">Refresh current readiness</FluentButton>
+    }
+</section>
+
+@if (review is { } ticket)
+{
+    <ConfirmPanel Visible="true" Busy="working" Title="Review protection test"
+                  Message="Confirm the actual agent, effective policy scope, exact thresholds, and hash commitments. Only this batch and its clean negative will be transmitted."
+                  ConfirmLabel="Confirm and send approved batch" OnConfirm="ExecuteAsync" OnCancel="CancelReviewAsync">
+        <AdditionalContent>
+            <dl class="review-summary">
+                <div><dt>Tenant</dt><dd>@ticket.Review.TenantId</dd></div>
+                <div><dt>Profile / blueprint application</dt><dd>@ticket.Review.ProfileId / @ticket.Review.BlueprintApplicationId</dd></div>
+                <div><dt>Actual agent registration</dt><dd>@ticket.Review.AgentRegistrationId</dd></div>
+                <div><dt>Actual child application</dt><dd>@ticket.Review.ChildApplicationId</dd></div>
+                <div><dt>Policy mode</dt><dd>@AgentProtectionUiMapping.PolicyLabel(ticket.Review.PolicyMode)</dd></div>
+                <div><dt>Profile version / inventory</dt><dd>@ticket.ExpectedRowVersion / @ticket.Review.InventoryGenerationId</dd></div>
+                <div><dt>Frozen suite hash</dt><dd><code>@ticket.Review.SuiteHash</code></dd></div>
+                <div><dt>Reviewed context fingerprint</dt><dd><code>@ticket.Review.ReviewedContextFingerprint</code></dd></div>
+                <div><dt>Selected SITs — ANY/OR</dt><dd><ul>
+                    @foreach (var sit in ticket.Review.SensitiveInformationTypes)
+                    {
+                        <li>@sit.ExactName (@sit.SensitiveInformationTypeId): count @sit.MinCount–@sit.MaxCount, confidence @sit.MinConfidence–@sit.MaxConfidence. Maximum count -1 means Any.</li>
+                    }
+                </ul></dd></div>
+                <div><dt>This batch's commitments</dt><dd><ul>
+                    @foreach (var sample in ticket.Review.Suite.PositiveSamples.Where(item => ticket.Review.PositiveCaseIds.Contains(item.CaseId)).Append(ticket.Review.Suite.NegativeSample))
+                    {
+                        <li>@(sample.IntendedSensitiveInformationTypeId?.ToString("D") ?? "Clean negative") — @sample.Utf8ByteCount bytes; <code>@sample.ContentHash</code></li>
+                    }
+                </ul></dd></div>
+            </dl>
+            @if (OriginAgentId is { } origin && origin != ticket.Review.AgentRegistrationId)
+            {
+                <p class="deployment-callout">This shared profile's backend-selected test agent differs from the agent page you opened. Results apply only to the actual agent/application and effective scope shown above, not automatically to the originating agent.</p>
+            }
+            <p>Graph does not expose matched-SIT attribution. Simulation does not require blocking; submission without an inline decision is not verification. Execution has a 60-second provider deadline and may wait up to 120 seconds including locks and cleanup. No POST is retried automatically.</p>
+            <label class="checkbox-label" for="@Id("target")">
+                <input id="@Id("target")" type="checkbox" @bind="targetApproved" disabled="@working" />
+                I approve sending this exact batch to the actual agent and effective policy scope shown above.
+            </label>
+            @if (!targetApproved)
+            {
+                <p class="inline-validation">Explicit target approval is required before anything is sent.</p>
+            }
+        </AdditionalContent>
+    </ConfirmPanel>
+}
+
+@code {
+    [Parameter] public Guid ProfileId { get; set; }
+    [Parameter] public Guid? OriginAgentId { get; set; }
+    [Parameter] public string ContextKey { get; set; } = string.Empty;
+    [Parameter] public string? ExpectedProfileRowVersion { get; set; }
+    [Parameter] public bool IsAdministrator { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+
+    private readonly string instanceId = $"runtime-test-{Guid.NewGuid():N}";
+    private readonly CancellationTokenSource disposal = new();
+    private ElementReference sampleRoot;
+    private IJSObjectReference? module;
+    private IJSObjectReference? browser;
+    private DotNetObjectReference<PurviewRuntimeTestPanel>? notifications;
+    private PurviewDlpProfileDto? savedProfile;
+    private PurviewDlpProfileDto? currentProfile;
+    private PurviewSensitiveInformationTypeListResponse? inventory;
+    private RuntimePreparedManifest? prepared;
+    private PurviewRuntimeReviewTicket? review;
+    private PurviewRuntimeTestReviewDto? executionContext;
+    private PurviewRuntimeTestReviewDto? receiptContext;
+    private PurviewRuntimeTestResultResponse? report;
+    private Guid tenantId;
+    private Guid actorId;
+    private Guid? operationId;
+    private (Guid, string, string?, bool, bool)? lastBinding;
+    private CancellationTokenSource? executionCancellation;
+    internal TimeProvider ExecutionTimeProvider { get; set; } = TimeProvider.System;
+    private int readinessRevision;
+    private bool readinessLoading;
+    private bool readinessRefreshRequired;
+    private int revision;
+    private int batchIndex;
+    private string? error;
+    private string? currentReadinessError;
+    private bool open;
+    private bool working;
+    private bool browserReady;
+    private bool syntheticApproved;
+    private bool targetApproved;
+    private bool transportUnknown;
+    private bool completed;
+    private bool disposed;
+
+    private string Id(string suffix) => $"{instanceId}-{suffix}";
+    private string PolicyMode => savedProfile?.PolicyMode ??
+        (savedProfile?.Mode == "Enforce" ? "Enforce" : savedProfile?.Mode == "AuditOnly" ? "SimulationWithoutTips" : "Unknown");
+    private bool CanAdvanceBatch => !working && !completed && currentProfile is not null && currentReadinessError is null &&
+        prepared is not null && report?.Status == "Completed" && batchIndex + 1 < prepared.Batches.Count &&
+        report?.Outcome is "Partial" or "SimulationExercised" or "SubmissionAccepted";
+
+    protected override void OnInitialized()
+    {
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(Navigation.ToAbsoluteUri(Navigation.Uri).Query);
+        if (query.TryGetValue("runtimeProfile", out var profileValue) && Guid.TryParse(profileValue.ToString(), out var profileId) &&
+            profileId == ProfileId && query.TryGetValue("runtimeTest", out var operationValue) &&
+            Guid.TryParse(operationValue.ToString(), out var recoveredId) && recoveredId != Guid.Empty)
+            operationId = recoveredId;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var binding = (ProfileId, ContextKey, ExpectedProfileRowVersion, IsAdministrator, Disabled);
+        var changed = lastBinding is not null && lastBinding != binding;
+        lastBinding = binding;
+        if (changed)
+        {
+            var hadRuntimeContext = open || report is not null || currentProfile is not null || readinessLoading || readinessRefreshRequired;
+            Invalidate();
+            prepared = null;
+            open = false;
+            syntheticApproved = false;
+            savedProfile = null;
+            currentProfile = null;
+            currentReadinessError = null;
+            readinessRefreshRequired = hadRuntimeContext;
+            readinessLoading = false;
+            readinessRevision++;
+            await ClearBrowserAsync(disposeSession: true);
+            if (hadRuntimeContext && IsAdministrator && !Disabled && ProfileId != Guid.Empty)
+                await RefreshCurrentReadinessAsync(ExpectedProfileRowVersion);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!open || savedProfile is null || PolicyMode == "Disabled" || browser is not null || disposed) return;
+        try
+        {
+            module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./purview-runtime-test.js");
+            notifications ??= DotNetObjectReference.Create(this);
+            browser = await module.InvokeAsync<IJSObjectReference>("createSession", sampleRoot, notifications);
+            browserReady = true;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (JSException) { error = "The private browser sample module could not be initialized."; }
+    }
+
+    private async Task OpenAsync()
+    {
+        if (!IsAdministrator || Disabled || working || ProfileId == Guid.Empty || readinessLoading || readinessRefreshRequired) return;
+        working = true;
+        error = null;
+        var openingRevision = revision;
+        try
+        {
+            await ResetAsync();
+            open = false;
+            await ClearBrowserAsync(disposeSession: true);
+            var currentRevision = revision;
+            openingRevision = currentRevision;
+            var profileId = ProfileId;
+            var profileTask = Api.GetPurviewDlpProfilesAsync(disposal.Token);
+            var inventoryTask = Api.GetPurviewSensitiveInformationTypesAsync(disposal.Token);
+            await Task.WhenAll(profileTask, inventoryTask);
+            if (currentRevision != revision || profileId != ProfileId || disposed) return;
+            savedProfile = (await profileTask).Value.Items.Single(item => item.Id == profileId);
+            if (ExpectedProfileRowVersion is not null && savedProfile.RowVersion != ExpectedProfileRowVersion)
+                throw new InvalidOperationException();
+            inventory = (await inventoryTask).Value;
+            if (PolicyMode is not ("Enforce" or "SimulationWithTips" or "SimulationWithoutTips" or "Disabled"))
+                throw new InvalidOperationException();
+            var user = (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User;
+            if (currentRevision != revision || disposed) return;
+            if (!Guid.TryParse(user.FindFirst("tid")?.Value ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/tenantid")?.Value, out tenantId) ||
+                !Guid.TryParse(user.FindFirst("oid")?.Value ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value, out actorId))
+                throw new InvalidOperationException();
+            if (PolicyMode != "Disabled" &&
+                (inventory.IsExpired || inventory.ExpiresAtUtc <= DateTime.UtcNow || inventory.TenantId != tenantId ||
+                 savedProfile.Readiness.Readback != "Ready" ||
+                 AgentProtectionUiMapping.Types(savedProfile).Count is < 1 or > RuntimeTestUiProtocol.MaximumSelectedTypes ||
+                 !AgentProtectionUiMapping.Types(savedProfile).All(AgentProtectionUiMapping.HasExplicitThresholds)))
+                throw new InvalidOperationException();
+            open = true;
+        }
+        catch (Exception) when (!disposal.IsCancellationRequested)
+        {
+            if (openingRevision == revision)
+                error = "Load a current, reconciled saved profile, complete its explicit SIT thresholds, and refresh its inventory before testing.";
+        }
+        finally { working = false; }
+    }
+
+    private async Task ReviewBatchAsync()
+    {
+        if (!IsAdministrator || Disabled || working || !syntheticApproved || transportUnknown || report?.Status == "Running" ||
+            browser is null || savedProfile is null || inventory is null || PolicyMode == "Disabled")
+            return;
+        working = true;
+        Invalidate();
+        var currentRevision = revision;
+        error = null;
+        try
+        {
+            var manifest = await browser.InvokeAsync<RuntimePreparedManifest>("prepare");
+            var selectedIds = AgentProtectionUiMapping.Types(savedProfile).Select(item => item.SensitiveInformationTypeId).ToArray();
+            if (!RuntimeTestUiProtocol.ValidManifest(manifest.Suite, selectedIds) ||
+                manifest.Batches.Count is < 1 or > 100 ||
+                manifest.Batches.Any(batch => !RuntimeTestUiProtocol.ValidBatch(manifest.Suite, batch)) ||
+                manifest.Batches.SelectMany(batch => batch).Count() != manifest.Suite.PositiveSamples.Count ||
+                !manifest.Batches.SelectMany(batch => batch).ToHashSet().SetEquals(manifest.Suite.PositiveSamples.Select(item => item.CaseId)))
+                throw new InvalidOperationException();
+            if (prepared is not null && !RuntimeTestUiProtocol.SameSuite(prepared.Suite, manifest.Suite))
+                throw new InvalidOperationException();
+            prepared = manifest;
+            if (batchIndex >= manifest.Batches.Count) throw new InvalidOperationException();
+            var request = new ReviewPurviewDlpRuntimeTestRequest(ProfileId, savedProfile.RowVersion,
+                inventory.GenerationId, manifest.Suite, manifest.Batches[batchIndex], true);
+            var ticket = await Api.ReviewPurviewRuntimeTestAsync(request, disposal.Token);
+            if (currentRevision != revision || !ReviewMatches(ticket) || !ticket.IsAvailable)
+            {
+                ticket.Discard();
+                throw new InvalidOperationException();
+            }
+            review = ticket;
+            targetApproved = false;
+        }
+        catch (Exception) when (!disposal.IsCancellationRequested)
+        {
+            error = "The bounded examples or saved context could not be reviewed. Check synthetic examples, reset after edits, and refresh saved protection. No sample text was sent through the circuit.";
+            review?.Discard();
+            review = null;
+        }
+        finally { working = false; }
+    }
+
+    private bool ReviewMatches(PurviewRuntimeReviewTicket ticket) => savedProfile is not null && inventory is not null && prepared is not null &&
+        ticket.Review.ProfileId == ProfileId && ticket.Review.TenantId == tenantId && ticket.Review.ActorObjectId == actorId &&
+        ticket.Review.BlueprintApplicationId == savedProfile.BlueprintApplicationId && ticket.Review.PolicyMode == PolicyMode &&
+        ticket.ExpectedRowVersion == savedProfile.RowVersion && ticket.Review.InventoryGenerationId == inventory.GenerationId &&
+        RuntimeTestUiProtocol.SameSuite(ticket.Review.Suite, prepared.Suite) &&
+        ticket.Review.PositiveCaseIds.ToHashSet().SetEquals(prepared.Batches[batchIndex]) &&
+        ticket.Review.SensitiveInformationTypes.Count == AgentProtectionUiMapping.Types(savedProfile).Count &&
+        AgentProtectionUiMapping.Types(savedProfile).All(expected => ticket.Review.SensitiveInformationTypes.Any(actual =>
+            actual.SensitiveInformationTypeId == expected.SensitiveInformationTypeId && actual.ExactName == expected.ExactName &&
+            actual.MinCount == expected.MinCount && actual.MaxCount == expected.MaxCount &&
+            actual.MinConfidence == expected.MinConfidence && actual.MaxConfidence == expected.MaxConfidence));
+
+    private async Task ExecuteAsync()
+    {
+        if (!IsAdministrator || Disabled || working || !targetApproved || !syntheticApproved || review is null || browser is null ||
+            PolicyMode == "Disabled" || !review.IsAvailable || !ReviewMatches(review)) return;
+        working = true;
+        var currentRevision = revision;
+        var reviewedTicket = review;
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(RuntimeTestUiProtocol.InteropExecutionTimeoutSeconds), ExecutionTimeProvider);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(disposal.Token, budget.Token);
+        executionCancellation = linked;
+        try
+        {
+            if (currentRevision != revision || !ReviewMatches(reviewedTicket)) return;
+            operationId = reviewedTicket.ReviewTokenId;
+            executionContext = reviewedTicket.Review;
+            var authorization = reviewedTicket.ConsumeForBrowser();
+            review = null;
+            var result = await browser.InvokeAsync<RuntimeBrowserExecutionResult>("execute", linked.Token, authorization);
+            if (currentRevision != revision) return;
+            transportUnknown = result.OutcomeUnknown;
+            if (result.Report is not null && RuntimeTestUiProtocol.IsSafeReport(result.Report, operationId.Value) &&
+                result.Report.SuiteHash == reviewedTicket.Review.SuiteHash &&
+                result.Report.ConfigurationFingerprint == reviewedTicket.Review.ConfigurationFingerprint)
+            {
+                report = result.Report;
+                receiptContext = reviewedTicket.Review;
+                completed = report.Outcome is "EnforcementBehaviorVerified" or "Disabled" or "Failed" or "OutcomeUnknown" ||
+                    prepared is not null && batchIndex + 1 == prepared.Batches.Count;
+                if (completed) await ClearBrowserAsync();
+                await RefreshCurrentReadinessAsync(report.ProfileRowVersion);
+            }
+            else
+            {
+                report = null;
+                transportUnknown = true;
+                completed = true;
+                prepared = null;
+                await ClearBrowserAsync();
+            }
+        }
+        catch (Exception) when (!disposal.IsCancellationRequested)
+        {
+            if (currentRevision != revision) return;
+            review?.Discard();
+            review = null;
+            transportUnknown = operationId is not null;
+            completed = true;
+            prepared = null;
+            await ClearBrowserAsync();
+            error = "The test was not completed locally. Recover the safe report; a fresh review is required before another explicit submission.";
+        }
+        finally { executionCancellation = null; working = false; }
+    }
+
+    private async Task RecoverAsync()
+    {
+        if (!IsAdministrator || working || operationId is not { } id) return;
+        working = true;
+        var currentRevision = revision;
+        try
+        {
+            var recovered = await Api.GetPurviewRuntimeTestAsync(id, disposal.Token);
+            if (currentRevision != revision || disposed) return;
+            report = recovered;
+            if (executionContext is not null && (report.SuiteHash != executionContext.SuiteHash ||
+                report.ConfigurationFingerprint != executionContext.ConfigurationFingerprint))
+            {
+                report = null;
+                error = "The recovered report does not match this frozen suite. Open the saved report separately; do not replay content.";
+                return;
+            }
+            transportUnknown = false;
+            if (executionContext is not null) receiptContext = executionContext;
+            if (report.Outcome is "Failed" or "OutcomeUnknown" or "Disabled" or "EnforcementBehaviorVerified")
+            {
+                completed = true;
+                await ClearBrowserAsync();
+            }
+            await RefreshCurrentReadinessAsync(ExpectedProfileRowVersion ??
+                (receiptContext?.ProfileId == ProfileId ? report.ProfileRowVersion : null));
+        }
+        catch (Exception) when (!disposal.IsCancellationRequested)
+        {
+            if (currentRevision == revision) error = "The safe report could not be retrieved. Do not replay the previous sample request.";
+        }
+        finally { working = false; }
+    }
+
+    private Task RefreshCurrentBindingAsync() => RefreshCurrentReadinessAsync(ExpectedProfileRowVersion);
+
+    private async Task RefreshCurrentReadinessAsync(string? expectedVersion = null)
+    {
+        var currentRevision = ++readinessRevision;
+        var profileId = ProfileId;
+        var context = ContextKey;
+        currentProfile = null;
+        currentReadinessError = null;
+        readinessLoading = true;
+        try
+        {
+            var profiles = await Api.GetPurviewDlpProfilesAsync(disposal.Token);
+            if (currentRevision != readinessRevision || profileId != ProfileId || context != ContextKey ||
+                disposed || !IsAdministrator || Disabled) return;
+            var fetched = profiles.Value.Items.Single(item => item.Id == profileId);
+            if (expectedVersion is not null && fetched.RowVersion != expectedVersion)
+            {
+                readinessRefreshRequired = true;
+                currentReadinessError = "The current profile version changed again. Refresh the saved binding and readiness; historical Ready does not apply.";
+                return;
+            }
+            currentProfile = fetched;
+            readinessRefreshRequired = false;
+            if (!completed && prepared is not null && savedProfile is not null &&
+                (currentProfile.RowVersion != savedProfile.RowVersion ||
+                 currentProfile.PolicyMode != savedProfile.PolicyMode ||
+                 !AgentProtectionUiMapping.Types(currentProfile).ToHashSet().SetEquals(AgentProtectionUiMapping.Types(savedProfile))))
+            {
+                completed = true;
+                currentReadinessError = "The saved protection context changed. This historical receipt remains valid for its recorded context only; reset and create a fresh suite/review before sending more examples.";
+                await ClearBrowserAsync();
+            }
+        }
+        catch (Exception) when (!disposal.IsCancellationRequested)
+        {
+            if (currentRevision != readinessRevision) return;
+            readinessRefreshRequired = true;
+            currentReadinessError = "Current profile readiness could not be verified. Historical receipts do not establish current enforcement; refresh the saved binding before continuing.";
+        }
+        finally { if (currentRevision == readinessRevision) readinessLoading = false; }
+    }
+
+    private void NextBatch()
+    {
+        if (!CanAdvanceBatch) return;
+        Invalidate();
+        batchIndex++;
+        report = null;
+        transportUnknown = false;
+        targetApproved = false;
+    }
+
+    [JSInvokable]
+    public async Task RuntimeInputsChanged()
+    {
+        Invalidate();
+        prepared = null;
+        batchIndex = 0;
+        syntheticApproved = false;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ResetAsync()
+    {
+        Invalidate();
+        prepared = null;
+        batchIndex = 0;
+        syntheticApproved = false;
+        targetApproved = false;
+        completed = false;
+        await ClearBrowserAsync();
+    }
+    private async Task CloseAsync() { await ResetAsync(); open = false; await ClearBrowserAsync(disposeSession: true); }
+    private Task CancelReviewAsync() => ResetAsync();
+    private void Invalidate()
+    {
+        revision++;
+        executionCancellation?.Cancel();
+        review?.Discard();
+        review = null;
+        executionContext = null;
+        targetApproved = false;
+    }
+    private async Task ClearBrowserAsync(bool disposeSession = false)
+    {
+        if (browser is null) return;
+        try
+        {
+            await browser.InvokeVoidAsync(disposeSession ? "dispose" : "clear");
+            if (disposeSession) { await browser.DisposeAsync(); browser = null; browserReady = false; }
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { browser = null; browserReady = false; }
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (disposed) return;
+        disposed = true;
+        disposal.Cancel();
+        Invalidate();
+        await ClearBrowserAsync(disposeSession: true);
+        notifications?.Dispose();
+        if (module is not null)
+        {
+            try { await module.DisposeAsync(); } catch (JSDisconnectedException) { }
+        }
+        disposal.Dispose();
+    }
+}

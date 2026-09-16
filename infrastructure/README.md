@@ -1,60 +1,71 @@
 # Infrastructure assets
 
-This directory contains the declarative Azure and SQL assets used by bootstrap and
-reviewed existing-environment operations. It is not an orchestration entry point and
-contains no credentials.
+This directory contains the declarative Azure and SQL assets consumed by the
+[bootstrap lifecycle](../bootstrap/README.md) and
+[existing-environment operations](../operations/README.md). Templates and SQL
+files are inputs to those workflows, not independent installation instructions.
 
-Use [bootstrap](../bootstrap/README.md) for a fresh subscription and
-[operations](../operations/README.md) for an existing deployment. Do not run an
-individual template or migration as a substitute for those workflows.
+The related Azure resources and supporting tools were deliberately removed.
+Retained assets do not prove a current deployment. The complete installation
+command is **not yet revalidated runnable**: `tools/Gateway.Setup`,
+`tools/Gateway.DatabaseMigrator`, `tools/Gateway.LiveVerification` and the former
+`tests/` projects are absent. [MILESTONES.md](../MILESTONES.md) is the sole
+completion and acceptance record.
 
 ## Layout
 
-```text
-infrastructure/
-├── bicep/
-│   ├── main.bicep                 existing-foundation workload composition
-│   ├── admin-ui.bicep             bounded Admin UI deployment
-│   ├── modules/                    reusable Azure resource modules
-│   └── parameters/                 environment parameter files
-└── sql/                            ordered forward-only schema changes
-```
+| Path | Purpose |
+|---|---|
+| `bicep/main.bicep` | Workload composition for an existing foundation. |
+| `bicep/admin-ui.bicep` | Bounded Admin UI deployment. |
+| `bicep/modules/` | Shared Azure resource modules. |
+| `bicep/parameters/` | Environment parameter inputs. |
+| `bicep/maintenance-*.bicep` | Bounded inputs to the maintenance lifecycle. |
+| `sql/` | Forward schema changes whose order and checksums must be bound by the migration workflow. |
 
-Bootstrap-specific subscription, foundation, private-endpoint, and database-job
-composition lives under `bootstrap/infra/` and consumes the same reviewed modules
-and runtime contracts.
+Bootstrap-specific subscription, foundation, private-endpoint and database-job
+composition lives under `bootstrap/infra/`.
 
 ## Azure boundary
 
-The Bicep modules define Container Apps, Container Registry, SQL, Service Bus, Blob
-storage, Key Vault, private networking, managed identities, role assignments,
-Application Insights, alerts, and the optional Azure AI Content Safety resource.
+The retained templates describe Container Apps, Container Registry, SQL, Service
+Bus, Blob storage, Key Vault, networking, managed identities, role assignments,
+Application Insights and protection dependencies. Purview execution also uses a
+Windows App Service and its runtime/package infrastructure.
 
-Prompt Shields use Azure AI Content Safety with local authentication disabled and
-the Gateway API managed identity assigned the required data-plane role. No account
-key is provisioned.
+New bootstrap configurations require the shared Azure AI Content Safety resource
+for Prompt Shields; per-agent use remains optional. The templates disable local
+authentication and assign the Gateway API managed identity the required
+data-plane role, without provisioning an account key. Accepted older
+configurations may retain their earlier capability choices.
 
-Purview policy objects are Microsoft 365 tenant resources and are not created by
-Azure Bicep. The authorized Security & Compliance PowerShell path configures a
-tenant-wide fixed `Group` location for Know Your Data and blueprint-specific
-`Individual` locations for DLP. Bicep supplies only the Azure/runtime dependencies
-needed by the Gateway integration.
+Purview policy objects belong to Microsoft 365 and are not created by Azure
+Bicep. The authorized Security & Compliance PowerShell integration manages a
+fixed tenant-wide `Group` location for Know Your Data and a blueprint-specific
+`Individual` location for DLP. Azure assets supply the integration's runtime
+dependencies; successful infrastructure deployment does not prove policy
+configuration or effective protection.
 
 ## SQL boundary
 
-Files under `sql/` are ordered, forward-only schema changes applied by
-`tools/Gateway.DatabaseMigrator`. Empty-database initialization is allowed only
-when SQL reports zero user tables. Existing environments must follow the reviewed
-upgrade or recovery path; do not apply migration files manually or mark them
-complete without exact database readback.
+The retained orchestration expects `tools/Gateway.DatabaseMigrator` to apply
+source-bound schema changes and verify the database. That tool's source is absent,
+so its complete manifest, ordering and execution must be restored and checked
+against the retained schema before claiming a runnable migration path.
 
-The prompt-protection and Purview-profile schema changes must exist before the
-corresponding runtime features are enabled. Schema success is not inferred from a
-file name, template build, or local test.
+Empty-database initialization is intended only when SQL reports zero user tables.
+Existing environments require the maintenance lifecycle and exact database
+readback. Do not apply individual SQL files manually or infer completion from
+their filenames. Preserve the original initialization evidence and user data;
+rollback uses compatible code on the expanded schema.
 
-## Validation
+## Validation boundary
 
-Compile and test changes through the bootstrap/source gates and the relevant .NET
-architecture and security projects. Run Azure What-If before any explicitly
-authorized live deployment. Local validation never proves that an Azure resource,
-tenant object, or SQL database was changed.
+Source restoration and baseline validation belong to M1; release preparation and
+live acceptance belong to M5 and M6 in [MILESTONES.md](../MILESTONES.md). Validation
+must include template compilation, configuration contracts, migration ordering,
+real schema and preservation checks, and the relevant restored test projects.
+The absent test projects have not been replaced by generated binaries.
+
+An authorized live deployment requires a current target-bound plan and What-If.
+Local compilation or test results do not prove Azure, tenant or database state.

@@ -1,72 +1,56 @@
 # A365 Custom Gateway documentation
 
-Start with the task you are trying to complete. The root README and bootstrap guide
-are the public installation path; engineering checkpoints and evidence records are
-not setup instructions.
+The project connects independently hosted agents to Agent 365 identity,
+observability and optional protection. The retained application is the working
+baseline for the development plan.
 
-## Deploy and use
+## Start here
 
-| Goal | Read |
+| Need | Document |
 |---|---|
-| Clone, deploy, sign in, register, and send a sample | [Project quickstart](../README.md) |
-| Configure, Plan, Apply, Resume, and Verify | [Bootstrap guide](../bootstrap/README.md) |
-| Integrate an external agent with the API | [OpenAPI contract](api/openapi.yaml) |
-| Understand Admin UI roles and routes | [Admin UI guide](agent-guides/admin-ui.md) |
-| Understand Agent ID provisioning | [Provisioning guide](agent-guides/provisioning.md) |
-| Review protection implementation and remaining gates | [Protection settings plan](architecture/protection-settings-plan.md) |
+| Product purpose and everyday use | [Project README](../README.md) |
+| Milestones, task acceptance and completion | [Milestone checklist](../MILESTONES.md) |
+| Next action and current source context | [Project state](project-state.md) |
+| Agent working rules | [Agent directives](../AGENTS.md) |
+| Persistent project preferences | [Repository memory](../MEMORY.md) |
+| Audience outcomes and product boundaries | [Product brief](spec/product-brief.md) |
 
-## Optional features
+The milestone task checkmarks are the sole completion record. Guides describe
+current source behavior and prerequisites; they do not maintain separate pass
+counts or deployment-completion claims. Every milestone requires a review and
+synchronization of the entire project's documents, directives, state and memory.
 
-| Feature | Read |
+## Build, deploy and operate
+
+| Need | Document |
 |---|---|
-| Agent 365 activity/OTel export | [Observability setup](operations/agent365-observability-setup.md) |
-| Microsoft Purview runtime and policies | [Purview setup](operations/purview-setup-runbook.md) |
-| Entra applications, app roles, and federation | [Entra setup](operations/entra-setup-runbook.md) |
+| Installer commands, configuration and prerequisites | [Bootstrap guide](../bootstrap/README.md) |
+| Azure templates and SQL assets | [Infrastructure map](../infrastructure/README.md) |
+| Operational commands and test classification | [Operations guide](../operations/README.md) |
+| Existing-deployment upgrade contract | [Upgrade guide](../operations/gateway-upgrade.md) |
+| Earlier maintenance scaffold and its limits | [Maintenance guide](../operations/gateway-maintenance.md) |
 
-The source separates capability installation from ongoing protection governance.
-Bootstrap prepares Azure AI Content Safety and Purview prerequisites.
-Role-aware Gateway Settings owns Prompt Shields defaults and per-agent use, plus
-Purview tenant connection, SIT selection, KYD, blueprint DLP profiles, readiness,
-and ongoing changes. Final backend acceptance reopened the source candidate for
-identity correctness, exact capability/runtime binding, cancellation cleanup, and
-truthful existing-policy updates. Prior final gates are invalidated. This
-implementation is not deployed, and its live E2E is postponed. Readback is not
-token-role propagation or live verdict proof.
-Purview locations remain independent: Know Your Data uses the fixed tenant-wide
-enterprise-AI-apps `Group`, while DLP uses each selected blueprint application ID
-as an `Individual`.
+Supporting tools/tests and related Azure resources were deliberately removed.
+Read the source-availability notes in these guides before using an installer or
+operational command. Existing checkpoint-bound recovery code describes recovery
+for an intact deployment; it does not reconstruct the deleted environment.
 
-## Operate and recover
+## Architecture and integration
 
-| Goal | Read |
+| Need | Document |
 |---|---|
-| Operate an existing deployment | [Operations index](../operations/README.md) |
-| Back up or recover data and configuration | [Backup and recovery](operations/backup-recovery.md) |
-| Rotate credentials and certificates | [Credential rotation](operations/credential-rotation.md) |
-| Upgrade safely | [Upgrade strategy](operations/upgrade-strategy.md) |
-| Respond to an incident | [Incident response](operations/incident-response.md) |
+| Components, identity and workflow | [System architecture](architecture/system-architecture.md) |
+| Persistence, messaging and receipt consistency | [Data model](architecture/data-model.md) |
+| Protection capabilities and administration | [Protection architecture](architecture/protection-settings-plan.md) |
+| Windows Purview execution and packaging | [Windows executor](architecture/purview-windows-executor.md) |
+| Microsoft provider contracts used by this source | [Microsoft capabilities](architecture/microsoft-capabilities.md) |
+| API authorization, lifecycle and client behavior | [API contract](api/api-contract.md) |
+| Machine-readable HTTP schemas | [OpenAPI](api/openapi.yaml) |
 
-## Design and implementation
+## Documentation maintenance
 
-| Topic | Read |
-|---|---|
-| System architecture | [System architecture](architecture/system-architecture.md) |
-| Protection capability and Settings implementation | [Protection settings plan](architecture/protection-settings-plan.md) |
-| Persistence and workflow design | [Data model](architecture/data-model.md) |
-| Microsoft contract validation | [Microsoft capabilities](architecture/microsoft-capabilities.md) |
-| Product intent | [Product brief](spec/product-brief.md) |
-| Declarative Azure and SQL assets | [Infrastructure index](../infrastructure/README.md) |
-
-## Engineering checkpoints
-
-| Purpose | Read |
-|---|---|
-| Continue after a Git transfer | [Continuation checkpoint](agent-continuation.md) |
-| Read current source and test truth | [Implementation status](implementation-status.md) |
-| Read live evidence and operator boundaries | [Deployment status](operations/development-deployment-status.md) |
-| Understand durable historical corrections | [Project history](history/README.md) |
-
-Contributors should read the continuation and both current status files before
-changing deployment or provisioning behavior. Project history is context, not a
-current checkpoint. Ordinary installers do not need these engineering records to
-follow the quickstart.
+At milestone closure inspect every authored Markdown file plus relevant
+configuration/schema contracts. Update changed behavior, links, entry points and
+prerequisites, and review unchanged sections for consistency. Update the next
+action in project state and preserve user preferences in repository memory. Check
+the milestone synchronization task only after that whole-project review passes.

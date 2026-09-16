@@ -1,0 +1,12 @@
+# Generated build and test output
+**/bin/
+**/obj/
+**/__pycache__/
+*.pyc
+TestResults/
+.vs/
+
+# Local deployment configuration and operational state
+/bootstrap/config.json
+/.bootstrap/
+/.maintenance/

@@ -1,157 +1,151 @@
-# Microsoft capability validation
+# Microsoft provider contracts
 
-This matrix records current official contracts relied on by the Gateway. Code,
-tests, deployed evidence, and current Microsoft documentation take precedence over
-older design notes or prototypes.
-
-Last reviewed against official Microsoft Learn: 2026-09-06.
+This guide records the contracts used by the retained Gateway adapters and
+deployment source. It is not a fresh provider-documentation review or proof of a
+live tenant's capabilities. Revalidate provider availability and permissions during
+deployment planning. Completion belongs only in
+[MILESTONES.md](../../MILESTONES.md); current context belongs in
+[project state](../project-state.md).
 
 ## Agent Identity and Agent 365
 
-| Capability | Gateway contract | Status |
-|---|---|---|
-| Agent Identity blueprint catalog | Graph v1.0 typed application cast and `managerApplications` compatibility | Documented v1.0 surface; tenant permission availability can still vary |
-| Blueprint principal and federation | Graph v1.0 Agent Identity casts plus application FIC | Documented v1.0 surface; exact readback required |
-| Child Agent ID creation | `POST /v1.0/servicePrincipals/microsoft.graph.agentIdentity` | `201 Created`; one distinct child per active registration |
-| Agent 365 Registry create | `POST /beta/copilot/agentRegistrations` | Beta and unsupported for production; Gateway uses user-only delegated OBO and at most one POST |
-| Agent 365 observability | S2S OTLP/HTTP JSON route with `Agent365.Observability.OtelWrite` | Documented direct OTel service contract |
+| Capability | Retained Gateway contract |
+|---|---|
+| Blueprint catalog | Graph v1.0 typed Agent Identity application casts and reviewed managerApplications |
+| Blueprint principal and federation | Graph v1.0 Agent Identity casts and application federated identity credentials, with exact readback |
+| Child Agent ID | POST /v1.0/servicePrincipals/microsoft.graph.agentIdentity; a distinct child for each registration |
+| Registry creation | POST /beta/copilot/agentRegistrations through user-only delegated OBO, at most once per operation lineage |
+| Observability | Direct S2S OTLP/HTTP JSON export with Agent365.Observability.OtelWrite |
 
-The worker Graph application-role allowlist is exactly `Application.Read.All`,
-`AppRoleAssignment.ReadWrite.All`, `AgentIdentityBlueprint.Create`,
-`AgentIdentityBlueprint.AddRemoveCreds.All`,
-`AgentIdentityBlueprintPrincipal.Create`, `AgentIdentityBlueprint.Read.All`,
-`AgentIdentity.Create.All`, and `AgentIdentity.Read.All`.
+The worker Graph application-role allowlist is Application.Read.All,
+AppRoleAssignment.ReadWrite.All, AgentIdentityBlueprint.Create,
+AgentIdentityBlueprint.AddRemoveCreds.All,
+AgentIdentityBlueprintPrincipal.Create, AgentIdentityBlueprint.Read.All,
+AgentIdentity.Create.All and AgentIdentity.Read.All.
 
-Registry permissions are the API app's admin-consented delegated
-`AgentRegistration.Read.All` and `AgentRegistration.ReadWrite.All` scopes, acquired
-through OBO. They are not worker roles. Microsoft also documents application
-permission for Registry, but the Gateway deliberately does not use that mode: its
-product boundary requires an accountable signed-in administrator.
+Registry uses the API application's delegated AgentRegistration.Read.All and
+AgentRegistration.ReadWrite.All scopes. The Gateway requires a signed-in
+Administrator and does not delegate Registry creation to the worker.
+The source gates Registry beta to explicitly acknowledged development use;
+staging and production registration admission remain closed.
 
-Registry create succeeds only on the documented `201 Created` response. Before the
-single POST, the Gateway persists a creator-bound planned ID. A timeout, transport
-failure, retryable HTTP status, or non-201 2xx is ambiguous and permits only exact
-GET of that planned ID; it never permits another POST.
+The API persists a creator-bound planned Registry ID before its single POST and
+accepts the expected 201 response. An ambiguous result permits exact GET of that
+planned ID, never another create attempt. Local Gateway persistence does not
+replace Microsoft-side final verification.
 
-The direct Agent 365 S2S telemetry route is
-`POST https://agent365.svc.cloud.microsoft/observabilityService/tenants/{tenantId}/otlp/agents/{agentId}/traces?api-version=1`.
-The URL agent ID is the child Agent Identity app ID and must match the app-only
-token's `appid` or `azp`; the token must carry
-`Agent365.Observability.OtelWrite`.
+The exporter uses the direct route:
 
-- [Agent 365 developer documentation](https://learn.microsoft.com/microsoft-agent-365/developer/)
-- [Create Agent 365 agent registration](https://learn.microsoft.com/microsoft-365/copilot/extensibility/api/admin-settings/agent-registration/agentregistration-create)
-- [Direct Agent 365 OpenTelemetry integration](https://learn.microsoft.com/microsoft-agent-365/developer/direct-open-telemetry-integration)
-- [Create Agent Identity blueprint](https://learn.microsoft.com/graph/api/agentidentityblueprint-post?view=graph-rest-1.0)
-- [Create child Agent Identity](https://learn.microsoft.com/graph/api/agentidentity-post?view=graph-rest-1.0)
-- [Microsoft Graph permissions](https://learn.microsoft.com/graph/permissions-reference)
-- [On-behalf-of flow](https://learn.microsoft.com/entra/identity-platform/v2-oauth2-on-behalf-of-flow)
-- [Workload identity federation](https://learn.microsoft.com/entra/workload-id/workload-identity-federation)
+```text
+POST https://agent365.svc.cloud.microsoft/observabilityService/tenants/{tenantId}/otlp/agents/{agentId}/traces?api-version=1
+```
 
-## Microsoft Purview
+The route's agent ID is the child Agent Identity application ID. The app-only
+token must bind to that child and carry Agent365.Observability.OtelWrite.
 
-| Capability | Contract | Status |
-|---|---|---|
-| Protection-scope computation | Graph v1.0 `/users/{userId}/dataSecurityAndGovernance/protectionScopes/compute` | Application permission `ProtectionScopes.Compute.User`; cache returned ETag |
-| Runtime content processing | Graph v1.0 `/users/{userId}/dataSecurityAndGovernance/processContent` | Application permission `Content.Process.User`; honor `200`, `202`, or `204` and per-activity inline/offline mode |
-| Content activity submission | Graph v1.0 `/users/{userId}/dataSecurityAndGovernance/activities/contentActivities` | Application permission `ContentActivity.Write`; success is `201 Created` |
-| Tenant sensitive-information-type inventory | Security & Compliance PowerShell `Get-DlpSensitiveInformationType` after `Connect-IPPSSession` | Windows only; current module documentation says Security & Compliance PowerShell is unavailable in PowerShell 7 on macOS and Linux; tenant RBAC controls availability |
-| Know Your Data setup | `New/Get/Set-FeatureConfiguration` | Public Preview; tenant availability varies |
-| Custom-app DLP authoring | Security & Compliance PowerShell | Exact readback required |
+Provider references:
+[Agent 365 registration](https://learn.microsoft.com/microsoft-365/copilot/extensibility/api/admin-settings/agent-registration/agentregistration-create),
+[direct OpenTelemetry integration](https://learn.microsoft.com/microsoft-agent-365/developer/direct-open-telemetry-integration),
+[blueprint creation](https://learn.microsoft.com/graph/api/agentidentityblueprint-post?view=graph-rest-1.0),
+[child identity creation](https://learn.microsoft.com/graph/api/agentidentity-post?view=graph-rest-1.0),
+[Graph permissions](https://learn.microsoft.com/graph/permissions-reference),
+[OBO](https://learn.microsoft.com/entra/identity-platform/v2-oauth2-on-behalf-of-flow).
 
-The policy scopes are deliberately different:
+## Purview runtime and policy administration
 
-- Know Your Data uses fixed enterprise-AI-apps location
-  `ee1680d0-702f-4090-b26c-c49091e86531`, `LocationSource=Entra`,
-  `LocationType=Group`.
-- DLP uses the protected blueprint application ID, `LocationSource=Entra`,
-  `LocationType=Individual`.
-- Both use `EnforcementPlanes=Application`.
+| Capability | Retained Gateway contract |
+|---|---|
+| Protection scopes | Graph v1.0 /users/{userId}/dataSecurityAndGovernance/protectionScopes/compute; ProtectionScopes.Compute.User |
+| Content processing | Graph v1.0 /users/{userId}/dataSecurityAndGovernance/processContent; Content.Process.User |
+| Content activity | Graph v1.0 /users/{userId}/dataSecurityAndGovernance/activities/contentActivities; ContentActivity.Write |
+| Tenant SIT inventory | Get-DlpSensitiveInformationType after Connect-IPPSSession |
+| Know Your Data | Fixed-scope New/Get/Set-FeatureConfiguration operations |
+| DLP authoring | Bounded Security & Compliance PowerShell policy/rule operations with exact readback |
 
-Directory assignment readback does not prove a managed-identity token already
-contains the roles. Microsoft documents managed-identity token caching by resource
-URI; runtime enablement must wait for safe token-role or data-plane verification.
-Never inspect or emit raw tokens.
+Runtime processing distinguishes inline decisions from accepted/offline work.
+A successful HTTP response alone is not an allow/block verdict. DownloadText
+processing can be offline and cannot then prove response-side blocking.
 
-SIT selection is tenant-backed, not a bundled catalog. The no-argument inventory
-cmdlet returns the types defined for the organization. The Gateway keys a selection
-by the returned GUID, retains its exact Unicode `Name` because the documented
-`New-DlpComplianceRule -ContentContainsSensitiveInformation` shape uses `Name`, and
-re-resolves the GUID before use. Exact GUID filtering is mandatory: Microsoft warns
-that a null or nonexistent `-Identity` can return the full inventory. Microsoft does
-not document a Graph endpoint for enumerating this catalog or a cmdlet-specific
-least-privilege role mapping, so the approved flow probes authorization and fails
-closed instead of guessing either contract.
+Know Your Data uses Entra Group location
+`ee1680d0-702f-4090-b26c-c49091e86531`. DLP uses the reusable blueprint application
+as an Entra Individual location. Both use the Application plane. Policies shared
+by a blueprint are not isolated to one registration.
 
-Core bootstrap and capability preparation stay supported on Windows, macOS, and
-Linux. Both interactive and certificate-authenticated `Connect-IPPSSession`
-require Windows; installing the module in the Linux worker does not provide a
-supported compliance execution path. A private Windows executor correction is
-pending deployment and live verification; see the current deployment checkpoint.
-SIT inventory and policy authoring are owned by Gateway Settings, with its
-packaged bounded Windows companion for interactive authorization. The Gateway does not
-substitute a static catalog or an unvalidated REST endpoint on other platforms.
-The companion verifies one exact owned session, tenant, operation Administrator,
-cmdlet surface, and bounded SIT inventory before returning one typed result line.
+SIT choices bind the tenant inventory GUID and exact Unicode name. The source
+re-resolves exact inventory membership rather than accepting a static catalog,
+free-text type or Graph sensitivity label. Multiple selected SITs use OR semantics
+with independent count/confidence thresholds.
 
-The bounded [Purview prerequisite recovery](../operations/purview-prerequisite-recovery.md)
-uses Graph v1.0 assignment and application-update APIs. It adds no permission or
-role beyond the existing exact automation tuple. Its OData directory-role query
-uses the documented `$filter` and `$select` names. Unknown writes remain
-readback-only; local recovery receipts are not policy or runtime readiness proof.
+Four policy modes map to the provider: Enforce to Enable, SimulationWithTips to
+TestWithNotifications, SimulationWithoutTips to TestWithoutNotifications, and
+Disabled to Disable. Verified simulation or configured-off status is distinct
+from certified enforcement.
 
-- [Configure Purview for custom AI applications](https://learn.microsoft.com/purview/developer/configurepurview)
-- [Use the Purview data-security APIs](https://learn.microsoft.com/purview/developer/use-the-api)
-- [Compute protection scopes](https://learn.microsoft.com/graph/api/userprotectionscopecontainer-compute?view=graph-rest-1.0)
-- [Process content](https://learn.microsoft.com/graph/api/userdatasecurityandgovernance-processcontent?view=graph-rest-1.0)
-- [Create content activity](https://learn.microsoft.com/graph/api/activitiescontainer-post-contentactivities?view=graph-rest-1.0)
-- [New-DlpCompliancePolicy](https://learn.microsoft.com/powershell/module/exchangepowershell/new-dlpcompliancepolicy?view=exchange-ps)
-- [New-DlpComplianceRule](https://learn.microsoft.com/powershell/module/exchangepowershell/new-dlpcompliancerule?view=exchange-ps)
-- [Get-DlpSensitiveInformationType](https://learn.microsoft.com/powershell/module/exchangepowershell/get-dlpsensitiveinformationtype?view=exchange-ps)
-- [Connect to Security & Compliance PowerShell](https://learn.microsoft.com/powershell/exchange/connect-to-scc-powershell?view=exchange-ps)
-- [Exchange Online PowerShell module operating-system support](https://learn.microsoft.com/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps#supported-operating-systems-for-the-exchange-online-powershell-module)
-- [Managed identity token caching](https://learn.microsoft.com/entra/identity/managed-identities-azure-resources/managed-identity-best-practice-recommendations#limitation-of-using-managed-identities-for-authorization)
+Directory-role readback and usable runtime-token roles are separate evidence.
+The runtime certification path safely verifies roles and behavior without exposing
+raw tokens. It binds the current profile, inventory, identity and approved samples;
+stale or uncertain results cannot establish readiness.
+
+Interactive connection uses the bounded Windows companion. Noninteractive policy
+administration uses the private [Windows executor](purview-windows-executor.md).
+Both are part of the retained execution design; no active deployment is inferred.
+Registration and Settings can submit reviewed configuration through the same
+application service, including deferred consent for a newly created blueprint.
+
+Provider references:
+[custom AI configuration](https://learn.microsoft.com/purview/developer/configurepurview),
+[data-security APIs](https://learn.microsoft.com/purview/developer/use-the-api),
+[compute protection scopes](https://learn.microsoft.com/graph/api/userprotectionscopecontainer-compute?view=graph-rest-1.0),
+[process content](https://learn.microsoft.com/graph/api/userdatasecurityandgovernance-processcontent?view=graph-rest-1.0),
+[content activities](https://learn.microsoft.com/graph/api/activitiescontainer-post-contentactivities?view=graph-rest-1.0),
+[SIT inventory](https://learn.microsoft.com/powershell/module/exchangepowershell/get-dlpsensitiveinformationtype?view=exchange-ps),
+[DLP policy](https://learn.microsoft.com/powershell/module/exchangepowershell/new-dlpcompliancepolicy?view=exchange-ps),
+[DLP rule](https://learn.microsoft.com/powershell/module/exchangepowershell/new-dlpcompliancerule?view=exchange-ps),
+[module platform support](https://learn.microsoft.com/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps#supported-operating-systems-for-the-exchange-online-powershell-module).
 
 ## Azure AI Content Safety
 
-Prompt Shields calls `POST {endpoint}/contentsafety/text:shieldPrompt` with API
-version `2024-09-01`. Microsoft documents key and Microsoft Entra authentication;
-the Gateway deliberately uses `ManagedIdentityCredential` only and assigns the API
-managed identity the built-in `Cognitive Services User` role on the resource. It
-has no developer, CLI, environment, workload, or client-secret credential-chain
-fallback. `attackDetected=true` blocks;
-transport, authorization, or schema ambiguity fails closed. Account keys are
-disabled.
+Prompt Shields calls POST /contentsafety/text:shieldPrompt with API version
+2024-09-01. The retained adapter uses ManagedIdentityCredential and resource-scoped
+Cognitive Services User authority; it does not fall back to account keys or a
+developer credential chain. An attack decision blocks, while required protection
+fails closed on transport, authorization or schema ambiguity.
 
-- [Prompt Shields quickstart](https://learn.microsoft.com/azure/ai-services/content-safety/quickstart-jailbreak)
-- [Prompt Shields REST operation](https://learn.microsoft.com/rest/api/contentsafety/text-operations/shield-prompt?view=rest-contentsafety-2024-09-01)
-- [Authenticate Foundry Tools with Microsoft Entra ID](https://learn.microsoft.com/azure/ai-services/authentication)
+Guided fresh setup includes shared Content Safety in every preset. Per-agent
+Prompt Shields usage is independent and optional. The source retains legacy
+disabled capability configurations for bound recovery. Resource installation
+alone does not prove a successful runtime decision.
 
-## Azure platform
+Provider references:
+[Prompt Shields operation](https://learn.microsoft.com/rest/api/contentsafety/text-operations/shield-prompt?view=rest-contentsafety-2024-09-01),
+[Entra authentication](https://learn.microsoft.com/azure/ai-services/authentication).
 
-| Area | Required boundary |
+## Azure deployment boundaries
+
+| Area | Source requirement |
 |---|---|
-| Deployment region discovery | Use the target subscription's ARM `Subscriptions - List Locations` 2022-12-01 response. Show `displayName`, persist canonical `name`, follow `nextLink`, and accept only `type=Region` with `metadata.regionType=Physical`. A listed region is not proof that every provider or SKU is available there. |
-| Azure SQL | Entra-only authentication, private endpoint, zero firewall rules |
-| Key Vault | RBAC, local/public access disabled after setup, exact secret scope |
-| Container Apps | Managed identities and immutable image digests |
-| Service Bus | Dedicated v3 queue and duplicate-safe consumers |
-| Container Registry | Dedicated pull identity avoids first-pull identity cycles |
+| Region discovery | Target subscription's ARM location inventory; retain canonical region names and validate provider/SKU availability separately |
+| SQL | Entra-only authentication and private access |
+| Key Vault | Scoped identity/RBAC access and exact certificate secret binding |
+| Container Apps | Managed identities and immutable candidate image bindings |
+| Service Bus | Separate registration and protection queues with duplicate-safe consumers |
+| Windows executor | Private application/SCM access, package integrity and exact worker caller |
+| Upgrade | Preserved bootstrap state plus a separate exact source/resource/schema-bound plan |
 
-The locations API uses Azure-authenticated subscription access. Azure CLI's
-`az account list-locations` is a Core GA surface for the same subscription-specific
-inventory. Microsoft's public region table identifies **Korea Central** by the
-programmatic name `koreacentral`.
+All project Azure operations use the tenant and subscription pinned in
+[AGENTS.md](../../AGENTS.md). Historical configuration files and incident-specific
+repair scripts do not establish a current target. Retained
+[upgrade tooling](../../operations/gateway-upgrade.md) must satisfy its own
+prerequisites and actual verification limits.
 
-- [ARM Subscriptions - List Locations](https://learn.microsoft.com/rest/api/resources/subscriptions/list-locations?view=rest-resources-2022-12-01)
-- [Azure CLI account commands](https://learn.microsoft.com/cli/azure/account?view=azure-cli-latest#az-account-list-locations)
-- [Azure regions and programmatic names](https://learn.microsoft.com/azure/reliability/regions-list)
+Provider references:
+[ARM location inventory](https://learn.microsoft.com/rest/api/resources/subscriptions/list-locations?view=rest-resources-2022-12-01),
+[managed identity authorization considerations](https://learn.microsoft.com/entra/identity/managed-identities-azure-resources/managed-identity-best-practice-recommendations#limitation-of-using-managed-identities-for-authorization).
 
 ## Unsupported assumptions
 
-Do not implement or claim conversion of an ordinary application into a typed
-blueprint, worker/app-only Registry creation, a client-secret OBO fallback, Purview
-SIT inventory or policy authoring through an unvalidated REST endpoint, substituting
-Graph sensitivity labels for Purview sensitive information types, Purview analytics
-retrieval through write-only APIs, response-side blocking for offline processing,
-or Microsoft-side completion from Gateway persistence alone.
+The retained design does not assume ordinary applications can be converted into
+typed blueprints, worker/app-only Registry creation, client-secret OBO fallback,
+an unvalidated REST replacement for compliance policy authoring, or write-only
+Purview APIs providing analytics retrieval. Provider readback, runtime
+certification and project milestone completion serve different purposes.

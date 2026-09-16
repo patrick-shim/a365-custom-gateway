@@ -1,0 +1,61 @@
+@page "/protection/runtime-tests/{OperationId:guid}"
+@attribute [Authorize(Roles = "Gateway.Administrator")]
+@rendermode InteractiveServer
+@inject IGatewayApiClient Api
+
+<PageTitle>Protection runtime report · A365 Gateway</PageTitle>
+<PageHeader Title="Protection runtime report" Description="Safe GET recovery only. This page never collects or replays sample content." />
+@if (report is not null)
+{
+    <PurviewRuntimeTestReport Report="report" />
+    @if (currentProfile is not null)
+    {
+        <ProtectionReadinessPanel Readiness="currentProfile.Readiness" Label="Current saved protection"
+            PolicyMode="@currentProfile.PolicyMode" ProfileStatus="@currentProfile.Status"
+            EvidenceExpiresAtUtc="currentProfile.RuntimeBehaviorVerifiedUntilUtc" />
+    }
+    @if (readinessError is not null)
+    {
+        <p class="readiness-blockers" role="status">@readinessError</p>
+    }
+}
+@if (error is not null)
+{
+    <ErrorState Message="@error" />
+}
+<FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" Disabled="loading" OnClick="LoadAsync">Refresh safe report</FluentButton>
+
+@code {
+    [Parameter] public Guid OperationId { get; set; }
+    private PurviewRuntimeTestResultResponse? report;
+    private PurviewDlpProfileDto? currentProfile;
+    private string? readinessError;
+    private bool loading;
+    private string? error;
+    protected override Task OnParametersSetAsync() => LoadAsync();
+    private async Task LoadAsync()
+    {
+        if (loading) return;
+        loading = true;
+        error = null;
+        try
+        {
+            report = await Api.GetPurviewRuntimeTestAsync(OperationId);
+            currentProfile = null;
+            readinessError = null;
+            try
+            {
+                var operation = (await Api.GetProtectionAdminOperationAsync(OperationId)).Value.Operation;
+                if (operation.Type != "TestDlpRuntime" || !Guid.TryParse(operation.TargetIdentifier, out var profileId))
+                    throw new InvalidOperationException();
+                currentProfile = (await Api.GetPurviewDlpProfilesAsync()).Value.Items.Single(item => item.Id == profileId);
+            }
+            catch
+            {
+                readinessError = "Current saved-profile readiness could not be verified. The historical receipt alone does not establish current enforcement.";
+            }
+        }
+        catch { error = "This safe report could not be retrieved. Check access and the operation ID; do not replay sample content."; }
+        finally { loading = false; }
+    }
+}

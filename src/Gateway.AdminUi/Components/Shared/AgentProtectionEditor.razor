@@ -1,0 +1,625 @@
+<section class="form-section" aria-labelledby="@Id("heading")">
+    <h2 id="@Id("heading")">Agent protection</h2>
+    <p>Choose a blueprint first, then review the protection choices. Editing these controls alone does not save or create a policy.</p>
+
+    @if (!IsAdministrator)
+    {
+        <div class="subtle-note" role="note">Your role has read-only access. A Gateway Administrator can change protection settings.</div>
+    }
+
+    <fieldset class="feature-group" disabled="@(!CanEdit)" aria-describedby="@Id("blueprint-status")">
+        <legend>1. Blueprint</legend>
+        @if (!string.IsNullOrWhiteSpace(DeferredBlueprintName))
+        {
+            <p>New blueprint: <strong>@DeferredBlueprintName</strong>. Its application ID will be resolved after registration. Reviewed Purview configuration waits for that exact blueprint.</p>
+        }
+        else
+        {
+        <div class="form-field">
+            <label for="@Id("blueprint")">Agent identity blueprint</label>
+            <select id="@Id("blueprint")" class="form-control" value="@selection.BlueprintId"
+                    disabled="@(LockBlueprintSelection || Blueprints.CurrentState != ProtectionInventoryState.Ready)"
+                    aria-describedby="@Id("blueprint-status")" @onchange="ChangeBlueprint">
+                <option value="">Select a blueprint</option>
+                @if (selection.BlueprintId is { } selectedBlueprint && !Blueprints.Items.Any(item => item.Id == selectedBlueprint))
+                {
+                    <option value="@selectedBlueprint">Previously selected blueprint: @selectedBlueprint (unavailable)</option>
+                }
+                @foreach (var blueprint in Blueprints.Items)
+                {
+                    <option value="@blueprint.Id">@blueprint.DisplayName (@blueprint.Id)</option>
+                }
+            </select>
+        </div>
+        }
+        <p id="@Id("blueprint-status")" class="field-help" role="status" aria-live="polite">
+            @(!string.IsNullOrWhiteSpace(DeferredBlueprintName) ? "Awaiting blueprint creation; no existing blueprint ID is being claimed." : InventoryMessage(Blueprints.CurrentState, Blueprints.Items.Count, "blueprints"))
+        </p>
+        @if (OnRefreshBlueprints.HasDelegate)
+        {
+            <FluentButton Type="ButtonType.Button" Appearance="Appearance.Stealth"
+                          Disabled="@(!CanEdit || Blueprints.CurrentState == ProtectionInventoryState.Loading)"
+                          OnClick="RefreshBlueprints">Refresh blueprints</FluentButton>
+        }
+    </fieldset>
+
+    @if (!PolicyOnly)
+    {
+    <fieldset class="feature-group" disabled="@(!CanEdit || !HasAvailableBlueprint)">
+        <legend>2. Protection for this agent</legend>
+        <div class="form-field">
+            <FluentSwitch Id="@Id("prompt-shields")" Value="@selection.PromptShieldsEnabled"
+                          ValueChanged="ChangePromptShields" Disabled="@(!CanEdit || !HasAvailableBlueprint || !PromptShieldsAvailable && !selection.PromptShieldsEnabled)"
+                          CheckedMessage="On" UncheckedMessage="Off" aria-describedby="@Id("prompt-help")">
+                Prompt Shields for this agent
+            </FluentSwitch>
+            <p id="@Id("prompt-help")" class="field-help">
+                Prompt Shields uses the Gateway's standalone pre-model evaluation endpoint. The external agent must call it before calling its model and honor the result.
+                Turning it on does not automatically intercept model calls or filter model responses.
+            </p>
+        </div>
+        <div class="form-field">
+            <FluentSwitch Id="@Id("purview")" Value="@selection.PurviewEnabled"
+                          ValueChanged="ChangePurview" Disabled="@(!CanEdit || !HasAvailableBlueprint || !PurviewAvailable && !selection.PurviewEnabled)"
+                          CheckedMessage="On" UncheckedMessage="Off" aria-describedby="@Id("purview-help")">
+                Purview for this agent
+            </FluentSwitch>
+            <p id="@Id("purview-help")" class="field-help">
+                This is the agent's Gateway protection choice, not an isolated per-agent Purview policy.
+                Purview policy is shared at blueprint / Application / Individual scope. “Individual” is the policy scope, not per-agent isolation.
+                Turning this agent's choice off does not turn off or delete the shared policy.
+            </p>
+        </div>
+    </fieldset>
+    }
+
+    @if (selection.PurviewEnabled)
+    {
+        <fieldset class="feature-group" disabled="@(!CanEdit || !HasAvailableBlueprint)" aria-describedby="@Id("sit-status")">
+            <legend>3. Sensitive information types (SITs)</legend>
+            <p>Choose from the real inventory supplied by the Gateway. No sample or built-in fallback inventory is supplied by this editor.</p>
+            <p id="@Id("sit-match-help")" class="field-help">
+                Match ANY selected SIT (OR). Each SIT keeps its own existing count and confidence thresholds.
+                Counts are not summed across different SITs. Selecting or deselecting a SIT does not replace its stored thresholds with new defaults.
+            </p>
+            <div class="form-field">
+                <label for="@Id("sit-search")">Search sensitive information types by name, ID, or description</label>
+                <input id="@Id("sit-search")" class="form-control" type="search" value="@search"
+                       disabled="@(SensitiveInformationTypes.CurrentState != ProtectionInventoryState.Ready)"
+                       @oninput="ChangeSearch" aria-describedby="@Id("sit-search-status")" />
+            </div>
+            <p id="@Id("sit-status")" class="field-help" role="status" aria-live="polite">
+                @InventoryMessage(SensitiveInformationTypes.CurrentState, SensitiveInformationTypes.Items.Count, "sensitive information types")
+            </p>
+            @if (SensitiveInformationTypes.CurrentState == ProtectionInventoryState.Ready)
+            {
+                <p id="@Id("sit-search-status")" class="field-help" role="status" aria-live="polite">
+                    @FilteredSensitiveInformationTypes.Count matching; @selection.SensitiveInformationTypeIds.Count selected (including selections outside this search).
+                </p>
+                @if (FilteredSensitiveInformationTypes.Count == 0 && SensitiveInformationTypes.Items.Count > 0)
+                {
+                    <p class="subtle-note">No sensitive information types match this search. Your selections have not changed.</p>
+                }
+                <div class="checkbox-grid">
+                    @foreach (var sit in FilteredSensitiveInformationTypes)
+                    {
+                        <label @key="sit.Id" class="checkbox-label">
+                            <input type="checkbox" checked="@IsSelected(sit.Id)" data-sit-id="@sit.Id"
+                                   disabled="@string.IsNullOrWhiteSpace(sit.Id)"
+                                   aria-describedby="@Id("sit-match-help")"
+                                   @onchange="args => ChangeSensitiveInformationType(sit.Id, args.Value is true)" />
+                            <span>@sit.DisplayName <small>@sit.Id</small>
+                                @if (!string.IsNullOrWhiteSpace(sit.Description))
+                                {
+                                    <span class="field-help">@sit.Description</span>
+                                }
+                                @if (selection.ThresholdsFor(sit.Id) is { } thresholds)
+                                {
+                                    <span class="field-help">
+                                        Existing thresholds — min count: @ThresholdValue(thresholds.MinCount);
+                                        max count: @ThresholdValue(thresholds.MaxCount);
+                                        min confidence: @ThresholdValue(thresholds.MinConfidence);
+                                        max confidence: @ThresholdValue(thresholds.MaxConfidence).
+                                        @(thresholds is { MinCount: not null, MaxCount: not null, MinConfidence: not null, MaxConfidence: not null }
+                                            ? "Kept unchanged." : "Threshold evidence is incomplete; unspecified does not mean a default.")
+                                    </span>
+                                }
+                            </span>
+                        </label>
+                        @if (AllowThresholdEditing && IsSelected(sit.Id))
+                        {
+                            var inputThresholds = selection.ThresholdsFor(sit.Id);
+                            <fieldset class="feature-group" aria-label="@($"Thresholds for {sit.DisplayName}")">
+                                <legend>@sit.DisplayName thresholds</legend>
+                                <p class="field-help">@(RequireExplicitThresholds
+                                    ? "Existing shared policies require all four explicit values for each selected SIT. Unknown values are not filled in."
+                                    : "Blank values are not assumed. A new-policy review can return explicit example values; changing an existing policy requires all four values.")</p>
+                                <div class="form-grid">
+                                    @foreach (var field in new[] { "MinCount", "MaxCount", "MinConfidence", "MaxConfidence" })
+                                    {
+                                        <div class="form-field">
+                                            <label for="@Id($"{sit.Id}-{field}")">@ThresholdLabel(field)</label>
+                                            <input id="@Id($"{sit.Id}-{field}")" class="form-control" type="number" step="1"
+                                                   min="@(field == "MaxCount" ? -1 : 1)"
+                                                   max="@(field.EndsWith("Confidence", StringComparison.Ordinal) ? 100 : int.MaxValue)"
+                                                   value="@ThresholdFieldValue(inputThresholds, field)" data-threshold-sit="@sit.Id" data-threshold-field="@field"
+                                                   @onchange="args => ChangeThreshold(sit.Id, field, args)" />
+                                        </div>
+                                    }
+                                </div>
+                                <p class="field-help">Minimum count must be positive. Maximum count is -1 (Any) or at least the minimum. Confidence bounds are inclusive, 1–100, with maximum at least minimum. Counts are never summed across SITs.</p>
+                            </fieldset>
+                        }
+                    }
+                </div>
+            }
+            else
+            {
+                <span id="@Id("sit-search-status")" class="field-help">Search and selection require a current inventory. Existing selections are retained, not verified.</span>
+            }
+            @if (UnverifiedSelectedIds.Count > 0)
+            {
+                <div class="readiness-blockers" role="alert" aria-label="Selected sensitive information type IDs requiring review">
+                    <strong>@(SensitiveInformationTypes.CurrentState == ProtectionInventoryState.Ready ? "Removed or unavailable selected SIT IDs" : "Unverified selected SIT IDs")</strong>
+                    <ul>
+                        @foreach (var id in UnverifiedSelectedIds)
+                        {
+                            <li>
+                                <code>@(string.IsNullOrWhiteSpace(id) ? "(missing SIT ID)" : id)</code>
+                                @if (CanEdit && HasAvailableBlueprint)
+                                {
+                                    <FluentButton Type="ButtonType.Button" Appearance="Appearance.Stealth"
+                                                  aria-label="@($"Remove selected SIT {(string.IsNullOrWhiteSpace(id) ? "with missing ID" : id)}")"
+                                                  OnClick="@(() => RemoveSensitiveInformationType(id))">Remove</FluentButton>
+                                }
+                            </li>
+                        }
+                    </ul>
+                    <p>These IDs are not silently discarded. Refresh the inventory or explicitly remove them.</p>
+                </div>
+            }
+            @if (OnRefreshSensitiveInformationTypes.HasDelegate)
+            {
+                <FluentButton Type="ButtonType.Button" Appearance="Appearance.Stealth"
+                              Disabled="@(!CanEdit || !HasAvailableBlueprint || SensitiveInformationTypes.CurrentState == ProtectionInventoryState.Loading)"
+                              OnClick="RefreshSensitiveInformationTypes">Refresh sensitive information types</FluentButton>
+            }
+        </fieldset>
+
+        <fieldset class="feature-group" disabled="@(!CanEdit || !HasAvailableBlueprint)" aria-describedby="@Id("policy-help")">
+            <legend>4. Shared Purview policy mode</legend>
+            <p id="@Id("policy-help")">Choose a policy lifecycle mode. This is separate from the legacy Gateway runtime AuditOnly / Enforce setting.</p>
+            <p class="field-help">
+                Microsoft Graph processContent reports restrictAccess, not a documented custom policy-tip payload.
+                Native custom-app policy tips are not promised.
+            </p>
+            @foreach (var mode in Enum.GetValues<PurviewPolicyMode>())
+            {
+                <label class="checkbox-label">
+                    <input type="radio" name="@Id("policy-mode")" value="@mode" checked="@(selection.PolicyMode == mode)"
+                           @onchange="() => ChangePolicyMode(mode)" />
+                    <span><strong>@ModeLabel(mode)</strong><span class="field-help">@ModeDescription(mode)</span></span>
+                </label>
+            }
+            <div class="deployment-callout">
+                <strong>Shared policy impact</strong>
+                <span>Creating or changing this policy can affect other agents using this blueprint's Application / Individual scope. Review the exact policy and affected scope before any write.</span>
+            </div>
+        </fieldset>
+    }
+
+    @if (RequiresSharedPolicyAcknowledgment)
+    {
+        <div class="confirm-extra" aria-labelledby="@Id("impact-heading")">
+            <h3 id="@Id("impact-heading")">Existing shared policy change</h3>
+            <p id="@Id("impact-help")">This change affects an existing shared Purview policy, not only this agent. Other agents using the blueprint / Application / Individual scope can be affected.</p>
+            @if (!string.IsNullOrWhiteSpace(SharedPolicyImpact))
+            {
+                <p>@SharedPolicyImpact</p>
+            }
+            <label class="checkbox-label" for="@Id("impact-acknowledgment")">
+                <input id="@Id("impact-acknowledgment")" type="checkbox" checked="@impactAcknowledged"
+                       disabled="@(!CanEdit || ConfigurationErrors.Count > 0)" @onchange="ChangeAcknowledgment"
+                       aria-describedby="@Id("impact-help")" />
+                I understand that these choices change the shared policy and can affect other agents.
+            </label>
+        </div>
+    }
+
+    <div aria-label="Configured choices and reported protection readiness" aria-live="polite">
+        @foreach (var protection in PolicyOnly ? new[] { "Purview" } : new[] { "Prompt Shields", "Purview" })
+        {
+            var isPrompt = protection == "Prompt Shields";
+            var enabled = isPrompt ? selection.PromptShieldsEnabled : selection.PurviewEnabled;
+            var signal = isPrompt ? Readiness?.PromptShields : Readiness?.Purview;
+            var matches = ReadinessMatches(isPrompt);
+            <div class="readiness-panel" aria-label="@($"{protection} readiness")">
+                <div class="readiness-summary"><strong>@protection</strong><StatusPill Value="@ReadinessStatus(isPrompt)" /></div>
+                <dl class="readiness-list">
+                    <div><dt>Configured choice (draft, not saved)</dt><dd>@(enabled ? "On" : "Off")</dd></div>
+                    @if (!isPrompt && enabled)
+                    {
+                        <div><dt>Shared policy mode (draft)</dt><dd>@(selection.PolicyMode is { } mode ? ModeLabel(mode) : "Not selected")</dd></div>
+                        <div><dt>Microsoft Purview mode (draft)</dt><dd>@(selection.ProviderPolicyMode ?? "Not selected")</dd></div>
+                    }
+                    <div><dt>Effective protection (reported, not inferred from the draft)</dt><dd>@EffectiveSummary(signal)</dd></div>
+                </dl>
+                @if (signal is not null && !string.IsNullOrWhiteSpace(signal.Detail))
+                {
+                    <p class="field-help">@signal.Detail</p>
+                }
+                @if (!matches && Readiness is not null)
+                {
+                    <p class="readiness-blockers">The report applies to previous choices. These draft choices need a new readiness check.</p>
+                }
+                @if (!isPrompt && enabled && selection.PolicyMode is PurviewPolicyMode.SimulationWithPolicyTips or PurviewPolicyMode.SilentSimulation)
+                {
+                    <p class="field-help">Simulation readiness checks evaluation and reporting, not actual blocking. Simulation does not enforce the policy.</p>
+                }
+                @if (!isPrompt && enabled && selection.PolicyMode == PurviewPolicyMode.CreateButLeaveOff)
+                {
+                    <p class="field-help">Configured off (draft): the shared policy is disabled, not enforced-ready. Readiness does not mean enforcement.</p>
+                }
+                <p class="field-help">Configured does not mean effective. Pending changes, failed checks, or missing readiness evidence must be resolved separately.</p>
+            </div>
+        }
+    </div>
+
+    @if (ValidationErrors.Count > 0)
+    {
+        <div class="validation-summary-errors" role="alert" aria-label="Protection choices need attention">
+            <strong>Review before continuing</strong>
+            <ul>
+                @foreach (var error in ValidationErrors)
+                {
+                    <li>@error</li>
+                }
+            </ul>
+        </div>
+    }
+    <p class="field-help">Protection choices can be edited after registration. Review and confirmation are required before shared-policy changes; configured choices alone do not prove effective protection.</p>
+    @if (OnReview.HasDelegate)
+    {
+        <div class="form-actions">
+            <FluentButton Type="ButtonType.Button" Appearance="Appearance.Accent" Disabled="@(!CanContinue)"
+                          OnClick="Review">Review protection choices</FluentButton>
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public AgentProtectionSelection Value { get; set; } = new();
+    [Parameter] public EventCallback<AgentProtectionSelection> ValueChanged { get; set; }
+    [Parameter] public EventCallback<bool> PromptShieldsChoiceChanged { get; set; }
+    [Parameter] public ProtectionInventory<AgentProtectionBlueprint> Blueprints { get; set; } = new();
+    [Parameter] public ProtectionInventory<AgentProtectionSensitiveInformationType> SensitiveInformationTypes { get; set; } = new();
+    [Parameter] public AgentProtectionReadiness? Readiness { get; set; }
+    [Parameter] public bool IsAdministrator { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public bool LockBlueprintSelection { get; set; }
+    [Parameter] public string? DeferredBlueprintName { get; set; }
+    [Parameter] public bool PolicyOnly { get; set; }
+    [Parameter] public bool PromptShieldsAvailable { get; set; } = true;
+    [Parameter] public bool PurviewAvailable { get; set; } = true;
+    [Parameter] public IReadOnlyList<string> AdditionalValidationErrors { get; set; } = [];
+    [Parameter] public bool AllowThresholdEditing { get; set; }
+    [Parameter] public bool RequireExplicitThresholds { get; set; }
+    [Parameter] public bool RequiresSharedPolicyAcknowledgment { get; set; }
+    [Parameter] public string? SharedPolicyImpact { get; set; }
+    [Parameter] public string? SharedPolicyReviewKey { get; set; }
+    [Parameter] public EventCallback<bool> CanContinueChanged { get; set; }
+    [Parameter] public EventCallback<AgentProtectionReview> OnReview { get; set; }
+    [Parameter] public EventCallback OnRefreshBlueprints { get; set; }
+    [Parameter] public EventCallback OnRefreshSensitiveInformationTypes { get; set; }
+
+    public bool CanContinue => CanEdit && ValidationErrors.Count == 0;
+    public bool SharedPolicyImpactAcknowledged => impactAcknowledged;
+    public IReadOnlyList<string> ValidationErrors => RequiresSharedPolicyAcknowledgment && !impactAcknowledged
+        ? [.. ConfigurationErrors, "Acknowledge the impact of changing the existing shared policy."]
+        : ConfigurationErrors;
+
+    private readonly string instanceId = $"agent-protection-{Guid.NewGuid():N}";
+    private AgentProtectionSelection selection = new();
+    private AgentProtectionSelection? lastValue;
+    private string? lastReviewKey;
+    private string? lastImpact;
+    private bool lastRequiresAcknowledgment;
+    private bool impactAcknowledged;
+    private bool? lastCanContinue;
+    private string search = string.Empty;
+    private readonly Dictionary<string, string> thresholdInputErrors = new();
+
+    private string Id(string suffix) => $"{instanceId}-{suffix}";
+    private bool CanEdit => IsAdministrator && !Busy;
+    private bool HasAvailableBlueprint => !string.IsNullOrWhiteSpace(DeferredBlueprintName) || Blueprints.CurrentState == ProtectionInventoryState.Ready &&
+        selection.BlueprintId is { } id && id != Guid.Empty && Blueprints.Items.Any(item => item.Id == id);
+    private IReadOnlyList<string> ConfigurationErrors =>
+        [.. selection.Validate(Blueprints, SensitiveInformationTypes, !string.IsNullOrWhiteSpace(DeferredBlueprintName)),
+         .. AdditionalValidationErrors,
+         .. ThresholdValidationErrors,
+         .. (selection.PurviewEnabled ? thresholdInputErrors.Values : Enumerable.Empty<string>())];
+    private IReadOnlyList<string> ThresholdValidationErrors
+    {
+        get
+        {
+            if (!AllowThresholdEditing || !selection.PurviewEnabled || AdditionalValidationErrors.Count > 0) return [];
+            if (selection.SensitiveInformationTypeIds.Any(id => !AgentProtectionUiMapping.HasValidSuppliedThresholds(selection.ThresholdsFor(id))))
+                return ["Use positive counts (-1 means Any for the maximum) and ordered confidence bounds from 1 to 100."];
+            return RequireExplicitThresholds && selection.SensitiveInformationTypeIds.Any(id => !AgentProtectionUiMapping.HasExplicitThresholds(selection.ThresholdsFor(id)))
+                ? ["Enter all four threshold values for every selected SIT before reviewing an existing policy change."] : [];
+        }
+    }
+    private IReadOnlyList<AgentProtectionSensitiveInformationType> FilteredSensitiveInformationTypes =>
+        SensitiveInformationTypes.Items.Where(item =>
+            item.DisplayName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+            item.Id.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+            (item.Description?.Contains(search, StringComparison.OrdinalIgnoreCase) ?? false)).ToArray();
+    private IReadOnlyList<string> UnverifiedSelectedIds => selection.SensitiveInformationTypeIds.Where(id =>
+        string.IsNullOrWhiteSpace(id) || SensitiveInformationTypes.CurrentState != ProtectionInventoryState.Ready ||
+        !SensitiveInformationTypes.Items.Any(item => string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase))).ToArray();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (lastValue is null || !Value.HasSameChoices(lastValue))
+        {
+            if (!selection.HasSamePolicyChoices(Value))
+            {
+                impactAcknowledged = false;
+            }
+            if (!selection.HasSameChoices(Value)) thresholdInputErrors.Clear();
+            selection = Value.Snapshot();
+            lastValue = Value.Snapshot();
+        }
+        if (!IsAdministrator || ConfigurationErrors.Count > 0 ||
+            RequiresSharedPolicyAcknowledgment != lastRequiresAcknowledgment ||
+            SharedPolicyReviewKey != lastReviewKey || SharedPolicyImpact != lastImpact)
+        {
+            impactAcknowledged = false;
+        }
+        lastRequiresAcknowledgment = RequiresSharedPolicyAcknowledgment;
+        lastReviewKey = SharedPolicyReviewKey;
+        lastImpact = SharedPolicyImpact;
+        await NotifyCanContinue();
+    }
+
+    private async Task UpdateSelection(AgentProtectionSelection updated)
+    {
+        if (!selection.HasSamePolicyChoices(updated))
+        {
+            impactAcknowledged = false;
+        }
+        selection = updated.Snapshot();
+        await ValueChanged.InvokeAsync(selection.Snapshot());
+        await NotifyCanContinue();
+    }
+
+    private Task ChangeBlueprint(ChangeEventArgs args)
+    {
+        if (!CanEdit || LockBlueprintSelection || Blueprints.CurrentState != ProtectionInventoryState.Ready)
+        {
+            return Task.CompletedTask;
+        }
+        var id = Guid.TryParse(args.Value?.ToString(), out var parsed) ? parsed : (Guid?)null;
+        if (id is not null && !Blueprints.Items.Any(item => item.Id == id))
+        {
+            return Task.CompletedTask;
+        }
+        return UpdateSelection(selection with { BlueprintId = id });
+    }
+
+    private async Task ChangePromptShields(bool enabled)
+    {
+        if (!CanEdit || !HasAvailableBlueprint || enabled && !PromptShieldsAvailable) return;
+        await PromptShieldsChoiceChanged.InvokeAsync(enabled);
+        await UpdateSelection(selection with { PromptShieldsEnabled = enabled });
+    }
+
+    private Task ChangePurview(bool enabled) => CanEdit && HasAvailableBlueprint && (!enabled || PurviewAvailable)
+        ? UpdateSelection(selection with { PurviewEnabled = enabled })
+        : Task.CompletedTask;
+
+    private void ChangeSearch(ChangeEventArgs args)
+    {
+        if (CanEdit && HasAvailableBlueprint && SensitiveInformationTypes.CurrentState == ProtectionInventoryState.Ready)
+        {
+            search = args.Value?.ToString()?.Trim() ?? string.Empty;
+        }
+    }
+
+    private bool IsSelected(string id) => selection.SensitiveInformationTypeIds.Contains(id, StringComparer.OrdinalIgnoreCase);
+
+    private Task ChangeSensitiveInformationType(string id, bool selected)
+    {
+        if (!CanEdit || !HasAvailableBlueprint || !selection.PurviewEnabled || string.IsNullOrWhiteSpace(id) ||
+            SensitiveInformationTypes.CurrentState != ProtectionInventoryState.Ready ||
+            !SensitiveInformationTypes.Items.Any(item => string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase)))
+        {
+            return Task.CompletedTask;
+        }
+        if (!selected) ClearThresholdInputErrors(id);
+        return UpdateSelection(selection with
+        {
+            SensitiveInformationTypeIds = selected
+                ? selection.SensitiveInformationTypeIds.Append(id).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+                : selection.SensitiveInformationTypeIds.Where(existing => !string.Equals(existing, id, StringComparison.OrdinalIgnoreCase)).ToArray()
+        });
+    }
+
+    private Task RemoveSensitiveInformationType(string id)
+    {
+        if (!CanEdit || !HasAvailableBlueprint) return Task.CompletedTask;
+        ClearThresholdInputErrors(id);
+        return UpdateSelection(selection with
+        {
+            SensitiveInformationTypeIds = selection.SensitiveInformationTypeIds
+                .Where(existing => !string.Equals(existing, id, StringComparison.OrdinalIgnoreCase)).ToArray()
+        });
+    }
+
+    private void ClearThresholdInputErrors(string id)
+    {
+        foreach (var key in thresholdInputErrors.Keys.Where(key => key.StartsWith($"{id}:", StringComparison.OrdinalIgnoreCase)).ToArray())
+            thresholdInputErrors.Remove(key);
+    }
+
+    private Task ChangePolicyMode(PurviewPolicyMode mode) => CanEdit && HasAvailableBlueprint
+        ? UpdateSelection(selection with { PolicyMode = mode })
+        : Task.CompletedTask;
+
+    private async Task ChangeThreshold(string id, string field, ChangeEventArgs args)
+    {
+        if (!AllowThresholdEditing || !CanEdit || !HasAvailableBlueprint || !selection.PurviewEnabled ||
+            SensitiveInformationTypes.CurrentState != ProtectionInventoryState.Ready || !IsSelected(id)) return;
+        var text = args.Value?.ToString();
+        int? value = null;
+        var errorKey = $"{id}:{field}";
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            if (!int.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+            {
+                thresholdInputErrors[errorKey] = $"Enter a whole number for {ThresholdLabel(field)}.";
+                await NotifyCanContinue();
+                return;
+            }
+            value = parsed;
+        }
+        thresholdInputErrors.Remove(errorKey);
+        var current = selection.ThresholdsFor(id) ?? new();
+        var updated = field switch
+        {
+            "MinCount" => current with { MinCount = value },
+            "MaxCount" => current with { MaxCount = value },
+            "MinConfidence" => current with { MinConfidence = value },
+            "MaxConfidence" => current with { MaxConfidence = value },
+            _ => current
+        };
+        var thresholds = new Dictionary<string, AgentProtectionSitThresholds>(selection.SensitiveInformationTypeThresholds, StringComparer.OrdinalIgnoreCase)
+        {
+            [id] = updated
+        };
+        await UpdateSelection(selection with { SensitiveInformationTypeThresholds = thresholds });
+    }
+
+    private static int? ThresholdFieldValue(AgentProtectionSitThresholds? value, string field) => field switch
+    {
+        "MinCount" => value?.MinCount,
+        "MaxCount" => value?.MaxCount,
+        "MinConfidence" => value?.MinConfidence,
+        "MaxConfidence" => value?.MaxConfidence,
+        _ => null
+    };
+
+    private static string ThresholdLabel(string field) => field switch
+    {
+        "MinCount" => "Minimum count",
+        "MaxCount" => "Maximum count (-1 means Any)",
+        "MinConfidence" => "Minimum confidence",
+        "MaxConfidence" => "Maximum confidence",
+        _ => "Threshold"
+    };
+
+    private async Task ChangeAcknowledgment(ChangeEventArgs args)
+    {
+        if (!CanEdit || !RequiresSharedPolicyAcknowledgment || ConfigurationErrors.Count > 0)
+        {
+            return;
+        }
+        impactAcknowledged = args.Value is true;
+        await NotifyCanContinue();
+    }
+
+    private async Task NotifyCanContinue()
+    {
+        if (!CanContinueChanged.HasDelegate)
+        {
+            return;
+        }
+        var current = CanContinue;
+        if (lastCanContinue != current)
+        {
+            lastCanContinue = current;
+            await CanContinueChanged.InvokeAsync(current);
+        }
+    }
+
+    private async Task Review()
+    {
+        // Re-evaluate at the action boundary, including inventory expiration and authorization.
+        await NotifyCanContinue();
+        if (CanContinue)
+        {
+            await OnReview.InvokeAsync(new AgentProtectionReview(selection.Snapshot(), impactAcknowledged, SharedPolicyReviewKey));
+        }
+    }
+
+    private Task RefreshBlueprints() => CanEdit && Blueprints.CurrentState != ProtectionInventoryState.Loading
+        ? OnRefreshBlueprints.InvokeAsync() : Task.CompletedTask;
+
+    private Task RefreshSensitiveInformationTypes() => CanEdit && HasAvailableBlueprint &&
+        SensitiveInformationTypes.CurrentState != ProtectionInventoryState.Loading
+        ? OnRefreshSensitiveInformationTypes.InvokeAsync() : Task.CompletedTask;
+
+    private bool ReadinessMatches(bool prompt) => Readiness is not null &&
+        (prompt ? selection.BlueprintId == Readiness.AssessedSelection.BlueprintId &&
+                  selection.PromptShieldsEnabled == Readiness.AssessedSelection.PromptShieldsEnabled
+                : selection.HasSamePolicyChoices(Readiness.AssessedSelection));
+
+    private string ReadinessStatus(bool prompt)
+    {
+        var signal = prompt ? Readiness?.PromptShields : Readiness?.Purview;
+        if (ReadinessMatches(prompt) && signal?.State == AgentProtectionReadinessState.Unavailable)
+            return "Unavailable";
+        if (!ReadinessMatches(prompt) || !HasAvailableBlueprint ||
+            (!prompt && selection.PurviewEnabled && ConfigurationErrors.Count > 0))
+        {
+            return "Unverified";
+        }
+        return signal?.State switch
+        {
+            AgentProtectionReadinessState.ConfiguredSimulation => "Configured simulation",
+            AgentProtectionReadinessState.ConfiguredOff => "Configured off",
+            AgentProtectionReadinessState.Ready when !prompt &&
+                (!selection.PurviewEnabled || selection.PolicyMode == PurviewPolicyMode.CreateButLeaveOff) => "Configured off",
+            AgentProtectionReadinessState.Ready when !prompt &&
+                selection.PolicyMode is PurviewPolicyMode.SimulationWithPolicyTips or PurviewPolicyMode.SilentSimulation => "Simulation ready",
+            AgentProtectionReadinessState.Ready => "Ready",
+            AgentProtectionReadinessState.Pending => "Pending",
+            AgentProtectionReadinessState.Unavailable => "Unavailable",
+            AgentProtectionReadinessState.Error => "Failed",
+            _ => "Unverified"
+        };
+    }
+
+    private static string EffectiveSummary(AgentProtectionReadinessSignal? signal) =>
+        string.IsNullOrWhiteSpace(signal?.EffectiveSummary) ? "Unknown — not checked" : signal.EffectiveSummary;
+
+    private static string ThresholdValue(int? value) => value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unspecified";
+
+    private static string InventoryMessage(ProtectionInventoryState state, int count, string noun) => state switch
+    {
+        ProtectionInventoryState.Loading => $"Loading {noun} inventory. Selections are retained but cannot be verified yet.",
+        ProtectionInventoryState.Unavailable => $"{noun} inventory is unavailable. This is not an empty inventory; retry loading it.",
+        ProtectionInventoryState.Stale => $"{noun} inventory is stale. Refresh it before continuing; selections are retained.",
+        ProtectionInventoryState.Ready when count == 0 => $"The current inventory returned no {noun}.",
+        ProtectionInventoryState.Ready => $"{count} {noun} in the current inventory.",
+        _ => $"{noun} inventory has not been loaded. No successful empty result is being claimed."
+    };
+
+    private static string ModeLabel(PurviewPolicyMode mode) => mode switch
+    {
+        PurviewPolicyMode.Enforce => "Enforce",
+        PurviewPolicyMode.SimulationWithPolicyTips => "Simulation with policy tips",
+        PurviewPolicyMode.SilentSimulation => "Silent simulation",
+        PurviewPolicyMode.CreateButLeaveOff => "Create policy but leave off",
+        _ => "Not selected"
+    };
+
+    private static string ModeDescription(PurviewPolicyMode mode) => mode switch
+    {
+        PurviewPolicyMode.Enforce => "Enforce the shared policy once it is applied and verified ready.",
+        PurviewPolicyMode.SimulationWithPolicyTips => "Evaluate without policy enforcement, with notifications/policy tips where supported by Microsoft Purview and the application.",
+        PurviewPolicyMode.SilentSimulation => "Evaluate without policy enforcement or policy tips.",
+        PurviewPolicyMode.CreateButLeaveOff => "Create the shared policy disabled. It will not evaluate or enforce until activated separately.",
+        _ => string.Empty
+    };
+}

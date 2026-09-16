@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseAppHost>true</UseAppHost>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(PurviewPowerShellReferencePath)' == ''">
+    <PackageReference Include="System.Management.Automation" Version="[7.6.5]" IncludeAssets="compile" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(PurviewPowerShellReferencePath)' != ''">
+    <Reference Include="System.Management.Automation">
+      <HintPath>$(PurviewPowerShellReferencePath)\System.Management.Automation.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Gateway.Purview\PurviewChildInvocation.cs" Link="PurviewChildInvocation.cs" />
+    <Compile Include="..\Gateway.Purview\PurviewRuntimeManifest.cs" Link="PurviewRuntimeManifest.cs" />
+  </ItemGroup>
+</Project>

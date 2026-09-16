@@ -1,0 +1,58 @@
+<section class="readiness-panel" aria-label="Saved runtime test report" aria-live="polite">
+    <div class="readiness-summary">
+        <strong>Historical runtime test receipt</strong>
+        <StatusPill Value="@Report.Status" />
+    </div>
+    <p><strong>@OutcomeLabel</strong></p>
+    <p>This is an immutable historical receipt, not current enforcement readiness. Approved sample behavior in effective policy scope only; matched-SIT and rule attribution are unavailable. Refresh the saved profile to determine current readiness. This receipt does not prove unsaved choices, a different configuration, or evidence beyond its validity window.</p>
+    <dl class="readiness-list">
+        <div><dt>Operation</dt><dd><code>@Report.OperationId</code></dd></div>
+        <div><dt>Completed</dt><dd>@(Report.CompletedAtUtc?.ToString("u") ?? "Not completed")</dd></div>
+        <div><dt>Policy mode</dt><dd>@AgentProtectionUiMapping.PolicyLabel(Report.PolicyMode)</dd></div>
+        <div><dt>Configuration fingerprint</dt><dd><code>@Report.ConfigurationFingerprint</code></dd></div>
+        <div><dt>Frozen suite hash</dt><dd><code>@Report.SuiteHash</code></dd></div>
+        <div><dt>Profile version</dt><dd><code>@Report.ProfileRowVersion</code></dd></div>
+        <div><dt>Outstanding intended-SIT examples</dt><dd>@Report.OutstandingSensitiveInformationTypeIds.Count</dd></div>
+    </dl>
+    <table class="data-table">
+        <caption>Backend observations, not browser verdicts</caption>
+        <thead><tr><th>Case</th><th>Intended SIT association</th><th>Decision</th><th>Processing</th><th>Action source</th></tr></thead>
+        <tbody>
+            @foreach (var item in Report.Cases)
+            {
+                <tr>
+                    <td><code>@item.CaseId</code></td>
+                    <td>@(item.IntendedSensitiveInformationTypeId?.ToString("D") ?? "Clean negative")</td>
+                    <td>@item.ObservedDecision</td><td>@item.ContentProcessing</td><td>@item.ActionSource</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    @if (Report.Cases.Any(item => item.ActionSource == "ProtectionScope"))
+    {
+        <p class="readiness-blockers">A protection-scope block is not evidence that an approved sample was processed or a selected SIT was detected.</p>
+    }
+    @if (Report.Cases.Any(item => item.ContentProcessing is "MetadataOnly" or "SubmittedWithoutDecision"))
+    {
+        <p class="readiness-blockers">Submission without an inline decision is not classifier verification.</p>
+    }
+    @if (Report.FailureCode is not null)
+    {
+        <p class="readiness-blockers">Reported failure: <code>@Report.FailureCode</code>. Recover the safe report or obtain a fresh review; never replay sample content automatically.</p>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public PurviewRuntimeTestResultResponse Report { get; set; } = default!;
+    private string OutcomeLabel => Report.Outcome switch
+    {
+        "Partial" => "Partial coverage — more approved examples are outstanding",
+        "EnforcementBehaviorVerified" => "Approved sample behavior verified in effective policy scope",
+        "SimulationExercised" => "Simulation exercised — no blocking requirement",
+        "SubmissionAccepted" => "Submission accepted — no inline verification claim",
+        "Disabled" => "Policy off — no samples sent",
+        "Failed" => "Test failed — fresh review required",
+        "OutcomeUnknown" => "Outcome unknown — recover the safe report without replay",
+        _ => "Unrecognized report"
+    };
+}

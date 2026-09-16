@@ -16,9 +16,11 @@ info:
     across global, registration, and credential scopes. The process-local in-memory
     implementation is for tests only.
 
-    Scoped idempotency canonical-hashes the typed request and takes an exclusive,
-    transaction-owned SQL application lock for registration + endpoint + key before
-    replay lookup or side effects, holding it through persistence and commit.
+    Data-plane idempotency canonical-hashes the typed request and takes an exclusive,
+    session-owned SQL application lock on an unpooled connection for registration
+    + endpoint + key. Provider/blob I/O occurs before the short commit transaction;
+    acceptance rechecks protection context and receipt consumption under SQL locks.
+    Control-plane idempotency retains its transaction-owned lock boundary.
 
     For Entra child Agent Identity telemetry, the Gateway emits the child client ID
     as gen_ai.agent.id and the selected blueprint client ID as
@@ -26,10 +28,16 @@ info:
     microsoft.a365.agent.platform.id. Agent 365 OTLP HTTP 200 proves endpoint
     acceptance only, not downstream CloudAppEvents landing.
 
-    Protection capability rows are materialized only at verified runtime startup
-    from bootstrap's complete exact 19-key, ownership/source/time-bound attestation.
-    Synchronization is SQL application-locked and transactional. It does not imply
+    Initial protection capability rows use bootstrap's complete exact 19-key,
+    ownership/source/time-bound attestation. Synchronization is SQL application-
+    locked and transactional. A separate capability-preparation path requires
+    matching authorization and receipt/history continuity; original bootstrap
+    configuration cannot overwrite an upgraded projection. Neither path implies
     policy, propagation, token-role, or runtime-verdict readiness.
+
+    This document describes retained source behavior. Deployment and test acceptance
+    are recorded only in [MILESTONES.md](../../MILESTONES.md); no historical result
+    establishes the state of an environment after the supporting-resource reset.
   version: 0.1.0-beta.2
   contact:
     name: Gateway Admin
@@ -101,6 +109,11 @@ paths:
         API paths.
 
         Gateway API designed for this solution, not a Microsoft API.
+
+        Optional purviewConfigurationIntent carries explicit reviewed and confirmed
+        policy consent. A deferred new-blueprint intent binds one external agent
+        and blueprint display name; configuration progress is returned separately
+        from effective protection readiness.
       tags: [Agents]
       security:
         - entraBearer: [Gateway.Administrator]
@@ -244,7 +257,8 @@ paths:
       description: |
         Compatibility-only inventory for older clients. New clients use
         /protection/purview/dlp-profiles and the independent Know Your Data route.
-        Registration never authors policy as a side effect.
+        New registration/configuration workflows can carry explicit reviewed and
+        confirmed policy intent; this legacy inventory does not authorize mutation.
       tags: [Configuration]
       security:
         - entraBearer: [Gateway.Administrator]
@@ -701,7 +715,11 @@ paths:
       - $ref: '#/components/parameters/PurviewDlpProfileId'
     post:
       operationId: reviewValidatePurviewDlpProfileRuntime
-      summary: Review a bounded synthetic runtime readiness check
+      summary: Reject legacy runtime validation without approved samples
+      deprecated: true
+      description: |
+        Retained route; valid requests return 422 PURVIEW_RUNTIME_SAMPLES_REQUIRED.
+        Use :review-runtime-test, operation-reviews:confirm, and :test-runtime.
       tags: [Protection administration]
       security:
         - entraBearer: [Gateway.Administrator]
@@ -714,8 +732,8 @@ paths:
             schema:
               $ref: '#/components/schemas/ReviewValidatePurviewDlpRuntimeRequest'
       responses:
-        '200':
-          $ref: '#/components/responses/ProtectionOperationReviewed'
+        '422':
+          $ref: '#/components/responses/PurviewRuntimeSamplesRequired'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -730,7 +748,11 @@ paths:
       - $ref: '#/components/parameters/PurviewDlpProfileId'
     post:
       operationId: validatePurviewDlpProfileRuntime
-      summary: Start a confirmed bounded runtime readiness check
+      summary: Reject legacy runtime execution without approved samples
+      deprecated: true
+      description: |
+        Retained route; valid requests return 422 PURVIEW_RUNTIME_SAMPLES_REQUIRED.
+        Use the explicit sample review, confirmation, and :test-runtime workflow.
       tags: [Protection administration]
       security:
         - entraBearer: [Gateway.Administrator]
@@ -744,14 +766,144 @@ paths:
             schema:
               $ref: '#/components/schemas/ConfirmProtectionAdminOperationRequest'
       responses:
-        '202':
-          $ref: '#/components/responses/ProtectionOperationAccepted'
+        '422':
+          $ref: '#/components/responses/PurviewRuntimeSamplesRequired'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/ConcurrencyConflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/dlp-profiles/{profileId}:review-runtime-test:
+    parameters:
+      - $ref: '#/components/parameters/PurviewDlpProfileId'
+    post:
+      operationId: reviewPurviewDlpRuntimeTest
+      summary: Review an explicit synthetic sample suite and execution batch
+      description: |
+        HTTPS only. Requires application/json, rejects unknown JSON properties,
+        and bounds the body to 1 MiB and depth 12. Reviews hashes and byte lengths,
+        never raw samples. The server selects and binds the active test registration,
+        child identity, shared policy, inventory, thresholds, and context versions.
+        Confirm the returned token with /protection/operation-reviews:confirm.
+        Disabled policies cannot be runtime-tested.
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewPurviewDlpRuntimeTestRequest'
+      responses:
+        '200':
+          description: One-time review token and exact bound sample/context summary
+          headers:
+            Cache-Control:
+              schema: {type: string, enum: [no-store]}
+            Pragma:
+              schema: {type: string, enum: [no-cache]}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurviewRuntimeTestReviewResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '412':
+          $ref: '#/components/responses/PurviewRuntimeContextChanged'
+        '422':
+          $ref: '#/components/responses/PurviewRuntimeInvalid'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/purview/dlp-profiles/{profileId}:test-runtime:
+    parameters:
+      - $ref: '#/components/parameters/PurviewDlpProfileId'
+    post:
+      operationId: executePurviewDlpRuntimeTest
+      summary: Execute the confirmed synthetic sample batch
+      description: |
+        HTTPS and application/json only; body limit 1 MiB, depth 12, no unknown
+        properties. Requires exact approved content for the selected positive
+        cases plus the negative case. Raw samples remain ephemeral; persisted
+        operation state and responses contain safe metadata and observations.
+        HTTP 200 is a structured result, not proof of enforcement. After an
+        interrupted response read /protection/runtime-tests/{operationId}; do not
+        automatically resubmit samples or repeat uncertain provider work.
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      parameters:
+        - $ref: '#/components/parameters/ProtectionIdempotencyKey'
+        - $ref: '#/components/parameters/ProtectionIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecutePurviewDlpRuntimeTestRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/PurviewRuntimeTestResult'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/ConcurrencyConflict'
+        '410':
+          description: Reviewed authorization expired; obtain a fresh review
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '412':
+          $ref: '#/components/responses/PurviewRuntimeContextChanged'
+        '422':
+          $ref: '#/components/responses/PurviewRuntimeInvalid'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /protection/runtime-tests/{operationId}:
+    parameters:
+      - $ref: '#/components/parameters/ProtectionOperationId'
+    get:
+      operationId: getPurviewDlpRuntimeTest
+      summary: Read or recover the approved runtime-test result
+      description: |
+        HTTPS only; tenant- and administrator-bound safe result. Expired Running
+        work is recovered under execution locks without resubmitting raw samples.
+        A historical result does not establish current profile readiness.
+      tags: [Protection administration]
+      security:
+        - entraBearer: [Gateway.Administrator]
+      responses:
+        '200':
+          $ref: '#/components/responses/PurviewRuntimeTestResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
 
@@ -766,7 +918,7 @@ paths:
         - entraBearer: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
       responses:
         '200':
-          description: Tenant-bound operation and its ordered version-1 steps
+          description: Tenant-bound operation with ordered version-1 steps or runtime-test result metadata
           headers:
             ETag:
               schema:
@@ -844,11 +996,26 @@ paths:
       description: |
         Protection changes are idempotent and concurrency-bound: idempotencyKey and
         expectedRowVersion must be present and match canonical Idempotency-Key and
-        If-Match headers. Purview enablement additionally requires the exact Ready,
-        current DLP profile for the registration blueprint.
+        If-Match headers. Purview configuration can select a compatible existing
+        profile or carry explicit reviewed purviewConfigurationIntent. Requested
+        configuration and its operation status do not establish effective readiness.
       tags: [Agents]
       security:
         - entraBearer: [Gateway.Administrator]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Required for protection feature mutations; canonical UUIDv4 matching body idempotencyKey.
+          schema:
+            type: string
+            format: uuid
+        - name: If-Match
+          in: header
+          required: false
+          description: Required for protection feature mutations; matches body expectedRowVersion for the registration.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -1957,6 +2124,20 @@ components:
           type: string
           readOnly: true
           nullable: true
+        purviewPolicyMode:
+          readOnly: true
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewPolicyMode'
+        purviewConfigurationOperationId:
+          type: string
+          format: uuid
+          readOnly: true
+          nullable: true
+        purviewConfigurationStatus:
+          type: string
+          readOnly: true
+          nullable: true
 
     Agent365Info:
       type: object
@@ -2318,6 +2499,12 @@ components:
 
     PurviewSensitiveInformationTypeSelection:
       type: object
+      description: |
+        Exact inventory selection. DLP count/confidence bounds apply independently
+        per SIT and are OR-combined, never summed across selected SITs. New-profile
+        review fills omissions with 1, -1, 75, 100. Existing-profile omissions
+        require proven readback thresholds; unverified legacy thresholds require
+        an explicit full replacement reviewed with shared-policy acknowledgment.
       required: [inventoryGenerationId, sensitiveInformationTypeId, exactName]
       properties:
         inventoryGenerationId:
@@ -2330,6 +2517,28 @@ components:
           type: string
           minLength: 1
           maxLength: 255
+        minCount:
+          type: integer
+          minimum: 1
+          nullable: true
+        maxCount:
+          type: integer
+          nullable: true
+          description: -1 means Any upper count; otherwise must be at least minCount.
+          oneOf:
+            - enum: [-1]
+            - minimum: 1
+        minConfidence:
+          type: integer
+          minimum: 1
+          maximum: 100
+          nullable: true
+        maxConfidence:
+          type: integer
+          minimum: 1
+          maximum: 100
+          nullable: true
+          description: Must be at least minConfidence; both bounds are inclusive.
 
     PurviewSensitiveInformationTypeListResponse:
       type: object
@@ -2527,6 +2736,55 @@ components:
           format: date-time
           nullable: true
 
+    PurviewPolicyMode:
+      type: string
+      enum: [Enforce, SimulationWithTips, SimulationWithoutTips, Disabled]
+      description: |
+        Enforce requires legacy mode Enforce; every other policy mode requires
+        AuditOnly. An omitted policyMode maps AuditOnly to SimulationWithoutTips.
+        Simulation does not itself prove a native policy tip or enforced blocking.
+
+    PurviewConfigurationIntent:
+      type: object
+      description: |
+        Explicit single-use authorization from the reviewed and confirmed DLP
+        configuration operation. Its row version belongs to the reviewed policy
+        operation; a feature update also has its own registration concurrency
+        fields. A deferred new-blueprint intent can bind only its reviewed
+        externalAgentId and blueprint displayName. Do not combine configuration
+        intent with an existing profile selection. Deferred work remains
+        AwaitingBlueprint until the exact new registration is Active.
+      required: [confirmationTokenId, confirmationToken, idempotencyKey, expectedRowVersion]
+      properties:
+        confirmationTokenId:
+          type: string
+          format: uuid
+        confirmationToken:
+          type: string
+          writeOnly: true
+        idempotencyKey:
+          type: string
+          format: uuid
+        expectedRowVersion:
+          type: string
+
+    PurviewDeferredBlueprint:
+      type: object
+      description: |
+        Consent for exactly one new registration and blueprint. DLP review requires
+        blueprintApplicationId to be the empty GUID and profileId to be absent/null.
+        Policy configuration waits until that registration resolves the new blueprint.
+      required: [externalAgentId, displayName]
+      properties:
+        externalAgentId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+
     PurviewDlpProfile:
       type: object
       required: [id, blueprintApplicationId, displayName, sensitiveInformationTypeId, sensitiveInformationTypeName, mode, activities, actions, status, readiness, rowVersion]
@@ -2556,7 +2814,7 @@ components:
             $ref: '#/components/schemas/PurviewDlpRuleAction'
         status:
           type: string
-          enum: [Draft, ReviewRequired, Pending, PendingPropagation, VerificationFailed, Ready]
+          enum: [Draft, ReviewRequired, Pending, PendingPropagation, VerificationFailed, Ready, SimulationReady, Disabled]
         readiness:
           $ref: '#/components/schemas/ProtectionReadiness'
         dlpPolicyProviderId:
@@ -2571,6 +2829,23 @@ components:
           nullable: true
         rowVersion:
           type: string
+
+        policyMode:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewPolicyMode'
+        sensitiveInformationTypes:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/PurviewSensitiveInformationTypeSelection'
+        runtimeBehaviorSuiteHash:
+          type: string
+          nullable: true
+        runtimeBehaviorVerifiedUntilUtc:
+          type: string
+          format: date-time
+          nullable: true
 
     PurviewDlpProfileListResponse:
       type: object
@@ -2647,6 +2922,25 @@ components:
         evidenceDigest:
           type: string
           nullable: true
+        policyMode:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewPolicyMode'
+        sensitiveInformationTypes:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/PurviewSensitiveInformationTypeSelection'
+        affectsAllBlueprintAgents:
+          type: boolean
+          description: The reviewed DLP configuration has shared blueprint scope.
+        deferredBlueprint:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewDeferredBlueprint'
+        replacesUnverifiedLegacyThresholds:
+          type: boolean
+          description: Confirmation authorizes replacement of the entire SIT condition with the explicit reviewed thresholds.
 
     ProtectionOperationReviewResponse:
       type: object
@@ -2657,7 +2951,7 @@ components:
           format: uuid
         reviewToken:
           type: string
-          writeOnly: true
+          description: One-time response secret; do not log, cache, or put in a URL.
         reviewedPayloadHash:
           type: string
         expiresAtUtc:
@@ -2678,7 +2972,7 @@ components:
           format: uuid
         confirmationToken:
           type: string
-          writeOnly: true
+          description: One-time response secret; do not log, cache, or put in a URL.
         expiresAtUtc:
           type: string
           format: date-time
@@ -2692,7 +2986,7 @@ components:
           format: uuid
         status:
           type: string
-          enum: [Pending, AwaitingConfirmation, AwaitingAdministrator, Submitted, Running, PendingPropagation, Completed, Failed, RequiresManualIntervention, Cancelled]
+          enum: [Pending, AwaitingConfirmation, AwaitingAdministrator, Submitted, Running, PendingPropagation, Completed, Failed, RequiresManualIntervention, Cancelled, AwaitingBlueprint]
         correlationId:
           type: string
           format: uuid
@@ -2760,7 +3054,7 @@ components:
           type: string
         status:
           type: string
-          enum: [Pending, AwaitingConfirmation, AwaitingAdministrator, Submitted, Running, PendingPropagation, Completed, Failed, RequiresManualIntervention, Cancelled]
+          enum: [Pending, AwaitingConfirmation, AwaitingAdministrator, Submitted, Running, PendingPropagation, Completed, Failed, RequiresManualIntervention, Cancelled, AwaitingBlueprint]
         tenantId:
           type: string
           format: uuid
@@ -2824,12 +3118,17 @@ components:
           format: date-time
         steps:
           type: array
-          minItems: 8
+          description: Queued administration workflows have eight ordered stages; explicit runtime-test operations use runtimeTest and can have no stage rows.
+          minItems: 0
           maxItems: 8
           items:
             $ref: '#/components/schemas/ProtectionAdminOperationStep'
         rowVersion:
           type: string
+        runtimeTest:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewRuntimeTestResultResponse'
 
     ProtectionAdminOperationResponse:
       type: object
@@ -2940,9 +3239,15 @@ components:
       type: object
       description: >-
         DLP actions must contain exactly one UploadText Block rule, and activities
-        must include UploadText. AuditOnly uses policy mode to evaluate without
-        enforcing the rule; only Enforce supports runtime allow/block validation.
-      required: [tenantConnectionId, blueprintApplicationId, displayName, sensitiveInformationType, mode, activities, actions, expectedRowVersion]
+        must include UploadText. Select 1–100 distinct SITs from one current inventory
+        using sensitiveInformationTypes or the legacy singular selection. If both
+        are supplied the singular selection must agree with one list member.
+        Existing profiles require acknowledgeSharedPolicyImpact. New-blueprint
+        consent uses deferredBlueprint, an empty blueprint GUID, and no profileId.
+      required: [tenantConnectionId, blueprintApplicationId, displayName, mode, activities, actions, expectedRowVersion]
+      anyOf:
+        - required: [sensitiveInformationType]
+        - required: [sensitiveInformationTypes]
       properties:
         profileId:
           type: string
@@ -2959,7 +3264,9 @@ components:
           minLength: 1
           maxLength: 120
         sensitiveInformationType:
-          $ref: '#/components/schemas/PurviewSensitiveInformationTypeSelection'
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewSensitiveInformationTypeSelection'
         mode:
           $ref: '#/components/schemas/PurviewMode'
         activities:
@@ -2981,6 +3288,25 @@ components:
                     enum: [Block]
         expectedRowVersion:
           type: string
+        sensitiveInformationTypes:
+          type: array
+          nullable: true
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/PurviewSensitiveInformationTypeSelection'
+        policyMode:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewPolicyMode'
+        acknowledgeSharedPolicyImpact:
+          type: boolean
+          default: false
+          description: Must be true when changing an existing shared blueprint profile.
+        deferredBlueprint:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewDeferredBlueprint'
 
     ReviewReconcilePurviewDlpProfileRequest:
       type: object
@@ -3001,6 +3327,296 @@ components:
           format: uuid
         expectedRowVersion:
           type: string
+
+    PurviewRuntimeTestSampleManifest:
+      type: object
+      additionalProperties: false
+      required: [caseId, contentHash, utf8ByteCount]
+      properties:
+        caseId:
+          type: string
+          format: uuid
+        intendedSensitiveInformationTypeId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Required for a positive case; absent/null for the negative case. This is intent, not provider match attribution.
+        contentHash:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+          description: |
+            SHA-256 of UTF-8 domain A365Gateway.PurviewRuntimeTest.Sample.v1 plus
+            NUL, the decoded 32-byte suite nonce, the four-byte little-endian
+            UTF-8 content length, and the exact UTF-8 content. No normalization.
+        utf8ByteCount:
+          type: integer
+          minimum: 1
+          maximum: 8192
+
+    PurviewRuntimeTestSuiteManifest:
+      type: object
+      additionalProperties: false
+      description: |
+        One distinct positive case per selected SIT and one distinct clean negative
+        case. All case IDs and content hashes must be unique. The same suite can
+        be reviewed in batches while its configuration remains current.
+      required: [suiteNonce, positiveSamples, negativeSample]
+      properties:
+        suiteNonce:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        positiveSamples:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/PurviewRuntimeTestSampleManifest'
+        negativeSample:
+          $ref: '#/components/schemas/PurviewRuntimeTestSampleManifest'
+
+    PurviewRuntimeTestSampleContent:
+      type: object
+      additionalProperties: false
+      required: [caseId, content]
+      description: Ephemeral TLS request body; never persist or log content or put it in a URL.
+      properties:
+        caseId:
+          type: string
+          format: uuid
+        content:
+          type: string
+          minLength: 1
+          maxLength: 8192
+          writeOnly: true
+          description: Exact reviewed content, additionally bounded to 8192 UTF-8 bytes.
+
+    ReviewPurviewDlpRuntimeTestRequest:
+      type: object
+      additionalProperties: false
+      required: [profileId, expectedRowVersion, inventoryGenerationId, suite, positiveCaseIds, acknowledgeSyntheticData]
+      properties:
+        profileId:
+          type: string
+          format: uuid
+          description: Must match the route profileId.
+        expectedRowVersion:
+          type: string
+          description: Current profile row version; must match If-Match.
+        inventoryGenerationId:
+          type: string
+          format: uuid
+        suite:
+          $ref: '#/components/schemas/PurviewRuntimeTestSuiteManifest'
+        positiveCaseIds:
+          type: array
+          minItems: 1
+          maxItems: 8
+          uniqueItems: true
+          description: Positive cases in this batch; their bytes plus the negative case must total at most 65536.
+          items:
+            type: string
+            format: uuid
+        acknowledgeSyntheticData:
+          type: boolean
+          enum: [true]
+
+    ExecutePurviewDlpRuntimeTestRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmationTokenId, confirmationToken, idempotencyKey, expectedRowVersion, samples]
+      properties:
+        confirmationTokenId:
+          type: string
+          format: uuid
+        confirmationToken:
+          type: string
+          minLength: 1
+          maxLength: 262144
+          writeOnly: true
+        idempotencyKey:
+          type: string
+          format: uuid
+          description: Canonical UUIDv4 matching Idempotency-Key.
+        expectedRowVersion:
+          type: string
+          description: Reviewed profile row version; must match If-Match.
+        samples:
+          type: array
+          minItems: 2
+          maxItems: 9
+          description: Exactly the reviewed batch positives plus negative; unique case IDs and at most 65536 UTF-8 bytes total.
+          items:
+            $ref: '#/components/schemas/PurviewRuntimeTestSampleContent'
+
+    PurviewRuntimeTestLimits:
+      type: object
+      required: [maximumPositiveSamplesPerBatch, maximumUtf8BytesPerSample, maximumUtf8BytesPerBatch, executionDeadlineSeconds]
+      properties:
+        maximumPositiveSamplesPerBatch:
+          type: integer
+          example: 8
+        maximumUtf8BytesPerSample:
+          type: integer
+          example: 8192
+        maximumUtf8BytesPerBatch:
+          type: integer
+          example: 65536
+        executionDeadlineSeconds:
+          type: integer
+          example: 60
+
+    PurviewRuntimeTestReview:
+      type: object
+      required: [tenantId, profileId, agentRegistrationId, childApplicationId, blueprintApplicationId, actorObjectId, inventoryGenerationId, policyMode, suiteHash, configurationFingerprint, reviewedContextFingerprint, sensitiveInformationTypes, suite, positiveCaseIds, limits, verificationScope, sitMatchAttribution]
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        profileId:
+          type: string
+          format: uuid
+        agentRegistrationId:
+          type: string
+          format: uuid
+        childApplicationId:
+          type: string
+          format: uuid
+        blueprintApplicationId:
+          type: string
+          format: uuid
+        actorObjectId:
+          type: string
+          format: uuid
+        inventoryGenerationId:
+          type: string
+          format: uuid
+        policyMode:
+          $ref: '#/components/schemas/PurviewPolicyMode'
+        suiteHash:
+          type: string
+        configurationFingerprint:
+          type: string
+        reviewedContextFingerprint:
+          type: string
+        sensitiveInformationTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurviewSensitiveInformationTypeSelection'
+        suite:
+          $ref: '#/components/schemas/PurviewRuntimeTestSuiteManifest'
+        positiveCaseIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        limits:
+          $ref: '#/components/schemas/PurviewRuntimeTestLimits'
+        verificationScope:
+          type: string
+          enum: [ApprovedSampleBehaviorInEffectivePolicyScope]
+        sitMatchAttribution:
+          type: string
+          enum: [Unavailable]
+
+    PurviewRuntimeTestReviewResponse:
+      type: object
+      required: [reviewTokenId, reviewToken, reviewedPayloadHash, expiresAtUtc, review]
+      properties:
+        reviewTokenId:
+          type: string
+          format: uuid
+        reviewToken:
+          type: string
+          description: One-time response secret; do not log, cache, or put in a URL.
+        reviewedPayloadHash:
+          type: string
+        expiresAtUtc:
+          type: string
+          format: date-time
+        review:
+          $ref: '#/components/schemas/PurviewRuntimeTestReview'
+
+    PurviewRuntimeTestCaseResult:
+      type: object
+      required: [caseId, contentHash, observedDecision, contentProcessing, actionSource, observedAtUtc]
+      properties:
+        caseId:
+          type: string
+          format: uuid
+        intendedSensitiveInformationTypeId:
+          type: string
+          format: uuid
+          nullable: true
+        contentHash:
+          type: string
+        observedDecision:
+          type: string
+          enum: [Unknown, Allowed, Blocked, Warned, AuditAccepted, NoInlineDecision]
+        contentProcessing:
+          type: string
+          enum: [NotSubmitted, MetadataOnly, SubmittedWithoutDecision, Processed]
+        actionSource:
+          type: string
+          enum: [None, ProtectionScope, Content]
+        observedAtUtc:
+          type: string
+          format: date-time
+        failureCode:
+          type: string
+          nullable: true
+        scopeFingerprint:
+          type: string
+          nullable: true
+
+    PurviewRuntimeTestResultResponse:
+      type: object
+      description: |
+        Safe historical observations, never raw samples. HTTP success, Completed,
+        simulation, or submission acceptance alone does not prove enforcement.
+        Certification requires full positive/negative coverage and current bound
+        evidence; current readiness may expire or change after this result.
+      required: [operationId, status, outcome, policyMode, suiteHash, configurationFingerprint, profileRowVersion, cases, outstandingSensitiveInformationTypeIds, enforcementBehaviorVerified, verificationScope, sitMatchAttribution]
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        outcome:
+          type: string
+          description: Includes Partial, EnforcementBehaviorVerified, SimulationExercised, SubmissionAccepted, Failed, or OutcomeUnknown.
+        policyMode:
+          $ref: '#/components/schemas/PurviewPolicyMode'
+        suiteHash:
+          type: string
+        configurationFingerprint:
+          type: string
+        profileRowVersion:
+          type: string
+        completedAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        cases:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurviewRuntimeTestCaseResult'
+        outstandingSensitiveInformationTypeIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        enforcementBehaviorVerified:
+          type: boolean
+        failureCode:
+          type: string
+          nullable: true
+        verificationScope:
+          type: string
+          enum: [ApprovedSampleBehaviorInEffectivePolicyScope]
+        sitMatchAttribution:
+          type: string
+          enum: [Unavailable]
 
     AgentGatewayCredential:
       type: object
@@ -3107,6 +3723,10 @@ components:
           $ref: '#/components/schemas/PurviewPolicyProfileSelection'
         purviewDlpProfile:
           $ref: '#/components/schemas/PurviewDlpProfileSelection'
+        purviewConfigurationIntent:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewConfigurationIntent'
 
     RegisterAgentResponse:
       type: object
@@ -3131,6 +3751,13 @@ components:
           $ref: '#/components/schemas/AgentGatewayCredential'
         links:
           $ref: '#/components/schemas/Links'
+        purviewConfigurationOperationId:
+          type: string
+          format: uuid
+          nullable: true
+        purviewConfigurationStatus:
+          type: string
+          nullable: true
 
     AgentSummary:
       type: object
@@ -3268,6 +3895,10 @@ components:
         expectedRowVersion:
           type: string
           description: Required with idempotencyKey for a protection feature mutation and must match If-Match.
+        purviewConfigurationIntent:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PurviewConfigurationIntent'
 
     UpdateFeaturesResponse:
       type: object
@@ -4019,6 +4650,47 @@ components:
         type: string
 
   responses:
+    PurviewRuntimeTestResult:
+      description: Safe structured runtime-test result; inspect outcome and enforcementBehaviorVerified
+      headers:
+        Cache-Control:
+          schema: {type: string, enum: [no-store]}
+        Pragma:
+          schema: {type: string, enum: [no-cache]}
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PurviewRuntimeTestResultResponse'
+
+    PurviewRuntimeContextChanged:
+      description: Reviewed profile or bound identity/configuration/evidence context changed; obtain a fresh review
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            title: Domain Error
+            status: 412
+            errorCode: PURVIEW_RUNTIME_CONTEXT_CHANGED
+
+    PurviewRuntimeInvalid:
+      description: Runtime-test manifest, sample bounds/content, synthetic approval, or policy context is invalid
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+    PurviewRuntimeSamplesRequired:
+      description: Legacy validation requires migration to an explicit reviewed synthetic sample suite
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            title: Domain Error
+            status: 422
+            errorCode: PURVIEW_RUNTIME_SAMPLES_REQUIRED
+
     ProtectionOperationReviewed:
       description: Review created; no provider mutation has been authorized or performed
       headers:

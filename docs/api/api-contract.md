@@ -4,6 +4,11 @@ The checked-in [OpenAPI document](openapi.yaml) is the machine-readable contract
 This page explains the authorization, safety, and lifecycle rules that are easy to
 miss when reading individual operations.
 
+This guide describes the retained source contract, not a currently deployed or
+tested environment. [MILESTONES.md](../../MILESTONES.md) is the sole project
+completion and acceptance record. The deleted test projects and supporting tools
+must be restored under that plan before reproducible validation can be claimed.
+
 ## API surfaces
 
 | Surface | Caller | Authentication | Purpose |
@@ -37,16 +42,18 @@ all protection reviews, confirmations, and mutations require
 `Gateway.Administrator`. Every protection request rechecks exact delegated user and
 tenant semantics.
 
-Capability records originate only from bootstrap's exact 19-key, ownership/source/
+Initial capability records come from bootstrap's exact 19-key, ownership/source/
 time-bound attestation. Inert startup materializes nothing. Verified runtime startup
 strictly validates the full Installed/NotInstalled set and synchronizes it under a
-SQL application lock in one deterministic transaction. Partial, drifted, or
-identifier-bearing NotInstalled facts fail startup; capability synchronization is
-not policy or runtime-readiness evidence.
+SQL application lock in one deterministic transaction. A separate capability
+preparation path requires matching authorization and a receipt/history chain;
+original bootstrap configuration cannot overwrite that upgraded projection.
+Partial facts, unauthorized drift, or identifier-bearing NotInstalled facts fail
+validation. Capability synchronization is not policy or runtime-readiness evidence.
 
 ## Protection administration
 
-Protection mutations use an explicit two-step boundary:
+Protection mutations use an explicit review, confirmation, and execution boundary:
 
 1. a `:review` or `:review-*` route validates the current ETag/row version and
    returns a short-lived, one-time review value plus the exact safe summary;
@@ -55,8 +62,8 @@ Protection mutations use an explicit two-step boundary:
 3. the matching mutation route requires the confirmation, canonical UUIDv4
    `Idempotency-Key` in both header and body, and matching `If-Match`/row version.
 
-Accepted work returns HTTP 202 and is persisted through the transactional outbox to
-`gateway-protection-admin-v1`. Its eight version-1 stages are separate from
+Queued administration work returns HTTP 202 and is persisted through the
+transactional outbox to `gateway-protection-admin-v1`. Its eight version-1 stages are separate from
 registration workflow v3. Reads return ETags where the resource has a row version.
 Per-user and per-IP protection-administration rate limits apply before the
 controller.
@@ -69,6 +76,77 @@ API validates its digest, operation, inventory generation, tenant, Administrator
 expiry, capabilities, and SIT inventory before independently verifying connection
 state.
 
+### Shared DLP configuration
+
+A blueprint DLP profile can select 1–100 distinct sensitive information types
+(SITs) from one current inventory generation. `sensitiveInformationTypes` is the
+multi-selection field; the legacy `sensitiveInformationType` remains accepted and,
+when both are supplied, must agree with one selection. A rule matches **any**
+selected SIT (OR); counts are not summed across SITs.
+
+Each selected SIT has explicit count and confidence thresholds: `minCount >= 1`,
+`maxCount = -1` for any upper count or `maxCount >= minCount`, and inclusive
+confidence bounds from 1 to 100. New-policy reviews fill omitted thresholds with
+1, -1, 75, and 100 and return those values for review. Existing-policy omissions
+can preserve only proven readback values. Unverified legacy thresholds require
+all four values for every SIT and an explicitly reviewed full replacement.
+
+`policyMode` supports `Enforce`, `SimulationWithTips`, `SimulationWithoutTips`, and
+`Disabled`. Keep legacy `mode` compatible: `Enforce` for enforcing, `AuditOnly` for
+the other modes. Omitted `policyMode` maps legacy `AuditOnly` to
+`SimulationWithoutTips`. Mode names do not prove runtime enforcement or a native
+policy tip. Updating an existing profile requires
+`acknowledgeSharedPolicyImpact: true`; the review reports
+`affectsAllBlueprintAgents` because the policy applies to the shared blueprint.
+
+### Approved sample runtime tests
+
+The administrator-only HTTPS runtime-test routes are:
+
+| Method and route under `/api/v1` | Contract |
+|---|---|
+| `POST /protection/purview/dlp-profiles/{profileId}:review-runtime-test` | Review a sample manifest and one batch; matching `If-Match` is required; returns HTTP 200 and a review token |
+| `POST /protection/purview/dlp-profiles/{profileId}:test-runtime` | Execute the confirmed batch with matching `If-Match` and `Idempotency-Key`; returns HTTP 200 with the structured result |
+| `GET /protection/runtime-tests/{operationId}` | Read a tenant/actor-bound result and recover expired running work without resubmitting content |
+
+Exchange the review token through `POST /protection/operation-reviews:confirm`
+before execution. Runtime-test action responses use `Cache-Control: no-store` and
+`Pragma: no-cache`. The two POST routes require `application/json`, reject unknown
+JSON properties, cap request bodies at 1 MiB and JSON depth at 12, and reject raw
+samples that do not match the reviewed manifest.
+
+The full suite has one positive example intended for each selected SIT and one
+clean negative example, with distinct case IDs and content commitments. A batch
+selects 1–8 positive case IDs plus the negative example. Each sample is 1–8192
+UTF-8 bytes; the batch including its negative is at most 65536 bytes. The review
+contains hashes and lengths only and requires `acknowledgeSyntheticData: true`.
+Execution carries the exact approved content in its TLS request body. Raw samples
+are ephemeral and are not persisted as operation state or returned in results.
+
+To commit content, use a fresh 32-byte nonce encoded as 64 lowercase hexadecimal
+characters. Compute SHA-256 over the UTF-8 bytes of
+`A365Gateway.PurviewRuntimeTest.Sample.v1` followed by a NUL byte, the decoded nonce,
+the content's four-byte little-endian UTF-8 byte length, and the exact UTF-8 content.
+Encode the digest as `sha256:` plus 64 lowercase hexadecimal characters. The
+manifest separately binds each case ID and intended SIT. Do not trim or normalize
+content after review.
+
+The review identifies the actual active registration and child identity selected
+by the server, the shared blueprint, policy mode, inventory, thresholds, and
+configuration/context fingerprints. Results distinguish partial coverage,
+enforcement behavior, simulation, submission acceptance, failure, and unknown
+outcomes. `enforcementBehaviorVerified` is distinct from a completed operation or
+a successful HTTP response. `verificationScope` is
+`ApprovedSampleBehaviorInEffectivePolicyScope` and `sitMatchAttribution` is
+`Unavailable`: observed blocking does not identify which SIT matched. Historical
+results do not replace current profile readiness; evidence expires and context
+changes invalidate it. Read status after an interrupted execution; do not
+automatically replay provider work or raw sample submissions.
+
+The legacy `:review-runtime-validation` and `:validate-runtime` routes remain
+mapped for compatibility but reject valid requests with HTTP 422
+`PURVIEW_RUNTIME_SAMPLES_REQUIRED`. Use the explicit sample workflow above.
+
 ## Registration
 
 Creating a registration accepts display name, environment, blueprint selection, and
@@ -76,6 +154,20 @@ optional protection settings plus a proposed external ID. The Admin UI generates
 that ID for its user; direct API clients supply one that meets the contract. The API
 validates its format and uniqueness, rechecks blueprint compatibility, persists the
 registration, and returns a one-time Gateway key after the boundary is accepted.
+
+Registration and feature updates can bind a compatible existing DLP profile or
+carry `purviewConfigurationIntent`: a one-time confirmation token, idempotency
+key, and expected row version from a reviewed DLP configuration. This is explicit
+consent to that exact configuration. For a new blueprint, the review carries
+`deferredBlueprint` with the exact external agent ID and blueprint display name,
+an empty blueprint GUID, and no existing profile ID. Registration binds the
+reviewed intent to its newly created blueprint before policy work proceeds. This
+consent cannot be reused for another registration or blueprint. Configuration
+operation ID/status fields expose progress separately from effective readiness.
+Do not combine configuration intent with an existing profile selection. Deferred
+configuration remains `AwaitingBlueprint` until the registration is Active and
+its exact new identity binding is available; stale authority/inventory or an
+existing conflicting shared policy requires a fresh review or manual action.
 
 The clear key appears once. API responses and clients must not log, cache, or place
 it in a URL. Losing it requires issuing a replacement and revoking the old key.
@@ -273,8 +365,8 @@ storage compatibility contracts.
 
 Protection administration is additive to the registration contract. Existing
 `promptShieldEnabled`, `purviewEnabled`, and `purviewMode` members remain
-compatible. Registration and feature-update requests can bind a typed DLP profile
-to the resolved blueprint. The API rejects Purview unless that exact profile has
-installed capability, exact readback, propagation, token roles, runtime allow and
-block evidence, and a current SIT snapshot. Registration never authors policy as a
-side effect.
+compatible. Requested configuration, pending configuration work, policy mode, and
+effective protection are separate response fields. Enforcing readiness requires
+the applicable installed capability, exact policy/threshold readback, propagation,
+token roles, current inventory, and approved runtime evidence. Queued configuration
+or registration acceptance alone does not establish that readiness.
