@@ -4,11 +4,9 @@ The checked-in [OpenAPI document](openapi.yaml) is the machine-readable contract
 This page explains the authorization, safety, and lifecycle rules that are easy to
 miss when reading individual operations.
 
-This guide describes the source contract, not an acceptance ledger.
-[MILESTONES.md](../../MILESTONES.md) records the isolated M5 release qualification
-and the separate M6 hosted/provider acceptance. Local fixtures, live health and
-authorization-boundary probes, and complete signed-in product journeys have
-different scopes; one must not be substituted for another.
+This guide describes the source contract. Local fixtures, live health,
+authorization-boundary probes and signed-in product journeys have different
+scopes; one must not be substituted for another.
 
 ## HTTPS ingress
 
@@ -603,11 +601,9 @@ into Problem Details.
 
 ## Versioning
 
-The [UX acceptance scenarios](../ux/acceptance-scenarios.md) supply design intent
-and regression targets for these contracts. The core client/listing and focused
-protection behavior above is present in application source; milestone acceptance
-and live provider verification remain separate. Prototype behavior adds no API
-routes, roles or schema guarantees.
+The client, listing and protection behavior above is implemented in application
+source. Current provider behavior must be verified independently; local fixtures
+do not add API routes, roles or schema guarantees.
 
 The public prefix remains `/api/v1`. Additive response fields are permitted; clients
 must ignore fields they do not understand. Breaking route or schema changes require

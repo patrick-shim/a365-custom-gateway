@@ -1,10 +1,8 @@
 # Purview Windows execution boundary
 
-This guide describes the retained executor, worker transport and packaging source.
-Project completion belongs only in [MILESTONES.md](../../MILESTONES.md); see
-[project state](../project-state.md) for current environment and tooling context.
-The isolated M5 Windows/package qualification is distinct from a compliance
-provider connection or DLP readiness. A private authenticated health response
+This guide describes the executor, worker transport and packaging source.
+Windows/package qualification is distinct from a compliance provider connection
+or DLP readiness. A private authenticated health response
 must match the expected source and package; bootstrap's Installed status alone
 does not establish that runtime result or policy enforcement.
 
@@ -189,17 +187,14 @@ bootstrap state must not be rewritten as evidence for changed source.
 
 Package integrity, host startup, worker authentication, compliance authorization,
 tenant inventory, exact policy readback and runtime sample behavior are independent
-verification boundaries. The milestone plan tracks their implementation and
-acceptance. Restored tool/test sources and local compilation do not replace a
+verification boundaries. Local compilation does not replace a
 fresh signed runtime package or frozen-candidate release validation.
 
-For local release qualification, [Test-PurviewPackage.ps1](../../tools/Test-PurviewPackage.ps1)
-accepts an exact package directory and source fingerprint. It verifies the ZIP
-receipt, runs the packaged native probe, rejects altered/unbound manifests and
-unapproved commands, and checks the actual executor's unauthenticated HTTP
-boundary using synthetic authority and an owned Windows profile. It performs no
-provider authentication or mutation. The build prerequisite also verifies that
-the selected PowerShell process is X64, not merely a 64-bit architecture.
+Package qualification verifies the exact ZIP receipt and source fingerprint,
+the packaged native probe, rejection of altered manifests and unapproved
+commands, and the executor's unauthenticated HTTP boundary. None of those checks
+proves provider authorization. The build prerequisite verifies that the selected
+PowerShell process is X64, not merely a 64-bit architecture.
 
 The [protection architecture](protection-settings-plan.md) explains reviewed
 registration configuration, multiple SITs and modes, shared scope, approved

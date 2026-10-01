@@ -4,12 +4,8 @@ The Gateway connects external agents to a tenant-owned Azure control plane. Each
 registration binds a generated external agent ID, a reusable Agent Identity
 blueprint, a distinct child Entra Agent ID, and a Gateway credential lifecycle.
 
-This guide describes the retained source. Completion belongs only in
-[MILESTONES.md](../../MILESTONES.md); deployment and continuation context belongs in
-[project state](../project-state.md). Supporting files and Azure resources were
-deliberately deleted during the initial reset. A separate M5 qualification
-installation now exercises these contracts; this architecture guide itself is
-not its acceptance record or evidence of M6 product/provider behavior.
+This guide describes the source architecture. Current deployment and provider
+readiness must be verified against the selected installation's exact bindings.
 
 ## System context
 
@@ -267,9 +263,7 @@ journeys do not turn those known limitations into accepted behavior guarantees.
 
 ## Security invariants
 
-The [UX design package](../ux/README.md) maps these boundaries into role-specific
-designs. Source behavior, local verification and milestone acceptance remain
-distinct; prototype role visibility never proves API enforcement. Registration
+Role-specific UI visibility never replaces API authorization. Registration
 status, protection readiness and telemetry delivery remain independent observations.
 
 - Entra-only SQL authentication and scoped workload identities.

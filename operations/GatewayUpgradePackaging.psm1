@@ -5,7 +5,7 @@ Import-Module (Join-Path $PSScriptRoot 'GatewayUpgrade.psm1')
 
 $script:RetainedBuildFiles = @('Directory.Build.props', 'global.json', 'nuget.config', 'VERSION')
 $script:AllowedRootFiles = $script:RetainedBuildFiles
-$script:AllowedDirectories = @('src', 'tools\Gateway.DatabaseMigrator', 'tools\Gateway.LiveVerification',
+$script:AllowedDirectories = @('src', 'tools\Gateway.DatabaseMigrator',
     'bootstrap\modules', 'bootstrap\infra', 'infrastructure\bicep', 'infrastructure\sql', 'operations')
 $script:Extensions = @('.cs', '.csproj', '.slnx', '.props', '.targets', '.razor', '.cshtml', '.css', '.js', '.mjs',
     '.ts', '.tsx', '.html', '.svg', '.sql', '.bicep', '.bicepparam', '.ps1', '.psm1', '.psd1')

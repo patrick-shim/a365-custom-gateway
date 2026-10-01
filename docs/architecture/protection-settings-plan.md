@@ -1,10 +1,8 @@
 # Protection configuration architecture
 
-This guide describes the retained bootstrap, registration, Settings and runtime
-protection contracts. Its historical filename is retained for existing links.
-Project acceptance belongs only in [MILESTONES.md](../../MILESTONES.md); current
-context belongs in [project state](../project-state.md). No deployment, provider
-readiness, test pass count or milestone completion is established here.
+This guide describes the bootstrap, registration, Settings and runtime protection
+contracts. Configuration, current readiness and observed provider behavior remain
+separate facts.
 
 ## Ownership
 
@@ -364,17 +362,14 @@ receipts.
 
 ## Compatibility and further work
 
-The [UX journeys and language](../ux/journeys-and-language.md) and
-[acceptance scenarios](../ux/acceptance-scenarios.md) are the design reference for
-the implemented focused protection tasks and shared-policy impact wording.
-Their separate prototype simulates review and runtime outcomes; it never
-establishes actual confirmation authority, provider behavior or a longer evidence
-lifetime. Source, local fixture behavior and milestone acceptance remain distinct.
+Focused protection tasks retain explicit review, shared-policy impact and
+exact-context recovery. A local fixture never establishes confirmation authority,
+provider behavior or a longer evidence lifetime.
 
 The source retains legacy combined profiles, review-required migration candidates
 and legacy request fields. They do not establish readiness. Bounded
-[upgrade operations](../../operations/gateway-upgrade.md) exist alongside the
-older review-only maintenance surface; original bootstrap state and separately
+[upgrade operations](../../operations/gateway-upgrade.md) preserve original
+bootstrap state and separately
 bound upgrade receipts serve different operational purposes.
 
 The minimum referenced tools and local test projects are present again. Reproducible

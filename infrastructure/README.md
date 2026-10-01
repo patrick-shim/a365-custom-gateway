@@ -5,14 +5,9 @@ This directory contains the declarative Azure and SQL assets consumed by the
 [existing-environment operations](../operations/README.md). Templates and SQL
 files are inputs to those workflows, not independent installation instructions.
 
-The original Azure resources and supporting tools were deliberately removed.
-Restored authored tooling and local fixtures now accompany a separate Azure
-release-qualification installation. The current source-bound terminal deployment,
-private SQL and package/runtime checks have their exact scope in M5; this does
-not establish M6's hosted product and provider acceptance. Retained assets or old
-outputs alone are not evidence. See the
-[local baseline command](../README.md#local-source-and-behavioral-validation).
-[MILESTONES.md](../MILESTONES.md) is the sole completion and acceptance record.
+Build the [production solution](../src/A365Gateway.slnx) and deploy through the
+canonical installer. Existing outputs or historical receipts alone do not prove
+the current Azure, identity or database state.
 
 ## Layout
 
@@ -64,11 +59,9 @@ rollback uses compatible code on the expanded schema.
 
 ## Validation boundary
 
-Source restoration and baseline validation belong to M1; release preparation and
-live acceptance belong to M5 and M6 in [MILESTONES.md](../MILESTONES.md). Validation
-must include template compilation, configuration contracts, migration ordering,
-real schema and preservation checks, and the relevant restored test projects.
-The new local suite uses authored source, not old generated binaries.
+Validation includes template compilation, configuration contracts, migration
+ordering, real schema and preservation checks. Build and provider verification
+must use the same immutable source and artifact bindings.
 
 An authorized live deployment requires a current target-bound plan and What-If.
 Local compilation or test results do not prove Azure, tenant or database state.

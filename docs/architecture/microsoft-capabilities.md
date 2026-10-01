@@ -2,10 +2,8 @@
 
 This guide records the contracts used by the retained Gateway adapters and
 deployment source. It is not a fresh provider-documentation review or proof of a
-live tenant's capabilities. Revalidate provider availability and permissions during
-deployment planning. Completion belongs only in
-[MILESTONES.md](../../MILESTONES.md); current context belongs in
-[project state](../project-state.md).
+live tenant's capabilities. Revalidate provider availability and permissions
+during deployment planning.
 
 ## Agent Identity and Agent 365
 
@@ -152,9 +150,9 @@ Provider references:
 | Windows executor | Private application/SCM access, package integrity and exact worker caller |
 | Upgrade | Preserved bootstrap state plus a separate exact source/resource/schema-bound plan |
 
-All project Azure operations use the tenant and subscription pinned in
-[AGENTS.md](../../AGENTS.md). Historical configuration files and incident-specific
-repair scripts do not establish a current target. Retained
+All Azure operations use the exact tenant and subscription bound by the accepted
+configuration and plan. Historical configuration does not establish a current
+target. The
 [upgrade tooling](../../operations/gateway-upgrade.md) must satisfy its own
 prerequisites and actual verification limits.
 

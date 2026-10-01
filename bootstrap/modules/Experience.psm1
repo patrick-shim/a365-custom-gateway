@@ -1916,7 +1916,7 @@ function Test-GatewayPlanSource {
         'infrastructure/bicep/main.bicep',
         'infrastructure/bicep/admin-ui.bicep',
         'tools/configure-workflow-v3-entra.ps1',
-        'operations/test-provisioning-prerequisites.ps1'
+        'operations/verify-provisioning-prerequisites.ps1'
     )
     foreach ($path in $required) {
         if (-not (Test-Path -LiteralPath (Join-Path $RepositoryRoot $path))) { throw "Required file is missing: $path" }

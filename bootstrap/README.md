@@ -6,31 +6,21 @@ What-If, reviewed deployment, identity preparation, database initialization,
 workload deployment and verification. Individual modules and templates are inputs
 to that lifecycle, not alternate installers.
 
-## Current source boundary
+## Source and target
 
-The user deliberately removed supporting files and related Azure resources during
-the initial reset. The retained application remains the working baseline. Its
-canonical terminal lifecycle now has a separately owned Azure qualification
-installation; the exact evidence and limits belong to M5, not to old checkpoints.
-The
-[Setup](../tools/Gateway.Setup), [DatabaseMigrator](../tools/Gateway.DatabaseMigrator)
-and [LiveVerification](../tools/Gateway.LiveVerification) source projects are
-restored, with a new bounded [local test baseline](../tests). Generated binaries
-do not replace these source prerequisites, and local tests do not prove deployment.
+The installer uses the authored [Setup](../tools/Gateway.Setup) and
+[DatabaseMigrator](../tools/Gateway.DatabaseMigrator) projects. Build the production
+solution before installation. Generated output does not replace source, and a
+local build does not establish deployment or provider readiness.
 
-[MILESTONES.md](../MILESTONES.md) is the only completion record. M1 covers the
-restored tooling and reproducible tests. M5 covers release qualification; M6 owns
-the separate fresh hosted product journeys and Microsoft-provider acceptance.
-[AGENTS.md](../AGENTS.md) defines the pinned tenant/subscription, installed
-Chrome/Edge browser choice and persistent authorization, including direct browser
-control. Existing configuration, ignored operational state and incident-specific
-scripts alone do not prove a current installation. Use the current qualification
-or future target's exact ownership/configuration rather than a deleted target.
+Select the intended tenant, subscription and environment in configuration.
+Plan and Apply bind their exact source and target. An old checkpoint does not
+authorize recreating a deleted environment.
 
 ## Intended installation
 
-The guided commands start the restored local Setup source. Deployment still
-requires current target-bound planning and the applicable milestone validation:
+The guided commands start the local Setup application. Deployment requires a
+current target-bound plan:
 
 ```bash
 ./gateway setup
@@ -49,10 +39,6 @@ doctor → init → plan → apply → verify
                        ↘ resume after an eligible interruption
 ```
 
-The [UX screen designs](../docs/ux/screen-design.md) propose clearer installer
-plan/progress/verified-endpoint handoffs. Their synthetic prototype does not run
-this lifecycle or establish that the production Setup screens have changed.
-
 This is a workflow description, not an instruction to resume a deleted
 environment. Do not invoke deployment to discover missing build inputs.
 
@@ -62,8 +48,8 @@ Build inputs include Git, the .NET SDK selected by [global.json](../global.json)
 [Directory.Build.props](../Directory.Build.props), [VERSION](../VERSION),
 [nuget.config](../nuget.config),
 PowerShell 7 and Azure CLI. The retained prerequisite checker defines its exact
-requirements. M1 validates local source and commands; a clean hosted install
-remains a separate release/live acceptance.
+requirements. Local compilation and hosted deployment verification have different
+boundaries.
 
 The Purview package contract requires Windows x64, Microsoft-signed PowerShell
 **7.6.5** and ExchangeOnlineManagement **3.10.1**. The package builder pins and
@@ -245,7 +231,7 @@ Intentionally Off per-agent protections are not an incomplete registration;
 deployment capabilities still follow the accepted configuration. Keep policy
 readback, propagation and runtime evidence separate throughout.
 
-See [the product flow](../README.md#main-user-journey),
+See [the product flow](../README.md#connect-an-external-agent),
 [API contract](../docs/api/api-contract.md),
 [Purview executor architecture](../docs/architecture/purview-windows-executor.md)
 and [infrastructure assets](../infrastructure/README.md). Actual installation and

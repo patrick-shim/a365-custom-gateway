@@ -1,9 +1,7 @@
 # A365 Custom Gateway product brief
 
-This document describes the retained working application's purpose and intended
-user outcomes. Development acceptance is recorded only in the
-[milestone checklist](../../MILESTONES.md); [project state](../project-state.md)
-records current tooling availability and the next action.
+This document describes the application's purpose, user outcomes and supported
+product boundaries.
 
 ## Purpose
 
@@ -31,10 +29,8 @@ An administrator should be able to:
    model, then submit activity and the completed interaction with that evaluation
    receipt.
 
-The guided installer is the product entry point. Its minimum supporting source
-projects and a bounded local test harness are restored under the milestone plan.
-The isolated M5 installation qualifies release infrastructure and runtime
-boundaries; these end-to-end audience outcomes still require M6 acceptance.
+The guided installer is the product entry point. Infrastructure health and
+runtime startup are prerequisites, not proof of these complete user journeys.
 
 An operator should inspect health, registrations and provisioning operations,
 enable or disable agent access, and identify actions requiring an administrator.
@@ -108,14 +104,11 @@ result is generalized into a supported production claim for preview dependencies
 
 ## Development quality standard
 
-The [UX design package](../ux/README.md) defines role journeys, shared wording,
-screen layouts and acceptance scenarios. Current application source includes
-reviewed registration/key handoff, bounded recovery, agent paging and sample-result
-handling, plus focused protection tasks, shared expiry-aware summaries and
-approved runtime-sample workflows. Their acceptance remains only in the milestone
-checklist; source implementation does not establish release or hosted acceptance.
-Prototype behavior alone proves neither implementation nor production/provider
-acceptance, and retained authorization and recovery contracts still apply.
+The application includes reviewed registration/key handoff, bounded recovery,
+agent paging and sample-result handling, focused protection tasks, expiry-aware
+summaries and approved runtime-sample workflows. Source implementation alone
+does not establish release or provider acceptance; authorization and recovery
+contracts must hold in the selected deployment.
 
 Every protection outcome explains what happened, why it was needed, what remains
 unverified and the next permitted action. A technical Completed/Skipped timeline
@@ -134,10 +127,9 @@ including reduced-motion and paused states, without inventing provider progress.
 This source retains Blazor: the identified gaps are workflow/state/provider
 behavior, not evidence that a framework replacement is required.
 
-Each milestone combines implementation and meaningful tests, followed by a full
-documentation/directive/state/memory synchronization. A checkmark in the milestone
-task list is the sole project acceptance record. Source and cloud checks are
-reported only after they have actually run against the relevant version.
+Source and cloud checks are reported only after they have run against the exact
+relevant version. Product documentation must remain consistent with the API,
+permissions and observed behavior.
 
 See the [documentation index](../README.md) and
 [system architecture](../architecture/system-architecture.md).

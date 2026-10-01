@@ -1470,6 +1470,8 @@ function Get-BootstrapSourceManifest {
         'tools/apply-migrations.ps1',
         'tools/_common.ps1',
         'tools/configure-workflow-v3-entra.ps1',
+        'operations/verify-provisioning-prerequisites.ps1',
+        # Preserve the hash contract of immutable snapshots made before this file was renamed.
         'operations/test-provisioning-prerequisites.ps1',
         'operations/build-purview-executor-package.ps1',
         'gateway',

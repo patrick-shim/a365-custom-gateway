@@ -1278,7 +1278,7 @@ function Test-GatewayBootstrapDeployment {
         -Identity $Identity `
         -Blueprint $Blueprint `
         -RuntimePreviewEnabled $runtimePreviewEnabled
-    & (Join-Path $root 'operations/test-provisioning-prerequisites.ps1') @preflightArguments | Out-Null
+    & (Join-Path $root 'operations/verify-provisioning-prerequisites.ps1') @preflightArguments | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Read-only provisioning preflight failed.' }
 
     $apiHealth = Wait-HttpsHealth -Url "https://$($Runtime.apiFqdn)/health/checks"

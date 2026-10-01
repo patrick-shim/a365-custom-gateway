@@ -2,11 +2,9 @@
 
 Azure SQL is the authoritative store for Gateway registrations, provisioning,
 credentials, protection configuration, audit, idempotency and dispatch state.
-This guide describes the EF model and persistence contracts. Private Azure SQL
-qualification is recorded in M5; it is not an assertion about every deployment
-or the separate M6 product journeys.
-[MILESTONES.md](../../MILESTONES.md) is the sole completion record; see
-[project state](../project-state.md) for source restoration and current context.
+This guide describes the EF model and persistence contracts. Local SQL behavior
+does not establish Azure identity, private networking or a different deployment's
+migration and receipt state.
 
 ## Core relationships
 

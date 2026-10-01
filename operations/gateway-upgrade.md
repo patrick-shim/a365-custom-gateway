@@ -4,23 +4,15 @@
 orchestration: Package, Prepare, Plan, Build, Execute, Verify and compatible Rollback,
 with a separate original-only SQL administrator compensation mode. It does not
 invoke Setup, Resume, recovery commands or the old database initialization job.
-The older [`gateway-maintenance.ps1`](gateway-maintenance.ps1) is only a v1
-baseline/contract scaffold, not an execution alternative.
-
-Supporting files and related Azure resources were deliberately removed. This
-guide describes the retained lifecycle contracts, not a current deployment or a
-fully revalidated live workflow. The minimum Setup, DatabaseMigrator and
-LiveVerification source projects and a bounded local suite are restored.
-Validate the actual frozen candidate and prerequisites before using a release
-workflow. Historical `gw0911g` repairs are not current steps.
-[MILESTONES.md](../MILESTONES.md) is the sole completion and acceptance record.
+Validate the actual frozen candidate and its prerequisites before using this
+workflow. A historical receipt or another installation's result does not
+establish current deployment authority.
 
 ## Authority and evidence
 
-Follow [AGENTS.md](../AGENTS.md) for the selected target and existing user
-authorization. Do not request authorization again merely because an older guide
-assumed it expired. The source-bound review and Plan bindings below are application
-operational controls; they do not establish project milestone completion.
+Use the selected target and existing administrator authorization. The source-bound
+review and Plan bindings below are operational controls, not a replacement for
+current provider readback.
 
 Source builds or local tests alone do not authorize Azure mutation. For an
 eligible preserved environment, the retained sequence is:
@@ -128,8 +120,9 @@ retained source/state/configuration are read-only inputs.
   -PlanPath '<approved Build Plan>' -ExpectedPlanFingerprint 'sha256:<approved Build Plan fingerprint>'
 ```
 
-Core-to-Full installation uses the v1 request structure documented in
-[gateway-maintenance.md](gateway-maintenance.md).
+Core-to-Full installation uses the v1 request contract enforced by
+[GatewayUpgrade.psm1](GatewayUpgrade.psm1); existing Full deployments use the
+source-only contract below.
 Set `database.targetModelFingerprint` to Prepare's output. If the physical
 post-migration fingerprint is not yet known, set `targetSchemaFingerprint` to
 `""`: the private migrator must match the approved compiled model and then
@@ -510,8 +503,7 @@ does not prove that HTTP middleware, reverse proxies or APM agents omit bodies.
 Record unknown or unavailable capture configuration as an open acceptance
 blocker rather than substituting a clean source test or zero-match query.
 
-No current deployment or acceptance is asserted here; use MILESTONES.md for the
-actual verification status after the deliberate reset.
+No current deployment acceptance is asserted by this guide.
 
 The prepared-capability builder consumes the independently observed facts from
 the verified private DB receipt, not a guessed timestamp, retained bootstrap
