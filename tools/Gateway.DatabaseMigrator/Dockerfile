@@ -5,7 +5,6 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY ["global.json", "./"]
 COPY ["nuget.config", "./"]
-COPY ["Directory.Build.props", "./"]
 COPY ["tools/Gateway.DatabaseMigrator/Gateway.DatabaseMigrator.csproj", "tools/Gateway.DatabaseMigrator/"]
 COPY ["src/Gateway.Infrastructure/Gateway.Infrastructure.csproj", "src/Gateway.Infrastructure/"]
 COPY ["src/Gateway.Application/Gateway.Application.csproj", "src/Gateway.Application/"]

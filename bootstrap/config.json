@@ -4,8 +4,8 @@
   "tenantId": "ff8b1e46-ff0f-4bc2-ab02-caf2b92da496",
   "environment": "dev",
   "location": "koreacentral",
-  "projectName": "gw72130",
-  "resourceGroupName": "rg-gw72130-dev",
+  "projectName": "gw40397",
+  "resourceGroupName": "rg-gw40397-dev",
   "alertEmail": "admin@DIAx48836189.onmicrosoft.com",
   "capabilityPreset": "fullEvaluation",
   "sql": {
@@ -13,7 +13,7 @@
     "skuTier": "Basic"
   },
   "agent365": {
-    "seedBlueprintName": "A365 Gateway gw72130 dev",
+    "seedBlueprintName": "A365 Gateway gw40397 dev",
     "allowDevelopmentRegistryPreview": true,
     "registryBetaAcknowledged": true,
     "reviewedManagerApplicationIds": [

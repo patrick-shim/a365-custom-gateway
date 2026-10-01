@@ -1,0 +1,16 @@
+# Build output
+**/bin/
+**/obj/
+
+# Bootstrap/deployment runtime state (ignored runtime area)
+.bootstrap/
+.agent-runtime/
+
+# IDE / tooling
+.vs/
+.vscode/
+*.user
+
+# OS
+Thumbs.db
+.DS_Store
