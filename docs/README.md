@@ -5,6 +5,7 @@
 | Need | Guide |
 |---|---|
 | Build, install and connect an agent | [Project README](../README.md) |
+| Console UI design system and direction | [Console design](console/design.md) · [Console README](../web/console/README.md) |
 | Installer commands and prerequisites | [Bootstrap](../bootstrap/README.md) |
 | Existing-installation operation and recovery | [Operations](../operations/README.md) |
 | Source-bound maintenance | [Upgrade contract](../operations/gateway-upgrade.md) |

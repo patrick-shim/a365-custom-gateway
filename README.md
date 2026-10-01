@@ -102,7 +102,8 @@ evidence invalidates current readiness.
 
 | Directory | Contents |
 |---|---|
-| [src](src) | Gateway services, Admin UI, provider adapters and sample client. |
+| [src](src) | Gateway services, legacy Admin UI, provider adapters and sample client. |
+| [web/console](web/console) | Modern React + TypeScript Console (new UI; replaces Blazor). |
 | [tools](tools) | Setup application, database migrator and required installer helpers. |
 | [bootstrap](bootstrap) | Canonical installer engine, configuration and foundation templates. |
 | [infrastructure](infrastructure) | Workload templates and ordered SQL assets. |

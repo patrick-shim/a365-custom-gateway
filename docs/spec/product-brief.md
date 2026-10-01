@@ -124,8 +124,10 @@ available types without a misleading selection step; policy types are selected
 once, with explained adjustable defaults and preserved saved/draft values.
 Subtle accessible activity identifies real pending UI work or status checks,
 including reduced-motion and paused states, without inventing provider progress.
-This source retains Blazor: the identified gaps are workflow/state/provider
-behavior, not evidence that a framework replacement is required.
+The user interface is moving off Blazor to a modern React + TypeScript Console
+(see the [Console design system](../console/design.md)). The gaps are
+workflow/state/provider behavior and clarity; the Console carries the same API
+contract and permissions while making them intuitive.
 
 Source and cloud checks are reported only after they have run against the exact
 relevant version. Product documentation must remain consistent with the API,
