@@ -1,0 +1,10 @@
+.protection-snapshot[b-g9b0j6dsnb] { display: grid; gap: 1rem; min-width: 0; }
+.protection-fact[b-g9b0j6dsnb] { min-width: 0; overflow-wrap: anywhere; }
+.protection-fact > strong[b-g9b0j6dsnb] { display: block; margin-bottom: .4rem; }
+.protection-fact dl[b-g9b0j6dsnb] { margin: 0; }
+.protection-fact dl > div[b-g9b0j6dsnb] { display: flex; flex-wrap: wrap; gap: .3rem .8rem; margin: .3rem 0; }
+.protection-fact dt[b-g9b0j6dsnb] { color: var(--text-muted); }
+.protection-fact dd[b-g9b0j6dsnb] { margin: 0; }
+.protection-fact p[b-g9b0j6dsnb] { margin-bottom: 0; }
+.compact[b-g9b0j6dsnb] { gap: .75rem; font-size: .8rem; }
+.compact .protection-fact > span[b-g9b0j6dsnb] { display: block; margin: .2rem 0; }

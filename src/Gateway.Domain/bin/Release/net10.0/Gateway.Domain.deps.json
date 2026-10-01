@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "Gateway.Domain/0.1.0-beta.2": {
+        "runtime": {
+          "Gateway.Domain.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "Gateway.Domain/0.1.0-beta.2": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

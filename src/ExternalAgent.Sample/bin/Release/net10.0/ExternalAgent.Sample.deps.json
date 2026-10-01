@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "ExternalAgent.Sample/0.1.0-beta.2": {
+        "runtime": {
+          "ExternalAgent.Sample.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "ExternalAgent.Sample/0.1.0-beta.2": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "q/4D9iNCzoM=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\patrickshim\\Projects\\a365-custom-gateway\\tools\\Gateway.Setup\\Gateway.Setup.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\patrickshim\\.nuget\\packages\\microsoft.aspnetcore.app.internal.assets\\10.0.12\\microsoft.aspnetcore.app.internal.assets.10.0.12.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\microsoft.fluentui.aspnetcore.components\\4.14.4\\microsoft.fluentui.aspnetcore.components.4.14.4.nupkg.sha512"
+  ],
+  "logs": []
+}

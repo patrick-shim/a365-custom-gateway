@@ -1,0 +1,12 @@
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\bin\Debug\net10.0\Gateway.Purview.Executor.StartupDiagnostics.deps.json
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\bin\Debug\net10.0\Gateway.Purview.Executor.StartupDiagnostics.dll
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\bin\Debug\net10.0\Gateway.Purview.Executor.StartupDiagnostics.pdb
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\obj\Debug\net10.0\Gateway.Purview.Executor.StartupDiagnostics.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\obj\Debug\net10.0\Gateway.Purview.Executor.StartupDiagnostics.AssemblyInfoInputs.cache
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\obj\Debug\net10.0\Gateway.Purview.Executor.StartupDiagnostics.AssemblyInfo.cs
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\obj\Debug\net10.0\Gateway.Purview.Executor.StartupDiagnostics.csproj.CoreCompileInputs.cache
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\obj\Debug\net10.0\Gateway.Purview.Executor.StartupDiagnostics.sourcelink.json
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\obj\Debug\net10.0\Gateway.Purview.Executor.StartupDiagnostics.dll
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\obj\Debug\net10.0\refint\Gateway.Purview.Executor.StartupDiagnostics.dll
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\obj\Debug\net10.0\Gateway.Purview.Executor.StartupDiagnostics.pdb
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Purview.Executor.StartupDiagnostics\obj\Debug\net10.0\ref\Gateway.Purview.Executor.StartupDiagnostics.dll

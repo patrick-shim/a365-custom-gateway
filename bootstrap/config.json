@@ -1,0 +1,34 @@
+{
+  "$schema": "./config.schema.json",
+  "subscriptionId": "6f6ae863-dcb7-456f-a7f0-d6f9887cfb76",
+  "tenantId": "ff8b1e46-ff0f-4bc2-ab02-caf2b92da496",
+  "environment": "dev",
+  "location": "koreacentral",
+  "projectName": "gw72130",
+  "resourceGroupName": "rg-gw72130-dev",
+  "alertEmail": "admin@DIAx48836189.onmicrosoft.com",
+  "capabilityPreset": "fullEvaluation",
+  "sql": {
+    "skuName": "Basic",
+    "skuTier": "Basic"
+  },
+  "agent365": {
+    "seedBlueprintName": "A365 Gateway gw72130 dev",
+    "allowDevelopmentRegistryPreview": true,
+    "registryBetaAcknowledged": true,
+    "reviewedManagerApplicationIds": [
+      "59eca866-2f46-40b8-96ff-63f663121ef9",
+      "ab3be6b7-f5df-413d-ac2d-abf1e3fd9c0b",
+      "e8be65d6-d430-4289-a665-51bf2a194bda"
+    ]
+  },
+  "promptShield": {
+    "enabled": true,
+    "skuName": "F0",
+    "costAndQuotaAcknowledged": true
+  },
+  "purview": {
+    "enabled": true,
+    "authorityRequirementsAcknowledged": true
+  }
+}

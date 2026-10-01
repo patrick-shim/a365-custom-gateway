@@ -1,0 +1,12 @@
+.overview-metrics[b-415a9q8ii1] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.metric-value[b-415a9q8ii1] { overflow-wrap: anywhere; }
+.overview-agents td[b-415a9q8ii1] { overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+    .overview-metrics[b-415a9q8ii1] { grid-template-columns: 1fr; }
+    .overview-agents[b-415a9q8ii1], .overview-agents tbody[b-415a9q8ii1], .overview-agents tr[b-415a9q8ii1], .overview-agents td[b-415a9q8ii1] { display: block; }
+    .overview-agents thead[b-415a9q8ii1] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    .overview-agents tr[b-415a9q8ii1] { padding: .5rem; border-bottom: 1px solid var(--border-subtle); }
+    .overview-agents td[b-415a9q8ii1] { padding: .5rem; border: 0; }
+    .overview-agents td[b-415a9q8ii1]::before { content: attr(data-label); display: block; margin-bottom: .25rem; color: var(--text-muted); font-size: .75rem; font-weight: 600; }
+}

@@ -1,0 +1,15 @@
+.form-actions[b-zj33hgxl1j] {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+}
+.form-actions[b-zj33hgxl1j]  fluent-button {
+    flex: 0 0 auto;
+    max-width: 100%;
+}
+.form-actions[b-zj33hgxl1j]  fluent-button::part(control) {
+    height: auto;
+    min-height: 2rem;
+    max-width: 100%;
+    white-space: normal;
+}
+.form-actions[b-zj33hgxl1j]  fluent-button::part(content) { white-space: normal; }

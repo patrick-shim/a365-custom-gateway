@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "dgSpecHash": "o9rS5RLzZuI=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\patrickshim\\Projects\\a365-custom-gateway\\src\\Gateway.Purview.PowerShellHost\\Gateway.Purview.PowerShellHost.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\patrickshim\\.nuget\\packages\\microsoft.applicationinsights\\2.23.0\\microsoft.applicationinsights.2.23.0.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\microsoft.management.infrastructure\\3.0.0\\microsoft.management.infrastructure.3.0.0.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\microsoft.management.infrastructure.runtime.unix\\3.0.0\\microsoft.management.infrastructure.runtime.unix.3.0.0.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\microsoft.management.infrastructure.runtime.win\\3.0.0\\microsoft.management.infrastructure.runtime.win.3.0.0.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\microsoft.powershell.coreclr.eventing\\7.6.5\\microsoft.powershell.coreclr.eventing.7.6.5.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\microsoft.powershell.native\\700.0.0\\microsoft.powershell.native.700.0.0.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\microsoft.security.extensions\\1.4.0\\microsoft.security.extensions.1.4.0.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\microsoft.win32.registry.accesscontrol\\10.0.5\\microsoft.win32.registry.accesscontrol.10.0.5.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\newtonsoft.json\\13.0.4\\newtonsoft.json.13.0.4.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\system.codedom\\10.0.5\\system.codedom.10.0.5.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\system.configuration.configurationmanager\\10.0.5\\system.configuration.configurationmanager.10.0.5.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\system.diagnostics.eventlog\\10.0.5\\system.diagnostics.eventlog.10.0.5.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\system.directoryservices\\10.0.5\\system.directoryservices.10.0.5.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\system.management\\10.0.5\\system.management.10.0.5.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\system.management.automation\\7.6.5\\system.management.automation.7.6.5.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\system.security.cryptography.pkcs\\10.0.5\\system.security.cryptography.pkcs.10.0.5.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\system.security.cryptography.protecteddata\\10.0.5\\system.security.cryptography.protecteddata.10.0.5.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\system.security.permissions\\10.0.5\\system.security.permissions.10.0.5.nupkg.sha512",
+    "C:\\Users\\patrickshim\\.nuget\\packages\\system.windows.extensions\\10.0.5\\system.windows.extensions.10.0.5.nupkg.sha512"
+  ],
+  "logs": []
+}

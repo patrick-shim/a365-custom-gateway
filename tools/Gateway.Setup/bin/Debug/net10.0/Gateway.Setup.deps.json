@@ -1,0 +1,41 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "Gateway.Setup/0.1.0-beta.2": {
+        "dependencies": {
+          "Microsoft.FluentUI.AspNetCore.Components": "4.14.4"
+        },
+        "runtime": {
+          "Gateway.Setup.dll": {}
+        }
+      },
+      "Microsoft.FluentUI.AspNetCore.Components/4.14.4": {
+        "runtime": {
+          "lib/net10.0/Microsoft.FluentUI.AspNetCore.Components.dll": {
+            "assemblyVersion": "4.14.4.26210",
+            "fileVersion": "4.14.4.26210"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "Gateway.Setup/0.1.0-beta.2": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Microsoft.FluentUI.AspNetCore.Components/4.14.4": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-isJiT1YGAr6xUaVsfB/sfAFs69HDj3JMTn7pwi26/PUF2iOn8J+fjwSOHOVZ2+AhmA9f/OYLdRadjQBav9nJww==",
+      "path": "microsoft.fluentui.aspnetcore.components/4.14.4",
+      "hashPath": "microsoft.fluentui.aspnetcore.components.4.14.4.nupkg.sha512"
+    }
+  }
+}

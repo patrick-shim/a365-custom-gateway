@@ -1,0 +1,16 @@
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\bin\Release\net10.0\Gateway.Observability.deps.json
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\bin\Release\net10.0\Gateway.Observability.dll
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\bin\Release\net10.0\Gateway.Observability.pdb
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\bin\Release\net10.0\Gateway.Contracts.dll
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\bin\Release\net10.0\Gateway.Contracts.pdb
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\obj\Release\net10.0\Gateway.Observability.csproj.AssemblyReference.cache
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\obj\Release\net10.0\Gateway.Observability.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\obj\Release\net10.0\Gateway.Observability.AssemblyInfoInputs.cache
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\obj\Release\net10.0\Gateway.Observability.AssemblyInfo.cs
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\obj\Release\net10.0\Gateway.Observability.csproj.CoreCompileInputs.cache
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\obj\Release\net10.0\Gateway.Observability.sourcelink.json
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\obj\Release\net10.0\Gateway..7BA2D34A.Up2Date
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\obj\Release\net10.0\Gateway.Observability.dll
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\obj\Release\net10.0\refint\Gateway.Observability.dll
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\obj\Release\net10.0\Gateway.Observability.pdb
+C:\Users\patrickshim\Projects\a365-custom-gateway\src\Gateway.Observability\obj\Release\net10.0\ref\Gateway.Observability.dll
