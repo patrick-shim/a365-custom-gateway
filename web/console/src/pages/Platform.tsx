@@ -1,69 +1,70 @@
-import { useQuery } from "@tanstack/react-query";
-import {
-  Card,
-  Spinner,
-  Text,
-  Body1,
-  Caption1,
-  Switch,
-  makeStyles,
-  tokens,
-} from "@fluentui/react-components";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Card, Spinner, Text, Body1, Caption1, Switch } from "@fluentui/react-components";
 import { api } from "../api/client";
+import { formatTime } from "../api/display";
 import { PageHeader } from "../components/PageHeader";
 import { StatusPill } from "../components/StatusPill";
-
-const useStyles = makeStyles({
-  card: { padding: tokens.spacingVerticalL, marginBottom: tokens.spacingVerticalL, display: "flex", flexDirection: "column", gap: tokens.spacingVerticalM },
-  grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: tokens.spacingHorizontalL },
-  row: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-});
+import { ErrorState } from "../components/ErrorState";
 
 export function Platform() {
-  const styles = useStyles();
+  const qc = useQueryClient();
   const health = useQuery({ queryKey: ["health"], queryFn: api.getHealth });
-  if (health.isLoading) return <Spinner label="Loading…" />;
-  const h = health.data!;
-
+  const capabilities = useQuery({ queryKey: ["capabilities"], queryFn: api.getCapabilities });
+  const config = useQuery({ queryKey: ["system-config"], queryFn: api.getSystemConfig });
+  const defaults = useMutation({
+    mutationFn: ({ enabled, version }: { enabled: boolean; version: string }) => api.setPromptShieldDefault(enabled, version),
+    onSuccess: async updated => {
+      qc.setQueryData(["system-config"], updated);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["agent"] }),
+        qc.invalidateQueries({ queryKey: ["agents"] }),
+      ]);
+    },
+    onError: () => { void config.refetch(); },
+  });
   return (
     <>
-      <PageHeader title="Platform" subtitle="Deployment health, capabilities, and defaults." />
-
-      <Card className={styles.card}>
-        <Text weight="semibold">Health</Text>
-        <div className={styles.grid}>
-          <HealthRow label="Gateway API" value={h.api} />
-          <HealthRow label="Worker" value={h.worker} />
-          <HealthRow label="Prompt Shields" value={h.promptShields} />
-          <HealthRow label="Purview" value={h.purview} />
-        </div>
-        <Caption1>Region {h.region} · admission {h.admissionMode}</Caption1>
+      <PageHeader title="Platform" subtitle="Service health, installed capabilities, and registration defaults." />
+      <Card style={{ marginBottom: 16 }}>
+        <Text weight="semibold">Gateway API</Text>
+        {health.isPending ? <Spinner size="small" label="Checking API" /> : health.isError ? (
+          <ErrorState error={health.error} onRetry={() => void health.refetch()} />
+        ) : <StatusPill value={health.data} />}
+        <Caption1>This check does not report worker health or delivery to Agent 365.</Caption1>
       </Card>
-
-      <Card className={styles.card}>
-        <Text weight="semibold">Defaults</Text>
-        <div className={styles.row}>
-          <div>
-            <Body1>Prompt Shields for new agents</Body1>
-            <Caption1 block>Operators can change it per agent later.</Caption1>
+      <Card style={{ marginBottom: 16 }}>
+        <Text weight="semibold">Installed capabilities</Text>
+        {capabilities.isPending ? <Spinner size="small" label="Loading capabilities" /> : capabilities.isError ? (
+          <ErrorState error={capabilities.error} onRetry={() => void capabilities.refetch()} />
+        ) : capabilities.data.length === 0 ? <Body1>No capabilities reported.</Body1> : capabilities.data.map(item => (
+          <div key={item.id} style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
+            <Body1>{item.capability}</Body1><StatusPill value={item.status} />
+            <Caption1>Last checked: {formatTime(item.lastReadbackAtUtc)}</Caption1>
+            {item.lastFailureCode && <Caption1>Details: {item.lastFailureCode}</Caption1>}
           </div>
-          <Switch defaultChecked label="On" labelPosition="above" />
-        </div>
+        ))}
+        <Caption1>Installed does not mean a policy is configured or enforcing.</Caption1>
       </Card>
-
-      <Card className={styles.card}>
-        <Text weight="semibold">Access</Text>
-        <Caption1>Roles: Administrator, Operator, Auditor, Support reader. Credential actions are admin-only.</Caption1>
+      <Card style={{ marginBottom: 16 }}>
+        <Text weight="semibold">Registration defaults</Text>
+        {config.isPending ? <Spinner size="small" label="Loading defaults" /> : config.isError ? (
+          <ErrorState error={config.error} onRetry={() => void config.refetch()} />
+        ) : (
+          <>
+            <Switch checked={config.data.defaultPromptShieldEnabled}
+              disabled={defaults.isPending || config.isFetching || !config.data.rowVersion || !config.data.promptShieldAvailable}
+              label="Prompt Shields default" onChange={(_, data) => {
+                if (config.data.rowVersion) defaults.mutate({ enabled: data.checked, version: config.data.rowVersion });
+              }} />
+            <Caption1>Applies to new agents and agents using the default. Explicit per-agent choices stay unchanged.</Caption1>
+            {!config.data.promptShieldAvailable && <Body1>Prompt Shields is not available in this deployment.</Body1>}
+            {defaults.isPending && <Body1 role="status">Saving default...</Body1>}
+            {defaults.isError && <ErrorState title="Could not save the default" error={defaults.error} />}
+            <Caption1>Provisioning: {config.data.provisioningMode}; execution {config.data.provisioningExecutionEnabled ? "enabled" : "disabled"}.</Caption1>
+          </>
+        )}
       </Card>
+      <Caption1>Registration, keys, protection changes, and defaults require the Gateway Administrator role.</Caption1>
     </>
   );
-
-  function HealthRow({ label, value }: { label: string; value: string }) {
-    return (
-      <div className={styles.row}>
-        <Body1>{label}</Body1>
-        <StatusPill value={value} />
-      </div>
-    );
-  }
 }

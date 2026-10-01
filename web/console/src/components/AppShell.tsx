@@ -10,7 +10,6 @@ import {
   Database24Regular,
   Flow24Regular,
 } from "@fluentui/react-icons";
-import { usingMock } from "../api/client";
 
 const useStyles = makeStyles({
   app: {
@@ -18,6 +17,7 @@ const useStyles = makeStyles({
     gridTemplateColumns: "260px 1fr",
     minHeight: "100vh",
     backgroundColor: tokens.colorNeutralBackground2,
+    "@media (max-width: 760px)": { gridTemplateColumns: "1fr" },
   },
   sidebar: {
     backgroundColor: tokens.colorNeutralBackground1,
@@ -26,6 +26,12 @@ const useStyles = makeStyles({
     flexDirection: "column",
     padding: `${tokens.spacingVerticalL} ${tokens.spacingHorizontalM}`,
     gap: tokens.spacingVerticalM,
+    "@media (max-width: 760px)": {
+      borderRightWidth: 0,
+      borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+      flexDirection: "row",
+      flexWrap: "wrap",
+    },
   },
   brand: {
     display: "flex",
@@ -68,11 +74,16 @@ const useStyles = makeStyles({
     padding: `${tokens.spacingVerticalM} ${tokens.spacingHorizontalXXL}`,
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
     backgroundColor: tokens.colorNeutralBackground1,
+    gap: tokens.spacingHorizontalM,
+    flexWrap: "wrap",
+    "@media (max-width: 760px)": { padding: tokens.spacingVerticalM },
   },
   content: {
     padding: tokens.spacingVerticalXXL,
     maxWidth: "1100px",
     width: "100%",
+    boxSizing: "border-box",
+    "@media (max-width: 760px)": { padding: tokens.spacingVerticalM },
   },
   spacer: { flex: 1 },
   footer: { marginTop: "auto", padding: tokens.spacingHorizontalS },
@@ -127,9 +138,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         <NavGroup label="Data protection" items={dataProtectionItems} />
         <NavGroup label="Platform" items={platformItems} />
 
-        <div className={styles.footer}>
-          {usingMock && <Badge appearance="tint" color="informative">Demo data</Badge>}
-        </div>
       </nav>
 
       <div className={styles.main}>
@@ -139,29 +147,30 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Badge appearance="outline" color="success">Identity protected · Microsoft Entra ID</Badge>
           </div>
         </header>
-        <div className={styles.content}>{children}</div>
+        <main className={styles.content}>{children}</main>
       </div>
     </div>
   );
+}
 
-  function NavGroup({ label, items }: { label: string; items: NavItem[] }) {
-    return (
-      <div className={styles.group}>
-        {label && <Caption1 className={styles.groupLabel}>{label}</Caption1>}
-        {items.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.end}
-            className={({ isActive }) =>
-              isActive ? `${styles.link} ${styles.linkActive}` : styles.link
-            }
-          >
-            {item.icon}
-            {item.label}
-          </NavLink>
-        ))}
-      </div>
-    );
-  }
+function NavGroup({ label, items }: { label: string; items: NavItem[] }) {
+  const styles = useStyles();
+  return (
+    <div className={styles.group}>
+      {label && <Caption1 className={styles.groupLabel}>{label}</Caption1>}
+      {items.map((item) => (
+        <NavLink
+          key={item.to}
+          to={item.to}
+          end={item.end}
+          className={({ isActive }) =>
+            isActive ? `${styles.link} ${styles.linkActive}` : styles.link
+          }
+        >
+          {item.icon}
+          {item.label}
+        </NavLink>
+      ))}
+    </div>
+  );
 }

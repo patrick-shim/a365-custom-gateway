@@ -37,14 +37,17 @@ export function CopyableCommand({
 }) {
   const styles = useStyles();
   const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   async function copy() {
     try {
+      setFailed(false);
       await navigator.clipboard.writeText(command);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
       setCopied(false);
+      setFailed(true);
     }
   }
 
@@ -67,7 +70,9 @@ export function CopyableCommand({
           {copied ? "Copied" : "Copy"}
         </Button>
       </div>
-      <Caption1>You can also select the text and copy it manually.</Caption1>
+      <Caption1 role={failed ? "alert" : undefined}>
+        {failed ? "Clipboard access was blocked. Select the text and copy it manually." : "You can also select the text and copy it manually."}
+      </Caption1>
     </Field>
   );
 }

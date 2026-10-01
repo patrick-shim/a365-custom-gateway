@@ -1,166 +1,160 @@
-import type {
-  Agent,
-  Blueprint,
-  DeploymentHealth,
-  DlpProfile,
-  GatewayApi,
-  PurviewConnection,
-  SensitiveInformationType,
-} from "./types";
-import { mockApi } from "./mock";
-import { config } from "../runtime-config";
+import { z } from "zod";
 import { getApiToken } from "../auth/msal";
+import { config } from "../runtime-config";
+import { ApiError } from "./errors";
+import {
+  acceptedOperationSchema, agentDetailSchema, agentListSchema, blueprintListSchema,
+  capabilitiesSchema, confirmationSchema, connectionResponseSchema, credentialListSchema,
+  dlpProfilesSchema, featuresUpdateSchema, inventorySchema, issuedCredentialSchema,
+  operationResponseSchema, registrationSchema, reviewSchema, revokedCredentialSchema,
+  systemConfigSchema,
+  type ConnectionReview, type RegisterAgentRequest,
+} from "./types";
 
-// The real client talks to the Gateway REST API (same-origin /api/v1/*), attaching
-// the signed-in user's access token. It is selected when runtime config provides a
-// client id (container deployment). Local dev with no config uses the mock.
+const problemSchema = z.object({
+  title: z.string().optional(),
+  detail: z.string().optional(),
+  errorCode: z.string().optional(),
+  correlationId: z.string().optional(),
+  errors: z.record(z.array(z.string())).optional(),
+});
 
-async function authHeaders(): Promise<Record<string, string>> {
+async function request(path: string, method = "GET", body?: unknown, headers?: HeadersInit): Promise<Response> {
   const token = await getApiToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path, {
-    headers: { Accept: "application/json", ...(await authHeaders()) },
-    credentials: "same-origin",
-  });
-  if (!res.ok) {
-    throw new Error(`GET ${path} failed: ${res.status}`);
-  }
-  return (await res.json()) as T;
-}
-
-async function postJson<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...(await authHeaders()),
-    },
-    credentials: "same-origin",
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new Error(`POST ${path} failed: ${res.status}`);
-  }
-  return (await res.json()) as T;
-}
-
-interface RawAgent365 {
-  agentId?: string | null;
-  blueprintId?: string | null;
-  blueprintObjectId?: string | null;
-}
-interface RawFeatures {
-  promptShieldEnabled?: boolean | null;
-  promptShieldEffectivelyEnabled?: boolean;
-  azureMonitorExportEnabled?: boolean | null;
-}
-interface RawAgentSummary {
-  agentId: string;
-  externalAgentId: string;
-  name: string;
-  status: string;
-  agent365?: RawAgent365 | null;
-  features?: RawFeatures | null;
-  lastActivityAtUtc?: string | null;
-  createdAtUtc: string;
-}
-interface RawAgentList {
-  items?: RawAgentSummary[];
-}
-
-const lifecycleMap: Record<string, Agent["lifecycle"]> = {
-  Draft: "Draft",
-  Pending: "Provisioning",
-  Provisioning: "Provisioning",
-  Active: "Active",
-  AwaitingRegistryHandoff: "AwaitingRegistryHandoff",
-  AwaitingRegistry: "AwaitingRegistryHandoff",
-  Disabled: "Disabled",
-  Failed: "Failed",
-};
-
-function mapAgent(a: RawAgentSummary): Agent {
-  const blueprintId = a.agent365?.blueprintId ?? "";
-  const shieldOn = a.features?.promptShieldEffectivelyEnabled ?? a.features?.promptShieldEnabled ?? false;
-  const explicit = a.features?.promptShieldEnabled !== null && a.features?.promptShieldEnabled !== undefined;
-  return {
-    id: a.agentId,
-    displayName: a.name,
-    externalAgentId: a.externalAgentId,
-    childAgentId: a.agent365?.agentId ?? undefined,
-    blueprint: {
-      id: blueprintId,
-      displayName: blueprintId || "—",
-      blueprintApplicationId: a.agent365?.blueprintObjectId ?? "",
-      shared: false,
-    },
-    lifecycle: lifecycleMap[a.status] ?? "Provisioning",
-    promptShield: explicit ? (shieldOn ? "On" : "Off") : shieldOn ? "DefaultOn" : "DefaultOff",
-    createdAtUtc: a.createdAtUtc,
-    lastActivityAtUtc: a.lastActivityAtUtc ?? undefined,
-    activity24h: 0,
-    observabilityExport: a.features?.azureMonitorExportEnabled ? "Agent365+AzureMonitor" : "Agent365",
-  };
-}
-
-async function safe<T>(work: () => Promise<T>, fallback: T): Promise<T> {
+  const requestHeaders = new Headers(headers);
+  requestHeaders.set("Accept", "application/json");
+  requestHeaders.set("Authorization", `Bearer ${token}`);
+  if (body !== undefined) requestHeaders.set("Content-Type", "application/json");
+  let response: Response;
   try {
-    return await work();
+    response = await fetch(path, {
+      method,
+      headers: requestHeaders,
+      credentials: "same-origin",
+      cache: "no-store",
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(45_000),
+    });
   } catch {
-    return fallback;
+    throw new ApiError(
+      method === "GET"
+        ? "The Gateway could not be reached. Check your connection and try again."
+        : "The response was lost. Refresh the current state before trying this change again.",
+      0, "REQUEST_UNCONFIRMED", undefined, method !== "GET",
+    );
   }
+  if (!response.ok) {
+    const raw = await response.text();
+    let problem: z.infer<typeof problemSchema> = {};
+    try {
+      const result = problemSchema.safeParse(JSON.parse(raw));
+      if (result.success) problem = result.data;
+    } catch {
+      // A proxy can return HTML. Never show that response as an API error.
+    }
+    const fallback = response.status === 401
+      ? "Your session has expired. Sign in again."
+      : response.status === 403
+        ? "Your account does not have permission for this action."
+        : `The Gateway returned HTTP ${response.status}. Try again or contact your administrator.`;
+    const validation = problem.errors ? Object.values(problem.errors).flat().slice(0, 8).join(" ") : undefined;
+    throw new ApiError(
+      validation || problem.detail || problem.title || fallback,
+      response.status, problem.errorCode, problem.correlationId, method !== "GET" && response.status >= 500,
+    );
+  }
+  return response;
 }
 
-async function getHealthLive(): Promise<DeploymentHealth> {
-  let api: DeploymentHealth["api"] = "Unhealthy";
+async function json<T>(schema: z.ZodType<T>, path: string, method = "GET", body?: unknown, headers?: HeadersInit): Promise<T> {
+  const response = await request(path, method, body, headers);
+  let raw: unknown;
   try {
-    const res = await fetch("/health/checks", { headers: await authHeaders(), credentials: "same-origin" });
-    const text = (await res.text()).trim();
-    api = res.ok && /healthy/i.test(text) ? "Healthy" : res.ok ? "Degraded" : "Unhealthy";
+    raw = await response.json();
   } catch {
-    api = "Unhealthy";
+    throw new ApiError("The Gateway returned an unreadable response. Refresh before continuing.", response.status,
+      "INVALID_API_RESPONSE", undefined, method !== "GET");
   }
-  return {
-    api,
-    worker: api,
-    promptShields: "Installed",
-    purview: "Degraded",
-    admissionMode: "OpenDevelopmentPreview",
-    region: "koreacentral",
-  };
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new ApiError("The Gateway response does not match this Console. Refresh or contact your administrator.",
+      response.status, "INVALID_API_RESPONSE", undefined, method !== "GET");
+  }
+  return parsed.data;
 }
 
-const liveApi: GatewayApi = {
-  getHealth: () => getHealthLive(),
-  listAgents: () => safe(async () => (await getJson<RawAgentList>("/api/v1/agents")).items?.map(mapAgent) ?? [], []),
-  getAgent: (id) =>
-    safe<Agent | undefined>(async () => mapAgent(await getJson<RawAgentSummary>(`/api/v1/agents/${id}`)), undefined),
-  setPromptShield: async (id, enabled) => {
-    await postJson(`/api/v1/agents/${id}:${enabled ? "enable" : "disable"}`);
-    const current = await getJson<RawAgentSummary>(`/api/v1/agents/${id}`);
-    return mapAgent(current);
+function mutationHeaders(expectedRowVersion: string, idempotencyKey: string): HeadersInit {
+  return { "If-Match": expectedRowVersion, "Idempotency-Key": idempotencyKey };
+}
+
+export const api = {
+  async getHealth() {
+    const response = await request("/health/checks");
+    const parsed = z.enum(["Healthy", "Degraded", "Unhealthy"]).safeParse((await response.text()).trim());
+    if (!parsed.success) throw new ApiError("The health endpoint returned an unexpected response.", 200, "INVALID_API_RESPONSE");
+    return parsed.data;
   },
-  listBlueprints: () => safe(() => getJson<Blueprint[]>("/api/v1/agent-identity-blueprints"), []),
-  getPurviewConnection: () =>
-    safe(() => getJson<PurviewConnection>("/api/v1/protection/purview/connection"), {
-      status: "NotConnected",
-      tenantId: config.tenantId,
-    }),
-  recheckPurviewConnection: () =>
-    safe(() => postJson<PurviewConnection>("/api/v1/protection/purview/connection:recheck"), {
-      status: "NotConnected",
-      tenantId: config.tenantId,
-    }),
-  listSensitiveInformationTypes: () =>
-    safe(() => getJson<SensitiveInformationType[]>("/api/v1/protection/purview/sensitive-information-types"), []),
-  listDlpProfiles: () => safe(() => getJson<DlpProfile[]>("/api/v1/protection/purview/dlp-profiles"), []),
+  listAgents(cursor?: string, search?: string) {
+    const query = new URLSearchParams({ limit: "50" });
+    if (cursor) query.set("cursor", cursor);
+    if (search) query.set("search", search);
+    return json(agentListSchema, `/api/v1/agents?${query}`);
+  },
+  getAgent: (id: string) => json(agentDetailSchema, `/api/v1/agents/${encodeURIComponent(id)}`),
+  setPromptShield(id: string, enabled: boolean, expectedRowVersion: string) {
+    const idempotencyKey = crypto.randomUUID();
+    return json(featuresUpdateSchema, `/api/v1/agents/${encodeURIComponent(id)}/features`, "PATCH", {
+      promptShieldEnabled: enabled, expectedRowVersion, idempotencyKey,
+    }, mutationHeaders(expectedRowVersion, idempotencyKey));
+  },
+  async listBlueprints() {
+    return (await json(blueprintListSchema, "/api/v1/agent-identity-blueprints")).items;
+  },
+  registerAgent: (body: RegisterAgentRequest) => json(registrationSchema, "/api/v1/agents", "POST", {
+    ...body,
+    // Data protection is configured separately, never an implicit registration dependency.
+    features: { purviewEnabled: false },
+  }),
+  listCredentials: (id: string) => json(credentialListSchema, `/api/v1/agents/${encodeURIComponent(id)}/credentials`),
+  issueCredential: (id: string) => json(issuedCredentialSchema, `/api/v1/agents/${encodeURIComponent(id)}/credentials`, "POST"),
+  revokeCredential: (id: string, keyId: string) => json(revokedCredentialSchema,
+    `/api/v1/agents/${encodeURIComponent(id)}/credentials/${encodeURIComponent(keyId)}`, "DELETE"),
+  async getPurviewConnection() {
+    return (await json(connectionResponseSchema, "/api/v1/protection/purview/connection")).connection;
+  },
+  async reviewPurviewConnection(expectedRowVersion: string): Promise<ConnectionReview> {
+    const result = await json(reviewSchema, "/api/v1/protection/purview/connection-operations:review", "POST",
+      { tenantId: config.tenantId, expectedRowVersion }, { "If-Match": expectedRowVersion });
+    if (result.review.tenantId !== config.tenantId || result.review.operationType !== "ConnectPurviewTenant") {
+      throw new ApiError("The review did not match this tenant and action. Refresh and review again.", 200, "REVIEW_MISMATCH");
+    }
+    return { ...result, expectedRowVersion };
+  },
+  async confirmPurviewConnection(review: ConnectionReview) {
+    const confirmation = await json(confirmationSchema, "/api/v1/protection/operation-reviews:confirm", "POST", {
+      reviewTokenId: review.reviewTokenId, reviewToken: review.reviewToken,
+    });
+    const idempotencyKey = crypto.randomUUID();
+    return json(acceptedOperationSchema, "/api/v1/protection/purview/connection-operations", "POST", {
+      tenantId: review.review.tenantId, ...confirmation, idempotencyKey,
+      expectedRowVersion: review.expectedRowVersion,
+    }, mutationHeaders(review.expectedRowVersion, idempotencyKey));
+  },
+  async getProtectionOperation(id: string) {
+    return (await json(operationResponseSchema, `/api/v1/protection/operations/${encodeURIComponent(id)}`)).operation;
+  },
+  listSensitiveInformationTypes: () => json(inventorySchema, "/api/v1/protection/purview/sensitive-information-types"),
+  async listDlpProfiles() {
+    return (await json(dlpProfilesSchema, "/api/v1/protection/purview/dlp-profiles")).items;
+  },
+  async getCapabilities() {
+    return (await json(capabilitiesSchema, "/api/v1/protection/capabilities")).items;
+  },
+  getSystemConfig: () => json(systemConfigSchema, "/api/v1/system/config"),
+  setPromptShieldDefault(enabled: boolean, expectedRowVersion: string) {
+    const idempotencyKey = crypto.randomUUID();
+    return json(systemConfigSchema, "/api/v1/system/config", "PATCH", {
+      defaultPromptShieldEnabled: enabled, expectedRowVersion, idempotencyKey,
+    }, mutationHeaders(expectedRowVersion, idempotencyKey));
+  },
 };
-
-const useMock = config.useMock;
-
-export const api: GatewayApi = useMock ? mockApi : liveApi;
-export const usingMock = useMock;

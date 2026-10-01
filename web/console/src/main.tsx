@@ -2,18 +2,25 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { FluentProvider, webLightTheme } from "@fluentui/react-components";
+import { FluentProvider, webLightTheme, Button, Body1, Title2 } from "@fluentui/react-components";
 import { MsalProvider } from "@azure/msal-react";
 import { App } from "./App";
-import { applyDemoOverrides } from "./api/mock";
-import { authEnabled } from "./runtime-config";
+import { validateConfig } from "./runtime-config";
 import { msalInstance } from "./auth/msal";
 import { SignInGate } from "./components/SignInGate";
-
-applyDemoOverrides(window.location.search);
+import { ApiError, SignInRequiredError } from "./api/errors";
+import "./base.css";
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      staleTime: 15_000,
+      retry: (failures, error) => failures < 1 && !(error instanceof SignInRequiredError) &&
+        !(error instanceof ApiError && error.status >= 400 && error.status < 500),
+    },
+    mutations: { retry: false, gcTime: 0 },
+  },
 });
 
 function Shell() {
@@ -28,32 +35,36 @@ function Shell() {
 
 async function bootstrap() {
   const root = createRoot(document.getElementById("root")!);
-
-  if (!authEnabled) {
+  let configurationValid = false;
+  try {
+    validateConfig();
+    configurationValid = true;
+    await msalInstance.initialize();
+    const response = await msalInstance.handleRedirectPromise();
+    if (response?.account) msalInstance.setActiveAccount(response.account);
     root.render(
       <StrictMode>
         <FluentProvider theme={webLightTheme}>
-          <Shell />
+          <MsalProvider instance={msalInstance}>
+            <SignInGate><Shell /></SignInGate>
+          </MsalProvider>
         </FluentProvider>
       </StrictMode>,
     );
-    return;
-  }
-
-  await msalInstance.initialize();
-  await msalInstance.handleRedirectPromise();
-
-  root.render(
-    <StrictMode>
+  } catch (error) {
+    console.error("Console startup failed", { name: error instanceof Error ? error.name : "Unknown" });
+    root.render(
       <FluentProvider theme={webLightTheme}>
-        <MsalProvider instance={msalInstance}>
-          <SignInGate>
-            <Shell />
-          </SignInGate>
-        </MsalProvider>
-      </FluentProvider>
-    </StrictMode>,
-  );
+        <main role="alert" style={{ padding: 32, minHeight: "100vh" }}>
+          <Title2 as="h1">Console could not start</Title2>
+          <Body1 block>{configurationValid
+            ? "Sign-in could not finish. Reload to try again."
+            : "Console sign-in is not configured. Ask the deployer to check the client ID, tenant ID, and API scope."}</Body1>
+          <Button style={{ marginTop: 16 }} onClick={() => window.location.reload()}>Reload Console</Button>
+        </main>
+      </FluentProvider>,
+    );
+  }
 }
 
 void bootstrap();

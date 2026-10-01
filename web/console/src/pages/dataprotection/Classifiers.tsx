@@ -1,59 +1,39 @@
 import { useQuery } from "@tanstack/react-query";
-import {
-  Table,
-  TableHeader,
-  TableRow,
-  TableHeaderCell,
-  TableBody,
-  TableCell,
-  Spinner,
-  Button,
-  MessageBar,
-  MessageBarBody,
-} from "@fluentui/react-components";
-import { ArrowClockwise24Regular } from "@fluentui/react-icons";
+import { Link } from "react-router-dom";
+import { Table, TableHeader, TableRow, TableHeaderCell, TableBody, TableCell, Spinner, Button, Body1, Caption1 } from "@fluentui/react-components";
 import { api } from "../../api/client";
+import { connectionIsUsable } from "../../api/types";
+import { formatTime } from "../../api/display";
 import { PageHeader } from "../../components/PageHeader";
+import { ErrorState } from "../../components/ErrorState";
 
 export function Classifiers() {
-  const sits = useQuery({ queryKey: ["sits"], queryFn: api.listSensitiveInformationTypes });
   const purview = useQuery({ queryKey: ["purview"], queryFn: api.getPurviewConnection });
-
-  const connected = purview.data?.status === "Connected";
-
+  const connected = purview.isSuccess && connectionIsUsable(purview.data);
+  const inventory = useQuery({ queryKey: ["sits"], queryFn: api.listSensitiveInformationTypes, enabled: connected });
   return (
     <>
-      <PageHeader
-        title="Classifiers"
-        subtitle="The sensitive info types your policies can look for."
-        actions={<Button icon={<ArrowClockwise24Regular />} disabled={!connected}>Refresh</Button>}
-      />
-
-      {!connected && (
-        <MessageBar intent="warning" style={{ marginBottom: 16 }}>
-          <MessageBarBody>Connect Purview first to load classifiers.</MessageBarBody>
-        </MessageBar>
-      )}
-
-      {sits.isLoading ? (
-        <Spinner label="Loading…" />
+      <PageHeader title="Classifiers" subtitle="Sensitive information types available to your DLP policies."
+        actions={<Button disabled={!connected || inventory.isFetching} onClick={() => void inventory.refetch()}>Reload list</Button>} />
+      {purview.isPending ? <Spinner label="Loading connection" /> : purview.isError ? (
+        <ErrorState error={purview.error} onRetry={() => void purview.refetch()} />
+      ) : !connected ? (
+        <Body1>Purview access must be verified before classifiers can be loaded. <Link to="/data-protection/connection">Check connection</Link>.</Body1>
+      ) : inventory.isPending ? <Spinner label="Loading classifiers" /> : inventory.isError ? (
+        <><ErrorState error={inventory.error} onRetry={() => void inventory.refetch()} /><Link to="/data-protection/connection">Refresh inventory through a connection check</Link></>
       ) : (
-        <Table aria-label="Classifiers">
-          <TableHeader>
-            <TableRow>
-              <TableHeaderCell>Name</TableHeaderCell>
-              <TableHeaderCell>Publisher</TableHeaderCell>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {sits.data!.map((s) => (
-              <TableRow key={s.id}>
-                <TableCell>{s.name}</TableCell>
-                <TableCell>{s.publisher}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        <>
+          <Caption1 block>Retrieved: {formatTime(inventory.data.retrievedAtUtc)}; expires: {formatTime(inventory.data.expiresAtUtc)}</Caption1>
+          {inventory.data.isExpired && <Body1 role="alert">This inventory has expired. <Link to="/data-protection/connection">Refresh connection</Link>.</Body1>}
+          {inventory.data.items.length === 0 ? <Body1>No classifiers were returned by Purview.</Body1> : (
+            <Table aria-label="Classifiers">
+              <TableHeader><TableRow><TableHeaderCell>Name</TableHeaderCell><TableHeaderCell>Publisher</TableHeaderCell></TableRow></TableHeader>
+              <TableBody>{inventory.data.items.map(item => (
+                <TableRow key={item.id}><TableCell>{item.exactName}</TableCell><TableCell>{item.publisher}</TableCell></TableRow>
+              ))}</TableBody>
+            </Table>
+          )}
+        </>
       )}
     </>
   );

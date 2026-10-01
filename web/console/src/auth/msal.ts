@@ -1,9 +1,11 @@
 import {
   PublicClientApplication,
+  InteractionRequiredAuthError,
   type Configuration,
   type AccountInfo,
 } from "@azure/msal-browser";
 import { config } from "../runtime-config";
+import { SignInRequiredError } from "../api/errors";
 
 const msalConfig: Configuration = {
   auth: {
@@ -24,15 +26,18 @@ export const msalInstance = new PublicClientApplication(msalConfig);
 export const apiScopes = config.apiScope ? [config.apiScope] : [];
 
 /** Acquire an access token for the Gateway API, silently when possible. */
-export async function getApiToken(): Promise<string | null> {
-  if (apiScopes.length === 0) return null;
-  const account: AccountInfo | undefined = msalInstance.getAllAccounts()[0];
-  if (!account) return null;
+export function getAccount(): AccountInfo | undefined {
+  return msalInstance.getActiveAccount() ?? msalInstance.getAllAccounts()[0];
+}
+
+export async function getApiToken(): Promise<string> {
+  const account = getAccount();
+  if (apiScopes.length === 0 || !account) throw new SignInRequiredError();
   try {
     const result = await msalInstance.acquireTokenSilent({ scopes: apiScopes, account });
     return result.accessToken;
-  } catch {
-    await msalInstance.acquireTokenRedirect({ scopes: apiScopes, account });
-    return null;
+  } catch (error) {
+    if (error instanceof InteractionRequiredAuthError) throw new SignInRequiredError();
+    throw error;
   }
 }

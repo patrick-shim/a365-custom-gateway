@@ -19,7 +19,7 @@ export function PageHeader({
   const styles = useStyles();
   return (
     <div className={styles.root}>
-      <Title2>{title}</Title2>
+      <Title2 as="h1" style={{ margin: 0 }}>{title}</Title2>
       {subtitle && <Body1 className={styles.sub} block>{subtitle}</Body1>}
       {actions && <div className={styles.actions}>{actions}</div>}
     </div>

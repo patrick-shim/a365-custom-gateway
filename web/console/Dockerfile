@@ -4,9 +4,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npm run build
+RUN npm test -- --reporter=dot && npm run build
 
 FROM nginx:1.27-alpine AS final
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$SOURCE_REVISION
 # Templated nginx config (GATEWAY_API_ORIGIN substituted at start).
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY docker-entrypoint.sh /docker-entrypoint.d/40-a365-config.sh

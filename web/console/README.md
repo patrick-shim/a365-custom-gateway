@@ -1,63 +1,73 @@
 # A365 Gateway Console
 
-Modern **React + TypeScript** single‑page app for the A365 Custom Gateway. It
-replaces the Blazor Admin UI and talks to the existing .NET REST API (`/api/v1/*`).
+React and TypeScript SPA using the existing .NET Gateway REST API.
+It is the replacement direction for the Blazor Admin UI, not yet full feature
+parity. See the [Console design](../../docs/console/design.md).
 
-Design and direction: [`docs/console/design.md`](../../docs/console/design.md).
+## Run locally against an API
 
-## Stack
+Use the existing Entra SPA registration with a registered local redirect URI.
+Only public identifiers belong in these settings; never supply a client secret.
 
-Vite · React 18 · TypeScript (strict) · Fluent UI React v9 · TanStack Query · React Router.
-
-## Run it
-
-```bash
-cd web/console
-npm install
-npm run dev        # http://localhost:5173
-```
-
-By default the app runs on **mock data** (mirrors the `gw40397-dev` deployment), so
-it works with no backend. Demo helpers:
-
-- `http://localhost:5173/?connected=1` — show Purview in the connected state.
-
-### Against the real API
-
-```bash
-# point the dev proxy at a Gateway API and use the live client
-set GATEWAY_API_BASE_URL=https://ca-gateway-api-dev.<region>.azurecontainerapps.io
-set VITE_USE_MOCK=0
+```powershell
+Set-Location .\web\console
+npm ci
+$env:VITE_CLIENT_ID = "<SPA application ID>"
+$env:VITE_TENANT_ID = "<tenant ID>"
+$env:VITE_API_SCOPE = "api://<Gateway identifier>/access_as_user"
+$env:GATEWAY_API_BASE_URL = "https://<Gateway API host>"
 npm run dev
 ```
 
-(Live client endpoints are wired in phase 2 — see the design doc §8–§9.)
+The container writes public settings into `config.js` from `CONSOLE_CLIENT_ID`,
+`CONSOLE_TENANT_ID`, and `CONSOLE_API_SCOPE`. Configure the same-origin proxy with
+`GATEWAY_API_ORIGIN` and `GATEWAY_API_HOST`. Sign-in uses MSAL authorization code
+with PKCE, then a delegated bearer token for API calls.
 
-## Build / check
+Missing configuration shows an error. There is no automatic mock/demo mode,
+including when the old `CONSOLE_USE_MOCK` setting is true. Test fixtures are
+isolated to the regression suite.
 
-```bash
-npm run build       # tsc -b && vite build  → dist/
+## Check and build
+
+```powershell
+npm test
 npm run typecheck
+npm run build
 ```
 
-## Layout
+The Docker build also runs the regression suite before bundling. Build with this
+directory as the Docker context. `SOURCE_REVISION` can label the immutable image
+with its source commit. Publish the image to the existing registry and deploy by
+digest; do not recreate the Gateway or its Entra registrations for a UI update.
 
-```
-src/
-  api/        types.ts · client.ts (live + mock switch) · mock.ts
-  components/ AppShell · PageHeader · StatusPill · CopyableCommand
-  pages/
-    Home.tsx                      "Needs attention" landing
-    agents/                       AgentsList · AgentDetail · RegisterAgent
-    dataprotection/               Connection · Classifiers · Policies
-    Platform.tsx
-```
+## Working surfaces and boundaries
 
-## Three persona zones (see design doc)
+- All routes keep navigation visible during loading, API failures, and contained
+  render failures. RFC 9457 errors retain their support code and correlation ID.
+- Agents support paginated reads, real registration using an existing compatible
+  blueprint or a new blueprint, one-time key handoff, replacement key issuance,
+  and explicit revocation.
+- Registration returning HTTP 202 means accepted, not provisioned. Lost responses
+  are checked by exact external ID instead of automatically replaying creation.
+- Prompt Shields uses `PATCH /agents/{id}/features`, including matching
+  `If-Match` and idempotency headers/body fields. It never calls the agent
+  enable/disable endpoints. Requested and effective states are distinct.
+- Purview Connection uses the existing review, explicit confirmation, start,
+  and operation-readback protocol. It does not invent a `connection:recheck`
+  endpoint, ask for scripts, or infer a missing provider reference from a generic
+  verification failure. Operation links survive reloads.
+- Classifiers use the actual inventory envelope and expiration metadata. Reload
+  reads the saved inventory; a connection check refreshes it from Purview.
+- Policies is currently **read-only**. Policy editing, behavior tests, and
+  complete Registry handoff are not yet implemented in the React Console.
+- Platform reports API health, actual capabilities, and persisted Prompt Shields
+  defaults. API health is not worker health; installation is not enforcement.
 
-- **Agents** — register, keys, per‑agent Prompt Shields, activity.
-- **Data protection** — Purview connection, classifiers, DLP policies.
-- **Platform** — health, defaults, access.
+One-time Gateway keys and review/confirmation values stay in component memory,
+not local/session storage or the shared query cache. Leaving their page hides
+them. Replacing a key does not implicitly revoke an old key.
 
-Prompt Shields lives on the agent; DLP lives in Data protection; defaults live in
-Platform. They never share a screen.
+The legacy Admin UI remains deployed. This Console is not yet part of the
+canonical bootstrap workflow. A successful build or smoke test is not human
+acceptance of the full product.

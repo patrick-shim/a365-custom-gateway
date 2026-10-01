@@ -22,6 +22,14 @@ const toneByValue: Record<string, Tone> = {
   Unhealthy: "danger",
   Failed: "danger",
   VerificationFailed: "danger",
+  Unavailable: "warning",
+  Cancelled: "subtle",
+  Completed: "success",
+  Running: "informative",
+  Submitted: "informative",
+  SimulationReady: "informative",
+  PendingPropagation: "warning",
+  RequiresManualIntervention: "warning",
   Expired: "danger",
   Off: "subtle",
   Disabled: "subtle",
@@ -39,7 +47,8 @@ const colorByTone: Record<Tone, "success" | "warning" | "danger" | "informative"
   subtle: "subtle",
 };
 
-export function StatusPill({ value }: { value: string }) {
+export function StatusPill({ value: supplied }: { value: string | null | undefined }) {
+  const value = typeof supplied === "string" && supplied.trim() ? supplied : "Unknown";
   const tone = toneByValue[value] ?? "informative";
   return (
     <Badge appearance="filled" color={colorByTone[tone]}>

@@ -58,7 +58,7 @@ verification checks the effective public origin. See the
 [HTTPS ingress contract](../api/api-contract.md#https-ingress).
 
 The user interface is being replaced by a modern React + TypeScript single‑page
-**Console** (see the [Console design system](console/design.md)); it consumes the
+**Console** (see the [Console design system](../console/design.md)); it consumes the
 same `/api/v1` control plane with the same Entra sign‑in and role enforcement. The
 legacy Blazor Admin UI described below is retained only until the Console migration
 completes.

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { makeStyles, tokens, Title2, Body1, Button, Spinner } from "@fluentui/react-components";
 import { useMsal, useIsAuthenticated } from "@azure/msal-react";
 import { InteractionStatus } from "@azure/msal-browser";
@@ -34,6 +35,15 @@ export function SignInGate({ children }: { children: React.ReactNode }) {
   const styles = useStyles();
   const { instance, inProgress } = useMsal();
   const isAuthenticated = useIsAuthenticated();
+  const [failed, setFailed] = useState(false);
+  async function signIn() {
+    setFailed(false);
+    try {
+      await instance.loginRedirect({ scopes: apiScopes });
+    } catch {
+      setFailed(true);
+    }
+  }
 
   if (isAuthenticated) return <>{children}</>;
 
@@ -53,10 +63,11 @@ export function SignInGate({ children }: { children: React.ReactNode }) {
         <Body1>Sign in with your Microsoft Entra account to continue.</Body1>
         <Button
           appearance="primary"
-          onClick={() => instance.loginRedirect({ scopes: apiScopes })}
+          onClick={() => void signIn()}
         >
           Sign in
         </Button>
+        {failed && <Body1 role="alert">Sign-in could not start. Reload and try again.</Body1>}
       </div>
     </div>
   );

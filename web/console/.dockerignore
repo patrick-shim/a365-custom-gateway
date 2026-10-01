@@ -3,3 +3,6 @@ dist
 .git
 tsconfig.tsbuildinfo
 .playwright-mcp
+.env
+.env.*
+coverage
