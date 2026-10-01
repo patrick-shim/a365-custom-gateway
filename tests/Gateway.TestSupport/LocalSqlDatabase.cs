@@ -23,7 +23,7 @@ public sealed class LocalSqlDatabase : IAsyncDisposable
     public string Name { get; }
     public string ConnectionString { get; }
 
-    internal static async Task<LocalSqlDatabase> CreateOwnedAsync(LocalSqlInstance instance)
+    internal static async Task<LocalSqlDatabase> CreateOwnedAsync(LocalSqlInstance instance, bool initializeSchema)
     {
         var database = new LocalSqlDatabase(instance);
         if (Directory.Exists(database._directory))
@@ -44,8 +44,11 @@ public sealed class LocalSqlDatabase : IAsyncDisposable
                 """;
             await command.ExecuteNonQueryAsync();
             database._ownsDatabase = true;
-            await using var context = database.CreateContext();
-            await context.Database.EnsureCreatedAsync();
+            if (initializeSchema)
+            {
+                await using var context = database.CreateContext();
+                await context.Database.EnsureCreatedAsync();
+            }
             return database;
         }
         catch

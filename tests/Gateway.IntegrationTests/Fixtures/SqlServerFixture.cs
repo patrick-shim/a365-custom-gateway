@@ -15,5 +15,6 @@ public sealed class SqlServerFixture : IAsyncLifetime
     public string PipeName => _instance.PipeName;
     public async Task InitializeAsync() => _instance = await LocalSqlInstance.CreateAsync();
     public Task<LocalSqlDatabase> CreateDatabaseAsync() => _instance.CreateDatabaseAsync();
+    public Task<LocalSqlDatabase> CreateEmptyDatabaseAsync() => _instance.CreateDatabaseAsync(initializeSchema: false);
     public Task DisposeAsync() => _instance is null ? Task.CompletedTask : _instance.DisposeAsync().AsTask();
 }

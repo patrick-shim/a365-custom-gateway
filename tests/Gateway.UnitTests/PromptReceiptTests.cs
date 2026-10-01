@@ -34,6 +34,8 @@ public sealed class PromptReceiptTests
     [InlineData(false, PurviewPolicyMode.Enforce, true)]
     [InlineData(true, PurviewPolicyMode.Disabled, true)]
     [InlineData(true, PurviewPolicyMode.SimulationWithTips, true)]
+    [InlineData(true, PurviewPolicyMode.SimulationWithoutTips, true)]
+    [InlineData(true, PurviewPolicyMode.Enforce, true)]
     public void Enforcement_and_Prompt_Shields_independently_require_proof(
         bool shield, PurviewPolicyMode mode, bool required)
     {
@@ -98,6 +100,35 @@ public sealed class PromptReceiptTests
         Assert.False(context.IsCurrentAt(TestData.Now.AddMinutes(3)));
     }
 
+    [Theory]
+    [InlineData("mode")]
+    [InlineData("readiness")]
+    [InlineData("readback")]
+    public void Shared_policy_change_invalidates_each_childs_receipt_without_changing_the_agent_revision(string mutation)
+    {
+        var profile = TestData.ReadyProfile();
+        var first = TestData.Agent(promptShield: true, purview: true);
+        var sibling = TestData.Agent(promptShield: true, purview: true);
+        first.BlueprintId = sibling.BlueprintId = profile.BlueprintApplicationId.Value.ToString("D");
+        var firstContext = PromptProtectionContext.Capture(first, profile);
+        var siblingContext = PromptProtectionContext.Capture(sibling, profile);
+        var firstProof = BoundReceipt(firstContext);
+        var siblingProof = BoundReceipt(siblingContext);
+        switch (mutation)
+        {
+            case "mode": profile.PolicyMode = PurviewPolicyMode.SimulationWithoutTips; break;
+            case "readiness": profile.RuntimeBehaviorVerifiedUntilUtc = TestData.Now; break;
+            case "readback": profile.LastReadbackAtUtc = TestData.Now; break;
+        }
+
+        Assert.Equal(firstContext.ProtectionRevision, first.ProtectionRevision);
+        Assert.Equal(siblingContext.ProtectionRevision, sibling.ProtectionRevision);
+        Assert.True(firstContext.MatchesReceipt(firstProof, TestData.Now));
+        Assert.True(siblingContext.MatchesReceipt(siblingProof, TestData.Now));
+        Assert.False(PromptProtectionContext.Capture(first, profile).MatchesReceipt(firstProof, TestData.Now));
+        Assert.False(PromptProtectionContext.Capture(sibling, profile).MatchesReceipt(siblingProof, TestData.Now));
+    }
+
     [Fact]
     public void Identity_feature_status_and_revision_changes_invalidate_context()
     {
@@ -133,6 +164,11 @@ public sealed class PromptReceiptTests
         }));
         Assert.NotEqual(hash, IdempotencyRequestHasher.Compute(request with { PromptEvaluationReceiptId = Guid.NewGuid() }));
         Assert.NotEqual(hash, IdempotencyRequestHasher.Compute(request with { Response = new("text/plain", "different") }));
+        Assert.NotEqual(hash, IdempotencyRequestHasher.Compute(request with { Prompt = new("text/plain", "prompt ") }));
+        Assert.NotEqual(hash, IdempotencyRequestHasher.Compute(request with { Prompt = new("text/markdown", "prompt") }));
+        Assert.NotEqual(hash, IdempotencyRequestHasher.Compute(request with { InteractionId = "another-interaction" }));
+        Assert.NotEqual(hash, IdempotencyRequestHasher.Compute(request with { ExternalAgentId = "another-child" }));
+        Assert.NotEqual(hash, IdempotencyRequestHasher.Compute(request with { UserContext = new(TestData.TenantUser) }));
     }
 
     private static PromptEvaluationRecord BoundReceipt(PromptProtectionContext context) => new()

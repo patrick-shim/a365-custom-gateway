@@ -22,6 +22,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Assert-PurviewPowerShellRuntimeIdentity {
+    param(
+        [Parameter()][AllowNull()][AllowEmptyCollection()][string[]]$Identity,
+        [Parameter(Mandatory)][int]$ExitCode
+    )
+    if ($ExitCode -ne 0 -or $null -eq $Identity -or $Identity.Count -ne 1 -or
+        $Identity[0] -cne '7.6.5|X64') {
+        throw 'This executor package requires PowerShell 7.6.5 Windows x64 exactly.'
+    }
+}
+
 function Assert-PurviewDependencyTree {
     param([Parameter(Mandatory)][string]$Root)
     # Check ancestors too: a version directory beneath a junction is not an
@@ -130,10 +141,8 @@ $signature = Get-AuthenticodeSignature -LiteralPath $powerShellPath
 if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') {
     throw 'Packaged PowerShell must have a valid Microsoft Authenticode signature.'
 }
-$runtimeVersion = & $powerShellPath -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
-if ($LASTEXITCODE -ne 0 -or [string]$runtimeVersion -cne '7.6.5') {
-    throw 'This executor package requires PowerShell 7.6.5 exactly.'
-}
+$runtimeIdentity = @(& $powerShellPath -NoLogo -NoProfile -NonInteractive -Command '($PSVersionTable.PSVersion.ToString() + "|" + [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString())')
+Assert-PurviewPowerShellRuntimeIdentity -Identity $runtimeIdentity -ExitCode $LASTEXITCODE
 $moduleRoot = Resolve-PurviewExecutorModuleRoot
 if ($ValidateOnly) { return }
 $sourceFingerprint = Get-BootstrapSourceFingerprint -Root $repositoryRoot

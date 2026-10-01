@@ -62,24 +62,18 @@ internal sealed class ProtectionAdminWorkerService : BackgroundService, IAsyncDi
 
     private async Task ProcessMessageAsync(ProcessMessageEventArgs args)
     {
-        using var scope = _scopeFactory.CreateScope();
-        var handler = scope.ServiceProvider.GetRequiredService<ProtectionAdminMessageHandler>();
         var messageType = args.Message.Subject;
         var payload = args.Message.Body.ToString();
 
+        MessageHandlingResult result;
         try
         {
-            var result = await handler.HandleAsync(
+            using var scope = _scopeFactory.CreateScope();
+            var handler = scope.ServiceProvider.GetRequiredService<ProtectionAdminMessageHandler>();
+            result = await handler.HandleAsync(
                 messageType,
                 payload,
                 args.CancellationToken);
-            if (result.ShouldDeadLetter)
-            {
-                await DeadLetterAsync(args, result);
-                return;
-            }
-
-            await args.CompleteMessageAsync(args.Message, args.CancellationToken);
         }
         catch (OperationCanceledException) when (args.CancellationToken.IsCancellationRequested)
         {
@@ -88,7 +82,6 @@ internal sealed class ProtectionAdminWorkerService : BackgroundService, IAsyncDi
         catch (Exception)
         {
             if (await TryFinalizeRetriesAsync(
-                    handler,
                     args,
                     payload,
                     "PROTECTION_ADMIN_UNEXPECTED_FAILURE"))
@@ -102,11 +95,14 @@ internal sealed class ProtectionAdminWorkerService : BackgroundService, IAsyncDi
             await args.AbandonMessageAsync(
                 args.Message,
                 cancellationToken: args.CancellationToken);
+            return;
         }
+
+        // Settlement failure cannot invalidate a step that already committed.
+        await SettleAsync(args, result);
     }
 
     private async Task<bool> TryFinalizeRetriesAsync(
-        ProtectionAdminMessageHandler handler,
         ProcessMessageEventArgs args,
         string payload,
         string failureCode)
@@ -114,6 +110,9 @@ internal sealed class ProtectionAdminWorkerService : BackgroundService, IAsyncDi
         if (!IsFinalDelivery(args.Message.DeliveryCount, _options.MaxDeliveryCount))
             return false;
 
+        // Reload durable state rather than entities tracked by the failed attempt.
+        using var scope = _scopeFactory.CreateScope();
+        var handler = scope.ServiceProvider.GetRequiredService<ProtectionAdminMessageHandler>();
         var result = await handler.HandleRetryExhaustedAsync(
             args.Message.Subject,
             payload,
@@ -122,9 +121,14 @@ internal sealed class ProtectionAdminWorkerService : BackgroundService, IAsyncDi
         if (result is null)
             return false;
 
-        await DeadLetterAsync(args, result);
+        await SettleAsync(args, result);
         return true;
     }
+
+    private Task SettleAsync(ProcessMessageEventArgs args, MessageHandlingResult result) =>
+        result.ShouldDeadLetter
+            ? DeadLetterAsync(args, result)
+            : args.CompleteMessageAsync(args.Message, args.CancellationToken);
 
     private async Task DeadLetterAsync(
         ProcessMessageEventArgs args,

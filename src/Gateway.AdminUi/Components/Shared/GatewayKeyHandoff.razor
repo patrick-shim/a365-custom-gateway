@@ -1,0 +1,141 @@
+@using Gateway.AdminUi.Options
+@using Microsoft.Extensions.Options
+@inject IOptions<GatewayApiOptions> ApiOptions
+@inject NavigationManager Navigation
+
+<NavigationLock ConfirmExternalNavigation="@(!saved)"
+                OnBeforeInternalNavigation="BeforeNavigation" />
+
+<section class="card form-card gateway-key-handoff" aria-labelledby="key-handoff-heading">
+    <div class="form-section">
+        <h2 id="key-handoff-heading">Connect to this Gateway</h2>
+        <p>@(Replacement
+            ? "Store the replacement key, update and verify your external agent, then revoke the old key."
+            : "Your agent record is created. Save the key now, then follow Agent 365 setup.")</p>
+        <div class="deployment-callout" role="note">
+            <strong>This key is shown once.</strong>
+            <span>Store it in the external agent's secret manager. Leaving this screen hides it permanently. A lost key requires a replacement, not another registration.</span>
+        </div>
+    </div>
+    <div class="form-section">
+        <div class="form-grid">
+            <div class="form-field full">
+                @if (GatewayConnectionCommand.IsShareableEndpoint(ApiOptions.Value.BaseUrl))
+                {
+                    <CopyableValue InputId="handoff-api-endpoint" Label="Gateway API endpoint"
+                                   Value="@(ApiOptions.Value.BaseUrl!.AbsoluteUri)" />
+                }
+                else
+                {
+                    <ErrorState Title="Gateway API endpoint is unavailable"
+                                Message="Ask a Gateway Administrator to verify the configured API endpoint. Save the one-time key now; the portal cannot recover it later." />
+                }
+            </div>
+            <div class="form-field full">
+                <CopyableValue InputId="credential-external-agent-id" Label="External agent ID" Value="@ExternalAgentId" />
+            </div>
+            <div class="form-field full">
+                <CopyableValue InputId="gateway-api-key" Label="One-time Gateway key" Value="@Credential.ApiKey" />
+            </div>
+            <div class="form-field">
+                <span class="detail-label">Key reference</span>
+                <code>@Credential.KeyId</code>
+            </div>
+            <div class="form-field">
+                <span class="detail-label">Expires</span>
+                <time datetime="@AsUtc(Credential.ExpiresAtUtc).ToString("O")">@AsUtc(Credential.ExpiresAtUtc).ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</time>
+            </div>
+        </div>
+        @if (GatewayConnectionCommand.SupportsSample(ApiOptions.Value.BaseUrl))
+        {
+            <details>
+                <summary>View a non-secret connection example</summary>
+                <p>Run from the repository root after registration is Active. Replace the tenant-user placeholder with the interaction's actual user ID. The sample prompts for the key without echoing it; do not add the key to this command or a URL.</p>
+                <CopyableCommand Label="PowerShell connection example"
+                                 Command="@GatewayConnectionCommand.CreateSample(ApiOptions.Value.BaseUrl!, ExternalAgentId)" />
+                <p class="field-help">The example uses a fixed-response model. Keep its evaluate, validate, model-once and submit sequence when connecting your own model. Gateway acceptance does not confirm downstream telemetry delivery.</p>
+            </details>
+        }
+        else if (GatewayConnectionCommand.IsShareableEndpoint(ApiOptions.Value.BaseUrl))
+        {
+            <p class="field-help" role="note">This Gateway uses a local HTTP endpoint. The external-agent sample requires HTTPS, so no executable command is offered. Save the key now and configure a trusted HTTPS API endpoint before running the sample.</p>
+        }
+    </div>
+    <div class="form-section">
+        <label class="checkbox-label" for="saved-gateway-key">
+            <input id="saved-gateway-key" type="checkbox" @bind="saved" />
+            <span>I have saved the key in a secret manager.</span>
+        </label>
+        <p class="field-help">Acknowledge saving the key before continuing. No Microsoft sign-in or Registry action runs on this screen.</p>
+    </div>
+    <div class="form-actions">
+        <FluentButton id="continue-to-provisioning" Type="ButtonType.Button"
+                      Appearance="Appearance.Accent" Disabled="@(!saved)" OnClick="ContinueAsync">
+            @ContinueLabel
+        </FluentButton>
+    </div>
+</section>
+
+<ConfirmPanel Visible="@(pendingLocation is not null)"
+              Title="Leave without saving the key?"
+              Message="This key is shown once. If you leave now, issue a replacement from the agent's details before connecting your application."
+              CancelLabel="Stay and save key" ConfirmLabel="Leave and hide key"
+              OnCancel="CancelNavigation" OnConfirm="DiscardAndLeaveAsync" />
+
+@code {
+    private bool saved;
+    private Guid displayedKey;
+    private string? pendingLocation;
+
+    [Parameter, EditorRequired] public string ExternalAgentId { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public AgentGatewayCredentialDto Credential { get; set; } = default!;
+    [Parameter] public bool Replacement { get; set; }
+    [Parameter] public string ContinueLabel { get; set; } = "Continue to agent setup";
+    [Parameter] public EventCallback OnContinue { get; set; }
+    [Parameter] public EventCallback OnDiscard { get; set; }
+    [Parameter] public string? RecoveryUri { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        if (displayedKey != Credential.KeyId)
+        {
+            displayedKey = Credential.KeyId;
+            saved = false;
+            pendingLocation = null;
+        }
+    }
+
+    private Task ContinueAsync() => saved ? OnContinue.InvokeAsync() : Task.CompletedTask;
+
+    private void BeforeNavigation(LocationChangingContext context)
+    {
+        if (!saved && !string.Equals(context.TargetLocation, RecoveryUri, StringComparison.Ordinal))
+        {
+            context.PreventNavigation();
+            pendingLocation = context.TargetLocation;
+        }
+    }
+
+    private void CancelNavigation() => pendingLocation = null;
+
+    private async Task DiscardAndLeaveAsync()
+    {
+        var target = pendingLocation;
+        if (target is null)
+        {
+            return;
+        }
+
+        saved = true;
+        pendingLocation = null;
+        await OnDiscard.InvokeAsync();
+        Navigation.NavigateTo(target);
+    }
+
+    private static DateTime AsUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+    };
+}

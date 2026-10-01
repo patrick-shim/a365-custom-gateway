@@ -125,6 +125,7 @@ code { font-family: "Cascadia Code", Consolas, monospace; font-size: .88em; }
 .tab-button:hover { color: var(--brand-strong); }
 .tab-button.active { border-bottom-color: var(--brand); color: var(--brand-strong); }
 
+.registration-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .form-grid-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .form-grid-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }

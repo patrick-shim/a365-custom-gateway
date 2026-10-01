@@ -202,19 +202,21 @@ paths:
             $ref: '#/components/schemas/Environment'
         - name: search
           in: query
-          description: Search in name, externalAgentId, description
+          description: Trimmed, case-insensitive literal substring search in name or externalAgentId. Combined with status and environment filters.
           schema:
             type: string
             maxLength: 256
-        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/AgentListLimit'
         - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
-          description: Paginated list of agents
+          description: Paginated matching agents, with the authoritative filtered total before the cursor. Forward nextCursor unchanged; null ends the list even when the final page is full.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentListResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -432,7 +434,10 @@ paths:
     post:
       operationId: reviewPurviewTenantConnectionCompletion
       summary: Review bounded Windows companion evidence
-      description: Performs no provider mutation and grants no completion by itself.
+      description: |
+        Performs no provider mutation and grants no completion by itself. The
+        returned review identifies a separate completion approval. Its reviewed
+        sourceOperationId remains the original connection execution/recovery ID.
       tags: [Protection administration]
       x-gateway-roles-any-of: [Gateway.Administrator]
       security:
@@ -463,6 +468,12 @@ paths:
     post:
       operationId: completePurviewTenantConnection
       summary: Submit confirmed companion evidence for independent verification
+      description: |
+        Returns the original connection operationId from the path, not the
+        separate completion approval ID. The original operation becomes Pending
+        and the connection becomes PendingVerification. The completion approval
+        is Submitted and references the original operation for readback.
+        Acceptance is not verified connection or DLP enforcement.
       tags: [Protection administration]
       x-gateway-roles-any-of: [Gateway.Administrator]
       security:
@@ -674,6 +685,10 @@ paths:
     post:
       operationId: reviewReconcilePurviewDlpProfile
       summary: Review exact DLP profile reconciliation
+      description: |
+        Validate unchanged saved settings against the connection's current active
+        inventory generation and return that binding in the review. Review alone
+        does not update the profile or authorize provider mutation.
       tags: [Protection administration]
       x-gateway-roles-any-of: [Gateway.Administrator]
       security:
@@ -704,7 +719,12 @@ paths:
     post:
       operationId: reconcilePurviewDlpProfile
       summary: Re-read exact DLP profile provider state
-      description: Does not silently rewrite mismatched provider policy.
+      description: |
+        Accept the newly confirmed exact review after revalidating profile/version,
+        settings and current inventory. The transaction may refresh the profile's
+        inventory binding and clear old protection proof while preserving settings,
+        provider IDs and agent choices. Worker provider reconciliation is read-only;
+        mismatched, partial or unknown objects are not silently created or rewritten.
       tags: [Protection administration]
       x-gateway-roles-any-of: [Gateway.Administrator]
       security:
@@ -1887,6 +1907,16 @@ components:
         type: string
         format: uuid
 
+    AgentListLimit:
+      name: limit
+      in: query
+      description: Page size for agent listing. The Admin UI requests 100 rows per page.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
     Limit:
       name: limit
       in: query
@@ -2190,6 +2220,11 @@ components:
           type: string
           readOnly: true
           nullable: true
+        purviewProfileStatus:
+          type: string
+          readOnly: true
+          nullable: true
+          description: Saved shared profile state, distinct from the configuration operation status.
 
     Agent365Info:
       type: object
@@ -2787,6 +2822,16 @@ components:
           type: string
           format: date-time
           nullable: true
+        validUntilUtc:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Earliest known expiry of the current connection, classifier inventory,
+            and (for Enforce) behavioral evidence. Equality is expired. This
+            snapshot bound does not prevent earlier invalidation by a context
+            change and grants no request authority. An absent value cannot
+            establish current enforcement in a cached UI.
 
     PurviewPolicyMode:
       type: string
@@ -3188,6 +3233,14 @@ components:
       properties:
         operation:
           $ref: '#/components/schemas/ProtectionAdminOperation'
+        companionLaunch:
+          nullable: true
+          description: |
+            Existing non-secret launch instructions for the same actor's accepted
+            ConnectPurviewTenant operation while it awaits completion. Readback
+            does not create a new operation, refresh expiry, or grant authority.
+          allOf:
+            - $ref: '#/components/schemas/PurviewCompanionLaunch'
 
     ReviewPurviewTenantConnectionRequest:
       type: object

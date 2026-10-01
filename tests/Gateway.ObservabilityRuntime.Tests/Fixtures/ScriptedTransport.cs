@@ -12,6 +12,7 @@ internal sealed record CapturedRequest(
     string? AuthorizationScheme,
     string? AuthorizationParameter,
     string? IfNoneMatch,
+    string? IfMatch,
     string Body)
 {
     public JsonElement Json => JsonSerializer.Deserialize<JsonElement>(Body);
@@ -64,6 +65,7 @@ internal sealed class ScriptedTransport : HttpMessageHandler
             request.Headers.Authorization?.Scheme,
             request.Headers.Authorization?.Parameter,
             request.Headers.TryGetValues("If-None-Match", out var values) ? values.Single() : null,
+            request.Headers.TryGetValues("If-Match", out var matches) ? matches.Single() : null,
             request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken));
         Requests.Add(captured);
         return next.Respond(captured);

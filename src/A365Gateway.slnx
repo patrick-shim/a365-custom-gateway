@@ -15,6 +15,9 @@
   <Project Path="Gateway.AdminUi/Gateway.AdminUi.csproj" />
   <Project Path="Gateway.Provisioning.Worker/Gateway.Provisioning.Worker.csproj" />
   <Project Path="ExternalAgent.Sample/ExternalAgent.Sample.csproj" />
+  <Folder Name="/Tests/">
+    <Project Path="../tests/Gateway.AdminUi.BrowserHost/Gateway.AdminUi.BrowserHost.csproj" />
+  </Folder>
   <Project Path="../tests/Gateway.AdminUi.Tests/Gateway.AdminUi.Tests.csproj" />
   <Project Path="../tests/Gateway.IntegrationTests/Gateway.IntegrationTests.csproj" />
   <Project Path="../tests/Gateway.ObservabilityRuntime.Tests/Gateway.ObservabilityRuntime.Tests.csproj" />

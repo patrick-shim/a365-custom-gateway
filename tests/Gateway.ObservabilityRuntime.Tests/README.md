@@ -40,6 +40,29 @@ Azure, Microsoft Graph, Service Bus, SQL, environment credentials, or user secre
 - The normal Purview evaluation fixture covers its existing bounded scope-refresh
   behavior. It does not run the approved-sample runtime probe, PowerShell executor,
   live policy propagation, role assignment or actual classifier enforcement.
+- Release publication tests exercise the real package-publisher coordinator and
+  Blob SDK adapter with the same terminal transport and synthetic credential.
+  They assert create-only upload, exact ETag-bound readback, no mutation retry
+  after response loss, rejection of conflicting bytes, and disabled provider
+  logging. Executor caller tests cover the post-JWT application-only predicate;
+  they do not replace signature validation or hosted Entra authorization.
+- Settings failure fixtures preserve only safe inventory-expiry and proven
+  transient-read-timeout classifications through the native adapter, executor
+  dispatcher and client. Unknown mutation outcomes remain non-replayable.
+  Reconciliation of absent, partial, mismatched or unknown provider state makes
+  no create/update calls. The separate native
+  [catalog tests](../LocalBaseline.Tests/PurviewCatalog.Tests.ps1) execute the
+  authored script with isolated synthetic commands, checking one catalog per
+  invocation, minimum imports and freshness immediately before writes.
+
+The separate [Windows package qualifier](../../tools/Test-PurviewPackage.ps1)
+extracts an already inspected content-addressed ZIP into an owned temporary
+directory, runs its fixed native child probe and starts its actual executor with
+synthetic identities. It sends only unauthenticated loopback health/execution
+requests and verifies rejection. It does not load deployment configuration,
+authenticate to Entra, execute a provider command or establish cloud networking.
+Its signed runtime inputs are explicit and are not required by the default local
+test runner.
 
 The returned provider responses are chosen fixtures, never live acceptance
 evidence. Project acceptance remains solely in [MILESTONES.md](../../MILESTONES.md).

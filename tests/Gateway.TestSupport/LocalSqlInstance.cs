@@ -50,10 +50,10 @@ public sealed class LocalSqlInstance : IAsyncDisposable
         }
     }
 
-    public async Task<LocalSqlDatabase> CreateDatabaseAsync()
+    public async Task<LocalSqlDatabase> CreateDatabaseAsync(bool initializeSchema = true)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var database = await LocalSqlDatabase.CreateOwnedAsync(this);
+        var database = await LocalSqlDatabase.CreateOwnedAsync(this, initializeSchema);
         _databases.Add(database);
         return database;
     }

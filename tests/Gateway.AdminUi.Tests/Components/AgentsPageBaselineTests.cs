@@ -6,6 +6,7 @@ using Gateway.AdminUi.Services;
 using Gateway.AdminUi.Tests.Fixtures;
 using Gateway.Contracts.Dtos;
 using Gateway.Contracts.Responses;
+using Microsoft.FluentUI.AspNetCore.Components;
 
 namespace Gateway.AdminUi.Tests.Components;
 
@@ -93,7 +94,7 @@ public sealed class AgentsPageBaselineTests
     [InlineData("GatewayOnly", false, true)]
     [InlineData("Agent365", true, false)]
     [InlineData("Agent365AzureMonitor", true, true)]
-    public void Existing_destination_modes_remain_distinct_and_paging_is_not_claimed_working(
+    public void Existing_destination_modes_remain_distinct_with_authoritative_totals_and_available_paging(
         string mode, bool agent365, bool mirror)
     {
         using var fixture = new AdminUiFixture(GatewayRoles.SupportReader);
@@ -109,8 +110,10 @@ public sealed class AgentsPageBaselineTests
         Assert.Contains($"Azure Monitor mirror: {(mirror ? "Enabled" : "Disabled")}", row);
         Assert.Contains("Not reported", row);
         Assert.NotNull(page.Find($"a[href='/agents/{agent.AgentId}']"));
-        Assert.Contains("paging is temporarily unavailable", page.Markup);
-        Assert.Contains("1 agent shown", page.Markup);
+        Assert.DoesNotContain("paging is temporarily unavailable", page.Markup);
+        Assert.Contains("1–1 of 125 agents", page.Markup);
+        Assert.False(page.FindComponents<FluentButton>()
+            .Single(button => button.Find("fluent-button").TextContent.Trim() == "Next").Instance.Disabled);
         fixture.AssertComplete();
     }
 }

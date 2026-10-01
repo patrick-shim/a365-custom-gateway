@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'">
+  <title>A365 Gateway · Journey prototype</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="fixture-bar" aria-label="Prototype fixture controls">
+    <div class="fixture-label"><strong>M2 / INTERACTIVE PROTOTYPE</strong><span>Local simulation · synthetic data · no authentication or provider calls</span></div>
+    <div class="fixture-controls">
+      <label for="fixture-role">Role<select id="fixture-role"><option value="Administrator">Administrator</option><option value="Operator">Operator</option><option value="Auditor">Auditor</option><option value="SupportReader">Support reader</option><option value="Developer">External developer · guide only</option></select></label>
+      <label for="fixture-state">State<select id="fixture-state"><option value="success">Success</option><option value="empty">Empty</option><option value="loading">Loading</option><option value="error">Error</option><option value="restricted">Restricted</option></select></label>
+      <button id="fixture-reset" type="button">Reset prototype</button>
+    </div>
+  </div>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#/dashboard" aria-label="A365 Gateway overview"><span class="brand-icon" aria-hidden="true">G</span><span>A365 Gateway<small>Agent control center</small></span></a>
+      <nav id="nav" aria-label="Main navigation"></nav>
+      <div class="sidebar-bottom"><span class="status-dot" aria-hidden="true"></span><div>Contoso workspace<small>Development environment</small></div></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><div><span class="workspace-name">CONTOSO</span><span class="divider">/</span><span>Gateway</span><span class="environment">Development</span></div><div class="user-info"><span id="role-caption"></span><span class="avatar" aria-hidden="true">JD</span></div></header>
+      <main id="main" tabindex="-1"></main>
+      <footer class="product-footer">A365 Gateway<span>Development Registry preview</span></footer>
+    </div>
+  </div>
+  <div id="announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="dialog" aria-labelledby="dialog-title"><div id="dialog-content"></div></dialog>
+</body>
+</html>

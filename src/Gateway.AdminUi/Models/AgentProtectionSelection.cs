@@ -32,10 +32,31 @@ public sealed record AgentProtectionSelection
         SensitiveInformationTypeThresholds.FirstOrDefault(item =>
             string.Equals(item.Key, id, StringComparison.OrdinalIgnoreCase)).Value;
 
+    internal AgentProtectionSelection WithSensitiveInformationType(string id, bool selected)
+    {
+        var thresholds = new Dictionary<string, AgentProtectionSitThresholds>(
+            SensitiveInformationTypeThresholds, StringComparer.OrdinalIgnoreCase);
+        if (!thresholds.ContainsKey(id))
+        {
+            // Retain an unknown legacy selection even after removal; reselecting it is not a new type.
+            thresholds[id] = selected && !SensitiveInformationTypeIds.Contains(id, StringComparer.OrdinalIgnoreCase)
+                ? AgentProtectionSitThresholds.StartingValues
+                : new();
+        }
+        return this with
+        {
+            SensitiveInformationTypeIds = selected
+                ? SensitiveInformationTypeIds.Append(id).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+                : SensitiveInformationTypeIds.Where(existing => !string.Equals(existing, id, StringComparison.OrdinalIgnoreCase)).ToArray(),
+            SensitiveInformationTypeThresholds = thresholds
+        };
+    }
+
     internal bool HasSamePolicyChoices(AgentProtectionSelection other) =>
         BlueprintId == other.BlueprintId &&
         PurviewEnabled == other.PurviewEnabled &&
         PolicyMode == other.PolicyMode &&
+        SensitiveInformationTypeIds.Count == other.SensitiveInformationTypeIds.Count &&
         SensitiveInformationTypeIds.ToHashSet(StringComparer.OrdinalIgnoreCase)
             .SetEquals(other.SensitiveInformationTypeIds) &&
         SensitiveInformationTypeIds.All(id => ThresholdsFor(id) == other.ThresholdsFor(id));
@@ -59,9 +80,9 @@ public sealed record AgentProtectionSelection
         {
             errors.Add("Select a blueprint before configuring protection.");
         }
-        else if (!deferredBlueprint && !blueprints.Items.Any(item => item.Id == BlueprintId))
+        else if (!deferredBlueprint && blueprints.Items.Count(item => item.Id == BlueprintId) != 1)
         {
-            errors.Add("The selected blueprint is no longer in the inventory. Select an available blueprint.");
+            errors.Add("The selected blueprint is missing or duplicated in the inventory. Select one exact available blueprint.");
         }
 
         if (!PurviewEnabled)
@@ -78,11 +99,16 @@ public sealed record AgentProtectionSelection
         {
             errors.Add("Select at least one sensitive information type for Purview.");
         }
-        else if (sensitiveInformationTypes.CurrentState == ProtectionInventoryState.Ready &&
-                 SensitiveInformationTypeIds.Any(id => !sensitiveInformationTypes.Items.Any(
-                     item => string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase))))
+        else if (SensitiveInformationTypeIds.Count > 100 ||
+                 SensitiveInformationTypeIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() != SensitiveInformationTypeIds.Count)
         {
-            errors.Add("Remove or replace selected sensitive information type IDs that are no longer available.");
+            errors.Add("Select 1-100 distinct sensitive information types.");
+        }
+        else if (sensitiveInformationTypes.CurrentState == ProtectionInventoryState.Ready &&
+                 SensitiveInformationTypeIds.Any(id => sensitiveInformationTypes.Items.Count(
+                     item => string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase)) != 1))
+        {
+            errors.Add("Remove or replace selected sensitive information type IDs that are missing or duplicated in the inventory.");
         }
 
         if (PolicyMode is null || !Enum.IsDefined(PolicyMode.Value))
@@ -100,7 +126,10 @@ public sealed record AgentProtectionSitThresholds(
     int? MinCount = null,
     int? MaxCount = null,
     int? MinConfidence = null,
-    int? MaxConfidence = null);
+    int? MaxConfidence = null)
+{
+    internal static AgentProtectionSitThresholds StartingValues => new(1, -1, 75, 100);
+}
 
 // Policy lifecycle modes deliberately do not reuse the Gateway's AuditOnly/Enforce runtime gate.
 public enum PurviewPolicyMode
@@ -125,9 +154,10 @@ public sealed record ProtectionInventory<T>
     public ProtectionInventoryState State { get; init; } = ProtectionInventoryState.NotLoaded;
     public IReadOnlyList<T> Items { get; init; } = [];
     public DateTimeOffset? ExpiresAtUtc { get; init; }
+    public TimeProvider Clock { get; init; } = TimeProvider.System;
 
     public ProtectionInventoryState CurrentState =>
-        State == ProtectionInventoryState.Ready && ExpiresAtUtc <= DateTimeOffset.UtcNow
+        State == ProtectionInventoryState.Ready && ExpiresAtUtc <= Clock.GetUtcNow()
             ? ProtectionInventoryState.Stale
             : State;
 }

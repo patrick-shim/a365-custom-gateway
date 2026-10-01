@@ -1,0 +1,138 @@
+.settings-header-activity { max-width: 24rem; }
+.previous-protection-operation {
+    margin: 1rem 0;
+    padding: 1rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: .75rem;
+    background: var(--surface, #fff);
+}
+.previous-protection-operation > summary { cursor: pointer; font-weight: 600; }
+.previous-protection-operation > summary:focus-visible {
+    outline: 3px solid var(--brand);
+    outline-offset: 4px;
+}
+.previous-protection-operation > p { color: var(--text-secondary); line-height: 1.5; }
+.protection-setup {
+    margin: 1rem 0;
+    padding: 1rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: .75rem;
+    background: var(--surface, #fff);
+}
+.protection-setup h2 { margin: 0 0 .4rem; font-size: 1rem; }
+.protection-setup > p { margin: .5rem 0; color: var(--text-secondary); line-height: 1.5; }
+.protection-setup-steps {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    list-style: none;
+    padding: 0;
+    gap: .6rem;
+    margin: 1rem 0;
+}
+.protection-setup-steps li { min-width: 0; }
+.protection-setup-steps a,
+.setup-step-restricted {
+    box-sizing: border-box;
+    height: 100%;
+    display: flex;
+    gap: .6rem;
+    padding: .85rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: .6rem;
+    color: var(--text-primary);
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+.protection-setup-steps a[aria-current="step"] {
+    background: var(--brand-soft);
+    border-color: var(--brand);
+    box-shadow: inset 0 3px 0 var(--brand);
+}
+.protection-setup-steps a:focus-visible {
+    outline: 3px solid var(--brand);
+    outline-offset: 3px;
+}
+.protection-setup-steps strong,
+.protection-setup-steps small { display: block; }
+.protection-setup-steps small { margin-top: .35rem; color: var(--text-secondary); line-height: 1.45; }
+.setup-step-number {
+    flex: 0 0 1.6rem;
+    height: 1.6rem;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--brand-soft);
+    color: var(--brand-strong);
+    font-weight: 700;
+}
+.inventory-count { margin: 1rem 0; }
+.saved-policy-library {
+    margin: 1.25rem 0;
+    padding: 1rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: .75rem;
+}
+.saved-policy-library > summary { cursor: pointer; font-weight: 600; }
+.saved-policy-library > summary:focus-visible {
+    outline: 3px solid var(--brand);
+    outline-offset: 4px;
+}
+.saved-policy-library > p { color: var(--text-secondary); line-height: 1.5; }
+.protection-task-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    margin: 1rem 0 1.5rem;
+}
+.protection-task-nav a {
+    border: 1px solid var(--border-subtle);
+    border-radius: .5rem;
+    color: var(--text-primary);
+    padding: .65rem .85rem;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+.protection-task-nav a[aria-current="page"] {
+    background: var(--brand-soft);
+    font-weight: 600;
+}
+.protection-task-nav a:focus-visible {
+    outline: 3px solid var(--brand);
+    outline-offset: 3px;
+}
+.settings-edit-fields {
+    border: 0;
+    margin: 0;
+    min-width: 0;
+    padding: 0;
+}
+.review-summary code { overflow-wrap: anywhere; }
+.profile-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 32rem), 1fr)); }
+.windows-companion-steps { padding-left: 1.4rem; }
+.windows-companion-steps li { margin: 0 0 1.25rem; }
+.windows-companion-steps p { margin: .65rem 0 0; }
+.companion-trust-step .copyable-value { margin: .65rem 0; }
+.companion-output {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    resize: vertical;
+    overflow-wrap: anywhere;
+    font-family: var(--font-mono, monospace);
+}
+.companion-upload { margin: .75rem 0; }
+.companion-upload summary { cursor: pointer; margin-bottom: .65rem; }
+.companion-upload summary:focus-visible {
+    outline: 3px solid var(--brand);
+    outline-offset: 3px;
+}
+.companion-upload label,
+.companion-upload .field-help { display: block; margin: .5rem 0; }
+@media (max-width: 600px) {
+    .protection-task-nav a { flex: 1 1 100%; }
+    .protection-setup-steps { grid-template-columns: minmax(0, 1fr); }
+    .protection-setup-steps a small { display: none; }
+}
+@media (min-width: 601px) and (max-width: 1000px) {
+    .protection-setup-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

@@ -7,9 +7,9 @@
 
 <PageTitle>Overview · A365 Gateway</PageTitle>
 
-<PageHeader Eyebrow="Control center" Title="Gateway overview" Description="A live view of registered agents and the health of the gateway control plane.">
+<PageHeader Eyebrow="Overview" Title="A clear view of your agents." Description="Gateway registrations and their next tasks, separate from optional protection and telemetry delivery.">
     <Actions>
-        <span class="last-updated">Updated @FormatTime(lastUpdatedUtc)</span>
+        <span class="last-updated">@(error is null ? "Updated" : "Last successful read") @FormatTime(lastUpdatedUtc)</span>
         <FluentButton Appearance="Appearance.Neutral" OnClick="LoadAsync" Disabled="loading">Refresh</FluentButton>
         <AuthorizeView Roles="Gateway.Administrator">
             <FluentAnchor Appearance="Appearance.Accent" Href="/agents/register">Register agent</FluentAnchor>
@@ -17,38 +17,66 @@
     </Actions>
 </PageHeader>
 
-@if (loading && agents is null)
+@if (loading)
 {
     <LoadingState Label="Loading gateway overview…" Detail="Checking the API and registered agent fleet." />
 }
 else if (error is not null)
 {
-    <ErrorState Message="@error.Message" CorrelationId="@error.CorrelationId" OnRetry="LoadAsync" />
+    <ErrorState Title="We couldn't load the overview" Message="@error.Message" CorrelationId="@error.CorrelationId" OnRetry="LoadAsync" />
 }
 else
 {
-    <section class="metric-grid" aria-label="Agent status summary">
-        <article class="metric-card card" style="--metric-color: var(--brand-soft)"><span class="metric-label">Registered agents</span><strong class="metric-value">@Total</strong><span class="metric-hint">@(hasAdditionalAgents ? "First 100 shown by the API" : "Visible in this environment")</span></article>
-        <article class="metric-card card" style="--metric-color: var(--success-soft)"><span class="metric-label">Active</span><strong class="metric-value">@Count("Active")</strong><span class="metric-hint">Accepting data-plane traffic</span></article>
-        <article class="metric-card card" style="--metric-color: var(--warning-soft)"><span class="metric-label">In progress</span><strong class="metric-value">@InProgress</strong><span class="metric-hint">Provisioning or awaiting action</span></article>
-        <article class="metric-card card" style="--metric-color: #eef0f5"><span class="metric-label">Disabled</span><strong class="metric-value">@Count("Disabled")</strong><span class="metric-hint">Data-plane access blocked</span></article>
-        <article class="metric-card card" style="--metric-color: var(--danger-soft)"><span class="metric-label">Needs attention</span><strong class="metric-value">@NeedsAttention</strong><span class="metric-hint">Failed or manual intervention</span></article>
+    <section class="metric-grid overview-metrics" aria-label="Registration counts" aria-live="polite">
+        <article class="metric-card card" data-count="registered" style="--metric-color: var(--brand-soft)"><span class="metric-label">Registered agents</span><strong class="metric-value">@FormatCount(registeredCount)</strong><span class="metric-hint">All non-deleted Gateway registrations</span></article>
+        <article class="metric-card card" data-count="active" style="--metric-color: var(--success-soft)"><span class="metric-label">Active registrations</span><strong class="metric-value">@FormatCount(activeCount)</strong><span class="metric-hint">Provisioned and enabled; each request is still evaluated</span></article>
+        <article class="metric-card card" data-count="action-required" style="--metric-color: var(--warning-soft)"><span class="metric-label">Action required</span><strong class="metric-value">@FormatCount(actionRequiredCount)</strong><span class="metric-hint">Awaiting administrator, failed, or manual intervention</span></article>
     </section>
+    <p class="subtle-note">Counts come from complete Gateway queries, not the preview below. These reads are not a fleet snapshot; refresh after lifecycle changes. An unavailable total is not zero.</p>
+
+    @if (registeredCount == 0)
+    {
+        <section class="card">
+            <EmptyState Icon="◎" Title="@(HealthChecksPassed ? "Your Gateway is ready for its first agent." : "No agents registered yet.")" Description="Register your external agent, save its Gateway ID and one-time key, then complete the Microsoft registration handoff.">
+                @if (!HealthChecksPassed)
+                {
+                    <p>Gateway health checks need attention. Open Getting started before registering.</p>
+                }
+                <AuthorizeView Roles="Gateway.Administrator">
+                    <Authorized><FluentAnchor Appearance="Appearance.Accent" Href="/agents/register">Register agent</FluentAnchor></Authorized>
+                    <NotAuthorized><p>Administrator task: ask a Gateway Administrator to register an agent. You can read its status here afterward.</p></NotAuthorized>
+                </AuthorizeView>
+                <a href="/getting-started" class="text-link">View getting started</a>
+            </EmptyState>
+        </section>
+    }
 
     <section class="content-grid">
         <article class="card">
-            <div class="card-header"><div><h2>Agents needing attention</h2><span class="section-caption">Failure and approval states</span></div><a href="/agents" class="text-link">View all agents</a></div>
-            @if (AttentionAgents.Count == 0)
+            <div class="card-header"><div><h2>Registration tasks</h2><span class="section-caption">Examples from administrator, failure and manual-intervention states</span></div><a href="/agents" class="text-link">View all agents</a></div>
+            @if (actionRequiredCount == 0)
             {
-                <EmptyState Icon="✓" Title="No agents need attention" Description="There are no failed, manual-intervention, or approval-waiting agents in the current result set." />
+                <EmptyState Icon="✓" Title="No registration actions required" Description="The current queries found no failed, manual-intervention, or approval-waiting registrations. This does not verify optional protection or telemetry delivery." />
+            }
+            else if (attentionAgents.Count == 0)
+            {
+                <EmptyState Icon="◎" Title="Registration task preview unavailable" Description="Open Agents or refresh to check current registration tasks. Missing counts and preview data do not establish that no action is needed." />
             }
             else
             {
-                <div class="table-scroll"><table class="data-table">
-                    <thead><tr><th>Agent</th><th>Status</th><th>Environment</th><th>Updated</th></tr></thead>
-                    <tbody>@foreach (var agent in AttentionAgents.Take(8))
+                <div class="table-scroll"><table class="data-table overview-agents">
+                    <thead><tr><th scope="col">Agent</th><th scope="col">Registration</th><th scope="col">Next task</th><th scope="col">Updated</th></tr></thead>
+                    <tbody>@foreach (var agent in attentionAgents)
                     {
-                        <tr><td><a class="row-link primary-cell" href="/agents/@agent.AgentId">@agent.Name</a><span class="secondary-cell">@agent.ExternalAgentId</span></td><td><StatusPill Value="@agent.Status" /></td><td>@agent.Environment</td><td>@FormatRelative(agent.UpdatedAtUtc)</td></tr>
+                        <tr @key="agent.AgentId">
+                            <td data-label="Agent"><a class="row-link primary-cell" href="/agents/@agent.AgentId">@agent.Name</a><span class="secondary-cell">@agent.ExternalAgentId</span></td>
+                            <td data-label="Registration">
+                                <StatusPill Value="@agent.Status" />
+                                <ProtectionSnapshot Features="agent.Features" RegistrationStatus="@agent.Status" Compact="true" />
+                            </td>
+                            <td data-label="Next task">@NextTask(agent.Status)</td>
+                            <td data-label="Updated">@FormatRelative(agent.UpdatedAtUtc)</td>
+                        </tr>
                     }</tbody>
                 </table></div>
             }
@@ -56,49 +84,61 @@ else
 
         <aside class="stack">
             <article class="card">
-                <div class="card-header"><h2>Service health</h2></div>
+                <div class="card-header"><h2>Gateway health checks</h2></div>
                 <div class="card-body health-list">
                     <div class="health-row"><span>Gateway API</span><StatusPill Value="@(health?.Status ?? "Unavailable")" /></div>
-                    <div class="health-row"><span>Database readiness</span><StatusPill Value="@(readiness?.Status ?? "Unavailable")" /></div>
-                    <div class="health-row"><span>Identity session</span><StatusPill Value="Healthy" /></div>
+                    <div class="health-row"><span>Readiness check</span><StatusPill Value="@(readiness?.Status ?? "Unavailable")" /></div>
                 </div>
             </article>
-            <article class="card"><div class="card-header"><h2>Data visibility</h2></div><div class="card-body"><div class="subtle-note">Activity volume and Purview outcome aggregates are not exposed by the current control-plane API. This dashboard reports only verified agent and health data.</div></div></article>
+            <article class="card"><div class="card-header"><h2>What these states mean</h2></div><div class="card-body">
+                <p><strong>Registration:</strong> Active means provisioned and enabled. The external agent still hosts and calls its own model.</p>
+                <p><strong>Protection:</strong> Installed capability and configured policy are not evidence of current enforcement. Check the agent's current protection details.</p>
+                <p><strong>Telemetry:</strong> Gateway acceptance or an export attempt does not confirm downstream delivery. This overview has no delivery metric.</p>
+                <p class="subtle-note">Gateway health checks do not verify every Microsoft dependency. Optional protection tasks are separate from core registration.</p>
+            </div></article>
         </aside>
     </section>
 }
 
 @code {
     private readonly CancellationTokenSource disposeCts = new();
-    private List<AgentSummaryDto>? agents;
+    private List<AgentSummaryDto> attentionAgents = [];
     private GatewayHealthStatus? health;
     private GatewayHealthStatus? readiness;
     private UiErrorInfo? error;
     private bool loading;
     private DateTime? lastUpdatedUtc;
-    private bool hasAdditionalAgents;
-
-    private int Total => agents?.Count ?? 0;
-    private int InProgress => agents?.Count(a => a.Status is "Provisioning" or "AwaitingAdminApproval" or "Deleting" or "Draft") ?? 0;
-    private int NeedsAttention => agents?.Count(a => a.Status is "Failed" or "RequiresManualIntervention") ?? 0;
-    private List<AgentSummaryDto> AttentionAgents => agents?.Where(a => a.Status is "Failed" or "RequiresManualIntervention" or "AwaitingAdminApproval").OrderByDescending(a => a.UpdatedAtUtc).ToList() ?? [];
+    private int? registeredCount;
+    private int? activeCount;
+    private int? actionRequiredCount;
+    private bool HealthChecksPassed => string.Equals(health?.Status, "Healthy", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(readiness?.Status, "Ready", StringComparison.OrdinalIgnoreCase);
 
     protected override Task OnInitializedAsync() => LoadAsync();
-    private int Count(string status) => agents?.Count(a => a.Status == status) ?? 0;
 
     private async Task LoadAsync()
     {
+        if (loading) return;
         loading = true;
         error = null;
         try
         {
-            var agentsTask = Api.GetAgentsAsync(new AgentListQuery(Limit: 100), disposeCts.Token);
+            var agentsTask = Api.GetAgentsAsync(new AgentListQuery(Limit: 1), disposeCts.Token);
+            var activeTask = Api.GetAgentsAsync(new AgentListQuery(Status: "Active", Limit: 1), disposeCts.Token);
+            var approvalTask = Api.GetAgentsAsync(new AgentListQuery(Status: "AwaitingAdminApproval", Limit: 8), disposeCts.Token);
+            var failedTask = Api.GetAgentsAsync(new AgentListQuery(Status: "Failed", Limit: 8), disposeCts.Token);
+            var manualTask = Api.GetAgentsAsync(new AgentListQuery(Status: "RequiresManualIntervention", Limit: 8), disposeCts.Token);
             var healthTask = Api.GetHealthAsync(disposeCts.Token);
             var readinessTask = Api.GetReadinessAsync(disposeCts.Token);
-            await Task.WhenAll(agentsTask, healthTask, readinessTask);
-            var agentResult = await agentsTask;
-            agents = agentResult.Items;
-            hasAdditionalAgents = !string.IsNullOrWhiteSpace(agentResult.NextCursor);
+            await Task.WhenAll(agentsTask, activeTask, approvalTask, failedTask, manualTask, healthTask, readinessTask);
+            registeredCount = ValidCount((await agentsTask).TotalCount);
+            activeCount = ValidCount((await activeTask).TotalCount);
+            var attentionResults = new[] { await approvalTask, await failedTask, await manualTask };
+            actionRequiredCount = attentionResults.All(response => ValidCount(response.TotalCount) is not null)
+                ? attentionResults.Sum(response => response.TotalCount!.Value)
+                : null;
+            attentionAgents = attentionResults.SelectMany(response => response.Items)
+                .DistinctBy(agent => agent.AgentId).OrderByDescending(agent => agent.UpdatedAtUtc).Take(8).ToList();
             health = await healthTask;
             readiness = await readinessTask;
             lastUpdatedUtc = DateTime.UtcNow;
@@ -108,6 +148,11 @@ else
         finally { loading = false; }
     }
 
+    private static int? ValidCount(int? count) => count is >= 0 ? count : null;
+    private static string FormatCount(int? count) => count?.ToString() ?? "Unavailable";
+    private static string NextTask(string status) => status == "AwaitingAdminApproval"
+        ? "Administrator: complete Agent 365 registration from this agent's setup."
+        : "Administrator: review this agent's operation and its permitted recovery action.";
     private static string FormatTime(DateTime? value) => value is null ? "not yet" : value.Value.ToLocalTime().ToString("HH:mm");
     private static string FormatRelative(DateTime value)
     {

@@ -1576,6 +1576,7 @@ function Get-GatewayInertPartialEnvironmentContract {
         $promptShieldEndpoint = "https://$($contentNames[0]).cognitiveservices.azure.com/"
     }
     $contracts.Api = [ordered]@{
+        'GatewayIngress__TrustedProxyNetworks__0' = '100.100.0.0/17'
         'ConnectionStrings__GatewayDb' = $sqlConnection
         'ServiceBus__FullyQualifiedNamespace' = $serviceBusNamespace
         'ServiceBus__QueueName' = 'gateway-provisioning-v3'

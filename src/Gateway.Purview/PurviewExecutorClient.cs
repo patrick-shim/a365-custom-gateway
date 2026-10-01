@@ -38,6 +38,14 @@ internal sealed class PurviewExecutorClient(
         if (command == PurviewExecutorCommand.VerifyConnection && reply.Status == "RetryableRead" &&
             reply.FailureCode == "PURVIEW_EXECUTOR_CONNECTION_READ_TIMEOUT" && reply.Value is null)
             throw Failure("PURVIEW_EXECUTOR_CONNECTION_READ_TIMEOUT", isTransient: true);
+        if (command is PurviewExecutorCommand.ReadKnowYourData or PurviewExecutorCommand.ReadDlpProfile &&
+            reply.Value is null)
+        {
+            if (reply.Status == "Rejected" && reply.FailureCode == "PURVIEW_INVENTORY_STALE")
+                throw Failure("PURVIEW_INVENTORY_STALE");
+            if (reply.Status == "RetryableRead" && reply.FailureCode == "PURVIEW_SETTINGS_READ_TIMEOUT")
+                throw Failure("PURVIEW_SETTINGS_READ_TIMEOUT", isTransient: true);
+        }
         if (reply.Status != "Completed" || reply.Value is not { } value ||
             reply.FailureCode is not null)
             throw Failure("PURVIEW_EXECUTOR_READ_UNAVAILABLE");

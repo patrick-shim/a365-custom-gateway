@@ -55,6 +55,45 @@ public sealed class RepositoryContractTests
         Assert.True(File.Exists(SourceTree.Resolve("nuget.config")));
     }
 
+    [Fact]
+    public void PublisherContainerUsesReviewedRootBuildInputsBeforeRestore()
+    {
+        var dockerfile = File.ReadAllText(SourceTree.Resolve("src", "Gateway.Purview.PackagePublisher", "Dockerfile"));
+        var restore = dockerfile.IndexOf("RUN dotnet restore ", StringComparison.Ordinal);
+        var workingDirectory = dockerfile.IndexOf("WORKDIR /source", StringComparison.Ordinal);
+        Assert.True(workingDirectory >= 0 && restore > workingDirectory);
+        foreach (var input in new[] { "global.json", "nuget.config", "Directory.Build.props" })
+        {
+            var copy = dockerfile.IndexOf($"COPY [\"{input}\", \"./\"]", StringComparison.Ordinal);
+            Assert.True(copy > workingDirectory && copy < restore,
+                $"Publisher restore must use the reviewed root input: {input}");
+        }
+        var restoreLine = Assert.Single(dockerfile.Split('\n'),
+            line => line.StartsWith("RUN dotnet restore ", StringComparison.Ordinal));
+        Assert.Contains("--configfile nuget.config", restoreLine);
+    }
+
+    [Fact]
+    public void ApiHttpsForwardingIsWiredBeforeAuthorizationAndBoundToReviewedIngress()
+    {
+        var program = File.ReadAllText(SourceTree.Resolve("src", "Gateway.Api", "Program.cs"));
+        var registration = program.IndexOf("builder.Services.AddGatewayIngress(", StringComparison.Ordinal);
+        Assert.True(registration >= 0 && registration < program.IndexOf("var app = builder.Build()", StringComparison.Ordinal));
+        Assert.Contains("context.Connection.RemoteIpAddress is not null", program);
+        var forwarding = program.IndexOf("ingress => ingress.UseForwardedHeaders()", StringComparison.Ordinal);
+        Assert.True(forwarding >= 0 && forwarding < program.IndexOf("app.UseAuthentication()", StringComparison.Ordinal));
+        var module = File.ReadAllText(SourceTree.Resolve("infrastructure", "bicep", "modules", "container-app-api.bicep"));
+        Assert.Contains("name: 'GatewayIngress__TrustedProxyNetworks__0'", module);
+        Assert.Contains("value: '100.100.0.0/17'", module);
+        Assert.Contains("allowInsecure: false", module);
+        var readback = File.ReadAllText(SourceTree.Resolve("bootstrap", "modules", "Azure.psm1"));
+        Assert.Contains("'GatewayIngress__TrustedProxyNetworks__0' = '100.100.0.0/17'", readback);
+        var runtimeReadback = File.ReadAllText(SourceTree.Resolve("bootstrap", "modules", "Experience.psm1"));
+        Assert.Contains("'GatewayIngress__TrustedProxyNetworks__0' = '100.100.0.0/17'", runtimeReadback);
+        var verification = File.ReadAllText(SourceTree.Resolve("bootstrap", "modules", "Verification.psm1"));
+        Assert.Contains("$apiIngress = Get-GatewayHttpsIngressEvidence", verification);
+    }
+
     [Theory]
     [InlineData("tools/Gateway.Setup/Gateway.Setup.csproj")]
     [InlineData("tools/Gateway.DatabaseMigrator/Gateway.DatabaseMigrator.csproj")]

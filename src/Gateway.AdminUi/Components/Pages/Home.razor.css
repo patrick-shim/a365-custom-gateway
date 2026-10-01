@@ -1,0 +1,12 @@
+.overview-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.metric-value { overflow-wrap: anywhere; }
+.overview-agents td { overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+    .overview-metrics { grid-template-columns: 1fr; }
+    .overview-agents, .overview-agents tbody, .overview-agents tr, .overview-agents td { display: block; }
+    .overview-agents thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    .overview-agents tr { padding: .5rem; border-bottom: 1px solid var(--border-subtle); }
+    .overview-agents td { padding: .5rem; border: 0; }
+    .overview-agents td::before { content: attr(data-label); display: block; margin-bottom: .25rem; color: var(--text-muted); font-size: .75rem; font-weight: 600; }
+}

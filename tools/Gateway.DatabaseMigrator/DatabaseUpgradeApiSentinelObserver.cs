@@ -51,7 +51,7 @@ public static partial class DatabaseUpgradePlatformObserver
         var sentinelId = contract.ApiResourceId + "/revisions/" + ApiSentinelRevisionName(contract.ApiResourceId, binding);
         var revisions = CompleteList(observedRevisions);
         if (revisions.GetArrayLength() is < 1 or > 1000) throw Unknown();
-        var identities = new HashSet<string>(StringComparer.Ordinal);
+        var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int? activeReplicas = null;
         string? containerName = null;
         foreach (var revision in revisions.EnumerateArray())
@@ -62,14 +62,15 @@ public static partial class DatabaseUpgradePlatformObserver
                 Property(properties, "replicas").ValueKind != JsonValueKind.Number ||
                 !Property(properties, "replicas").TryGetInt32(out var replicas))
                 throw Unknown();
-            if (id != sentinelId)
+            if (!ResourceIdEquals(id, sentinelId))
             {
                 if (Property(properties, "active").ValueKind != JsonValueKind.False || replicas != 0) throw Unknown();
                 continue;
             }
             if (Text(revision, "name") != ApiSentinelRevisionName(contract.ApiResourceId, binding) ||
                 Property(properties, "active").ValueKind != JsonValueKind.True || replicas is < 1 or > 1000 ||
-                Text(properties, "healthState") != "Healthy" || Text(properties, "runningState") != "Running")
+                Text(properties, "healthState") != "Healthy" ||
+                Text(properties, "runningState") is not ("Running" or "RunningAtMaxScale"))
                 throw Unknown();
             var revisionTemplate = Property(properties, "template");
             containerName = AssertSentinelTemplate(revisionTemplate, binding, targetPort);
@@ -158,13 +159,13 @@ public static partial class DatabaseUpgradePlatformObserver
     {
         var replicas = CompleteList(observed);
         if (replicas.GetArrayLength() != expectedCount) throw Unknown();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var containerIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var replica in replicas.EnumerateArray())
         {
             var id = Text(replica, "id");
             var name = Text(replica, "name");
-            if (!Exact(name, "[a-z0-9-]+") || id != revisionId + "/replicas/" + name || !seen.Add(id))
+            if (!Exact(name, "[a-z0-9-]+") || !ResourceIdEquals(id, revisionId + "/replicas/" + name) || !seen.Add(id))
                 throw Unknown();
             var properties = Property(replica, "properties");
             if (Text(properties, "runningState") != "Running") throw Unknown();

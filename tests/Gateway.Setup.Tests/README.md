@@ -46,3 +46,7 @@ are preserved as recovery inputs and cannot authorize new configuration writes.
 Root launchers and the full solution build are separate integration surfaces.
 Project acceptance remains in [MILESTONES.md](../../MILESTONES.md); this document
 does not establish deployment or milestone completion.
+
+The [UX screen designs](../../docs/ux/screen-design.md) include the proposed
+installation review/progress/handoff. Their synthetic browser fixture does not
+start this Setup host or execute the bootstrap lifecycle.

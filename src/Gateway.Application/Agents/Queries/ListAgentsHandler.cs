@@ -32,13 +32,16 @@ internal sealed class ListAgentsHandler : IRequestHandler<ListAgentsQuery, Agent
         var limit = Math.Clamp(request.Limit, 1, 200);
 
         var filter = new AgentListFilter(
-            request.Status,
-            request.Environment,
-            request.Search,
-            limit,
+            request.Status?.Trim(),
+            request.Environment?.Trim(),
+            request.Search?.Trim(),
+            limit + 1,
             request.Cursor);
 
         var (agents, totalCount) = await _agentRepository.ListAsync(filter, cancellationToken);
+        var hasMore = agents.Count > limit;
+        if (hasMore)
+            agents.RemoveRange(limit, agents.Count - limit);
 
         var lastActivity = await AgentLastActivity.ResolveAsync(
             _interactionRepository,
@@ -80,8 +83,8 @@ internal sealed class ListAgentsHandler : IRequestHandler<ListAgentsQuery, Agent
                     agent.UpdatedAtUtc));
         }
 
-        var nextCursor = items.Count == limit
-            ? agents[^1].Id.ToString()
+        var nextCursor = hasMore
+            ? ListAgentsCursor.Encode(agents[^1].CreatedAtUtc, agents[^1].Id)
             : null;
 
         return new AgentListResponse(items, nextCursor, totalCount);

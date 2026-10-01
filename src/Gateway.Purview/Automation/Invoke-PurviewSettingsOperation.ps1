@@ -518,13 +518,13 @@ function Get-SelectedSensitiveInformationType {
 }
 
 function Get-SelectedSensitiveInformationTypes {
-    param([Parameter(Mandatory)]$InputObject)
+    param([Parameter(Mandatory)]$InputObject, [object[]]$Inventory)
     $selections = @(Get-Property -InputObject $InputObject -Names @('sensitiveInformationTypes') -Optional)
     if ($selections.Count -eq 0) {
         throw 'PURVIEW_SIT_THRESHOLDS_REVIEW_REQUIRED: Explicit reviewed SIT thresholds are required.'
     }
     if ($selections.Count -gt 100) { throw 'Too many selected sensitive information types.' }
-    $inventory = @(Get-DlpSensitiveInformationType -ErrorAction Stop)
+    if ($null -eq $Inventory) { $Inventory = @(Get-DlpSensitiveInformationType -ErrorAction Stop) }
     $ids = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($selection in $selections) {
         if (-not $ids.Add([string]$selection.id)) { throw 'Duplicate selected sensitive information type.' }
@@ -747,7 +747,7 @@ function Get-DlpPolicyMode {
     return $mode
 }
 
-function Assert-Intent {
+function Assert-IntentLifetime {
     param([Parameter(Mandatory)]$InputObject)
 
     ConvertTo-CanonicalGuid -Value ([string]$InputObject.operationId) `
@@ -759,8 +759,15 @@ function Assert-Intent {
     $expiresAt = [DateTimeOffset]$InputObject.inventoryExpiresAtUtc
     if ($expiresAt.Offset -ne [TimeSpan]::Zero -or
         $expiresAt -le [DateTimeOffset]::UtcNow) {
+        $script:SettingsSchemaCode = 'InventoryExpired'
         throw 'The selected Purview inventory generation is expired or invalid.'
     }
+}
+
+function Assert-Intent {
+    param([Parameter(Mandatory)]$InputObject, [object[]]$Inventory)
+
+    Assert-IntentLifetime -InputObject $InputObject
     Assert-BoundedText -Value $InputObject.policyName `
         -MaximumLength 256 -Label 'policy Name' | Out-Null
     if ([string]$InputObject.mode -notin @('AuditOnly', 'Enforce')) {
@@ -773,7 +780,35 @@ function Assert-Intent {
         @($activities | Where-Object { $_ -notin @('UploadText', 'DownloadText') }).Count -ne 0) {
         throw 'The reviewed Purview activities are invalid or unsupported.'
     }
-    return Get-SelectedSensitiveInformationType -InputObject $InputObject
+    return Get-SelectedSensitiveInformationType -InputObject $InputObject -Inventory $Inventory
+}
+
+function Get-OperationProviderCommands {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('ReadKnowYourData', 'CreateKnowYourData', 'ReadDlpProfile', 'CreateDlpPolicy', 'CreateDlpRule')]
+        [string]$Operation
+    )
+
+    'Get-DlpSensitiveInformationType'
+    if ($Operation -cin @('ReadKnowYourData', 'CreateKnowYourData')) {
+        'Get-FeatureConfiguration'
+        if ($Operation -ceq 'CreateKnowYourData') {
+            'New-FeatureConfiguration'
+            'Set-FeatureConfiguration'
+        }
+        return
+    }
+    'Get-DlpCompliancePolicy'
+    'Get-DlpComplianceRule'
+    if ($Operation -ceq 'CreateDlpPolicy') {
+        'New-DlpCompliancePolicy'
+        'Set-DlpCompliancePolicy'
+    }
+    elseif ($Operation -ceq 'CreateDlpRule') {
+        'New-DlpComplianceRule'
+        'Set-DlpComplianceRule'
+    }
 }
 
 function ConvertTo-ProviderMode {
@@ -1284,7 +1319,8 @@ function Write-SafeSettingsFailure {
             'UnexpectedDistributionResults', 'UnexpectedLastStatusUpdateTime',
             'UnexpectedScenario', 'UnexpectedType', 'UnexpectedPolicyType',
             'UnexpectedPolicyVersion', 'UnexpectedIsDefaultPolicy', 'UnexpectedPolicyRBACScopes',
-            'UnexpectedRules', 'UnexpectedPolicyRulesMetaData', 'UnexpectedDictionaryMetadata')) {
+            'UnexpectedRules', 'UnexpectedPolicyRulesMetaData', 'UnexpectedDictionaryMetadata',
+            'InventoryExpired')) {
         $marker = "A365GW_VERIFIER_ERROR:InvalidData:Other:00000000:$($script:SettingsSchemaCode)"
         $null = $markers.Add($marker)
         [Console]::Error.WriteLine($marker)
@@ -1330,6 +1366,7 @@ try {
     $script:SettingsStage = 2
     $input = Get-Content -LiteralPath $InputPath -Raw |
         ConvertFrom-Json -Depth 20 -ErrorAction Stop
+    Assert-IntentLifetime -InputObject $input
     $expectedTenantId = ConvertTo-CanonicalGuid `
         -Value ([string]$input.tenantId) `
         -Label 'tenant ID'
@@ -1342,11 +1379,7 @@ try {
     $existingConnectionIds = @($existingConnections | ForEach-Object {
         [string]$_.ConnectionId
     })
-    $requiredProviderCommands = @(
-        'Get-DlpSensitiveInformationType',
-        'Get-FeatureConfiguration', 'New-FeatureConfiguration', 'Set-FeatureConfiguration',
-        'Get-DlpCompliancePolicy', 'New-DlpCompliancePolicy', 'Set-DlpCompliancePolicy',
-        'Get-DlpComplianceRule', 'New-DlpComplianceRule', 'Set-DlpComplianceRule')
+    $requiredProviderCommands = @(Get-OperationProviderCommands -Operation $Operation)
     $providerWorkspace = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($InputPath))
     $script:SettingsStage = 4
     Connect-IPPSSession `
@@ -1390,7 +1423,9 @@ try {
     }
 
     $script:SettingsStage = 6
-    $selectedType = Assert-Intent -InputObject $input
+    Assert-IntentLifetime -InputObject $input
+    $inventory = @(Get-DlpSensitiveInformationType -ErrorAction Stop)
+    $selectedType = Assert-Intent -InputObject $input -Inventory $inventory
     if ($Operation -in @('ReadKnowYourData', 'CreateKnowYourData')) {
         $script:SettingsStage = 7
         $state = Get-KnowYourDataReadback `
@@ -1413,6 +1448,7 @@ try {
                 -Id $script:EnterpriseAiAppsGroupId)) |
                 ConvertTo-Json -Depth 10 -Compress -AsArray
             if ([string]$state.state -ceq 'Absent') {
+                Assert-IntentLifetime -InputObject $input
                 New-FeatureConfiguration `
                     -FeatureScenario KnowYourData `
                     -Name ([string]$input.policyName) `
@@ -1424,6 +1460,7 @@ try {
             }
             elseif ([string]$state.state -ceq 'Mismatch') {
                 $policy = Get-KnowYourDataUpdateTarget -InputObject $input
+                Assert-IntentLifetime -InputObject $input
                 Set-FeatureConfiguration `
                     -Identity $policy.Identity `
                     -Mode (ConvertTo-KnowYourDataProviderMode -Mode ([string]$input.mode)) `
@@ -1443,7 +1480,7 @@ try {
     }
 
     $actions = @(Assert-DlpActions -InputObject $input)
-    $selectedTypes = @(Get-SelectedSensitiveInformationTypes -InputObject $input)
+    $selectedTypes = @(Get-SelectedSensitiveInformationTypes -InputObject $input -Inventory $inventory)
     $policyMode = Get-DlpPolicyMode -InputObject $input
     $script:SettingsStage = 8
     $state = Get-DlpReadback `
@@ -1470,6 +1507,7 @@ try {
             -Id $blueprintId)) |
             ConvertTo-Json -Depth 10 -Compress -AsArray
         if ([string]$state.state -ceq 'Absent') {
+            Assert-IntentLifetime -InputObject $input
             New-DlpCompliancePolicy `
                 -Name ([string]$input.policyName) `
                 -Mode (ConvertTo-ProviderMode -Mode $policyMode) `
@@ -1480,6 +1518,7 @@ try {
         }
         elseif ([string]$state.state -ceq 'Mismatch') {
             $policy = Get-DlpPolicyUpdateTarget -InputObject $input
+            Assert-IntentLifetime -InputObject $input
             Set-DlpCompliancePolicy `
                 -Identity $policy.Identity `
                 -Mode (ConvertTo-ProviderMode -Mode $policyMode) `
@@ -1515,6 +1554,7 @@ try {
                 [string]$input.expectedRuleProviderId)) {
             throw 'A provider-ID-bound DLP rule is absent and cannot be recreated.'
         }
+        Assert-IntentLifetime -InputObject $input
         New-DlpComplianceRule `
             -Name ([string]$input.ruleName) `
             -Policy ([string]$input.policyName) `
@@ -1526,6 +1566,7 @@ try {
     }
     else {
         $rule = Get-DlpRuleUpdateTarget -InputObject $input
+        Assert-IntentLifetime -InputObject $input
         Set-DlpComplianceRule `
             -Identity $rule.Identity `
             -ContentContainsSensitiveInformation $providerSensitiveTypes `

@@ -19,7 +19,12 @@ public static class AgentProtectionUiMapping
         "SimulationWithTips" => PurviewPolicyMode.SimulationWithPolicyTips,
         "SimulationWithoutTips" => PurviewPolicyMode.SilentSimulation,
         "Disabled" => PurviewPolicyMode.CreateButLeaveOff,
-        null or "" => legacyMode == "Enforce" ? PurviewPolicyMode.Enforce : PurviewPolicyMode.SilentSimulation,
+        null or "" => legacyMode switch
+        {
+            "Enforce" => PurviewPolicyMode.Enforce,
+            "AuditOnly" => PurviewPolicyMode.SilentSimulation,
+            _ => null
+        },
         _ => null
     };
 
@@ -93,9 +98,12 @@ public static class AgentProtectionUiMapping
         _ => ready ? AgentProtectionReadinessState.Ready : AgentProtectionReadinessState.Unverified
     };
 
-    public static bool CurrentReadiness(PurviewDlpProfileDto profile) =>
+    public static bool CurrentReadiness(PurviewDlpProfileDto profile) => CurrentReadiness(profile, DateTime.UtcNow);
+
+    public static bool CurrentReadiness(PurviewDlpProfileDto profile, DateTime utcNow) =>
         profile.Readiness.IsReady &&
-        (profile.RuntimeBehaviorVerifiedUntilUtc is null || profile.RuntimeBehaviorVerifiedUntilUtc > DateTime.UtcNow);
+        profile.Readiness.ValidUntilUtc > utcNow &&
+        profile.RuntimeBehaviorVerifiedUntilUtc > utcNow;
 
     public static string PolicyLabel(string? mode, string? legacy = null) => PolicyMode(mode, legacy) switch
     {

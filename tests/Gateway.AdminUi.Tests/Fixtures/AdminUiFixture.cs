@@ -85,11 +85,16 @@ internal sealed class AdminUiFixture : BunitContext
     public IGatewayApiClient Api { get; }
     public ScriptedGatewayApi Script { get; }
     public DenyUiNetworkHandler Network { get; } = new();
+    public RendererInfo Rendering { get; set; } = new("Server", isInteractive: true);
 
     public AdminUiFixture(string role = GatewayRoles.Administrator)
     {
         (Api, Script) = ScriptedGatewayApi.Create();
         Services.AddFluentUIComponents();
+        Services.AddScoped<RegistrationHandoffState>();
+        Services.AddSingleton(TimeProvider.System);
+        Services.Configure<Gateway.AdminUi.Options.GatewayApiOptions>(options =>
+            options.BaseUrl = new Uri("https://gateway.example.invalid/"));
         Services.AddSingleton(Api);
         Services.AddSingleton(new HttpClient(Network, disposeHandler: true));
         Services.AddSingleton<IHttpClientFactory, DenyUiClientFactory>();
@@ -97,10 +102,19 @@ internal sealed class AdminUiFixture : BunitContext
         // bUnit never runs JavaScript. Fluent UI display/focus interop may be stubbed;
         // the sample module below has a separate finite invocation script.
         JSInterop.Mode = JSRuntimeMode.Loose;
+        JSInterop.Setup<bool>("A365Gateway.retainRegistrationRecovery", _ => true).SetResult(true);
+        JSInterop.Setup<bool>("A365Gateway.retainProtectionRecovery", _ => true).SetResult(true);
         var authorization = AddAuthorization();
         authorization.SetAuthorized("Offline fixture");
         authorization.SetRoles(role);
         authorization.SetClaims(new Claim("tid", Tenant.ToString("D")), new Claim("oid", Actor.ToString("D")));
+    }
+
+    public override IRenderedComponent<TComponent> Render<TComponent>(RenderFragment renderFragment)
+    {
+        // Creating the renderer freezes services, so apply its mode only after fixture customization.
+        SetRendererInfo(Rendering);
+        return base.Render<TComponent>(renderFragment);
     }
 
     public void AssertComplete()
@@ -154,22 +168,25 @@ internal sealed class ScriptedJsObject : IJSObjectReference
     public List<string> UnexpectedCalls { get; } = [];
 
     public void Expect(string method, object? result) => expected.Enqueue((method, result));
+    public void ExpectAsync(string method, Func<CancellationToken, Task<object?>> respond) => expected.Enqueue((method, respond));
     public ValueTask<TValue> InvokeAsync<TValue>(string identifier, object?[]? args) =>
         InvokeAsync<TValue>(identifier, CancellationToken.None, args);
 
-    public ValueTask<TValue> InvokeAsync<TValue>(string identifier, CancellationToken cancellationToken, object?[]? args)
+    public async ValueTask<TValue> InvokeAsync<TValue>(string identifier, CancellationToken cancellationToken, object?[]? args)
     {
         cancellationToken.ThrowIfCancellationRequested();
         Invocations.Add(identifier);
         if (identifier is "clear" or "dispose" && ++cleanupCalls <= 4)
-            return ValueTask.FromResult(default(TValue)!);
+            return default!;
         if (!expected.TryPeek(out var next) || next.Method != identifier)
         {
             UnexpectedCalls.Add(identifier);
             throw new UnexpectedUiFixtureCallException("Unscripted private-sample interop call.");
         }
         expected.Dequeue();
-        return ValueTask.FromResult(next.Result is null ? default! : (TValue)next.Result);
+        var result = next.Result is Func<CancellationToken, Task<object?>> respond
+            ? await respond(cancellationToken) : next.Result;
+        return result is null ? default! : (TValue)result;
     }
 
     public ValueTask DisposeAsync()

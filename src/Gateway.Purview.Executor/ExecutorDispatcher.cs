@@ -78,8 +78,15 @@ internal sealed class ExecutorDispatcher(
         {
             return Reply(request, "Rejected", failureCode: "PURVIEW_EXECUTOR_INPUT_INVALID");
         }
-        catch (PurviewPolicyException)
+        catch (PurviewPolicyException exception)
         {
+            if (request.Command is PurviewExecutorCommand.ReadKnowYourData or PurviewExecutorCommand.ReadDlpProfile)
+            {
+                if (exception.FailureCode == "PURVIEW_INVENTORY_STALE")
+                    return Reply(request, "Rejected", failureCode: exception.FailureCode);
+                if (exception.IsTransient && exception.FailureCode == "PURVIEW_SETTINGS_READ_TIMEOUT")
+                    return Reply(request, "RetryableRead", failureCode: exception.FailureCode);
+            }
             return Reply(request, "Unavailable", failureCode: "PURVIEW_EXECUTOR_PROVIDER_UNAVAILABLE");
         }
         catch (PurviewConnectionVerificationException exception)

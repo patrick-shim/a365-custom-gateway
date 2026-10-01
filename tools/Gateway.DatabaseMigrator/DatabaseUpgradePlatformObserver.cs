@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Net;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -59,7 +60,7 @@ public static partial class DatabaseUpgradePlatformObserver
             contract.ProtectionQueueResourceId[..contract.ProtectionQueueResourceId.LastIndexOf("/queues/", StringComparison.Ordinal)])
             throw new ArgumentException("UpgradeCutover: exact same-scope resources are required.");
         if (originalRevisionResourceIds is not null && (originalRevisionResourceIds.Count is < 2 or > 1000 ||
-            originalRevisionResourceIds.Distinct(StringComparer.Ordinal).Count() != originalRevisionResourceIds.Count ||
+            originalRevisionResourceIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() != originalRevisionResourceIds.Count ||
             originalRevisionResourceIds.Any(id => !RevisionOf(id, contract.ApiResourceId) && !RevisionOf(id, contract.WorkerResourceId)) ||
             !originalRevisionResourceIds.Any(id => RevisionOf(id, contract.ApiResourceId)) ||
             !originalRevisionResourceIds.Any(id => RevisionOf(id, contract.WorkerResourceId))))
@@ -136,7 +137,7 @@ public static partial class DatabaseUpgradePlatformObserver
                         foreach (var revision in sentinel.RevisionResourceIds)
                         {
                             using var replicas = await ReadAsync(revision + "/replicas", AppVersion);
-                            if (revision == sentinel.ActiveRevisionResourceId)
+                            if (ResourceIdEquals(revision, sentinel.ActiveRevisionResourceId))
                                 AssertReadyApiReplicas(replicas.RootElement, revision, sentinel.ContainerName, sentinel.ReplicaCount);
                             else
                                 AssertNoReplicas(replicas.RootElement);
@@ -173,7 +174,7 @@ public static partial class DatabaseUpgradePlatformObserver
     public static void AssertQueue(JsonElement observed, string resourceId)
     {
         Unique(observed);
-        if (Text(observed, "id") != resourceId ||
+        if (!ResourceIdEquals(Text(observed, "id"), resourceId) ||
             Text(Property(observed, "properties"), "status") != "ReceiveDisabled")
             throw Unknown();
     }
@@ -187,7 +188,7 @@ public static partial class DatabaseUpgradePlatformObserver
         string deploymentOwnershipId, string originalAcceptedSourceFingerprint, bool requireDeny)
     {
         Unique(observed);
-        if (Text(observed, "id") != resourceId ||
+        if (!ResourceIdEquals(Text(observed, "id"), resourceId) ||
             string.IsNullOrWhiteSpace(deploymentOwnershipId) || string.IsNullOrWhiteSpace(originalAcceptedSourceFingerprint))
             throw Unknown();
         var tags = Property(observed, "tags");
@@ -229,7 +230,7 @@ public static partial class DatabaseUpgradePlatformObserver
     {
         var revisions = CompleteList(observed);
         if (revisions.GetArrayLength() is < 1 or > 1000) throw Unknown();
-        var identities = new HashSet<string>(StringComparer.Ordinal);
+        var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var revision in revisions.EnumerateArray())
         {
             var id = Text(revision, "id");
@@ -269,8 +270,15 @@ public static partial class DatabaseUpgradePlatformObserver
         value is not null && !value.Contains("/../", StringComparison.Ordinal) &&
         !value.Contains("/./", StringComparison.Ordinal) &&
         Regex.IsMatch(value, @"\A" + pattern + @"\z", RegexOptions.CultureInvariant);
-    private static bool RevisionOf(string? id, string appId) =>
-        Exact(id, Regex.Escape(appId) + @"/revisions/[a-z0-9-]+");
+    private static bool ResourceIdEquals([NotNullWhen(true)] string? actual, string expected) =>
+        actual is not null && string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
+
+    private static bool RevisionOf(string? id, string appId)
+    {
+        var prefix = appId + "/revisions/";
+        return id is not null && id.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+            Exact(id[prefix.Length..], "[a-z0-9-]+");
+    }
 
     private static void Unique(JsonElement value)
     {

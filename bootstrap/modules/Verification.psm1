@@ -16,6 +16,29 @@ function Wait-HttpsHealth {
     throw "Health endpoint '$Url' did not return a 2xx response within five minutes."
 }
 
+function Get-GatewayHttpsIngressEvidence {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ApiFqdn)
+
+    if ($ApiFqdn -cnotmatch '^[A-Za-z0-9.-]+$') {
+        throw 'Gateway API FQDN is not canonical; HTTPS ingress was not verified.'
+    }
+    $origin = "https://$ApiFqdn/"
+    $response = Invoke-WebRequest -Uri "${origin}openapi/v1.json" -Method Get `
+        -Headers @{ 'X-Forwarded-Proto' = 'http'; 'X-Forwarded-Host' = 'untrusted.invalid' } `
+        -TimeoutSec 30 -MaximumRedirection 0 -SkipHttpErrorCheck
+    if ([int]$response.StatusCode -ne 200 -or
+        [Text.Encoding]::UTF8.GetByteCount([string]$response.Content) -gt 2097152) {
+        throw 'Gateway API HTTPS ingress did not return a bounded OpenAPI document.'
+    }
+    $document = [string]$response.Content | ConvertFrom-Json -Depth 100 -ErrorAction Stop
+    $servers = @($document.servers)
+    if ($servers.Count -ne 1 -or [string]$servers[0].url -cne $origin) {
+        throw 'Gateway API request-derived origin is not the exact HTTPS endpoint; trusted proxy handling is unverified.'
+    }
+    return [ordered]@{ status = 'Passed'; scheme = 'https'; host = $ApiFqdn }
+}
+
 function Test-GatewayRecordedDatabaseAttestationBoundary {
     [CmdletBinding()]
     param(
@@ -406,18 +429,19 @@ function Assert-GatewayExactAzureRoleAssignments {
         throw 'Runtime image-pull identity resource is missing or outside the exact identity, ownership, and source boundary.'
     }
 
+    # CLI auto-discovery can select an API version unavailable in the deployed resource's region.
     foreach ($resource in @(
-        [ordered]@{ id = $storageId; type = 'Microsoft.Storage/storageAccounts'; requireTags = $true },
-        [ordered]@{ id = $expectedRegistryId; type = 'Microsoft.ContainerRegistry/registries'; requireTags = $true },
-        [ordered]@{ id = $expectedVaultId; type = 'Microsoft.KeyVault/vaults'; requireTags = $true },
-        [ordered]@{ id = $expectedQueueId; type = 'Microsoft.ServiceBus/namespaces/queues'; requireTags = $false }
+        [ordered]@{ id = $storageId; type = 'Microsoft.Storage/storageAccounts'; apiVersion = '2023-05-01'; requireTags = $true },
+        [ordered]@{ id = $expectedRegistryId; type = 'Microsoft.ContainerRegistry/registries'; apiVersion = '2023-11-01-preview'; requireTags = $true },
+        [ordered]@{ id = $expectedVaultId; type = 'Microsoft.KeyVault/vaults'; apiVersion = '2023-07-01'; requireTags = $true },
+        [ordered]@{ id = $expectedQueueId; type = 'Microsoft.ServiceBus/namespaces/queues'; apiVersion = '2024-01-01'; requireTags = $false }
         $(if ($purviewCapabilityEnabled) {
-            [ordered]@{ id = $expectedProtectionQueueId; type = 'Microsoft.ServiceBus/namespaces/queues'; requireTags = $false }
+            [ordered]@{ id = $expectedProtectionQueueId; type = 'Microsoft.ServiceBus/namespaces/queues'; apiVersion = '2024-01-01'; requireTags = $false }
         })
     )) {
         if ($null -eq $resource) { continue }
         $readback = Invoke-AzJson -Arguments @(
-            'resource', 'show', '--ids', [string]$resource.id,
+            'resource', 'show', '--ids', [string]$resource.id, '--api-version', [string]$resource.apiVersion,
             '--query', '{id:id,type:type,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}'
         )
         if (-not ([string]$readback.id).Equals([string]$resource.id, [StringComparison]::OrdinalIgnoreCase) -or
@@ -843,9 +867,26 @@ function Test-GatewayBootstrapDeployment {
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter()][AllowNull()][System.Collections.IDictionary]$DatabaseRecoveryPlan,
         [Parameter()][AllowNull()][System.Collections.IDictionary]$ManualDatabaseRepairPlan,
+        [Parameter()][AllowNull()][System.Collections.IDictionary]$AdminUiPredecessor,
+        [ValidateSet('B1', 'B2')][string]$AcceptedExecutorPlanSku,
         [Parameter(Mandatory)][System.Collections.IDictionary]$State,
         [switch]$NonInteractive
     )
+    $executorVerificationArguments = @{}
+    if ($PSBoundParameters.ContainsKey('AcceptedExecutorPlanSku')) {
+        if ($Config.purview.enabled -ne $true -or -not $State.Contains('freshPurviewExecutor') -or
+            [string]$State.freshPurviewExecutor.status -cne 'Installed') {
+            throw 'An accepted hosting selection requires a completed Full executor installation.'
+        }
+        $executorVerificationArguments['AcceptedExecutorPlanSku'] = $AcceptedExecutorPlanSku
+    }
+    if ($null -ne $AdminUiPredecessor -and (
+        -not $State.Contains('freshPurviewExecutor') -or
+        [string]$State.freshPurviewExecutor.status -cne 'Installed' -or
+        [string]$AdminUiPredecessor.context.bootstrapPlanFingerprint -cne [string]$State.acceptedPlan.planFingerprint -or
+        [string]$AdminUiPredecessor.context.configurationFingerprint -cne [string]$State.acceptedPlan.configurationFingerprint)) {
+        throw 'Admin UI predecessor readback must belong to the exact accepted Full installation.'
+    }
     if (-not $State.steps.Contains('Purview capability prerequisites') -or
         $State.steps['Purview capability prerequisites'].evidence -isnot [System.Collections.IDictionary]) {
         throw 'Bootstrap capability evidence is missing from the exact bootstrap state.'
@@ -862,7 +903,7 @@ function Test-GatewayBootstrapDeployment {
             -SourceFingerprint ([string]$Images.sourceFingerprint)
         $purviewExecutor = Install-BootstrapPurviewExecutor -Config $Config -State $State `
             -StatePath (Get-BootstrapStatePath -Config $Config) -Foundation $Foundation -Runtime $Runtime `
-            -Automation $purviewAutomation -Database $Database -ReadOnly
+            -Automation $purviewAutomation -Database $Database -ReadOnly @executorVerificationArguments
     }
     Test-GatewayBootstrapCapabilityEvidence `
         -Evidence $capabilityEvidence `
@@ -1064,7 +1105,8 @@ function Test-GatewayBootstrapDeployment {
         -Evidence $AdminUi `
         -DeploymentOwnershipId $DeploymentOwnershipId `
         -SourceFingerprint ([string]$Images.sourceFingerprint) `
-        -AdminUiImage ([string]$Images.adminUi) | Out-Null
+        -AdminUiImage ([string]$Images.adminUi) `
+        -AdminUiPredecessor $AdminUiPredecessor | Out-Null
     Assert-GatewayExactAzureRoleAssignments -Config $Config -Runtime $Runtime -AdminUi $AdminUi -Database $Database -PurviewAutomation $purviewAutomation -PurviewExecutor $purviewExecutor | Out-Null
     Assert-GatewayExactAzureLocalCredentialControls -Config $Config -Runtime $Runtime | Out-Null
     Test-GatewayApplicationEvidence -Config $Config -Evidence $Identity -ObjectIdProperty 'gatewayApiApplicationObjectId' -ClientIdProperty 'gatewayApiClientId' -ApplicationKind GatewayApi | Out-Null
@@ -1145,7 +1187,9 @@ function Test-GatewayBootstrapDeployment {
     $deployedImages = [ordered]@{
         "ca-gateway-api-$($Config.environment)" = [string]$Images.api
         "ca-gateway-worker-$($Config.environment)-v3" = [string]$Images.worker
-        "ca-gateway-admin-$($Config.environment)" = [string]$Images.adminUi
+        "ca-gateway-admin-$($Config.environment)" = if ($null -ne $AdminUiPredecessor) {
+            [string]$AdminUiPredecessor.build.image
+        } else { [string]$Images.adminUi }
     }
     foreach ($entry in $deployedImages.GetEnumerator()) {
         $actualImage = Invoke-AzTsv -Arguments @('containerapp', 'show', '--resource-group', [string]$Config.resourceGroupName, '--name', $entry.Key, '--query', 'properties.template.containers[0].image')
@@ -1238,11 +1282,13 @@ function Test-GatewayBootstrapDeployment {
     if ($LASTEXITCODE -ne 0) { throw 'Read-only provisioning preflight failed.' }
 
     $apiHealth = Wait-HttpsHealth -Url "https://$($Runtime.apiFqdn)/health/checks"
+    $apiIngress = Get-GatewayHttpsIngressEvidence -ApiFqdn ([string]$Runtime.apiFqdn)
     $databaseAttestation = Get-GatewayCurrentDatabaseAttestationEvidence -ApiFqdn ([string]$Runtime.apiFqdn)
     $adminHealth = Wait-HttpsHealth -Url "$($AdminUi.adminUiUrl.TrimEnd('/'))/health"
     return [ordered]@{
         verifiedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
         api = $apiHealth
+        apiIngress = $apiIngress
         adminUi = $adminHealth
         sqlPublicNetworkAccess = $sqlPublic
         keyVaultPublicNetworkAccess = 'Disabled'

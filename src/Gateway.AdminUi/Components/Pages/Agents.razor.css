@@ -1,0 +1,19 @@
+.toolbar-field { min-width: 0; }
+.toolbar-field label { display: block; margin-bottom: .35rem; font-size: .8rem; font-weight: 600; }
+.toolbar-field input, .toolbar-field select { box-sizing: border-box; width: 100%; min-width: 0; padding: .55rem .7rem; border: 1px solid var(--border-subtle); border-radius: .35rem; background: white; color: var(--text-primary); font: inherit; }
+.toolbar-field input:focus-visible, .toolbar-field select:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+#agent-results-heading:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.filter-notice { flex-basis: 100%; margin: 0; }
+.agent-pagination { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; justify-content: space-between; }
+.agents-table td { overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+    .toolbar { align-items: stretch; flex-direction: column; }
+    .toolbar-field, .toolbar-field.search { flex: 0 1 auto; width: 100%; }
+    .filter-notice { flex-basis: auto; }
+    .agents-table, .agents-table tbody, .agents-table tr, .agents-table td { display: block; }
+    .agents-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    .agents-table tr { padding: .5rem; border-bottom: 1px solid var(--border-subtle); }
+    .agents-table td { padding: .5rem; border: 0; }
+    .agents-table td::before { content: attr(data-label); display: block; margin-bottom: .25rem; color: var(--text-muted); font-size: .75rem; font-weight: 600; }
+}

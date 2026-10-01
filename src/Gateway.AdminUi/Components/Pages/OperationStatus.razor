@@ -4,15 +4,50 @@
 @implements IAsyncDisposable
 @inject IGatewayApiClient Api
 @inject AuthenticationStateProvider AuthenticationStateProvider
+@inject RegistrationHandoffState HandoffState
+@inject TimeProvider Clock
+@inject ILogger<OperationStatus> Logger
 
 <PageTitle>Operation status · A365 Gateway</PageTitle>
 
 <PageHeader Eyebrow="Provisioning operation"
-            Title="@(operation is null ? "Operation status" : FormatPascalCase(operation.Type))"
+            Title="@(contextAgent?.Name ?? "Agent setup")"
             Description="@OperationDescription">
     <Actions>
         @if (operation is not null)
         {
+            @if (contextError is not null)
+            {
+                <div class="subtle-note" role="status">
+                    Agent details could not be refreshed. This operation belongs to Gateway registration
+                    <code>@operation.AgentId</code>; its recorded progress remains visible.
+                </div>
+            }
+            @if (error is not null)
+            {
+                <div class="subtle-note" role="status">Showing the last known operation state from @FormatLocal(lastCheckedUtc). Current status has not been confirmed.</div>
+            }
+            @if (RegistryOutcomeNeedsReadback)
+            {
+                <section class="card registry-action-card" aria-labelledby="registry-unknown-heading">
+                    <div class="card-header"><h2 id="registry-unknown-heading">The Registry result is not confirmed</h2></div>
+                    <div class="card-body">
+                        <p>The request may have succeeded. Check the Gateway's recorded state for this same operation. This read does not issue another Registry create or promise a fresh Microsoft readback.</p>
+                        <p>Operation reference: <code>@OperationId</code>. If it remains unresolved, ask an administrator to reconcile the exact existing registration.</p>
+                        <FluentButton Type="ButtonType.Button" Appearance="Appearance.Accent"
+                                      OnClick="RestartPollingAsync" Disabled="@(loading || completingAgent365Registration)">
+                            Check existing operation
+                        </FluentButton>
+                    </div>
+                </section>
+            }
+            @if (IsCompleted(operation.Status))
+            {
+                <div class="subtle-note" role="status">
+                    <strong>This setup operation completed.</strong>
+                    Completed identity steps are not repeated. Current registration availability, protection and telemetry delivery remain separate.
+                </div>
+            }
             <FluentAnchor Appearance="Appearance.Stealth" Href="@($"/agents/{operation.AgentId:D}")">Back to agent</FluentAnchor>
         }
         else
@@ -116,6 +151,10 @@ else
                                             </span>
                                         }
                                     </div>
+                                    <FluentAnchor Appearance="Appearance.Neutral"
+                                                  Href="@($"/authentication/login?returnUrl={Uri.EscapeDataString($"/operations/{OperationId:D}")}")">
+                                        Sign in and return to this operation
+                                    </FluentAnchor>
                                 }
                                 else
                                 {
@@ -127,7 +166,7 @@ else
 
                             <div class="registry-action-controls" aria-live="polite">
                                 <FluentButton Appearance="Appearance.Accent"
-                                              Disabled="@(completingAgent365Registration || agent365RegistrationAccepted)"
+                                              Disabled="@(!CanCompleteRegistration)"
                                               OnClick="OpenAgent365RegistrationConfirmation">
                                     @(completingAgent365Registration
                                         ? "Completing registration…"
@@ -143,16 +182,25 @@ else
                                 {
                                     <span class="field-help" role="status">The Gateway accepted this action. Automatic status checks are following the remaining operation steps.</span>
                                 }
+                                else if (!operation.Agent365RegistrationCompletionAvailable)
+                                {
+                                    <span class="field-help">Administrator completion is not currently available on this Gateway. Refresh the operation or ask the installation operator to review registration admission.</span>
+                                }
                             </div>
 
                             <ConfirmPanel Visible="@confirmAgent365Registration"
                                           Busy="@completingAgent365Registration"
                                           Title="Complete Agent 365 registration?"
-                                          Message="The Gateway will use your signed-in administrator identity to complete and verify the pending Agent 365 Registry step."
+                                          Message="Use your signed-in administrator session for this exact registration. The Gateway preserves its blueprint and child identity and follows final verification separately."
                                           ConfirmLabel="Complete registration"
                                           OnConfirm="CompleteAgent365RegistrationAsync"
                                           OnCancel="CancelAgent365RegistrationConfirmation">
                                 <AdditionalContent>
+                                    <dl class="review-summary">
+                                        <div><dt>Agent</dt><dd>@(contextAgent?.Name ?? operation.AgentId.ToString("D"))</dd></div>
+                                        <div><dt>External agent ID</dt><dd>@(contextAgent?.ExternalAgentId ?? "Open agent details to confirm")</dd></div>
+                                        <div><dt>Operation</dt><dd>@operation.OperationId</dd></div>
+                                    </dl>
                                     <div class="subtle-note">
                                         You will not upload a JSON file or paste a token. Microsoft Graph access remains inside the trusted Gateway flow.
                                     </div>
@@ -363,6 +411,9 @@ else
     private CancellationTokenSource? pollCts;
     private Task? pollTask;
     private OperationStatusDto? operation;
+    private AgentDetailDto? contextAgent;
+    private UiErrorInfo? contextError;
+    private bool contextLoaded;
     private UiErrorInfo? error;
     private UiErrorInfo? registrationActionError;
     private string? pollingNotice;
@@ -372,14 +423,30 @@ else
     private bool polling;
     private bool completingAgent365Registration;
     private bool confirmAgent365Registration;
+    private Guid? confirmedOperationId;
+    private Guid? confirmedAgentId;
+    private int selectionGeneration;
     private bool agent365RegistrationAccepted;
     private bool automaticAgent365RegistrationAttempted;
+    private bool completionOutcomeUnknown;
     private bool signedInAdministrator;
     private bool disposed;
 
     private string OperationDescription => operation?.Legacy == true
         ? "Historical persisted Gateway workflow state. Automatic polling and replay remain disabled for this legacy operation."
-        : "Live status for a known asynchronous Gateway operation. Automatic updates stop at a terminal state or after five minutes.";
+        : "Follow this registration's recorded progress and next action. Completed identity steps are not repeated; automatic updates stop after five minutes.";
+
+    private bool RegistryOutcomeNeedsReadback => completionOutcomeUnknown ||
+        operation is { Legacy: false, CurrentStep: "RegisterAgent", ReplaySupported: false } &&
+        string.Equals(operation.Status, "RequiresManualIntervention", StringComparison.OrdinalIgnoreCase);
+
+    private bool CanCompleteRegistration => RendererInfo.IsInteractive && signedInAdministrator &&
+        operation is { Legacy: false, Agent365RegistrationCompletionAvailable: true } &&
+        loadedOperationId == OperationId && operation.OperationId == OperationId &&
+        RequiresAgent365Registration(operation) && !IsTerminal(operation.Status) &&
+        !completingAgent365Registration && !agent365RegistrationAccepted &&
+        !RegistryOutcomeNeedsReadback && error is null && contextError is null &&
+        contextAgent?.AgentId == operation.AgentId;
 
     [Parameter]
     public Guid OperationId { get; set; }
@@ -391,15 +458,30 @@ else
             return;
         }
 
+        var generation = ++selectionGeneration;
+        var requestedOperationId = OperationId;
         loadedOperationId = OperationId;
         operation = null;
+        contextAgent = null;
+        contextError = null;
+        contextLoaded = false;
         error = null;
         registrationActionError = null;
         confirmAgent365Registration = false;
+        confirmedOperationId = null;
+        confirmedAgentId = null;
         agent365RegistrationAccepted = false;
         automaticAgent365RegistrationAttempted = false;
-        signedInAdministrator = (await AuthenticationStateProvider.GetAuthenticationStateAsync())
-            .User.IsInRole("Gateway.Administrator");
+        completionOutcomeUnknown = false;
+        completingAgent365Registration = false;
+        signedInAdministrator = false;
+        loading = true;
+        polling = false;
+        await CancelCurrentPollAsync();
+        if (!IsCurrentOperation(requestedOperationId, generation)) return;
+        var authentication = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        if (!IsCurrentOperation(requestedOperationId, generation)) return;
+        signedInAdministrator = authentication.User.IsInRole("Gateway.Administrator");
         await RestartPollingAsync();
     }
 
@@ -411,13 +493,15 @@ else
 
     private void OpenAgent365RegistrationConfirmation()
     {
-        if (completingAgent365Registration || agent365RegistrationAccepted)
+        if (!CanCompleteRegistration)
         {
             return;
         }
 
         registrationActionError = null;
         confirmAgent365Registration = true;
+        confirmedOperationId = operation!.OperationId;
+        confirmedAgentId = operation.AgentId;
     }
 
     private void CancelAgent365RegistrationConfirmation()
@@ -425,55 +509,76 @@ else
         if (!completingAgent365Registration)
         {
             confirmAgent365Registration = false;
+            confirmedOperationId = null;
+            confirmedAgentId = null;
         }
     }
 
     private async Task CompleteAgent365RegistrationAsync()
     {
-        if (completingAgent365Registration ||
-            agent365RegistrationAccepted ||
-            operation is null ||
-            !RequiresAgent365Registration(operation))
+        if (!CanCompleteRegistration || operation is null || !confirmAgent365Registration ||
+            confirmedOperationId != OperationId || confirmedAgentId != operation.AgentId)
         {
             return;
         }
 
         completingAgent365Registration = true;
+        automaticAgent365RegistrationAttempted = true;
         registrationActionError = null;
+        var requestedOperationId = loadedOperationId;
+        var expectedAgentId = operation.AgentId;
+        var generation = selectionGeneration;
+        confirmAgent365Registration = false;
+        confirmedOperationId = null;
+        confirmedAgentId = null;
 
         try
         {
-            await Api.CompleteAgent365RegistrationAsync(OperationId, disposeCts.Token);
+            var result = await Api.CompleteAgent365RegistrationAsync(requestedOperationId, disposeCts.Token);
+            if (!IsCurrentOperation(requestedOperationId, generation))
+            {
+                return;
+            }
+            ValidateCompletion(result, requestedOperationId, expectedAgentId);
             agent365RegistrationAccepted = true;
+            completionOutcomeUnknown = false;
             confirmAgent365Registration = false;
             await RestartPollingAsync();
-            pollingNotice = "Agent 365 registration was submitted and verified by the Gateway. Automatic updates resumed for the remaining operation steps.";
+            if (!IsCurrentOperation(requestedOperationId, generation)) return;
+            pollingNotice = "The Gateway accepted the Registry completion. Follow the remaining recorded verification steps; acceptance alone does not mean the registration is Active.";
         }
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            confirmAgent365Registration = false;
-            registrationActionError = UiErrorInfo.FromException(exception);
-            pollingNotice = "The administrator action did not complete. Review the safe details below; no automatic retry was attempted.";
+            if (IsCurrentOperation(requestedOperationId, generation))
+            {
+                RecordCompletionError(exception);
+            }
         }
         finally
         {
-            completingAgent365Registration = false;
+            if (IsCurrentOperation(requestedOperationId, generation))
+            {
+                completingAgent365Registration = false;
+            }
         }
     }
 
     private async Task RestartPollingAsync()
     {
+        var requestedOperationId = loadedOperationId;
+        var generation = selectionGeneration;
         await CancelCurrentPollAsync();
 
-        if (disposed)
+        if (!IsCurrentOperation(requestedOperationId, generation))
         {
             return;
         }
 
         error = null;
+        contextLoaded = false;
         pollingNotice = null;
         loading = operation is null;
         polling = true;
@@ -491,9 +596,11 @@ else
 
     private async Task PollAsync(CancellationToken cancellationToken)
     {
-        using var boundedPollingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        boundedPollingCts.CancelAfter(PollLimit);
+        using var deadline = new CancellationTokenSource(PollLimit, Clock);
+        using var boundedPollingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         var boundedToken = boundedPollingCts.Token;
+        var requestedOperationId = loadedOperationId;
+        var generation = selectionGeneration;
 
         try
         {
@@ -501,15 +608,37 @@ else
             {
                 try
                 {
-                    operation = await Api.GetOperationStatusAsync(OperationId, boundedToken);
-                    lastCheckedUtc = DateTime.UtcNow;
+                    var previousStatus = operation?.Status;
+                    var latest = await Api.GetOperationStatusAsync(requestedOperationId, boundedToken);
+                    if (boundedToken.IsCancellationRequested || !IsCurrentOperation(requestedOperationId, generation))
+                    {
+                        return;
+                    }
+                    if (latest.OperationId != requestedOperationId || latest.AgentId == Guid.Empty)
+                    {
+                        throw new GatewayApiProtocolException("The returned operation does not match the requested registration.", null);
+                    }
+                    operation = latest;
+                    lastCheckedUtc = Clock.GetUtcNow().UtcDateTime;
                     error = null;
                     loading = false;
+                    if (!contextLoaded || IsCompleted(operation.Status) &&
+                        !string.Equals(previousStatus, operation.Status, StringComparison.Ordinal))
+                    {
+                        await LoadAgentContextAsync(operation, generation, boundedToken);
+                    }
+                    boundedToken.ThrowIfCancellationRequested();
+                    if (!IsCurrentOperation(requestedOperationId, generation)) return;
+                    if (IsCompleted(operation.Status) ||
+                        operation.Steps?.Any(step => step.Step == "RegisterAgent" && step.Status == "Completed") == true)
+                    {
+                        completionOutcomeUnknown = false;
+                        agent365RegistrationAccepted = true;
+                    }
 
-                    if (signedInAdministrator &&
-                        operation.Agent365RegistrationCompletionAvailable &&
-                        RequiresAgent365Registration(operation) &&
-                        !automaticAgent365RegistrationAttempted)
+                    if (CanCompleteRegistration &&
+                        !automaticAgent365RegistrationAttempted &&
+                        HandoffState.TryConsumeAutomaticCompletion(requestedOperationId, operation.AgentId))
                     {
                         automaticAgent365RegistrationAttempted = true;
                         completingAgent365Registration = true;
@@ -517,22 +646,38 @@ else
 
                         try
                         {
-                            await Api.CompleteAgent365RegistrationAsync(
-                                OperationId,
-                                boundedToken);
+                            var result = await Api.CompleteAgent365RegistrationAsync(requestedOperationId, boundedToken);
+                            if (boundedToken.IsCancellationRequested || !IsCurrentOperation(requestedOperationId, generation))
+                            {
+                                if (IsCurrentOperation(requestedOperationId, generation))
+                                {
+                                    completionOutcomeUnknown = true;
+                                    registrationActionError = new UiErrorInfo("The Registry request finished after status checking stopped. Read its existing operation before taking another action.");
+                                }
+                                return;
+                            }
+                            ValidateCompletion(result, requestedOperationId, operation.AgentId);
                             agent365RegistrationAccepted = true;
-                            pollingNotice = "Agent 365 registration was completed automatically with your signed-in administrator session. Verification is continuing.";
+                            pollingNotice = "After the key handoff, the Gateway accepted automatic Registry completion using your administrator session. Final verification is still a separate step.";
                             continue;
+                        }
+                        catch (OperationCanceledException) when (boundedToken.IsCancellationRequested)
+                        {
+                            if (IsCurrentOperation(requestedOperationId, generation))
+                            {
+                                completionOutcomeUnknown = true;
+                                registrationActionError = new UiErrorInfo("The Registry request was interrupted. Check its existing operation; cancellation does not undo work already sent.");
+                            }
+                            throw;
                         }
                         catch (Exception exception) when (exception is not OperationCanceledException)
                         {
-                            registrationActionError = UiErrorInfo.FromException(exception);
-                            pollingNotice = "Automatic Agent 365 registration did not complete. Review the safe details below; no automatic retry was attempted.";
+                            if (IsCurrentOperation(requestedOperationId, generation)) RecordCompletionError(exception);
                             return;
                         }
                         finally
                         {
-                            completingAgent365Registration = false;
+                            if (IsCurrentOperation(requestedOperationId, generation)) completingAgent365Registration = false;
                         }
                     }
                 }
@@ -542,6 +687,7 @@ else
                 }
                 catch (Exception exception)
                 {
+                    if (!IsCurrentOperation(requestedOperationId, generation)) return;
                     error = UiErrorInfo.FromException(exception);
                     loading = false;
                     pollingNotice = "Automatic updates stopped after a request error. Review the safe error details, then try again.";
@@ -549,6 +695,7 @@ else
                 }
 
                 await NotifyStateChangedAsync();
+                if (!IsCurrentOperation(requestedOperationId, generation)) return;
 
                 if (operation is not null && IsTerminal(operation.Status))
                 {
@@ -568,22 +715,83 @@ else
                     return;
                 }
 
-                await Task.Delay(PollInterval, boundedToken);
+                await Task.Delay(PollInterval, Clock, boundedToken);
             }
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && boundedPollingCts.IsCancellationRequested)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
         {
-            pollingNotice = "Automatic updates paused after the five-minute polling limit. The operation may still be running; resume updates to continue.";
+            if (IsCurrentOperation(requestedOperationId, generation))
+                pollingNotice = "Automatic updates paused after the five-minute polling limit. The operation may still be running; resume updates to continue.";
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
         finally
         {
-            polling = false;
-            loading = false;
-            await NotifyStateChangedAsync();
+            if (IsCurrentOperation(requestedOperationId, generation))
+            {
+                polling = false;
+                loading = false;
+                await NotifyStateChangedAsync();
+            }
         }
+    }
+
+    private async Task LoadAgentContextAsync(OperationStatusDto current, int generation, CancellationToken cancellationToken)
+    {
+        contextLoaded = true;
+        contextError = null;
+        try
+        {
+            var resource = await Api.GetAgentAsync(current.AgentId, cancellationToken);
+            if (cancellationToken.IsCancellationRequested || !IsCurrentOperation(current.OperationId, generation))
+            {
+                return;
+            }
+            if (resource.Value.AgentId != current.AgentId)
+            {
+                throw new GatewayApiProtocolException("Agent details do not match this operation's registration.", null);
+            }
+            contextAgent = resource.Value;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            if (IsCurrentOperation(current.OperationId, generation)) contextError = UiErrorInfo.FromException(exception);
+            Logger.LogWarning("Operation agent context could not be refreshed ({ErrorType}).", exception.GetType().Name);
+        }
+    }
+
+    private bool IsCurrentOperation(Guid operationId, int generation) =>
+        !disposed && selectionGeneration == generation && loadedOperationId == operationId && OperationId == operationId;
+
+    private static void ValidateCompletion(CompleteAgent365RegistrationResponse result, Guid operationId, Guid agentId)
+    {
+        if (result.OperationId != operationId || result.AgentId != agentId ||
+            string.IsNullOrWhiteSpace(result.Agent365RegistrationId) || string.IsNullOrWhiteSpace(result.Status))
+        {
+            throw new GatewayApiProtocolException("The Registry completion response could not be bound to this operation and agent.", null);
+        }
+    }
+
+    private void RecordCompletionError(Exception exception)
+    {
+        confirmAgent365Registration = false;
+        confirmedOperationId = null;
+        confirmedAgentId = null;
+        var rejected = exception is GatewayAuthenticationRequiredException ||
+            exception is GatewayApiException { StatusCode: System.Net.HttpStatusCode.Unauthorized or
+                System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.BadRequest };
+        completionOutcomeUnknown = !rejected;
+        registrationActionError = completionOutcomeUnknown
+            ? new UiErrorInfo("The request may have completed. Check the existing operation instead of sending another Registry action.",
+                (exception as GatewayApiClientException)?.CorrelationId)
+            : UiErrorInfo.FromException(exception);
+        pollingNotice = completionOutcomeUnknown
+            ? "The Registry result needs checking. No automatic retry or new create was attempted."
+            : "The administrator action was not authorized or admitted. Complete the required sign-in or consent step, then review this same operation.";
+        Logger.LogWarning("Registry completion did not return a bound result ({ErrorType}); correlation {CorrelationId}.",
+            exception.GetType().Name, (exception as GatewayApiClientException)?.CorrelationId);
     }
 
     private async Task CancelCurrentPollAsync()
@@ -632,6 +840,10 @@ else
         status.Equals("Cancelled", StringComparison.OrdinalIgnoreCase) ||
         status.Equals("Canceled", StringComparison.OrdinalIgnoreCase) ||
         status.Equals("RequiresManualIntervention", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsCompleted(string status) =>
+        status.Equals("Completed", StringComparison.OrdinalIgnoreCase) ||
+        status.Equals("Succeeded", StringComparison.OrdinalIgnoreCase);
 
     private static int ClampPercent(int value) => Math.Clamp(value, 0, 100);
 

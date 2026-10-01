@@ -14,4 +14,5 @@ public record AgentFeaturesDto(
     string? PromptShieldCapabilityStatus = null,
     string? PurviewPolicyMode = null,
     Guid? PurviewConfigurationOperationId = null,
-    string? PurviewConfigurationStatus = null);
+    string? PurviewConfigurationStatus = null,
+    string? PurviewProfileStatus = null);

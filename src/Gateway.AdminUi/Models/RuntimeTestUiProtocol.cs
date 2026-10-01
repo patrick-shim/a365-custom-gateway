@@ -68,11 +68,21 @@ public static class RuntimeTestUiProtocol
         report.PolicyMode is "Enforce" or "SimulationWithTips" or "SimulationWithoutTips" or "Disabled" &&
         IsHash(report.SuiteHash) && IsHash(report.ConfigurationFingerprint) && IsRowVersion(report.ProfileRowVersion) &&
         report.Cases.Count <= MaximumBatchPositives + 1 && report.OutstandingSensitiveInformationTypeIds.Count <= MaximumSelectedTypes &&
+        report.Cases.Select(item => item.CaseId).Distinct().Count() == report.Cases.Count &&
+        (report.Outcome == "EnforcementBehaviorVerified") == report.EnforcementBehaviorVerified &&
         (!report.EnforcementBehaviorVerified || report.PolicyMode == "Enforce" && report.Outcome == "EnforcementBehaviorVerified" &&
-            report.OutstandingSensitiveInformationTypeIds.Count == 0) &&
+            report.Status == "Completed" && report.CompletedAtUtc is not null && report.FailureCode is null &&
+            report.OutstandingSensitiveInformationTypeIds.Count == 0 &&
+            report.Cases.Any(item => item.IntendedSensitiveInformationTypeId is not null) &&
+            report.Cases.Count(item => item.IntendedSensitiveInformationTypeId is null) == 1 &&
+            report.Cases.All(item => item.ContentProcessing == "Processed" &&
+                (item.IntendedSensitiveInformationTypeId is null ? item.ActionSource is "None" or "Content" : item.ActionSource == "Content") &&
+                item.FailureCode is null && item.ObservedDecision ==
+                    (item.IntendedSensitiveInformationTypeId is null ? "Allowed" : "Blocked"))) &&
         (report.PolicyMode != "Disabled" || !report.EnforcementBehaviorVerified && report.Cases.All(item => item.ContentProcessing == "NotSubmitted")) &&
         report.OutstandingSensitiveInformationTypeIds.All(id => id != Guid.Empty) && SafeFailure(report.FailureCode) &&
         report.Cases.All(item => item.CaseId != Guid.Empty && IsHash(item.ContentHash) &&
+            item.IntendedSensitiveInformationTypeId != Guid.Empty &&
             item.ObservedDecision is "Unknown" or "Allowed" or "Blocked" or "Warned" or "AuditAccepted" or "NoInlineDecision" &&
             item.ContentProcessing is "NotSubmitted" or "MetadataOnly" or "SubmittedWithoutDecision" or "Processed" &&
             item.ActionSource is "None" or "ProtectionScope" or "Content" &&

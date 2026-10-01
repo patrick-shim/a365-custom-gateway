@@ -3,18 +3,22 @@
 @attribute [Authorize(Roles = "Gateway.Administrator")]
 @implements IAsyncDisposable
 @using System.ComponentModel.DataAnnotations
+@using System.Text.Json
 @inject IGatewayApiClient Api
 @inject AuthenticationStateProvider AuthenticationStateProvider
 @inject NavigationManager Navigation
 @inject ILogger<RegisterAgent> Logger
+@inject RegistrationHandoffState HandoffState
+@inject IJSRuntime JS
+@inject TimeProvider Clock
 
 <PageTitle>Register agent · A365 Gateway</PageTitle>
 
 <PageHeader Eyebrow="Agent registry"
-            Title="@(gatewayCredential is null ? "Register an agent" : "Save the Gateway credential")"
-            Description="@(gatewayCredential is null ? "Create the gateway record and start the deployed provisioning workflow." : "Registration was accepted. Save the one-time credential before following provisioning progress.")">
+            Title="@(gatewayCredential is null ? "Register an agent" : "Save your connection details")"
+            Description="@(gatewayCredential is null ? "Choose its identity, then decide which optional protections it should use." : "Your agent record is created. Save the key now, then follow Agent 365 setup.")">
     <Actions>
-        @if (gatewayCredential is null)
+        @if (gatewayCredential is null && !submitting)
         {
             <FluentAnchor Appearance="Appearance.Neutral" Href="/agents">Cancel</FluentAnchor>
         }
@@ -24,78 +28,9 @@
 @if (acceptedRegistration is { } registration && gatewayCredential is { } credential)
 {
     <div class="form-layout">
-        <section class="card form-card" aria-labelledby="credential-heading" aria-live="polite">
-            <div class="form-section">
-                <h2 id="credential-heading">Save this Gateway API key now</h2>
-                <p>The external agent uses this credential to authenticate to its registration at the Gateway.</p>
-            </div>
-
-            <div class="form-section">
-                <div class="validation-summary-errors" role="alert">
-                    <strong>This credential cannot be retrieved again.</strong>
-                    <span> Copy it now and store it in the external agent's secret manager. Leaving this page permanently removes it from the portal.</span>
-                </div>
-            </div>
-
-            <div class="form-section">
-                <div class="form-grid">
-                    <div class="form-field full">
-                        <label for="credential-external-agent-id">External agent ID</label>
-                        <input id="credential-external-agent-id"
-                               class="form-control"
-                               value="@registration.ExternalAgentId"
-                               readonly
-                               aria-readonly="true" />
-                        <span class="field-help">Send this external agent ID in Gateway requests made with the credential below.</span>
-                    </div>
-                    <div class="form-field full">
-                        <label for="gateway-api-key">Gateway API key</label>
-                        <input id="gateway-api-key"
-                               class="form-control"
-                               value="@credential.ApiKey"
-                               readonly
-                               aria-readonly="true"
-                               autocomplete="off"
-                               spellcheck="false" />
-                    </div>
-                    <div class="form-field full">
-                        <label for="gateway-authorization-header">Authorization header</label>
-                        <input id="gateway-authorization-header"
-                               class="form-control"
-                               value="@FormatAuthorizationHeader(credential.ApiKey)"
-                               readonly
-                               aria-readonly="true"
-                               autocomplete="off"
-                               spellcheck="false" />
-                        <span class="field-help">Send this value in the HTTP <code>Authorization</code> header. Never put the key in a URL or request body.</span>
-                    </div>
-                    <div class="form-field full">
-                        <span class="detail-label">Expires</span>
-                        <time id="gateway-credential-expiration"
-                              class="detail-value"
-                              datetime="@FormatUtcMachine(credential.ExpiresAtUtc)">@FormatUtcDisplay(credential.ExpiresAtUtc)</time>
-                    </div>
-                </div>
-            </div>
-
-            @if (registration.PurviewConfigurationOperationId is { } protectionOperationId)
-            {
-                <div class="form-section" role="status">
-                    <strong>Purview configuration accepted</strong>
-                    <StatusPill Value="@(registration.PurviewConfigurationStatus ?? "Pending")" />
-                    <p>Configuration is not effective protection yet. A new blueprint's reviewed policy waits for its exact application ID.</p>
-                    <span>Protection operation: <code>@protectionOperationId</code>. Inspect it in Settings after saving this credential.</span>
-                </div>
-            }
-            <div class="form-actions">
-                <FluentButton id="continue-to-provisioning"
-                              Type="ButtonType.Button"
-                              Appearance="Appearance.Accent"
-                              OnClick="ContinueToProvisioning">
-                    Continue to provisioning
-                </FluentButton>
-            </div>
-        </section>
+        <GatewayKeyHandoff ExternalAgentId="@registration.ExternalAgentId" Credential="@credential"
+                           RecoveryUri="@recoveryUri" OnContinue="ContinueToProvisioning"
+                           OnDiscard="DiscardCredential" />
 
         <aside class="card guidance-card" aria-label="Credential guidance">
             <div class="card-header"><h2>Before continuing</h2></div>
@@ -103,20 +38,62 @@
                 <div><span>1</span><p><strong>Copy the key</strong><small>Store it in the external agent's protected runtime configuration.</small></p></div>
                 <div><span>2</span><p><strong>Keep the mapping</strong><small>Use the external agent ID shown with this key so the Gateway can bind the request to this registration.</small></p></div>
                 <div><span>3</span><p><strong>Follow provisioning</strong><small>Continue only after the credential is safely stored. The next page reports persisted Gateway operation progress.</small></p></div>
+                @if (registration.PurviewConfigurationOperationId is { } protectionOperationId)
+                {
+                    <div role="status">
+                        <strong>Purview configuration accepted</strong>
+                        <StatusPill Value="@(registration.PurviewConfigurationStatus ?? "Pending")" />
+                        <p>Configuration is not effective protection yet. A new blueprint's policy waits for its exact application ID. Protection operation: <code>@protectionOperationId</code>.</p>
+                    </div>
+                }
             </div>
         </aside>
     </div>
 }
+else if (registrationOutcomeUnknown)
+{
+    <section class="card" aria-labelledby="registration-recovery-heading">
+        <div class="card-header"><h2 id="registration-recovery-heading">Registration result needs checking</h2></div>
+        <div class="card-body">
+            <p>The registration may already exist. Check its retained external ID before taking another action. This page will not send another create request.</p>
+            <CopyableValue InputId="registration-recovery-id" Label="External agent ID" Value="@form.ExternalAgentId" />
+            @if (error is not null)
+            {
+                <ErrorState Message="@error.Message" CorrelationId="@error.CorrelationId" />
+            }
+            @if (recoveryAgentId is { } agentId)
+            {
+                <p role="status">The Gateway registration exists. Its original key cannot be retrieved. Open its details to issue a replacement before connecting the external agent.</p>
+                <FluentAnchor Appearance="Appearance.Accent" Href="@($"/agents/{agentId:D}")">Open registered agent</FluentAnchor>
+            }
+            else
+            {
+                <FluentButton Type="ButtonType.Button" Appearance="Appearance.Accent" OnClick="CheckRegistrationAsync"
+                              Disabled="@(checkingRegistration || !ValidRecoveryId)">
+                    @(checkingRegistration ? "Checking registration…" : "Check existing registration")
+                </FluentButton>
+            }
+            @if (recoveryNotice is not null)
+            {
+                <p class="field-help" role="status">@recoveryNotice</p>
+            }
+            <FluentAnchor Appearance="Appearance.Neutral" Href="@($"/agents?search={Uri.EscapeDataString(form.ExternalAgentId)}")">Check agents</FluentAnchor>
+        </div>
+    </section>
+}
 else
 {
 <div class="form-layout">
-    <EditForm Model="form" OnValidSubmit="SubmitAsync" class="card form-card">
+    <EditForm id="registration-form" EditContext="editContext" OnValidSubmit="ReviewRegistration"
+              OnInvalidSubmit="InvalidRegistration" class="card form-card"
+              aria-busy="@(!RendererInfo.IsInteractive || submitting ? "true" : "false")">
         <DataAnnotationsValidator />
         <ValidationSummary />
+        <fieldset class="registration-fields" disabled="@(!RendererInfo.IsInteractive || submitting)">
 
         <nav class="form-stepper" aria-label="Registration sections">
-            <a href="#blueprint-heading"><span>1</span>Blueprint</a>
-            <a href="#identity-heading"><span>2</span>Identity</a>
+            <a href="#identity-heading"><span>1</span>Agent</a>
+            <a href="#blueprint-heading"><span>2</span>Blueprint</a>
             <a href="#features-heading"><span>3</span>Features</a>
         </nav>
 
@@ -162,8 +139,53 @@ else
             </div>
         }
 
+        <section class="form-section" aria-labelledby="identity-heading">
+            <h2 id="identity-heading" tabindex="-1">Give your agent a name</h2>
+            <p>The Gateway generates its stable external ID and prefills the signed-in owner. Review the owner and environment before registering.</p>
+            <div class="form-grid">
+                <div class="form-field">
+                    <label for="agent-name">Agent name</label>
+                    <InputText id="agent-name" class="form-control" @bind-Value="form.Name"
+                               @oninput="eventArgs => form.Name = eventArgs.Value?.ToString() ?? string.Empty" autocomplete="off"
+                               aria-describedby="agent-name-error" />
+                    <ValidationMessage For="@(() => form.Name)" id="agent-name-error" />
+                </div>
+                <div class="form-field">
+                    <label for="external-agent-id">External agent ID <span class="optional-label">Generated</span></label>
+                    <input id="external-agent-id" class="form-control" value="@form.ExternalAgentId" readonly
+                           aria-readonly="true" aria-describedby="external-agent-id-help" />
+                    <span id="external-agent-id-help" class="field-help">Generated automatically and immutable after registration. This remains separate from the Gateway record ID and Agent 365 IDs.</span>
+                    <ValidationMessage For="@(() => form.ExternalAgentId)" />
+                </div>
+                <div class="form-field">
+                    <label for="agent-environment">Environment</label>
+                    <InputSelect id="agent-environment" class="form-control" @bind-Value="form.Environment">
+                        <option value="Development">Development</option>
+                        <option value="Test">Test</option>
+                        <option value="Production">Production</option>
+                    </InputSelect>
+                    <ValidationMessage For="@(() => form.Environment)" />
+                </div>
+                <div class="form-field">
+                    <label for="owner-object-id">Owner object ID <span class="optional-label">Prefilled</span></label>
+                    <InputText id="owner-object-id" class="form-control" @bind-Value="form.OwnerObjectId"
+                               @oninput="eventArgs => form.OwnerObjectId = eventArgs.Value?.ToString() ?? string.Empty"
+                               autocomplete="off" aria-describedby="owner-object-id-help owner-object-id-error" />
+                    <span id="owner-object-id-help" class="field-help">@(ownerDisplay is null ? "Prefilled from your authenticated Microsoft Entra identity. Change it only when another user is accountable." : $"Prefilled from signed-in owner {ownerDisplay}. Change it only when another user is accountable.")</span>
+                    <ValidationMessage For="@(() => form.OwnerObjectId)" id="owner-object-id-error" />
+                </div>
+                <div class="form-field full">
+                    <label for="agent-description">Description <span class="optional-label">Optional</span></label>
+                    <InputTextArea id="agent-description" class="form-control form-textarea" @bind-Value="form.Description"
+                                   @oninput="eventArgs => form.Description = eventArgs.Value?.ToString()" />
+                    <div class="field-counter">@(form.Description?.Length ?? 0) / 2,000</div>
+                    <ValidationMessage For="@(() => form.Description)" />
+                </div>
+            </div>
+        </section>
+
         <section class="form-section" aria-labelledby="blueprint-heading">
-            <h2 id="blueprint-heading" tabindex="-1">Reusable Agent ID blueprint</h2>
+            <h2 id="blueprint-heading" tabindex="-1">Choose a reusable blueprint</h2>
             <p>Choose a reusable Microsoft Entra Agent Identity blueprint already available to the Gateway, or create one that can be reused by more than one agent. Only typed Agent ID blueprints are listed.</p>
             <div class="form-grid">
                 <div class="form-field full">
@@ -172,12 +194,12 @@ else
                                  class="form-control"
                                  @bind-Value="form.BlueprintMode"
                                  @bind-Value:after="HandleBlueprintModeChangedAsync"
-                                 aria-describedby="blueprint-mode-help">
-                        <option value="@BlueprintModeUseExisting">Use an existing reusable blueprint</option>
+                                 aria-describedby="blueprint-mode-help blueprint-mode-error">
+                        <option value="@BlueprintModeUseExisting">Use an existing blueprint</option>
                         <option value="@BlueprintModeCreateNew">Create a reusable blueprint</option>
                     </InputSelect>
                     <span id="blueprint-mode-help" class="field-help">Using an existing blueprint is the default. Choices are loaded through the Gateway API and validated again before the Agent ID is created.</span>
-                    <ValidationMessage For="@(() => form.BlueprintMode)" />
+                    <ValidationMessage For="@(() => form.BlueprintMode)" id="blueprint-mode-error" />
                 </div>
 
                 @if (form.BlueprintMode == BlueprintModeUseExisting)
@@ -202,7 +224,7 @@ else
                     {
                         <div class="form-field full">
                             <EmptyState Icon="◇"
-                                        Title="No reusable blueprints found"
+                                        Title="No reusable blueprints yet"
                                         Description="No typed Agent ID blueprints are currently available through the Gateway. Create one with this registration or refresh the inventory.">
                                 <FluentButton Type="ButtonType.Button" Appearance="Appearance.Accent" OnClick="UseCreateNewBlueprint">Create a reusable blueprint</FluentButton>
                                 <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" OnClick="LoadBlueprintOptionsAsync">Refresh blueprints</FluentButton>
@@ -232,7 +254,7 @@ else
                                          class="form-control"
                                          @bind-Value="form.BlueprintObjectId"
                                          @bind-Value:after="HandleExistingBlueprintChanged"
-                                         aria-describedby="existing-blueprint-help blueprint-inventory-status">
+                                         aria-describedby="existing-blueprint-help blueprint-inventory-status existing-blueprint-error">
                                 <option value="">Select an Agent 365-compatible blueprint</option>
                                 @if (FilteredCompatibleBlueprints.Count > 0)
                                 {
@@ -266,7 +288,7 @@ else
                                     <span>Create a reusable blueprint with this registration, or ask an operator to update an existing blueprint's Agent 365 manager applications.</span>
                                 </div>
                             }
-                            <ValidationMessage For="@(() => form.BlueprintObjectId)" />
+                            <ValidationMessage For="@(() => form.BlueprintObjectId)" id="existing-blueprint-error" />
                             <div class="toolbar-actions">
                                 @if (CompatibleBlueprintCount == 0)
                                 {
@@ -289,67 +311,23 @@ else
                 else if (form.BlueprintMode == BlueprintModeCreateNew)
                 {
                     <div class="form-field full">
-                        <label for="new-blueprint-display-name">New blueprint display name</label>
+                        <label for="new-blueprint-display-name">Blueprint name</label>
                         <InputText id="new-blueprint-display-name"
                                    class="form-control"
                                    @bind-Value="form.BlueprintDisplayName"
                                    @oninput="eventArgs => form.BlueprintDisplayName = eventArgs.Value?.ToString()"
                                    autocomplete="off"
-                                   aria-describedby="new-blueprint-display-name-help" />
+                                   aria-describedby="new-blueprint-display-name-help new-blueprint-error" />
                         <span id="new-blueprint-display-name-help" class="field-help">Choose a durable name for the reusable Agent Identity blueprint. The Gateway creates and verifies the blueprint before creating this agent's Agent ID.</span>
-                        <ValidationMessage For="@(() => form.BlueprintDisplayName)" />
+                        <ValidationMessage For="@(() => form.BlueprintDisplayName)" id="new-blueprint-error" />
                     </div>
                 }
             </div>
         </section>
 
-        <section class="form-section" aria-labelledby="identity-heading">
-            <h2 id="identity-heading" tabindex="-1">Agent identity</h2>
-            <p>The gateway generates the stable external identifier and assigns the signed-in administrator as owner.</p>
-            <div class="form-grid">
-                <div class="form-field">
-                    <label for="agent-name">Display name</label>
-                    <InputText id="agent-name" class="form-control" @bind-Value="form.Name"
-                               @oninput="eventArgs => form.Name = eventArgs.Value?.ToString() ?? string.Empty" autocomplete="off" />
-                    <ValidationMessage For="@(() => form.Name)" />
-                </div>
-                <div class="form-field">
-                    <label for="external-agent-id">External agent ID <span class="optional-label">Generated</span></label>
-                    <input id="external-agent-id" class="form-control" value="@form.ExternalAgentId" readonly
-                           aria-readonly="true" aria-describedby="external-agent-id-help" />
-                    <span id="external-agent-id-help" class="field-help">Generated automatically and immutable after registration. This remains separate from the gateway record ID and Agent 365 IDs.</span>
-                    <ValidationMessage For="@(() => form.ExternalAgentId)" />
-                </div>
-                <div class="form-field">
-                    <label for="agent-environment">Environment</label>
-                    <InputSelect id="agent-environment" class="form-control" @bind-Value="form.Environment">
-                        <option value="Development">Development</option>
-                        <option value="Test">Test</option>
-                        <option value="Production">Production</option>
-                    </InputSelect>
-                    <ValidationMessage For="@(() => form.Environment)" />
-                </div>
-                <div class="form-field">
-                    <label for="owner-object-id">Owner object ID <span class="optional-label">Prefilled</span></label>
-                    <InputText id="owner-object-id" class="form-control" @bind-Value="form.OwnerObjectId"
-                               @oninput="eventArgs => form.OwnerObjectId = eventArgs.Value?.ToString() ?? string.Empty"
-                               autocomplete="off" aria-describedby="owner-object-id-help" />
-                    <span id="owner-object-id-help" class="field-help">@(ownerDisplay is null ? "Prefilled from your authenticated Microsoft Entra identity. Change it only when another user is accountable." : $"Prefilled from signed-in owner {ownerDisplay}. Change it only when another user is accountable.")</span>
-                    <ValidationMessage For="@(() => form.OwnerObjectId)" />
-                </div>
-                <div class="form-field full">
-                    <label for="agent-description">Description <span class="optional-label">Optional</span></label>
-                    <InputTextArea id="agent-description" class="form-control form-textarea" @bind-Value="form.Description"
-                                   @oninput="eventArgs => form.Description = eventArgs.Value?.ToString()" />
-                    <div class="field-counter">@(form.Description?.Length ?? 0) / 2,000</div>
-                    <ValidationMessage For="@(() => form.Description)" />
-                </div>
-            </div>
-        </section>
-
         <section class="form-section" aria-labelledby="features-heading">
-            <h2 id="features-heading" tabindex="-1">Gateway features</h2>
-            <p>These settings can be adjusted later from the agent details page.</p>
+            <h2 id="features-heading" tabindex="-1">Choose what this agent uses</h2>
+            <p>Prompt Shields and Microsoft Purview are optional and independent. Both off is a complete core registration choice. Saved choices and current protection are separate.</p>
             <div class="feature-stack">
                 <fieldset class="feature-group" aria-describedby="activity-observability-help">
                     <legend>Activity observability</legend>
@@ -374,7 +352,7 @@ else
                     BlueprintApplicationId="@(form.BlueprintMode == BlueprintModeUseExisting ? SelectedBlueprint?.BlueprintClientId : null)"
                     BlueprintDisplayName="@(form.BlueprintMode == BlueprintModeUseExisting ? SelectedBlueprint?.DisplayName : null)"
                     DeferredBlueprint="DeferredProtectionBlueprint"
-                    DefaultPromptShieldsEnabled="@(defaultPromptShieldEnabled && promptShieldAvailable)"
+                    DefaultPromptShieldsEnabled="defaultPromptShieldEnabled"
                     PromptRuntimeAvailable="promptShieldServerAvailable"
                     DefaultPurviewEnabled="defaultPurviewEnabled"
                     ContextKey="@form.ExternalAgentId"
@@ -394,34 +372,72 @@ else
                             : ExistingBlueprintInventoryUnavailable
                                 ? "Blueprint unavailable"
                             : identityReady
-                                ? "Register agent"
+                                ? "Review registration"
                                 : "Loading identity…")
             </FluentButton>
         </div>
+        </fieldset>
     </EditForm>
 
     <aside class="card guidance-card" aria-label="Registration guidance">
         <div class="card-header"><h2>What happens next</h2></div>
         <div class="card-body guidance-steps">
-            <div><span>1</span><p><strong>Blueprint ready</strong><small>The Gateway validates the selected reusable blueprint or creates and verifies a new one before creating the Agent ID.</small></p></div>
-            <div><span>2</span><p><strong>Agent ID created</strong><small>A distinct Microsoft Entra Agent ID is created under the reusable blueprint and read back for verification.</small></p></div>
-            <div><span>3</span><p><strong>Agent 365 connected</strong><small>The Gateway assigns Agent 365 observability access to the new Agent ID, registers it through the configured preview provider, and verifies the Agent 365 connection.</small></p></div>
+            <div><span>1</span><p><strong>Save your connection details</strong><small>Store the one-time key with the API endpoint and external agent ID before leaving registration.</small></p></div>
+            <div><span>2</span><p><strong>Finish Agent 365 setup</strong><small>A Gateway Administrator completes the delegated Registry step. The Gateway then verifies the identity mapping.</small></p></div>
+            <div><span>3</span><p><strong>Connect the external agent</strong><small>Wait for an Active registration, then preserve the sample's evaluate, model-once and submit sequence.</small></p></div>
         </div>
         <div class="card-footer"><div class="subtle-note">Keep the operation page open to follow verified progress. Polling stops automatically after a bounded period.</div></div>
     </aside>
 </div>
 }
 
+@if (submitting)
+{
+    <NavigationLock ConfirmExternalNavigation="true" OnBeforeInternalNavigation="BeforeSubmittingNavigation" />
+}
+<ConfirmPanel Visible="@(reviewedRequest is not null)" Busy="submitting"
+              Title="Review registration" Message="Confirm this identity and these choices. Save the one-time key before continuing to Agent 365 setup."
+              ConfirmLabel="Register and show key" OnConfirm="SubmitAsync" OnCancel="CancelRegistrationReview">
+    <AdditionalContent>
+        @if (reviewedRequest is { } reviewed)
+        {
+            <dl class="review-summary">
+                <div><dt>Agent</dt><dd>@reviewed.Name</dd></div>
+                <div><dt>External agent ID</dt><dd>@reviewed.ExternalAgentId</dd></div>
+                <div><dt>Owner object ID</dt><dd>@reviewed.OwnerObjectId</dd></div>
+                <div><dt>Environment</dt><dd>@reviewed.Environment</dd></div>
+                <div><dt>Blueprint</dt><dd>@(reviewed.Blueprint is { Mode: BlueprintModeCreateNew } newBlueprint ? $"New: {newBlueprint.DisplayName}" : $"Reuse {SelectedBlueprint?.DisplayName} ({reviewed.Blueprint?.BlueprintObjectId})")</dd></div>
+                <div><dt>Prompt Shields</dt><dd>@(reviewed.Features?.PromptShieldEnabled == true ? "On" : "Off")</dd></div>
+                <div><dt>Microsoft Purview</dt><dd>@(reviewed.Features?.PurviewEnabled == true ? "Reviewed configuration; current protection is verified separately" : "Off")</dd></div>
+                <div><dt>Telemetry choices</dt><dd>Agent 365: @(reviewed.Features?.Agent365ObservabilityEnabled == true ? "On" : "Off"); Azure Monitor mirror: @(reviewed.Features?.AzureMonitorExportEnabled == true ? "On" : "Off")</dd></div>
+            </dl>
+        }
+    </AdditionalContent>
+</ConfirmPanel>
+
 @code {
+    [SupplyParameterFromQuery(Name = "pendingExternalId")]
+    public string? PendingExternalId { get; set; }
+
     private const string EntraObjectIdClaim = "http://schemas.microsoft.com/identity/claims/objectidentifier";
     private const string EntraObjectIdShortClaim = "oid";
     private const string BlueprintModeUseExisting = "UseExisting";
     private const string BlueprintModeCreateNew = "CreateNew";
     private readonly CancellationTokenSource disposeCts = new();
     private readonly RegistrationForm form = new();
+    private EditContext editContext = default!;
+    private ValidationMessageStore serverValidation = default!;
+    private RegisterAgentRequest? reviewedRequest;
+    private string? reviewedSignature;
+    private string? recoveryUri;
+    private string? recoveryNotice;
+    private Guid? recoveryAgentId;
+    private bool registrationOutcomeUnknown;
+    private bool checkingRegistration;
+    private bool focusValidationRequested;
+    private bool focusHeadingRequested;
     private readonly List<string> remoteValidationErrors = [];
     private IReadOnlyList<AgentIdentityBlueprintSummaryDto> blueprintOptions = [];
-    private GatewayApiResource<ProtectionCapabilitiesResponse>? protectionCapabilities;
     private RegisterAgentResponse? acceptedRegistration;
     private AgentGatewayCredentialDto? gatewayCredential;
     private UiErrorInfo? error;
@@ -439,7 +455,6 @@ else
     private bool promptShieldServerAvailable;
     private bool defaultPromptShieldEnabled;
     private bool defaultPurviewEnabled;
-    private bool promptShieldAvailable;
     private bool submitting;
     private AgentProtectionConfiguration? protectionEditor;
     private PurviewDeferredBlueprintDto? DeferredProtectionBlueprint =>
@@ -449,10 +464,23 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        editContext = new(form);
+        serverValidation = new(editContext);
+        editContext.OnValidationRequested += ClearServerValidation;
+        if (PendingExternalId is not null)
+        {
+            form.ExternalAgentId = PendingExternalId;
+            registrationOutcomeUnknown = true;
+            if (!ValidRecoveryId)
+            {
+                error = new UiErrorInfo("This recovery link has an invalid external agent ID. Open Agents or ask an administrator to locate the registration.");
+            }
+            return;
+        }
+
         form.ExternalAgentId = $"agent-{Guid.NewGuid():N}";
         var featureDefaultsTask = LoadFeatureDefaultsAsync();
         var blueprintOptionsTask = LoadBlueprintOptionsAsync();
-        var protectionCapabilitiesTask = LoadProtectionCapabilitiesAsync();
 
         try
         {
@@ -464,7 +492,8 @@ else
                 ?? user.FindFirst(EntraObjectIdShortClaim)?.Value;
 
             if (user.Identity?.IsAuthenticated is not true ||
-                !Guid.TryParse(ownerObjectId, out var ownerObjectGuid))
+                !Guid.TryParse(ownerObjectId, out var ownerObjectGuid) ||
+                ownerObjectGuid == Guid.Empty)
             {
                 identityError = "Sign out and back in, or ask an administrator to verify that your Entra sign-in includes an object ID.";
                 return;
@@ -488,30 +517,7 @@ else
         {
             await Task.WhenAll(
                 featureDefaultsTask,
-                blueprintOptionsTask,
-                protectionCapabilitiesTask);
-        }
-    }
-
-    private async Task LoadProtectionCapabilitiesAsync()
-    {
-        try
-        {
-            protectionCapabilities = await Api.GetProtectionCapabilitiesAsync(disposeCts.Token);
-        }
-        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception)
-        {
-            Logger.LogWarning(
-                exception,
-                "The registration page could not load protection capability readiness.");
-            protectionCapabilities = null;
-        }
-        finally
-        {
-            UpdatePromptShieldAvailability();
+                blueprintOptionsTask);
         }
     }
 
@@ -530,6 +536,13 @@ else
         try
         {
             var response = await Api.GetAgentIdentityBlueprintsAsync(disposeCts.Token);
+            if (response.Items is null ||
+                response.Items.Any(item => item.BlueprintObjectId == Guid.Empty || item.BlueprintClientId == Guid.Empty) ||
+                response.Items.Select(item => item.BlueprintObjectId).Distinct().Count() != response.Items.Count ||
+                response.Items.Select(item => item.BlueprintClientId).Distinct().Count() != response.Items.Count)
+            {
+                throw new GatewayApiProtocolException("The blueprint inventory contains missing or duplicate identities. Refresh it before selecting a blueprint.", null);
+            }
             blueprintOptions = response.Items
                 .OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(item => item.BlueprintClientId)
@@ -561,6 +574,7 @@ else
         }
         catch (Exception ex)
         {
+            Logger.LogWarning("Blueprint inventory could not be loaded ({ErrorType}).", ex.GetType().Name);
             blueprintOptions = [];
             form.BlueprintObjectId = null;
             blueprintLoadError = UiErrorInfo.FromException(ex);
@@ -601,6 +615,11 @@ else
         try
         {
             var config = await Api.GetSystemConfigAsync(disposeCts.Token);
+            if ((config.DefaultAgent365ObservabilityEnabled is null || config.DefaultAzureMonitorExportEnabled is null) &&
+                config.DefaultObservabilityMode is not ("Disabled" or "GatewayOnly" or "Agent365" or "Agent365AzureMonitor"))
+            {
+                throw new GatewayApiProtocolException("The Gateway returned an unrecognized telemetry default. Refresh its configuration before registering.", null);
+            }
             form.Agent365ObservabilityEnabled = config.DefaultAgent365ObservabilityEnabled
                 ?? LegacyAgent365ObservabilityEnabled(config.DefaultObservabilityMode);
             form.AzureMonitorExportEnabled = config.DefaultAzureMonitorExportEnabled
@@ -608,7 +627,6 @@ else
             defaultPurviewEnabled = config.DefaultPurviewEnabled;
             promptShieldServerAvailable = config.PromptShieldAvailable;
             defaultPromptShieldEnabled = config.DefaultPromptShieldEnabled;
-            UpdatePromptShieldAvailability();
             provisioningExecutionEnabled = config.ProvisioningExecutionEnabled;
         }
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
@@ -625,7 +643,6 @@ else
             promptShieldServerAvailable = false;
             defaultPromptShieldEnabled = false;
             defaultPurviewEnabled = false;
-            UpdatePromptShieldAvailability();
         }
         finally
         {
@@ -633,82 +650,297 @@ else
         }
     }
 
-    private async Task SubmitAsync()
+    private bool ValidRecoveryId => form.ExternalAgentId.Length is > 0 and <= 128 &&
+        System.Text.RegularExpressions.Regex.IsMatch(form.ExternalAgentId, @"^[a-zA-Z0-9][a-zA-Z0-9._-]*$");
+
+    private void ClearServerValidation(object? sender, ValidationRequestedEventArgs args) =>
+        serverValidation.Clear();
+
+    private void InvalidRegistration(EditContext context) => focusValidationRequested = true;
+
+    private void ReviewRegistration()
     {
-        if (submitting || !identityReady || !provisioningExecutionEnabled || protectionEditor?.CanApply != true)
+        if (!RendererInfo.IsInteractive || submitting || registrationOutcomeUnknown || acceptedRegistration is not null)
         {
             return;
         }
 
+        error = null;
+        remoteValidationErrors.Clear();
+        if (!identityReady || !provisioningExecutionEnabled || protectionEditor?.CanApply != true)
+        {
+            error = new UiErrorInfo("Wait for current identity, registration admission and protection choices before reviewing registration.");
+            return;
+        }
         if (form.BlueprintMode == BlueprintModeUseExisting && !SelectedBlueprintIsCurrent())
         {
-            error = null;
-            remoteValidationErrors.Clear();
             remoteValidationErrors.Add(
                 "Select an Agent 365-compatible reusable blueprint from the current Gateway inventory. Refresh the choices if the blueprint was recently created or changed.");
+            focusValidationRequested = true;
+            return;
+        }
+
+        reviewedRequest = BuildRegistrationRequest();
+        reviewedSignature = ReviewSignature(reviewedRequest);
+    }
+
+    private RegisterAgentRequest BuildRegistrationRequest()
+    {
+        if (protectionEditor is not { CanApply: true } editor)
+        {
+            throw new InvalidOperationException("Review the current protection choices before registering.");
+        }
+
+        var protection = editor.Selection;
+        var dlpSelection = editor.ExistingProfileSelection;
+        var features = new AgentFeaturesDto(
+            ToLegacyObservabilityMode(form.Agent365ObservabilityEnabled, form.AzureMonitorExportEnabled),
+            protection.PurviewEnabled,
+            protection.PurviewEnabled ? AgentProtectionUiMapping.LegacyMode(protection.PolicyMode) : null,
+            form.Agent365ObservabilityEnabled,
+            form.AzureMonitorExportEnabled,
+            protection.PromptShieldsEnabled,
+            PurviewDlpProfile: dlpSelection);
+        return new RegisterAgentRequest(
+            form.ExternalAgentId.Trim(),
+            form.Name.Trim(),
+            NullIfEmpty(form.Description),
+            form.OwnerObjectId.Trim(),
+            form.Environment,
+            features,
+            new AgentBlueprintSelectionDto(
+                form.BlueprintMode,
+                form.BlueprintMode == BlueprintModeUseExisting ? NullIfEmpty(form.BlueprintObjectId) : null,
+                form.BlueprintMode == BlueprintModeCreateNew ? NullIfEmpty(form.BlueprintDisplayName) : null),
+            PurviewPolicyProfile: null,
+            PurviewDlpProfile: dlpSelection);
+    }
+
+    private string ReviewSignature(RegisterAgentRequest request) =>
+        JsonSerializer.Serialize(new { Request = request, Protection = protectionEditor?.Selection });
+
+    private void CancelRegistrationReview()
+    {
+        if (!submitting)
+        {
+            reviewedRequest = null;
+            reviewedSignature = null;
+        }
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (submitting || registrationOutcomeUnknown || acceptedRegistration is not null || reviewedRequest is null)
+        {
+            return;
+        }
+
+        if (!editContext.Validate() || !identityReady || !provisioningExecutionEnabled ||
+            protectionEditor?.CanApply != true ||
+            form.BlueprintMode == BlueprintModeUseExisting && !SelectedBlueprintIsCurrent() ||
+            !string.Equals(reviewedSignature, ReviewSignature(BuildRegistrationRequest()), StringComparison.Ordinal))
+        {
+            CancelRegistrationReview();
+            error = new UiErrorInfo("Your choices or their readiness changed. Review the current registration before confirming again.");
+            focusValidationRequested = true;
             return;
         }
 
         submitting = true;
         error = null;
         remoteValidationErrors.Clear();
-
+        var dispatched = false;
         try
         {
-            var protection = protectionEditor.Selection;
-            var dlpSelection = protectionEditor.ExistingProfileSelection;
-            var intent = protectionEditor.TakeConfigurationIntent();
-            var features = new AgentFeaturesDto(
-                ToLegacyObservabilityMode(form.Agent365ObservabilityEnabled, form.AzureMonitorExportEnabled),
-                protection.PurviewEnabled,
-                protection.PurviewEnabled ? AgentProtectionUiMapping.LegacyMode(protection.PolicyMode) : null,
-                form.Agent365ObservabilityEnabled,
-                form.AzureMonitorExportEnabled,
-                protection.PromptShieldsEnabled,
-                PurviewDlpProfile: dlpSelection);
-            var request = new RegisterAgentRequest(
-                form.ExternalAgentId.Trim(),
-                form.Name.Trim(),
-                NullIfEmpty(form.Description),
-                form.OwnerObjectId.Trim(),
-                form.Environment,
-                features,
-                new AgentBlueprintSelectionDto(
-                    form.BlueprintMode,
-                    form.BlueprintMode == BlueprintModeUseExisting
-                        ? NullIfEmpty(form.BlueprintObjectId)
-                        : null,
-                    form.BlueprintMode == BlueprintModeCreateNew
-                        ? NullIfEmpty(form.BlueprintDisplayName)
-                        : null),
-                PurviewPolicyProfile: null,
-                PurviewDlpProfile: dlpSelection,
-                PurviewConfigurationIntent: intent);
-
-            var response = await Api.RegisterAgentAsync(request, disposeCts.Token);
-            if (response.GatewayCredential is null)
+            var request = reviewedRequest with { PurviewConfigurationIntent = protectionEditor.TakeConfigurationIntent() };
+            recoveryUri = Navigation.GetUriWithQueryParameter("pendingExternalId", request.ExternalAgentId);
+            var retained = await JS.InvokeAsync<bool>(
+                "A365Gateway.retainRegistrationRecovery", disposeCts.Token, recoveryUri, request.ExternalAgentId);
+            if (!retained)
             {
+                throw new GatewayApiProtocolException("The recovery reference could not be retained in this browser. No registration was sent. Reconnect or refresh before reviewing again.", null);
+            }
+            if (disposeCts.IsCancellationRequested) return;
+            Navigation.NavigateTo(recoveryUri, replace: true);
+            dispatched = true;
+            var response = await Api.RegisterAgentAsync(request, disposeCts.Token);
+            if (disposeCts.IsCancellationRequested)
+            {
+                return;
+            }
+            if (response.AgentId == Guid.Empty || response.OperationId == Guid.Empty ||
+                !string.Equals(response.ExternalAgentId, request.ExternalAgentId, StringComparison.Ordinal))
+            {
+                throw new GatewayApiProtocolException("The registration response could not be bound to the submitted external ID.", null);
+            }
+
+            recoveryAgentId = response.AgentId;
+            if (response.GatewayCredential is not { } issued ||
+                issued.KeyId == Guid.Empty || string.IsNullOrWhiteSpace(issued.ApiKey) ||
+                AsUtc(issued.ExpiresAtUtc) <= Clock.GetUtcNow().UtcDateTime)
+            {
+                registrationOutcomeUnknown = true;
+                acceptedRegistration = response with { GatewayCredential = null };
                 error = new UiErrorInfo(
-                    "The registration response did not include the required one-time Gateway credential. Acceptance may already have occurred, so do not submit this form again. Locate the registration in Agents, then issue a replacement credential from its details page.");
+                    "Registration was accepted, but a usable one-time key was not returned. Open the registered agent and issue a replacement; do not create another registration.");
                 return;
             }
 
             acceptedRegistration = response;
-            gatewayCredential = response.GatewayCredential;
+            gatewayCredential = issued;
         }
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested) { }
-        catch (GatewayApiException ex) when (ex.ValidationErrors.Count > 0)
+        catch (GatewayApiException ex) when (
+            ex.ValidationErrors.Count > 0 &&
+            ex.StatusCode is System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.UnprocessableEntity)
         {
             remoteValidationErrors.AddRange(ex.ValidationErrors.SelectMany(pair => pair.Value));
+            foreach (var pair in ex.ValidationErrors)
+            {
+                var field = pair.Key switch
+                {
+                    "Blueprint.BlueprintObjectId" => nameof(RegistrationForm.BlueprintObjectId),
+                    "Blueprint.DisplayName" => nameof(RegistrationForm.BlueprintDisplayName),
+                    "Blueprint.Mode" => nameof(RegistrationForm.BlueprintMode),
+                    _ => pair.Key
+                };
+                serverValidation.Add(editContext.Field(field), pair.Value);
+            }
+            editContext.NotifyValidationStateChanged();
             error = new UiErrorInfo(ex.Detail ?? ex.Title, ex.CorrelationId);
+            ClearRecoveryUri();
+            focusValidationRequested = true;
         }
         catch (Exception ex)
         {
-            error = UiErrorInfo.FromException(ex);
+            Logger.LogWarning("Registration did not return a usable result ({ErrorType}); correlation {CorrelationId}.",
+                ex.GetType().Name, (ex as GatewayApiClientException)?.CorrelationId);
+            var rejected = ex is GatewayAuthenticationRequiredException ||
+                ex is GatewayApiException { StatusCode: System.Net.HttpStatusCode.BadRequest or
+                    System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden or
+                    System.Net.HttpStatusCode.UnprocessableEntity };
+            if (dispatched && !rejected)
+            {
+                registrationOutcomeUnknown = true;
+                error = new UiErrorInfo(
+                    "The create response was interrupted or could not be verified. Check the existing registration by its retained external ID. No automatic resubmission will occur.",
+                    (ex as GatewayApiClientException)?.CorrelationId);
+            }
+            else
+            {
+                error = UiErrorInfo.FromException(ex);
+                if (dispatched)
+                {
+                    ClearRecoveryUri();
+                }
+            }
         }
         finally
         {
             submitting = false;
+            reviewedRequest = null;
+            reviewedSignature = null;
+            focusHeadingRequested = gatewayCredential is not null || registrationOutcomeUnknown;
+        }
+    }
+
+    private void ClearRecoveryUri()
+    {
+        recoveryUri = Navigation.GetUriWithQueryParameter("pendingExternalId", (string?)null);
+        Navigation.NavigateTo(recoveryUri, replace: true);
+    }
+
+    private void BeforeSubmittingNavigation(LocationChangingContext context)
+    {
+        if (!string.Equals(context.TargetLocation, recoveryUri, StringComparison.Ordinal))
+        {
+            context.PreventNavigation();
+            error = new UiErrorInfo("Registration is still being submitted. Wait for its result. If the connection is lost, reopen this page's recovery link instead of creating another registration.");
+        }
+    }
+
+    private async Task CheckRegistrationAsync()
+    {
+        if (checkingRegistration || !ValidRecoveryId)
+        {
+            return;
+        }
+
+        checkingRegistration = true;
+        error = null;
+        recoveryNotice = null;
+        try
+        {
+            string? cursor = null;
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (var page = 0; page < 10; page++)
+            {
+                var response = await Api.GetAgentsAsync(new AgentListQuery(
+                    Search: form.ExternalAgentId, Limit: 100, Cursor: cursor), disposeCts.Token);
+                if (disposeCts.IsCancellationRequested)
+                {
+                    return;
+                }
+                var matches = response.Items.Where(item =>
+                    string.Equals(item.ExternalAgentId, form.ExternalAgentId, StringComparison.Ordinal)).ToArray();
+                if (matches.Length > 1 || matches.Any(item => item.AgentId == Guid.Empty))
+                {
+                    throw new GatewayApiProtocolException("The registration lookup returned an ambiguous identity. Ask an administrator to inspect it.", null);
+                }
+                if (matches.Length == 1)
+                {
+                    recoveryAgentId = matches[0].AgentId;
+                    return;
+                }
+                if (response.NextCursor is null)
+                {
+                    recoveryNotice = "No exact registration was returned yet. Check again or ask an administrator to inspect this external ID. This does not authorize another create request.";
+                    return;
+                }
+                if (string.IsNullOrWhiteSpace(response.NextCursor) || !seen.Add(response.NextCursor))
+                {
+                    throw new GatewayApiProtocolException("Registration lookup could not advance through the returned results.", null);
+                }
+                cursor = response.NextCursor;
+            }
+            recoveryNotice = "The bounded lookup reached ten pages without an exact match. More results may exist; use Agents or ask an administrator to inspect this external ID. No create was repeated.";
+        }
+        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            Logger.LogWarning("Registration recovery lookup failed ({ErrorType}).", ex.GetType().Name);
+            error = UiErrorInfo.FromException(ex);
+        }
+        finally
+        {
+            checkingRegistration = false;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        var focusInvalid = focusValidationRequested;
+        var focusHeading = focusHeadingRequested;
+        focusValidationRequested = false;
+        focusHeadingRequested = false;
+        if (!focusInvalid && !focusHeading)
+        {
+            return;
+        }
+        try
+        {
+            if (focusInvalid)
+            {
+                await JS.InvokeVoidAsync("A365Gateway.focusFirstInvalid", "registration-form");
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("A365Gateway.focusHeading");
+            }
+        }
+        catch (JSException exception)
+        {
+            Logger.LogWarning("Registration focus could not be moved ({ErrorType}).", exception.GetType().Name);
         }
     }
 
@@ -722,9 +954,21 @@ else
         }
 
         var operationId = acceptedRegistration.OperationId;
+        HandoffState.RecordSavedCredential(operationId, acceptedRegistration.AgentId);
+        registrationOutcomeUnknown = true;
         acceptedRegistration = null;
         gatewayCredential = null;
         Navigation.NavigateTo($"/operations/{operationId}");
+    }
+
+    private void DiscardCredential()
+    {
+        gatewayCredential = null;
+        if (acceptedRegistration is not null)
+        {
+            acceptedRegistration = acceptedRegistration with { GatewayCredential = null };
+        }
+        registrationOutcomeUnknown = true;
     }
 
     private static string FormatAuthorizationHeader(string apiKey) => $"Authorization: Bearer {apiKey}";
@@ -843,14 +1087,6 @@ else
         return $"{displayName} — Graph ID {blueprint.BlueprintObjectId:D}{compatibility}";
     }
 
-    private void UpdatePromptShieldAvailability()
-    {
-        var capabilityReady = protectionCapabilities?.Value.Items.Any(item =>
-            string.Equals(item.Capability, "PromptShields", StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(item.Status, "Installed", StringComparison.OrdinalIgnoreCase)) == true;
-        promptShieldAvailable = promptShieldServerAvailable && capabilityReady;
-    }
-
     private static string ToLegacyObservabilityMode(bool agent365Enabled, bool azureMonitorEnabled) =>
         (agent365Enabled, azureMonitorEnabled) switch
         {
@@ -884,6 +1120,9 @@ else
 
     public ValueTask DisposeAsync()
     {
+        editContext.OnValidationRequested -= ClearServerValidation;
+        reviewedRequest = null;
+        reviewedSignature = null;
         acceptedRegistration = null;
         gatewayCredential = null;
         disposeCts.Cancel();
@@ -920,6 +1159,10 @@ else
 
         public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
         {
+            if (!TryParseNonEmptyGuid(OwnerObjectId))
+            {
+                yield return new ValidationResult("Enter a non-empty Microsoft Entra owner object ID.", [nameof(OwnerObjectId)]);
+            }
             if (BlueprintMode == BlueprintModeUseExisting)
             {
                 if (!TryParseNonEmptyGuid(BlueprintObjectId))

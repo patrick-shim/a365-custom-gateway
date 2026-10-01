@@ -49,6 +49,17 @@
     margin-bottom: 1.5rem;
 }
 
+.setup-diagnostics {
+    margin-bottom: 1.5rem;
+}
+
+.setup-diagnostics > summary {
+    padding: .85rem 0;
+    color: var(--brand-strong);
+    cursor: pointer;
+    font-weight: 650;
+}
+
 .section-heading {
     margin-bottom: .85rem;
     display: flex;
@@ -84,7 +95,7 @@
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: .8rem;
     list-style: none;
 }

@@ -1578,34 +1578,55 @@ internal sealed class ProvisioningMessageHandler
                 "The provisioning payload could not be finalized after retry exhaustion.");
         }
 
+        await using var executionLease =
+            await _provisioningExecutionLockProvider.AcquireAsync(message.JobId, ct);
         var agent = await _agentRepository.GetByIdAsync(message.AgentRegistrationId, ct);
         var job = await _jobRepository.GetByIdAsync(message.JobId, ct);
-        if (agent is null || job is null || job.AgentRegistrationId != agent.Id)
+        if (agent is null || job is null || job.AgentRegistrationId != agent.Id ||
+            job.Type is not OperationType.ProvisionAgent and not OperationType.RetryProvisioning)
         {
             return MessageHandlingResult.DeadLetter(
                 ErrorCodes.PROVISIONING_JOB_MISMATCH,
                 "The exhausted provisioning message could not be correlated safely.");
         }
 
-        if (job.Status is not JobStatus.Completed and not JobStatus.Failed and
-            not JobStatus.RequiresManualIntervention and
-            not JobStatus.AwaitingAdministratorAction)
+        if (job.Status is JobStatus.Completed or JobStatus.Failed or
+            JobStatus.RequiresManualIntervention or JobStatus.AwaitingAdministratorAction)
         {
-            var step = job.Steps
-                .OrderBy(candidate => candidate.OrderIndex)
-                .FirstOrDefault(candidate => candidate.Status != StepStatus.Completed);
-
-            await PersistProvisioningFailureAsync(
-                agent,
-                job,
-                step,
-                ErrorCodes.PROVISIONING_RETRIES_EXHAUSTED,
-                "Provisioning dependency retries were exhausted.",
-                requiresManualIntervention: false,
-                message.CorrelationId,
-                ct,
-                lastFailureCode);
+            return MessageHandlingResult.Complete();
         }
+
+        var steps = job.Steps.OrderBy(candidate => candidate.OrderIndex).ToList();
+        if (!HasCurrentProvisioningSequence(job, steps))
+        {
+            return MessageHandlingResult.DeadLetter(
+                ErrorCodes.PROVISIONING_LEGACY_JOB,
+                "The exhausted provisioning message does not identify the current workflow.");
+        }
+
+        var step = steps.FirstOrDefault(candidate => candidate.Status != StepStatus.Completed);
+        if (step is null || message.ExpectedStepIndex < step.OrderIndex)
+            return MessageHandlingResult.Complete();
+        if (message.ExpectedStepIndex > step.OrderIndex)
+        {
+            return MessageHandlingResult.DeadLetter(
+                ErrorCodes.PROVISIONING_STATE_INVALID,
+                "The provisioning message is out of order for the persisted job state.");
+        }
+
+        if (step.StepType == ProvisioningStepType.RegisterAgent)
+            return MessageHandlingResult.Complete();
+
+        await PersistProvisioningFailureAsync(
+            agent,
+            job,
+            step,
+            ErrorCodes.PROVISIONING_RETRIES_EXHAUSTED,
+            "Provisioning dependency retries were exhausted.",
+            requiresManualIntervention: false,
+            message.CorrelationId,
+            ct,
+            lastFailureCode);
 
         return MessageHandlingResult.DeadLetter(
             ErrorCodes.PROVISIONING_RETRIES_EXHAUSTED,

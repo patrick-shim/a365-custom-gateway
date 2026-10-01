@@ -15,16 +15,16 @@ internal sealed class PurviewRuntimeTestRunner(
     {
         var cases = new List<PurviewRuntimeTestCaseEvidence>();
         PurviewRuntimeRoleEvidence? roleEvidence = null;
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var remaining = deadlineUtc - clock.GetUtcNow();
         if (remaining <= TimeSpan.Zero || remaining > PurviewRuntimeTestLimits.ExecutionDeadline)
             return Result(PurviewRuntimeTestFailureCodes.DeadlineExceeded);
         if (plan.Context.PolicyMode == PurviewPolicyMode.Disabled)
             return Result(PurviewRuntimeTestFailureCodes.Disabled);
-        deadline.CancelAfter(remaining);
+        using var timeout = new CancellationTokenSource(remaining, clock);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         try
         {
-            roleEvidence = await roles.VerifyAsync(plan.Context.Identity.TenantId, deadline.Token);
+            roleEvidence = await roles.VerifyAsync(plan.Context.Identity.TenantId, deadline.Token).WaitAsync(deadline.Token);
             if (!roleEvidence.Ready || roleEvidence.ObservedAtUtc.Offset != TimeSpan.Zero ||
                 roleEvidence.ObservedAtUtc > clock.GetUtcNow().AddMinutes(2) ||
                 roleEvidence.ObservedAtUtc < clock.GetUtcNow().AddMinutes(-30) ||
@@ -34,7 +34,8 @@ internal sealed class PurviewRuntimeTestRunner(
             foreach (var caseId in plan.PositiveCaseIds.Prepend(plan.NegativeSample.CaseId))
             {
                 deadline.Token.ThrowIfCancellationRequested();
-                var observation = await probes.ProbeAsync(operationId, plan.Context, samples.GetSample(caseId), deadlineUtc, deadline.Token);
+                var observation = await probes.ProbeAsync(operationId, plan.Context, samples.GetSample(caseId), deadlineUtc, deadline.Token)
+                    .WaitAsync(deadline.Token);
                 var evidence = PurviewRuntimeTestEvidenceFactory.Capture(plan, operationId, caseId, observation, clock.GetUtcNow());
                 cases.Add(evidence);
                 if (evidence.Behavior is PurviewRuntimeBehaviorObservation.Failed or

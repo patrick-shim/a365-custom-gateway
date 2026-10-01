@@ -14,11 +14,25 @@ baseline for the development plan.
 | Agent working rules | [Agent directives](../AGENTS.md) |
 | Persistent project preferences | [Repository memory](../MEMORY.md) |
 | Audience outcomes and product boundaries | [Product brief](spec/product-brief.md) |
+| Design journeys, wording, screens and acceptance scenarios | [UX design package](ux/README.md) |
 
 The milestone task checkmarks are the sole completion record. Guides describe
 current source behavior and prerequisites; they do not maintain separate pass
 counts or deployment-completion claims. Every milestone requires a review and
 synchronization of the entire project's documents, directives, state and memory.
+
+The UX design package is the M3/M4 design reference. The guides below describe
+current onboarding, handoff, listing, focused protection tasks, explained outcomes,
+bounded read-only progress, exact-profile continuation, expiry-aware summaries
+and approved-sample behavior. Same-page shortcuts preserve recovery context;
+pre-submission browser failures are distinguished from uncertain submitted work.
+The novice setup guide separates count-only connection inventory, one policy SIT
+selection and explained defaults, while preserving draft values. Native reads
+are bounded and exact-policy recovery requires fresh reviewed inventory binding;
+visible activity never substitutes for provider evidence.
+Implementation is not milestone or live
+acceptance. The local prototype remains separate from production components and
+their regression fixtures; release and hosted verification retain their own scope.
 
 ## Build, deploy and operate
 
@@ -30,8 +44,10 @@ synchronization of the entire project's documents, directives, state and memory.
 | Existing-deployment upgrade contract | [Upgrade guide](../operations/gateway-upgrade.md) |
 | Earlier maintenance scaffold and its limits | [Maintenance guide](../operations/gateway-maintenance.md) |
 
-Supporting tools/tests and related Azure resources were deliberately removed.
-The minimum tooling source and local fixtures are present again; use the
+Supporting tools/tests and the original Azure resources were deliberately removed.
+Authored tooling, local fixtures and an isolated release-qualification installation
+are now present; their actual acceptance belongs to M5. M6's hosted product and
+provider journeys remain separate. Use the
 [local baseline command](../README.md#local-source-and-behavioral-validation)
 without treating its result as cloud acceptance. Existing checkpoint-bound recovery
 code describes an intact deployment; it does not reconstruct the deleted environment.

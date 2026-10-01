@@ -8,19 +8,24 @@ to that lifecycle, not alternate installers.
 
 ## Current source boundary
 
-The user deliberately removed supporting files and related Azure resources. The
-retained application remains the working baseline, but the complete installer is
-**not yet revalidated against a new Azure environment**. The minimum
+The user deliberately removed supporting files and related Azure resources during
+the initial reset. The retained application remains the working baseline. Its
+canonical terminal lifecycle now has a separately owned Azure qualification
+installation; the exact evidence and limits belong to M5, not to old checkpoints.
+The
 [Setup](../tools/Gateway.Setup), [DatabaseMigrator](../tools/Gateway.DatabaseMigrator)
 and [LiveVerification](../tools/Gateway.LiveVerification) source projects are
 restored, with a new bounded [local test baseline](../tests). Generated binaries
 do not replace these source prerequisites, and local tests do not prove deployment.
 
 [MILESTONES.md](../MILESTONES.md) is the only completion record. M1 covers the
-restored tooling and reproducible tests; later milestones cover a new deployment.
-[AGENTS.md](../AGENTS.md) defines the pinned tenant/subscription, Chrome preference
-and persistent user authorization. Existing configuration, ignored operational
-state and incident-specific scripts do not prove a current installation.
+restored tooling and reproducible tests. M5 covers release qualification; M6 owns
+the separate fresh hosted product journeys and Microsoft-provider acceptance.
+[AGENTS.md](../AGENTS.md) defines the pinned tenant/subscription, installed
+Chrome/Edge browser choice and persistent authorization, including direct browser
+control. Existing configuration, ignored operational state and incident-specific
+scripts alone do not prove a current installation. Use the current qualification
+or future target's exact ownership/configuration rather than a deleted target.
 
 ## Intended installation
 
@@ -44,6 +49,10 @@ doctor → init → plan → apply → verify
                        ↘ resume after an eligible interruption
 ```
 
+The [UX screen designs](../docs/ux/screen-design.md) propose clearer installer
+plan/progress/verified-endpoint handoffs. Their synthetic prototype does not run
+this lifecycle or establish that the production Setup screens have changed.
+
 This is a workflow description, not an instruction to resume a deleted
 environment. Do not invoke deployment to discover missing build inputs.
 
@@ -59,8 +68,10 @@ remains a separate release/live acceptance.
 The Purview package contract requires Windows x64, Microsoft-signed PowerShell
 **7.6.5** and ExchangeOnlineManagement **3.10.1**. The package builder pins and
 checks the selected runtime/module manifest; a newer installation does not
-silently satisfy that contract. These constraints do not establish that the
-current machine or a deleted executor is ready.
+silently satisfy that contract. The selected PowerShell executable must itself
+report X64; a 64-bit ARM runtime does not qualify merely by matching the version.
+These constraints do not establish that the current machine or a deleted executor
+is ready.
 
 [config.schema.json](config.schema.json) and
 [config.example.json](config.example.json) describe non-secret configuration:
@@ -82,6 +93,18 @@ not grant unlimited scope or replace the current project authorization.
 Passwords, tokens, clear Gateway keys, prompt/response text and certificate
 material do not belong in configuration.
 
+### Reviewed manager applications
+
+Review `agent365.reviewedManagerApplicationIds` independently before creating a blueprint.
+An ID returned by discovery from an existing blueprint does not establish that it
+is the intended Microsoft manager. Verify the current
+[Agent 365 CLI authentication constants](https://github.com/microsoft/Agent365-devTools/blob/main/src/Microsoft.Agents.A365.DevTools.Cli/Constants/AuthenticationConstants.cs)
+and read back the corresponding service principal in the intended tenant,
+including its application ID, owner tenant and verified Microsoft publisher.
+The manager application and the interactive CLI client are distinct identities.
+Record the reviewed non-secret IDs in the configuration; tenant eligibility,
+consent and the current typed Graph boundary still require separate validation.
+
 ## Deployment responsibilities
 
 The retained deployment assets describe:
@@ -95,12 +118,29 @@ The retained deployment assets describe:
 - optional Purview identities, authority prerequisites, certificate, dedicated
   administration queue and Windows executor/package-publisher infrastructure.
 
+Fresh Purview installations use one Windows Basic B1 worker, with private inbound
+access and dedicated VNet integration. Check regional capacity before Apply;
+planning is not a reservation or proof of provider performance. Existing
+installations retain their accepted hosting evidence. A separately approved,
+already-allocated B1/B2 change uses the explicit
+[source-only maintenance acknowledgment](../operations/gateway-upgrade.md#source-only-maintenance-of-an-installed-full-deployment),
+not a rewritten bootstrap receipt or an automatic resize.
+
 Bootstrap prepares capabilities. Gateway Settings owns tenant connection,
 sensitive-information inventory, Know Your Data and DLP configuration, and runtime
 verification. An installed capability is not an authored policy or a proven
 allow/block result. The API synchronizes a source/ownership-bound
 `BootstrapCapabilities` snapshot after deployment readback; those runtime facts
 do not mark project milestones complete.
+
+The Entra automation identity is not its Security & Compliance service-principal
+reference. The retained installer does not create that separate provider
+reference, and the administrator companion does not transfer its session or
+create it either. Before the first Purview tenant connection, follow the
+[provider-reference prerequisite](../operations/README.md#purview-automation-reference-prerequisite)
+for the exact installed automation AppId and enterprise-application ObjectId.
+Preserve the original bootstrap receipt: an external prerequisite read/repair is
+separate operational evidence, not a rewrite of the accepted deployment.
 
 ## Command reference
 
@@ -162,6 +202,23 @@ does not relabel the original deployment. Native/Graph command boundaries enforc
 the reviewed tenant, subscription, methods and targets. Diagnostics retain bounded
 error signatures and mismatch identifiers, not provider bodies.
 
+Azure resource-management MFA can reject authenticated What-If even when Doctor
+can read the subscription and reports sufficient RBAC. The terminal launcher
+returns failure for an unsuccessful bootstrap script, not a successful shell
+status. A recognized MFA denial reports `AzureMfaRequired` with interactive
+sign-in guidance; raw provider messages and resource names are not retained in
+the diagnostic signature. Complete the real MFA challenge in the configured
+tenant, then rerun Plan, or use Resume for an existing deployment. Do not bypass
+MFA, weaken tenant policy, or recreate resources to work around the challenge.
+
+The API's runtime-test HTTPS checks run behind Container Apps TLS termination.
+The deployment therefore supplies an explicit reviewed proxy CIDR for
+`GatewayIngress:TrustedProxyNetworks`; it never enables trust-all forwarding.
+Canonical readback verifies that configuration and checks the request-derived
+public HTTPS origin with misleading client forwarding headers present. Health
+HTTP 200 alone does not establish this transport boundary. See the
+[API HTTPS contract](../docs/api/api-contract.md#https-ingress).
+
 Image builds persist intent before ACR submission and independently bind a single
 successful run to its immutable digest. An uncertain submitted build is not
 automatically repeated. Private database initialization similarly records intent
@@ -177,10 +234,16 @@ Fresh planning must report that distinction without silently upgrading the SKU.
 
 ## After a verified installation
 
-Use verified API/Admin endpoints to sign in, register an agent and securely
-store its one-time key. Complete the delegated Registry handoff and inspect the
-actual registration state. Configure installed protections in Settings; separate
-policy readback, propagation and runtime evidence throughout.
+Use verified API/Admin endpoints to sign in and open the Admin UI's Getting
+started page (`/getting-started`, with `/setup` retained as an alias). This deployed
+application page is not the local Setup installer. Review registration, then
+securely store and acknowledge its endpoint/ID/one-time-key handoff before Registry
+completion. Inspect the actual registration state before connecting the external
+agent. Settings now separates tenant connection/inventory, shared policy, runtime
+testing, optional collection and registration defaults into focused tasks.
+Intentionally Off per-agent protections are not an incomplete registration;
+deployment capabilities still follow the accepted configuration. Keep policy
+readback, propagation and runtime evidence separate throughout.
 
 See [the product flow](../README.md#main-user-journey),
 [API contract](../docs/api/api-contract.md),

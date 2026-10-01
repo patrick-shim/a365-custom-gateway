@@ -274,7 +274,7 @@ internal sealed class ProtectionMutationHandler :
                 command.OperationId);
         }
 
-        var launch = ReadCompanionLaunch(originalOperation);
+        var launch = PurviewCompanionLaunchContract.Read(originalOperation);
         if (launch.InventoryGenerationId !=
                 command.Request.InventoryGenerationId ||
             launch.ExpiresAtUtc <= nowOffset ||
@@ -582,6 +582,20 @@ internal sealed class ProtectionMutationHandler :
         profile.SensitiveInformationTypes = reviewedSelections.Select(ProtectionAdministrationRules.ToSelectedType).ToList();
         profile.Activities = activities.ToList();
         profile.Actions = actions.ToList();
+        ResetProfileVerification(profile, now);
+        if (command.Registration is { } configuredAgent)
+            BindAgentConfiguration(configuredAgent, accepted.Operation, profile.Id.Value, profile.EffectivePolicyMode);
+
+        await QueueAsync(
+            accepted.Operation,
+            "PurviewDlpProfileOperationAccepted",
+            cancellationToken,
+            saveChanges: command.Registration is null);
+        return Accepted(accepted.Operation);
+    }
+
+    private static void ResetProfileVerification(PurviewDlpProfile profile, DateTime now)
+    {
         profile.Status = PurviewDlpProfileStatus.Pending;
         profile.Readiness = new ProtectionReadiness(
             ProtectionCapabilityStatus.Installed,
@@ -598,15 +612,6 @@ internal sealed class ProtectionMutationHandler :
         profile.RuntimeBehaviorCertificationOperationId = null;
         profile.LastFailureCode = null;
         profile.UpdatedAtUtc = now;
-        if (command.Registration is { } configuredAgent)
-            BindAgentConfiguration(configuredAgent, accepted.Operation, profile.Id.Value, profile.EffectivePolicyMode);
-
-        await QueueAsync(
-            accepted.Operation,
-            "PurviewDlpProfileOperationAccepted",
-            cancellationToken,
-            saveChanges: command.Registration is null);
-        return Accepted(accepted.Operation);
     }
 
     private static void BindAgentConfiguration(AgentRegistration agent, ProtectionAdminOperation operation,
@@ -649,7 +654,8 @@ internal sealed class ProtectionMutationHandler :
             command.Request.ExpectedRowVersion,
             accepted.Payload!.Value,
             requireRuntimePrerequisites: false,
-            cancellationToken);
+            cancellationToken,
+            allowReviewedInventoryRefresh: true);
         await QueueAsync(
             accepted.Operation,
             "PurviewDlpProfileReconcileAccepted",
@@ -727,7 +733,8 @@ internal sealed class ProtectionMutationHandler :
         string expectedRowVersion,
         JsonElement payload,
         bool requireRuntimePrerequisites,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowReviewedInventoryRefresh = false)
     {
         var reviewed =
             ProtectionAdministrationRules
@@ -760,12 +767,12 @@ internal sealed class ProtectionMutationHandler :
             profile.Id.Value,
             profile.UpdatedAtUtc,
             profile.RowVersion);
-        EnsureProfileMatchesReview(profile, reviewed);
+        EnsureProfileMatchesReview(profile, reviewed, allowReviewedInventoryRefresh);
         await ProtectionAdministrationRules.RequireInventorySelectionsAsync(
             _inventory, connection, ProtectionAdministrationRules.DlpSelections(reviewed), UtcNow(), cancellationToken);
         ProtectionAdministrationRules.ParseActions(reviewed.Actions,
             ProtectionAdministrationRules.ParseActivities(reviewed.Activities));
-        await RequireReviewedInventoryAsync(
+        var inventorySelection = await RequireReviewedInventoryAsync(
             connection,
             reviewed.InventoryGenerationId,
             reviewed.SensitiveInformationTypeId,
@@ -785,11 +792,18 @@ internal sealed class ProtectionMutationHandler :
                 "Enforce mode, exact policy readback, propagation, and token-role evidence are required before runtime validation.",
                 ErrorCodes.PURVIEW_DLP_PROFILE_NOT_READY);
         }
+        if (allowReviewedInventoryRefresh && profile.InventoryGenerationId.Value != reviewed.InventoryGenerationId)
+        {
+            profile.InventoryGenerationId = inventorySelection.Generation.Id;
+            profile.SensitiveInformationTypeSnapshotExpiresAtUtc = inventorySelection.Generation.ExpiresAtUtc;
+            ResetProfileVerification(profile, UtcNow());
+        }
     }
 
     private static void EnsureProfileMatchesReview(
         PurviewDlpProfile profile,
-        PurviewDlpProfileReviewPayload reviewed)
+        PurviewDlpProfileReviewPayload reviewed,
+        bool allowReviewedInventoryRefresh)
     {
         var activities = profile.Activities
             .OrderBy(value => value)
@@ -813,8 +827,8 @@ internal sealed class ProtectionMutationHandler :
                 profile.DisplayName,
                 reviewed.DisplayName,
                 StringComparison.Ordinal) ||
-            profile.InventoryGenerationId.Value !=
-                reviewed.InventoryGenerationId ||
+            (!allowReviewedInventoryRefresh && profile.InventoryGenerationId.Value !=
+                reviewed.InventoryGenerationId) ||
             profile.SensitiveInformationTypeId.Value !=
                 reviewed.SensitiveInformationTypeId ||
             !string.Equals(
@@ -1048,32 +1062,6 @@ internal sealed class ProtectionMutationHandler :
             operation.CorrelationId,
             companionLaunch);
 
-    private static PurviewCompanionLaunchDto ReadCompanionLaunch(
-        ProtectionAdminOperation operation)
-    {
-        if (string.IsNullOrWhiteSpace(operation.ResultJson))
-        {
-            throw new DomainException(
-                "The companion launch binding is unavailable.",
-                ErrorCodes.PROTECTION_CONFIRMATION_INVALID);
-        }
-
-        var launch =
-            JsonSerializer.Deserialize<ProtectionOperationAcceptedResponse>(
-                operation.ResultJson)?.CompanionLaunch;
-        if (launch is null ||
-            launch.OperationId != operation.Id ||
-            launch.InventoryGenerationId == Guid.Empty ||
-            launch.ExpiresAtUtc.Offset != TimeSpan.Zero)
-        {
-            throw new DomainException(
-                "The companion launch binding is invalid.",
-                ErrorCodes.PROTECTION_CONFIRMATION_INVALID);
-        }
-
-        return launch;
-    }
-
     private static ProtectionOperationAcceptedResponse ReplayResult(
         ProtectionAdminOperation operation)
     {
@@ -1096,6 +1084,7 @@ internal sealed class ProtectionMutationHandler :
         int expectedStepIndex,
         CancellationToken cancellationToken)
     {
+        var step = operation.OrderedSteps.Single(candidate => candidate.OrderIndex == expectedStepIndex);
         await _outbox.AddAsync(new OutboxMessage
         {
             Id = Guid.NewGuid(),
@@ -1105,7 +1094,8 @@ internal sealed class ProtectionMutationHandler :
                     operation.Id,
                     operation.WorkflowVersion,
                     expectedStepIndex,
-                    operation.CorrelationId)),
+                    operation.CorrelationId,
+                    step.AttemptCount)),
             Status = OutboxMessageStatus.Pending,
             RetryCount = 0,
             CreatedAtUtc = UtcNow()

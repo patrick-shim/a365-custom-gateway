@@ -1,0 +1,29 @@
+@inject TimeProvider Clock
+
+@if (RuntimeTestUiProtocol.IsSafeReport(Report, Report.OperationId))
+{
+<ReadinessExpiryBoundary AdditionalExpiriesUtc="@([CurrentProfile?.Readiness.ValidUntilUtc])">
+    <ProtectionJourneyOutcome Id="@($"runtime-outcome-{Report.OperationId:D}")"
+        Guidance="@ProtectionJourneyGuidance.ForRuntime(Report, CurrentProfile, Clock.GetUtcNow().UtcDateTime)"
+        ActionDisabled="@(Busy || !RendererInfo.IsInteractive)" OnAction="HandleActionAsync" />
+</ReadinessExpiryBoundary>
+}
+else
+{
+    <ErrorState Title="Runtime result could not be verified" Message="This report is inconsistent. Read the retained operation; do not infer protection or replay samples." />
+}
+
+@code {
+    [Parameter, EditorRequired] public PurviewRuntimeTestResultResponse Report { get; set; } = default!;
+    [Parameter] public PurviewDlpProfileDto? CurrentProfile { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback OnRecover { get; set; }
+    [Parameter] public EventCallback OnRefreshReadiness { get; set; }
+
+    private Task HandleActionAsync(ProtectionJourneyAction action) => action switch
+    {
+        ProtectionJourneyAction.CheckOperation => OnRecover.InvokeAsync(),
+        ProtectionJourneyAction.RefreshState => OnRefreshReadiness.InvokeAsync(),
+        _ => Task.CompletedTask
+    };
+}

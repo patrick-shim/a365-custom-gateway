@@ -114,7 +114,7 @@ internal sealed class PurviewConnectionVerificationDiagnostics(TimeProvider time
         "UnexpectedDistributionResults", "UnexpectedLastStatusUpdateTime", "UnexpectedScenario",
         "UnexpectedType", "UnexpectedPolicyType", "UnexpectedPolicyVersion", "UnexpectedIsDefaultPolicy",
         "UnexpectedPolicyRBACScopes", "UnexpectedRules", "UnexpectedPolicyRulesMetaData",
-        "UnexpectedDictionaryMetadata"
+        "UnexpectedDictionaryMetadata", "InventoryExpired"
     };
 
     internal PurviewVerificationFailure? Read()

@@ -212,6 +212,10 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           }
           env: concat([
             {
+              name: 'GatewayIngress__TrustedProxyNetworks__0'
+              value: '100.100.0.0/17'
+            }
+            {
               name: 'ConnectionStrings__GatewayDb'
               value: 'Server=tcp:${sqlServerFqdn},1433;Database=${sqlDatabaseName};Authentication=Active Directory Managed Identity;Encrypt=True;TrustServerCertificate=False;'
             }

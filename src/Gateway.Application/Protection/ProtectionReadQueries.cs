@@ -182,6 +182,11 @@ internal sealed class ProtectionReadQueriesHandler :
         return new ProtectionAdminOperationResponse(
             ProtectionAdministrationMapper.ToDto(
                 operation,
-                _timeProvider.GetUtcNow().UtcDateTime));
+                _timeProvider.GetUtcNow().UtcDateTime),
+            operation.Type == Gateway.Domain.Enums.ProtectionAdminOperationType.ConnectPurviewTenant &&
+            operation.Status == Gateway.Domain.Enums.ProtectionAdminOperationStatus.AwaitingAdministrator &&
+            operation.ActorObjectId == request.Actor.ObjectId
+                ? PurviewCompanionLaunchContract.Read(operation)
+                : null);
     }
 }

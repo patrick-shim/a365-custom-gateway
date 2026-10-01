@@ -5,11 +5,13 @@ This directory contains the declarative Azure and SQL assets consumed by the
 [existing-environment operations](../operations/README.md). Templates and SQL
 files are inputs to those workflows, not independent installation instructions.
 
-The related Azure resources and supporting tools were deliberately removed.
-Retained assets do not prove a current deployment. The complete installation
-command is **not yet revalidated against a fresh Azure environment**. The three
-required tooling source projects and a bounded local test suite are present again;
-see the [local baseline command](../README.md#local-source-and-behavioral-validation).
+The original Azure resources and supporting tools were deliberately removed.
+Restored authored tooling and local fixtures now accompany a separate Azure
+release-qualification installation. The current source-bound terminal deployment,
+private SQL and package/runtime checks have their exact scope in M5; this does
+not establish M6's hosted product and provider acceptance. Retained assets or old
+outputs alone are not evidence. See the
+[local baseline command](../README.md#local-source-and-behavioral-validation).
 [MILESTONES.md](../MILESTONES.md) is the sole completion and acceptance record.
 
 ## Layout

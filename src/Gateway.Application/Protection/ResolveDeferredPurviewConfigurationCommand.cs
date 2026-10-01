@@ -118,7 +118,8 @@ internal sealed class ResolveDeferredPurviewConfigurationHandler(
                 Id = Guid.NewGuid(),
                 MessageType = nameof(ProtectionAdminOperationMessage),
                 Payload = JsonSerializer.Serialize(new ProtectionAdminOperationMessage(operation.Id,
-                    ProtectionAdminWorkflow.CurrentVersion, 0, operation.CorrelationId),
+                    ProtectionAdminWorkflow.CurrentVersion, 0, operation.CorrelationId,
+                    operation.OrderedSteps.Single(step => step.OrderIndex == 0).AttemptCount),
                     ProtectionAdministrationRules.JsonOptions),
                 Status = OutboxMessageStatus.Pending,
                 CreatedAtUtc = now

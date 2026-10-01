@@ -369,8 +369,30 @@ function Invoke-GatewayUpgradeArmDeployment {
             elseif ($whatIf.Contains('changes')) { @($whatIf.changes) }
             else { throw 'UpgradeExecution: What-If omitted its complete change set.' }
         foreach ($change in $changes) {
+            if ($change -isnot [Collections.IDictionary] -or
+                -not $change.Contains('resourceId') -or -not $change.Contains('changeType') -or
+                $change.resourceId -isnot [string] -or [string]::IsNullOrWhiteSpace($change.resourceId) -or
+                $change.changeType -isnot [string]) {
+                throw 'UpgradeExecution: What-If returned a malformed resource change.'
+            }
+            $allowedResource = $change.resourceId.ToLowerInvariant() -cin @($AllowedResourceIds | ForEach-Object { $_.ToLowerInvariant() })
+            # Incremental What-If also includes untouched group resources with identical projections.
+            if ($change.changeType -ceq 'Ignore' -and -not $allowedResource) {
+                $groupPrefix = "$($Context.plan.scope.resourceGroupId)/providers/"
+                $unchangedProjection = -not $change.Contains('after') -or $null -eq $change.after -or (
+                    $change.Contains('before') -and $change.before -is [Collections.IDictionary] -and
+                    $change.after -is [Collections.IDictionary] -and
+                    (Get-GatewayUpgradeFingerprint $change.before) -ceq (Get-GatewayUpgradeFingerprint $change.after))
+                if (-not $change.resourceId.StartsWith($groupPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+                    $change.resourceId.Length -le $groupPrefix.Length -or
+                    ($change.Contains('delta') -and $null -ne $change.delta -and @($change.delta).Count -ne 0) -or
+                    -not $unchangedProjection) {
+                    throw 'UpgradeExecution: What-If Ignore is not an untouched resource in the exact target group.'
+                }
+                continue
+            }
             if ($change.changeType -cnotin @('Create', 'Modify', 'NoChange', 'Ignore') -or
-                $change.resourceId.ToLowerInvariant() -cnotin @($AllowedResourceIds | ForEach-Object { $_.ToLowerInvariant() }) -or
+                -not $allowedResource -or
                 ($change.changeType -ceq 'Modify' -and $change.resourceId.ToLowerInvariant() -cnotin @($AllowedModifyResourceIds | ForEach-Object { $_.ToLowerInvariant() }))) {
                 throw 'UpgradeExecution: What-If escaped the exact resource allowlist or requested deletion.'
             }
@@ -395,7 +417,8 @@ function Get-GatewayUpgradeRoleContract {
 function Test-GatewayUpgradeRoleReadback {
     param($Context, $Role, [string]$PrincipalId)
     $live = Invoke-GatewayUpgradeArm $Context GET $Role.assignmentResourceId '2022-04-01'
-    if ($live.properties.principalId -cne $PrincipalId -or $live.properties.roleDefinitionId -cne $Role.roleDefinitionId -or
+    if ($live.properties.principalId -cne $PrincipalId -or
+        -not (Test-GatewayUpgradeResourceId $live.properties.roleDefinitionId $Role.roleDefinitionId) -or
         ($live.properties.Contains('condition') -and $live.properties.condition)) {
         throw 'UpgradeExecution: role principal, permission or condition differs from its exact declaration.'
     }
@@ -583,10 +606,10 @@ function Invoke-GatewayUpgradeExecutorHost {
             $site = Invoke-GatewayUpgradeArm $Context GET $scope.siteId '2024-11-01'
             $planId = "$($Context.plan.scope.resourceGroupId)/providers/Microsoft.Web/serverfarms/$($scope.planName)"
             $plan = Invoke-GatewayUpgradeArm $Context GET $planId '2024-11-01'
-            if ($site.identity.type -cne 'SystemAssigned' -or $site.properties.serverFarmId -cne $planId -or
+            if ($site.identity.type -cne 'SystemAssigned' -or -not (Test-GatewayUpgradeResourceId $site.properties.serverFarmId $planId) -or
                 $site.tags.gatewayUpgradePlanFingerprint -cne $Context.planFingerprint -or
                 $site.properties.publicNetworkAccess -cne 'Disabled' -or $site.properties.httpsOnly -ne $true -or
-                $site.properties.virtualNetworkSubnetId -cne "$($scope.networkId)/subnets/snet-purview-executor" -or
+                -not (Test-GatewayUpgradeResourceId $site.properties.virtualNetworkSubnetId "$($scope.networkId)/subnets/snet-purview-executor") -or
                 $site.properties.outboundVnetRouting.allTraffic -ne $true -or
                 $plan.sku.name -cne $selectedSku -or $plan.sku.capacity -ne 1 -or $plan.properties.reserved -ne $false) {
                 throw 'UpgradeExecution: reviewed Windows host SKU, identity or private-network boundary differs.'
@@ -615,8 +638,8 @@ function Invoke-GatewayUpgradeExecutorHost {
             $endpointId = "$($Context.plan.scope.resourceGroupId)/providers/Microsoft.Network/privateEndpoints/$($scope.endpointName)"
             $endpoint = Invoke-GatewayUpgradeArm $Context GET $endpointId '2023-11-01'
             $connections = @($endpoint.properties.privateLinkServiceConnections)
-            if ($endpoint.properties.subnet.id -cne $Context.foundation.privateEndpointSubnetId -or $connections.Count -ne 1 -or
-                $connections[0].properties.privateLinkServiceId -cne $scope.siteId -or
+            if (-not (Test-GatewayUpgradeResourceId $endpoint.properties.subnet.id $Context.foundation.privateEndpointSubnetId) -or $connections.Count -ne 1 -or
+                -not (Test-GatewayUpgradeResourceId $connections[0].properties.privateLinkServiceId $scope.siteId) -or
                 $connections[0].properties.privateLinkServiceConnectionState.status -cne 'Approved' -or
                 (Get-GatewayUpgradeFingerprint @($connections[0].properties.groupIds)) -cne (Get-GatewayUpgradeFingerprint @('sites'))) {
                 throw 'UpgradeExecution: executor private endpoint is not approved for the exact host/subnet.'
@@ -679,7 +702,7 @@ function Invoke-GatewayUpgradePublisher {
             param($outputs)
             $live = Invoke-GatewayUpgradeArm $Context GET $scope.publisherId '2025-01-01'
             $containers = @($live.properties.template.containers)
-            if ($live.properties.environmentId -cne $Context.foundation.containerAppsEnvironmentId -or
+            if (-not (Test-GatewayUpgradeResourceId $live.properties.environmentId $Context.foundation.containerAppsEnvironmentId) -or
                 $live.tags.gatewayUpgradePlanFingerprint -cne $Context.planFingerprint -or
                 $live.properties.configuration.triggerType -cne 'Manual' -or [int]$live.properties.configuration.replicaRetryLimit -ne 0 -or
                 [int]$live.properties.configuration.manualTriggerConfig.parallelism -ne 1 -or
@@ -975,7 +998,7 @@ function Invoke-GatewayUpgradeContentSafety {
                 $account.properties.customSubDomainName -cne $parameters.accountName -or
                 $account.tags.gatewayUpgradePlanFingerprint -cne $Context.planFingerprint -or
                 $role.properties.principalId -cne $Context.runtime.apiPrincipalId -or
-                $role.properties.roleDefinitionId -cne $scope.roles[0].roleDefinitionId) {
+                -not (Test-GatewayUpgradeResourceId $role.properties.roleDefinitionId $scope.roles[0].roleDefinitionId)) {
                 throw 'UpgradeExecution: Content Safety identity, paid SKU or role readback differs.'
             }
             return @{ accountId = $accountId; endpoint = "https://$($parameters.accountName).cognitiveservices.azure.com/"; roleId = $roleId; sku = 'S0' }
@@ -1277,7 +1300,7 @@ function Read-GatewayUpgradeDatabaseReceipt {
         '--resource-group', $Context.config.resourceGroupName, '--workspace-name', $Context.foundation.logAnalyticsWorkspaceName,
         '--query', '{id:id,customerId:customerId}')
     $expectedWorkspaceId = "$($Context.plan.scope.resourceGroupId)/providers/Microsoft.OperationalInsights/workspaces/$($Context.foundation.logAnalyticsWorkspaceName)"
-    if ($workspace.id -cne $expectedWorkspaceId -or [string]$workspace.customerId -cne ([guid][string]$workspace.customerId).ToString('D')) {
+    if (-not (Test-GatewayUpgradeResourceId $workspace.id $expectedWorkspaceId) -or [string]$workspace.customerId -cne ([guid][string]$workspace.customerId).ToString('D')) {
         throw 'UpgradeExecution: migration evidence workspace is outside the exact deployment.'
     }
     $query = "ContainerAppConsoleLogs_CL | where TimeGenerated > ago(30d) | where ContainerGroupName_s startswith '$ExecutionName' | where Log_s startswith '$prefix' | summarize by Log_s | take 2"
@@ -1649,10 +1672,11 @@ function Assert-GatewayUpgradeCutoverReaderRoles {
         Assert-GatewayUpgradeDatabaseJobFields $role @('id', 'name', 'type', 'properties')
         Assert-GatewayUpgradeDatabaseJobFields $role.properties @('principalId', 'principalType', 'roleDefinitionId', 'scope') @(
             'condition', 'conditionVersion', 'description', 'delegatedManagedIdentityResourceId', 'createdOn', 'updatedOn', 'createdBy', 'updatedBy')
-        if ($role.id -cne $contract.assignmentResourceId -or $role.properties.principalId -cne $PrincipalId -or
-            $role.name -cne $contract.assignmentResourceId.Split('/')[-1] -or $role.type -cne 'Microsoft.Authorization/roleAssignments' -or
-            $role.properties.scope -cne ($contract.assignmentResourceId -creplace '/providers/Microsoft.Authorization/roleAssignments/[^/]+$', '') -or
-            $role.properties.roleDefinitionId -cne $contract.roleDefinitionId -or
+        if (-not (Test-GatewayUpgradeResourceId $role.id $contract.assignmentResourceId) -or $role.properties.principalId -cne $PrincipalId -or
+            $role.name -cne $contract.assignmentResourceId.Split('/')[-1] -or
+            -not [string]::Equals($role.type, 'Microsoft.Authorization/roleAssignments', [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-GatewayUpgradeResourceId $role.properties.scope ($contract.assignmentResourceId -creplace '/providers/Microsoft.Authorization/roleAssignments/[^/]+$', '')) -or
+            -not (Test-GatewayUpgradeResourceId $role.properties.roleDefinitionId $contract.roleDefinitionId) -or
             $role.properties.principalType -cne 'ServicePrincipal') {
             throw 'UpgradeCutover: the private observer Reader role differs from its exact Plan scope.'
         }
@@ -1920,9 +1944,9 @@ function Get-GatewayUpgradeWorkloadSnapshot {
     $app = Invoke-GatewayUpgradeArm $Context GET $id $version
     $containers = @($app.properties.template.containers)
     $environmentId = if ($app.properties.Contains('environmentId') -and $app.properties.environmentId) { [string]$app.properties.environmentId } else { [string]$app.properties.managedEnvironmentId }
-    if ($app.id -cne $id -or $app.tags.bootstrapOwnershipId -cne $Context.state.deploymentOwnershipId -or
+    if (-not (Test-GatewayUpgradeResourceId $app.id $id) -or $app.tags.bootstrapOwnershipId -cne $Context.state.deploymentOwnershipId -or
         $app.tags.bootstrapSourceFingerprint -cne $Context.state.acceptedPlan.sourceFingerprint -or
-        $environmentId -cne $Context.foundation.containerAppsEnvironmentId -or
+        -not (Test-GatewayUpgradeResourceId $environmentId $Context.foundation.containerAppsEnvironmentId) -or
         ($app.properties.configuration.activeRevisionsMode -cne 'Single' -and
             (-not $Context.Contains('cutoverInventory') -or $Component -ceq 'adminUi' -or
                 $app.properties.configuration.activeRevisionsMode -cne 'Multiple')) -or
@@ -1933,7 +1957,8 @@ function Get-GatewayUpgradeWorkloadSnapshot {
     if ($Component -ceq 'adminUi') {
         $identityId = "$($Context.plan.scope.resourceGroupId)/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-gateway-admin-$($Context.config.environment)"
         $identity = Invoke-GatewayUpgradeArm $Context GET $identityId '2023-01-31'
-        if ($app.identity.type -cne 'UserAssigned' -or $identityIds.Count -ne 1 -or $identityIds[0] -cne $identityId -or
+        if ($app.identity.type -cne 'UserAssigned' -or $identityIds.Count -ne 1 -or
+            -not (Test-GatewayUpgradeResourceId $identityIds[0] $identityId) -or
             $identity.properties.principalId -cne $Context.state.steps['Admin UI deployment'].evidence.adminUiPrincipalId) {
             throw 'UpgradeExecution: Admin identity would be changed or replaced.'
         }
@@ -1943,7 +1968,7 @@ function Get-GatewayUpgradeWorkloadSnapshot {
     else {
         $principalId = if ($Component -ceq 'api') { [string]$Context.runtime.apiPrincipalId } else { [string]$Context.runtime.workerPrincipalId }
         if ($app.identity.principalId -cne $principalId -or $identityIds.Count -ne 1 -or
-            $identityIds[0] -cne $Context.foundation.runtimeImagePullIdentityId) {
+            -not (Test-GatewayUpgradeResourceId $identityIds[0] $Context.foundation.runtimeImagePullIdentityId)) {
             throw 'UpgradeExecution: an existing API/worker identity would change.'
         }
         $fqdn = if ($Component -ceq 'api') { [string]$Context.runtime.apiFqdn } else { '' }
@@ -2225,7 +2250,8 @@ function Invoke-GatewayUpgradeWorkload {
             $Context.config.resourceGroupName, '--name', $current.name,
             '--query', '[?properties.active==`true`].{name:name,health:properties.healthState,running:properties.runningState,replicas:properties.replicas}'))
         if ($revisions.Count -ne 1 -or $revisions[0].name -cne $current.revision -or
-            $revisions[0].health -cne 'Healthy' -or $revisions[0].running -cne 'Running' -or [int]$revisions[0].replicas -lt 1) { return $null }
+            $revisions[0].health -cne 'Healthy' -or -not (Test-GatewayContainerAppRevisionRunning $revisions[0].running) -or
+            [int]$revisions[0].replicas -lt 1) { return $null }
         if ($Component -ceq 'api' -and -not $Context.Contains('cutoverInventory')) {
             $null = Get-GatewayCurrentDatabaseAttestationEvidence -ApiFqdn $current.fqdn
         }
@@ -2249,7 +2275,7 @@ function Invoke-GatewayUpgradeWorkload {
                     continue
                 }
                 if ($desired.properties.active -eq $true -and $desired.properties.healthState -ceq 'Healthy' -and
-                    $desired.properties.runningState -ceq 'Running' -and $desired.properties.replicas -gt 0) {
+                    (Test-GatewayContainerAppRevisionRunning $desired.properties.runningState) -and $desired.properties.replicas -gt 0) {
                     Assert-GatewayUpgradeMaintenanceApiRevision $Context $desired $phase
                     break
                 }
@@ -2259,7 +2285,7 @@ function Invoke-GatewayUpgradeWorkload {
                 Start-Sleep -Seconds 5
             }
             foreach ($revision in (Get-GatewayUpgradeCutoverRevisions $Context $before.id)) {
-                if ($revision.properties.active -and $revision.id -cne $desiredId) {
+                if ($revision.properties.active -and -not (Test-GatewayUpgradeResourceId $revision.id $desiredId)) {
                     $null = Invoke-GatewayUpgradeArm $Context POST "$($revision.id)/deactivate" '2025-01-01'
                 }
             }
@@ -2341,7 +2367,7 @@ function Invoke-GatewayUpgradePreSchemaApi {
             continue
         }
         if ($revision.properties.active -eq $true -and $revision.properties.healthState -ceq 'Healthy' -and
-            $revision.properties.runningState -ceq 'Running' -and $revision.properties.replicas -gt 0) {
+            (Test-GatewayContainerAppRevisionRunning $revision.properties.runningState) -and $revision.properties.replicas -gt 0) {
             Assert-GatewayUpgradeMaintenanceApiRevision $Context $revision PreSchemaClosed
             return $revisionId
         }
@@ -2383,7 +2409,7 @@ function Assert-GatewayUpgradeMaintenanceApiRevision {
         $probe[0].httpGet.path -cne $path -or $probe[0].httpGet.port -ne $targetPort -or
         ($probe[0].httpGet.Contains('host') -and $probe[0].httpGet.host) -or
         $Revision.properties.active -isnot [bool] -or $Revision.properties.active -ne $true -or
-        $Revision.properties.healthState -cne 'Healthy' -or $Revision.properties.runningState -cne 'Running' -or
+        $Revision.properties.healthState -cne 'Healthy' -or -not (Test-GatewayContainerAppRevisionRunning $Revision.properties.runningState) -or
         ($Revision.properties.replicas -isnot [int] -and $Revision.properties.replicas -isnot [long]) -or $Revision.properties.replicas -lt 1) {
         throw 'UpgradeCutover: the fixed maintenance probe is not independently healthy.'
     }
@@ -2406,10 +2432,10 @@ function Assert-GatewayUpgradeMaintenanceApiRevision {
         ($replicas.Contains('nextLink') -and $replicas.nextLink)) {
         throw 'UpgradeCutoverUnknown: maintenance replica inventory is incomplete.'
     }
-    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($replica in $replicas.value) {
         if ($replica.id -isnot [string] -or $replica.name -isnot [string] -or
-            $replica.id -cne "$($Revision.id)/replicas/$($replica.name)" -or -not $seen.Add($replica.id) -or
+            -not (Test-GatewayUpgradeResourceId $replica.id "$($Revision.id)/replicas/$($replica.name)") -or -not $seen.Add($replica.id) -or
             $replica.properties.runningState -cne 'Running' -or @($replica.properties.containers).Count -ne 1 -or
             $replica.properties.containers[0].name -cne $containers[0].name -or
             $replica.properties.containers[0].ready -isnot [bool] -or $replica.properties.containers[0].ready -ne $true -or
@@ -2494,7 +2520,8 @@ function Assert-GatewayUpgradeWorkloadHealthy {
         $Context.config.resourceGroupName, '--name', $Snapshot.name,
         '--query', '[?properties.active==`true`].{name:name,health:properties.healthState,running:properties.runningState,replicas:properties.replicas}'))
     if ($revisions.Count -ne 1 -or $revisions[0].name -cne $Snapshot.revision -or
-        $revisions[0].health -cne 'Healthy' -or $revisions[0].running -cne 'Running' -or [int]$revisions[0].replicas -lt 1) {
+        $revisions[0].health -cne 'Healthy' -or -not (Test-GatewayContainerAppRevisionRunning $revisions[0].running) -or
+        [int]$revisions[0].replicas -lt 1) {
         throw 'UpgradeOutcomeUnknown: untouched workload live revision is not exactly healthy.'
     }
     if ($Component -ceq 'api') { $null = Get-GatewayCurrentDatabaseAttestationEvidence -ApiFqdn $Snapshot.fqdn }
@@ -2639,14 +2666,14 @@ function Assert-GatewayUpgradeJointReadback {
                 ($probe[0].httpGet.Contains('host') -and $probe[0].httpGet.host)) {
                 throw 'UpgradeCutover: platform readiness must probe the local schema-attesting API endpoint.'
             }
-            if ($component -ceq 'worker' -and $Context.plan.request.schemaVersion -eq 2) {
-                Assert-GatewayUpgradeSourceOnlyWorkloadPreservation $Context $component $snapshot
-            }
+        }
+        if ($component -ceq 'worker' -and $Context.plan.request.schemaVersion -eq 2) {
+            Assert-GatewayUpgradeSourceOnlyWorkloadPreservation $Context $component $snapshot
         }
         $revisions = Get-GatewayUpgradeCutoverRevisions $Context $snapshot.id
         $active = @($revisions | Where-Object { $_.properties.active })
         if ($active.Count -ne 1 -or $active[0].name -cne $result.record.value.revision -or
-            $active[0].properties.healthState -cne 'Healthy' -or $active[0].properties.runningState -cne 'Running' -or
+            $active[0].properties.healthState -cne 'Healthy' -or -not (Test-GatewayContainerAppRevisionRunning $active[0].properties.runningState) -or
             $active[0].properties.replicas -lt 1 -or
             (Get-GatewayUpgradeFingerprint $active[0].properties.template.containers) -cne
                 (Get-GatewayUpgradeFingerprint $snapshot.raw.properties.template.containers)) {
@@ -2667,10 +2694,10 @@ function Assert-GatewayUpgradeJointReadback {
             if ($replicas.value.Count -lt 1 -or $replicas.value.Count -ne $revision.properties.replicas) {
                 throw 'UpgradeCutoverUnknown: ready replica cardinality differs.'
             }
-            $replicaIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            $replicaIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
             foreach ($replica in $replicas.value) {
                 if ($replica.id -isnot [string] -or $replica.name -isnot [string] -or
-                    $replica.id -cne "$($revision.id)/replicas/$($replica.name)" -or -not $replicaIds.Add($replica.id) -or
+                    -not (Test-GatewayUpgradeResourceId $replica.id "$($revision.id)/replicas/$($replica.name)") -or -not $replicaIds.Add($replica.id) -or
                     $replica.properties.runningState -cne 'Running' -or @($replica.properties.containers).Count -ne 1 -or
                     $replica.properties.containers[0].ready -isnot [bool] -or
                     $replica.properties.containers[0].started -isnot [bool] -or
@@ -2787,7 +2814,7 @@ function Assert-GatewayUpgradeCutoverOpenControls {
     }
     foreach ($id in @($Context.plan.cutover.ProvisioningQueueResourceId, $Context.plan.cutover.ProtectionQueueResourceId)) {
         $queue = Invoke-GatewayUpgradeArm $Context GET $id '2024-01-01'
-        if ($queue.id -cne $id -or $queue.properties.status -cne 'Active') { throw 'UpgradeCutoverUnknown: queue reopen readback failed.' }
+        if (-not (Test-GatewayUpgradeResourceId $queue.id $id) -or $queue.properties.status -cne 'Active') { throw 'UpgradeCutoverUnknown: queue reopen readback failed.' }
     }
 }
 
@@ -2999,9 +3026,9 @@ function Get-GatewayUpgradeSourceOnlyCapabilities {
     $site = Invoke-GatewayUpgradeArm $Context GET $scope.siteId '2024-11-01'
     $plan = Invoke-GatewayUpgradeArm $Context GET $scope.retained.planId '2024-11-01'
     if ($site.identity.principalId -cne $old.ExecutorPrincipalId -or $site.identity.type -cne 'SystemAssigned' -or
-        $site.properties.serverFarmId -cne $scope.retained.planId -or $site.properties.publicNetworkAccess -cne 'Disabled' -or
+        -not (Test-GatewayUpgradeResourceId $site.properties.serverFarmId $scope.retained.planId) -or $site.properties.publicNetworkAccess -cne 'Disabled' -or
         $site.properties.enabled -ne $true -or $site.properties.httpsOnly -ne $true -or
-        $site.properties.virtualNetworkSubnetId -cne $fresh.host.integrationSubnetId.value -or
+        -not (Test-GatewayUpgradeResourceId $site.properties.virtualNetworkSubnetId $fresh.host.integrationSubnetId.value) -or
         $site.properties.outboundVnetRouting.allTraffic -ne $true -or
         "https://$($site.properties.defaultHostName)" -cne $fresh.host.executorEndpoint.value -or
         $plan.sku.name -cne $Context.plan.request.capabilities.purview.executorSku -or
@@ -3035,9 +3062,9 @@ function Get-GatewayUpgradeSourceOnlyCapabilities {
     }
     $endpoint = Invoke-GatewayUpgradeArm $Context GET $fresh.host.privateEndpointId.value '2023-11-01'
     $connections = @($endpoint.properties.privateLinkServiceConnections)
-    if ($connections.Count -ne 1 -or $connections[0].properties.privateLinkServiceId -cne $scope.siteId -or
+    if ($connections.Count -ne 1 -or -not (Test-GatewayUpgradeResourceId $connections[0].properties.privateLinkServiceId $scope.siteId) -or
         $connections[0].properties.privateLinkServiceConnectionState.status -cne 'Approved' -or
-        $endpoint.properties.subnet.id -cne $Context.foundation.privateEndpointSubnetId) {
+        -not (Test-GatewayUpgradeResourceId $endpoint.properties.subnet.id $Context.foundation.privateEndpointSubnetId)) {
         throw 'UpgradeSourceOnly: the existing private endpoint does not target the exact executor.'
     }
     $protected.privateEndpoint = $endpoint.properties

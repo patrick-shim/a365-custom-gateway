@@ -40,8 +40,9 @@ project only with `-IncludeSql` and requires all tests to pass with none skipped
   its directory, then stops/deletes only the fixture's private instance. A cleanup
   failure fails the run. Do not terminate the test runner during SQL cleanup.
 
-The fixture creates the **current EF SQL Server schema** with `EnsureCreated`;
-this is not migration-upgrade or production deployment validation.
+By default the fixture creates the **current EF SQL Server schema** with
+`EnsureCreated`. Migration-specific tests can explicitly request a newly owned
+empty database without changing the connection or ownership boundary.
 
 ## Implementation and provider boundaries
 
@@ -69,13 +70,47 @@ known rejected content stage. An arbitrary failed ingestion commit may leave a
 staged provider object; the tests intentionally do not claim that the current
 handler compensates uncertain outcomes.
 
+Listing fixtures exercise the actual repository and handler against SQL:
+multi-page cursor round-tripping with tied creation times and SQL GUID ordering,
+combined status/environment filters, literal case-insensitive name/external-ID
+search, full filtered totals, exact-final-page termination and lifecycle changes.
+They do not substitute for Admin UI navigation or browser verification.
+
+Protection-administration fixtures use the real review, confirmation, mutation
+and SQL paths for four policy modes, multi-SIT threshold round trips, preserved
+per-agent Prompt Shields choices and invalidation of prior runtime certification.
+They cover stale row-version rollback, accepted-operation replay without another
+outbox item, actor/expiry rejection and exact deferred-registration consent
+binding. Provider policy execution remains outside these SQL fixtures.
+Renewed-inventory reconciliation tests require a new exact review and
+confirmation, then verify acceptance-only rebinding, preserved IDs/settings/agent
+choices, cleared old runtime proof and single-outbox replay. Renamed/missing
+types, unknown thresholds, row-version changes, generation drift and expiry
+equality reject or roll back without silently adopting new authority.
+
 Coverage is bounded to local implementation behavior. It does not establish live
-Graph/Registry/Purview/Content Safety correctness, hosted authentication, migration
-compatibility, cross-machine failover, simultaneous last-credential revocation,
+Graph/Registry/Purview/Content Safety correctness, hosted authentication, complete
+Azure migration/receipt acceptance, cross-machine failover, simultaneous last-credential revocation,
 browser journeys, worker recovery or sample model-callback execution. Those
-require their separate acceptance scenarios. Paging/search behavior is outside
-this baseline suite. Transactional ingestion scenarios supply explicit
-idempotency keys; the optional-key HTTP contract is not exercised here.
+require their separate acceptance scenarios. Transactional ingestion scenarios
+supply explicit idempotency keys; the required HTTP-header validation is not
+exercised here.
+
+## Authored SQL migration checks
+
+`M5MigrationSqlTests` uses the production migration ordering/checksum loader and
+executes the four current additive SQL files on owned LocalDB databases. Cases
+cover initialization classification from observed SQL table counts, legacy
+mode/threshold/proof preservation, historical receipts remaining unbound,
+registration/outbox preservation, idempotent replay, missing prerequisites and
+real transaction-owned application-lock serialization.
+
+The replay comparison covers the local relational columns, indexes and check
+constraints. It does not substitute for the production Azure SQL schema
+fingerprint: Azure-only catalog surfaces such as `sys.database_firewall_rules`
+do not exist in LocalDB. The native migrator's Azure FQDN, managed-identity,
+private-DNS, principal and durable remote-receipt checks are not bypassed for a
+local test. Those full platform boundaries remain separate qualification work.
 
 For shared SQL tests reference `Gateway.TestSupport`, then use:
 

@@ -17,5 +17,6 @@
   <ItemGroup>
     <ProjectReference Include="..\Gateway.TestSupport\Gateway.TestSupport.csproj" />
     <ProjectReference Include="..\..\src\Gateway.ContentSafety\Gateway.ContentSafety.csproj" />
+    <ProjectReference Include="..\..\tools\Gateway.DatabaseMigrator\Gateway.DatabaseMigrator.csproj" />
   </ItemGroup>
 </Project>

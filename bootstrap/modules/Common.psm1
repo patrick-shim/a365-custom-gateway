@@ -587,6 +587,11 @@ function Get-BootstrapProviderFailureSignature {
     if ([string]::IsNullOrWhiteSpace($Output)) { return $signature }
 
     $codes = [ordered]@{}
+    # Azure CLI can render this policy denial as prose without a JSON error code.
+    if ($Output.Contains('without authenticating through MFA', [StringComparison]::OrdinalIgnoreCase) -and
+        $Output -match 'https://aka\.ms/MFAforAzure(?:\.(?=\s|$)|(?=\s|$))') {
+        $codes['AzureMfaRequired'] = $true
+    }
     foreach ($match in [regex]::Matches($Output, '"(?:code|errorCode)"\s*:\s*"([A-Za-z][A-Za-z0-9._-]{0,63})"')) {
         $codes[[string]$match.Groups[1].Value] = $true
         if ($codes.Count -ge 8) { break }
@@ -1340,6 +1345,11 @@ function Invoke-AzTsv {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string[]]$Arguments)
     return (Invoke-BootstrapCommand -FilePath 'az' -ArgumentList ($Arguments + @('--output', 'tsv', '--only-show-errors'))).Trim()
+}
+
+function Test-GatewayContainerAppRevisionRunning {
+    param([AllowNull()][AllowEmptyString()][string]$RunningState)
+    return $RunningState -cin @('Running', 'RunningAtMaxScale')
 }
 
 function Assert-GuidValue {

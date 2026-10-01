@@ -81,10 +81,12 @@ function Get-GatewayUpgradeCutoverRevisions {
         ($response.Contains('nextLink') -and $response.nextLink)) {
         throw 'UpgradeCutoverUnknown: incomplete revision inventory; closure is not proven.'
     }
-    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $prefix = "$AppId/revisions/"
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($revision in $response.value) {
         if ($revision.id -isnot [string] -or
-            $revision.id -cnotmatch "^$([regex]::Escape($AppId))/revisions/[a-z0-9-]+$" -or
+            -not $revision.id.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+            $revision.id.Substring($prefix.Length) -cnotmatch '\A[a-z0-9-]+\z' -or
             -not $seen.Add($revision.id) -or $revision.properties.active -isnot [bool] -or
             ($revision.properties.replicas -isnot [long] -and $revision.properties.replicas -isnot [int]) -or
             $revision.properties.replicas -lt 0) {
@@ -174,7 +176,7 @@ function Get-GatewayUpgradeCutoverInventory {
             $queues[$id] = $null
             continue
         }
-        if ($queue.id -cne $id -or $queue.properties.status -cne 'Active') {
+        if (-not (Test-GatewayUpgradeResourceId $queue.id $id) -or $queue.properties.status -cne 'Active') {
             throw 'UpgradeCutover: an unknown or previously held queue cannot be adopted.'
         }
         $queues[$id] = Get-GatewayUpgradeCutoverQueueProperties $queue
@@ -257,7 +259,7 @@ function Set-GatewayUpgradeCutoverQueueHold {
         if ($Id -ceq $Context.plan.cutover.ProtectionQueueResourceId -and $null -eq $Context.cutoverInventory.queues[$Id]) { return }
         throw 'UpgradeCutoverUnknown: a required queue is missing.'
     }
-    if ($queue.id -cne $Id -or $queue.properties.status -cnotin @('Active', 'ReceiveDisabled')) {
+    if (-not (Test-GatewayUpgradeResourceId $queue.id $Id) -or $queue.properties.status -cnotin @('Active', 'ReceiveDisabled')) {
         throw 'UpgradeCutoverUnknown: queue identity or state is unknown.'
     }
     $properties = Get-GatewayUpgradeCutoverQueueProperties $queue
@@ -279,7 +281,7 @@ function Assert-GatewayUpgradeCutoverHeld {
         $entry = $Context.cutoverInventory.apps[$component]
         $app = Invoke-GatewayUpgradeCutoverArm $Context GET $entry.id '2025-01-01'
         if ($component -ceq 'api') { Assert-GatewayUpgradeCutoverHttpBoundary $app.properties.configuration }
-        if ($app.id -cne $entry.id -or $app.properties.provisioningState -cne 'Succeeded' -or
+        if (-not (Test-GatewayUpgradeResourceId $app.id $entry.id) -or $app.properties.provisioningState -cne 'Succeeded' -or
             $app.properties.configuration.activeRevisionsMode -cne 'Multiple') {
             throw 'UpgradeCutoverUnknown: management readback does not prove the ingress/revision hold.'
         }
@@ -289,7 +291,7 @@ function Assert-GatewayUpgradeCutoverHeld {
         }
         $revisions = Get-GatewayUpgradeCutoverRevisions $Context $entry.id
         foreach ($originalId in $entry.revisions) {
-            if ($originalId -cnotin @($revisions.id)) {
+            if (-not (Test-GatewayUpgradeResourceId $originalId @($revisions.id))) {
                 throw 'UpgradeCutoverUnknown: an inventoried original revision is absent from the complete readback.'
             }
         }
@@ -306,11 +308,11 @@ function Assert-GatewayUpgradeCutoverHeld {
                 if ($component -ceq 'worker') { $allowed += "$rollbackId-run" }
                 $images += $Context.plan.rollbackContract.images[$component]
             }
-            $approvedNew = $revision.id -cin $allowed -and @($revision.properties.template.containers).Count -eq 1 -and
+            $approvedNew = (Test-GatewayUpgradeResourceId $revision.id $allowed) -and @($revision.properties.template.containers).Count -eq 1 -and
                 $revision.properties.template.containers[0].image -cin $images
             $closedApi = $component -ceq 'api' -and $approvedNew -and $revision.properties.active -eq $true
             if ($closedApi) {
-                $phase = if ($revision.id -ceq $preSchemaId) { 'PreSchemaClosed' } else { 'PostSchemaClosed' }
+                $phase = if (Test-GatewayUpgradeResourceId $revision.id $preSchemaId) { 'PreSchemaClosed' } else { 'PostSchemaClosed' }
                 if ($ZeroWriters -and $phase -cne 'PreSchemaClosed') {
                     throw 'UpgradeCutoverNotDrained: schema work requires the exact pre-schema closed API.'
                 }
@@ -319,7 +321,7 @@ function Assert-GatewayUpgradeCutoverHeld {
                     Assert-GatewayUpgradeMaintenanceApiRevision $ctx $rev $maintenancePhase
                 } $Context $revision $phase
             }
-            if (($ZeroWriters -and -not $closedApi) -or $revision.id -cin $entry.revisions -or -not $approvedNew) {
+            if (($ZeroWriters -and -not $closedApi) -or (Test-GatewayUpgradeResourceId $revision.id $entry.revisions) -or -not $approvedNew) {
                 if ($revision.properties.active -ne $false -or $revision.properties.replicas -ne 0) {
                     throw 'UpgradeCutoverNotDrained: an excluded revision remains active or has replicas.'
                 }
@@ -335,7 +337,7 @@ function Assert-GatewayUpgradeCutoverHeld {
         $queue = Invoke-GatewayUpgradeCutoverArm $Context GET $id '2024-01-01' -AllowNotFound
         if ($null -eq $queue -and $AllowAbsentProtectionQueue -and $id -ceq $Context.plan.cutover.ProtectionQueueResourceId -and
             $null -eq $Context.cutoverInventory.queues[$id]) { continue }
-        if ($null -eq $queue -or $queue.id -cne $id -or $queue.properties.status -cne 'ReceiveDisabled') {
+        if ($null -eq $queue -or -not (Test-GatewayUpgradeResourceId $queue.id $id) -or $queue.properties.status -cne 'ReceiveDisabled') {
             throw 'UpgradeCutoverUnknown: management readback does not prove the queue receive hold.'
         }
         $properties = Get-GatewayUpgradeCutoverQueueProperties $queue
@@ -388,7 +390,7 @@ function Close-GatewayUpgradeCutover {
     foreach ($component in @('api', 'worker')) {
         try {
             foreach ($revision in (Get-GatewayUpgradeCutoverRevisions $Context $Context.cutoverInventory.apps[$component].id)) {
-                if ($revision.properties.active -and $revision.id -cne $preSchemaId) {
+                if ($revision.properties.active -and -not (Test-GatewayUpgradeResourceId $revision.id $preSchemaId)) {
                     Assert-GatewayUpgradeCutoverAuthority $Context
                     $null = Invoke-GatewayUpgradeCutoverArm $Context POST "$($revision.id)/deactivate" '2025-01-01'
                 }

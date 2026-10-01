@@ -3,7 +3,10 @@
 @inject IJSRuntime JS
 @inject AuthenticationStateProvider AuthenticationStateProvider
 @inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject ILogger<PurviewRuntimeTestPanel> Logger
 
+<ReadinessExpiryBoundary AdditionalExpiriesUtc="@([review?.ExpiresAtUtc, inventory?.ExpiresAtUtc])">
 <section class="form-section" aria-labelledby="@Id("heading")">
     <h3 id="@Id("heading")">Test protection</h3>
     <p>Optional, post-registration testing of the saved shared profile. Registration never requires samples, and unsaved editor choices are not tested.</p>
@@ -14,7 +17,7 @@
     else
     {
         <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral"
-                      Disabled="@(working || Disabled || ProfileId == Guid.Empty || readinessLoading || readinessRefreshRequired)"
+                      Disabled="@(!RendererInfo.IsInteractive || working || Disabled || ProfileId == Guid.Empty || readinessLoading || readinessRefreshRequired)"
                       OnClick="OpenAsync">Verify shared profile</FluentButton>
         @if (OriginAgentId is not null)
         {
@@ -65,7 +68,7 @@
             }
             <div class="form-actions">
                 <FluentButton Type="ButtonType.Button" Appearance="Appearance.Accent"
-                              Disabled="@(working || !browserReady || !syntheticApproved || review is not null || completed || transportUnknown || report?.Status == "Running")"
+                              Disabled="@(!RendererInfo.IsInteractive || working || !browserReady || !syntheticApproved || review is not null || completed || transportUnknown || report?.Status == "Running")"
                               OnClick="ReviewBatchAsync">Review test batch</FluentButton>
                 <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" OnClick="ResetAsync">Reset and erase samples</FluentButton>
                 <FluentButton Type="ButtonType.Button" Appearance="Appearance.Stealth" OnClick="CloseAsync">Close and erase samples</FluentButton>
@@ -86,6 +89,9 @@
     }
     @if (report is not null)
     {
+        <ProtectionRuntimeOutcome Report="report" CurrentProfile="currentProfile"
+            Busy="@(working || readinessLoading || Disabled)" OnRecover="RecoverAsync"
+            OnRefreshReadiness="RefreshCurrentBindingAsync" />
         @if (receiptContext is not null)
         {
             <p class="subtle-note">Historical receipt profile: <code>@receiptContext.ProfileId</code>. Actual tested registration: <code>@receiptContext.AgentRegistrationId</code>; child application: <code>@receiptContext.ChildApplicationId</code>. Results apply to this recorded identity and shared policy scope, not automatically to the current or originating agent.</p>
@@ -125,6 +131,7 @@
 @if (review is { } ticket)
 {
     <ConfirmPanel Visible="true" Busy="working" Title="Review protection test"
+                  ConfirmDisabled="@(ticket.ExpiresAtUtc <= Clock.GetUtcNow().UtcDateTime)"
                   Message="Confirm the actual agent, effective policy scope, exact thresholds, and hash commitments. Only this batch and its clean negative will be transmitted."
                   ConfirmLabel="Confirm and send approved batch" OnConfirm="ExecuteAsync" OnCancel="CancelReviewAsync">
         <AdditionalContent>
@@ -166,6 +173,7 @@
         </AdditionalContent>
     </ConfirmPanel>
 }
+</ReadinessExpiryBoundary>
 
 @code {
     [Parameter] public Guid ProfileId { get; set; }
@@ -174,6 +182,7 @@
     [Parameter] public string? ExpectedProfileRowVersion { get; set; }
     [Parameter] public bool IsAdministrator { get; set; }
     [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<PurviewDlpProfileDto?> OnReadinessChanged { get; set; }
 
     private readonly string instanceId = $"runtime-test-{Guid.NewGuid():N}";
     private readonly CancellationTokenSource disposal = new();
@@ -194,7 +203,7 @@
     private Guid? operationId;
     private (Guid, string, string?, bool, bool)? lastBinding;
     private CancellationTokenSource? executionCancellation;
-    internal TimeProvider ExecutionTimeProvider { get; set; } = TimeProvider.System;
+    internal TimeProvider? ExecutionTimeProvider { get; set; }
     private int readinessRevision;
     private bool readinessLoading;
     private bool readinessRefreshRequired;
@@ -205,6 +214,8 @@
     private bool open;
     private bool working;
     private bool browserReady;
+    private bool browserInitializing;
+    private Task browserInitialization = Task.CompletedTask;
     private bool syntheticApproved;
     private bool targetApproved;
     private bool transportUnknown;
@@ -251,23 +262,97 @@
         }
     }
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
+    protected override Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!open || savedProfile is null || PolicyMode == "Disabled" || browser is not null || disposed) return;
+        if (!RendererInfo.IsInteractive || !open || savedProfile is null || PolicyMode == "Disabled" ||
+            browser is not null || disposed || browserInitializing)
+            return Task.CompletedTask;
+        browserInitializing = true;
+        return browserInitialization = InitializeBrowserAsync(revision, sampleRoot);
+    }
+
+    private bool InitializationIsCurrent(int value) =>
+        value == revision && !disposed && open && IsAdministrator && !Disabled &&
+        savedProfile is not null && PolicyMode != "Disabled" && RendererInfo.IsInteractive;
+
+    private async Task InitializeBrowserAsync(int initialRevision, ElementReference root)
+    {
+        IJSObjectReference? created = null;
         try
         {
-            module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./purview-runtime-test.js");
+            if (module is null)
+            {
+                var imported = await JS.InvokeAsync<IJSObjectReference>("import", "./purview-runtime-test.js");
+                if (!InitializationIsCurrent(initialRevision))
+                {
+                    await imported.DisposeAsync();
+                    return;
+                }
+                module = imported;
+            }
+            if (!InitializationIsCurrent(initialRevision))
+                return;
             notifications ??= DotNetObjectReference.Create(this);
-            browser = await module.InvokeAsync<IJSObjectReference>("createSession", sampleRoot, notifications);
+            created = await module.InvokeAsync<IJSObjectReference>("createSession", root, notifications);
+            if (!InitializationIsCurrent(initialRevision))
+                return;
+            browser = created;
+            created = null;
             browserReady = true;
-            await InvokeAsync(StateHasChanged);
         }
-        catch (JSException) { error = "The private browser sample module could not be initialized."; }
+        catch (JSDisconnectedException)
+        {
+            if (InitializationIsCurrent(initialRevision))
+            {
+                open = false;
+                error = "The browser disconnected before the private sample session was ready. Reopen after restoring the connection.";
+            }
+            Logger.LogDebug("The runtime browser disconnected during sample-session initialization.");
+        }
+        catch (JSException)
+        {
+            if (InitializationIsCurrent(initialRevision))
+            {
+                error = "The private browser sample module could not be initialized.";
+                open = false;
+            }
+            else
+                Logger.LogDebug("Sample-session initialization completed after its UI context was closed.");
+        }
+        finally
+        {
+            if (created is not null)
+                await DisposeUnpublishedSessionAsync(created);
+            browserInitializing = false;
+            if (!disposed)
+                await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task DisposeUnpublishedSessionAsync(IJSObjectReference session)
+    {
+        try
+        {
+            await session.InvokeVoidAsync("dispose");
+        }
+        catch (JSDisconnectedException) { Logger.LogDebug("The browser disconnected before acknowledging stale-session cleanup."); }
+        catch (JSException)
+        {
+            error = "Browser sample erasure could not be confirmed. Close this tab before starting a new test.";
+            open = false;
+            Logger.LogWarning("A superseded runtime sample session did not acknowledge erasure.");
+        }
+        finally
+        {
+            try { await session.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+            catch (JSException) { Logger.LogWarning("A stale runtime JavaScript reference could not be released."); }
+        }
     }
 
     private async Task OpenAsync()
     {
-        if (!IsAdministrator || Disabled || working || ProfileId == Guid.Empty || readinessLoading || readinessRefreshRequired) return;
+        if (!RendererInfo.IsInteractive || !IsAdministrator || Disabled || working || ProfileId == Guid.Empty || readinessLoading || readinessRefreshRequired) return;
         working = true;
         error = null;
         var openingRevision = revision;
@@ -279,6 +364,13 @@
             var currentRevision = revision;
             openingRevision = currentRevision;
             var profileId = ProfileId;
+            var user = (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User;
+            if (currentRevision != revision || disposed) return;
+            if (!user.IsInRole("Gateway.Administrator") ||
+                !Guid.TryParse(user.FindFirst("tid")?.Value ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/tenantid")?.Value, out tenantId) ||
+                !Guid.TryParse(user.FindFirst("oid")?.Value ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value, out actorId) ||
+                tenantId == Guid.Empty || actorId == Guid.Empty)
+                throw new InvalidOperationException("This runtime task requires a bound administrator identity.");
             var profileTask = Api.GetPurviewDlpProfilesAsync(disposal.Token);
             var inventoryTask = Api.GetPurviewSensitiveInformationTypesAsync(disposal.Token);
             await Task.WhenAll(profileTask, inventoryTask);
@@ -289,16 +381,16 @@
             inventory = (await inventoryTask).Value;
             if (PolicyMode is not ("Enforce" or "SimulationWithTips" or "SimulationWithoutTips" or "Disabled"))
                 throw new InvalidOperationException();
-            var user = (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User;
-            if (currentRevision != revision || disposed) return;
-            if (!Guid.TryParse(user.FindFirst("tid")?.Value ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/tenantid")?.Value, out tenantId) ||
-                !Guid.TryParse(user.FindFirst("oid")?.Value ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value, out actorId))
-                throw new InvalidOperationException();
             if (PolicyMode != "Disabled" &&
-                (inventory.IsExpired || inventory.ExpiresAtUtc <= DateTime.UtcNow || inventory.TenantId != tenantId ||
+                (inventory.IsExpired || inventory.ExpiresAtUtc <= Clock.GetUtcNow().UtcDateTime || inventory.TenantId != tenantId ||
                  savedProfile.Readiness.Readback != "Ready" ||
                  AgentProtectionUiMapping.Types(savedProfile).Count is < 1 or > RuntimeTestUiProtocol.MaximumSelectedTypes ||
-                 !AgentProtectionUiMapping.Types(savedProfile).All(AgentProtectionUiMapping.HasExplicitThresholds)))
+                 !AgentProtectionUiMapping.Types(savedProfile).All(AgentProtectionUiMapping.HasExplicitThresholds) ||
+                 AgentProtectionUiMapping.Types(savedProfile).Select(item => item.SensitiveInformationTypeId).Distinct().Count() !=
+                    AgentProtectionUiMapping.Types(savedProfile).Count ||
+                 AgentProtectionUiMapping.Types(savedProfile).Any(selected =>
+                    selected.InventoryGenerationId != inventory.GenerationId ||
+                    inventory.Items.Count(item => item.Id == selected.SensitiveInformationTypeId && item.ExactName == selected.ExactName) != 1)))
                 throw new InvalidOperationException();
             open = true;
         }
@@ -312,7 +404,7 @@
 
     private async Task ReviewBatchAsync()
     {
-        if (!IsAdministrator || Disabled || working || !syntheticApproved || transportUnknown || report?.Status == "Running" ||
+        if (!RendererInfo.IsInteractive || !IsAdministrator || Disabled || working || !syntheticApproved || transportUnknown || report?.Status == "Running" ||
             browser is null || savedProfile is null || inventory is null || PolicyMode == "Disabled")
             return;
         working = true;
@@ -322,6 +414,10 @@
         try
         {
             var manifest = await browser.InvokeAsync<RuntimePreparedManifest>("prepare");
+            if (currentRevision != revision || disposed)
+                return;
+            if (inventory.ExpiresAtUtc <= Clock.GetUtcNow().UtcDateTime)
+                throw new InvalidOperationException("The reviewed inventory expired.");
             var selectedIds = AgentProtectionUiMapping.Types(savedProfile).Select(item => item.SensitiveInformationTypeId).ToArray();
             if (!RuntimeTestUiProtocol.ValidManifest(manifest.Suite, selectedIds) ||
                 manifest.Batches.Count is < 1 or > 100 ||
@@ -336,7 +432,8 @@
             var request = new ReviewPurviewDlpRuntimeTestRequest(ProfileId, savedProfile.RowVersion,
                 inventory.GenerationId, manifest.Suite, manifest.Batches[batchIndex], true);
             var ticket = await Api.ReviewPurviewRuntimeTestAsync(request, disposal.Token);
-            if (currentRevision != revision || !ReviewMatches(ticket) || !ticket.IsAvailable)
+            if (currentRevision != revision || !ReviewMatches(ticket) || !ticket.IsAvailable ||
+                ticket.ExpiresAtUtc <= Clock.GetUtcNow().UtcDateTime)
             {
                 ticket.Discard();
                 throw new InvalidOperationException();
@@ -346,6 +443,8 @@
         }
         catch (Exception) when (!disposal.IsCancellationRequested)
         {
+            if (currentRevision != revision)
+                return;
             error = "The bounded examples or saved context could not be reviewed. Check synthetic examples, reset after edits, and refresh saved protection. No sample text was sent through the circuit.";
             review?.Discard();
             review = null;
@@ -367,12 +466,22 @@
 
     private async Task ExecuteAsync()
     {
-        if (!IsAdministrator || Disabled || working || !targetApproved || !syntheticApproved || review is null || browser is null ||
+        if (!RendererInfo.IsInteractive || !IsAdministrator || Disabled || working || !targetApproved || !syntheticApproved || review is null || browser is null ||
             PolicyMode == "Disabled" || !review.IsAvailable || !ReviewMatches(review)) return;
+        if (review.ExpiresAtUtc <= Clock.GetUtcNow().UtcDateTime ||
+            inventory?.ExpiresAtUtc <= Clock.GetUtcNow().UtcDateTime)
+        {
+            Invalidate();
+            prepared = null;
+            syntheticApproved = false;
+            await ClearBrowserAsync();
+            error = "The review or inventory expired. Reset and approve fresh samples against the current saved policy.";
+            return;
+        }
         working = true;
         var currentRevision = revision;
         var reviewedTicket = review;
-        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(RuntimeTestUiProtocol.InteropExecutionTimeoutSeconds), ExecutionTimeProvider);
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(RuntimeTestUiProtocol.InteropExecutionTimeoutSeconds), ExecutionTimeProvider ?? Clock);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(disposal.Token, budget.Token);
         executionCancellation = linked;
         try
@@ -385,7 +494,8 @@
             var result = await browser.InvokeAsync<RuntimeBrowserExecutionResult>("execute", linked.Token, authorization);
             if (currentRevision != revision) return;
             transportUnknown = result.OutcomeUnknown;
-            if (result.Report is not null && RuntimeTestUiProtocol.IsSafeReport(result.Report, operationId.Value) &&
+            if (result.OperationId == operationId && result.Report is not null &&
+                RuntimeTestUiProtocol.IsSafeReport(result.Report, operationId.Value) &&
                 result.Report.SuiteHash == reviewedTicket.Review.SuiteHash &&
                 result.Report.ConfigurationFingerprint == reviewedTicket.Review.ConfigurationFingerprint)
             {
@@ -421,13 +531,18 @@
 
     private async Task RecoverAsync()
     {
-        if (!IsAdministrator || working || operationId is not { } id) return;
+        if (!RendererInfo.IsInteractive || !IsAdministrator || working || operationId is not { } id) return;
         working = true;
         var currentRevision = revision;
         try
         {
             var recovered = await Api.GetPurviewRuntimeTestAsync(id, disposal.Token);
             if (currentRevision != revision || disposed) return;
+            if (!RuntimeTestUiProtocol.IsSafeReport(recovered, id))
+            {
+                error = "The recovered report does not match the retained operation. No verdict is claimed; do not replay content.";
+                return;
+            }
             report = recovered;
             if (executionContext is not null && (report.SuiteHash != executionContext.SuiteHash ||
                 report.ConfigurationFingerprint != executionContext.ConfigurationFingerprint))
@@ -436,7 +551,7 @@
                 error = "The recovered report does not match this frozen suite. Open the saved report separately; do not replay content.";
                 return;
             }
-            transportUnknown = false;
+            transportUnknown = recovered.Outcome == "OutcomeUnknown";
             if (executionContext is not null) receiptContext = executionContext;
             if (report.Outcome is "Failed" or "OutcomeUnknown" or "Disabled" or "EnforcementBehaviorVerified")
             {
@@ -463,6 +578,7 @@
         currentProfile = null;
         currentReadinessError = null;
         readinessLoading = true;
+        await OnReadinessChanged.InvokeAsync(null);
         try
         {
             var profiles = await Api.GetPurviewDlpProfilesAsync(disposal.Token);
@@ -493,7 +609,14 @@
             readinessRefreshRequired = true;
             currentReadinessError = "Current profile readiness could not be verified. Historical receipts do not establish current enforcement; refresh the saved binding before continuing.";
         }
-        finally { if (currentRevision == readinessRevision) readinessLoading = false; }
+        finally
+        {
+            if (currentRevision == readinessRevision && profileId == ProfileId && context == ContextKey && !disposed)
+            {
+                readinessLoading = false;
+                await OnReadinessChanged.InvokeAsync(currentReadinessError is null ? currentProfile : null);
+            }
+        }
     }
 
     private void NextBatch()
@@ -531,6 +654,8 @@
     private void Invalidate()
     {
         revision++;
+        if (executionCancellation is not null && operationId is not null)
+            transportUnknown = true;
         executionCancellation?.Cancel();
         review?.Discard();
         review = null;
@@ -545,7 +670,14 @@
             await browser.InvokeVoidAsync(disposeSession ? "dispose" : "clear");
             if (disposeSession) { await browser.DisposeAsync(); browser = null; browserReady = false; }
         }
-        catch (JSException) { }
+        catch (JSException)
+        {
+            browserReady = false;
+            open = false;
+            syntheticApproved = false;
+            error = "Browser sample erasure could not be confirmed. Close this tab before starting a new test; recover the retained report without replay.";
+            Logger.LogWarning("The private runtime sample session did not acknowledge erasure.");
+        }
         catch (JSDisconnectedException) { browser = null; browserReady = false; }
     }
     public async ValueTask DisposeAsync()
@@ -555,6 +687,7 @@
         disposal.Cancel();
         Invalidate();
         await ClearBrowserAsync(disposeSession: true);
+        await browserInitialization;
         notifications?.Dispose();
         if (module is not null)
         {

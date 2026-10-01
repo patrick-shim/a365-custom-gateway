@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Gateway.AdminUi.Tests" />
+    <InternalsVisibleTo Include="Gateway.AdminUi.BrowserHost" />
   </ItemGroup>
 
   <ItemGroup>

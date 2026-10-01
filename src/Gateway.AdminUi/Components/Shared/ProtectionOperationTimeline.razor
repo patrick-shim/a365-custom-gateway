@@ -1,11 +1,13 @@
 @using System.Text
 @using Gateway.Contracts.Dtos
 
-<section class="operation-panel" aria-labelledby="protection-operation-heading" aria-live="polite">
+<details class="operation-panel protection-technical-details">
+    <summary>Technical operation details</summary>
+<section aria-labelledby="protection-operation-heading">
     <div class="operation-heading">
         <div>
             <h3 id="protection-operation-heading">Latest protection operation</h3>
-            <span class="section-caption">Persisted Gateway progress. A completed policy check is not by itself runtime proof.</span>
+            <span class="section-caption">Saved Gateway steps for this operation, not a live view of Microsoft activity. Skipped means not run, not a passed check. The result and next action are explained above.</span>
         </div>
         <StatusPill Value="@DisplayStatus(Operation.Status)" />
     </div>
@@ -16,7 +18,7 @@
 
     @if (Operation.Blockers.Count > 0)
     {
-        <div class="deployment-callout" role="status">
+        <div class="deployment-callout">
             <strong>@(Operation.RequiresManualIntervention ? "Administrator attention is required." : "The operation is waiting.")</strong>
             <ul>
                 @foreach (var blocker in Operation.Blockers.Select(ExplainBlocker).Distinct())
@@ -27,9 +29,14 @@
         </div>
     }
 
-    @if (!string.IsNullOrWhiteSpace(Operation.RequiredAction))
+    @if (!string.IsNullOrWhiteSpace(NextActionOverride) || !string.IsNullOrWhiteSpace(Operation.RequiredAction))
     {
-        <p class="operation-next-action"><strong>Next step:</strong> @ExplainRequiredAction(Operation)</p>
+        <p class="operation-next-action"><strong>Next step:</strong> @(NextActionOverride ?? ExplainRequiredAction(Operation))</p>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(Operation.FailureCode))
+    {
+        <p class="operation-failure-code">Failure reference: <code>@Operation.FailureCode</code>. Include this reference and the correlation ID when requesting support.</p>
     }
 
     <ol class="timeline operation-timeline" aria-label="Protection operation steps">
@@ -38,17 +45,18 @@
             <li class="timeline-item">
                 <span class="timeline-dot" aria-hidden="true"></span>
                 <div class="timeline-title">
-                    @SplitWords(step.Step)
+                    @ProtectionOperationPresentation.StepTitle(Operation.Type, step.Step)
                     <StatusPill Value="@DisplayStatus(step.Status)" />
                 </div>
+                <p class="field-help">@ProtectionOperationPresentation.StepExplanation(Operation.Type, step)</p>
                 <div class="timeline-meta">
                     @if (step.CompletedAtUtc is { } completed)
                     {
-                        <span>Finished <time datetime="@AsUtc(completed).ToString("O")">@FormatLocal(completed)</time></span>
+                        <span>Finished <time datetime="@AsUtc(completed).ToString("O")">@FormatUtc(completed)</time></span>
                     }
                     else if (step.StartedAtUtc is { } started)
                     {
-                        <span>Started <time datetime="@AsUtc(started).ToString("O")">@FormatLocal(started)</time></span>
+                        <span>Started <time datetime="@AsUtc(started).ToString("O")">@FormatUtc(started)</time></span>
                     }
                     else
                     {
@@ -64,13 +72,15 @@
     </ol>
 
     <div class="operation-meta">
-        <span>Updated <time datetime="@AsUtc(Operation.UpdatedAtUtc).ToString("O")">@FormatLocal(Operation.UpdatedAtUtc)</time></span>
+        <span>Updated <time datetime="@AsUtc(Operation.UpdatedAtUtc).ToString("O")">@FormatUtc(Operation.UpdatedAtUtc)</time></span>
         <span>Correlation ID: <code>@Operation.CorrelationId</code></span>
     </div>
 </section>
+</details>
 
 @code {
     [Parameter, EditorRequired] public ProtectionAdminOperationDto Operation { get; set; } = default!;
+    [Parameter] public string? NextActionOverride { get; set; }
 
     private static string DisplayStatus(string status) => status switch
     {
@@ -90,7 +100,7 @@
                 Status: "AwaitingAdministrator"
             })
         {
-            return "On a Windows computer, complete the Gateway-provided Microsoft Purview sign-in companion, then return here and refresh.";
+            return "On Windows, follow the current Gateway companion instructions. Copy its complete result line into Paste companion result, then review and submit it for independent verification of this existing connection. No text file is required.";
         }
 
         return operation.RequiredAction switch
@@ -152,8 +162,8 @@
         return builder.ToString();
     }
 
-    private static string FormatLocal(DateTime value) =>
-        AsUtc(value).ToLocalTime().ToString("MMM d, yyyy h:mm tt");
+    private static string FormatUtc(DateTime value) =>
+        AsUtc(value).ToString("MMM d, yyyy h:mm tt 'UTC'", System.Globalization.CultureInfo.InvariantCulture);
 
     private static DateTime AsUtc(DateTime value) => value.Kind switch
     {

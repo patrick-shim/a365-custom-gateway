@@ -1,0 +1,11 @@
+.state-panel { min-width: 0; }
+.loading-feedback { min-width: 0; max-width: 100%; }
+.loading-feedback p {
+    color: var(--text-secondary, #566078);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+    .state-panel { padding: 1rem; }
+}

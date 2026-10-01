@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.work\**</DefaultItemExcludes>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Gateway.AdminUi\Gateway.AdminUi.csproj" />
+    <Compile Include="..\..\src\Gateway.Application\Agents\Queries\ListAgentsCursor.cs"
+             Link="ProductionContracts\ListAgentsCursor.cs" />
+  </ItemGroup>
+</Project>

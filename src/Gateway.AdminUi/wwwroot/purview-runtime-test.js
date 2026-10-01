@@ -176,7 +176,9 @@ export function createSession(root, notifications) {
                     const url = new URL(globalThis.location.href);
                     url.searchParams.set("runtimeTest", authorization.reviewTokenId);
                     url.searchParams.set("runtimeProfile", authorization.profileId);
-                    globalThis.history.replaceState(null, "", url);
+                    globalThis.history.replaceState(globalThis.history.state, "", url);
+                    if (globalThis.location.href !== url.href)
+                        throw new Error("The runtime recovery location could not be retained.");
                 }
                 const csrfResponse = await fetch("/portal/protection/runtime-tests/antiforgery", {
                     credentials: "same-origin", cache: "no-store", redirect: "error",

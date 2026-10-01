@@ -8,7 +8,9 @@
     This is a narrow, same-resource-group upgrade path. It never rewrites the
     accepted clean-bootstrap plan, never deploys the API or worker, and never reads
     Service Bus messages. It records a separate, safe upgrade receipt under the
-    ignored .bootstrap/evidence tree before each external mutation.
+    ignored .bootstrap/evidence tree before each external mutation. A successor
+    requires one exact prior receipt and fresh read-only verification; the prior
+    receipt is retained unchanged, including an Accepted post-check failure.
 #>
 
 [CmdletBinding()]
@@ -29,6 +31,7 @@ if (-not $Yes) {
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $repositoryRoot 'bootstrap/modules/Common.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $repositoryRoot 'bootstrap/modules/Azure.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'GatewayAdminUiReadback.psm1') -Force -DisableNameChecking
 
 function Save-AdminUiUpgradeReceipt {
     param(
@@ -61,100 +64,6 @@ function Save-AdminUiUpgradeReceipt {
     }
     finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
-    }
-}
-
-function Read-AdminUiUpgradeReceipt {
-    param([Parameter(Mandatory)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
-    try {
-        $convertParameters = @{ AsHashtable = $true; Depth = 100; ErrorAction = 'Stop' }
-        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
-            $convertParameters['DateKind'] = 'String'
-        }
-        return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json @convertParameters
-    }
-    catch {
-        throw 'The Admin UI upgrade receipt is malformed. Preserve it for review; do not edit it to claim completion.'
-    }
-}
-
-function Get-RequiredCompletedEvidence {
-    param(
-        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
-        [Parameter(Mandatory)][string]$Name
-    )
-    $step = if ($State.steps -is [System.Collections.IDictionary]) { $State.steps[$Name] } else { $null }
-    if ($step -isnot [System.Collections.IDictionary] -or
-        [string]$step.status -cne 'Completed' -or
-        $step.evidence -isnot [System.Collections.IDictionary]) {
-        throw "Admin UI upgrade requires completed and evidenced bootstrap step '$Name'. Run gateway resume and gateway verify first."
-    }
-    return $step.evidence
-}
-
-function Assert-CompletedBootstrapBoundary {
-    param(
-        [Parameter(Mandatory)]$Configuration,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$State
-    )
-
-    if ($State.acceptedPlan -isnot [System.Collections.IDictionary]) {
-        throw 'Admin UI upgrade requires the preserved accepted bootstrap plan.'
-    }
-    foreach ($name in @(
-        'Azure foundation',
-        'Gateway API identity',
-        'Immutable workload images',
-        'Inert identity deployment',
-        'Agent 365 seed blueprint',
-        'Workflow v3 Entra configuration',
-        'SQL private endpoint',
-        'Gateway database',
-        'Admin UI identity',
-        'Admin UI Key Vault credential',
-        'Gateway runtime deployment',
-        'Admin UI deployment',
-        'Admin UI redirect URIs',
-        'Network hardening',
-        'End-to-end deployment verification')) {
-        $null = Get-RequiredCompletedEvidence -State $State -Name $name
-    }
-
-    $verificationStep = $State.steps['End-to-end deployment verification']
-    $verification = if ($State.outputs -is [System.Collections.IDictionary]) { $State.outputs['verification'] } else { $null }
-    if ($verification -isnot [System.Collections.IDictionary] -or
-        [string]$verification.verifiedAtUtc -cne [string]$verificationStep.evidence.verifiedAtUtc) {
-        throw 'Admin UI upgrade requires one current, completed bootstrap verification receipt.'
-    }
-
-    $canonicalOwnership = ([guid][string]$State.deploymentOwnershipId).ToString('D')
-    if ([string]$State.deploymentOwnershipId -cne $canonicalOwnership -or
-        [string]$State.configuration.subscriptionId -cne [string]$Configuration.subscriptionId -or
-        [string]$State.configuration.tenantId -cne [string]$Configuration.tenantId -or
-        [string]$State.configuration.resourceGroupName -cne [string]$Configuration.resourceGroupName -or
-        [string]$State.configuration.projectName -cne [string]$Configuration.projectName -or
-        [string]$State.configuration.environment -cne [string]$Configuration.environment) {
-        throw 'Bootstrap state does not match the exact configured subscription, tenant, resource group, project, environment, and ownership boundary.'
-    }
-
-    if ($State.Contains('databaseRecoveryPlan')) {
-        $recovery = $State.databaseRecoveryPlan
-        $database = $State.steps['Gateway database'].evidence
-        if ($recovery -isnot [System.Collections.IDictionary] -or
-            [string]$recovery.status -cne 'Completed' -or
-            [string]$recovery.deploymentOwnershipId -cne $canonicalOwnership -or
-            [string]$database.databaseRecoveryPlanFingerprint -cne [string]$recovery.planFingerprint -or
-            (Get-BootstrapObjectFingerprint -InputObject $database) -cne [string]$recovery.databaseEvidenceFingerprint) {
-            throw 'The post-recovery database receipt is not exact, completed, or bound to the verified bootstrap state.'
-        }
-    }
-
-    return [ordered]@{
-        deploymentOwnershipId = $canonicalOwnership
-        acceptedPlanFingerprint = [string]$State.acceptedPlan.planFingerprint
-        acceptedPlanRecordFingerprint = Get-BootstrapObjectFingerprint -InputObject $State.acceptedPlan
-        verifiedAtUtc = [string]$verification.verifiedAtUtc
     }
 }
 
@@ -191,101 +100,6 @@ function Get-ContainerAppSnapshot {
     }
 }
 
-function Get-AdminUiUpgradeSourceMetadata {
-    $buildSourceFingerprint = Get-BootstrapSourceFingerprint -Root $repositoryRoot
-    $toolPath = Join-Path $repositoryRoot 'operations/upgrade-bootstrap-admin-ui.ps1'
-    $toolFingerprint = "sha256:$((Get-FileHash -LiteralPath $toolPath -Algorithm SHA256).Hash.ToLowerInvariant())"
-    Assert-BootstrapFingerprintValue -Value $buildSourceFingerprint -Label 'Admin UI build source fingerprint'
-    Assert-BootstrapFingerprintValue -Value $toolFingerprint -Label 'Admin UI upgrade tool fingerprint'
-    return [ordered]@{
-        buildSourceFingerprint = $buildSourceFingerprint
-        toolFingerprint = $toolFingerprint
-        upgradeSourceFingerprint = Get-BootstrapObjectFingerprint -InputObject ([ordered]@{
-            buildSourceFingerprint = $buildSourceFingerprint
-            toolFingerprint = $toolFingerprint
-        })
-    }
-}
-
-function Assert-AdminUiUpgradeReceipt {
-    param(
-        [Parameter(Mandatory)][System.Collections.IDictionary]$Receipt,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$SourceMetadata,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$Completion,
-        [Parameter(Mandatory)][string]$OwnershipId,
-        [Parameter(Mandatory)][string]$ConfigurationFingerprint,
-        [Parameter(Mandatory)][string]$IntentId,
-        [Parameter(Mandatory)][string]$Tag,
-        [Parameter(Mandatory)][string]$DeploymentName,
-        [Parameter(Mandatory)][string]$LocatorFingerprint
-    )
-
-    if ([string]$Receipt.schemaVersion -cne '1' -or
-        [string]$Receipt.operation -cne 'BootstrapAdminUiOnlyUpgrade' -or
-        $Receipt.acceptedPlan -isnot [System.Collections.IDictionary] -or
-        $Receipt.build -isnot [System.Collections.IDictionary] -or
-        $Receipt.deployment -isnot [System.Collections.IDictionary]) {
-        throw 'The Admin UI upgrade receipt has an unsupported or incomplete contract.'
-    }
-    Assert-BootstrapFingerprintValue -Value ([string]$Receipt.planFingerprint) -Label 'Admin UI accepted upgrade plan fingerprint'
-    Assert-BootstrapFingerprintValue -Value ([string]$Receipt.locatorFingerprint) -Label 'Admin UI upgrade receipt locator fingerprint'
-    if ((Get-BootstrapObjectFingerprint -InputObject $Receipt.acceptedPlan) -cne [string]$Receipt.planFingerprint -or
-        [string]$Receipt.locatorFingerprint -cne $LocatorFingerprint) {
-        throw 'The immutable accepted Admin UI upgrade plan or its deterministic receipt locator does not match its fingerprint.'
-    }
-
-    $plan = $Receipt.acceptedPlan
-    if ([string]$plan.operation -cne 'BootstrapAdminUiOnlyUpgrade' -or
-        [string]$plan.deploymentOwnershipId -cne $OwnershipId -or
-        [string]$plan.configurationFingerprint -cne $ConfigurationFingerprint -or
-        [string]$plan.acceptedBootstrapPlanFingerprint -cne [string]$Completion.acceptedPlanFingerprint -or
-        [string]$plan.acceptedBootstrapPlanRecordFingerprint -cne [string]$Completion.acceptedPlanRecordFingerprint -or
-        [string]$plan.buildSourceFingerprint -cne [string]$SourceMetadata.buildSourceFingerprint -or
-        [string]$plan.upgradeToolFingerprint -cne [string]$SourceMetadata.toolFingerprint -or
-        [string]$plan.upgradeSourceFingerprint -cne [string]$SourceMetadata.upgradeSourceFingerprint -or
-        [string]$plan.build.intentId -cne $IntentId -or
-        [string]$plan.build.tag -cne $Tag -or
-        [string]$plan.build.component -cne 'adminUi' -or
-        [string]$plan.build.repository -cne 'gateway-admin' -or
-        [string]$plan.build.dockerfile -cne 'src/Gateway.AdminUi/Dockerfile' -or
-        [string]$plan.deployment.name -cne $DeploymentName -or
-        [string]$plan.deployment.mode -cne 'Incremental' -or
-        [string]$plan.deployment.deployKeyVaultPrivateEndpoint -cne 'False') {
-        throw 'The Admin UI upgrade receipt belongs to a different source, owner, configuration, build, deployment, or accepted bootstrap plan.'
-    }
-
-    if ([string]$Receipt.build.intentId -cne $IntentId -or
-        [string]$Receipt.build.tag -cne $Tag -or
-        [string]$Receipt.build.state -notin @('IntentRecorded', 'RunQueued', 'DigestCheckpointed') -or
-        [string]$Receipt.deployment.name -cne $DeploymentName -or
-        [string]$Receipt.deployment.mode -cne 'Incremental' -or
-        [string]$Receipt.deployment.deployKeyVaultPrivateEndpoint -cne 'False' -or
-        [string]$Receipt.deployment.state -notin @('Planned', 'IntentRecorded', 'Succeeded') -or
-        [string]$Receipt.status -notin @('Accepted', 'Verified')) {
-        throw 'The mutable Admin UI upgrade recovery checkpoints are malformed or outside the accepted plan.'
-    }
-    if ([string]$Receipt.build.state -ceq 'DigestCheckpointed') {
-        if ([string]$Receipt.build.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$' -or
-            [string]$Receipt.build.digest -cnotmatch '^sha256:[0-9a-f]{64}$' -or
-            [string]$Receipt.build.image -cne "$($plan.baseline.foundation.acrLoginServer)/gateway-admin@$($Receipt.build.digest)") {
-            throw 'The Admin UI build checkpoint does not contain the one exact accepted immutable image.'
-        }
-    }
-    elseif ([string]$Receipt.build.state -ceq 'RunQueued' -and
-        [string]$Receipt.build.runId -cnotmatch '^[A-Za-z0-9-]{1,64}$') {
-        throw 'The queued Admin UI build checkpoint has no exact ACR run identifier.'
-    }
-    if ([string]$Receipt.deployment.state -in @('IntentRecorded', 'Succeeded') -and
-        [string]$Receipt.build.state -cne 'DigestCheckpointed') {
-        throw 'The Admin UI deployment checkpoint advanced without an immutable build digest.'
-    }
-    if ([string]$Receipt.status -ceq 'Verified' -and
-        ([string]$Receipt.build.state -cne 'DigestCheckpointed' -or [string]$Receipt.deployment.state -cne 'Succeeded')) {
-        throw 'The Admin UI upgrade receipt claims verification without completed build and deployment checkpoints.'
-    }
-    return $true
-}
-
 function Get-QueueCountSnapshot {
     param([Parameter(Mandatory)]$Configuration)
     $namespaceName = "sb-$($Configuration.projectName)-$($Configuration.environment)"
@@ -313,103 +127,6 @@ function Get-QueueCountSnapshot {
     return @($result)
 }
 
-function Get-ExactAdminRoleAssignment {
-    param(
-        [Parameter(Mandatory)][string]$PrincipalId,
-        [Parameter(Mandatory)][string]$Scope,
-        [Parameter(Mandatory)][string]$RoleDefinitionGuid
-    )
-    $assignments = @(Invoke-AzJson -Arguments @(
-        'role', 'assignment', 'list', '--assignee-object-id', $PrincipalId,
-        '--scope', $Scope, '--include-inherited',
-        '--query', '[].{id:id,principalId:principalId,scope:scope,roleDefinitionId:roleDefinitionId}'))
-    if ($assignments.Count -ne 1 -or
-        -not ([string]$assignments[0].principalId).Equals($PrincipalId, [StringComparison]::OrdinalIgnoreCase) -or
-        -not ([string]$assignments[0].scope).Equals($Scope, [StringComparison]::OrdinalIgnoreCase) -or
-        -not ([string]$assignments[0].roleDefinitionId).EndsWith("/$RoleDefinitionGuid", [StringComparison]::OrdinalIgnoreCase) -or
-        [string]$assignments[0].id -cnotmatch '^/subscriptions/[0-9a-f-]{36}/.+/providers/Microsoft.Authorization/roleAssignments/[0-9a-f-]{36}$') {
-        throw 'Admin UI managed identity does not have the one exact least-privilege role assignment.'
-    }
-    return [string]$assignments[0].id
-}
-
-function Get-AdminUiLiveBoundary {
-    param(
-        [Parameter(Mandatory)]$Configuration,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
-        [Parameter(Mandatory)][string]$OwnershipId,
-        [Parameter(Mandatory)][string]$BootstrapSourceFingerprint
-    )
-    $foundation = $State.steps['Azure foundation'].evidence
-    $adminEvidence = $State.steps['Admin UI deployment'].evidence
-    $credential = $State.steps['Admin UI Key Vault credential'].evidence
-    $identityName = "id-gateway-admin-$($Configuration.environment)"
-    $appName = "ca-gateway-admin-$($Configuration.environment)"
-    $identity = Invoke-AzJson -Arguments @(
-        'identity', 'show', '--resource-group', [string]$Configuration.resourceGroupName,
-        '--name', $identityName)
-    $app = Invoke-AzJson -Arguments @(
-        'containerapp', 'show', '--resource-group', [string]$Configuration.resourceGroupName,
-        '--name', $appName)
-    $containers = @($app.properties.template.containers)
-    $attachedIdentityIds = @($app.identity.userAssignedIdentities.PSObject.Properties.Name)
-    $secrets = @($app.properties.configuration.secrets)
-    $secretUri = [string]$credential.secretUri
-    if ([string]$identity.name -cne $identityName -or
-        [string]$identity.principalId -cne [string]$adminEvidence.adminUiPrincipalId -or
-        [string]$identity.tags.bootstrapOwnershipId -cne $OwnershipId -or
-        [string]$identity.tags.bootstrapSourceFingerprint -cne $BootstrapSourceFingerprint -or
-        [string]$app.name -cne $appName -or
-        [string]$app.properties.provisioningState -cne 'Succeeded' -or
-        [string]$app.properties.configuration.activeRevisionsMode -cne 'Single' -or
-        [string]$app.tags.bootstrapOwnershipId -cne $OwnershipId -or
-        [string]$app.tags.bootstrapSourceFingerprint -cne $BootstrapSourceFingerprint -or
-        [string]$app.identity.type -cne 'UserAssigned' -or
-        $containers.Count -ne 1 -or
-        [string]$containers[0].image -cnotmatch '@sha256:[0-9a-f]{64}$' -or
-        $attachedIdentityIds.Count -ne 1 -or
-        -not ([string]$attachedIdentityIds[0]).Equals([string]$identity.id, [StringComparison]::OrdinalIgnoreCase) -or
-        @($app.properties.configuration.registries).Count -ne 1 -or
-        [string]$app.properties.configuration.registries[0].server -cne [string]$foundation.acrLoginServer -or
-        -not ([string]$app.properties.configuration.registries[0].identity).Equals([string]$identity.id, [StringComparison]::OrdinalIgnoreCase) -or
-        $secrets.Count -ne 1 -or [string]$secrets[0].name -cne 'admin-ui-entra-client-secret' -or
-        [string]$secrets[0].keyVaultUrl -cne $secretUri -or
-        -not ([string]$secrets[0].identity).Equals([string]$identity.id, [StringComparison]::OrdinalIgnoreCase) -or
-        $secretUri -cnotmatch '^https://[a-z0-9-]+\.vault\.azure\.net/secrets/admin-ui-entra-client-secret$') {
-        throw 'The live Admin UI identity, registry pull, versionless Key Vault secret, source, or ownership boundary is not exact.'
-    }
-    $acrScope = "/subscriptions/$($Configuration.subscriptionId)/resourceGroups/$($Configuration.resourceGroupName)/providers/Microsoft.ContainerRegistry/registries/$($foundation.acrName)"
-    $secretScope = "/subscriptions/$($Configuration.subscriptionId)/resourceGroups/$($Configuration.resourceGroupName)/providers/Microsoft.KeyVault/vaults/kv-$($Configuration.projectName)-$($Configuration.environment)/secrets/admin-ui-entra-client-secret"
-    $registry = Invoke-AzJson -Arguments @(
-        'resource', 'show', '--ids', $acrScope, '--api-version', '2023-11-01-preview')
-    $vault = Invoke-AzJson -Arguments @(
-        'keyvault', 'show', '--resource-group', [string]$Configuration.resourceGroupName,
-        '--name', "kv-$($Configuration.projectName)-$($Configuration.environment)")
-    if ([string]$registry.properties.adminUserEnabled -cne 'False' -or
-        [string]$registry.properties.policies.azureADAuthenticationAsArmPolicy.status -cne 'enabled' -or
-        [string]$vault.properties.enableRbacAuthorization -cne 'True' -or
-        [string]$vault.properties.publicNetworkAccess -cne 'Disabled') {
-        throw 'Admin UI dependencies are not on the required Entra/RBAC-only ACR and private Key Vault boundary.'
-    }
-    $acrRole = Get-ExactAdminRoleAssignment -PrincipalId ([string]$identity.principalId) -Scope $acrScope -RoleDefinitionGuid '7f951dda-4ed3-4680-a7ca-43fe172d538d'
-    $secretRole = Get-ExactAdminRoleAssignment -PrincipalId ([string]$identity.principalId) -Scope $secretScope -RoleDefinitionGuid '4633458b-17de-408a-b874-0445c86b69e6'
-    return [ordered]@{
-        app = $app
-        appId = [string]$app.id
-        appName = $appName
-        image = [string]$containers[0].image
-        fqdn = [string]$app.properties.configuration.ingress.fqdn
-        identityId = [string]$identity.id
-        principalId = [string]$identity.principalId
-        secretUri = $secretUri
-        secretResourceId = $secretScope
-        allowedRoleAssignmentIds = @(@($acrRole, $secretRole) | Sort-Object)
-        localRegistryAuthenticationDisabled = $true
-        keyVaultRbacOnly = $true
-        keyVaultPublicNetworkDisabled = $true
-    }
-}
-
 function New-ArmParameterFile {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Parameters)
     $parameterObject = [ordered]@{
@@ -429,35 +146,6 @@ function New-ArmParameterFile {
     return $path
 }
 
-function Get-AdminUiUpgradeParameters {
-    param(
-        [Parameter(Mandatory)]$Configuration,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
-        [Parameter(Mandatory)][string]$OwnershipId,
-        [Parameter(Mandatory)][string]$BootstrapSourceFingerprint,
-        [Parameter(Mandatory)][string]$UpgradeSourceFingerprint,
-        [Parameter(Mandatory)][string]$Image
-    )
-    $foundation = $State.steps['Azure foundation'].evidence
-    $apiIdentity = $State.steps['Gateway API identity'].evidence
-    $adminIdentity = $State.steps['Admin UI identity'].evidence
-    $credential = $State.steps['Admin UI Key Vault credential'].evidence
-    return [ordered]@{
-        environment = [string]$Configuration.environment
-        projectName = [string]$Configuration.projectName
-        deploymentOwnershipId = $OwnershipId
-        bootstrapSourceFingerprint = $BootstrapSourceFingerprint
-        adminUiUpgradeSourceFingerprint = $UpgradeSourceFingerprint
-        containerAppsEnvironmentName = [string]$foundation.containerAppsEnvironmentName
-        adminUiContainerImage = $Image
-        entraIdTenantId = [string]$Configuration.tenantId
-        adminUiEntraClientId = [string]$adminIdentity.adminUiClientId
-        adminUiEntraClientSecretKeyVaultSecretUri = [string]$credential.secretUri
-        adminUiGatewayApiScope = "$($apiIdentity.gatewayApiScopeBaseUri)/access_as_user"
-        deployKeyVaultPrivateEndpoint = $false
-    }
-}
-
 function Invoke-AdminUiUpgradeWhatIf {
     param(
         [Parameter(Mandatory)]$Configuration,
@@ -471,7 +159,8 @@ function Invoke-AdminUiUpgradeWhatIf {
             'deployment', 'group', 'what-if',
             '--resource-group', [string]$Configuration.resourceGroupName,
             '--template-file', (Join-Path $repositoryRoot 'infrastructure/bicep/admin-ui.bicep'),
-            '--parameters', "@$temporary", '--result-format', 'ResourceIdOnly')
+            '--parameters', "@$temporary", '--result-format', 'ResourceIdOnly',
+            '--no-pretty-print', '--exclude-change-types', 'Ignore')
     }
     finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
@@ -578,32 +267,6 @@ function Resolve-AdminUiBuild {
     return [string]$intent.image
 }
 
-function Assert-AdminDeploymentResult {
-    param(
-        [Parameter(Mandatory)]$Deployment,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$Parameters,
-        [Parameter(Mandatory)][string]$UpgradeSourceFingerprint,
-        [Parameter(Mandatory)][string]$Image
-    )
-    if (-not $Deployment -or [string]$Deployment.properties.provisioningState -cne 'Succeeded') {
-        throw 'The exact Admin UI upgrade deployment did not reach Succeeded.'
-    }
-    $actual = $Deployment.properties.parameters
-    $outputs = $Deployment.properties.outputs
-    foreach ($name in @('environment', 'projectName', 'deploymentOwnershipId', 'bootstrapSourceFingerprint', 'adminUiUpgradeSourceFingerprint', 'containerAppsEnvironmentName', 'adminUiContainerImage', 'entraIdTenantId', 'adminUiEntraClientId', 'adminUiGatewayApiScope', 'deployKeyVaultPrivateEndpoint')) {
-        if ([string]$actual.$name.value -cne [string]$Parameters[$name]) {
-            throw 'The Admin UI upgrade deployment parameter receipt does not match the accepted plan.'
-        }
-    }
-    if ([string]$outputs.adminUiUpgradeSourceFingerprint.value -cne $UpgradeSourceFingerprint -or
-        [string]$outputs.adminUiContainerImage.value -cne $Image -or
-        [string]$outputs.deploymentOwnershipId.value -cne [string]$Parameters.deploymentOwnershipId -or
-        [string]$outputs.bootstrapSourceFingerprint.value -cne [string]$Parameters.bootstrapSourceFingerprint) {
-        throw 'The Admin UI upgrade deployment did not echo the exact original ownership/source plus separate upgrade source and digest.'
-    }
-    return $true
-}
-
 function Deploy-AdminUiUpgrade {
     param(
         [Parameter(Mandatory)]$Configuration,
@@ -643,82 +306,6 @@ function Deploy-AdminUiUpgrade {
     $Receipt.deployment['completedAtUtc'] = [DateTimeOffset]::UtcNow.ToString('O')
     Save-AdminUiUpgradeReceipt -Receipt $Receipt -Path $ReceiptPath
     return $existing
-}
-
-function Test-AdminUiHttpBoundary {
-    param(
-        [Parameter(Mandatory)][string]$Fqdn,
-        [Parameter(Mandatory)][string]$TenantId,
-        [Parameter(Mandatory)][string]$ClientId
-    )
-    $handler = [Net.Http.HttpClientHandler]::new()
-    $handler.AllowAutoRedirect = $false
-    $client = [Net.Http.HttpClient]::new($handler)
-    $client.Timeout = [TimeSpan]::FromSeconds(30)
-    try {
-        $health = $client.GetAsync("https://$Fqdn/health").GetAwaiter().GetResult()
-        if ([int]$health.StatusCode -ne 200) { throw 'Admin UI health endpoint did not return HTTP 200.' }
-        $signIn = $client.GetAsync("https://$Fqdn/MicrosoftIdentity/Account/SignIn?returnUrl=%2F").GetAwaiter().GetResult()
-        $location = $signIn.Headers.Location
-        if ([int]$signIn.StatusCode -notin @(302, 303) -or -not $location -or
-            $location.Scheme -cne 'https' -or
-            -not $location.IsDefaultPort -or
-            -not $location.Host.Equals('login.microsoftonline.com', [StringComparison]::OrdinalIgnoreCase) -or
-            -not $location.AbsolutePath.Contains("/$TenantId/", [StringComparison]::OrdinalIgnoreCase) -or
-            $location.Query -cnotmatch "(?i)(?:[?&])client_id=$([regex]::Escape($ClientId))(?:&|$)") {
-            throw 'Admin UI sign-in endpoint did not return the exact Entra authorization redirect shape.'
-        }
-        return [ordered]@{ healthStatus = 200; signInStatus = [int]$signIn.StatusCode; authorityHost = 'login.microsoftonline.com' }
-    }
-    finally {
-        $client.Dispose()
-        $handler.Dispose()
-    }
-}
-
-function Test-UpgradedAdminUi {
-    param(
-        [Parameter(Mandatory)]$Configuration,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$State,
-        [Parameter(Mandatory)][string]$OwnershipId,
-        [Parameter(Mandatory)][string]$BootstrapSourceFingerprint,
-        [Parameter(Mandatory)][string]$UpgradeSourceFingerprint,
-        [Parameter(Mandatory)][string]$Image
-    )
-    $boundary = Get-AdminUiLiveBoundary -Configuration $Configuration -State $State -OwnershipId $OwnershipId -BootstrapSourceFingerprint $BootstrapSourceFingerprint
-    $app = $boundary.app
-    if ([string]$boundary.image -cne $Image -or
-        [string]$app.tags.adminUiUpgradeSourceFingerprint -cne $UpgradeSourceFingerprint) {
-        throw 'Admin UI did not read back the exact upgraded digest and separate source tag.'
-    }
-    $revisions = @(Invoke-AzJson -Arguments @(
-        'containerapp', 'revision', 'list', '--resource-group', [string]$Configuration.resourceGroupName,
-        '--name', [string]$boundary.appName,
-        '--query', '[?properties.active==`true`].{name:name,healthState:properties.healthState,runningState:properties.runningState,replicas:properties.replicas}'))
-    if ($revisions.Count -ne 1 -or
-        [string]$revisions[0].name -cne [string]$app.properties.latestReadyRevisionName -or
-        [string]$revisions[0].healthState -cne 'Healthy' -or
-        [string]$revisions[0].runningState -cne 'Running' -or
-        [int]$revisions[0].replicas -lt 1) {
-        throw 'Admin UI does not have exactly one active, healthy, running, ready revision.'
-    }
-    $clientId = [string]$State.steps['Admin UI identity'].evidence.adminUiClientId
-    $http = Test-AdminUiHttpBoundary -Fqdn ([string]$boundary.fqdn) -TenantId ([string]$Configuration.tenantId) -ClientId $clientId
-    return [ordered]@{
-        image = $Image
-        digest = $Image.Split('@')[-1]
-        fqdn = [string]$boundary.fqdn
-        url = "https://$($boundary.fqdn)"
-        revisionName = [string]$revisions[0].name
-        principalId = [string]$boundary.principalId
-        secretResourceId = [string]$boundary.secretResourceId
-        versionlessSecretUri = $true
-        managedIdentityRegistryPull = $true
-        localRegistryAuthenticationDisabled = [bool]$boundary.localRegistryAuthenticationDisabled
-        keyVaultRbacOnly = [bool]$boundary.keyVaultRbacOnly
-        keyVaultPublicNetworkDisabled = [bool]$boundary.keyVaultPublicNetworkDisabled
-        http = $http
-    }
 }
 
 $configuration = Read-BootstrapConfig -Path $Config
@@ -761,17 +348,12 @@ try {
     $buildSourceFingerprint = [string]$sourceMetadata.buildSourceFingerprint
     $upgradeSourceFingerprint = [string]$sourceMetadata.upgradeSourceFingerprint
     Assert-BootstrapFingerprintValue -Value $upgradeSourceFingerprint -Label 'Admin UI upgrade source fingerprint'
-    $intentId = Get-BootstrapDeterministicGuid -Material "$ownershipId|$upgradeSourceFingerprint|$($state.configurationFingerprint)|$($completion.verifiedAtUtc)|admin-ui-upgrade"
-    $tag = Get-BootstrapImageBuildIntentTag -DeploymentOwnershipId $ownershipId -SourceFingerprint $upgradeSourceFingerprint -IntentId $intentId
-    $deploymentName = "a365gw-$($configuration.projectName)-admin-upgrade-$($upgradeSourceFingerprint.Substring(7, 12))-$($configuration.environment)"
-    $locatorFingerprint = Get-BootstrapObjectFingerprint -InputObject ([ordered]@{
-        operation = 'BootstrapAdminUiOnlyUpgrade'
-        deploymentOwnershipId = $ownershipId
-        configurationFingerprint = [string]$state.configurationFingerprint
-        upgradeSourceFingerprint = $upgradeSourceFingerprint
-        intentId = $intentId
-    })
-    $receiptPath = Join-Path $repositoryRoot ".bootstrap/evidence/$($configuration.resourceGroupName)/admin-ui-upgrade/$($locatorFingerprint.Substring(7)).json"
+    $intent = Get-AdminUiUpgradeIntent -Configuration $configuration -Completion $completion -ConfigurationFingerprint ([string]$state.configurationFingerprint) -UpgradeSourceFingerprint $upgradeSourceFingerprint
+    $intentId = [string]$intent.intentId
+    $tag = [string]$intent.tag
+    $deploymentName = [string]$intent.deploymentName
+    $locatorFingerprint = [string]$intent.locatorFingerprint
+    $receiptPath = Join-Path $repositoryRoot ".bootstrap\evidence\$($configuration.resourceGroupName)\admin-ui-upgrade\$($locatorFingerprint.Substring(7)).json"
     $prospectiveImage = "$($foundation.acrLoginServer)/gateway-admin:$tag"
     $moduleDeploymentId = "/subscriptions/$($configuration.subscriptionId)/resourceGroups/$($configuration.resourceGroupName)/providers/Microsoft.Resources/deployments/deploy-admin-ui-app"
     $allowedIds = @([string]$adminBefore.appId, [string]$adminBefore.identityId, $moduleDeploymentId) + @($adminBefore.allowedRoleAssignmentIds)
@@ -789,9 +371,7 @@ try {
         if ($preexistingTag -or $preexistingRuns.Count -ne 0) {
             throw 'Fresh Admin UI upgrade intent collides with existing ACR provider state.'
         }
-        if ([string]$adminBefore.image -cne [string]$state.steps['Admin UI deployment'].evidence.adminUiImage) {
-            throw 'Live Admin UI no longer matches the completed bootstrap baseline and no exact upgrade receipt exists.'
-        }
+        $priorUpgrade = Get-AdminUiUpgradePriorEvidence -Configuration $configuration -State $state -Completion $completion -SourceMetadata $sourceMetadata -BootstrapSourceFingerprint $bootstrapSourceFingerprint -AdminUiBoundary $adminBefore -ReceiptPath $receiptPath
         $acceptedPlan = [ordered]@{
             schemaVersion = 1
             operation = 'BootstrapAdminUiOnlyUpgrade'
@@ -820,6 +400,7 @@ try {
             prospectiveWhatIf = $prospectiveWhatIf
             deployment = [ordered]@{ name = $deploymentName; mode = 'Incremental'; deployKeyVaultPrivateEndpoint = $false }
         }
+        if ($null -ne $priorUpgrade) { $acceptedPlan['priorUpgrade'] = $priorUpgrade }
         $planFingerprint = Get-BootstrapObjectFingerprint -InputObject $acceptedPlan
         $receipt = [ordered]@{
             schemaVersion = 1
@@ -838,19 +419,7 @@ try {
     }
 
     $planFingerprint = [string]$receipt.planFingerprint
-    $acceptedAdminImage = [string]$receipt.acceptedPlan.baseline.adminUi.image
-    $targetImage = if ([string]$receipt.build.state -ceq 'DigestCheckpointed') { [string]$receipt.build.image } else { '' }
-    $allowedCurrentAdminImages = @($acceptedAdminImage)
-    if ([string]$receipt.deployment.state -ceq 'IntentRecorded' -and
-        -not [string]::IsNullOrWhiteSpace($targetImage)) {
-        $allowedCurrentAdminImages += $targetImage
-    }
-    elseif ([string]$receipt.deployment.state -ceq 'Succeeded') {
-        $allowedCurrentAdminImages = @($targetImage)
-    }
-    if ($allowedCurrentAdminImages -cnotcontains [string]$adminBefore.image) {
-        throw 'The live Admin UI image is outside the accepted upgrade recovery boundary.'
-    }
+    Assert-AdminUiUpgradeCurrentImage -Receipt $receipt -Image ([string]$adminBefore.image)
     $receipt['verificationBaseline'] = [ordered]@{
         capturedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
         api = $apiBefore

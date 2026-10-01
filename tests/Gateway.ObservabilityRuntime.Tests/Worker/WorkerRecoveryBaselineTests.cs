@@ -5,9 +5,14 @@ using Gateway.Contracts;
 using Gateway.Contracts.Messages;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
+using Gateway.Domain.Interfaces;
 using Gateway.Domain.Models;
 using Gateway.Observability;
 using Gateway.ObservabilityRuntime.Tests.Fixtures;
+using Gateway.Provisioning.Worker;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace Gateway.ObservabilityRuntime.Tests.Worker;
 
@@ -259,6 +264,216 @@ public sealed class WorkerRecoveryBaselineTests
         Assert.Equal(ErrorCodes.PROVISIONING_STATE_INVALID, result.DeadLetterReason);
         Assert.Equal(AgentStatus.RequiresManualIntervention, store.ReopenCommitted().Agent.Status);
         Assert.Empty(providers.Steps.Requests);
+        providers.AssertComplete();
+    }
+
+    [Fact]
+    public async Task Exhausted_stale_provisioning_message_cannot_fail_the_next_step()
+    {
+        var store = new WorkerStore { Job = Job(completedPrefix: 1) };
+        var providers = new WorkerProviders();
+
+        var result = await store.Handler(providers).HandleRetryExhaustedAsync(
+            "ProvisionAgent", ProvisionMessage(store, 0), "SyntheticFailure", default);
+
+        Assert.False(result!.ShouldDeadLetter);
+        Assert.Equal(JobStatus.Running, store.Job.Status);
+        Assert.Equal(StepStatus.Pending, store.Job.Steps.Single(step => step.OrderIndex == 1).Status);
+        Assert.Empty(store.Saves);
+        Assert.Equal(1, store.LeaseAcquisitions);
+        Assert.Equal(store.LeaseAcquisitions, store.LeaseReleases);
+        providers.AssertComplete();
+    }
+
+    [Fact]
+    public async Task Exhausted_future_provisioning_message_is_rejected_without_mutation()
+    {
+        var store = new WorkerStore { Job = Job() };
+        var providers = new WorkerProviders();
+
+        var result = await store.Handler(providers).HandleRetryExhaustedAsync(
+            "ProvisionAgent", ProvisionMessage(store, 1), "SyntheticFailure", default);
+
+        Assert.Equal(ErrorCodes.PROVISIONING_STATE_INVALID, result!.DeadLetterReason);
+        Assert.Equal(JobStatus.Running, store.Job.Status);
+        Assert.Empty(store.Saves);
+        Assert.Equal(1, store.LeaseAcquisitions);
+        Assert.Equal(store.LeaseAcquisitions, store.LeaseReleases);
+        providers.AssertComplete();
+    }
+
+    [Theory]
+    [InlineData(JobStatus.Completed)]
+    [InlineData(JobStatus.Failed)]
+    [InlineData(JobStatus.RequiresManualIntervention)]
+    [InlineData(JobStatus.AwaitingAdministratorAction)]
+    public async Task Exhausted_terminal_provisioning_message_completes_without_writes(JobStatus status)
+    {
+        var store = new WorkerStore { Job = Job() };
+        store.Job.Status = status;
+        var providers = new WorkerProviders();
+
+        var result = await store.Handler(providers).HandleRetryExhaustedAsync(
+            "ProvisionAgent", ProvisionMessage(store, 0), "SyntheticFailure", default);
+
+        Assert.False(result!.ShouldDeadLetter);
+        Assert.Equal(status, store.Job.Status);
+        Assert.Empty(store.Saves);
+        Assert.Equal(1, store.LeaseAcquisitions);
+        Assert.Equal(store.LeaseAcquisitions, store.LeaseReleases);
+        providers.AssertComplete();
+    }
+
+    [Fact]
+    public async Task Exhaustion_without_an_unfinished_provisioning_step_does_not_invent_failure()
+    {
+        var store = new WorkerStore { Job = Job(completedPrefix: ProvisioningWorkflow.CurrentSteps.Count) };
+        var providers = new WorkerProviders();
+
+        var result = await store.Handler(providers).HandleRetryExhaustedAsync(
+            "ProvisionAgent", ProvisionMessage(store, 0), "SyntheticFailure", default);
+
+        Assert.False(result!.ShouldDeadLetter);
+        Assert.Equal(JobStatus.Running, store.Job.Status);
+        Assert.Empty(store.Saves);
+        providers.AssertComplete();
+    }
+
+    [Fact]
+    public async Task Exhaustion_cannot_terminalize_the_delegated_registry_boundary()
+    {
+        var store = new WorkerStore { Job = Job(completedPrefix: 5) };
+        var providers = new WorkerProviders();
+
+        var result = await store.Handler(providers).HandleRetryExhaustedAsync(
+            "ProvisionAgent", ProvisionMessage(store, 5), "SyntheticFailure", default);
+
+        Assert.False(result!.ShouldDeadLetter);
+        Assert.Equal(JobStatus.Running, store.Job.Status);
+        Assert.Empty(store.Saves);
+        providers.AssertComplete();
+    }
+
+    [Fact]
+    public async Task Exact_current_provisioning_exhaustion_is_saved_once_under_its_execution_lock()
+    {
+        var store = new WorkerStore { Job = Job(completedPrefix: 1) };
+        var providers = new WorkerProviders();
+        var payload = ProvisionMessage(store, 1);
+
+        var result = await store.Handler(providers).HandleRetryExhaustedAsync(
+            "ProvisionAgent", payload, "SyntheticFailure", default);
+        var reopened = store.ReopenCommitted();
+        var repeated = await reopened.Handler(providers).HandleRetryExhaustedAsync(
+            "ProvisionAgent", payload, "SyntheticFailure", default);
+        await reopened.Handler(providers).HandleAsync("ProvisionAgent", payload, default);
+
+        Assert.True(result!.ShouldDeadLetter);
+        Assert.Equal(ErrorCodes.PROVISIONING_RETRIES_EXHAUSTED, result.DeadLetterReason);
+        Assert.False(repeated!.ShouldDeadLetter);
+        Assert.Equal(JobStatus.Failed, reopened.Job!.Status);
+        Assert.Equal(StepStatus.Failed, reopened.Job.Steps.Single(step => step.OrderIndex == 1).Status);
+        Assert.Single(reopened.Audits);
+        Assert.Empty(reopened.Saves);
+        Assert.Empty(reopened.Outbox);
+        Assert.Equal(1, store.LeaseAcquisitions);
+        Assert.Equal(store.LeaseAcquisitions, store.LeaseReleases);
+        providers.AssertComplete();
+    }
+
+    [Fact]
+    public async Task Broker_completion_failure_after_provisioning_commit_does_not_exhaust_the_next_step()
+    {
+        var store = new WorkerStore { Job = Job() };
+        var providers = new WorkerProviders();
+        providers.Steps.Expect(request => new(request.StepType, new()
+        {
+            BlueprintObjectId = FixtureIds.Principal.ToString("D"),
+            BlueprintClientId = FixtureIds.Blueprint.ToString("D")
+        }, "ExistingBlueprintVerified"));
+        using var services = new ServiceCollection().AddScoped(_ => store.Handler(providers)).BuildServiceProvider();
+        await using var worker = new ProvisioningWorkerService(new WorkerServiceBusClient(),
+            Options.Create(new ProvisioningWorkerOptions()), services.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<ProvisioningWorkerService>.Instance);
+        var error = new InvalidOperationException("Synthetic completion response loss.");
+        var args = new WorkerMessageEventArgs("ProvisionAgent", ProvisionMessage(store, 0)) { CompletionFailure = error };
+
+        Assert.Same(error, await Assert.ThrowsAsync<InvalidOperationException>(() => args.ProcessAsync(worker)));
+
+        var reopened = store.ReopenCommitted();
+        Assert.Equal(JobStatus.Running, reopened.Job!.Status);
+        Assert.Equal(StepStatus.Completed, reopened.Job.Steps.Single(step => step.OrderIndex == 0).Status);
+        Assert.Equal(StepStatus.Pending, reopened.Job.Steps.Single(step => step.OrderIndex == 1).Status);
+        Assert.Single(reopened.Outbox);
+        Assert.Single(reopened.Audits);
+        Assert.Equal(1, args.Completions);
+        Assert.Empty(args.DeadLetters);
+        Assert.Equal(0, args.Abandons);
+        Assert.False((await reopened.Handler(providers).HandleAsync(
+            "ProvisionAgent", ProvisionMessage(reopened, 0), default)).ShouldDeadLetter);
+        Assert.Empty(reopened.Saves);
+        Assert.Single(reopened.Outbox);
+        providers.AssertComplete();
+    }
+
+    [Theory]
+    [InlineData(false, 10)]
+    [InlineData(true, 10)]
+    [InlineData(false, 1)]
+    public async Task Provisioning_processing_failure_recovers_final_deliveries_or_abandons(bool advanced, int deliveryCount)
+    {
+        var store = new WorkerStore { Job = Job(completedPrefix: advanced ? 1 : 0) };
+        var providers = new WorkerProviders();
+        var handlers = 0;
+        using var services = new ServiceCollection().AddScoped(_ =>
+        {
+            handlers++;
+            return handlers == 1
+                ? new ProvisioningMessageHandler(providers,
+                    WorkerDependencyProxy.Create<IAgentRepository>((_, _) =>
+                        throw new InvalidOperationException("Synthetic read failure before processing.")),
+                    store, store, store, providers, store, store, store, store,
+                    Options.Create(new ProvisioningWorkerOptions { ProvisioningExecutionEnabled = true }),
+                    NullLogger<ProvisioningMessageHandler>.Instance)
+                : store.Handler(providers);
+        }).BuildServiceProvider();
+        await using var worker = new ProvisioningWorkerService(new WorkerServiceBusClient(),
+            Options.Create(new ProvisioningWorkerOptions()), services.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<ProvisioningWorkerService>.Instance);
+        var args = new WorkerMessageEventArgs("ProvisionAgent", ProvisionMessage(store, 0), deliveryCount);
+
+        await args.ProcessAsync(worker);
+
+        var final = deliveryCount == 10;
+        Assert.Equal(final ? 2 : 1, handlers);
+        Assert.Equal(final && advanced ? 1 : 0, args.Completions);
+        Assert.Equal(final && !advanced ? 1 : 0, args.DeadLetters.Count);
+        Assert.Equal(final ? 0 : 1, args.Abandons);
+        Assert.Equal(final && !advanced ? JobStatus.Failed : JobStatus.Running, store.Job.Status);
+        Assert.Equal(final && !advanced ? 1 : 0, store.Saves.Count);
+        Assert.Equal(store.LeaseAcquisitions, store.LeaseReleases);
+        providers.AssertComplete();
+    }
+
+    [Fact]
+    public async Task Provisioning_dead_letter_settlement_failure_does_not_reclassify_the_operation()
+    {
+        var store = new WorkerStore { Job = Job() };
+        var providers = new WorkerProviders();
+        using var services = new ServiceCollection().AddScoped(_ => store.Handler(providers)).BuildServiceProvider();
+        await using var worker = new ProvisioningWorkerService(new WorkerServiceBusClient(),
+            Options.Create(new ProvisioningWorkerOptions()), services.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<ProvisioningWorkerService>.Instance);
+        var error = new InvalidOperationException("Synthetic dead-letter response loss.");
+        var args = new WorkerMessageEventArgs("ProvisionAgent", ProvisionMessage(store, 1)) { DeadLetterFailure = error };
+
+        Assert.Same(error, await Assert.ThrowsAsync<InvalidOperationException>(() => args.ProcessAsync(worker)));
+
+        Assert.Equal([ErrorCodes.PROVISIONING_STATE_INVALID], args.DeadLetters);
+        Assert.Equal(0, args.Completions);
+        Assert.Equal(0, args.Abandons);
+        Assert.Equal(JobStatus.Running, store.Job.Status);
+        Assert.Empty(store.Saves);
         providers.AssertComplete();
     }
 

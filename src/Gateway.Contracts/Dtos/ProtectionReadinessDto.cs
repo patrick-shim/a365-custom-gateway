@@ -14,4 +14,5 @@ public sealed record ProtectionReadinessDto(
     DateTime? PropagationVerifiedAtUtc = null,
     DateTime? TokenRolesVerifiedAtUtc = null,
     DateTime? RuntimeAllowVerifiedAtUtc = null,
-    DateTime? RuntimeBlockVerifiedAtUtc = null);
+    DateTime? RuntimeBlockVerifiedAtUtc = null,
+    DateTime? ValidUntilUtc = null);
