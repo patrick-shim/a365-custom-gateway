@@ -2,6 +2,15 @@
 **/bin/
 **/obj/
 
+# Node / web app
+**/node_modules/
+web/console/dist/
+web/console/tsconfig.tsbuildinfo
+
+# Browser automation / screenshots
+.playwright-mcp/
+/*.png
+
 # Bootstrap/deployment runtime state (ignored runtime area)
 .bootstrap/
 .agent-runtime/
