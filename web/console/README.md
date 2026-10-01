@@ -41,6 +41,18 @@ directory as the Docker context. `SOURCE_REVISION` can label the immutable image
 with its source commit. Publish the image to the existing registry and deploy by
 digest; do not recreate the Gateway or its Entra registrations for a UI update.
 
+Azure Container Apps requires the Linux x64 runtime image, even when developing
+on Windows ARM. The Node build stage runs natively; its output is static assets.
+
+```powershell
+docker buildx build --platform linux/amd64 --provenance=false --load `
+  --build-arg SOURCE_REVISION=<commit> --tag <registry>/gateway-console:<release> .
+docker image inspect <registry>/gateway-console:<release> --format '{{.Os}}/{{.Architecture}}'
+```
+
+Require `linux/amd64` before publishing. An ARM64 image can fail activation with
+an image-pull error; changing registry permissions does not repair its platform.
+
 ## Working surfaces and boundaries
 
 - All routes keep navigation visible during loading, API failures, and contained
