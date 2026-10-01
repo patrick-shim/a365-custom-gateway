@@ -6,7 +6,7 @@
                     @if (context.User.Identity?.IsAuthenticated == true)
                     {
                         <LayoutView Layout="typeof(Layout.MainLayout)">
-                            <AccessDenied />
+                            <AccessDenied RequiredAccess="@Gateway.AdminUi.Authentication.GatewayPolicies.DescribeRequiredAccess(routeData.PageType)" />
                         </LayoutView>
                     }
                     else

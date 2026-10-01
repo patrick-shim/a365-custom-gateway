@@ -5,17 +5,20 @@
 @inject IGatewayApiClient Api
 @inject AuthenticationStateProvider AuthenticationStateProvider
 @inject NavigationManager Navigation
+@inject TimeProvider Clock
+@inject ILogger<AgentDetails> Logger
+@inject Microsoft.Extensions.Options.IOptions<Gateway.AdminUi.Options.GatewayApiOptions> ApiOptions
 
 <PageTitle>@(agentResource?.Value.Name is { Length: > 0 } name ? $"{name} · A365 Gateway" : "Agent details · A365 Gateway")</PageTitle>
 
 <PageHeader Eyebrow="Agent registry"
             Title="@(agentResource?.Value.Name ?? "Agent details")"
-            Description="Verified registration, feature, provisioning, and audit information from the Gateway API.">
+            Description="Current Gateway registration and recorded actions. Protection and downstream delivery remain separate.">
     <Actions>
         <FluentAnchor Appearance="Appearance.Stealth" Href="/agents">Back to agents</FluentAnchor>
         <FluentButton Appearance="Appearance.Neutral"
                       OnClick="LoadAsync"
-                      Disabled="@(loading || actionBusy || featureSaving)">
+                      Disabled="@(!RendererInfo.IsInteractive || loading || actionBusy || featureSaving || issuedGatewayCredential is not null)">
             Refresh
         </FluentButton>
     </Actions>
@@ -41,6 +44,28 @@ else if (agentResource is not null)
 {
     var agent = agentResource.Value;
 
+    @if (issuedGatewayCredential is { } issued)
+    {
+        <GatewayKeyHandoff ExternalAgentId="@agent.ExternalAgentId" Credential="@issued" Replacement="true"
+                           ContinueLabel="Return to agent" OnContinue="DismissIssuedCredential" OnDiscard="DismissIssuedCredential" />
+    }
+    else
+    {
+    @if (loadError is not null)
+    {
+        <ErrorState Title="The latest agent details are unavailable" Message="@loadError.Message"
+                    CorrelationId="@loadError.CorrelationId" OnRetry="LoadAsync" />
+        <p class="field-help" role="status">These are the last known details. Refresh before changing the registration.</p>
+    }
+    @if (actionReadbackRequired)
+    {
+        <div class="deployment-callout" role="alert">
+            <strong>Check the existing result before another action.</strong>
+            <span>@readbackMessage</span>
+            <FluentButton Type="ButtonType.Button" Appearance="Appearance.Neutral" OnClick="LoadAsync"
+                          Disabled="@(loading || actionBusy)">Check agent and credential status</FluentButton>
+        </div>
+    }
     @if (!string.IsNullOrWhiteSpace(announcement))
     {
         <div class="subtle-note" role="status" aria-live="polite">@announcement</div>
@@ -181,6 +206,30 @@ else if (agentResource is not null)
                 </div>
                 <div class="card-body">
                     <p>The external runtime authenticates with a per-registration Gateway API key. The Gateway binds that credential to this registration, cross-checks the payload external agent ID, and routes sanitized telemetry to this registration's child Agent ID.</p>
+                    @if (GatewayConnectionCommand.IsShareableEndpoint(ApiOptions.Value.BaseUrl))
+                    {
+                        <CopyableValue InputId="detail-api-endpoint" Label="Gateway API endpoint" Value="@(ApiOptions.Value.BaseUrl!.AbsoluteUri)" />
+                        <CopyableValue InputId="detail-external-id" Label="External agent ID" Value="@agent.ExternalAgentId" />
+                        @if (GatewayConnectionCommand.SupportsSample(ApiOptions.Value.BaseUrl))
+                        {
+                        <details>
+                            <summary>View a non-secret connection example</summary>
+                            <p>Run from the repository root once the registration is Active. Replace the tenant-user placeholder with the interaction's actual user ID. The sample prompts for the key without echoing it.</p>
+                            <CopyableCommand Label="PowerShell connection example"
+                                             Command="@GatewayConnectionCommand.CreateSample(ApiOptions.Value.BaseUrl!, agent.ExternalAgentId)" />
+                            <p class="field-help">The sample uses a fixed-response model. Preserve its evaluate, validate, model-once and submit sequence. Gateway acceptance is not confirmed downstream delivery.</p>
+                        </details>
+                        }
+                        else
+                        {
+                            <p class="field-help" role="note">This Gateway uses a local HTTP endpoint. The external-agent sample requires HTTPS; configure a trusted HTTPS API endpoint before running it. No executable sample command is offered for this address.</p>
+                        }
+                    }
+                    else
+                    {
+                        <ErrorState Title="Gateway API endpoint is unavailable"
+                                    Message="Ask an administrator to verify the configured endpoint before connecting the external runtime." />
+                    }
                     @if (!string.Equals(agent.Status, "Active", StringComparison.OrdinalIgnoreCase))
                     {
                         <div class="subtle-note">The Gateway credential can be prepared now, but ingestion remains unavailable until this registration reaches Active.</div>
@@ -261,45 +310,12 @@ else if (agentResource is not null)
                         </div>
                         <FluentButton Appearance="Appearance.Neutral"
                                       OnClick="@(() => OpenConfirmation(ConfirmationAction.IssueCredential))"
-                                      Disabled="@(!CanIssueCredential(agent.Status) || credentialsLoading || actionBusy)">
-                            Issue additional credential
+                                      Disabled="@(!CanIssueCredential(agent.Status) || credentialsLoading || !CanChangeAgent)">
+                            Issue replacement key
                         </FluentButton>
                     </div>
                     <div class="card-body">
                         <p>Issue and deploy a new key first, verify the external runtime uses it, and only then revoke the old key. Raw keys cannot be retrieved after their one-time response.</p>
-
-                        @if (issuedGatewayCredential is { } issuedCredential)
-                        {
-                            <div class="validation-summary-errors" role="alert" aria-live="assertive">
-                                <strong>Save this new Gateway API key now. It cannot be retrieved again.</strong>
-                            </div>
-                            <div class="form-grid" style="margin-top: 1rem">
-                                <div class="form-field full">
-                                    <label for="issued-gateway-api-key">Gateway API key</label>
-                                    <input id="issued-gateway-api-key"
-                                           class="form-control"
-                                           value="@issuedCredential.ApiKey"
-                                           readonly
-                                           aria-readonly="true"
-                                           autocomplete="off"
-                                           spellcheck="false" />
-                                </div>
-                                <div class="form-field full">
-                                    <label for="issued-gateway-authorization-header">Authorization header</label>
-                                    <input id="issued-gateway-authorization-header"
-                                           class="form-control"
-                                           value="@FormatAuthorizationHeader(issuedCredential.ApiKey)"
-                                           readonly
-                                           aria-readonly="true"
-                                           autocomplete="off"
-                                           spellcheck="false" />
-                                    <span class="field-help">Store the key in the external runtime's secret manager. Never put it in a URL, request body, log, or audit record.</span>
-                                </div>
-                            </div>
-                            <div class="form-actions">
-                                <FluentButton Appearance="Appearance.Accent" OnClick="DismissIssuedCredential">I saved this key</FluentButton>
-                            </div>
-                        }
 
                         @if (credentialsLoading && ingressCredentials is null)
                         {
@@ -317,6 +333,10 @@ else if (agentResource is not null)
                         }
                         else if (ingressCredentials is not null)
                         {
+                            @if (ingressCredentials.Items.Count(IsUsableCredential) <= 1)
+                            {
+                                <p class="field-help" role="note">Keep one usable Gateway key. Issue a replacement and update the external agent before revoking its last usable key.</p>
+                            }
                             <div class="table-scroll" style="margin-top: 1rem">
                                 <table class="data-table">
                                     <thead><tr><th>Key ID</th><th>Status</th><th>Created</th><th>Expires</th><th><span class="sr-only">Actions</span></th></tr></thead>
@@ -332,8 +352,9 @@ else if (agentResource is not null)
                                                     @if (credential.RevokedAtUtc is null)
                                                     {
                                                         <FluentButton Appearance="Appearance.Stealth"
+                                                                      aria-label="@($"Revoke Gateway key {credential.KeyId:D}")"
                                                                       OnClick="@(() => OpenCredentialRevocation(credential.KeyId))"
-                                                                      Disabled="@(!CanRevokeCredential(credential, ingressCredentials.Items) || actionBusy)">
+                                                                      Disabled="@(!CanRevokeCredential(credential, ingressCredentials.Items) || !CanChangeAgent)">
                                                             Revoke
                                                         </FluentButton>
                                                     }
@@ -355,9 +376,14 @@ else if (agentResource is not null)
             <section class="card" aria-labelledby="features-heading">
                 <div class="card-header">
                     <div>
-                        <h2 id="features-heading">Features</h2>
-                        <span class="section-caption">Activity telemetry destinations and Purview policy settings</span>
+                        <h2 id="features-heading">Protection and telemetry choices</h2>
+                        <span class="section-caption">Saved choices, current protection and telemetry delivery are separate</span>
                     </div>
+                </div>
+
+                <div class="card-body">
+                    <ProtectionSnapshot Features="agent.Features" RegistrationStatus="@agent.Status" />
+                    <a href="/settings" class="text-link">Explore optional protection tasks</a>
                 </div>
 
                 @if (featureError is not null)
@@ -382,7 +408,7 @@ else if (agentResource is not null)
                                             <input id="feature-agent365-observability-enabled"
                                                    type="checkbox"
                                                    @bind="featureAgent365ObservabilityEnabled"
-                                                   disabled="@(!CanEditFeatures(agent.Status) || featureSaving)" />
+                                                   disabled="@(!CanEditFeatures(agent.Status) || !CanChangeAgent)" />
                                             <span><strong>Agent 365 observability</strong><small>Send supported sanitized activity telemetry to Microsoft Agent 365.</small></span>
                                         </label>
                                     </div>
@@ -391,7 +417,7 @@ else if (agentResource is not null)
                                             <input id="feature-azure-monitor-export-enabled"
                                                    type="checkbox"
                                                    @bind="featureAzureMonitorExportEnabled"
-                                                   disabled="@(!CanEditFeatures(agent.Status) || featureSaving)" />
+                                                   disabled="@(!CanEditFeatures(agent.Status) || !CanChangeAgent)" />
                                             <span><strong>Also mirror sanitized activity telemetry to Azure Monitor</strong><small>Export a separate sanitized copy of activity metrics and traces to the configured Azure Monitor destination.</small></span>
                                         </label>
                                     </div>
@@ -403,7 +429,7 @@ else if (agentResource is not null)
                                 BlueprintDisplayName="@agent.Agent365?.BlueprintId"
                                 Features="agent.Features" ProfileId="@agent.Features?.PurviewDlpProfile?.ProfileId"
                                 ContextKey="@($"{agent.AgentId}|{agentResource?.ETag ?? Convert.ToBase64String(agent.RowVersion)}")"
-                                IsAdministrator="isAdministrator" Busy="@(featureSaving || !CanEditFeatures(agent.Status))"
+                                IsAdministrator="isAdministrator" Busy="@(!CanChangeAgent || !CanEditFeatures(agent.Status))"
                                 Changed="ProtectionChanged" OnRefreshAgent="ReloadAgentAsync" />
                         </div>
                     </div>
@@ -414,7 +440,7 @@ else if (agentResource is not null)
                         }
                         <FluentButton Appearance="Appearance.Accent"
                                       OnClick="SaveFeaturesAsync"
-                                      Disabled="@(!CanEditFeatures(agent.Status) || featureSaving || actionBusy || !FeatureSelectionsValid)">
+                                      Disabled="@(!CanEditFeatures(agent.Status) || !CanChangeAgent || !FeatureSelectionsValid)">
                             @(featureSaving ? "Saving…" : "Save features")
                         </FluentButton>
                     </div>
@@ -437,24 +463,14 @@ else if (agentResource is not null)
                             <span class="detail-label">Azure Monitor activity mirror</span>
                             <span class="detail-value">@FormatEnabled(ResolveAzureMonitorExport(agent.Features))</span>
                         </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Prompt Shields</span>
-                            <span class="detail-value">Requested: @(agent.Features?.PromptShieldEnabled == true ? "On" : "Off"). Effective: @(agent.Features?.PromptShieldEffectivelyEnabled == true ? "Ready" : "Not ready").</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Purview evaluation</span>
-                            <span class="detail-value">Requested: @(agent.Features?.PurviewEnabled == true ? "On" : "Off"). Effective: @(agent.Features?.PurviewEffectivelyEnabled == true ? "Ready" : "Not ready").</span>
-                        </div>
-                        <div class="detail-item">
-                            <span class="detail-label">Purview mode</span>
-                            <span class="detail-value">@AgentProtectionUiMapping.PolicyLabel(agent.Features?.PurviewPolicyMode, agent.Features?.PurviewMode)</span>
-                        </div>
                     </div>
-                    @if (agent.Features?.PurviewReadiness is { } readOnlyReadiness)
+                    @if (agent.Features?.PurviewEnabled == true &&
+                        agent.Features.PurviewPolicyMode != "Disabled" &&
+                        agent.Features.PurviewReadiness is { } readOnlyReadiness)
                     {
                         <div class="card-body">
                             <ProtectionReadinessPanel Readiness="readOnlyReadiness" Label="Purview for this agent"
-                                PolicyMode="@agent.Features?.PurviewPolicyMode" ProfileStatus="@agent.Features?.PurviewConfigurationStatus" />
+                                PolicyMode="@agent.Features.PurviewPolicyMode" ProfileStatus="@agent.Features.PurviewProfileStatus" />
                         </div>
                     }
                     @if (agent.Features?.PurviewConfigurationStatus is { } configurationStatus)
@@ -521,14 +537,14 @@ else if (agentResource is not null)
                                     <p>Allow this disabled agent to submit gateway activity again.</p>
                                     <FluentButton Appearance="Appearance.Neutral"
                                                   OnClick="@(() => OpenConfirmation(ConfirmationAction.Enable))"
-                                                  Disabled="@(!CanEnable(agent.Status) || actionBusy)">Enable agent</FluentButton>
+                                                  Disabled="@(!CanEnable(agent.Status) || !CanChangeAgent)">Enable agent</FluentButton>
                                 </div>
                                 <div class="action-tile">
                                     <strong>Disable</strong>
                                     <p>Stop new data-plane submissions while preserving the registration.</p>
                                     <FluentButton Appearance="Appearance.Neutral"
                                                   OnClick="@(() => OpenConfirmation(ConfirmationAction.Disable))"
-                                                  Disabled="@(!CanDisable(agent.Status) || actionBusy)">Disable agent</FluentButton>
+                                                  Disabled="@(!CanDisable(agent.Status) || !CanChangeAgent)">Disable agent</FluentButton>
                                 </div>
                             }
                             @if (isAdministrator)
@@ -551,7 +567,7 @@ else if (agentResource is not null)
                                         <p>@RetryProvisioningReason(agent)</p>
                                         <FluentButton Appearance="Appearance.Neutral"
                                                       OnClick="@(() => OpenConfirmation(ConfirmationAction.Retry))"
-                                                      Disabled="@actionBusy">Retry provisioning</FluentButton>
+                                                      Disabled="@(!CanChangeAgent)">Retry provisioning</FluentButton>
                                     </div>
                                 }
                                 else
@@ -566,7 +582,7 @@ else if (agentResource is not null)
                                     <p>Remove this registration from the Gateway. Linked Microsoft resources are not changed.</p>
                                     <FluentButton Appearance="Appearance.Neutral"
                                                   OnClick="@(() => OpenConfirmation(ConfirmationAction.Delete))"
-                                                  Disabled="@(!CanDelete(agent.Status) || actionBusy)">Delete registration</FluentButton>
+                                                  Disabled="@(!CanDelete(agent.Status) || !CanChangeAgent)">Delete Gateway registration</FluentButton>
                                 </div>
                             }
                         </div>
@@ -716,10 +732,16 @@ else if (agentResource is not null)
                   Title="@ConfirmationTitle"
                   Message="@ConfirmationMessage"
                   ConfirmLabel="@ConfirmationLabel"
+                  ConfirmDisabled="@(confirmationAction == ConfirmationAction.RevokeCredential && !replacementInstalled)"
                   Tone="@ConfirmationTone"
                   OnConfirm="ExecuteConfirmedActionAsync"
                   OnCancel="CloseConfirmation">
         <AdditionalContent>
+            <dl class="review-summary">
+                <div><dt>Agent</dt><dd>@agent.Name</dd></div>
+                <div><dt>External agent ID</dt><dd>@agent.ExternalAgentId</dd></div>
+                <div><dt>Gateway registration</dt><dd>@agent.AgentId</dd></div>
+            </dl>
             @if (confirmationAction == ConfirmationAction.Delete)
             {
                 <p class="field-help">The selected blueprint, child Agent ID, and Agent 365 Registry record are not deleted by this action.</p>
@@ -731,9 +753,14 @@ else if (agentResource is not null)
             else if (confirmationAction == ConfirmationAction.RevokeCredential)
             {
                 <p class="field-help">Only key <code>@pendingCredentialId</code> will be revoked. The raw key can never be retrieved.</p>
+                <label class="checkbox-label" for="replacement-installed">
+                    <input id="replacement-installed" type="checkbox" @bind="replacementInstalled" />
+                    <span>I updated and verified the external agent with its replacement key, or confirmed this key is no longer in use.</span>
+                </label>
             }
         </AdditionalContent>
     </ConfirmPanel>
+    }
     }
 }
 
@@ -768,10 +795,17 @@ else if (agentResource is not null)
         Guid.TryParse(agentResource?.Value.Agent365?.BlueprintId, out var id) ? id : null;
     private void ProtectionChanged() => StateHasChanged();
     private bool actionBusy;
+    private bool actionReadbackRequired;
+    private string? readbackMessage;
+    private Guid confirmationAgentId;
+    private int selectionGeneration;
+    private bool replacementInstalled;
     private Guid? pendingCredentialId;
     private ConfirmationAction confirmationAction;
 
     private bool FeatureSelectionsValid => protectionEditor?.CanApply == true;
+    private bool CanChangeAgent => RendererInfo.IsInteractive && !loading && !actionBusy && !featureSaving &&
+        !actionReadbackRequired && loadError is null && issuedGatewayCredential is null;
 
     [Parameter]
     public Guid AgentId { get; set; }
@@ -806,17 +840,38 @@ else if (agentResource is not null)
             return;
         }
 
+        selectionGeneration++;
         loadedAgentId = AgentId;
         agentResource = null;
         provisioningHistory = null;
         auditEvents = null;
         ingressCredentials = null;
         issuedGatewayCredential = null;
+        confirmationAction = ConfirmationAction.None;
+        confirmationAgentId = Guid.Empty;
+        pendingCredentialId = null;
+        replacementInstalled = false;
+        actionReadbackRequired = false;
+        readbackMessage = null;
+        actionError = null;
+        featureError = null;
+        actionBusy = false;
+        featureSaving = false;
+        loading = false;
+        provisioningLoading = false;
+        auditLoading = false;
+        credentialsLoading = false;
         await LoadAsync();
     }
 
     private async Task LoadAsync()
     {
+        if (loading || issuedGatewayCredential is not null)
+        {
+            return;
+        }
+        var generation = selectionGeneration;
+        var requestedAgentId = loadedAgentId;
         loading = true;
         loadError = null;
         provisioningError = null;
@@ -826,15 +881,22 @@ else if (agentResource is not null)
         try
         {
             var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            if (!IsCurrentSelection(generation, requestedAgentId))
+            {
+                return;
+            }
             SetRoleCapabilities(authenticationState.User);
 
-            agentResource = await Api.GetAgentAsync(AgentId, disposeCts.Token);
+            var resource = await Api.GetAgentAsync(requestedAgentId, disposeCts.Token);
+            if (!IsCurrentSelection(generation, requestedAgentId))
+            {
+                return;
+            }
+            ValidateAgentIdentity(resource.Value.AgentId, requestedAgentId);
+            agentResource = resource;
             CopyFeatureValues(agentResource.Value.Features);
 
             var relatedLoads = new List<Task>(4);
-            if (isAdministrator)
-            {
-            }
             if (canViewProvisioning)
             {
                 relatedLoads.Add(LoadProvisioningAsync());
@@ -854,17 +916,38 @@ else if (agentResource is not null)
             {
                 await Task.WhenAll(relatedLoads);
             }
+            if (IsCurrentSelection(generation, requestedAgentId) &&
+                provisioningError is null && auditError is null && credentialError is null)
+            {
+                actionReadbackRequired = false;
+                readbackMessage = null;
+            }
         }
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            loadError = UiErrorInfo.FromException(exception);
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                loadError = UiErrorInfo.FromException(exception);
+                if (exception is GatewayApiException { StatusCode: System.Net.HttpStatusCode.NotFound or
+                    System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden })
+                {
+                    agentResource = null;
+                    ingressCredentials = null;
+                    auditEvents = null;
+                    provisioningHistory = null;
+                }
+            }
+            Logger.LogWarning("Agent details could not be refreshed ({ErrorType}).", exception.GetType().Name);
         }
         finally
         {
-            loading = false;
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                loading = false;
+            }
         }
     }
 
@@ -877,20 +960,34 @@ else if (agentResource is not null)
 
         provisioningLoading = true;
         provisioningError = null;
+        var generation = selectionGeneration;
+        var requestedAgentId = loadedAgentId;
         try
         {
-            provisioningHistory = await Api.GetProvisioningHistoryAsync(AgentId, disposeCts.Token);
+            var result = await Api.GetProvisioningHistoryAsync(requestedAgentId, disposeCts.Token);
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                ValidateAgentIdentity(result.AgentId, requestedAgentId);
+                provisioningHistory = result;
+            }
         }
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            provisioningError = UiErrorInfo.FromException(exception);
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                provisioningError = UiErrorInfo.FromException(exception);
+            }
+            Logger.LogWarning("Provisioning history could not be refreshed ({ErrorType}).", exception.GetType().Name);
         }
         finally
         {
-            provisioningLoading = false;
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                provisioningLoading = false;
+            }
         }
     }
 
@@ -903,23 +1000,36 @@ else if (agentResource is not null)
 
         auditLoading = true;
         auditError = null;
+        var generation = selectionGeneration;
+        var requestedAgentId = loadedAgentId;
         try
         {
-            auditEvents = await Api.GetAgentAuditEventsAsync(
-                AgentId,
+            var result = await Api.GetAgentAuditEventsAsync(
+                requestedAgentId,
                 new AuditEventQuery(Limit: 100),
                 disposeCts.Token);
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                auditEvents = result;
+            }
         }
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            auditError = UiErrorInfo.FromException(exception);
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                auditError = UiErrorInfo.FromException(exception);
+            }
+            Logger.LogWarning("Agent audit could not be refreshed ({ErrorType}).", exception.GetType().Name);
         }
         finally
         {
-            auditLoading = false;
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                auditLoading = false;
+            }
         }
     }
 
@@ -932,28 +1042,47 @@ else if (agentResource is not null)
 
         credentialsLoading = true;
         credentialError = null;
+        var generation = selectionGeneration;
+        var requestedAgentId = loadedAgentId;
         try
         {
-            ingressCredentials = await Api.GetAgentIngressCredentialsAsync(
-                AgentId,
+            var result = await Api.GetAgentIngressCredentialsAsync(
+                requestedAgentId,
                 disposeCts.Token);
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                ValidateAgentIdentity(result.AgentId, requestedAgentId);
+                if (result.Items.Any(item => item.KeyId == Guid.Empty) ||
+                    result.Items.Select(item => item.KeyId).Distinct().Count() != result.Items.Count)
+                {
+                    throw new GatewayApiProtocolException("Credential metadata contains an invalid or duplicate key identity.", null);
+                }
+                ingressCredentials = result;
+            }
         }
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            credentialError = UiErrorInfo.FromException(exception);
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                credentialError = UiErrorInfo.FromException(exception);
+            }
+            Logger.LogWarning("Credential metadata could not be refreshed ({ErrorType}).", exception.GetType().Name);
         }
         finally
         {
-            credentialsLoading = false;
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                credentialsLoading = false;
+            }
         }
     }
 
     private async Task SaveFeaturesAsync()
     {
-        if (!isAdministrator || agentResource is null || featureSaving ||
+        if (!isAdministrator || agentResource is null || !CanChangeAgent ||
             !CanEditFeatures(agentResource.Value.Status) ||
             !FeatureSelectionsValid)
         {
@@ -964,6 +1093,8 @@ else if (agentResource is not null)
         featureError = null;
         actionError = null;
         announcement = null;
+        var generation = selectionGeneration;
+        var requestedAgentId = loadedAgentId;
 
         try
         {
@@ -990,57 +1121,102 @@ else if (agentResource is not null)
                 PurviewConfigurationIntent: intent);
 
             await Api.UpdateAgentFeaturesAsync(
-                AgentId,
+                requestedAgentId,
                 request,
                 disposeCts.Token);
 
-            await ReloadAgentAsync();
-            announcement = "Feature settings saved.";
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                await ReloadAgentAsync();
+                if (IsCurrentSelection(generation, requestedAgentId))
+                {
+                    announcement = "Feature settings saved.";
+                }
+            }
         }
         catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            featureError = UiErrorInfo.FromException(exception);
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                featureError = UiErrorInfo.FromException(exception);
+            }
         }
         finally
         {
-            featureSaving = false;
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                featureSaving = false;
+            }
         }
     }
 
     private void OpenConfirmation(ConfirmationAction action)
     {
+        if (!CanChangeAgent || agentResource is null)
+        {
+            return;
+        }
         actionError = null;
         announcement = null;
         pendingCredentialId = null;
+        confirmationAgentId = loadedAgentId;
+        replacementInstalled = false;
         confirmationAction = action;
     }
 
     private void OpenCredentialRevocation(Guid credentialId)
     {
+        if (!CanChangeAgent || !isAdministrator || ingressCredentials is null || credentialError is not null)
+        {
+            return;
+        }
+        var target = ingressCredentials.Items.SingleOrDefault(item => item.KeyId == credentialId);
+        if (target is null || !CanRevokeCredential(target, ingressCredentials.Items))
+        {
+            actionError = new UiErrorInfo("Keep one usable Gateway key. Refresh credential metadata and issue a replacement before revoking the last usable key.");
+            return;
+        }
         actionError = null;
         announcement = null;
         pendingCredentialId = credentialId;
+        confirmationAgentId = loadedAgentId;
+        replacementInstalled = false;
         confirmationAction = ConfirmationAction.RevokeCredential;
     }
 
     private Task CloseConfirmation()
     {
+        if (actionBusy)
+        {
+            return Task.CompletedTask;
+        }
         confirmationAction = ConfirmationAction.None;
         pendingCredentialId = null;
+        replacementInstalled = false;
         return Task.CompletedTask;
     }
 
     private async Task ExecuteConfirmedActionAsync()
     {
-        if (agentResource is null || actionBusy || confirmationAction == ConfirmationAction.None)
+        if (agentResource is null || !CanChangeAgent || confirmationAction == ConfirmationAction.None ||
+            confirmationAgentId != loadedAgentId)
         {
             return;
         }
 
         var requestedAction = confirmationAction;
+        if (requestedAction == ConfirmationAction.RevokeCredential && !replacementInstalled)
+        {
+            actionError = new UiErrorInfo("Confirm that the external agent uses its replacement key, or that the selected key is no longer in use.");
+            return;
+        }
+        var generation = selectionGeneration;
+        var requestedAgentId = loadedAgentId;
+        var expectedExternalId = agentResource.Value.ExternalAgentId;
+        var accepted = false;
         actionBusy = true;
         actionError = null;
         announcement = null;
@@ -1051,23 +1227,34 @@ else if (agentResource is not null)
             {
                 case ConfirmationAction.Enable when canOperate && CanEnable(agentResource.Value.Status):
                 {
-                    var result = await Api.EnableAgentAsync(AgentId, disposeCts.Token);
+                    var result = await Api.EnableAgentAsync(requestedAgentId, disposeCts.Token);
+                    if (!IsCurrentSelection(generation, requestedAgentId)) return;
+                    ValidateAgentIdentity(result.AgentId, requestedAgentId);
+                    accepted = true;
                     confirmationAction = ConfirmationAction.None;
                     await ReloadAgentAsync();
-                    announcement = $"Agent enabled. Current status: {FormatPascalCase(result.Status)}.";
+                    if (!IsCurrentSelection(generation, requestedAgentId)) return;
+                    announcement = $"Enable request accepted. Current status: {FormatPascalCase(agentResource.Value.Status)}.";
                     break;
                 }
                 case ConfirmationAction.Disable when canOperate && CanDisable(agentResource.Value.Status):
                 {
-                    var result = await Api.DisableAgentAsync(AgentId, disposeCts.Token);
+                    var result = await Api.DisableAgentAsync(requestedAgentId, disposeCts.Token);
+                    if (!IsCurrentSelection(generation, requestedAgentId)) return;
+                    ValidateAgentIdentity(result.AgentId, requestedAgentId);
+                    accepted = true;
                     confirmationAction = ConfirmationAction.None;
                     await ReloadAgentAsync();
-                    announcement = $"Agent disabled. Current status: {FormatPascalCase(result.Status)}.";
+                    if (!IsCurrentSelection(generation, requestedAgentId)) return;
+                    announcement = $"Disable request accepted. Current status: {FormatPascalCase(agentResource.Value.Status)}.";
                     break;
                 }
                 case ConfirmationAction.Retry when isAdministrator && CanRetry(agentResource.Value):
                 {
-                    var result = await Api.RetryProvisioningAsync(AgentId, disposeCts.Token);
+                    var result = await Api.RetryProvisioningAsync(requestedAgentId, disposeCts.Token);
+                    if (!IsCurrentSelection(generation, requestedAgentId)) return;
+                    ValidateAgentIdentity(result.AgentId, requestedAgentId);
+                    if (result.OperationId == Guid.Empty) throw new GatewayApiProtocolException("The retry did not return an operation reference.", null);
                     confirmationAction = ConfirmationAction.None;
                     Navigation.NavigateTo($"/operations/{result.OperationId:D}");
                     break;
@@ -1075,8 +1262,11 @@ else if (agentResource is not null)
                 case ConfirmationAction.Delete when isAdministrator && CanDelete(agentResource.Value.Status):
                 {
                     var result = await Api.DeleteAgentAsync(
-                        AgentId,
+                        requestedAgentId,
                         disposeCts.Token);
+                    if (!IsCurrentSelection(generation, requestedAgentId)) return;
+                    ValidateAgentIdentity(result.AgentId, requestedAgentId);
+                    if (result.OperationId == Guid.Empty) throw new GatewayApiProtocolException("The deletion did not return an operation reference.", null);
                     confirmationAction = ConfirmationAction.None;
                     Navigation.NavigateTo($"/operations/{result.OperationId:D}");
                     break;
@@ -1085,35 +1275,61 @@ else if (agentResource is not null)
                     CanIssueCredential(agentResource.Value.Status):
                 {
                     var result = await Api.IssueAgentIngressCredentialAsync(
-                        AgentId,
+                        requestedAgentId,
                         disposeCts.Token);
-                    issuedGatewayCredential = result.GatewayCredential;
+                    if (!IsCurrentSelection(generation, requestedAgentId)) return;
+                    ValidateAgentIdentity(result.AgentId, requestedAgentId);
+                    if (!string.Equals(result.ExternalAgentId, expectedExternalId, StringComparison.Ordinal) ||
+                        result.GatewayCredential is not { } issued || issued.KeyId == Guid.Empty ||
+                        string.IsNullOrWhiteSpace(issued.ApiKey) || AsUtc(issued.ExpiresAtUtc) <= Clock.GetUtcNow().UtcDateTime)
+                    {
+                        throw new GatewayApiProtocolException("A usable one-time key bound to this registration was not returned. Check credential metadata before another issuance.", null);
+                    }
+                    accepted = true;
+                    issuedGatewayCredential = issued;
                     confirmationAction = ConfirmationAction.None;
                     await LoadCredentialsAsync();
+                    if (!IsCurrentSelection(generation, requestedAgentId)) return;
                     if (canViewAudit)
                     {
                         await LoadAuditAsync();
                     }
-                    announcement = "An additional Gateway credential was issued. Save the one-time key before continuing.";
+                    if (IsCurrentSelection(generation, requestedAgentId))
+                    {
+                        announcement = "A replacement key was issued. Save it, update the external agent and then revoke the old key.";
+                    }
                     break;
                 }
                 case ConfirmationAction.RevokeCredential when isAdministrator &&
-                    pendingCredentialId is { } credentialId:
+                    pendingCredentialId is { } credentialId && credentialError is null &&
+                    ingressCredentials?.Items.SingleOrDefault(item => item.KeyId == credentialId) is { } selected &&
+                    CanRevokeCredential(selected, ingressCredentials.Items):
                 {
                     var result = await Api.RevokeAgentIngressCredentialAsync(
-                        AgentId,
+                        requestedAgentId,
                         credentialId,
                         disposeCts.Token);
+                    if (!IsCurrentSelection(generation, requestedAgentId)) return;
+                    ValidateAgentIdentity(result.AgentId, requestedAgentId);
+                    if (result.Credential.KeyId != credentialId || result.Credential.RevokedAtUtc is null)
+                    {
+                        throw new GatewayApiProtocolException("The revocation response did not confirm the selected key.", null);
+                    }
+                    accepted = true;
                     confirmationAction = ConfirmationAction.None;
                     pendingCredentialId = null;
                     await LoadCredentialsAsync();
+                    if (!IsCurrentSelection(generation, requestedAgentId)) return;
                     if (canViewAudit)
                     {
                         await LoadAuditAsync();
                     }
-                    announcement = result.AlreadyRevoked
-                        ? "That Gateway credential was already revoked."
-                        : "Gateway credential revoked.";
+                    if (IsCurrentSelection(generation, requestedAgentId))
+                    {
+                        announcement = result.AlreadyRevoked
+                            ? "That Gateway key was already revoked."
+                            : "Selected Gateway key revoked. Other usable credentials were not revoked.";
+                    }
                     break;
                 }
                 default:
@@ -1127,34 +1343,74 @@ else if (agentResource is not null)
         }
         catch (Exception exception)
         {
-            confirmationAction = ConfirmationAction.None;
-            pendingCredentialId = null;
-            actionError = UiErrorInfo.FromException(exception);
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                confirmationAction = ConfirmationAction.None;
+                pendingCredentialId = null;
+                var rejected = exception is GatewayAuthenticationRequiredException ||
+                    exception is GatewayApiException { StatusCode: System.Net.HttpStatusCode.BadRequest or
+                        System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden or
+                        System.Net.HttpStatusCode.UnprocessableEntity };
+                actionReadbackRequired = accepted || !rejected;
+                readbackMessage = accepted
+                    ? "The Gateway accepted the action, but refreshed state is unavailable. Read the current record before taking another action."
+                    : "The response was interrupted or could not be verified. The action may have completed. Refresh the same agent and its metadata; no automatic replay will occur.";
+                actionError = actionReadbackRequired
+                    ? new UiErrorInfo(readbackMessage, (exception as GatewayApiClientException)?.CorrelationId)
+                    : UiErrorInfo.FromException(exception);
+            }
+            Logger.LogWarning("Agent action did not return a verified result ({ErrorType}).", exception.GetType().Name);
         }
         finally
         {
-            actionBusy = false;
+            if (IsCurrentSelection(generation, requestedAgentId))
+            {
+                actionBusy = false;
+            }
         }
     }
 
     private async Task ReloadAgentAsync()
     {
-        agentResource = await Api.GetAgentAsync(AgentId, disposeCts.Token);
+        var generation = selectionGeneration;
+        var requestedAgentId = loadedAgentId;
+        var resource = await Api.GetAgentAsync(requestedAgentId, disposeCts.Token);
+        if (!IsCurrentSelection(generation, requestedAgentId)) return;
+        ValidateAgentIdentity(resource.Value.AgentId, requestedAgentId);
+        agentResource = resource;
         CopyFeatureValues(agentResource.Value.Features);
 
         if (canViewProvisioning)
         {
             await LoadProvisioningAsync();
+            if (!IsCurrentSelection(generation, requestedAgentId)) return;
         }
 
         if (canViewAudit)
         {
             await LoadAuditAsync();
+            if (!IsCurrentSelection(generation, requestedAgentId)) return;
         }
 
         if (isAdministrator)
         {
             await LoadCredentialsAsync();
+        }
+        if (IsCurrentSelection(generation, requestedAgentId) &&
+            (provisioningError is not null || auditError is not null || credentialError is not null))
+        {
+            throw new GatewayApiProtocolException("The action was accepted, but related metadata could not be refreshed.", null);
+        }
+    }
+
+    private bool IsCurrentSelection(int generation, Guid agentId) =>
+        !disposeCts.IsCancellationRequested && selectionGeneration == generation && loadedAgentId == agentId;
+
+    private static void ValidateAgentIdentity(Guid actual, Guid expected)
+    {
+        if (actual == Guid.Empty || actual != expected)
+        {
+            throw new GatewayApiProtocolException("The Gateway response does not match the selected registration.", null);
         }
     }
 
@@ -1208,8 +1464,8 @@ else if (agentResource is not null)
         ConfirmationAction.Disable => "Disable this agent?",
         ConfirmationAction.Retry => "Retry provisioning?",
         ConfirmationAction.Delete => "Delete this Gateway registration?",
-        ConfirmationAction.IssueCredential => "Issue an additional Gateway credential?",
-        ConfirmationAction.RevokeCredential => "Revoke this Gateway credential?",
+        ConfirmationAction.IssueCredential => "Issue a replacement key?",
+        ConfirmationAction.RevokeCredential => "Revoke this Gateway key?",
         _ => "Confirm action"
     };
 
@@ -1218,8 +1474,8 @@ else if (agentResource is not null)
         ConfirmationAction.Enable => "The agent will be allowed to submit new data-plane requests.",
         ConfirmationAction.Disable => "New data-plane requests will be rejected until the agent is enabled again.",
         ConfirmationAction.Retry => "A new asynchronous provisioning operation will be created from the confirmed retry-safe failure. The existing history is preserved.",
-        ConfirmationAction.Delete => "Deletion runs asynchronously. The Gateway registration is removed; linked Microsoft resources are not changed.",
-        ConfirmationAction.IssueCredential => "The current credential remains valid while you deploy and verify the new key.",
+        ConfirmationAction.Delete => "This removes the registration and its Gateway access asynchronously. Microsoft Entra identities, Agent 365 registrations, shared Purview policies and external hosting remain.",
+        ConfirmationAction.IssueCredential => "Store the new key, update and verify the external agent, then revoke the old key. Existing keys stay valid. Unapplied protection edits are not saved by this separate task.",
         ConfirmationAction.RevokeCredential => "Requests using the selected key will be rejected immediately after revocation.",
         _ => string.Empty
     };
@@ -1229,9 +1485,9 @@ else if (agentResource is not null)
         ConfirmationAction.Enable => "Enable",
         ConfirmationAction.Disable => "Disable",
         ConfirmationAction.Retry => "Start retry",
-        ConfirmationAction.Delete => "Delete registration",
-        ConfirmationAction.IssueCredential => "Issue credential",
-        ConfirmationAction.RevokeCredential => "Revoke credential",
+        ConfirmationAction.Delete => "Delete Gateway registration",
+        ConfirmationAction.IssueCredential => "Issue replacement",
+        ConfirmationAction.RevokeCredential => "Revoke key",
         _ => "Confirm"
     };
 
@@ -1261,23 +1517,23 @@ else if (agentResource is not null)
         !status.Equals("Deleting", StringComparison.OrdinalIgnoreCase) &&
         !status.Equals("Deleted", StringComparison.OrdinalIgnoreCase);
 
-    private static bool CanRevokeCredential(
+    private bool CanRevokeCredential(
         AgentIngressCredentialMetadataDto credential,
         IReadOnlyList<AgentIngressCredentialMetadataDto> credentials) =>
         credential.RevokedAtUtc is null &&
         (!IsUsableCredential(credential) || credentials.Count(IsUsableCredential) > 1);
 
-    private static bool IsUsableCredential(AgentIngressCredentialMetadataDto credential) =>
-        credential.RevokedAtUtc is null && AsUtc(credential.ExpiresAtUtc) > DateTime.UtcNow;
+    private bool IsUsableCredential(AgentIngressCredentialMetadataDto credential) =>
+        credential.RevokedAtUtc is null && AsUtc(credential.ExpiresAtUtc) > Clock.GetUtcNow().UtcDateTime;
 
-    private static string CredentialStatus(AgentIngressCredentialMetadataDto credential)
+    private string CredentialStatus(AgentIngressCredentialMetadataDto credential)
     {
         if (credential.RevokedAtUtc is not null)
         {
             return "Revoked";
         }
 
-        return AsUtc(credential.ExpiresAtUtc) <= DateTime.UtcNow ? "Expired" : "Active";
+        return AsUtc(credential.ExpiresAtUtc) <= Clock.GetUtcNow().UtcDateTime ? "Expired" : "Active";
     }
 
     private void DismissIssuedCredential()

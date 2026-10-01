@@ -9,15 +9,15 @@
     private string CssClass => Normalize(Value) switch
     {
         "active" or "healthy" or "ready" or "completed" or "succeeded" or
-            "connected" or "installed" => "status-positive",
+            "connected" or "connectionverified" or "installed" or "enforcing" or "readyforevaluation" => "status-positive",
         "failed" or "expired" or "unavailable" or "simulationunavailable" or "verificationfailed" or
-            "requiresmanualintervention" => "status-negative",
+            "requiresmanualintervention" or "verificationexpired" => "status-negative",
         "disabled" or "deleted" or "cancelled" or "notconnected" or
             "notinstalled" or "notready" => "status-neutral",
         "provisioning" or "running" or "pending" or "awaitingblueprint" or "deleting" or
             "awaitingadmin" or "awaitingadminapproval" or "awaitingadministrator" or
             "awaitingadministratoraction" or "pendingpropagation" or "pendingverification" or
-            "waitingforpropagation" =>
+            "waitingforpropagation" or "verifying" or "waitingforblueprint" =>
                 "status-progress",
         _ => "status-neutral"
     };
@@ -29,7 +29,7 @@
         "AwaitingAdministratorAction" => "Administrator action required",
         "AwaitingAdministrator" => "Awaiting admin",
         "NotConnected" => "Not connected",
-        "NotInstalled" => "Unavailable",
+        "NotInstalled" => "Not installed",
         "PendingPropagation" => "Pending propagation",
         "PendingVerification" => "Pending verification",
         "WaitingForPropagation" => "Pending propagation",

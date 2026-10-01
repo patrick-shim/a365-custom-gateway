@@ -1,12 +1,13 @@
 (() => {
-    const states = new WeakMap();
+    const states = new Map();
 
-    function initialize(panel) {
-        if (!panel || states.has(panel)) {
+    function initialize(panel, id) {
+        if (!panel || !panel.isConnected || states.has(id)) {
             return;
         }
 
         const state = {
+            panel,
             lastOutsideFocus: null,
             focusHandler: null
         };
@@ -24,34 +25,35 @@
         }
 
         document.addEventListener("focusin", state.focusHandler, true);
-        states.set(panel, state);
+        states.set(id, state);
     }
 
-    function restore(panel) {
-        const target = states.get(panel)?.lastOutsideFocus;
-        if (!(target instanceof HTMLElement) || !target.isConnected) {
-            return;
-        }
-
-        queueMicrotask(() => target.focus({ preventScroll: true }));
+    function restore(id) {
+        const invoker = states.get(id)?.lastOutsideFocus;
+        queueMicrotask(() => {
+            const target = invoker instanceof HTMLElement && invoker.isConnected
+                ? invoker : document.querySelector("h1");
+            target?.focus({ preventScroll: true });
+        });
     }
 
-    function open(panel) {
+    function open(id) {
         requestAnimationFrame(() => {
+            const panel = states.get(id)?.panel;
             const target = panel?.querySelector(
                 "fluent-button:not([disabled]), button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])");
             target?.focus({ preventScroll: true });
         });
     }
 
-    function dispose(panel) {
-        const state = states.get(panel);
+    function dispose(id) {
+        const state = states.get(id);
         if (!state) {
             return;
         }
 
         document.removeEventListener("focusin", state.focusHandler, true);
-        states.delete(panel);
+        states.delete(id);
     }
 
     window.A365Gateway = window.A365Gateway || {};

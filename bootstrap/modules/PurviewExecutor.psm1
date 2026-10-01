@@ -534,9 +534,21 @@ function Get-PurviewExecutorExpectedPlanSku {
     return $sku
 }
 
+function Assert-PurviewExecutorPlanBoundary {
+    param([Parameter(Mandatory)]$Site, [Parameter(Mandatory)]$Plan,
+        [Parameter(Mandatory)][string]$PlanId,
+        [Parameter(Mandatory)][ValidateSet('B1', 'B2')][string]$ExpectedSku)
+    if (-not ([string]$Site.properties.serverFarmId).Equals($PlanId, [StringComparison]::OrdinalIgnoreCase) -or
+        $Plan.properties.reserved -ne $false -or [string]$Plan.sku.name -cne $ExpectedSku -or $Plan.sku.capacity -ne 1 -or
+        $Site.properties.outboundVnetRouting.allTraffic -ne $true) {
+        throw 'Executor must use the selected owned one-worker Windows plan and private outbound routing.'
+    }
+}
+
 function Assert-PurviewExecutorHost {
     param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$Foundation,
-        [Parameter(Mandatory)][Collections.IDictionary]$Record, [switch]$Enabled)
+        [Parameter(Mandatory)][Collections.IDictionary]$Record, [switch]$Enabled,
+        [ValidateSet('B1', 'B2')][string]$AcceptedExecutorPlanSku)
     $context = $Record.context
     $outputs = $Record.host
     $siteId = [string]$outputs.executorId.value
@@ -556,10 +568,8 @@ function Assert-PurviewExecutorHost {
     $plan = Get-PurviewExecutorArmResource -Id $planId -ApiVersion '2024-11-01'
     Assert-PurviewExecutorOwnedResource -Resource $plan -Id $planId -Context $context
     $expectedSku = Get-PurviewExecutorExpectedPlanSku -Outputs $outputs
-    if (-not ([string]$site.properties.serverFarmId).Equals($planId, [StringComparison]::OrdinalIgnoreCase) -or
-        $expectedSku -cnotin @('B1','B2') -or
-        $plan.properties.reserved -ne $false -or [string]$plan.sku.name -cne $expectedSku -or $plan.sku.capacity -ne 1 -or
-        $site.properties.outboundVnetRouting.allTraffic -ne $true) { throw 'Executor must use the owned Windows plan and private outbound routing.' }
+    if ($PSBoundParameters.ContainsKey('AcceptedExecutorPlanSku')) { $expectedSku = $AcceptedExecutorPlanSku }
+    Assert-PurviewExecutorPlanBoundary -Site $site -Plan $plan -PlanId $planId -ExpectedSku $expectedSku
     $subnet = Get-PurviewExecutorArmResource -Id $outputs.integrationSubnetId.value -ApiVersion '2023-11-01'
     if ([string]$subnet.properties.addressPrefix -cne '10.42.3.0/26' -or
         @($subnet.properties.delegations).Count -ne 1 -or
@@ -995,8 +1005,16 @@ function Install-BootstrapPurviewExecutor {
         [Parameter(Mandatory)]$Runtime,
         [Parameter(Mandatory)]$Automation,
         [Parameter(Mandatory)]$Database,
-        [switch]$ReadOnly
+        [switch]$ReadOnly,
+        [ValidateSet('B1', 'B2')][string]$AcceptedExecutorPlanSku
     )
+    $hostVerificationArguments = @{}
+    if ($PSBoundParameters.ContainsKey('AcceptedExecutorPlanSku')) {
+        if (-not $ReadOnly -or $Config.purview.enabled -ne $true -or -not $State.Contains('freshPurviewExecutor')) {
+            throw 'An accepted existing hosting selection is read-only and cannot create or resize an executor.'
+        }
+        $hostVerificationArguments['AcceptedExecutorPlanSku'] = $AcceptedExecutorPlanSku
+    }
     # Core and Custom-without-Purview do not inspect Windows tools or contact providers.
     if ($Config.purview.enabled -ne $true) { return $null }
     $context = Get-PurviewExecutorFreshContext -Config $Config -State $State -Foundation $Foundation `
@@ -1114,7 +1132,8 @@ function Install-BootstrapPurviewExecutor {
         -Template 'bootstrap/infra/purview-windows-executor.bicep' -Parameters $hostParameters
     # A resumed enabled host is verified as enabled; it is never disabled again.
     $enableName = "a365gw-$($Config.projectName)-executor-enable-$($Config.environment)"
-    Assert-PurviewExecutorHost -Config $Config -Foundation $Foundation -Record $record -Enabled:($record.operations.Contains($enableName))
+    Assert-PurviewExecutorHost -Config $Config -Foundation $Foundation -Record $record `
+        -Enabled:($record.operations.Contains($enableName)) @hostVerificationArguments
     $publisherParameters = [ordered]@{
         location = [string]$Config.location; environmentName = [string]$Config.environment; projectName = [string]$Config.projectName
         deploymentOwnershipId = $context.deploymentOwnershipId; bootstrapSourceFingerprint = $context.sourceFingerprint
@@ -1140,7 +1159,7 @@ function Install-BootstrapPurviewExecutor {
     $enabled = Invoke-PurviewExecutorDeployment @deploymentArguments -Name $enableName `
         -Template 'bootstrap/infra/purview-windows-executor.bicep' -Parameters $hostParameters
     Assert-PurviewExecutorEqual -Actual $enabled -Expected $record.host -Label 'enabled host identity'
-    Assert-PurviewExecutorHost -Config $Config -Foundation $Foundation -Record $record -Enabled
+    Assert-PurviewExecutorHost -Config $Config -Foundation $Foundation -Record $record -Enabled @hostVerificationArguments
     if (-not $ReadOnly) { $record.status = 'Installed'; & $checkpoint | Out-Null }
     return [ordered]@{
         enabled = $true; endpoint = [string]$record.host.executorEndpoint.value; binding = $record.host.executorBinding.value

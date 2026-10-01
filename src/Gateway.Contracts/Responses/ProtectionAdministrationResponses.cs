@@ -50,4 +50,5 @@ public sealed record ProtectionOperationAcceptedResponse(
     PurviewCompanionLaunchDto? CompanionLaunch = null);
 
 public sealed record ProtectionAdminOperationResponse(
-    ProtectionAdminOperationDto Operation);
+    ProtectionAdminOperationDto Operation,
+    PurviewCompanionLaunchDto? CompanionLaunch = null);

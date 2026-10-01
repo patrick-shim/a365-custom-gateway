@@ -730,9 +730,14 @@ internal sealed class ProtectionReviewHandler :
                 now,
                 mustBeUsable: true,
                 cancellationToken);
+        var inventoryGenerationId = operationType == ProtectionAdminOperationType.ReconcileDlpProfile
+            ? connection.ActiveInventoryGenerationId?.Value
+                ?? throw new DomainException("A current classifier inventory is required for reconciliation.",
+                    ErrorCodes.PURVIEW_INVENTORY_STALE)
+            : profile.InventoryGenerationId.Value;
         await RecheckInventoryAsync(
             connection,
-            profile.InventoryGenerationId.Value,
+            inventoryGenerationId,
             profile.SensitiveInformationTypeId.Value,
             profile.SensitiveInformationTypeName,
             now,
@@ -743,7 +748,7 @@ internal sealed class ProtectionReviewHandler :
             profile.Id.Value,
             profile.UpdatedAtUtc,
             profile.RowVersion);
-        var payload = CreateDlpPayload(profile);
+        var payload = CreateDlpPayload(profile, inventoryGenerationId);
         await ProtectionAdministrationRules.RequireInventorySelectionsAsync(
             _inventory, connection, ProtectionAdministrationRules.DlpSelections(payload), UtcNow(), cancellationToken);
         ProtectionAdministrationRules.ParseActions(payload.Actions,
@@ -778,7 +783,11 @@ internal sealed class ProtectionReviewHandler :
                 payload.Actions,
                 PurviewPolicyScopeType.Individual.ToString(),
                 PurviewEnforcementPlane.Application.ToString(),
-                ProtectionAdministrationRules.ReadinessDisclaimer,
+                ProtectionAdministrationRules.ReadinessDisclaimer +
+                    (inventoryGenerationId != profile.InventoryGenerationId.Value
+                        ? " After confirmation, this read-only reconciliation binds the same saved selections to the current inventory and invalidates earlier runtime verification. It does not create or change Microsoft policies."
+                        : ""),
+                InventoryGenerationId: payload.InventoryGenerationId,
                 PolicyMode: payload.PolicyMode,
                 SensitiveInformationTypes: payload.SensitiveInformationTypes,
                 AffectsAllBlueprintAgents: true),
@@ -786,13 +795,13 @@ internal sealed class ProtectionReviewHandler :
     }
 
     private static PurviewDlpProfileReviewPayload CreateDlpPayload(
-        PurviewDlpProfile profile) =>
+        PurviewDlpProfile profile, Guid inventoryGenerationId) =>
         new(
             profile.Id.Value,
             profile.PurviewTenantConnectionId,
             profile.BlueprintApplicationId.Value,
             profile.DisplayName,
-            profile.InventoryGenerationId.Value,
+            inventoryGenerationId,
             profile.SensitiveInformationTypeId.Value,
             profile.SensitiveInformationTypeName,
             profile.Mode.ToString(),
@@ -809,7 +818,7 @@ internal sealed class ProtectionReviewHandler :
                 .ToArray(),
             profile.EffectivePolicyMode.ToString(),
             profile.NormalizedSensitiveInformationTypes.Select(value =>
-                new PurviewSensitiveInformationTypeSelectionDto(profile.InventoryGenerationId.Value, value.Id, value.ExactName,
+                new PurviewSensitiveInformationTypeSelectionDto(inventoryGenerationId, value.Id, value.ExactName,
                     value.MinCount, value.MaxCount, value.MinConfidence, value.MaxConfidence)).ToArray());
 
     private async Task<(

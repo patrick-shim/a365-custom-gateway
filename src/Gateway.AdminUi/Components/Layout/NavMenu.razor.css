@@ -34,7 +34,7 @@
 .nav-eyebrow { padding: .55rem .75rem .45rem; color: rgba(255,255,255,.42); font-size: .65rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .nav-section { margin-top: 1.2rem; }
 
-.nav-link {
+::deep .nav-link {
     min-height: 2.75rem;
     padding: .55rem .75rem;
     display: flex;
@@ -49,8 +49,8 @@
     transition: background .16s ease, color .16s ease, transform .16s ease;
 }
 
-.nav-link:hover { background: rgba(255,255,255,.07); color: #fff; transform: translateX(2px); }
-.nav-link.active { background: linear-gradient(90deg, rgba(112,139,255,.24), rgba(112,139,255,.08)); border-color: rgba(147,174,255,.18); color: #fff; }
+::deep .nav-link:hover { background: rgba(255,255,255,.07); color: #fff; transform: translateX(2px); }
+::deep .nav-link.active { background: linear-gradient(90deg, rgba(112,139,255,.24), rgba(112,139,255,.08)); border-color: rgba(147,174,255,.18); color: #fff; }
 .nav-icon { width: 1.5rem; height: 1.5rem; display: grid; place-items: center; color: #aebfff; font-size: 1.05rem; }
 
 .sidebar-footer { position: absolute; bottom: 0; width: 100%; padding: 1rem; }
@@ -66,6 +66,7 @@
     .nav-toggle { display: block; }
     .nav-toggle input { position: absolute; opacity: 0; }
     .nav-toggle span { padding: .5rem .7rem; border: 1px solid rgba(255,255,255,.16); border-radius: .5rem; font-size: .75rem; }
+    .nav-toggle:focus-within span { outline: 2px solid #aebfff; outline-offset: 3px; }
     .brand-block:has(.nav-toggle input:not(:checked)) + .nav-list { display: none; }
     .nav-list { padding: .6rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .nav-eyebrow, .sidebar-footer { display: none; }

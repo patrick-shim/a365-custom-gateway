@@ -1,0 +1,53 @@
+@inject NavigationManager Navigation
+
+<section id="@Id" class="journey-outcome" aria-labelledby="@($"{Id}-heading")">
+    <div class="outcome-heading">
+        <h2 id="@($"{Id}-heading")" tabindex="-1" @ref="heading">@Guidance.Title</h2>
+        <StatusPill Value="@Guidance.Status" />
+    </div>
+    <p class="outcome-announcement" role="status" aria-live="polite" aria-atomic="true">@Guidance.Title. @Guidance.NextStep</p>
+    @if (Busy)
+    {
+        <div class="outcome-activity">
+            <ActivityIndicator Label="Checking for updates" />
+            <p>The page is checking or monitoring saved Gateway state. This does not confirm progress in Microsoft.</p>
+        </div>
+    }
+    <dl class="outcome-facts">
+        <div><dt>What happened</dt><dd>@Guidance.Summary</dd></div>
+        <div><dt>Why this matters</dt><dd>@Guidance.Purpose</dd></div>
+        <div><dt>What remains</dt><dd>@Guidance.Remaining</dd></div>
+    </dl>
+    <div class="outcome-next">
+        <div>
+            <h3>Next step</h3>
+            <p>@Guidance.NextStep</p>
+        </div>
+        @if (Guidance.ActionLabel is { } label)
+        {
+            @if (Guidance.ActionHref is { } href)
+            {
+                <a class="outcome-action" href="@ResolveActionHref(href)">@label</a>
+            }
+            else if (Guidance.Action != ProtectionJourneyAction.None)
+            {
+                <FluentButton Appearance="Appearance.Accent" Disabled="@ActionDisabled"
+                              OnClick="@(() => OnAction.InvokeAsync(Guidance.Action))">@label</FluentButton>
+            }
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public ProtectionJourneyGuidance Guidance { get; set; } = default!;
+    [Parameter] public string Id { get; set; } = "protection-journey-outcome";
+    [Parameter] public EventCallback<ProtectionJourneyAction> OnAction { get; set; }
+    [Parameter] public bool ActionDisabled { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    private ElementReference heading;
+
+    private string ResolveActionHref(string href) => href.StartsWith('#')
+        ? new Uri(Navigation.Uri).GetLeftPart(UriPartial.Query) + href : href;
+
+    public ValueTask FocusAsync() => heading.FocusAsync();
+}

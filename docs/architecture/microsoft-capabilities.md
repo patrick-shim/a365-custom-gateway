@@ -43,6 +43,12 @@ POST https://agent365.svc.cloud.microsoft/observabilityService/tenants/{tenantId
 The route's agent ID is the child Agent Identity application ID. The app-only
 token must bind to that child and carry Agent365.Observability.OtelWrite.
 
+The accepted operation names are `invoke_agent`, `execute_tool`, `chat` and
+`output_messages`. The public activity contract also retains Custom, which does
+not have an Agent 365 export mapping. Optional OTLP result details and a `sent`
+sink indicate only the evidence reported by that endpoint; an absent or unrouted
+destination is not independently verified portal landing.
+
 Provider references:
 [Agent 365 registration](https://learn.microsoft.com/microsoft-365/copilot/extensibility/api/admin-settings/agent-registration/agentregistration-create),
 [direct OpenTelemetry integration](https://learn.microsoft.com/microsoft-agent-365/developer/direct-open-telemetry-integration),
@@ -75,6 +81,12 @@ SIT choices bind the tenant inventory GUID and exact Unicode name. The source
 re-resolves exact inventory membership rather than accepting a static catalog,
 free-text type or Graph sensitivity label. Multiple selected SITs use OR semantics
 with independent count/confidence thresholds.
+Native settings operations share one fresh catalog within an invocation, import
+only their required commands and check expiry immediately before writes. This
+is bounded execution, not background catalog caching or automatic authority
+renewal. A newly reviewed existing-profile reconciliation can accept the current
+generation for unchanged settings and invalidate old proof; its provider work
+remains read-only.
 
 Four policy modes map to the provider: Enforce to Enable, SimulationWithTips to
 TestWithNotifications, SimulationWithoutTips to TestWithoutNotifications, and
@@ -88,9 +100,17 @@ stale or uncertain results cannot establish readiness.
 
 Interactive connection uses the bounded Windows companion. Noninteractive policy
 administration uses the private [Windows executor](purview-windows-executor.md).
-Both are part of the retained execution design; no active deployment is inferred.
+Both are part of the execution design. M5's private Windows runtime qualification
+does not establish a tenant connection, provider authorization or policy readiness.
 Registration and Settings can submit reviewed configuration through the same
 application service, including deferred consent for a newly created blueprint.
+
+The connection verifier requires the automation identity's separate Security &
+Compliance service-principal reference to match both ObjectId and AppId. Retained
+Entra preparation and the interactive companion do not create that reference.
+Connection/inventory proof currently expires after 15 minutes; certification
+cannot outlive it. These are source prerequisites and lifetime constraints, not
+current tenant observations.
 
 Provider references:
 [custom AI configuration](https://learn.microsoft.com/purview/developer/configurepurview),

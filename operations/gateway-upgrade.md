@@ -9,10 +9,10 @@ baseline/contract scaffold, not an execution alternative.
 
 Supporting files and related Azure resources were deliberately removed. This
 guide describes the retained lifecycle contracts, not a current deployment or a
-fully revalidated runnable workflow. `tools/Gateway.Setup`,
-`tools/Gateway.DatabaseMigrator`, `tools/Gateway.LiveVerification` and the former
-`tests/` projects are absent. Restore and validate those prerequisites before
-using a release workflow. Historical `gw0911g` repairs are not current steps.
+fully revalidated live workflow. The minimum Setup, DatabaseMigrator and
+LiveVerification source projects and a bounded local suite are restored.
+Validate the actual frozen candidate and prerequisites before using a release
+workflow. Historical `gw0911g` repairs are not current steps.
 [MILESTONES.md](../MILESTONES.md) is the sole completion and acceptance record.
 
 ## Authority and evidence
@@ -34,6 +34,22 @@ eligible preserved environment, the retained sequence is:
 3. Generate a read-only **Plan**. It freshly invokes the corrected canonical
    verifier against the actual preserved state. Historical Failed verification
    stays Failed; diagnostic reports are not accepted as authorization receipts.
+   A failed isolated verifier retains only a bounded exception type and existing
+   relative source-file/line locations, including localized PowerShell stacks.
+   Native/provider output remains suppressed; a success marker cannot override
+   a nonzero child exit.
+   Generic resource metadata reads use explicit reviewed API versions. A
+   `NoRegisteredProviderFound` response can mean an automatically selected API
+   version is unavailable in that region, not that the existing provider needs
+   registration. Diagnose the exact read; preserve ownership/type/source checks
+   rather than registering resources, weakening the gate or accepting absence.
+   If a previously restored SKU changes again, stop and establish the new change's
+   time and actor. Resource Graph property changes can supply the correlation ID
+   for an Activity Log lookup even when a resource-ID-filtered query is empty.
+   Cross-tenant governance callers have different local/issuer object IDs; resolve
+   the application ID without switching the authorized project tenant. Do not
+   repeatedly rescale, rewrite original receipts, relax the SKU check or add
+   unapproved governance exclusions.
 4. Obtain independent GPT-6 Astra source review and generate the reviewed
    **Build Plan**. Approve its exact returned fingerprint.
 5. **Build** source-bound ACR artifacts and the signed Windows executor package.
@@ -63,9 +79,33 @@ the returned tenant before sending HTTP. Azure CLI does not accept simultaneous
 subscription and tenant selectors for `account get-access-token`; this check
 preserves both bindings without that invalid invocation or logging tokens.
 
+Incremental ARM What-If can include unrelated existing resources as `Ignore`,
+with identical `before` and `after` projections. These are not proposed writes.
+Maintenance permits them only inside the exact target resource group, with no
+delta and no changed projection. Create/Modify targets still require their exact
+resource allowlists; unsupported changes and deletions remain rejected. An
+ignored resource outside the group or contradictory Ignore payload is not
+accepted. The source-only executor cannot recreate its existing app settings.
+
+### Protection transport compatibility
+
+Current protection messages include `ExpectedStepAttemptCount` as well as
+`ExpectedStepIndex`. All enqueue paths bind that value to durable step state.
+Old strict workers reject the added field; new workers do not invent an attempt
+generation for old current-step payloads. Deploy matching producer and worker
+releases under the reviewed cutover boundary, not a mixed-version rolling change.
+Inspect and explicitly reconcile legacy/unbound current work before promotion.
+
+An unbound current-step delivery is dead-lettered with
+`PROTECTION_ADMIN_MESSAGE_ATTEMPT_UNBOUND`. Unbound publication exhaustion reports
+`PROTECTION_ADMIN_PUBLICATION_GENERATION_UNBOUND` and preserves the operation and
+outbox recovery information. These are explicit recovery conditions, not
+permission to replay a provider mutation or rewrite stored payloads. Existing
+terminal/older-step dispositions remain supported.
+
 ## Commands
 
-These command examples explain the interface once its missing prerequisites and
+These command examples explain the interface once its current prerequisites and
 target eligibility have been verified. They do not authorize resuming deliberately
 deleted resources. Outputs are under the main checkout's `.maintenance` directory;
 retained source/state/configuration are read-only inputs.
@@ -83,7 +123,7 @@ retained source/state/configuration are read-only inputs.
   -RequestPath '<separate upgrade request.json>' -ValidationPath '<local validation.json>' `
   -ReviewPath '<independent source review.json>'
 
-.\operations\gateway-upgrade.ps1 -Mode Build `
+& '<validated PowerShell 7.6.5 x64 directory>\pwsh.exe' -NoLogo -NoProfile -File .\operations\gateway-upgrade.ps1 -Mode Build `
   -StatePath '<original state.json>' -ConfigPath '<original config.json>' `
   -PlanPath '<approved Build Plan>' -ExpectedPlanFingerprint 'sha256:<approved Build Plan fingerprint>'
 ```
@@ -102,11 +142,31 @@ another owner is editing SQL or mappings.
 Use request **schemaVersion 2**, **mode `SourceOnlyFull`** for an already-Full,
 19-stage completed/Passed bootstrap with an Installed `freshPurviewExecutor`.
 Other recovery/repair variants, partial capability baselines, historical failures,
-resource adoption, configuration changes, SKU changes and schema changes are
-rejected. The normalized configuration fingerprint must equal the original
+resource adoption, configuration changes, unacknowledged SKU changes and schema
+changes are rejected. The bounded existing-allocation acknowledgment below does
+not permit a hosting mutation. The normalized configuration fingerprint must equal the original
 accepted fingerprint. Full evidence, executor ownership, identities, package,
 certificate and endpoints remain bound to that original source; they are never
 relabeled as the new source.
+
+The v2 request admits a bootstrap-valid custom resource-group name only when it
+exactly matches the original accepted configuration and state. The v1
+Core-to-Full request retains its conventional `rg-<project>-<environment>` rule.
+Neither permits substituting a resource group, adopting unrelated resources or
+editing accepted state/configuration to pass validation.
+
+Earlier canonical Admin UI-only promotions are verified separately through
+[the shared read-only helpers](GatewayAdminUiReadback.psm1). The complete verifier
+checks original named ARM deployment parameters/outputs and original image
+evidence, while every current-image readback uses the independently verified
+predecessor for the Admin UI only. Its `immutableImages` report remains original
+bootstrap evidence; `deployedImages` reports the freshly checked live images.
+API and worker images remain the exact originals at baseline admission.
+The predecessor is reverified before and after the complete Full readback;
+changes to receipt bytes/set, approved source/Plan, identity, image or revision
+invalidate that readback. Missing, ambiguous or incomplete history fails closed.
+An old Accepted receipt with a succeeded deployment may be independently read
+back, but its historical status and bytes are never rewritten.
 
 Baseline verification runs the current reviewed verifier code against the
 independently hash-checked original accepted snapshot for executor assets. The
@@ -129,7 +189,7 @@ The request otherwise retains the v1 field names:
   "target": {
     "subscriptionId": "<original subscription GUID>",
     "tenantId": "<original tenant GUID>",
-    "resourceGroupName": "<original rg-project-environment>",
+    "resourceGroupName": "<exact originally accepted resource group>",
     "location": "<original location>",
     "projectName": "<original project>",
     "environment": "dev",
@@ -152,8 +212,18 @@ The request otherwise retains the v1 field names:
 }
 ```
 
-Use the actually installed F0/S0 and B1/B2 values, not this example as permission
-to resize. `acceptPaidUsage` is false for existing F0 and true for existing S0;
+Use the originally accepted, currently matching F0/S0 and B1/B2 values by default,
+not this example as permission to resize. Unacknowledged drift blocks verification.
+For a separately approved, already-allocated B1/B2 change, v2 additionally accepts
+`"acceptExistingSkuChange": true` inside `capabilities.purview`, alongside the
+exact desired `executorSku`. The original SKU must differ; a fresh read must prove
+the selected SKU on the same owned one-worker Windows plan with unchanged private
+networking and identity. This acknowledgment is source/Plan-bound and is echoed
+across the isolated verifier boundary. It does not authorize a resize, allocation,
+governance change or rewrite of the original host receipt. An absent, false,
+malformed or v1 acknowledgment cannot admit drift.
+
+`acceptPaidUsage` is false for existing F0 and true for existing S0;
 `acceptPaidHosting` acknowledges retained Basic hosting, not new installation.
 
 `-Mode ValidateRequest -StatePath ... -ConfigPath ... -RequestPath ...` performs
@@ -172,6 +242,23 @@ the package URL, manifest digest and execution-source/package binding. The compl
 remaining settings and protected workload environments are retained and rechecked.
 The publisher and private verification job are source-bound maintenance jobs,
 not replacement capability resources.
+
+Joint readback rechecks the API and worker's immutable original environments
+before enabling consumers, before reopening and after reopening. Worker
+processing/outbox controls and the reviewed execution-source/package binding are
+the only environment exceptions; a matching new deployment receipt does not
+authorize changing the original tenant, credentials, endpoint or capabilities.
+Ready revisions may report `Running` or `RunningAtMaxScale`. Exact revision/image,
+healthy state, positive replica counts, probes and individual replica identity,
+`Running` state, startup and readiness remain independently required.
+
+Azure may return a differently cased ARM ID, such as `containerapps` instead of
+`containerApps`. Live resource, child-revision/replica and scoped-permission
+identity checks use ordinal case-insensitive comparison in both orchestration
+and the private observer. Two spellings of the same resource still count as a
+duplicate, not two writers or replicas. This does not rewrite approved Plan or
+receipt bytes: ownership/principal bindings, source/image fingerprints, phases,
+health states and the original observations retain their separate exact checks.
 
 The private SQL manifest uses version 2 with **zero scripts**. It verifies the
 compiled model and exact principals before and after its serialized preservation
@@ -200,8 +287,8 @@ order against the compiled migrator manifest. Never overwrite an older candidate
 validation receipt or Plan to represent newer source.
 
 Prepare expects the candidate migrator to compile and emit its target-model
-fingerprint and executable-bundle evidence. The migrator source is currently
-absent. After restoring it, Prepare still does **not** establish that application
+fingerprint and executable-bundle evidence. The restored migrator source and
+Prepare output still do **not** establish that application
 builds, tests or executor packaging passed. Separately perform fresh API,
 worker and Admin builds, the restored regression suites, real local
 migration-runner tests and signed executor-package validation from isolated
@@ -244,9 +331,9 @@ does not access SQL or Azure, change receipt/options JSON, or include the separa
 Exchange application permission.
 
 The SQL-job behavior below is the contract expected by the retained orchestration.
-Because the migration runner source is absent, its internal transaction, manifest
-and reconciliation behavior must be re-established and tested before this path
-can be accepted as runnable.
+The restored migration runner's internal transaction, manifest and reconciliation
+behavior must be tested on the exact frozen candidate before this live path is
+accepted. Current-EF-schema LocalDB tests alone do not establish that contract.
 
 - In the v1 Core-to-Full route, Content Safety is **S0**, uses the existing API managed identity and disables
   local authentication. Its endpoint remains public with Entra authentication;
@@ -345,9 +432,11 @@ as successful rollback. The low-level workload dispatcher is private; rollback
 is exposed only through the compatibility-guarded v2 pipeline.
 
 The prompt-receipt context migration deliberately leaves historical receipts
-unbound. Those receipts cannot authorize later protected ingestion; clients must
-reevaluate with the current protection configuration. A compatible release must
-coordinate every API/protection writer so that old writers cannot alter settings
+unbound. Such receipts are rejected when supplied, even with protection off. For a
+new interaction, evaluate the prompt before starting generation under the current
+configuration. Do not mint replacement proof for already-generated content or
+blindly repeat model/ingestion work; reconcile uncertain outcomes. A compatible
+release must coordinate every API/protection writer so that old writers cannot alter settings
 without advancing the protection revision. Additive columns alone do not prove
 mixed-version safety. Require reviewed writer draining/promotion and rollback
 evidence before deployment; do not promise uninterrupted protected ingestion
@@ -369,12 +458,13 @@ artifact for bounded reconciliation, not authorize automatic deletion.
 
 ## Required migration validation
 
-The migration runner and former test projects are absent. Historical references
-to `MaintenanceUpgradeRunnerSqlTests`, opt-in environment variables, a particular
-Git baseline or past test outcomes are not current validation. M1 restores the
-minimum runnable source and tests; M5 validates the frozen release candidate.
+The migration runner and bounded local fixture projects are restored. Historical
+references to `MaintenanceUpgradeRunnerSqlTests`, old opt-in environment variables,
+a particular Git baseline or past test outcomes are not current validation.
+M1 establishes the minimum source/behavior baseline; M5 validates the exact frozen
+release candidate and its full migration protocol.
 
-The restored test path must exercise the real ordered SQL scripts against an
+The release test path must exercise the real ordered SQL scripts against an
 independently established prior schema with synthetic registrations, credentials
 and receipts. It must check original-marker preservation, transaction rollback,
 unknown outcomes without replay, and a committed migration whose subsequent
@@ -588,6 +678,16 @@ The retained executor package contract requires Microsoft-signed PowerShell
 **7.6.5** exactly and ExchangeOnlineManagement **3.10.1**. The Build workflow must
 use a matching validated installation; a newer runtime is not silently accepted
 in place of the pinned dependency.
+
+Launch the entire canonical **Build** with that installation's `pwsh.exe`, as
+shown above. Its isolated package child inherits the launcher's `$PSHOME`.
+Running Build from a newer default shell still selects that newer runtime even
+if a separate prerequisite check previously used 7.6.5. Validate the selected
+installation with the package builder's `-ValidateOnly` before starting Build;
+do not downgrade the system shell or relax the package version/signature checks.
+If this prerequisite stops a Build after image creation, inspect its exact
+checkpoints, then resume the same approved Build with the validated launcher.
+Completed image intents are read back, not recreated.
 
 Do not assume a project-local portable runtime, historical download or earlier
 prerequisite result survived the reset. Re-establish its provenance, signature,

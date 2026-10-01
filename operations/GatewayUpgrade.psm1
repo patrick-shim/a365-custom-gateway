@@ -93,6 +93,15 @@ function Get-GatewayUpgradeFileHash {
     return 'sha256:' + (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Test-GatewayUpgradeResourceId {
+    param([AllowNull()]$Actual, [AllowNull()][string[]]$Expected)
+    if ($Actual -isnot [string] -or [string]::IsNullOrWhiteSpace($Actual)) { return $false }
+    foreach ($id in $Expected) {
+        if ([string]::Equals($Actual, $id, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
 function ConvertFrom-GatewayUpgradeJsonElement {
     param([System.Text.Json.JsonElement]$Element, [int]$Depth = 0)
     if ($Depth -gt 64) { throw 'UpgradeContract: JSON nesting limit exceeded.' }
@@ -224,12 +233,22 @@ function Assert-GatewayUpgradeRequest {
     foreach ($name in @('subscriptionId', 'tenantId', 'deploymentOwnershipId')) { Assert-GatewayUpgradeGuid $target[$name] }
     if ($target.projectName -cnotmatch '^[a-z][a-z0-9]{1,7}$' -or $target.environment -cnotin @('dev', 'staging', 'prod') -or
         $target.location -cnotmatch '^[a-z][a-z0-9]{1,31}$' -or
-        $target.resourceGroupName -cne "rg-$($target.projectName)-$($target.environment)") {
-        throw 'UpgradeContract: target must be the exact conventional existing deployment.'
+        ($Request.schemaVersion -eq 1 -and $target.resourceGroupName -cne "rg-$($target.projectName)-$($target.environment)") -or
+        ($Request.schemaVersion -eq 2 -and $target.resourceGroupName -cnotmatch '^(?=.{1,90}$)[A-Za-z0-9._()\-]*[A-Za-z0-9_()\-]$')) {
+        throw 'UpgradeContract: target must name the exact accepted deployment; v1 requires the conventional name and v2 requires a valid original resource-group name.'
     }
     Assert-GatewayUpgradeShape $Request.capabilities @('promptShields', 'purview') 'capabilities'
     Assert-GatewayUpgradeShape $Request.capabilities.promptShields @('enabled', 'sku', 'acceptPaidUsage') 'promptShields'
-    Assert-GatewayUpgradeShape $Request.capabilities.purview @('enabled', 'executorSku', 'acceptPaidHosting') 'purview'
+    $purviewKeys = @('enabled', 'executorSku', 'acceptPaidHosting')
+    if ($Request.schemaVersion -eq 2 -and $Request.capabilities.purview -is [Collections.IDictionary] -and
+        $Request.capabilities.purview.Contains('acceptExistingSkuChange')) {
+        $purviewKeys += 'acceptExistingSkuChange'
+        if ($Request.capabilities.purview.acceptExistingSkuChange -isnot [bool] -or
+            $Request.capabilities.purview.acceptExistingSkuChange -ne $true) {
+            throw 'UpgradeContract: an existing hosting change requires explicit true acceptance.'
+        }
+    }
+    Assert-GatewayUpgradeShape $Request.capabilities.purview $purviewKeys 'purview'
     $shields = $Request.capabilities.promptShields
     $purview = $Request.capabilities.purview
     $sourceOnly = $Request.schemaVersion -eq 2
@@ -337,11 +356,15 @@ function Read-GatewayUpgradeBaselineInputs {
     foreach ($name in $unsupported) {
         if ($state.Contains($name)) { throw 'UpgradeBaseline: this baseline variant is not implemented; retained evidence was not reinterpreted.' }
     }
-    return @{
+    $inputs = @{
         state = $state; config = $config
         statePath = [IO.Path]::GetFullPath($StatePath); configPath = [IO.Path]::GetFullPath($ConfigPath)
         stateSha256 = $stateHash; configSha256 = $configHash
     }
+    if ($Request.schemaVersion -eq 2 -and $Request.capabilities.purview.Contains('acceptExistingSkuChange')) {
+        $inputs['acceptedExecutorPlanSku'] = [string]$Request.capabilities.purview.executorSku
+    }
+    return $inputs
 }
 
 function Assert-GatewayUpgradeFullBaseline {
@@ -366,7 +389,7 @@ function Assert-GatewayUpgradeFullBaseline {
             $verification.evidence.promptShield -cne 'Passed' -or $verification.evidence.purviewCapability -cne 'Installed' -or
             $capabilities.enabled -ne $true -or $capabilities.promptShields.status -cne 'Installed' -or
             $capabilities.purview.status -cne 'Installed' -or $fresh.schemaVersion -ne 1 -or $fresh.status -cne 'Installed') {
-            throw 'UpgradeBaseline: SourceOnlyFull requires an exact independently verified Full fresh-executor baseline and unchanged SKUs.'
+            throw 'UpgradeBaseline: SourceOnlyFull requires an exact independently verified Full fresh-executor baseline and unchanged Content Safety SKU.'
         }
         foreach ($key in @('deploymentOwnershipId', 'sourceFingerprint', 'configurationFingerprint', 'planFingerprint')) {
             $expected = if ($key -ceq 'deploymentOwnershipId') { $State.deploymentOwnershipId } else { $State.acceptedPlan[$key] }
@@ -383,8 +406,15 @@ function Assert-GatewayUpgradeFullBaseline {
             }
         }
         $binding = $fresh.host.executorBinding.value
-        if ($fresh.host.executorPlanSku.value -cne $Request.capabilities.purview.executorSku -or
-            $binding.DeploymentOwnershipId -cne $State.deploymentOwnershipId -or $binding.TenantId -cne $Request.target.tenantId -or
+        $originalSku = [string]$fresh.host.executorPlanSku.value
+        $selectedSku = [string]$Request.capabilities.purview.executorSku
+        $acceptSkuChange = $Request.capabilities.purview.Contains('acceptExistingSkuChange')
+        if ($originalSku -cnotin @('B1', 'B2') -or
+            ($originalSku -cne $selectedSku -and -not $acceptSkuChange) -or
+            ($originalSku -ceq $selectedSku -and $acceptSkuChange)) {
+            throw 'UpgradeBaseline: a different existing B1/B2 SKU requires explicit acceptance; unchanged hosting must not claim a change.'
+        }
+        if ($binding.DeploymentOwnershipId -cne $State.deploymentOwnershipId -or $binding.TenantId -cne $Request.target.tenantId -or
             $fresh.package.receipt.sourceFingerprint -cne $State.acceptedPlan.sourceFingerprint -or
             $binding.BootstrapSourceFingerprint -cne $State.acceptedPlan.sourceFingerprint -or
             $binding.ExecutionSourceFingerprint -cne $State.acceptedPlan.sourceFingerprint -or
@@ -427,6 +457,37 @@ function Initialize-GatewayUpgradeVerifier {
     }
 }
 
+function Get-GatewayUpgradeAdminUiPredecessor {
+    param($Inputs)
+    $readback = Import-Module (Join-Path $script:ToolingRoot 'operations\GatewayAdminUiReadback.psm1') -PassThru -DisableNameChecking
+    $completion = & $readback.ExportedCommands['Assert-CompletedBootstrapBoundary'] -Configuration $Inputs.config -State $Inputs.state
+    $source = & $readback.ExportedCommands['Get-AdminUiUpgradeSourceMetadata']
+    $bootstrapSource = [string]$Inputs.state.acceptedPlan.sourceFingerprint
+    $boundary = & $readback.ExportedCommands['Get-AdminUiLiveBoundary'] -Configuration $Inputs.config -State $Inputs.state `
+        -OwnershipId $Inputs.state.deploymentOwnershipId -BootstrapSourceFingerprint $bootstrapSource
+    return & $readback.ExportedCommands['Get-AdminUiUpgradePriorEvidence'] -Configuration $Inputs.config -State $Inputs.state `
+        -Completion $completion -SourceMetadata $source -BootstrapSourceFingerprint $bootstrapSource `
+        -AdminUiBoundary $boundary -ForFullMaintenance
+}
+
+function Get-GatewayUpgradeAdminUiPredecessorBinding {
+    param([AllowNull()]$Evidence)
+    if ($null -eq $Evidence) { return 'OriginalBootstrapAdminUi' }
+    return Get-GatewayUpgradeFingerprint @{
+        context = $Evidence.context
+        receiptSetFingerprint = $Evidence.receiptSetFingerprint
+        receiptFileName = $Evidence.receiptFileName
+        receiptByteFingerprint = $Evidence.receiptByteFingerprint
+        planFingerprint = $Evidence.planFingerprint
+        image = $Evidence.build.image
+        upgradeSourceFingerprint = $Evidence.upgradeSourceFingerprint
+        principalId = $Evidence.verification.adminUi.principalId
+        secretResourceId = $Evidence.verification.adminUi.secretResourceId
+        fqdn = $Evidence.verification.adminUi.fqdn
+        revisionName = $Evidence.verification.adminUi.revisionName
+    }
+}
+
 function Invoke-GatewayUpgradeCanonicalVerifierCore {
     [CmdletBinding()]
     param($Inputs)
@@ -442,6 +503,7 @@ function Invoke-GatewayUpgradeCanonicalVerifierCore {
             Set-BootstrapExecutionSourceRoot -Path (Resolve-BootstrapAcceptedSourceRoot -State $state)
         }
         Assert-BootstrapAzureContext -Config $config | Out-Null
+        $adminUiPredecessor = if ($state.Contains('freshPurviewExecutor')) { Get-GatewayUpgradeAdminUiPredecessor $Inputs } else { $null }
         $arguments = @{
             Config = $config; State = $state; DeploymentOwnershipId = $state.deploymentOwnershipId; NonInteractive = $true
         }
@@ -452,12 +514,31 @@ function Invoke-GatewayUpgradeCanonicalVerifierCore {
             AdminIdentity = 'Admin UI identity'; AdminCredential = 'Admin UI Key Vault credential'
         }
         foreach ($key in $mapping.Keys) { $arguments[$key] = $state.steps[$mapping[$key]].evidence }
+        if ($null -ne $adminUiPredecessor) { $arguments['AdminUiPredecessor'] = $adminUiPredecessor }
+        if ($Inputs.Contains('acceptedExecutorPlanSku')) {
+            $arguments['AcceptedExecutorPlanSku'] = $Inputs.acceptedExecutorPlanSku
+        }
         # Invoke the current read-only verifier, not bootstrap's state-writing dispatcher.
         $result = Test-GatewayBootstrapDeployment @arguments
         if ($result.deploymentVerification -cne 'Passed' -or $result.azureRbac -cne 'Passed' -or
             $result.sqlPrivateEndpoint -cne 'Passed' -or $result.adminUiIdentity -cne 'Passed' -or
             $result.adminUiCredential -cne 'Passed' -or $result.provisioningAdmissionReady -ne $true) {
             throw 'UpgradeBaseline: independent verification did not prove the working deployment.'
+        }
+        if ($Inputs.Contains('acceptedExecutorPlanSku')) {
+            $result['executorHostingSelection'] = @{
+                originalSku = [string]$state.freshPurviewExecutor.host.executorPlanSku.value
+                currentSku = [string]$Inputs.acceptedExecutorPlanSku
+                capacity = 1
+                disposition = 'AcceptedExistingAllocation;NoHostingMutation'
+            }
+        }
+        if ($state.Contains('freshPurviewExecutor')) {
+            $after = Get-GatewayUpgradeAdminUiPredecessor $Inputs
+            if ((Get-GatewayUpgradeAdminUiPredecessorBinding $after) -cne (Get-GatewayUpgradeAdminUiPredecessorBinding $adminUiPredecessor)) {
+                throw 'UpgradeBaseline: the Admin UI predecessor changed during complete baseline verification.'
+            }
+            if ($null -ne $after) { $result['adminUiPredecessor'] = $after }
         }
         return $result
     }
@@ -471,6 +552,29 @@ function Invoke-GatewayUpgradeCanonicalVerifierCore {
     }
 }
 
+function Get-GatewayUpgradeBaselineFailureContext {
+    param([string]$Output, [string]$SourceRoot)
+    $offset = $Output.LastIndexOf('Verifier failure type: ', [StringComparison]::Ordinal)
+    if ($offset -lt 0 -or $Output.Length - $offset -gt 32768) { return '' }
+    $trace = $Output.Substring($offset)
+    $type = [regex]::Match($trace, '\AVerifier failure type: ([A-Za-z][A-Za-z0-9]{0,127}); source stack:')
+    if (-not $type.Success) { return '' }
+    $root = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\', '/')
+    # PowerShell localizes stack delimiters and line labels; retain only known source paths and line numbers.
+    $pattern = [regex]::Escape($root) +
+        '[\\/](?<file>(?:bootstrap|operations)[\\/][A-Za-z0-9_.\\/-]{1,220}\.psm?1):[^\r\n0-9]{0,32}(?<line>[1-9][0-9]{0,5})(?![0-9])'
+    $locations = [Collections.Generic.List[string]]::new()
+    foreach ($match in [regex]::Matches($trace, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+        $relative = $match.Groups['file'].Value
+        if (@($relative -split '[\\/]' | Where-Object { $_ -in @('.', '..') }).Count -gt 0 -or
+            -not (Test-Path -LiteralPath (Join-Path $root $relative) -PathType Leaf)) { continue }
+        $locations.Add("$($relative):$($match.Groups['line'].Value)")
+        if ($locations.Count -eq 12) { break }
+    }
+    if ($locations.Count -eq 0) { return '' }
+    return "Verifier type: $($type.Groups[1].Value). Source locations: $($locations -join ' > ')."
+}
+
 function Invoke-GatewayUpgradeBaselineProcess {
     param($Inputs, [ValidateRange(1, 1800)][int]$TimeoutSeconds = 1800)
     $scriptPath = Resolve-GatewayUpgradeFile $script:ToolingRoot 'operations\gateway-upgrade-baseline.ps1'
@@ -481,8 +585,12 @@ function Invoke-GatewayUpgradeBaselineProcess {
     $start.RedirectStandardError = $true
     foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $scriptPath,
             '-StatePath', $Inputs.statePath, '-ConfigPath', $Inputs.configPath,
-            '-ExpectedStateSha256', $Inputs.stateSha256, '-ExpectedConfigSha256', $Inputs.configSha256)) {
+            '-ExpectedStateSha256', $Inputs.stateSha256, '-ExpectedConfigSha256', $Inputs.configSha256, '-Verbose')) {
         $start.ArgumentList.Add([string]$argument)
+    }
+    if ($Inputs.Contains('acceptedExecutorPlanSku')) {
+        $start.ArgumentList.Add('-AcceptedExecutorPlanSku')
+        $start.ArgumentList.Add([string]$Inputs.acceptedExecutorPlanSku)
     }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
@@ -499,7 +607,10 @@ function Invoke-GatewayUpgradeBaselineProcess {
         }
         $text = $stdout.GetAwaiter().GetResult()
         $null = $stderr.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) { throw 'UpgradeBaseline: current read-only verifier failed; child output suppressed. Original history was not rewritten.' }
+        if ($process.ExitCode -ne 0) {
+            $context = Get-GatewayUpgradeBaselineFailureContext -Output $text -SourceRoot $script:ToolingRoot
+            throw "UpgradeBaseline: current read-only verifier failed; provider output suppressed. Original history was not rewritten. $context".TrimEnd()
+        }
         $marker = 'A365GW_UPGRADE_BASELINE:'
         $lines = @($text.Split("`n") | Where-Object { $_.StartsWith($marker) })
         if ($lines.Count -ne 1 -or $lines[0].Length -gt 4096) { throw 'UpgradeBaseline: expected exactly one bounded verifier result.' }
@@ -510,7 +621,13 @@ function Invoke-GatewayUpgradeBaselineProcess {
         }
         catch { throw 'UpgradeBaseline: invalid verifier result; child output suppressed.' }
         finally { if ($null -ne $document) { $document.Dispose() } }
-        Assert-GatewayUpgradeShape $result @('status', 'verifiedAtUtc', 'verifierResultFingerprint') 'verifier result'
+        $resultKeys = @('status', 'verifiedAtUtc', 'verifierResultFingerprint')
+        if ($Inputs.Contains('acceptedExecutorPlanSku')) { $resultKeys += 'acceptedExecutorPlanSku' }
+        Assert-GatewayUpgradeShape $result $resultKeys 'verifier result'
+        if ($Inputs.Contains('acceptedExecutorPlanSku') -and
+            $result.acceptedExecutorPlanSku -cne $Inputs.acceptedExecutorPlanSku) {
+            throw 'UpgradeBaseline: the verifier did not prove the explicitly accepted hosting SKU.'
+        }
         Assert-GatewayUpgradeHash $result.verifierResultFingerprint
         if ($result.status -cne 'Passed') { throw 'UpgradeBaseline: current verifier did not pass.' }
         return $result
@@ -841,10 +958,11 @@ function Get-GatewayUpgradeOriginalBinding {
 function Get-GatewayUpgradeReview {
     param([Parameter(Mandatory)]$Request)
     if ($Request.schemaVersion -eq 2) {
+        $acceptedHosting = $Request.capabilities.purview.Contains('acceptExistingSkuChange')
         return @{
-            costBoundary = "SourceOnlyFull retains installed $($Request.capabilities.promptShields.sku)/$($Request.capabilities.purview.executorSku); no capability installation or paid SKU transition."
+            costBoundary = "SourceOnlyFull retains live $($Request.capabilities.promptShields.sku)/$($Request.capabilities.purview.executorSku); existing hosting change accepted: $acceptedHosting. No capability installation or hosting resize is authorized."
             contentSafety = 'Preserve exact existing account, SKU, endpoint, identity and permissions.'
-            purviewHosting = 'Preserve exact existing Windows plan/site/private network/identity/certificate/permissions; change package binding only.'
+            purviewHosting = 'Require the selected existing B1/B2 allocation with one Windows worker. Preserve original SKU history, plan/site/private network/identity/certificate/permissions; change package binding only.'
             dataPreservation = 'Keep endpoint identities, registrations, keys, user writes, bootstrap marker, accepted snapshots and original state/configuration.'
             rollback = 'Compatible immutable code only; retain verified unchanged schema and upgrade receipt. No down migration, restore-over-live, queue purge or repeated Registry create.'
             policyScope = 'Purview DLP is blueprint-shared; per-registration editing must validate cross-registration effects.'
@@ -1022,4 +1140,4 @@ function Invoke-GatewayUpgradeStage {
 }
 
 Export-ModuleMember -Function ConvertTo-GatewayUpgradeCanonicalJson, Get-GatewayUpgradeFingerprint, Get-GatewayUpgradeFileHash, Read-GatewayUpgradeJson,
-    Assert-GatewayUpgradeRequest, New-GatewayUpgradePlan, Test-GatewayUpgradePlan, Save-GatewayUpgradePlan, Invoke-GatewayUpgradeStage
+    Test-GatewayUpgradeResourceId, Assert-GatewayUpgradeRequest, New-GatewayUpgradePlan, Test-GatewayUpgradePlan, Save-GatewayUpgradePlan, Invoke-GatewayUpgradeStage

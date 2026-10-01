@@ -1,0 +1,12 @@
+.readiness-panel { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.readiness-list > div, .readiness-list dd { min-width: 0; }
+.runtime-observations { max-width: 100%; overflow-x: auto; }
+.data-table td { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+    .data-table, .data-table tbody, .data-table tr, .data-table td { display: block; }
+    .data-table caption { display: block; width: 100%; text-align: left; }
+    .data-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    .data-table tr { margin-bottom: .75rem; border-bottom: 1px solid var(--border-subtle); }
+    .data-table td { padding: .4rem 0; border: 0; white-space: normal; }
+    .data-table td::before { content: attr(data-label); display: block; color: var(--text-muted); font-size: .75rem; }
+}

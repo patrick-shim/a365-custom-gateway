@@ -3,7 +3,10 @@
 This guide describes the retained executor, worker transport and packaging source.
 Project completion belongs only in [MILESTONES.md](../../MILESTONES.md); see
 [project state](../project-state.md) for current environment and tooling context.
-No current Windows deployment, provider connection or DLP readiness is asserted.
+The isolated M5 Windows/package qualification is distinct from a compliance
+provider connection or DLP readiness. A private authenticated health response
+must match the expected source and package; bootstrap's Installed status alone
+does not establish that runtime result or policy enforcement.
 
 ## Responsibilities
 
@@ -54,6 +57,21 @@ Unexpected pipeline-object output and unsafe error details are rejected. The
 parent owns cancellation and whole-process-tree termination. Local process
 behavior alone does not establish cloud runtime or provider connectivity.
 
+Each settings invocation imports only its required Security & Compliance
+commands and reads one fresh SIT catalog for all of that invocation's primary
+and multi-SIT validation. The catalog is not reused across invocations. Authority
+is checked before connecting and again immediately before every New/Set call,
+including after reading an existing update target. This reduces avoidable
+provider work without extending the accepted deadline or inventory lifetime.
+The native child remains bounded to 180 seconds.
+
+Failed reads preserve the safe `PURVIEW_INVENTORY_STALE` or proven transient
+`PURVIEW_SETTINGS_READ_TIMEOUT` classification when available; other read
+failures remain unavailable. These classifications do not authorize mutation
+replay. A Started mutation claim with an unknown result still requires exact
+readback, even if the same provider work would now time out or its inventory
+has expired.
+
 ## Caller and certificate authority
 
 A dedicated single-tenant API application exposes Purview.Executor.Invoke to the
@@ -76,7 +94,39 @@ operation ID, timestamp, fixed stage/category and numeric child/provider stage.
 It excludes exception messages, provider bodies and secret material. A diagnostic
 receipt is not connection or enforcement proof.
 
+### The automation application's provider reference
+
+An Entra enterprise application and its Security & Compliance service-principal
+reference are separate objects. The reference uses the existing application's
+AppId and the enterprise application's ObjectId, not the app-registration
+object ID. `VerifyConnection` deliberately requires exactly that pair through
+`Get-ServicePrincipal` before resolving the administrator and reading the
+classifier catalog. Successful certificate sign-in alone cannot skip this check.
+
+The retained bootstrap creates the Entra/certificate/executor prerequisites; it
+does not register that separate provider reference. The Windows companion reads
+administrator-bound catalog facts and also does not create the reference, transfer
+its sign-in session or grant the automation app permissions. Before the first
+tenant connection, an authorized administrator must verify this prerequisite.
+See the [bounded operator procedure](../../operations/README.md#purview-automation-reference-prerequisite).
+
+If an exact read proves the reference absent, Microsoft's
+[New-ServicePrincipal](https://learn.microsoft.com/en-us/powershell/module/exchangepowershell/new-serviceprincipal?view=exchange-ps)
+registers the existing identity in Security & Compliance. This is not a new
+Entra identity or a role/policy grant. A mismatch or unknown create outcome
+requires investigation/readback, never another create. Verify the Gateway's own
+app access separately after registration; neither the reference nor a human
+catalog read proves DLP configuration or enforcement.
+
 ## Private package delivery
+
+Fresh installations select one Windows Basic B1 worker. That choice supports the
+required private endpoint and VNet integration; allocation and private runtime
+health must still be checked independently. Existing installations preserve
+their original hosting receipt. The
+[explicit maintenance acknowledgment](../../operations/gateway-upgrade.md#source-only-maintenance-of-an-installed-full-deployment)
+can verify an approved, already-existing B1/B2 change without resizing or
+rewriting that history.
 
 The source provisions dedicated VNet integration, private endpoint and DNS for
 application/SCM names. Public network access and basic publishing credentials are
@@ -94,6 +144,11 @@ manifest and every file hash. Counted reads bound actual expanded size. Windows
 path validation rejects traversal, reserved names, aliases, collisions and
 file/directory conflicts. The build context contains allowlisted publisher
 sources, public settings and the inspected ZIP.
+The publisher Dockerfile copies the reviewed SDK, version and NuGet inputs into
+the build root before restore and explicitly uses the repository feed configuration.
+Including these files in the build context alone does not make the SDK or
+MSBuild consume them; an omitted version input would publish default metadata
+instead of the repository release version.
 
 The publisher checks the expected private storage address before obtaining
 credentials, validates the local payload, and writes with If-None-Match: *.
@@ -135,8 +190,16 @@ bootstrap state must not be rewritten as evidence for changed source.
 Package integrity, host startup, worker authentication, compliance authorization,
 tenant inventory, exact policy readback and runtime sample behavior are independent
 verification boundaries. The milestone plan tracks their implementation and
-acceptance. Missing tool/test projects must be restored before claiming
-reproducible packaging or release validation.
+acceptance. Restored tool/test sources and local compilation do not replace a
+fresh signed runtime package or frozen-candidate release validation.
+
+For local release qualification, [Test-PurviewPackage.ps1](../../tools/Test-PurviewPackage.ps1)
+accepts an exact package directory and source fingerprint. It verifies the ZIP
+receipt, runs the packaged native probe, rejects altered/unbound manifests and
+unapproved commands, and checks the actual executor's unauthenticated HTTP
+boundary using synthetic authority and an owned Windows profile. It performs no
+provider authentication or mutation. The build prerequisite also verifies that
+the selected PowerShell process is X64, not merely a 64-bit architecture.
 
 The [protection architecture](protection-settings-plan.md) explains reviewed
 registration configuration, multiple SITs and modes, shared scope, approved

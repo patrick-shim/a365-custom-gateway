@@ -31,7 +31,7 @@ param runtimeManifestDigest string
 param executionBinding object
 param organization string
 
-var executorSku = 'B2'
+var executorSku = 'B1'
 var suffix = '${projectName}-${environmentName}'
 var executorName = 'app-${suffix}-purview-${take(uniqueString(resourceGroup().id), 6)}'
 var tags = {

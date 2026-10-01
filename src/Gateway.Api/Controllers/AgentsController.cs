@@ -79,6 +79,7 @@ public class AgentsController : ControllerBase
     [HttpGet]
     [Authorize(Policy = AuthorizationPolicies.AllControlPlane)]
     [ProducesResponseType(typeof(AgentListResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ListAgents(
         [FromQuery] string? status,
         [FromQuery] string? environment,

@@ -6,11 +6,11 @@
 @inject IGatewayApiClient Api
 @inject AuthenticationStateProvider AuthenticationStateProvider
 
-<PageTitle>Setup center · A365 Gateway</PageTitle>
+<PageTitle>Getting started · A365 Gateway</PageTitle>
 
 <PageHeader Eyebrow="Getting started"
-            Title="Setup center"
-            Description="Confirm deployment readiness, then create and verify registrations through Active state.">
+            Title="From a ready Gateway to a connected agent"
+            Description="Save the one-time key before completing Agent 365 setup. Optional protection is a separate choice.">
     <Actions>
         <span class="last-updated">Checked @FormatTime(lastUpdatedUtc)</span>
         <FluentButton Appearance="Appearance.Neutral" OnClick="LoadAsync" Disabled="loading">Refresh checks</FluentButton>
@@ -49,19 +49,26 @@ else
             <h2 id="next-safe-action-heading">@NextActionTitle</h2>
             <p>@NextActionDescription</p>
             <div class="setup-summary-actions">
-                @if (CanRegisterNow && !HasActiveRegistration)
+                @if (CanRegisterNow && !HasActiveRegistration && FirstAgent is null &&
+                    agentInventory is not null && activeAgentInventory is not null)
                 {
-                    <FluentAnchor Appearance="Appearance.Accent" Href="/agents/register">Register the first agent</FluentAnchor>
+                    <FluentAnchor Appearance="Appearance.Accent" Href="/agents/register">Register agent</FluentAnchor>
                 }
                 else if (FirstActiveAgent is { } activeAgent)
                 {
-                    <FluentAnchor Appearance="Appearance.Accent" Href="@($"/agents/{activeAgent.AgentId:D}")">Review an Active registration</FluentAnchor>
+                    <FluentAnchor Appearance="Appearance.Accent" Href="@($"/agents/{activeAgent.AgentId:D}")">Open connection details</FluentAnchor>
+                }
+                @if (!HasActiveRegistration && FirstAgent is { } existingAgent)
+                {
+                    <FluentAnchor Appearance="Appearance.Accent" Href="@($"/agents/{existingAgent.AgentId:D}")">Review existing agent setup</FluentAnchor>
                 }
                 <FluentAnchor Appearance="Appearance.Stealth" Href="/agents">Open agent inventory</FluentAnchor>
             </div>
         </div>
     </section>
 
+    <details class="setup-diagnostics">
+    <summary>Deployment readiness and support details</summary>
     <section class="readiness-section" aria-labelledby="readiness-heading">
         <div class="section-heading">
             <div>
@@ -97,37 +104,24 @@ else
             }
         </ol>
     </section>
+    </details>
 
     <div class="setup-columns">
         <section class="card" aria-labelledby="first-run-heading">
             <div class="card-header">
                 <div>
-                    <h2 id="first-run-heading">First-run path</h2>
-                    <span class="section-caption">Role-aware, resumable handoffs</span>
+                    <h2 id="first-run-heading">Connect your agent</h2>
+                    <span class="section-caption">Keep the identity, key and next action together</span>
                 </div>
             </div>
             <ol class="first-run-list">
                 <li>
                     <span class="first-run-number" aria-hidden="true">1</span>
                     <div>
-                        <h3>Confirm your signed-in role</h3>
-                        <p>You are signed in as <strong>@CurrentRole</strong>. Portal role checks guide the experience; every API call remains independently authorized.</p>
-                    </div>
-                </li>
-                <li>
-                    <span class="first-run-number" aria-hidden="true">2</span>
-                    <div>
-                        <h3>Review deployment capabilities</h3>
-                        <p>@CapabilityGuidance</p>
-                    </div>
-                </li>
-                <li>
-                    <span class="first-run-number" aria-hidden="true">3</span>
-                    <div>
-                        <h3>Register the external agent</h3>
+                        <h3>Choose the agent and its blueprint</h3>
                         @if (isAdministrator)
                         {
-                            <p>Choose a typed Agent 365-compatible reusable blueprint or create a new reusable blueprint. The API rechecks compatibility and registration admission before issuing a one-time Gateway key.</p>
+                            <p>Give the external agent a name, then reuse a compatible blueprint or create one. Each registration still receives its own child identity and Gateway key.</p>
                         }
                         else
                         {
@@ -136,30 +130,37 @@ else
                     </div>
                 </li>
                 <li>
+                    <span class="first-run-number" aria-hidden="true">2</span>
+                    <div>
+                        <h3>Save the one-time Gateway key</h3>
+                        <p>Keep the API endpoint, external agent ID and key together in the external agent's protected configuration. Save the key before continuing; a lost key needs a replacement from the existing registration, not another registration.</p>
+                    </div>
+                </li>
+                <li>
+                    <span class="first-run-number" aria-hidden="true">3</span>
+                    <div>
+                        <h3>Complete Agent 365 setup</h3>
+                        <p>A Gateway Administrator completes the delegated Registry step using their signed-in session. A permitted automatic handoff starts only after the key is saved. Reopen the same operation to follow verification; do not repeat an uncertain create.</p>
+                    </div>
+                </li>
+                <li>
                     <span class="first-run-number" aria-hidden="true">4</span>
                     <div>
-                        <h3>Follow the seven-step operation</h3>
-                        <p>The worker completes five stages and pauses at 71% for a signed-in Gateway Administrator. An enabled development deployment may initiate that delegated action from the administrator UI. It never bypasses the user, role, OBO, locking, or one-POST Registry boundary.</p>
-                    </div>
-                </li>
-                <li>
-                    <span class="first-run-number" aria-hidden="true">5</span>
-                    <div>
-                        <h3>Deploy the one-time Gateway key</h3>
-                        <p>The clear key appears only in the successful issuance response. Do not put it in a URL, browser storage, logs, or documentation. If it is lost, issue a replacement; the old clear value cannot be recovered.</p>
-                    </div>
-                </li>
-                <li>
-                    <span class="first-run-number" aria-hidden="true">6</span>
-                    <div>
-                        <h3>Confirm the registration becomes Active</h3>
-                        <p>Active means the Gateway persisted completion after final verification. This is a post-deployment use check; it does not turn the preview Agent 365 Registry dependency into supported production readiness.</p>
+                        <h3>Connect and send an interaction</h3>
+                        <p>When the registration is Active, use the connection example in its details. Evaluate every prompt, require valid allow proof, call the model once, then submit that same interaction. Gateway acceptance and downstream delivery are different outcomes.</p>
                     </div>
                 </li>
             </ol>
         </section>
 
         <aside class="setup-aside" aria-label="Deployment capability and evidence guidance">
+            <section class="card" aria-labelledby="optional-protection-heading">
+                <div class="card-header"><h2 id="optional-protection-heading">Add protection when needed</h2></div>
+                <div class="card-body">
+                    <p>Prompt Shields and Microsoft Purview are independent, optional choices for each agent. Both off is a complete core registration, not an unfinished protection task.</p>
+                    <FluentAnchor Appearance="Appearance.Neutral" Href="/settings">Explore protection settings</FluentAnchor>
+                </div>
+            </section>
             <section class="card" aria-labelledby="capabilities-heading">
                 <div class="card-header">
                     <div>
@@ -250,6 +251,7 @@ else
 
     private bool ControlPlaneReady => agentInventory is not null;
     private bool HasActiveRegistration => FirstActiveAgent is not null;
+    private AgentSummaryDto? FirstAgent => agentInventory?.Items.FirstOrDefault();
     private AgentSummaryDto? FirstActiveAgent => activeAgentInventory?.Items.FirstOrDefault();
     private bool CanRegisterNow => isAdministrator && systemConfig?.ProvisioningExecutionEnabled == true;
 
@@ -275,11 +277,15 @@ else
                     ? "Refresh the server capability check"
                     : isAdministrator && systemConfig?.ProvisioningExecutionEnabled != true
                         ? "Registration admission is currently closed"
+                        : activeAgentInventory is null
+                            ? "Refresh registration status"
+                        : !HasActiveRegistration && FirstAgent is not null
+                            ? "Review existing agent setup"
                         : !HasActiveRegistration
                             ? isAdministrator
                                 ? "Register the first external agent"
                                 : "Ask a Gateway Administrator to register the first agent"
-                            : "Review the Active registration";
+                            : "Connect your external agent";
 
     private string NextActionDescription =>
         !InfrastructureReady
@@ -290,17 +296,15 @@ else
                     ? "The portal cannot safely decide whether registration is open without the administrator-only capability response."
                     : isAdministrator && systemConfig?.ProvisioningExecutionEnabled != true
                         ? "A deployment operator must review the server-owned admission gate. This page cannot enable or infer deployment capability."
+                        : activeAgentInventory is null
+                            ? "The Active-registration query did not return. Refresh it instead of assuming that no registration exists."
                         : !HasActiveRegistration
                             ? isAdministrator
-                                ? "Registration will create a Gateway mapping and start provisioning. Microsoft effects remain unproven until the operation reaches its verified terminal state."
+                                ? FirstAgent is not null
+                                    ? "A registration already exists. Review its setup, save or replace its key, and complete the remaining administrator action."
+                                    : "Register the agent, save the one-time key, then finish Agent 365 registration."
                                 : "Only a Gateway Administrator can create the mapping and receive the one-time Gateway key."
-                            : "At least one registration is Gateway-reported Active. This confirms the post-deployment registration path in Gateway state, not supported production readiness for the preview Registry dependency.";
-
-    private string CapabilityGuidance => !isAdministrator
-        ? "Ask a Gateway Administrator to review the current admission and optional protection-provider capabilities; those settings are intentionally not exposed to your role."
-        : systemConfig is null
-            ? "Capability data is unavailable. Refresh rather than assuming registration or an optional protection provider is configured."
-            : "Use only the current server-advertised admission and protection-provider flags below. A disabled capability cannot be enabled by a page-level choice.";
+                            : "The Gateway reports an Active registration. Open its connection details and preserve the evaluate-before-model flow. Protection and telemetry delivery remain separate.";
 
     private string AdmissionDescription => systemConfig?.ProvisioningExecutionEnabled == true
         ? "The authenticated continuous-development registration path is enabled. API authorization, SQL locking, and delegated Registry safeguards remain mandatory."
@@ -489,8 +493,11 @@ else
 
     private static string FormatCount(int? totalCount, int returnedCount, string noun)
     {
-        var count = totalCount ?? returnedCount;
-        return count == 1 ? $"1 {noun}" : $"{count} {noun}s";
+        if (totalCount is null)
+        {
+            return $"{returnedCount} in the current results; the full {noun} total is unavailable";
+        }
+        return totalCount == 1 ? $"1 {noun}" : $"{totalCount} {noun}s";
     }
 
     private static string FormatTime(DateTime? value) => value is null

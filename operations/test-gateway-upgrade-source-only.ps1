@@ -204,6 +204,7 @@ $assetChecks = & $module {
         return $script:assetFixture.original
     }
     function script:Assert-BootstrapAzureContext { param($Config) }
+    function script:Get-GatewayUpgradeAdminUiPredecessor { param($Inputs) return $null }
     function script:Test-GatewayBootstrapDeployment {
         $script:assetFixture.calls++
         if ($script:assetFixture.root -cne 'verified-original') { throw 'Verifier did not use independently resolved original assets.' }

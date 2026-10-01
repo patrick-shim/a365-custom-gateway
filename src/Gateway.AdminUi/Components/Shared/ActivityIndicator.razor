@@ -1,0 +1,8 @@
+<div class="activity-indicator" role="progressbar" aria-label="@Label" aria-busy="true">
+    <span class="activity-ring" aria-hidden="true"></span>
+    <strong class="activity-label" aria-hidden="true">@Label</strong>
+</div>
+
+@code {
+    [Parameter] public string Label { get; set; } = "Checking for updates…";
+}

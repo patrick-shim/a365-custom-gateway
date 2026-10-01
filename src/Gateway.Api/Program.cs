@@ -17,6 +17,7 @@ using Microsoft.Identity.Web;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddGatewayIngress(builder.Configuration);
 
 var maintenance = MaintenanceCutoverOptions.Read(builder.Configuration);
 builder.Services.AddSingleton(maintenance);
@@ -107,6 +108,10 @@ if (maintenance.Phase == MaintenanceCutoverPhase.PostSchemaClosed)
     MaintenanceCutoverStartup.HoldOperationalServices(builder.Services);
 
 var app = builder.Build();
+
+// A missing network peer cannot establish authority for a forwarded scheme.
+app.UseWhen(context => context.Connection.RemoteIpAddress is not null,
+    ingress => ingress.UseForwardedHeaders());
 
 if (maintenance.Phase == MaintenanceCutoverPhase.PostSchemaClosed)
     app.UseMiddleware<MaintenanceCutoverMiddleware>();

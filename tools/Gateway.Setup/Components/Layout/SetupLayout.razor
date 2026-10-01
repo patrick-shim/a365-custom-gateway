@@ -1,0 +1,46 @@
+@inherits LayoutComponentBase
+
+<a class="skip-link" href="#setup-main">Skip to setup content</a>
+
+<div class="setup-shell">
+    <aside class="setup-sidebar" aria-label="Setup progress">
+        <a class="brand" href="/setup/welcome" aria-label="A365 Gateway setup home">
+            <span class="brand-mark" aria-hidden="true">A</span>
+            <span><strong>A365 Gateway</strong><small>Secure setup</small></span>
+        </a>
+
+        <nav class="step-nav" aria-label="Setup steps">
+            <NavLink href="/setup/welcome" Match="NavLinkMatch.All"><span>1</span><div><strong>Welcome</strong><small>Safety boundary</small></div></NavLink>
+            <NavLink href="/setup/account"><span>2</span><div><strong>Azure account</strong><small>Read-only discovery</small></div></NavLink>
+            <NavLink href="/setup/profile"><span>3</span><div><strong>Profile &amp; features</strong><small>Public configuration</small></div></NavLink>
+            <NavLink href="/setup/permissions"><span>4</span><div><strong>Permissions &amp; plan</strong><small>Explicit review</small></div></NavLink>
+            <NavLink href="/setup/progress"><span>5</span><div><strong>Progress</strong><small>Resumable execution</small></div></NavLink>
+            <NavLink href="/setup/finish"><span>6</span><div><strong>Finish</strong><small>Open the portal</small></div></NavLink>
+        </nav>
+
+        <div class="local-boundary" role="note">
+            <strong>Local-only session</strong>
+            <span>Bound to 127.0.0.1. The one-time URL is removed after entry and session data stays in memory.</span>
+        </div>
+    </aside>
+
+    <main class="setup-main" id="setup-main" tabindex="-1">
+        <header class="setup-topbar">
+            <span class="local-status"><i aria-hidden="true"></i> Local setup</span>
+            <span>Keep the launch terminal open</span>
+        </header>
+        <article class="setup-content">
+            @Body
+        </article>
+    </main>
+</div>
+
+<FluentToastProvider />
+<FluentDialogProvider />
+<FluentTooltipProvider />
+<FluentMessageBarProvider />
+
+<div id="blazor-error-ui" data-nosnippet>
+    The local setup connection was interrupted.
+    <a href=".">Reload</a>
+</div>

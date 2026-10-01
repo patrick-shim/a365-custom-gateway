@@ -195,8 +195,9 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
         }
 
         var capabilityReady = IsPurviewCapabilityReady(purviewCapability);
-        var inventoryReady = profile is not null &&
-            await IsCurrentInventoryAsync(profile, UtcNow(), cancellationToken);
+        var inventoryValidUntil = profile is null ? (DateTime?)null :
+            await GetCurrentInventoryExpiryAsync(profile, UtcNow(), cancellationToken);
+        var inventoryReady = inventoryValidUntil is not null;
         var certificationReady = profile is not null && capabilityReady && inventoryReady &&
             await HasCurrentCertificationAsync(profile, cancellationToken);
         var purviewReady =
@@ -228,14 +229,15 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
             PurviewEffectivelyEnabled: purviewReady,
             PurviewReadiness: profile is null
                 ? null
-                : ToReadinessDto(profile, purviewCapability, capabilityReady, inventoryReady, certificationReady),
+                : ToReadinessDto(profile, purviewCapability, capabilityReady, inventoryValidUntil, certificationReady),
             PromptShieldEffectivelyEnabled: promptReady,
             PromptShieldCapabilityStatus:
                 promptCapability?.Status.ToString(),
             PurviewPolicyMode: profile?.EffectivePolicyMode.ToString() ?? operation?.DeferredConfiguration?.PolicyMode.ToString() ??
                 agent.RequestedPurviewPolicyMode?.ToString(),
             PurviewConfigurationOperationId: agent.PurviewConfigurationOperationId,
-            PurviewConfigurationStatus: operation?.Status.ToString());
+            PurviewConfigurationStatus: operation?.Status.ToString(),
+            PurviewProfileStatus: profile?.Status.ToString());
     }
 
     private static bool IsInstalled(ProtectionCapability? capability) =>
@@ -253,28 +255,37 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
         IsInstalled(capability) && _purviewBinding?.IsExact(capability) == true;
 
     private async Task<bool> IsCurrentInventoryAsync(
+        PurviewDlpProfile profile, DateTime now, CancellationToken cancellationToken) =>
+        await GetCurrentInventoryExpiryAsync(profile, now, cancellationToken) is not null;
+
+    private async Task<DateTime?> GetCurrentInventoryExpiryAsync(
         PurviewDlpProfile profile, DateTime now, CancellationToken cancellationToken)
     {
         if (_connections is null || _inventory is null ||
             profile.PurviewTenantConnectionId == Guid.Empty ||
             profile.InventoryGenerationId.Value == Guid.Empty ||
             profile.SensitiveInformationTypeId.Value == Guid.Empty)
-            return false;
+            return null;
 
         var connection = await _connections.GetByIdAsync(profile.PurviewTenantConnectionId, cancellationToken);
         if (connection is null || connection.Id != profile.PurviewTenantConnectionId ||
             !connection.IsUsableAt(now) ||
             connection.ActiveInventoryGenerationId != profile.InventoryGenerationId)
-            return false;
+            return null;
 
         var inventory = await _inventory.GetGenerationAsync(profile.InventoryGenerationId, cancellationToken);
-        return inventory is not null && inventory.Id == profile.InventoryGenerationId &&
+        var matches = inventory is not null && inventory.Id == profile.InventoryGenerationId &&
             inventory.PurviewTenantConnectionId == connection.Id && inventory.TenantId == connection.TenantId &&
             !inventory.IsExpired(now) && inventory.ExpiresAtUtc == profile.SensitiveInformationTypeSnapshotExpiresAtUtc &&
             profile.NormalizedSensitiveInformationTypes.All(selected =>
                 inventory.Items.Count(item => item.GenerationId == inventory.Id &&
                     item.SensitiveInformationTypeId.Value == selected.Id &&
                     string.Equals(item.ExactName, selected.ExactName, StringComparison.Ordinal)) == 1);
+        if (!matches || inventory is null)
+            return null;
+
+        return connection.ExpiresAtUtc is { } connectionExpiry && connectionExpiry < inventory.ExpiresAtUtc
+            ? connectionExpiry : inventory.ExpiresAtUtc;
     }
 
     public async Task<PurviewDlpProfileDto> ToProfileDtoAsync(
@@ -286,15 +297,23 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
         return dto with
         {
             Readiness = ToReadinessDto(profile, capability, IsPurviewCapabilityReady(capability),
-                await IsCurrentInventoryAsync(profile, UtcNow(), cancellationToken), certificationReady)
+                await GetCurrentInventoryExpiryAsync(profile, UtcNow(), cancellationToken), certificationReady)
         };
     }
 
     private ProtectionReadinessDto ToReadinessDto(
-        PurviewDlpProfile profile, ProtectionCapability? capability, bool capabilityReady, bool inventoryReady,
+        PurviewDlpProfile profile, ProtectionCapability? capability, bool capabilityReady, DateTime? inventoryValidUntil,
         bool certificationReady)
     {
+        var inventoryReady = inventoryValidUntil is not null;
         var readiness = ProtectionAdministrationMapper.ToDto(profile, UtcNow(), certificationReady).Readiness;
+        var validUntil = inventoryValidUntil;
+        if (profile.EffectivePolicyMode == PurviewPolicyMode.Enforce)
+        {
+            validUntil = profile.RuntimeBehaviorVerifiedUntilUtc is { } runtimeExpiry && validUntil is { } inventoryExpiry
+                ? runtimeExpiry < inventoryExpiry ? runtimeExpiry : inventoryExpiry
+                : null;
+        }
         return readiness with
         {
             Capability = capabilityReady ? readiness.Capability : ProtectionCapabilityStatus.Unavailable.ToString(),
@@ -303,7 +322,8 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
                 .Concat(capabilityReady ? [] : new[] { ErrorCodes.PROTECTION_CAPABILITY_UNAVAILABLE })
                 .Concat(inventoryReady ? [] : new[] { ErrorCodes.PURVIEW_INVENTORY_STALE })
                 .Distinct(StringComparer.Ordinal).ToArray(),
-            CapabilityReadbackAtUtc = capabilityReady ? capability?.LastReadbackAtUtc : null
+            CapabilityReadbackAtUtc = capabilityReady ? capability?.LastReadbackAtUtc : null,
+            ValidUntilUtc = validUntil
         };
     }
 

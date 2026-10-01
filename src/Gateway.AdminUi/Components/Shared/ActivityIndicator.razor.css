@@ -1,0 +1,41 @@
+.activity-indicator {
+    display: flex;
+    align-items: center;
+    gap: .65rem;
+    min-width: 0;
+    max-width: 100%;
+    color: var(--text-primary, #172033);
+    line-height: 1.5;
+}
+
+.activity-ring {
+    width: 1.15rem;
+    height: 1.15rem;
+    flex: 0 0 1.15rem;
+    box-sizing: border-box;
+    border: .16rem solid var(--border-strong, #cdd2df);
+    border-top-color: var(--brand-strong, #3f51c2);
+    border-radius: 50%;
+    animation: activity-turn 1.4s linear infinite;
+}
+
+.activity-label {
+    min-width: 0;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+@keyframes activity-turn {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .activity-ring { animation: none; }
+}
+
+@media (forced-colors: active) {
+    .activity-ring {
+        border-color: CanvasText;
+        border-top-color: Highlight;
+    }
+}

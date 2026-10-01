@@ -1281,7 +1281,7 @@ function New-GatewayBootstrapConfiguration {
 
     Write-Host ''
     Write-Host 'Agent 365 managerApplications grant first-party manager authority and must be independently reviewed for this tenant/provider version.' -ForegroundColor Yellow
-    Write-Host 'Do not copy IDs from blueprint discovery alone. Follow the "Reviewed manager applications" section of docs/operations/entra-setup-runbook.md.' -ForegroundColor DarkGray
+    Write-Host 'Do not copy IDs from blueprint discovery alone. Follow the "Reviewed manager applications" section of bootstrap/README.md.' -ForegroundColor DarkGray
     $reviewedManagerApplicationIds = @()
     while ($reviewedManagerApplicationIds.Count -eq 0) {
         $managerInput = Read-GatewayText -Prompt 'Reviewed manager application ID(s), comma-separated' -Pattern '^[0-9A-Fa-f,; \-]+$' -ValidationMessage 'Enter one to ten comma-separated GUIDs.'
@@ -1646,7 +1646,7 @@ function Get-GatewayPlanDescriptor {
     if ($Config.promptShield.enabled -eq $true) { $azureResources.Add('Azure AI Content Safety account with local authentication disabled') }
     if ($Config.purview.enabled -eq $true) {
         $azureResources.Add('Dedicated gateway-protection-admin-v1 queue with exact API sender and worker receiver roles')
-        $azureResources.Add('Private Windows B2 App Service executor, dedicated integration subnet, private endpoint and app/SCM DNS; private package/claim containers and exact system-identity roles')
+        $azureResources.Add('Private Windows B1 App Service executor, dedicated integration subnet, private endpoint and app/SCM DNS; private package/claim containers and exact system-identity roles')
     }
 
     $imperative = [Collections.Generic.List[object]]::new()
@@ -4725,14 +4725,14 @@ function Test-GatewaySubscriptionDeploymentEvidence {
         }
 
         foreach ($resource in @(
-            [ordered]@{ id = [string]$Evidence.containerAppsEnvironmentId; type = 'Microsoft.App/managedEnvironments'; name = [string]$Evidence.containerAppsEnvironmentName; tagged = $true },
-            [ordered]@{ id = [string]$Evidence.virtualNetworkId; type = 'Microsoft.Network/virtualNetworks'; name = [string]$Evidence.virtualNetworkName; tagged = $true },
-            [ordered]@{ id = [string]$Evidence.privateEndpointSubnetId; type = 'Microsoft.Network/virtualNetworks/subnets'; name = [string]$Evidence.privateEndpointSubnetName; tagged = $false }
+            [ordered]@{ id = [string]$Evidence.containerAppsEnvironmentId; type = 'Microsoft.App/managedEnvironments'; apiVersion = '2024-03-01'; name = [string]$Evidence.containerAppsEnvironmentName; tagged = $true },
+            [ordered]@{ id = [string]$Evidence.virtualNetworkId; type = 'Microsoft.Network/virtualNetworks'; apiVersion = '2023-11-01'; name = [string]$Evidence.virtualNetworkName; tagged = $true },
+            [ordered]@{ id = [string]$Evidence.privateEndpointSubnetId; type = 'Microsoft.Network/virtualNetworks/subnets'; apiVersion = '2023-11-01'; name = [string]$Evidence.privateEndpointSubnetName; tagged = $false }
         )) {
                         if ([string]::IsNullOrWhiteSpace($resource.id)) {
                 throw (New-BootstrapValidationMismatchException -PropertyName 'resource.id')
             }
-            $actual = Invoke-AzJson -Arguments @('resource', 'show', '--ids', $resource.id, '--query', '{id:id,type:type,name:name,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}')
+            $actual = Invoke-AzJson -Arguments @('resource', 'show', '--ids', $resource.id, '--api-version', $resource.apiVersion, '--query', '{id:id,type:type,name:name,ownershipId:tags.bootstrapOwnershipId,sourceFingerprint:tags.bootstrapSourceFingerprint}')
                         if ([string]$actual.id -ne $resource.id) {
                 throw (New-BootstrapValidationMismatchException -PropertyName 'actual.id')
             }
@@ -5415,6 +5415,7 @@ function Test-GatewayGroupDeploymentEvidence {
                 -Config $Config -Evidence $Evidence -Outputs $deployment.outputs `
                 -CapabilityEvidence $expectedCapabilities -Api $api -Worker $worker -Enabled $expectedPurviewEnabled
             $apiEnvironment = [ordered]@{
+                'GatewayIngress__TrustedProxyNetworks__0' = '100.100.0.0/17'
                 'ConnectionStrings__GatewayDb' = $sqlConnection
                 'ServiceBus__FullyQualifiedNamespace' = $serviceBusNamespace
                 'ServiceBus__QueueName' = [string]$Evidence.serviceBusQueueName
@@ -5648,11 +5649,33 @@ function Test-GatewayNamedGroupDeployment {
         [Parameter(Mandatory)]$Evidence,
         [Parameter(Mandatory)][string]$DeploymentOwnershipId,
         [Parameter(Mandatory)][string]$SourceFingerprint,
-        [Parameter(Mandatory)][string]$AdminUiImage
+        [Parameter(Mandatory)][string]$AdminUiImage,
+        [Parameter()][AllowNull()][System.Collections.IDictionary]$AdminUiPredecessor
     )
     try {
         $canonicalOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
         Assert-BootstrapFingerprintValue -Value $SourceFingerprint -Label 'Admin UI source fingerprint'
+        $currentImage = $AdminUiImage
+        if ($null -ne $AdminUiPredecessor) {
+            Assert-BootstrapFingerprintValue -Value ([string]$AdminUiPredecessor.receiptByteFingerprint) -Label 'Admin UI predecessor receipt'
+            Assert-BootstrapFingerprintValue -Value ([string]$AdminUiPredecessor.receiptSetFingerprint) -Label 'Admin UI predecessor receipt set'
+            Assert-BootstrapFingerprintValue -Value ([string]$AdminUiPredecessor.upgradeSourceFingerprint) -Label 'Admin UI predecessor source'
+            if ([string]$AdminUiPredecessor.context.subscriptionId -cne [string]$Config.subscriptionId -or
+                [string]$AdminUiPredecessor.context.tenantId -cne [string]$Config.tenantId -or
+                [string]$AdminUiPredecessor.context.resourceGroupName -cne [string]$Config.resourceGroupName -or
+                [string]$AdminUiPredecessor.context.deploymentOwnershipId -cne $canonicalOwnershipId -or
+                [string]$AdminUiPredecessor.context.bootstrapSourceFingerprint -cne $SourceFingerprint -or
+                [string]$AdminUiPredecessor.verification.kind -cne 'ReadOnlyPredecessorReverification' -or
+                [string]$AdminUiPredecessor.build.state -cne 'DigestCheckpointed' -or
+                [string]$AdminUiPredecessor.deployment.state -cne 'Succeeded' -or
+                [string]$AdminUiPredecessor.build.image -cnotmatch '@sha256:[0-9a-f]{64}$' -or
+                [string]$AdminUiPredecessor.verification.adminUi.image -cne [string]$AdminUiPredecessor.build.image -or
+                [string]$AdminUiPredecessor.verification.adminUi.principalId -cne [string]$Evidence.adminUiPrincipalId -or
+                [string]$AdminUiPredecessor.verification.adminUi.fqdn -cne [string]$Evidence.adminUiFqdn) {
+                throw (New-BootstrapValidationMismatchException -PropertyName 'adminUiPredecessor')
+            }
+            $currentImage = [string]$AdminUiPredecessor.build.image
+        }
         $expectedName = "a365gw-$($Config.projectName)-bootstrap-admin-$($Config.environment)"
                 if ($DeploymentName -ne $expectedName) {
             throw (New-BootstrapValidationMismatchException -PropertyName 'deploymentName')
@@ -5756,8 +5779,12 @@ function Test-GatewayNamedGroupDeployment {
         if (@($admin.properties.template.containers).Count -ne 1) {
             throw (New-BootstrapValidationMismatchException -PropertyName 'admin.properties.template.containers')
         }
-        if ([string]$admin.properties.template.containers[0].image -cne $AdminUiImage) {
+        if ([string]$admin.properties.template.containers[0].image -cne $currentImage) {
             throw (New-BootstrapValidationMismatchException -PropertyName 'admin.properties.template.containers.image')
+        }
+        if ($null -ne $AdminUiPredecessor -and
+            [string]$admin.tags.adminUiUpgradeSourceFingerprint -cne [string]$AdminUiPredecessor.upgradeSourceFingerprint) {
+            throw (New-BootstrapValidationMismatchException -PropertyName 'admin.tags.adminUiUpgradeSourceFingerprint')
         }
         if ([string]$adminManagedIdentity.name -ne "id-gateway-admin-$($Config.environment)") {
             throw (New-BootstrapValidationMismatchException -PropertyName 'adminManagedIdentity.name')

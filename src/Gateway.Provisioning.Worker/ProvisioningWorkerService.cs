@@ -68,30 +68,12 @@ internal sealed class ProvisioningWorkerService : BackgroundService, IAsyncDispo
             args.Message.MessageId,
             messageType);
 
-        using var scope = _scopeFactory.CreateScope();
-        var handler = scope.ServiceProvider.GetRequiredService<ProvisioningMessageHandler>();
-
+        MessageHandlingResult result;
         try
         {
-            var result = await handler.HandleAsync(messageType, payload, args.CancellationToken);
-            if (result.ShouldDeadLetter)
-            {
-                _logger.LogWarning(
-                    "Dead-lettering Service Bus message {MessageId}, type {MessageType}, reason {Reason}: {SafeSummary}",
-                    args.Message.MessageId,
-                    messageType,
-                    result.DeadLetterReason,
-                    result.DeadLetterDescription);
-
-                await args.DeadLetterMessageAsync(
-                    args.Message,
-                    result.DeadLetterReason,
-                    result.DeadLetterDescription,
-                    args.CancellationToken);
-                return;
-            }
-
-            await args.CompleteMessageAsync(args.Message, args.CancellationToken);
+            using var scope = _scopeFactory.CreateScope();
+            var handler = scope.ServiceProvider.GetRequiredService<ProvisioningMessageHandler>();
+            result = await handler.HandleAsync(messageType, payload, args.CancellationToken);
         }
         catch (OperationCanceledException) when (args.CancellationToken.IsCancellationRequested)
         {
@@ -99,8 +81,7 @@ internal sealed class ProvisioningWorkerService : BackgroundService, IAsyncDispo
         }
         catch (Agent365ObservabilityExportException exception)
         {
-            if (await TryFinalizeObservabilityRetriesAsync(
-                    handler,
+            if (await TryFinalizeRetriesAsync(
                     args,
                     messageType,
                     payload,
@@ -118,11 +99,11 @@ internal sealed class ProvisioningWorkerService : BackgroundService, IAsyncDispo
             await args.AbandonMessageAsync(
                 args.Message,
                 cancellationToken: args.CancellationToken);
+            return;
         }
         catch (Agent365ProvisioningException exception)
         {
-            if (await TryFinalizeObservabilityRetriesAsync(
-                    handler,
+            if (await TryFinalizeRetriesAsync(
                     args,
                     messageType,
                     payload,
@@ -140,11 +121,11 @@ internal sealed class ProvisioningWorkerService : BackgroundService, IAsyncDispo
             await args.AbandonMessageAsync(
                 args.Message,
                 cancellationToken: args.CancellationToken);
+            return;
         }
         catch (Exception exception)
         {
-            if (await TryFinalizeObservabilityRetriesAsync(
-                    handler,
+            if (await TryFinalizeRetriesAsync(
                     args,
                     messageType,
                     payload,
@@ -162,11 +143,14 @@ internal sealed class ProvisioningWorkerService : BackgroundService, IAsyncDispo
             await args.AbandonMessageAsync(
                 args.Message,
                 cancellationToken: args.CancellationToken);
+            return;
         }
+
+        // Settlement failure cannot invalidate a step that already committed.
+        await SettleAsync(args, result);
     }
 
-    private async Task<bool> TryFinalizeObservabilityRetriesAsync(
-        ProvisioningMessageHandler handler,
+    private async Task<bool> TryFinalizeRetriesAsync(
         ProcessMessageEventArgs args,
         string messageType,
         string payload,
@@ -175,6 +159,9 @@ internal sealed class ProvisioningWorkerService : BackgroundService, IAsyncDispo
         if (!IsFinalDelivery(args.Message.DeliveryCount, _options.MaxDeliveryCount))
             return false;
 
+        // Reload durable state rather than entities tracked by the failed attempt.
+        using var scope = _scopeFactory.CreateScope();
+        var handler = scope.ServiceProvider.GetRequiredService<ProvisioningMessageHandler>();
         var result = await handler.HandleRetryExhaustedAsync(
             messageType,
             payload,
@@ -183,18 +170,29 @@ internal sealed class ProvisioningWorkerService : BackgroundService, IAsyncDispo
         if (result is null)
             return false;
 
-        _logger.LogError(
-            "Dead-lettering Service Bus message {MessageId}, type {MessageType} after {DeliveryCount} delivery attempts",
-            args.Message.MessageId,
-            messageType,
-            args.Message.DeliveryCount);
+        await SettleAsync(args, result);
+        return true;
+    }
 
+    private async Task SettleAsync(ProcessMessageEventArgs args, MessageHandlingResult result)
+    {
+        if (!result.ShouldDeadLetter)
+        {
+            await args.CompleteMessageAsync(args.Message, args.CancellationToken);
+            return;
+        }
+
+        _logger.LogWarning(
+            "Dead-lettering Service Bus message {MessageId}, type {MessageType}, reason {Reason}: {SafeSummary}",
+            args.Message.MessageId,
+            args.Message.Subject,
+            result.DeadLetterReason,
+            result.DeadLetterDescription);
         await args.DeadLetterMessageAsync(
             args.Message,
             result.DeadLetterReason,
             result.DeadLetterDescription,
             args.CancellationToken);
-        return true;
     }
 
     internal static bool IsFinalDelivery(int deliveryCount, int maxDeliveryCount) =>

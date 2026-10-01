@@ -1,0 +1,23 @@
+.protection-configuration,
+.prerequisite-recovery {
+    min-inline-size: 0;
+}
+
+.prerequisite-recovery {
+    margin-block-end: 1rem;
+}
+
+.prerequisite-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: .5rem 1rem;
+}
+
+.prerequisite-actions .field-help {
+    flex: 1 1 18rem;
+}
+
+.deployment-callout a {
+    overflow-wrap: anywhere;
+}

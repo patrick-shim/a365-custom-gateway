@@ -1222,6 +1222,9 @@ function Get-GatewaySafeFailureEvent {
     # cause instead of forcing the operator to guess. Provider prose, bodies,
     # headers, and credentials never reach this event.
     $providerCodes = @(Get-BootstrapExceptionProviderErrorCodes -Exception $Exception)
+    if ($providerCodes -ccontains 'AzureMfaRequired') {
+        $message = 'Azure requires multifactor authentication for resource management. Sign in interactively to the configured tenant and complete MFA, then rerun Plan. If deployment has already started, preserve .bootstrap and use Resume instead of replaying mutations.'
+    }
     $providerCorrelationIds = @()
     $providerDiagnosticPath = ''
     $current = $Exception

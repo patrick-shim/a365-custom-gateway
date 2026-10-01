@@ -218,14 +218,9 @@ internal sealed class ProtectionAdminMessageHandler
                 SafeFailureSummary);
         }
 
-        if (message.ExpectedStepIndex < step.OrderIndex)
-            return MessageHandlingResult.Complete();
-        if (message.ExpectedStepIndex > step.OrderIndex)
-        {
-            return MessageHandlingResult.DeadLetter(
-                "PROTECTION_ADMIN_MESSAGE_OUT_OF_ORDER",
-                SafeFailureSummary);
-        }
+        var messageDisposition = GetStepMessageDisposition(message, step);
+        if (messageDisposition is not null)
+            return messageDisposition;
 
         var now = UtcNow;
         if (step.NextAttemptAtUtc is not null && step.NextAttemptAtUtc > now)
@@ -418,6 +413,12 @@ internal sealed class ProtectionAdminMessageHandler
         var step = operation.OrderedSteps.FirstOrDefault(candidate =>
             candidate.Status is not ProtectionAdminStepStatus.Completed and
                 not ProtectionAdminStepStatus.Skipped);
+        if (step is null)
+            return MessageHandlingResult.Complete();
+        var messageDisposition = GetStepMessageDisposition(message, step);
+        if (messageDisposition is not null)
+            return messageDisposition;
+
         var failureCode = NormalizeFailureCode(
             lastFailureCode,
             "PROTECTION_ADMIN_RETRIES_EXHAUSTED");
@@ -1368,7 +1369,8 @@ internal sealed class ProtectionAdminMessageHandler
                         operation.Id,
                         ProtectionAdminQueueContract.WorkflowVersion,
                         nextStep.OrderIndex,
-                        operation.CorrelationId),
+                        operation.CorrelationId,
+                        nextStep.AttemptCount),
                     MessageJsonOptions),
                 Status = OutboxMessageStatus.Pending,
                 CreatedAtUtc = now
@@ -1413,7 +1415,8 @@ internal sealed class ProtectionAdminMessageHandler
                     operation.Id,
                     ProtectionAdminQueueContract.WorkflowVersion,
                     step.OrderIndex,
-                    operation.CorrelationId),
+                    operation.CorrelationId,
+                    step.AttemptCount),
                 MessageJsonOptions),
             Status = OutboxMessageStatus.Pending,
             CreatedAtUtc = now,
@@ -1965,11 +1968,35 @@ internal sealed class ProtectionAdminMessageHandler
         }
         if (operation.CorrelationId != message.CorrelationId ||
             message.ExpectedStepIndex < 0 ||
-            message.ExpectedStepIndex >= ProtectionAdminWorkflow.CurrentSteps.Count)
+            message.ExpectedStepIndex >= ProtectionAdminWorkflow.CurrentSteps.Count ||
+            message.ExpectedStepAttemptCount is < 0)
         {
             return "PROTECTION_ADMIN_MESSAGE_BINDING_MISMATCH";
         }
 
+        return null;
+    }
+
+    private static MessageHandlingResult? GetStepMessageDisposition(
+        ProtectionAdminOperationMessage message,
+        ProtectionAdminOperationStep step)
+    {
+        if (message.ExpectedStepIndex < step.OrderIndex)
+            return MessageHandlingResult.Complete();
+        if (message.ExpectedStepIndex > step.OrderIndex)
+            return MessageHandlingResult.DeadLetter("PROTECTION_ADMIN_MESSAGE_OUT_OF_ORDER", SafeFailureSummary);
+        if (message.ExpectedStepAttemptCount is not { } expectedAttemptCount)
+            return MessageHandlingResult.DeadLetter("PROTECTION_ADMIN_MESSAGE_ATTEMPT_UNBOUND", SafeFailureSummary);
+
+        // MarkRunning increments the counter once. Recovery still belongs to that
+        // message until a same-step retry is durably queued with the new count.
+        var currentGeneration = step.Status == ProtectionAdminStepStatus.Running
+            ? step.AttemptCount - 1
+            : step.AttemptCount;
+        if (expectedAttemptCount < currentGeneration)
+            return MessageHandlingResult.Complete();
+        if (expectedAttemptCount > currentGeneration)
+            return MessageHandlingResult.DeadLetter("PROTECTION_ADMIN_MESSAGE_OUT_OF_ORDER", SafeFailureSummary);
         return null;
     }
 

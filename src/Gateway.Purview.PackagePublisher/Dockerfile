@@ -1,7 +1,10 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /source
+COPY ["global.json", "./"]
+COPY ["nuget.config", "./"]
+COPY ["Directory.Build.props", "./"]
 COPY src/Gateway.Purview.PackagePublisher/Gateway.Purview.PackagePublisher.csproj src/Gateway.Purview.PackagePublisher/
-RUN dotnet restore src/Gateway.Purview.PackagePublisher/Gateway.Purview.PackagePublisher.csproj
+RUN dotnet restore src/Gateway.Purview.PackagePublisher/Gateway.Purview.PackagePublisher.csproj --configfile nuget.config
 COPY src/Gateway.Purview.PackagePublisher/ src/Gateway.Purview.PackagePublisher/
 RUN dotnet publish src/Gateway.Purview.PackagePublisher/Gateway.Purview.PackagePublisher.csproj -c Release --no-restore -o /out
 

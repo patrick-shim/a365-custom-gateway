@@ -11,6 +11,9 @@ public sealed record UiErrorInfo(
 {
     public static UiErrorInfo FromException(Exception exception) => exception switch
     {
+        GatewayAuthenticationRequiredException authenticationException => new(
+            authenticationException.Message, authenticationException.CorrelationId,
+            RequiresUserInteraction: true),
         GatewayApiException { RequiresUserInteraction: true } apiException => new(
             apiException.HasClaimsChallenge
                 ? "Conditional Access requires another Microsoft Entra sign-in step. Sign in again and complete the requested interaction before retrying."

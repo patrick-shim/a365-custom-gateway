@@ -1,5 +1,6 @@
 using Gateway.AdminUi.Components;
 using Gateway.AdminUi.Authentication;
+using Gateway.AdminUi.Models;
 using Gateway.AdminUi.Options;
 using Gateway.AdminUi.Services;
 using Microsoft.AspNetCore.Authentication;
@@ -57,7 +58,9 @@ builder.Services.AddTransient<IClaimsTransformation, PortalRoleClaimsTransformat
 builder.Services.AddCascadingAuthenticationState();
 
 builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
+    .AddInteractiveServerComponents()
+    .AddHubOptions(options =>
+        options.MaximumReceiveMessageSize = PurviewCompanionInputLimits.MaximumHubMessageBytes);
 
 builder.Services.AddFluentUIComponents();
 builder.Services.AddAntiforgery(options =>
@@ -67,6 +70,8 @@ builder.Services.AddAntiforgery(options =>
 });
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IGatewayAccessTokenProvider, GatewayAccessTokenProvider>();
+builder.Services.AddScoped<RegistrationHandoffState>();
+builder.Services.AddSingleton(TimeProvider.System);
 
 builder.Services
     .AddOptions<GatewayApiOptions>()

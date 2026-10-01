@@ -277,9 +277,10 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
                         "PURVIEW_SETTINGS_MUTATION_RESULT_UNKNOWN");
                 }
 
-                throw Failure(
-                    "PURVIEW_SETTINGS_READ_FAILED",
-                    "Purview Settings readback failed closed.");
+                var failureCode = ClassifyChildReadFailure(standardError.Text);
+                throw Failure(failureCode, failureCode == "PURVIEW_INVENTORY_STALE"
+                    ? "The reviewed Purview inventory expired. Refresh prerequisites before a new review."
+                    : "Purview Settings readback failed closed.");
             }
 
             failureStage = "ResultParsing";
@@ -332,6 +333,12 @@ internal sealed class PowerShellPurviewSettingsAutomation : IPurviewSettingsAuto
             PowerShellPurviewPolicyProvisioningClient.EnsureCleanupProven(cleanupProven);
         }
     }
+
+    internal static string ClassifyChildReadFailure(string standardError) =>
+        standardError.Split('\n').Any(line =>
+            line.TrimEnd('\r') == "A365GW_VERIFIER_ERROR:InvalidData:Other:00000000:InventoryExpired")
+            ? "PURVIEW_INVENTORY_STALE"
+            : "PURVIEW_SETTINGS_READ_FAILED";
 
     private string ParseChildOutput(Guid operationId, string command, string output)
     {

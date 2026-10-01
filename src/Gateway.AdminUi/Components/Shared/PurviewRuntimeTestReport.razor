@@ -1,3 +1,9 @@
+@if (!RuntimeTestUiProtocol.IsSafeReport(Report, Report.OperationId))
+{
+    <ErrorState Title="The saved report could not be verified" Message="The report metadata is inconsistent. Read the same operation again; no protection verdict is claimed." />
+}
+else
+{
 <section class="readiness-panel" aria-label="Saved runtime test report" aria-live="polite">
     <div class="readiness-summary">
         <strong>Historical runtime test receipt</strong>
@@ -14,6 +20,7 @@
         <div><dt>Profile version</dt><dd><code>@Report.ProfileRowVersion</code></dd></div>
         <div><dt>Outstanding intended-SIT examples</dt><dd>@Report.OutstandingSensitiveInformationTypeIds.Count</dd></div>
     </dl>
+    <div class="runtime-observations" role="region" aria-label="Runtime observations table" tabindex="0">
     <table class="data-table">
         <caption>Backend observations, not browser verdicts</caption>
         <thead><tr><th>Case</th><th>Intended SIT association</th><th>Decision</th><th>Processing</th><th>Action source</th></tr></thead>
@@ -21,13 +28,16 @@
             @foreach (var item in Report.Cases)
             {
                 <tr>
-                    <td><code>@item.CaseId</code></td>
-                    <td>@(item.IntendedSensitiveInformationTypeId?.ToString("D") ?? "Clean negative")</td>
-                    <td>@item.ObservedDecision</td><td>@item.ContentProcessing</td><td>@item.ActionSource</td>
+                    <td data-label="Case"><code>@item.CaseId</code></td>
+                    <td data-label="Intended SIT association">@(item.IntendedSensitiveInformationTypeId?.ToString("D") ?? "Clean negative")</td>
+                    <td data-label="Decision">@item.ObservedDecision</td>
+                    <td data-label="Processing">@item.ContentProcessing</td>
+                    <td data-label="Action source">@item.ActionSource</td>
                 </tr>
             }
         </tbody>
     </table>
+    </div>
     @if (Report.Cases.Any(item => item.ActionSource == "ProtectionScope"))
     {
         <p class="readiness-blockers">A protection-scope block is not evidence that an approved sample was processed or a selected SIT was detected.</p>
@@ -41,6 +51,7 @@
         <p class="readiness-blockers">Reported failure: <code>@Report.FailureCode</code>. Recover the safe report or obtain a fresh review; never replay sample content automatically.</p>
     }
 </section>
+}
 
 @code {
     [Parameter, EditorRequired] public PurviewRuntimeTestResultResponse Report { get; set; } = default!;

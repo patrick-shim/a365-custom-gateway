@@ -6,111 +6,292 @@
 
 <PageTitle>Agents · A365 Gateway</PageTitle>
 
-<PageHeader Eyebrow="Registry" Title="Agents" Description="Search, filter, and manage the external agents connected to Agent 365.">
+<PageHeader Eyebrow="Registry" Title="Agents" Description="Find a Gateway registration by name or external agent ID, then open its current status and permitted actions.">
     <Actions>
-        <FluentButton Appearance="Appearance.Neutral" OnClick="LoadAsync" Disabled="loading">Refresh</FluentButton>
+        <FluentButton Appearance="Appearance.Neutral" OnClick="RestartAsync" Disabled="ControlsDisabled">Refresh</FluentButton>
         <AuthorizeView Roles="Gateway.Administrator"><FluentAnchor Appearance="Appearance.Accent" Href="/agents/register">Register agent</FluentAnchor></AuthorizeView>
     </Actions>
 </PageHeader>
 
-<section class="toolbar card" aria-label="Agent filters">
-    <div class="toolbar-field search"><FluentTextField Label="Search agents" Placeholder="Name or external agent ID" @bind-Value="search" @onkeydown="HandleSearchKey" /></div>
-    <div class="toolbar-field"><FluentSelect TOption="string" Label="Status" @bind-Value="status"><FluentOption TOption="string" Value="">All statuses</FluentOption>@foreach (var option in Statuses) { <FluentOption TOption="string" Value="@option">@FormatStatus(option)</FluentOption> }</FluentSelect></div>
-    <div class="toolbar-field"><FluentSelect TOption="string" Label="Environment" @bind-Value="environment"><FluentOption TOption="string" Value="">All environments</FluentOption>@foreach (var option in Environments) { <FluentOption TOption="string" Value="@option">@option</FluentOption> }</FluentSelect></div>
-    <div class="toolbar-actions"><FluentButton Appearance="Appearance.Accent" OnClick="ApplyFiltersAsync" Disabled="loading">Apply</FluentButton><FluentButton Appearance="Appearance.Stealth" OnClick="ClearFiltersAsync" Disabled="loading">Clear</FluentButton></div>
+<section id="agent-filters" class="toolbar card" aria-label="Agent filters" aria-busy="@(ControlsDisabled ? "true" : "false")">
+    <div class="toolbar-field search">
+        <label for="agent-search">Search agents</label>
+        <input id="agent-search" type="search" placeholder="Name or external agent ID" maxlength="256"
+               @bind="search" @bind:event="oninput" @onkeydown="HandleSearchKey" disabled="@ControlsDisabled" />
+    </div>
+    <div class="toolbar-field">
+        <label for="agent-status">Registration status</label>
+        <select id="agent-status" @bind="status" disabled="@ControlsDisabled">
+            <option value="">All statuses</option>
+            @foreach (var option in Statuses) { <option value="@option">@FormatStatus(option)</option> }
+        </select>
+    </div>
+    <div class="toolbar-field">
+        <label for="agent-environment">Environment</label>
+        <select id="agent-environment" @bind="environment" disabled="@ControlsDisabled">
+            <option value="">All environments</option>
+            @foreach (var option in Environments) { <option value="@option">@option</option> }
+        </select>
+    </div>
+    <div class="toolbar-actions"><FluentButton Appearance="Appearance.Accent" OnClick="ApplyFiltersAsync" Disabled="ControlsDisabled">Search</FluentButton><FluentButton Appearance="Appearance.Stealth" OnClick="ClearFiltersAsync" Disabled="ControlsDisabled">Clear</FluentButton></div>
+    @if (!RendererInfo.IsInteractive)
+    {
+        <p class="filter-notice" role="status">Preparing agent controls…</p>
+    }
+    else if (FiltersChanged)
+    {
+        <p class="filter-notice" role="status">Filters changed. Select Search to restart at the first page.</p>
+    }
 </section>
 
-<section class="card" aria-busy="@loading.ToString().ToLowerInvariant()">
-    <div class="card-header"><div><h2>Registered agents</h2><span class="section-caption">@ResultSummary</span></div></div>
-    @if (loading && result is null)
+<section id="agent-results" class="card" aria-busy="@(ControlsDisabled ? "true" : "false")">
+    <div class="card-header"><div><h2 id="agent-results-heading" tabindex="-1" @ref="resultsHeading">Registered agents</h2><span class="section-caption" role="status" aria-live="polite">@ResultSummary</span></div></div>
+    @if (loading)
     {
         <LoadingState Label="Loading agents…" />
     }
     else if (error is not null)
     {
-        <div class="card-body"><ErrorState Message="@error.Message" CorrelationId="@error.CorrelationId" OnRetry="LoadAsync" /></div>
+        <div class="card-body">
+            @if (cursorError)
+            {
+                <ErrorState Title="This page link is no longer valid" Message="Restart the list to load the current results. Your filters are preserved." CorrelationId="@error.CorrelationId" />
+            }
+            else
+            {
+                <ErrorState Title="We couldn't load agents" Message="@error.Message" CorrelationId="@error.CorrelationId"
+                            OnRetry="@(ControlsDisabled ? default(EventCallback) : EventCallback.Factory.Create(this, RetryAsync))" />
+            }
+            @if (cursorError || pageIndex > 0)
+            {
+                <FluentButton Appearance="Appearance.Neutral" OnClick="RestartAsync" Disabled="ControlsDisabled">Restart list</FluentButton>
+            }
+        </div>
     }
     else if (result?.Items.Count is 0)
     {
         <EmptyState Icon="◎"
-                    Title="@(HasFilters ? "No matching agents" : "No agents registered")"
-                    Description="@(HasFilters ? "Try broader filters or clear them to return to the full registry." : "Register an external agent to create its Gateway mapping and begin Agent 365 provisioning.")">
-            @if (HasFilters)
+                    Title="@EmptyTitle"
+                    Description="@EmptyDescription">
+            @if (pageIndex > 0)
             {
-                <FluentButton Appearance="Appearance.Neutral" OnClick="ClearFiltersAsync">Clear filters</FluentButton>
+                <FluentButton Appearance="Appearance.Neutral" OnClick="RestartAsync" Disabled="ControlsDisabled">Restart list</FluentButton>
             }
-            else
+            else if (HasFilters)
             {
-                <AuthorizeView Roles="Gateway.Administrator"><FluentAnchor Appearance="Appearance.Accent" Href="/agents/register">Register agent</FluentAnchor></AuthorizeView>
+                <FluentButton Appearance="Appearance.Neutral" OnClick="ClearFiltersAsync" Disabled="ControlsDisabled">Clear filters</FluentButton>
+            }
+            else if (result.TotalCount == 0)
+            {
+                <AuthorizeView Roles="Gateway.Administrator">
+                    <Authorized><FluentAnchor Appearance="Appearance.Accent" Href="/agents/register">Register agent</FluentAnchor></Authorized>
+                    <NotAuthorized><p>Administrator task: ask a Gateway Administrator to register the first agent.</p></NotAuthorized>
+                </AuthorizeView>
             }
         </EmptyState>
     }
     else if (result is not null)
     {
-        <div class="table-scroll"><table class="data-table">
-            <thead><tr><th>Agent</th><th>Status</th><th>Environment</th><th>Activity telemetry</th><th>Purview</th><th>Last activity</th></tr></thead>
+        <div class="table-scroll"><table class="data-table agents-table">
+            <thead><tr><th scope="col">Agent</th><th scope="col">Registration</th><th scope="col">Environment</th><th scope="col">Telemetry choices</th><th scope="col">Protection</th><th scope="col">Last activity</th></tr></thead>
             <tbody>@foreach (var agent in result.Items)
             {
-                <tr><td><a class="row-link primary-cell" href="/agents/@agent.AgentId">@agent.Name</a><span class="secondary-cell">@agent.ExternalAgentId</span></td><td><StatusPill Value="@agent.Status" /></td><td>@agent.Environment</td><td><span class="primary-cell">Agent 365: @FormatEnabled(ResolveAgent365Observability(agent.Features))</span><span class="secondary-cell">Azure Monitor mirror: @FormatEnabled(ResolveAzureMonitorExport(agent.Features))</span></td><td>@FormatPurview(agent.Features)</td><td>@(agent.LastActivityAtUtc?.ToLocalTime().ToString("MMM d, HH:mm") ?? "Not reported")</td></tr>
+                <tr @key="agent.AgentId">
+                    <td data-label="Agent"><a class="row-link primary-cell" href="/agents/@agent.AgentId">@agent.Name</a><span class="secondary-cell">@agent.ExternalAgentId</span></td>
+                    <td data-label="Registration"><StatusPill Value="@agent.Status" /></td>
+                    <td data-label="Environment">@agent.Environment</td>
+                    <td data-label="Telemetry choices"><span class="primary-cell">Agent 365: @FormatEnabled(ResolveAgent365Observability(agent.Features))</span><span class="secondary-cell">Azure Monitor mirror: @FormatEnabled(ResolveAzureMonitorExport(agent.Features))</span></td>
+                    <td data-label="Protection"><ProtectionSnapshot Features="agent.Features" RegistrationStatus="@agent.Status" Compact="true" /></td>
+                    <td data-label="Last activity">@(agent.LastActivityAtUtc?.ToLocalTime().ToString("MMM d, HH:mm") ?? "Not reported")</td>
+                </tr>
             }</tbody>
         </table></div>
-        @if (!string.IsNullOrWhiteSpace(result.NextCursor))
-        {
-            <div class="card-footer"><div class="subtle-note">Additional records exist, but paging is temporarily unavailable because the deployed API's returned agent cursor is not accepted on subsequent requests.</div></div>
-        }
+    }
+    @if (!loading && error is null && result is not null)
+    {
+        <div class="card-footer">
+            <nav class="agent-pagination" aria-label="Agent pages">
+                <FluentButton Appearance="Appearance.Neutral" OnClick="PreviousAsync" Disabled="@(ControlsDisabled || pageIndex == 0 || FiltersChanged)">Previous</FluentButton>
+                <span>@PageSummary</span>
+                <FluentButton Appearance="Appearance.Neutral" OnClick="NextAsync" Disabled="@(ControlsDisabled || string.IsNullOrEmpty(result.NextCursor) || FiltersChanged)">Next</FluentButton>
+            </nav>
+            <p class="subtle-note">Sorted by creation time, then Gateway ID. Registrations can change while you browse; Refresh restarts this query. Saved choices and recent activity do not confirm current protection or downstream telemetry delivery.</p>
+        </div>
     }
 </section>
 
 @code {
+    private const int PageSize = 100;
     private static readonly string[] Statuses = ["Draft", "Provisioning", "AwaitingAdminApproval", "Active", "Disabled", "Failed", "Deleting", "RequiresManualIntervention"];
     private static readonly string[] Environments = ["Development", "Test", "Production"];
     private readonly CancellationTokenSource disposeCts = new();
+    private readonly List<string?> pageCursors = [null];
+    private AgentListQuery appliedQuery = new(Limit: PageSize);
+    private AgentListQuery? routeQuery;
+    private CancellationTokenSource? requestCts;
     private AgentListResponse? result;
     private UiErrorInfo? error;
     private string? search;
     private string? status;
     private string? environment;
     private bool loading;
-    private bool HasFilters => !string.IsNullOrWhiteSpace(search) ||
-        !string.IsNullOrWhiteSpace(status) ||
-        !string.IsNullOrWhiteSpace(environment);
-    private string ResultSummary => result is null
-        ? "Waiting for Gateway data"
-        : result.Items.Count == 1
-            ? "1 agent shown"
-            : $"{result.Items.Count} agents shown";
+    private bool cursorError;
+    private bool focusResults;
+    private ElementReference resultsHeading;
+    private int pageIndex;
+    private int loadVersion;
+    private bool ControlsDisabled => !RendererInfo.IsInteractive || loading;
 
-    protected override Task OnInitializedAsync() => LoadAsync();
-    private async Task LoadAsync()
+    [Parameter, SupplyParameterFromQuery(Name = "search")] public string? SearchParameter { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "status")] public string? StatusParameter { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "environment")] public string? EnvironmentParameter { get; set; }
+
+    private AgentListQuery EditedQuery => new(NullIfEmpty(status), NullIfEmpty(environment), NullIfEmpty(search), PageSize);
+    private bool FiltersChanged => EditedQuery != appliedQuery;
+    private bool HasFilters => appliedQuery.Search is not null || appliedQuery.Status is not null || appliedQuery.Environment is not null;
+    private string ResultSummary => loading ? "Loading agents…"
+        : error is not null ? "Agent results unavailable"
+        : result is null ? "Waiting for Gateway data"
+        : result.TotalCount is not (>= 0) ? $"{result.Items.Count} agents shown on this page · total unavailable"
+        : result.Items.Count == 0 ? $"0 shown of {result.TotalCount} {(HasFilters ? "matching agents" : "agents")}"
+        : pageIndex * PageSize + result.Items.Count > result.TotalCount
+            ? $"{result.Items.Count} agents shown on this page · query total {result.TotalCount}; refresh for updated results"
+            : $"{pageIndex * PageSize + 1}–{pageIndex * PageSize + result.Items.Count} of {result.TotalCount} {(HasFilters ? "matching agents" : "agents")}";
+    private string PageSummary
     {
-        loading = true; error = null;
-        try { result = await Api.GetAgentsAsync(new AgentListQuery(NullIfEmpty(status), NullIfEmpty(environment), NullIfEmpty(search), 100), disposeCts.Token); }
-        catch (OperationCanceledException) when (disposeCts.IsCancellationRequested) { }
-        catch (Exception ex) { error = UiErrorInfo.FromException(ex); }
-        finally { loading = false; }
+        get
+        {
+            if (result?.TotalCount is not (>= 0))
+                return $"Page {pageIndex + 1} · total pages unavailable";
+            var totalPages = Math.Max(1, (int)Math.Ceiling(result.TotalCount.Value / (double)PageSize));
+            return pageIndex < totalPages
+                ? $"Page {pageIndex + 1} of {totalPages}"
+                : $"Page {pageIndex + 1} · registrations changed; restart the list";
+        }
+    }
+    private string EmptyTitle => pageIndex > 0 || result?.TotalCount > 0 ? "No agents on this page"
+        : HasFilters ? "No matching agents"
+        : result?.TotalCount == 0 ? "No agents registered yet" : "No agents returned";
+    private string EmptyDescription => pageIndex > 0 || result?.TotalCount > 0
+        ? "Registrations may have changed. Restart the list to load the current results."
+        : HasFilters ? "Try broader filters or clear them to return to the full registry."
+        : result?.TotalCount == 0 ? "Register an external agent, save its Gateway key, then complete Agent 365 registration."
+        : "The total is unavailable. Refresh to check the registry again.";
+
+    protected override Task OnParametersSetAsync()
+    {
+        var query = new AgentListQuery(NullIfEmpty(StatusParameter), NullIfEmpty(EnvironmentParameter), NullIfEmpty(SearchParameter), PageSize);
+        if (query == routeQuery)
+            return Task.CompletedTask;
+        routeQuery = query;
+        status = query.Status;
+        environment = query.Environment;
+        search = query.Search;
+        appliedQuery = query;
+        ResetPages();
+        return LoadAsync();
     }
 
-    private Task ApplyFiltersAsync() => LoadAsync();
-    private async Task ClearFiltersAsync() { search = status = environment = null; await LoadAsync(); }
-    private async Task HandleSearchKey(KeyboardEventArgs args) { if (args.Key == "Enter") await LoadAsync(); }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!focusResults || ControlsDisabled || disposeCts.IsCancellationRequested)
+            return;
+        focusResults = false;
+        try { await resultsHeading.FocusAsync(preventScroll: true); }
+        catch (JSDisconnectedException) { }
+    }
+
+    private async Task LoadAsync()
+    {
+        var version = ++loadVersion;
+        focusResults = version > 1;
+        requestCts?.Cancel();
+        using var request = CancellationTokenSource.CreateLinkedTokenSource(disposeCts.Token);
+        requestCts = request;
+        loading = true;
+        error = null;
+        cursorError = false;
+        result = null;
+        try
+        {
+            var response = await Api.GetAgentsAsync(appliedQuery with { Cursor = pageCursors[pageIndex] }, request.Token);
+            if (version == loadVersion)
+                result = response;
+        }
+        catch (OperationCanceledException) when (request.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            if (version == loadVersion)
+            {
+                error = UiErrorInfo.FromException(ex);
+                cursorError = ex is GatewayApiException { StatusCode: System.Net.HttpStatusCode.BadRequest } apiError &&
+                    apiError.ValidationErrors.Keys.Any(key => string.Equals(key, "Cursor", StringComparison.OrdinalIgnoreCase));
+            }
+        }
+        finally
+        {
+            if (version == loadVersion)
+            {
+                loading = false;
+                requestCts = null;
+            }
+        }
+    }
+
+    private Task ApplyFiltersAsync()
+    {
+        if (ControlsDisabled) return Task.CompletedTask;
+        appliedQuery = EditedQuery;
+        ResetPages();
+        return LoadAsync();
+    }
+    private Task RestartAsync()
+    {
+        if (ControlsDisabled) return Task.CompletedTask;
+        ResetPages();
+        return LoadAsync();
+    }
+    private Task PreviousAsync()
+    {
+        if (ControlsDisabled || FiltersChanged || pageIndex == 0) return Task.CompletedTask;
+        pageIndex--;
+        return LoadAsync();
+    }
+    private Task NextAsync()
+    {
+        if (ControlsDisabled || FiltersChanged || string.IsNullOrEmpty(result?.NextCursor)) return Task.CompletedTask;
+        pageCursors.RemoveRange(pageIndex + 1, pageCursors.Count - pageIndex - 1);
+        pageCursors.Add(result.NextCursor);
+        pageIndex++;
+        return LoadAsync();
+    }
+    private Task ClearFiltersAsync()
+    {
+        if (ControlsDisabled) return Task.CompletedTask;
+        search = status = environment = null;
+        return ApplyFiltersAsync();
+    }
+    private Task RetryAsync() => ControlsDisabled ? Task.CompletedTask : LoadAsync();
+    private void ResetPages() { pageIndex = 0; pageCursors.Clear(); pageCursors.Add(null); }
+    private Task HandleSearchKey(KeyboardEventArgs args) => args.Key == "Enter" ? ApplyFiltersAsync() : Task.CompletedTask;
     private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-    private static bool ResolveAgent365Observability(AgentFeaturesDto? features) =>
+    private static bool? ResolveAgent365Observability(AgentFeaturesDto? features) =>
         features?.Agent365ObservabilityEnabled
         ?? (features?.ObservabilityMode switch
         {
             "Disabled" or "GatewayOnly" => false,
             "Agent365" or "Agent365AzureMonitor" => true,
-            _ => true
+            _ => (bool?)null
         });
-    private static bool ResolveAzureMonitorExport(AgentFeaturesDto? features) =>
+    private static bool? ResolveAzureMonitorExport(AgentFeaturesDto? features) =>
         features?.AzureMonitorExportEnabled
         ?? (features?.ObservabilityMode switch
         {
             "GatewayOnly" or "Agent365AzureMonitor" => true,
-            _ => false
+            "Disabled" or "Agent365" => false,
+            _ => (bool?)null
         });
-    private static string FormatEnabled(bool enabled) => enabled ? "Enabled" : "Disabled";
-    private static string FormatPurview(AgentFeaturesDto? features) => features?.PurviewEnabled == true ? features.PurviewMode ?? "Enabled" : "Disabled";
+    private static string FormatEnabled(bool? enabled) => enabled switch { true => "Enabled", false => "Disabled", _ => "Status unknown" };
     private static string FormatStatus(string value) => value switch { "AwaitingAdminApproval" => "Awaiting approval", "RequiresManualIntervention" => "Manual intervention", _ => value };
     public ValueTask DisposeAsync() { disposeCts.Cancel(); disposeCts.Dispose(); return ValueTask.CompletedTask; }
 }

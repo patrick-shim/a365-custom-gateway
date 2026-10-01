@@ -302,7 +302,7 @@ public sealed class ProtectionController : ControllerBase
 
     [HttpPost("purview/dlp-profiles/{profileId:guid}:validate-runtime")]
     [Authorize(Policy = AuthorizationPolicies.AdministratorOnly)]
-    [ProducesResponseType(typeof(ProtectionOperationAcceptedResponse), StatusCodes.Status202Accepted)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status422UnprocessableEntity)]
     public Task<IActionResult> ValidateDlpProfileRuntime(
         Guid profileId,
         [FromBody] ValidatePurviewDlpProfileRuntimeRequest request,
@@ -319,7 +319,7 @@ public sealed class ProtectionController : ControllerBase
 
     [HttpPost("purview/dlp-profiles/{profileId:guid}:review-runtime-validation")]
     [Authorize(Policy = AuthorizationPolicies.AdministratorOnly)]
-    [ProducesResponseType(typeof(ProtectionOperationReviewResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status422UnprocessableEntity)]
     public async Task<IActionResult> ReviewValidateDlpProfileRuntime(
         Guid profileId,
         [FromBody] ReviewValidatePurviewDlpRuntimeRequest request,

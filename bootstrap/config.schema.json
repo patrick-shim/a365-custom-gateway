@@ -89,12 +89,15 @@
         "registryBetaAcknowledged": { "type": "boolean" },
         "reviewedManagerApplicationIds": {
           "type": "array",
+          "description": "Independently reviewed Microsoft first-party application IDs, unique by GUID identity regardless of letter casing.",
+          "$comment": "uniqueItems enforces only case-sensitive JSON string uniqueness. Read-BootstrapConfig in bootstrap/modules/Common.psm1 provides the supplemental case-insensitive GUID uniqueness guard and accepts valid uppercase or mixed-case GUIDs. Schema validation alone does not establish that guard.",
           "minItems": 1,
           "maxItems": 10,
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "pattern": "^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$"
+            "pattern": "^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$",
+            "not": { "const": "00000000-0000-0000-0000-000000000000" }
           }
         }
       }
@@ -126,7 +129,12 @@
           "deprecated": true
         },
         "sensitiveInformationType": { "type": "string", "maxLength": 255, "deprecated": true },
-        "activateGatewayAdapterAfterPolicyReadback": { "type": "boolean", "deprecated": true },
+        "activateGatewayAdapterAfterPolicyReadback": {
+          "type": "boolean",
+          "const": false,
+          "deprecated": true,
+          "description": "Legacy compatibility input. Only false is accepted; the loader discards it without activating an adapter."
+        },
         "policyProvisioningEnabled": { "type": "boolean", "deprecated": true },
         "policyProvisioningOrganization": { "type": "string", "deprecated": true },
         "policyProvisioningApplicationId": { "type": "string", "deprecated": true },
@@ -135,6 +143,51 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "capabilityPreset": { "const": "fullEvaluation" }
+        },
+        "required": ["capabilityPreset"]
+      },
+      "then": {
+        "properties": {
+          "environment": { "const": "dev" },
+          "agent365": {
+            "properties": {
+              "allowDevelopmentRegistryPreview": { "const": true }
+            }
+          },
+          "promptShield": {
+            "properties": {
+              "enabled": { "const": true }
+            }
+          },
+          "purview": {
+            "properties": {
+              "enabled": { "const": true }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "capabilityPreset": { "const": "coreGateway" }
+        },
+        "required": ["capabilityPreset"]
+      },
+      "then": {
+        "properties": {
+          "purview": {
+            "properties": {
+              "enabled": { "const": false }
+            }
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {

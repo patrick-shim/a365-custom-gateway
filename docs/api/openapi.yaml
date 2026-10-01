@@ -52,7 +52,7 @@ servers:
         default: localhost:7089
 
 security:
-  - entraBearer: []
+  - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
 
 tags:
   - name: Agents
@@ -115,8 +115,9 @@ paths:
         and blueprint display name; configuration progress is returned separately
         from effective protection readiness.
       tags: [Agents]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       requestBody:
         required: true
         content:
@@ -187,8 +188,9 @@ paths:
       operationId: listAgents
       summary: List agents with filtering and pagination
       tags: [Agents]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - name: status
           in: query
@@ -200,19 +202,21 @@ paths:
             $ref: '#/components/schemas/Environment'
         - name: search
           in: query
-          description: Search in name, externalAgentId, description
+          description: Trimmed, case-insensitive literal substring search in name or externalAgentId. Combined with status and environment filters.
           schema:
             type: string
             maxLength: 256
-        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/AgentListLimit'
         - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
-          description: Paginated list of agents
+          description: Paginated matching agents, with the authoritative filtered total before the cursor. Forward nextCursor unchanged; null ends the list even when the final page is full.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentListResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -231,8 +235,9 @@ paths:
         but cannot be registered. It never converts an ordinary application into a
         blueprint and never returns partial inventory as a successful empty result.
       tags: [Blueprints]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Typed reusable blueprint inventory
@@ -260,8 +265,9 @@ paths:
         New registration/configuration workflows can carry explicit reviewed and
         confirmed policy intent; this legacy inventory does not authorize mutation.
       tags: [Configuration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Verified reusable Purview profile inventory
@@ -283,8 +289,9 @@ paths:
         configuration readback; it does not prove policy, propagation, token roles,
         or runtime verdict readiness.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Bounded non-secret capability facts
@@ -302,8 +309,9 @@ paths:
       operationId: getPurviewTenantConnection
       summary: Read the current tenant Purview connection
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Operator]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Current tenant connection or null
@@ -326,8 +334,9 @@ paths:
       summary: Review an exact-tenant connection operation
       description: Returns a short-lived one-time review value and performs no provider mutation.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIfMatch'
       requestBody:
@@ -356,8 +365,9 @@ paths:
         Exchanges one fresh review value once for a short-lived confirmation value.
         Neither value is a provider token or credential.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       requestBody:
         required: true
         content:
@@ -394,8 +404,9 @@ paths:
       operationId: startPurviewTenantConnection
       summary: Start a confirmed Purview tenant-connection operation
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIdempotencyKey'
         - $ref: '#/components/parameters/ProtectionIfMatch'
@@ -423,10 +434,14 @@ paths:
     post:
       operationId: reviewPurviewTenantConnectionCompletion
       summary: Review bounded Windows companion evidence
-      description: Performs no provider mutation and grants no completion by itself.
+      description: |
+        Performs no provider mutation and grants no completion by itself. The
+        returned review identifies a separate completion approval. Its reviewed
+        sourceOperationId remains the original connection execution/recovery ID.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIfMatch'
       requestBody:
@@ -453,9 +468,16 @@ paths:
     post:
       operationId: completePurviewTenantConnection
       summary: Submit confirmed companion evidence for independent verification
+      description: |
+        Returns the original connection operationId from the path, not the
+        separate completion approval ID. The original operation becomes Pending
+        and the connection becomes PendingVerification. The completion approval
+        is Submitted and references the original operation for readback.
+        Acceptance is not verified connection or DLP enforcement.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIdempotencyKey'
         - $ref: '#/components/parameters/ProtectionIfMatch'
@@ -482,8 +504,9 @@ paths:
       operationId: getPurviewSensitiveInformationTypes
       summary: Read the current connected-tenant SIT inventory
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Expiring bounded tenant inventory
@@ -503,8 +526,9 @@ paths:
       operationId: getPurviewKnowYourData
       summary: Read independent tenant-wide Know Your Data state
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Operator]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Fixed-Group configuration or null
@@ -526,8 +550,9 @@ paths:
       operationId: reviewPurviewKnowYourData
       summary: Review a fixed-Group Know Your Data operation
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIfMatch'
       requestBody:
@@ -553,8 +578,9 @@ paths:
       operationId: startPurviewKnowYourData
       summary: Start a confirmed fixed-Group Know Your Data operation
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIdempotencyKey'
         - $ref: '#/components/parameters/ProtectionIfMatch'
@@ -581,8 +607,9 @@ paths:
       operationId: listPurviewDlpProfiles
       summary: List current-tenant blueprint DLP profiles and readiness
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Operator]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Authorized profiles, including non-Ready states
@@ -600,8 +627,9 @@ paths:
       operationId: reviewPurviewDlpProfile
       summary: Review one blueprint-Individual DLP operation
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIfMatch'
       requestBody:
@@ -627,8 +655,9 @@ paths:
       operationId: startPurviewDlpProfile
       summary: Start a confirmed blueprint-Individual DLP operation
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIdempotencyKey'
         - $ref: '#/components/parameters/ProtectionIfMatch'
@@ -656,9 +685,14 @@ paths:
     post:
       operationId: reviewReconcilePurviewDlpProfile
       summary: Review exact DLP profile reconciliation
+      description: |
+        Validate unchanged saved settings against the connection's current active
+        inventory generation and return that binding in the review. Review alone
+        does not update the profile or authorize provider mutation.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIfMatch'
       requestBody:
@@ -685,10 +719,16 @@ paths:
     post:
       operationId: reconcilePurviewDlpProfile
       summary: Re-read exact DLP profile provider state
-      description: Does not silently rewrite mismatched provider policy.
+      description: |
+        Accept the newly confirmed exact review after revalidating profile/version,
+        settings and current inventory. The transaction may refresh the profile's
+        inventory binding and clear old protection proof while preserving settings,
+        provider IDs and agent choices. Worker provider reconciliation is read-only;
+        mismatched, partial or unknown objects are not silently created or rewritten.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIdempotencyKey'
         - $ref: '#/components/parameters/ProtectionIfMatch'
@@ -721,8 +761,9 @@ paths:
         Retained route; valid requests return 422 PURVIEW_RUNTIME_SAMPLES_REQUIRED.
         Use :review-runtime-test, operation-reviews:confirm, and :test-runtime.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIfMatch'
       requestBody:
@@ -754,8 +795,9 @@ paths:
         Retained route; valid requests return 422 PURVIEW_RUNTIME_SAMPLES_REQUIRED.
         Use the explicit sample review, confirmation, and :test-runtime workflow.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIdempotencyKey'
         - $ref: '#/components/parameters/ProtectionIfMatch'
@@ -791,8 +833,9 @@ paths:
         Confirm the returned token with /protection/operation-reviews:confirm.
         Disabled policies cannot be runtime-tested.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIfMatch'
       requestBody:
@@ -845,8 +888,9 @@ paths:
         interrupted response read /protection/runtime-tests/{operationId}; do not
         automatically resubmit samples or repeat uncertain provider work.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/ProtectionIdempotencyKey'
         - $ref: '#/components/parameters/ProtectionIfMatch'
@@ -893,8 +937,9 @@ paths:
         work is recovered under execution locks without resubmitting raw samples.
         A historical result does not establish current profile readiness.
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           $ref: '#/components/responses/PurviewRuntimeTestResult'
@@ -914,8 +959,9 @@ paths:
       operationId: getProtectionAdminOperation
       summary: Read durable protection administration progress
       tags: [Protection administration]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Tenant-bound operation with ordered version-1 steps or runtime-test result metadata
@@ -942,8 +988,9 @@ paths:
       operationId: getAgent
       summary: Get agent details
       tags: [Agents]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Operator, Gateway.Auditor, Gateway.SupportReader]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Agent details
@@ -970,8 +1017,9 @@ paths:
         blueprint, child Agent ID, Agent 365 Registry record, and other linked
         Microsoft resources are not changed by this operation.
       tags: [Agents]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '202':
           description: Deletion accepted
@@ -1000,8 +1048,9 @@ paths:
         profile or carry explicit reviewed purviewConfigurationIntent. Requested
         configuration and its operation status do not establish effective readiness.
       tags: [Agents]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - name: Idempotency-Key
           in: header
@@ -1054,8 +1103,9 @@ paths:
       operationId: listAgentIngressCredentials
       summary: List safe Gateway credential metadata
       tags: [Agents]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Credential metadata only; never clear keys, hashes, or salts
@@ -1079,8 +1129,9 @@ paths:
         before revoking the old one. A lost successful response cannot be replayed;
         list safe metadata and issue another replacement.
       tags: [Agents]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '201':
           description: Replacement Gateway credential issued
@@ -1124,8 +1175,9 @@ paths:
         the credential is not owned by the route agent and 409 when revocation would
         remove the last unexpired, unrevoked credential.
       tags: [Agents]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Credential revoked or already revoked
@@ -1170,8 +1222,9 @@ paths:
       operationId: enableAgent
       summary: Enable an agent
       tags: [Agents]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Operator]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Agent enabled
@@ -1200,8 +1253,9 @@ paths:
       operationId: disableAgent
       summary: Disable an agent
       tags: [Agents]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Operator]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Agent disabled
@@ -1238,8 +1292,9 @@ paths:
         fails before persistence when deployment-level provisioning execution is
         disabled.
       tags: [Agents]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '202':
           description: Retry accepted
@@ -1278,8 +1333,9 @@ paths:
       operationId: getOperation
       summary: Get operation status
       tags: [Operations]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Operator]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Operation status
@@ -1322,8 +1378,9 @@ paths:
         continuous-development delegated action. Other deployment profiles keep the
         preview Registry boundary closed.
       tags: [Operations]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator, access_as_user]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Registry create accepted and final worker verification queued
@@ -1358,8 +1415,9 @@ paths:
       operationId: getAuditEvents
       summary: Get agent audit history
       tags: [Audit]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Auditor]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Auditor]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       parameters:
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
@@ -1385,8 +1443,9 @@ paths:
       operationId: getProvisioningHistory
       summary: Get provisioning job history
       tags: [Audit]
+      x-gateway-roles-any-of: [Gateway.Administrator, Gateway.Operator]
       security:
-        - entraBearer: [Gateway.Administrator, Gateway.Operator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: Provisioning history for the selected registration
@@ -1406,8 +1465,9 @@ paths:
       operationId: getSystemConfig
       summary: Get system configuration
       tags: [System]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       responses:
         '200':
           description: System configuration
@@ -1435,8 +1495,9 @@ paths:
         default additionally requires matching Idempotency-Key/idempotencyKey and
         If-Match/expectedRowVersion values.
       tags: [System]
+      x-gateway-roles-any-of: [Gateway.Administrator]
       security:
-        - entraBearer: [Gateway.Administrator]
+        - entraBearer: ["api://{gatewayApiApplicationId}/access_as_user"]
       requestBody:
         required: true
         content:
@@ -1464,6 +1525,11 @@ paths:
           $ref: '#/components/responses/ConcurrencyConflict'
 
   /health:
+    servers:
+      - url: https://{host}
+        variables:
+          host:
+            default: localhost:7089
     get:
       operationId: healthCheck
       summary: Liveness health check
@@ -1482,6 +1548,11 @@ paths:
                     enum: [Healthy]
 
   /health/ready:
+    servers:
+      - url: https://{host}
+        variables:
+          host:
+            default: localhost:7089
     get:
       operationId: readinessCheck
       summary: Readiness health check
@@ -1805,16 +1876,17 @@ components:
       type: oauth2
       description: |
         Microsoft Entra ID OAuth 2.0 for Gateway control-plane users. Data-plane
-        callers use gatewayAgentApiKey instead.
+        callers use gatewayAgentApiKey instead. Before configuring an OAuth client,
+        replace tenantId and gatewayApiApplicationId placeholders with the verified
+        deployment values. Gateway.* values are application roles, not OAuth scopes.
+        The operation extension x-gateway-roles-any-of describes the alternative
+        allowed roles; the API enforces those roles independently of delegated scope.
       flows:
         authorizationCode:
           authorizationUrl: https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/authorize
           tokenUrl: https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token
           scopes:
-            Gateway.Administrator: Full control-plane access
-            Gateway.Operator: Enable/disable agents and view provisioning status
-            Gateway.Auditor: Read-only audit access
-            Gateway.SupportReader: Health/diagnostics with redaction
+            "api://{gatewayApiApplicationId}/access_as_user": Access the Gateway as the signed-in user; separate Gateway role authorization is required
     gatewayAgentApiKey:
       type: http
       scheme: bearer
@@ -1834,6 +1906,16 @@ components:
       schema:
         type: string
         format: uuid
+
+    AgentListLimit:
+      name: limit
+      in: query
+      description: Page size for agent listing. The Admin UI requests 100 rows per page.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
 
     Limit:
       name: limit
@@ -2138,6 +2220,11 @@ components:
           type: string
           readOnly: true
           nullable: true
+        purviewProfileStatus:
+          type: string
+          readOnly: true
+          nullable: true
+          description: Saved shared profile state, distinct from the configuration operation status.
 
     Agent365Info:
       type: object
@@ -2735,6 +2822,16 @@ components:
           type: string
           format: date-time
           nullable: true
+        validUntilUtc:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Earliest known expiry of the current connection, classifier inventory,
+            and (for Enforce) behavioral evidence. Equality is expired. This
+            snapshot bound does not prevent earlier invalidation by a context
+            change and grants no request authority. An absent value cannot
+            establish current enforcement in a cached UI.
 
     PurviewPolicyMode:
       type: string
@@ -3136,6 +3233,14 @@ components:
       properties:
         operation:
           $ref: '#/components/schemas/ProtectionAdminOperation'
+        companionLaunch:
+          nullable: true
+          description: |
+            Existing non-secret launch instructions for the same actor's accepted
+            ConnectPurviewTenant operation while it awaits completion. Readback
+            does not create a new operation, refresh expiry, or grant authority.
+          allOf:
+            - $ref: '#/components/schemas/PurviewCompanionLaunch'
 
     ReviewPurviewTenantConnectionRequest:
       type: object

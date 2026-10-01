@@ -1,0 +1,15 @@
+.form-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+}
+.form-actions ::deep fluent-button {
+    flex: 0 0 auto;
+    max-width: 100%;
+}
+.form-actions ::deep fluent-button::part(control) {
+    height: auto;
+    min-height: 2rem;
+    max-width: 100%;
+    white-space: normal;
+}
+.form-actions ::deep fluent-button::part(content) { white-space: normal; }

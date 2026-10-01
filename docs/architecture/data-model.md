@@ -2,9 +2,11 @@
 
 Azure SQL is the authoritative store for Gateway registrations, provisioning,
 credentials, protection configuration, audit, idempotency and dispatch state.
-This guide describes the retained EF model, not a deployed database.
+This guide describes the EF model and persistence contracts. Private Azure SQL
+qualification is recorded in M5; it is not an assertion about every deployment
+or the separate M6 product journeys.
 [MILESTONES.md](../../MILESTONES.md) is the sole completion record; see
-[project state](../project-state.md) for the deleted tooling and current context.
+[project state](../project-state.md) for source restoration and current context.
 
 ## Core relationships
 
@@ -71,15 +73,47 @@ Its safe payload identifies workflow work; it has no job/registration foreign ke
 Persistence derives the destination from the message type. Registration and
 protection queues remain separate, and consumers tolerate duplicate delivery.
 
+Protection queue messages bind both `ExpectedStepIndex` and
+`ExpectedStepAttemptCount`, the durable step attempt count captured when queued.
+Attempt count is existing step state; this transport addition creates no SQL
+column. Under the execution lock, a committed same-step retry supersedes its
+earlier publication even if timestamps tie. A legitimately running attempt can
+still recover using its original queued generation.
+
+Processing and broker settlement are separate: a lost completion acknowledgement
+does not fail the next step. Terminal publication propagation uses fresh locked
+state and an atomic database transition; failing an obsolete outbox item cannot
+fail newer operation work. Current-step legacy messages without a generation
+dead-letter with `PROTECTION_ADMIN_MESSAGE_ATTEMPT_UNBOUND`; unbound publication
+exhaustion reports `PROTECTION_ADMIN_PUBLICATION_GENERATION_UNBOUND` without
+inventing zero or rewriting the operation/payload/retry/claim. Terminal and
+older-step messages retain their existing completion/dead-letter dispositions.
+Producers and workers therefore require matching releases; see the
+[upgrade compatibility boundary](../../operations/gateway-upgrade.md#protection-transport-compatibility).
+
+The `AzureMonitorMirrorScheduled` audit event is an attempt-suppression marker,
+not a per-destination delivery receipt. It precedes span emission and can therefore
+survive a crash without a delivered span. The current data model does not retain
+independently confirmed landing for every downstream telemetry destination.
+
 Protection operations also bind actor, tenant, target, reviewed payload, accepted
 request, confirmation verifier, idempotency key and row version. Provider work
 does not hold the runtime-test acceptance transaction open.
+
+An ordinary start's review token ID identifies its durable protection operation.
+Companion completion instead has a separate approval record: after acceptance it
+is `Submitted`, and its `ReadbackReferenceId` identifies the original
+`ConnectPurviewTenant` operation that resumes as `Pending`. The connection
+resource is `PendingVerification`. These IDs and states are not interchangeable.
+Accepted connection result JSON retains its bounded non-secret companion launch;
+same-actor GET projects it only while awaiting administrator completion.
+Recovery reads the existing records without renewing consent or launch expiry.
 
 ## Protection state
 
 | Record | Persisted purpose |
 |---|---|
-| ProtectionCapabilities | Installed/unavailable state, non-secret resource identifiers and exact readback |
+| ProtectionCapabilities | Installed, NotInstalled, PendingPropagation or Unavailable state, non-secret resource identifiers and exact readback |
 | PurviewTenantConnections | Exact tenant authority, status, expiry and active inventory generation |
 | SIT generations and snapshots | Tenant-backed GUID, exact Unicode name, publisher, bounded generation and expiry |
 | PurviewKnowYourDataConfigurations | Fixed enterprise-AI-apps Group on the Application plane |
@@ -104,11 +138,26 @@ separate facts. SimulationReady and Disabled are not enforced-ready. Enforce
 readiness requires current capability/connection/inventory binding and a valid
 runtime certification for the exact profile and test registration.
 
+The optional response field `readiness.validUntilUtc` derives the earliest usable
+connection/inventory expiry, capped by runtime behavior evidence for Enforce.
+It is not a new persisted lease or request authority. Equality is expired, and
+context changes can invalidate it sooner. `features.purviewProfileStatus` projects
+the saved profile's status separately from configuration-operation progress.
+These additive read projections do not add SQL tables or replace receipt checks.
+
+Existing-profile reconciliation can replace the profile's inventory generation
+and snapshot expiry only in the accepted transaction for a newly confirmed exact
+review. It preserves settings and provider IDs, resets verification to Pending
+and clears previous propagation, token-role and runtime certification. The new
+inventory and unchanged selection/scope are revalidated at acceptance; review
+drift rolls back rather than rebinding silently. This uses existing columns and
+does not introduce a schema migration or authorize provider writes.
+
 Legacy combined profiles and review-required candidates remain in the model.
 Their existence or provider IDs do not establish current readiness. The source
-retains database bootstrap/upgrade attestation contracts, but the referenced
-DatabaseMigrator project is absent; schema application must be re-established
-and verified under the milestone plan.
+retains database bootstrap/upgrade attestation contracts and the restored
+DatabaseMigrator source. Schema application, ordered migration, preservation and
+cloud attestation retain separate acceptance under the milestone plan.
 
 ## Runtime tests and prompt receipts
 

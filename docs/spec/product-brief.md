@@ -25,16 +25,22 @@ An administrator should be able to:
 4. deploy a verified Gateway and open its Admin UI;
 5. register an external agent against a compatible reusable blueprint;
 6. receive the external ID and one-time Gateway key;
-7. configure the external agent to evaluate every prompt before calling its own
+7. securely store the key, complete the delegated Registry handoff, and wait for
+   final registration verification;
+8. configure the external agent to evaluate every prompt before calling its own
    model, then submit activity and the completed interaction with that evaluation
    receipt.
 
-The guided installer is the intended product entry point. Re-establishing its
-deleted supporting tool projects and the test harness is part of the milestone
-plan; these audience outcomes are not a claim of a currently verified fresh install.
+The guided installer is the product entry point. Its minimum supporting source
+projects and a bounded local test harness are restored under the milestone plan.
+The isolated M5 installation qualifies release infrastructure and runtime
+boundaries; these end-to-end audience outcomes still require M6 acceptance.
 
-An operator should inspect health, registrations, operations, credential lifecycle,
-and safe correlation evidence without seeing secrets or content.
+An operator should inspect health, registrations and provisioning operations,
+enable or disable agent access, and identify actions requiring an administrator.
+Credential management remains administrator-only. Auditors can inspect audit
+history; support readers can inspect permitted registration and capability state.
+The external developer integrates one registration through its Gateway key.
 
 ## Product boundaries
 
@@ -102,11 +108,31 @@ result is generalized into a supported production claim for preview dependencies
 
 ## Development quality standard
 
-User-facing language should explain what happened, whether work is continuing,
-who must act and what to do next. Registration, installed capability, configured
+The [UX design package](../ux/README.md) defines role journeys, shared wording,
+screen layouts and acceptance scenarios. Current application source includes
+reviewed registration/key handoff, bounded recovery, agent paging and sample-result
+handling, plus focused protection tasks, shared expiry-aware summaries and
+approved runtime-sample workflows. Their acceptance remains only in the milestone
+checklist; source implementation does not establish release or hosted acceptance.
+Prototype behavior alone proves neither implementation nor production/provider
+acceptance, and retained authorization and recovery contracts still apply.
+
+Every protection outcome explains what happened, why it was needed, what remains
+unverified and the next permitted action. A technical Completed/Skipped timeline
+alone is not an acceptable end to the journey. Bounded read-only progress updates
+and exact-context next-step links must not auto-confirm, replay work or silently
+enable protection. Registration, installed capability, configured
 policy, simulation and effective enforcement have distinct meanings. Technical
 identifiers and detailed diagnostics remain available without dominating the
 ordinary workflow.
+
+First-time protection setup follows a visible ordered guide. Connection reports
+available types without a misleading selection step; policy types are selected
+once, with explained adjustable defaults and preserved saved/draft values.
+Subtle accessible activity identifies real pending UI work or status checks,
+including reduced-motion and paused states, without inventing provider progress.
+This source retains Blazor: the identified gaps are workflow/state/provider
+behavior, not evidence that a framework replacement is required.
 
 Each milestone combines implementation and meaningful tests, followed by a full
 documentation/directive/state/memory synchronization. A checkmark in the milestone

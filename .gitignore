@@ -5,8 +5,11 @@
 *.pyc
 TestResults/
 .vs/
+/.test-work/
+/.playwright-mcp/
 
 # Local deployment configuration and operational state
 /bootstrap/config.json
 /.bootstrap/
 /.maintenance/
+/.temp_secret
