@@ -34,7 +34,8 @@ function Get-LocalBaselineSourceFiles {
     foreach ($relative in $files) {
         if ([IO.Path]::IsPathFullyQualified($relative) -or
             $relative -match '(^|/)\.\.?(/|$)' -or
-            $relative -match '(^|/)(bin|obj|TestResults|node_modules|__pycache__|\.git|\.vs|\.test-work|\.bootstrap|\.maintenance|\.copilot-azure)(/|$)' -or
+            $relative -match '(^|/)(bin|obj|TestResults|node_modules|__pycache__|\.git|\.vs|\.test-work|\.bootstrap|\.maintenance|\.copilot-azure|\.playwright-mcp)(/|$)' -or
+            $relative -match '(^|/)\.temp_secret$' -or
             $relative -ceq 'bootstrap/config.json') {
             throw "Generated, operational or unsafe source entry is not permitted: $relative"
         }

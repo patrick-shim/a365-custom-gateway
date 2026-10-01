@@ -1,15 +1,120 @@
 # Project continuation state
 
-Updated: 2026-09-25 KST.
+Updated: 2026-10-01 KST.
 
 Read [the milestone checklist](../MILESTONES.md) for completion. This document
 records operational context and the next action, not a second acceptance ledger.
 
-## Reboot checkpoint: paused at the user's request
+## Current resumption
 
-Saved 2026-09-25 03:55 KST (2026-09-24 18:55 UTC). The user requested a laptop
-reboot and will resume afterward. Do not start another build or deployment until
-resumption. All authored changes and existing operational evidence are retained
+The user has resumed autonomous completion and validation. This session initially
+opened at the old `50ff066` checkpoint, not the later working source. The original
+checkout at `C:\Users\patrickshim\Projects\a365-custom-gateway` contains the
+`24bc24a` baseline and the retained uncommitted M2-M5 work. Its 963 authored files
+were recovered into this session worktree with per-file SHA-256 verification.
+The original authored checkout was not modified during recovery. After the final
+independent review below, only the exact reviewed
+`operations/GatewayUpgradeExecution.psm1` correction was integrated there so the
+canonical launcher can retain its original operational-state root. Both copies
+match SHA-256 `5fe3b4bb845562a51d8be4274095f27fedabda0ac09b2480f3d9ae6978b997a7`.
+Existing original receipts/configuration were not rewritten. Generated binaries,
+operational state and the supplied local authentication file were not copied.
+
+Use the existing authenticated administrator session first. The authorized
+temporary credential file remains in the original checkout as `.temp_secret`;
+read it only into the intended sign-in flow if needed, never into tool output,
+source, snapshots, command arguments or logs. Current pinned Azure reads and
+Chrome administrator sign-in succeeded without needing to expose that file.
+
+The reboot checkpoint below was superseded by a later, previously unrecorded
+successful Build on 2026-09-26. Do not rebuild or replay those old inputs:
+
+- Recovered candidate `7e18c7d4...` initially matched all 723 current deployable
+  inputs. The later What-If correction below changes one deployment helper and
+  now requires a separately qualified candidate.
+- Canonical Build Plan remains `f6a307b9...`. Its completed artifact bundle is
+  `sha256:89f75191b2ea66eb2697c08ac47eed3383612ea95cd25e9bc1e652b85a78685a`,
+  at the original checkout's
+  `.maintenance/executions/f6a307b944775ccada64ed647c35d26cd960b43ac78f18be62a55a9bd30476ad/artifacts.json`.
+  Exact ACR runs `deg`, `deh`, `dej`, `dek` and `dem` are Succeeded.
+- The actual Windows ZIP is
+  `sha256:d95b60b82dac5f7300e183c17ac47340c9e3c74e01d166301f8e90154970255a`;
+  its manifest is
+  `sha256:ed414892a927bce1b4b03d3ea2f9546f68dd2036383550d2eebdffb7aa124694`.
+  These are not the older `c9fec9e2...` artifacts.
+- The hosted qualification apps still use the earlier API/worker and `dea`
+  Admin UI, not the new bundle. The B1 executor plan is Ready/Succeeded with one
+  Windows worker. Chrome shows three Active registrations, an expired connection
+  launch and shared policies requiring attention; none of that proves enforcement.
+- The original state/configuration hashes in the retained inputs below still
+  match. An initial read-only canonical diagnostic under 7.6.5 exceeded its explicit
+  900-second bound and was terminated without accepting a result. Earlier
+  September diagnostics also include private-endpoint and UI-predecessor reads;
+  the exact private-endpoint read now passes in both installed and pinned shells.
+  No cause was inferred from those narrow reads. The subsequent actual
+  artifact-bound Plan completed its full canonical baseline at 08:59:09 UTC,
+  with verifier result `972f92c8...`.
+
+Artifact-bound Plan
+`sha256:fb42ef3b6fa0e35ad710f3524954f39f4577ed596ecb891abc4e880e44c94dec`
+was admitted for the old `7e18c7d4...` bytes. Its exact five-image, Windows ZIP,
+publisher-payload, shared-contract and SQL byte qualification passed. The official
+five-step Azure validator passed for the three parameter-bound maintenance
+templates. However, the actual canonical What-If response exposed a real
+maintenance blocker before any mutation: it includes unrelated, unchanged
+resources in the same group as `Ignore`, and the old mutation allowlist rejects
+those entries. The publisher response contained two creates and 53 ignores,
+50 outside the overall maintenance write set. Those ignores are not proposed
+writes.
+
+The correction in this worktree keeps exact Create/Modify permissions, deletion
+rejection and the no-recreate executor rule. It admits only same-group Ignore
+entries with no delta and absent or canonically identical resource projections.
+An initial null-projection assumption was rejected by actual response checks;
+the implementation and tests now cover Azure's full identical before/after
+payloads. All 264 focused guard/baseline/UI-maintenance tests pass. Fresh previews
+accepted by the real corrected preflight, with terminal mutation stubs, report
+seven database creates, two publisher creates and one executor modification,
+plus unchanged ignores. This is read-only validation, not deployment authority.
+
+The final source is now qualified and independently approved:
+
+- Candidate:
+  `sha256:f1baa66e5d67afe21f05e50f255d0d2f2a0e8301178a3269bc2a9ce25d9e3ce5`;
+  current-worktree receipt is
+  `.maintenance/candidates/f1baa66e5d67afe21f05e50f255d0d2f2a0e8301178a3269bc2a9ce25d9e3ce5/provenance.json`.
+- Source: `sha256:5ad1d4bef809e4d9c4e82a79455ac925aea1fcc0a14f1448b0ba14010f9ffebe`;
+  caller: `sha256:908d3c512edfd3e17871eeb6e6619f7abcfb0b98b2f38159c3219cc46651cded`.
+- Prepare: `.maintenance/validation/83e3e4a19eb14035a11f2489bdf88065.json`;
+  its unchanged compiled model is `96ab3dae...`.
+- Final clean source at `C:\gwq\typed-20261001-c082f741` passed a zero-warning/error
+  build, all 1,478 .NET cases including 138 owned SQL, 575 Pester cases and all
+  three portable gates. All 723 frozen files match that tested source.
+- Genuine GPT-6 Astra review `861e58de-a61d-44c9-ad3e-a5e925f88770` approved the
+  exact final source after independently verifying the corrected type gate,
+  31 focused cases, all source/caller bindings and 98 compiled files. The first
+  replacement `ab858ec0...` was rejected for Boolean/array `changeType` coercion;
+  its approval was not fabricated or reused. The final review record is
+  `.maintenance/continuation-20261001/source-review-f1baa66e5d67.json`.
+
+The reviewed canonical Plan/Build is running with the pinned 7.6.5/X64 launcher.
+Its persistent log is
+`C:\gwq\typed-20261001-c082f741\canonical-reviewed-build.log`; structured
+`reviewed-build-plan.json` and `reviewed-artifacts.json` appear only after their
+own successful operations. Check the actual process and receipts before resuming.
+The immediate task is exact artifact qualification and a new deployment Plan,
+then validation/cutover. Do not execute `fb42ef3b...` with patched helpers or
+relabel its approval/artifacts. Original `.bootstrap/` and
+`.maintenance/` receipts remain in the original checkout; do not manufacture or
+silently relocate them into this worktree. Fresh verification belongs on the
+applicable milestone items. M4/M5 remain open and M6 remains unstarted; the
+preserved M6 group is still absent.
+
+## Historical reboot checkpoint
+
+Saved 2026-09-25 03:55 KST (2026-09-24 18:55 UTC). This was the state at the
+user's reboot pause, not the current execution state. All authored changes and
+existing operational evidence were retained
 locally; no commit or push was requested or performed.
 
 The latest exact-source review is **approved**, and canonical Build Plan admission
@@ -78,7 +183,7 @@ or provider acceptance.
   SHA-256 `1cd1cb06a7af7aa9247394eac2d06ac20ba4f8c24e7342e4d625968b92c74fc7`.
   Both were rechecked unchanged at this pause.
 
-### First action after resumption
+### Historical restart instruction
 
 Recheck the retained bindings, original hashes and pinned Azure session. Diagnose
 the actual same-launcher read-only baseline failure before continuing the exact
@@ -98,7 +203,10 @@ has local controls but no live run. Retain the three uncertain policy operations
 below. No B2 exception, receipt rewrite or new M6 deployment is authorized by this
 restart.
 
-## Current follow-up: novice protection workflow
+## Retained novice-protection context
+
+The following chronology predates the recovered September 26 Build. Use the
+current resumption section for the next action and artifact selection.
 
 The user authorized a holistic improvement of the connection/shared-policy
 journey. M4.1, M4.3, M4.4, M4.7 and M4.8 are reopened in the milestone record.
@@ -486,8 +594,9 @@ dependent M6 work.
 The user deliberately deleted the original supporting files and Azure resources,
 then identified the retained application as a working baseline. Historical
 deployments, repair targets and generated binaries are not current authority.
-The starting Git checkpoint is `24bc24a` on `main`; authored M2-M5 work remains
-uncommitted and must be preserved.
+The original checkout's starting Git checkpoint is `24bc24a` on `main`; authored
+M2-M5 work remains uncommitted and must be preserved. The current session's older
+worktree was reconciled from those exact authored bytes as described above.
 
 All Azure work remains in tenant `ff8b1e46-ff0f-4bc2-ab02-caf2b92da496` and
 subscription **internal-security-lab-02**
@@ -1075,9 +1184,10 @@ Source manifests, red/green test reports, browser proof, accepted snapshots and
 operational receipts remain. Do not launch a replacement timed connection until
 the administrator is ready.
 
-## Next action and fresh M6 target
+## Historical M5 closure and preserved fresh M6 target
 
-M5 release acceptance is complete in the milestone checklist. Corrected canonical
+Before the later full-stack follow-up reopened M4/M5, the September 22 release
+acceptance had completed in the milestone checklist. Corrected canonical
 Verify and final independent documentation/evidence review passed. Owned scratch
 source/package/layer extractions were removed; source archives, accepted
 snapshots, exact hosted ZIPs and compact evidence were retained and rehashed.

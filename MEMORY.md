@@ -11,6 +11,9 @@ Continuation context belongs in [docs/project-state.md](docs/project-state.md).
 - Use the temporary administrator credential already provided in the conversation
   or the authenticated session; do not ask for it again. The credential source is
   the user's message in this task on 2026-09-16. No password is stored here.
+  The user also supplied a local `.temp_secret` file in the original checkout.
+  Keep that file out of source, snapshots and Docker contexts; use only the
+  existing authenticated session or in-memory input to the intended sign-in flow.
 - Use installed Chrome or Edge. The user authorized direct browser control on
   2026-09-19; the extension is optional. Keep synthetic local checks in an isolated
   browser profile, separate from authenticated user sessions.
@@ -104,6 +107,8 @@ Continuation context belongs in [docs/project-state.md](docs/project-state.md).
   attempts and recheck live authority; an admitted Plan does not replace a later
   failing execution-time baseline, and an empty action directory is not a
   successful build. Do not silently restart installation or provider mutations.
+  A newer successful action can exist after the last continuation-note update;
+  reconcile its immutable receipt before deciding to repeat the action.
 - Release qualification must bind a fresh authored-source archive and package,
   not reuse generated binaries. The [Windows package qualifier](tools/Test-PurviewPackage.ps1)
   uses an owned profile and synthetic authority for native and unauthenticated

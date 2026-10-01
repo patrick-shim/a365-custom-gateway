@@ -132,10 +132,10 @@ public sealed class RepositoryContractTests
     public void SourceDeliveryIgnoresGeneratedAndOperationalDirectories()
     {
         var ignore = File.ReadAllText(SourceTree.Resolve(".gitignore"));
-        foreach (var required in new[] { "**/bin/", "**/obj/", "TestResults/", "/.test-work/", "/.bootstrap/", "/.maintenance/", "/bootstrap/config.json" })
+        foreach (var required in new[] { "**/bin/", "**/obj/", "TestResults/", "/.test-work/", "/.playwright-mcp/", "/.bootstrap/", "/.maintenance/", "/.temp_secret", "/bootstrap/config.json" })
             Assert.Contains(required, ignore);
         var dockerIgnore = File.ReadAllText(SourceTree.Resolve(".dockerignore"));
-        foreach (var required in new[] { ".git/", "**/bin/", "**/obj/", ".test-work/", ".bootstrap/", ".maintenance/", ".copilot-azure/", "bootstrap/config.json" })
+        foreach (var required in new[] { ".git/", "**/bin/", "**/obj/", ".test-work/", ".playwright-mcp/", ".bootstrap/", ".maintenance/", ".copilot-azure/", ".temp_secret", "bootstrap/config.json" })
             Assert.Contains(required, dockerIgnore);
     }
 

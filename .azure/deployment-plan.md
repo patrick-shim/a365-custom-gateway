@@ -2,13 +2,28 @@
 
 Status: Ready for Validation
 
-Paused at the user's reboot request, 2026-09-25 03:55 KST. Exact `7e18c7d4...`
-source review and Build Plan `f6a307b9...` passed. The following canonical Build
-failed its fresh read-only baseline before cloud-lease acquisition or any artifact
-action; its execution directory is empty and its processes have exited. The
-provider cause is not established. No replacement release is deployed. Resume
-from the exact inputs and diagnostic boundary in
-[project state](../docs/project-state.md), without treating this plan as Validated.
+Resumed 2026-10-01. The original checkout contains a later successful
+2026-09-26 Build that was not reflected in the reboot notes. Exact candidate
+`7e18c7d4...` and Build Plan `f6a307b9...` produced artifact bundle `89f75191...`,
+ACR runs `deg/deh/dej/dek/dem` and Windows ZIP `d95b60b8...`. All 723 current
+deployable inputs match the approved source. Do not repeat that Build.
+Fresh five-image, Windows-package and cross-artifact checks passed for the recovered
+`7e18c7d4...` bundle. Artifact Plan
+`fb42ef3b...` completed a full canonical baseline at 08:59 UTC and passed
+admission. The official template validation passed, but actual canonical What-If
+exposed an Ignore-handling defect before any deployment. The corrected helper
+passes 264 focused tests and fresh read-only previews; it requires replacement
+source qualification, independent review and new artifacts/Plan. Neither the old
+artifact Plan nor its approvals can authorize changed source. Final replacement
+`f1baa66e...` now passed the complete clean build/1,478 .NET/575 Pester suite,
+canonical Package/Prepare and genuine independent GPT-6 Astra follow-up review.
+Its reviewed Plan/Build is running under the pinned launcher. No replacement
+release is deployed. Follow the current resumption section in
+[project state](../docs/project-state.md).
+
+The remaining September chronology is historical unless explicitly reverified
+below. In particular, earlier empty-execution and not-built statements describe
+those failed attempts, not the current artifact inventory.
 
 ## Current work: guided Purview setup and safe policy recovery
 
@@ -226,19 +241,39 @@ Neither preceding candidate was deployed.
 Recipe: AZCLI through the canonical source-only maintenance pipeline.
 **All validation checks pass** remains an open deployment prerequisite:
 
-1. **Core validation (CLI, authentication, build, validate, What-If):** the new
-   independently reviewed Build Plan for `7e18c7d4...` is admitted; after its canonical Build,
-   derive exact database, publisher and executor parameters from the new
+1. **Core validation (CLI, authentication, build, validate, What-If):** the
+   independently reviewed Build Plan for `7e18c7d4...` completed on September 26.
+   Derive exact database, publisher and executor parameters from a new
    artifact-bound Plan. Run the prescribed five-step validator and enforce the
    canonical resource/change allowlist on structured What-If for each component.
-2. **Container build:** use the pinned PowerShell 7.6.5/X64 launcher for the whole
-   canonical Build, with ACR as the existing Linux build engine. Qualify all five
-   actual image digests and the actual Windows package; no earlier artifact
-   result can approve this replacement bundle.
+2. **Container build:** qualify retained bundle `89f75191...`, not earlier
+   artifacts or rebuilt replacements. Fresh five-image integrity/non-root/scanner
+   checks and six isolated native/HTTP Windows checks pass. Finish package scan,
+   embedded-ZIP and producer/worker/SQL byte agreement before deployment.
 3. **Azure Policy validation:** refresh actual applicable assignments,
    parameters, definitions and exemptions for the pinned target and proposed
    writes. Preserve governance, then require exact ARM validation/What-If and
    static identity/role review before deployment.
+
+October 1 validation of the recovered bytes: all five official checks passed for
+the exact database, publisher and executor template parameters. The CLI's textual
+Create/Modify counts include nested lines and are not the resource allowlist.
+Structured canonical What-If exposed unrelated same-group Ignore entries with
+identical full projections. Corrected-source previews accept seven database
+creates, two publisher creates and one executor app-settings modification, with
+zero deletions and no cloud mutation. Replacement source approval and subsequent
+exact artifact validation are still required.
+
+Fresh policy reads found 11 effective assignments, 330 current/selected-version
+documents, stable assignment readbacks and no management/subscription/target
+exemptions. The cloud security benchmark advanced from 57.59.0 to 57.60.0,
+consolidating eight ARO/Databricks-specific storage exclusions into common rule
+parameters. VM/VMSS preview rules also advanced; no such resources are created by
+this maintenance request. Three unavailable preview selectors remain explicit:
+Arc Kubernetes policy extension, Key Vault private link and machine update
+assessment. Their current definitions are audit-oriented; this request does not
+create or update those resource types. No policy was disabled or changed, and
+the exact ARM validate/What-If checks remain the deployment-specific gate.
 
 Fresh clean build, 723-input Package reconciliation and 98-file Prepare binding
 have passed. The exact-source local scan has nine findings, all individually

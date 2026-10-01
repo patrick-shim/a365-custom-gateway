@@ -443,6 +443,14 @@ wording, selected features, and reproducible validation.
   journey pass; no late session can become the active sample flow.
 - [ ] **M4.7** Pass focused tests, Chrome workflow/accessibility checks, API schema
   conformance and independent review of the protection experience.
+  Resumption verification 2026-10-01: a fresh actual-component build passed 144
+  fixture self-tests and 63 HTTP/isolation checks. Installed Chrome 154 passed
+  all 180 M3 and 146 M4 journeys with no nonlocal requests, script errors or
+  unexpected console errors; the one deliberate lost-response diagnostic was
+  matched by the fixture. The 18 private runtime-protocol checks also passed.
+  Desktop/narrow handoff and policy screenshots were inspected. This verifies
+  current source, not the older hosted UI, real policy reconciliation or provider
+  behavior; the reopened hosted/release dependencies remain incomplete.
   Expanded acceptance 2026-09-23: a novice must be able to continue from tenant
   connection through inventory, reviewed shared-policy configuration, approved
   runtime verification and the resulting protection summary without external
@@ -633,6 +641,34 @@ of the new candidate. M6 remains blocked until current M4/M5 closure.
 
 - [x] **M5.1** Build and test the exact candidate from a clean source copy; prove
   no dependency on old local checkpoints, binaries or unpublished working files.
+  Reverified 2026-10-01 for final `f1baa66e...`: clean 965-input source/76
+  PowerShell parses, zero-warning/error Release build, all 1,478 .NET cases
+  including 138 owned SQL, all 575 StrictMode Pester cases and three portable
+  gates passed with no skips/unrun cases and unchanged-source guard. All 723
+  frozen inputs match the tested copy; canonical Prepare binds 98 compiled files
+  and unchanged model `96ab3dae...`. Genuine GPT-6 Astra follow-up independently
+  verified exact source/caller/candidate/Prepare bindings and passed 31 focused
+  tests, resolving the malformed Boolean/array change-type finding. Source
+  approval is explicit for final `f1baa66e...`, not rejected `ab858ec0...`.
+  New artifact/deployment validation and live acceptance remain separate.
+  Reopened 2026-10-01: exact canonical ARM What-If returned unchanged same-group
+  resources as Ignore; the old helper rejected them as outside its write set.
+  Four positive regressions reproduced this with 16 denial controls passing.
+  The correction preserves the exact write/delete/no-recreate boundaries and
+  accepts only truly unchanged same-group ignores, including full identical
+  projections. All 264 focused regressions pass; fresh real previews pass the
+  corrected actual preflight with mutations denied. Replacement clean-source
+  qualification and Package/Prepare are required; old `7e18c7d4...` approval and
+  images do not approve the changed helper.
+  Revalidated 2026-10-01 after recovering the later authored checkout: the clean
+  short-path 963-input copy built with zero warnings/errors and passed all 1,478
+  .NET cases, including 138 owned-SQL cases, 543 Pester cases and all three
+  portable gates. No tests were skipped/unrun and the source-stability guard
+  passed. Current follow-up validation passed all 544 StrictMode Pester cases
+  and 29 source-contract cases, including credential/browser-output exclusion
+  and the actual module-scoped verifier child. All 723 deployable inputs still
+  match approved `7e18c7d4...`; no new application candidate is implied by the
+  local safety, test and documentation changes.
   Reverified 2026-09-25 KST for the user's explicit B1 selection. The replacement
   contract acknowledges only an already-allocated, exact B1/B2 change and carries
   that selection through actual read-only host verification, preserving the same
@@ -730,6 +766,23 @@ of the new candidate. M6 remains blocked until current M4/M5 closure.
   before this clean run; earlier NU1900 warnings were not hidden or accepted.
 - [ ] **M5.2** Validate API, Admin UI and worker containers plus the pinned Windows
   executor/package-publisher path from that candidate.
+  Current source is approved `f1baa66e...`, not the recovered `7e18c7d4...`.
+  The reviewed canonical Plan/Build uses the pinned 7.6.5/X64 launcher and must
+  produce its own exact artifact bundle before any replacement deployment.
+  Resumption 2026-10-01 recovered a later successful canonical Build from
+  2026-09-26, superseding the empty-execution checkpoint below. Bundle
+  `89f75191...` binds exact `7e18c7d4...` source to successful ACR runs
+  `deg/deh/dej/dek/dem`; no build was replayed. Fresh audits of all five exact
+  images verified digest/config/layer integrity, Linux AMD64, non-root UID 1654
+  and zero scanner findings/errors. The actual `d95b60b8...` Windows ZIP passed
+  exact receipt/manifest checks and all six isolated native/HTTP checks with
+  PowerShell 7.6.5 and EOM 3.10.1. Further exact checks passed all 1,367 package
+  entries, a zero-finding/error package scan, publisher embedded-ZIP equality,
+  matching API/worker contracts, all 14 SQL/source files and 0.1.0.0 assembly
+  versions. Artifact Plan `fb42ef3b...` passed actual full baseline at 08:59 UTC;
+  its official template validation passed, but canonical What-If exposed the
+  Ignore defect described on M5.1. No Execute was dispatched. The correction
+  requires replacement source/review/artifacts rather than reuse of that Plan.
   Reboot checkpoint 2026-09-25 KST: genuine `7e18c7d4...` source review and fresh
   canonical Build Plan `f6a307b9...` pass. The Plan's baseline passed at
   2026-09-24 18:43:09 UTC. The following Build used the required 7.6.5/X64

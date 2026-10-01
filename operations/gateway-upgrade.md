@@ -79,6 +79,14 @@ the returned tenant before sending HTTP. Azure CLI does not accept simultaneous
 subscription and tenant selectors for `account get-access-token`; this check
 preserves both bindings without that invalid invocation or logging tokens.
 
+Incremental ARM What-If can include unrelated existing resources as `Ignore`,
+with identical `before` and `after` projections. These are not proposed writes.
+Maintenance permits them only inside the exact target resource group, with no
+delta and no changed projection. Create/Modify targets still require their exact
+resource allowlists; unsupported changes and deletions remain rejected. An
+ignored resource outside the group or contradictory Ignore payload is not
+accepted. The source-only executor cannot recreate its existing app settings.
+
 ### Protection transport compatibility
 
 Current protection messages include `ExpectedStepAttemptCount` as well as

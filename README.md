@@ -145,6 +145,12 @@ databases, never a supplied Azure database connection or administrator credentia
 Use `-KeepWorkDirectory` only when retaining the isolated source/results for
 diagnosis; otherwise the runner removes only its exact owned run directory.
 
+The local `.temp_secret` authentication file and `.playwright-mcp/` browser
+captures are excluded from Git and Docker contexts. The clean-source runner also
+rejects either if it enters the source inventory, including through forced Git
+indexing. Use an existing authenticated session or read the supplied credential
+only into its intended sign-in flow; never copy it into a source snapshot.
+
 This command is development validation, not a deployment, signed Windows-package
 verification, or proof of Microsoft provider behavior. The milestone checklist
 records which acceptance conditions have actually passed.

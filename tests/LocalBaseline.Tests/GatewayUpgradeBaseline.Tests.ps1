@@ -574,6 +574,60 @@ if ($StatePath -ne 'success') { exit 1 }
     }
 }
 
+Describe 'Actual baseline entry point diagnostics' {
+    It 'retains failures from the actual module-scoped verifier child' {
+        $processRoot = Join-Path $TestDrive 'actual-baseline-child'
+        $operations = Join-Path $processRoot 'operations'
+        [IO.Directory]::CreateDirectory($operations) | Out-Null
+        [IO.File]::Copy((Join-Path $root 'operations\gateway-upgrade-baseline.ps1'),
+            (Join-Path $operations 'gateway-upgrade-baseline.ps1'))
+        $stubs = @'
+function Initialize-GatewayUpgradeVerifier { }
+function Get-BootstrapExecutionSourceRoot { return $null }
+function Set-BootstrapExecutionSourceRoot { param($Path) }
+function Set-BootstrapAzureSubscriptionContext { param($SubscriptionId, $TenantId) }
+function Clear-BootstrapAzureSubscriptionContext { }
+function Assert-BootstrapAzureContext { param($Config) }
+function Test-GatewayBootstrapDeployment {
+    param($Config, $State, $DeploymentOwnershipId, $NonInteractive,
+        $Foundation, $Identity, $Blueprint, $Runtime, $Database, $SqlPrivateEndpoint,
+        $AdminUi, $Images, $AdminIdentity, $AdminCredential)
+    throw [InvalidOperationException]::new('synthetic-provider-body-canary')
+}
+'@
+        [IO.File]::WriteAllText((Join-Path $operations 'GatewayUpgrade.psm1'),
+            "Set-StrictMode -Version Latest`n" + ($definitions -join "`n") + "`n" + $stubs,
+            [Text.UTF8Encoding]::new($false))
+        $fixture = New-FullBaselineFixture
+        $fixture.state.Remove('freshPurviewExecutor')
+        $statePath = Join-Path $processRoot 'state.json'
+        $configPath = Join-Path $processRoot 'config.json'
+        [IO.File]::WriteAllText($statePath, (ConvertTo-Json $fixture.state -Depth 100))
+        [IO.File]::WriteAllText($configPath, (ConvertTo-Json $fixture.config -Depth 100))
+        $inputs = @{
+            statePath = $statePath; configPath = $configPath
+            stateSha256 = 'sha256:' + (Get-FileHash -LiteralPath $statePath).Hash.ToLowerInvariant()
+            configSha256 = 'sha256:' + (Get-FileHash -LiteralPath $configPath).Hash.ToLowerInvariant()
+        }
+        $failure = $null
+        try {
+            & $baselineModule { param($root) $script:ToolingRoot = $root } $processRoot
+            try { & $runBaselineProcess -Inputs $inputs -TimeoutSeconds 30 }
+            catch { $failure = $_ }
+        }
+        finally {
+            & $baselineModule { param($root) $script:ToolingRoot = $root } $root
+        }
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.Exception.Message | Should -Match 'Verifier type: InvalidOperationException'
+        $failure.Exception.Message | Should -Match 'operations[\\/]GatewayUpgrade\.psm1:[1-9][0-9]*'
+        $failure.Exception.Message | Should -Not -Match 'synthetic-provider-body-canary'
+        $failure.Exception.Message | Should -Not -Match ([regex]::Escape($processRoot))
+        ('sha256:' + (Get-FileHash -LiteralPath $statePath).Hash.ToLowerInvariant()) | Should -BeExactly $inputs.stateSha256
+        ('sha256:' + (Get-FileHash -LiteralPath $configPath).Hash.ToLowerInvariant()) | Should -BeExactly $inputs.configSha256
+    }
+}
+
 Describe 'Actual executor host readback uses only the explicitly selected existing allocation' {
     BeforeEach {
         $fixture = New-FullBaselineFixture

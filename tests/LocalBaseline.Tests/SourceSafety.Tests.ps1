@@ -40,6 +40,37 @@ Describe 'Source-only baseline boundary' {
         { Get-LocalBaselineSourceFiles $repository } | Should -Throw '*Generated, operational or unsafe*'
     }
 
+    It 'rejects local authentication and browser output before creating a snapshot' -ForEach @(
+        @{ Relative = '.temp_secret'; Tracked = $false },
+        @{ Relative = '.temp_secret'; Tracked = $true },
+        @{ Relative = '.playwright-mcp\page.yml'; Tracked = $false },
+        @{ Relative = '.playwright-mcp\page.yml'; Tracked = $true }
+    ) {
+        $path = Join-Path $repository $Relative
+        [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path)) | Out-Null
+        [IO.File]::WriteAllText($path, 'synthetic-private-fixture')
+        if ($Tracked) {
+            & git -C $repository add --force -- $Relative
+            if ($LASTEXITCODE -ne 0) { throw 'Local test setup failed.' }
+        }
+        $target = Join-Path $repository '.test-work\copy\source'
+        { New-LocalBaselineSnapshot $repository $target } | Should -Throw '*Generated, operational or unsafe*'
+        Test-Path -LiteralPath $target | Should -BeFalse
+    }
+
+    It 'keeps the supplied local credential and browser output out of the source inventory' {
+        $ignore = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\..\.gitignore'))
+        [IO.File]::WriteAllText((Join-Path $repository '.gitignore'), $ignore)
+        [IO.File]::WriteAllText((Join-Path $repository '.temp_secret'), 'synthetic-private-fixture')
+        $browser = Join-Path $repository '.playwright-mcp'
+        [IO.Directory]::CreateDirectory($browser) | Out-Null
+        [IO.File]::WriteAllText((Join-Path $browser 'page.yml'), 'synthetic-private-fixture')
+        $files = @(Get-LocalBaselineSourceFiles $repository)
+        $files | Should -Not -Contain '.temp_secret'
+        $files | Should -Not -Contain '.playwright-mcp/page.yml'
+        $files | Should -Contain 'tracked.cs'
+    }
+
     It 'copies exact current source into a new clean directory' {
         $target = Join-Path $repository '.test-work\copy\source'
         $manifest = @(New-LocalBaselineSnapshot $repository $target)

@@ -8,6 +8,11 @@ The milestone checklist is the sole project completion record.
 
 ## User instructions
 
+- The only authoritative checkout is
+  `C:\Users\patrickshim\Projects\a365-custom-gateway`, on `main`.
+  Do not create branches or worktrees. The user explicitly requires a single
+  clean production repository; agent roles, development harnesses and project
+  coordination state belong outside it.
 - Treat the retained application as a working baseline. Improve UX flow, wording
   and selected features through the milestone plan.
 - The user deliberately deleted supporting files and Azure resources. Do not use
@@ -18,6 +23,9 @@ The milestone checklist is the sole project completion record.
   Its source is the user's credential message in this task on 2026-09-16; consult
   existing task history when context has been compacted. A genuine MFA challenge
   is a separate user action, not a reason to request the password again.
+  The user's later local `.temp_secret` file is also an authorized sign-in source.
+  Keep it outside authored snapshots and Docker contexts; never print its contents
+  or copy it into a different checkout. Prefer the authenticated session.
 - Pin all project Azure operations to tenant
   `ff8b1e46-ff0f-4bc2-ab02-caf2b92da496` and subscription
   `internal-security-lab-02` / `6f6ae863-dcb7-456f-a7f0-d6f9887cfb76`.
@@ -87,6 +95,18 @@ The milestone checklist is the sole project completion record.
   protocol, which retain their separate release and live acceptance.
 
 ## Learnings
+
+- A resumed session can open an older clean worktree while the real continuation
+  remains uncommitted in the original checkout. Compare source and operational
+  receipts before rebuilding or replaying anything, and recover only hash-checked
+  authored files, never the local authentication file. Inspect a saved result's
+  bindings when formatted console output hides fields; a missing table column
+  does not prove the operation failed.
+- Incremental ARM What-If includes untouched resources from the target group as
+  `Ignore`, often with full, identical before/after projections. Do not treat
+  those as new writes or assume their projections are null. Keep exact mutation
+  allowlists; permit only in-group Ignore entries with no delta and unchanged
+  projections, and test the real canonical fingerprint helper and ARM response.
 
 - Production browser checks use [the actual-component fixture](tests/Gateway.AdminUi.BrowserHost)
   and [its Chrome driver](tools/Test-M3Browser.cjs), not the M2 prototype. The
