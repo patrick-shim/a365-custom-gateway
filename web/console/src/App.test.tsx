@@ -129,8 +129,9 @@ describe("Console routes with actual API envelopes", () => {
     expect(screen.queryByRole("button", { name: "Load more agents" })).not.toBeInTheDocument();
   });
 
-  it("changes Prompt Shields without changing agent lifecycle", async () => {
-    const updated = { ...agent, features: { ...features, promptShieldEnabled: true, promptShieldEffectivelyEnabled: true } };
+  it.each(["Active", "Disabled"])("changes Prompt Shields without changing the %s lifecycle", async status => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({ ...agent, status }));
+    const updated = { ...agent, status, features: { ...features, promptShieldEnabled: true, promptShieldEffectivelyEnabled: true } };
     server.handlers.set(`PATCH /api/v1/agents/${agentId}/features`, () => {
       server.handlers.set(`GET /api/v1/agents/${agentId}`, () => updated);
       return { agentId, features: updated.features, updatedAtUtc: agent.updatedAtUtc };
@@ -139,7 +140,7 @@ describe("Console routes with actual API envelopes", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("switch", { name: "Prompt Shields" }));
     expect(await screen.findByText("On", { exact: true })).toBeVisible();
-    expect(screen.getByText("Active", { exact: true })).toBeVisible();
+    expect(screen.getByText(status, { exact: true })).toBeVisible();
     const change = server.requests.find(r => r.method === "PATCH");
     expect(change?.path).toBe(`/api/v1/agents/${agentId}/features`);
     expect(change?.headers.get("If-Match")).toBe(rowVersion);
@@ -153,6 +154,38 @@ describe("Console routes with actual API envelopes", () => {
     await user.click(await screen.findByRole("switch", { name: "Prompt Shields" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("The agent changed. Reload first.");
     expect(screen.getByRole("switch", { name: "Prompt Shields" })).not.toBeChecked();
+  });
+
+  it("explains provisioning failure and does not offer protection changes on a failed agent", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({
+      ...agent, status: "Failed", provisioning: {
+        currentStep: "ResolveBlueprint", percentComplete: 0,
+        lastError: "DirectRegistryPreview is restricted to Development.",
+      },
+    }));
+    renderApp(`/agents/${agentId}`);
+    expect(await screen.findByRole("alert")).toHaveTextContent("DirectRegistryPreview is restricted to Development.");
+    expect(screen.getByRole("alert")).toHaveTextContent("ResolveBlueprint");
+    expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeDisabled();
+  });
+
+  it("automatically refreshes a Draft agent until provisioning finishes", async () => {
+    let reads = 0;
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({
+      ...agent, status: ++reads === 1 ? "Draft" : "Active",
+    }));
+    renderApp(`/agents/${agentId}`);
+    expect(await screen.findByText(/Setting up the agent/)).toBeVisible();
+    expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeEnabled(), { timeout: 6500 });
+    expect(reads).toBe(2);
+  }, 10000);
+
+  it("explains the Registry approval blocker on the default agent tab", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({ ...agent, status: "AwaitingAdminApproval" }));
+    renderApp(`/agents/${agentId}`);
+    expect(await screen.findByText(/Agent 365 registration needs administrator approval/)).toBeVisible();
+    expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeDisabled();
   });
 
   it("reads all agent tabs and issues a replacement only after confirmation", async () => {
@@ -183,18 +216,24 @@ describe("Console routes with actual API envelopes", () => {
 
   it("requires explicit confirmation and never calls the invented recheck endpoint", async () => {
     server.handlers.set("POST /api/v1/protection/purview/connection-operations", () => {
-      server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ connection: connected }));
-      return response({ operationId, status: "Submitted", correlationId: operationId }, 202);
+      server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+        connection: { ...connected, status: "AwaitingAdministrator", lastVerifiedAtUtc: null },
+      }));
+      server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => ({
+        operation: { ...operation.operation, status: "AwaitingAdministrator", requiredAction: "CompletePurviewTenantConnection" },
+      }));
+      return response({ operationId, status: "AwaitingAdministrator", correlationId: operationId }, 202);
     });
     renderApp("/data-protection/connection");
     const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Check connection" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "Check connection" }));
-    await screen.findByRole("button", { name: "Confirm check" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start authorization" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Start authorization" }));
+    await screen.findByRole("button", { name: "Confirm authorization" });
     expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
-    await user.click(screen.getByRole("button", { name: "Confirm check" }));
-    expect(await screen.findByText("Completed")).toBeVisible();
-    expect(await screen.findByText(/Gateway access is verified/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Confirm authorization" }));
+    expect(await screen.findByText(/Administrator evidence is still required/)).toBeVisible();
+    expect(screen.queryByText(/Gateway access is verified/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start authorization" })).toBeDisabled();
     expect(server.requests.some(r => r.path.endsWith("connection:recheck"))).toBe(false);
   });
 
@@ -205,6 +244,23 @@ describe("Console routes with actual API envelopes", () => {
     renderApp(`/data-protection/connection?operation=${operationId}`);
     expect(await screen.findByText("Running", { exact: true })).toBeVisible();
     expect(screen.queryByText(/Gateway access is verified/)).not.toBeInTheDocument();
+  });
+
+  it("reports verified access only from current connection readback", async () => {
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ connection: connected }));
+    renderApp(`/data-protection/connection?operation=${operationId}`);
+    expect(await screen.findByText(/Gateway access is verified/)).toBeVisible();
+    expect(server.requests.some(r => r.method === "POST")).toBe(false);
+  });
+
+  it("explains the required administrator handoff and prevents repeating it", async () => {
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+      connection: { ...connected, status: "AwaitingAdministrator", lastVerifiedAtUtc: null },
+    }));
+    renderApp("/data-protection/connection");
+    expect(await screen.findByText(/That handoff cannot be completed in this Console yet/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Start authorization" })).toBeDisabled();
+    expect(server.requests.some(r => r.method === "POST")).toBe(false);
   });
 
   it("unwraps a classifier inventory and renders exactName", async () => {

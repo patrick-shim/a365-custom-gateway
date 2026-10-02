@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Spinner, Card, Switch, Text, Body1, Caption1, TabList, Tab, Button } from "@fluentui/react-components";
+import { Spinner, Card, Switch, Text, Body1, Caption1, TabList, Tab, Button, MessageBar, MessageBarBody } from "@fluentui/react-components";
 import { api } from "../../api/client";
 import { blueprintName, formatTime, shieldLabel } from "../../api/display";
 import { PageHeader } from "../../components/PageHeader";
@@ -15,7 +15,8 @@ export function AgentDetail() {
   const [tab, setTab] = useState("protection");
   const agent = useQuery({
     queryKey: ["agent", id], queryFn: () => api.getAgent(id),
-    refetchInterval: query => query.state.data?.status === "Provisioning" ? 5000 : false,
+    refetchInterval: query => query.state.error ? false :
+      query.state.data && ["Draft", "Provisioning"].includes(query.state.data.status) ? 5000 : false,
   });
   const blueprints = useQuery({ queryKey: ["blueprints"], queryFn: api.listBlueprints });
   const shield = useMutation({
@@ -30,6 +31,7 @@ export function AgentDetail() {
     onError: () => { void agent.refetch(); },
   });
   const a = agent.data;
+  const canChangeProtection = a?.status === "Active" || a?.status === "Disabled";
   return (
     <>
       <Link to="/agents">Back to agents</Link>
@@ -39,6 +41,23 @@ export function AgentDetail() {
         <ErrorState error={agent.error} onRetry={() => void agent.refetch()} />
       ) : a && (
         <>
+          {(a.status === "Failed" || a.status === "RequiresManualIntervention") && (
+            <MessageBar intent="error" role="alert" style={{ marginBottom: 16 }}>
+              <MessageBarBody>
+                <Text weight="semibold">Agent setup needs attention. </Text>
+                {a.provisioning?.lastError ?? "The Gateway has not provided a failure detail. Contact your Gateway administrator."}
+                {a.provisioning?.currentStep && <Caption1 block>Step: {a.provisioning.currentStep}</Caption1>}
+              </MessageBarBody>
+            </MessageBar>
+          )}
+          {["Draft", "Provisioning"].includes(a.status) && (
+            <Body1 role="status" style={{ marginBottom: 16 }}>Setting up the agent. {a.provisioning?.currentStep ?? "Waiting for the worker"}{a.provisioning ? ` (${a.provisioning.percentComplete}%)` : ""}</Body1>
+          )}
+          {a.status === "AwaitingAdminApproval" && (
+            <MessageBar intent="warning" style={{ marginBottom: 16 }}>
+              <MessageBarBody>Agent 365 registration needs administrator approval. Completing that handoff is not available in this Console yet.</MessageBarBody>
+            </MessageBar>
+          )}
           <TabList selectedValue={tab} onTabSelect={(_, data) => { if (typeof data.value === "string") setTab(data.value); }} style={{ marginBottom: 16 }}>
             <Tab value="protection">Prompt Shields</Tab><Tab value="identity">Identity</Tab>
             <Tab value="api">API key</Tab><Tab value="activity">Activity</Tab>
@@ -49,11 +68,12 @@ export function AgentDetail() {
             {a.features ? (
               <>
                 <Switch checked={a.features.promptShieldEnabled ?? a.features.promptShieldEffectivelyEnabled}
-                  disabled={shield.isPending || agent.isFetching}
+                  disabled={shield.isPending || agent.isFetching || !canChangeProtection}
                   label="Prompt Shields" onChange={(_, data) => shield.mutate({ enabled: data.checked, version: a.rowVersion })} />
                 <Body1>Effective state: <StatusPill value={shieldLabel(a)} /></Body1>
                 {a.features.promptShieldEnabled == null && <Caption1>Using the Gateway default.</Caption1>}
                 {a.features.promptShieldCapabilityStatus && <Caption1>Capability: {a.features.promptShieldCapabilityStatus}</Caption1>}
+                {!canChangeProtection && <Caption1>Protection settings become available after the agent is provisioned.</Caption1>}
               </>
             ) : <Body1>The Gateway did not report this agent's protection settings.</Body1>}
             {shield.isPending && <Body1 role="status">Saving and checking the setting...</Body1>}
@@ -68,7 +88,6 @@ export function AgentDetail() {
             <Caption1>Child agent ID</Caption1><Body1><code>{a.agent365?.agentId ?? "Not assigned"}</code></Body1>
             <Caption1>Agent identity object ID</Caption1><Body1><code>{a.agent365?.agentIdentityObjectId ?? "Not assigned"}</code></Body1>
             <Body1>Environment: {a.environment}</Body1>
-            {a.status === "AwaitingAdminApproval" && <Body1>Agent 365 registration needs an administrator's approval.</Body1>}
           </Card>}
           {tab === "api" && <AgentCredentials key={id} agentId={id} externalAgentId={a.externalAgentId} />}
           {tab === "activity" && <Card style={{ gap: 12, padding: 24 }}>

@@ -66,15 +66,26 @@ an image-pull error; changing registry permissions does not repair its platform.
   `If-Match` and idempotency headers/body fields. It never calls the agent
   enable/disable endpoints. Requested and effective states are distinct.
 - Purview Connection uses the existing review, explicit confirmation, start,
-  and operation-readback protocol. It does not invent a `connection:recheck`
-  endpoint, ask for scripts, or infer a missing provider reference from a generic
-  verification failure. Operation links survive reloads.
+  and operation-readback protocol. **The existing start endpoint always waits
+  for administrator evidence; it does not queue a provider check by itself.**
+  The Console explains this boundary and does not offer repeated authorization
+  while that handoff is pending. Gateway-owned, browser-only verification requires
+  a backend contract change; it is not implemented here. Operation links survive
+  reloads. A generic failure never implies a missing provider reference.
 - Classifiers use the actual inventory envelope and expiration metadata. Reload
-  reads the saved inventory; a connection check refreshes it from Purview.
+  reads the saved inventory; inventory refresh requires completed authorization
+  and a successful Gateway provider verification.
 - Policies is currently **read-only**. Policy editing, behavior tests, and
   complete Registry handoff are not yet implemented in the React Console.
 - Platform reports API health, actual capabilities, and persisted Prompt Shields
   defaults. API health is not worker health; installation is not enforcement.
+- Agent setup failures retain the API's provisioning step and failure detail.
+  The DirectRegistryPreview deployment admits Development registrations only;
+  accepting a Test registration is not proof it can be provisioned.
+  Development may still require the Registry administrator handoff. The Console
+  reports that blocker on the default detail tab; completing the handoff remains
+  migration work. Feature edits are available only in the API-supported Active
+  and Disabled lifecycle states.
 
 One-time Gateway keys and review/confirmation values stay in component memory,
 not local/session storage or the shared query cache. Leaving their page hides

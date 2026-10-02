@@ -42,6 +42,11 @@ export const agentListSchema = z.object({
 export const agentDetailSchema = agentSchema.extend({
   rowVersion: text,
   ownerObjectId: text,
+  provisioning: z.object({
+    currentStep: nullableText,
+    percentComplete: z.number(),
+    lastError: nullableText,
+  }).nullable(),
 });
 export const featuresUpdateSchema = z.object({
   agentId: text,

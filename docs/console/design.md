@@ -164,8 +164,8 @@ regression tests for navigation, registration, errors, and mutations.
 |---|---|
 | Navigation | React routes; loading/error/empty states; render failures preserve the shell |
 | Agents | Paginated list/detail, real registration, one-time keys, replacement/revocation, per-agent Prompt Shields |
-| Connection | Server-side review, explicit confirmation, operation polling, safe failure details |
-| Classifiers | Current inventory and expiration; refresh through a connection check |
+| Connection | Review, explicit confirmation, operation polling, safe failure details; current API still requires an administrator evidence handoff |
+| Classifiers | Current inventory and expiration; refresh requires completed authorization and provider verification |
 | Policies | Read-only saved policy list; editor and behavior tests remain unfinished |
 | Platform | Actual API health/capabilities and persisted Prompt Shields defaults; no fabricated worker health |
 | Packaging | Separate nginx Console container; bootstrap integration and Blazor retirement remain unfinished |
@@ -173,6 +173,14 @@ regression tests for navigation, registration, errors, and mutations.
 The persona zones do not alter authorization: the backend currently requires
 Administrator for registration, credential actions, and protection mutations.
 Role-aware navigation and full Registry handoff remain migration work.
+
+The current connection start handler unconditionally enters
+`AwaitingAdministrator` and returns a companion launch. It does **not** run the
+Gateway-owned verifier at that point. Browser-only verification requires an
+explicit reviewed backend mode that queues the existing independent verifier,
+retaining tenant/actor binding, exact capability/certificate checks, concurrency,
+idempotency, and authoritative provider readback. Never fabricate companion
+evidence or relabel acceptance as verified access to bypass this gap.
 
 Acceptance requires the exact deployed image to pass authenticated menu-click,
 registration, and mutation journeys. Connection verification, policy readiness,
@@ -210,8 +218,10 @@ provider mutations without specific evidence.
 
 - *"Fails with zero explanation"* -> failures stay visible with a plain message,
   operation status, and safe code/reference under Details.
-- *"Download a script and paste strings back"* -> use Gateway-owned verification
-  with review/confirm in the browser; no terminal copy/paste workflow.
+- *"Download a script and paste strings back"* -> the design requires Gateway-owned
+  verification without a manual handoff. This remains a backend migration gap,
+  not a completed feature; the Console must say so rather than advertise a
+  working automatic recheck.
 - *"Every menu goes black"* -> validate response wrappers, test actual menu clicks,
   and keep navigation outside the route error boundary. Never mask API failures
   with demo data or success-shaped defaults.
