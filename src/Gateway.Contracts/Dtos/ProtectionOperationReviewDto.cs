@@ -21,4 +21,5 @@ public sealed record ProtectionOperationReviewSummaryDto(
     IReadOnlyList<PurviewSensitiveInformationTypeSelectionDto>? SensitiveInformationTypes = null,
     bool AffectsAllBlueprintAgents = false,
     PurviewDeferredBlueprintDto? DeferredBlueprint = null,
-    bool ReplacesUnverifiedLegacyThresholds = false);
+    bool ReplacesUnverifiedLegacyThresholds = false,
+    string? VerificationMode = null);

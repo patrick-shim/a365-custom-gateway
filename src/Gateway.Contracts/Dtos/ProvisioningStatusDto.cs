@@ -3,4 +3,5 @@ namespace Gateway.Contracts.Dtos;
 public record ProvisioningStatusDto(
     string? CurrentStep,
     int PercentComplete,
-    string? LastError);
+    string? LastError,
+    Guid? OperationId = null);

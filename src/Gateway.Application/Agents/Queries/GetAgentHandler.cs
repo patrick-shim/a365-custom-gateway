@@ -52,7 +52,8 @@ internal sealed class GetAgentHandler : IRequestHandler<GetAgentQuery, AgentDeta
             provisioning = new ProvisioningStatusDto(
                 runningStep?.StepType.ToString(),
                 latestJob.PercentComplete,
-                latestJob.ErrorSummary);
+                latestJob.ErrorSummary,
+                latestJob.Id);
         }
 
         var observabilityDestinations = agent.FeatureConfiguration.ObservabilityMode.ToDestinations();

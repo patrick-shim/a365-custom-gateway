@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./client";
-import { ApiError } from "./errors";
+import { ApiError, readAuthorizationChallenge } from "./errors";
 import {
   agent, agentId, blueprints, connected, failedConnection, features, mockServer,
-  response, review, rowVersion, tenantId,
+  response, review, rowVersion, tenantId, operationId, registrationOperation, systemConfig,
 } from "../test/fixtures";
 import { connectionIsUsable } from "./types";
 
@@ -85,10 +85,11 @@ describe("Gateway wire contracts", () => {
       "/api/v1/protection/operation-reviews:confirm",
       "/api/v1/protection/purview/connection-operations",
     ]);
-    expect(server.requests[0].body).toEqual({ tenantId, expectedRowVersion: rowVersion });
+    expect(server.requests[0].body).toEqual({ tenantId, expectedRowVersion: rowVersion, verificationMode: "Gateway" });
     expect(server.requests[0].headers.get("If-Match")).toBe(rowVersion);
-    expect(server.requests[2].body).toMatchObject({ tenantId, expectedRowVersion: rowVersion });
+    expect(server.requests[2].body).toMatchObject({ tenantId, expectedRowVersion: rowVersion, verificationMode: "Gateway" });
     expect(server.requests[2].headers.get("If-Match")).toBe(rowVersion);
+    expect(server.requests[2].body).toHaveProperty("idempotencyKey", server.requests[2].headers.get("Idempotency-Key"));
   });
 
   it("rejects a review for another tenant before confirmation", async () => {
@@ -97,6 +98,100 @@ describe("Gateway wire contracts", () => {
     }));
     await expect(api.reviewPurviewConnection(rowVersion)).rejects.toMatchObject({ code: "REVIEW_MISMATCH" });
     expect(server.requests).toHaveLength(1);
+  });
+
+  it("rejects legacy companion review instead of falling back to it", async () => {
+    server.handlers.set("POST /api/v1/protection/purview/connection-operations:review", () => ({
+      ...review, review: { ...review.review, operationType: "ConnectPurviewTenant", verificationMode: null },
+    }));
+    await expect(api.reviewPurviewConnection(rowVersion)).rejects.toMatchObject({ code: "REVIEW_MISMATCH" });
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it("rejects a mode change before exchanging a confirmation token", async () => {
+    await expect(api.confirmPurviewConnection({
+      ...review, expectedRowVersion: rowVersion, review: { ...review.review, verificationMode: null },
+    })).rejects.toMatchObject({ code: "REVIEW_MISMATCH" });
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("rejects a confirmation for a different operation before starting", async () => {
+    server.handlers.set("POST /api/v1/protection/operation-reviews:confirm", () => ({
+      confirmationTokenId: agentId, confirmationToken: "test-only-confirmation",
+    }));
+    await expect(api.confirmPurviewConnection({ ...review, expectedRowVersion: rowVersion }))
+      .rejects.toMatchObject({ code: "REVIEW_MISMATCH" });
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it("rejects a companion-only acceptance even if HTTP 202 is returned", async () => {
+    server.handlers.set("POST /api/v1/protection/purview/connection-operations", () =>
+      response({ operationId, status: "AwaitingAdministrator", correlationId: operationId, companionLaunch: {} }, 202));
+    await expect(api.confirmPurviewConnection({ ...review, expectedRowVersion: rowVersion }))
+      .rejects.toMatchObject({ code: "OPERATION_MISMATCH", outcomeUnknown: true });
+    expect(server.requests.filter(r => r.path.endsWith("/connection-operations"))).toHaveLength(1);
+  });
+
+  it("reads Registry progress and completes with no request body or fabricated evidence", async () => {
+    expect(await api.getRegistrationOperation(operationId, agentId)).toEqual(registrationOperation);
+    expect(await api.completeAgent365Registration(operationId, agentId)).toMatchObject({ status: "VerificationQueued" });
+    const request = server.requests[1];
+    expect(request.path).toBe(`/api/v1/operations/${operationId}:complete-agent365-registration`);
+    expect(request.method).toBe("POST");
+    expect(request.body).toBeUndefined();
+    expect(request.headers.has("Content-Type")).toBe(false);
+  });
+
+  it("rejects operation readback belonging to a different agent", async () => {
+    await expect(api.getRegistrationOperation(operationId, tenantId)).rejects.toMatchObject({ code: "OPERATION_MISMATCH" });
+    expect(server.requests.every(r => r.method === "GET")).toBe(true);
+  });
+
+  it("does not accept Active as a fabricated completion response", async () => {
+    server.handlers.set(`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () => ({
+      operationId, agentId, agent365RegistrationId: agentId, status: "Active",
+    }));
+    await expect(api.completeAgent365Registration(operationId, agentId))
+      .rejects.toMatchObject({ code: "INVALID_API_RESPONSE", outcomeUnknown: true });
+  });
+
+  it.each([undefined, { environment: "Development", reason: null }, { environment: "Unknown", reason: "Unknown provider" }])(
+    "requires authoritative registration defaults with a reason for preview exceptions", async registrationDefaults => {
+      server.handlers.set("GET /api/v1/system/config", () => ({ ...systemConfig, registrationDefaults }));
+      await expect(api.getSystemConfig()).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
+    },
+  );
+
+  it("accepts the standard server Production default without an exception reason", async () => {
+    server.handlers.set("GET /api/v1/system/config", () => ({
+      ...systemConfig, registrationDefaults: { environment: "Production", reason: null },
+    }));
+    expect((await api.getSystemConfig()).registrationDefaults.environment).toBe("Production");
+  });
+
+  it("retains a decoded claims challenge in memory without retrying the POST", async () => {
+    const claims = JSON.stringify({ access_token: { acrs: { value: "test" } } });
+    server.handlers.set(`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () => new Response(
+      JSON.stringify({ errorCode: "AGENT365_REGISTRY_DELEGATED_ACCESS_REQUIRED" }),
+      { status: 401, headers: { "WWW-Authenticate": `Bearer error="insufficient_claims", claims="${btoa(claims)}"` } },
+    ));
+    await expect(api.completeAgent365Registration(operationId, agentId)).rejects.toMatchObject({
+      status: 401, authorizationChallenge: { kind: "claims", claims }, outcomeUnknown: false,
+    });
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it("recognizes consent scopes as guidance, not a different browser authority", () => {
+    expect(readAuthorizationChallenge('Bearer authorization_uri="https://untrusted.invalid", error="insufficient_scope", scope="https://graph.microsoft.com/AgentRegistry.ReadWrite.All"'))
+      .toEqual({ kind: "consent", scopes: ["https://graph.microsoft.com/AgentRegistry.ReadWrite.All"] });
+  });
+
+  it.each([
+    null, 'Bearer error="insufficient_claims", claims="bad"',
+    `Bearer error="insufficient_claims", claims="${btoa("{}")}"`,
+    'Bearer error="insufficient_claims", error="insufficient_scope"',
+  ])("rejects an unreadable authorization challenge visibly", header => {
+    expect(readAuthorizationChallenge(header)).toEqual({ kind: "unavailable" });
   });
 
   it("flags an unconfirmed mutation instead of silently repeating it", async () => {

@@ -10,7 +10,8 @@ public enum ProtectionAdminOperationType
     ValidateDlpRuntime,
     UpdateProtectionDefaults,
     CompletePurviewTenantConnection,
-    TestDlpRuntime
+    TestDlpRuntime,
+    VerifyPurviewTenantConnection
 }
 
 public enum ProtectionAdminTargetType

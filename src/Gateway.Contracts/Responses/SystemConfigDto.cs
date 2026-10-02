@@ -30,7 +30,12 @@ public record SystemConfigDto(
     bool PurviewPolicyProvisioningEnabled = false,
     bool DefaultPromptShieldEnabled = false,
     bool PromptShieldAvailable = false,
-    string? RowVersion = null);
+    string? RowVersion = null,
+    AgentRegistrationDefaultsDto? RegistrationDefaults = null);
+
+public sealed record AgentRegistrationDefaultsDto(
+    string Environment = "Production",
+    string? Reason = null);
 
 public record UpdateFeaturesResponse(
     Guid AgentId,

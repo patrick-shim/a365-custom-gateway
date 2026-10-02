@@ -3,11 +3,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Card, Input, Field, Dropdown, Option, Button, Text, Body1, Caption1,
-  Spinner, Select, RadioGroup, Radio, Checkbox, MessageBar, MessageBarBody,
+  Spinner, RadioGroup, Radio, Checkbox, MessageBar, MessageBarBody,
 } from "@fluentui/react-components";
 import { api } from "../../api/client";
 import { ApiError, SignInRequiredError } from "../../api/errors";
-import type { Agent, Registration, RegisterAgentRequest } from "../../api/types";
+import type { Agent, Registration } from "../../api/types";
 import { getAccount } from "../../auth/msal";
 import { PageHeader } from "../../components/PageHeader";
 import { CopyableCommand } from "../../components/CopyableCommand";
@@ -17,10 +17,10 @@ export function RegisterAgent() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [step, setStep] = useState(1);
+  const system = useQuery({ queryKey: ["system-config"], queryFn: api.getSystemConfig });
   const blueprints = useQuery({ queryKey: ["blueprints"], queryFn: api.listBlueprints, enabled: step === 2 });
   const [name, setName] = useState("");
   const [externalId, setExternalId] = useState(() => `agent-${crypto.randomUUID()}`);
-  const [environment, setEnvironment] = useState<RegisterAgentRequest["environment"]>("Development");
   const [blueprintId, setBlueprintId] = useState("");
   const [newBlueprint, setNewBlueprint] = useState(false);
   const [blueprintDisplayName, setBlueprintDisplayName] = useState("");
@@ -32,6 +32,8 @@ export function RegisterAgent() {
   const [existing, setExisting] = useState<Agent>();
   const [readbackMessage, setReadbackMessage] = useState("");
   const compatible = blueprints.data?.filter(b => b.isAgent365Compatible) ?? [];
+  const defaults = system.isSuccess ? system.data.registrationDefaults : undefined;
+  const registrationOpen = !!defaults && system.data?.provisioningExecutionEnabled === true;
   const validName = name.trim().length > 0 && name.trim().length <= 256;
   const validExternalId = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(externalId);
   const validBlueprint = newBlueprint ? blueprintDisplayName.trim().length > 0 :
@@ -39,14 +41,14 @@ export function RegisterAgent() {
   const cardStyle = { padding: 24, gap: 16, maxWidth: 620 };
 
   async function create() {
-    if (!validName || !validExternalId || !validBlueprint || busy || uncertain) return;
+    if (!validName || !validExternalId || !validBlueprint || busy || uncertain || !registrationOpen || !defaults) return;
     setBusy(true);
     setError(undefined);
     try {
       const oid = getAccount()?.idTokenClaims?.oid;
       if (typeof oid !== "string" || !oid) throw new SignInRequiredError();
       const registered = await api.registerAgent({
-        name: name.trim(), externalAgentId: externalId, ownerObjectId: oid, environment,
+        name: name.trim(), externalAgentId: externalId, ownerObjectId: oid, environment: defaults.environment,
         blueprint: newBlueprint
           ? { mode: "CreateNew", displayName: blueprintDisplayName.trim() }
           : { mode: "UseExisting", blueprintObjectId: blueprintId },
@@ -92,6 +94,15 @@ export function RegisterAgent() {
     <>
       <PageHeader title="Register agent" subtitle="Name the agent, choose a blueprint, and save its Gateway key." />
       <Body1 block style={{ marginBottom: 16 }}>Step {step} of 3: {["Name", "Blueprint", "Key"][step - 1]}</Body1>
+      {step < 3 && (system.isPending ? <Spinner label="Loading registration defaults" /> : system.isError ? (
+        <ErrorState title="Registration defaults are unavailable" error={system.error} onRetry={() => void system.refetch()} />
+      ) : <>
+        <Body1 block style={{ marginBottom: 8 }}>Registration environment: {defaults?.environment}</Body1>
+        {defaults?.reason && <Caption1 block style={{ marginBottom: 16 }}>{defaults.reason}</Caption1>}
+        {!registrationOpen && <MessageBar intent="warning"><MessageBarBody>
+          Registration is closed on this Gateway. Your administrator must open the provisioning gate before you can continue.
+        </MessageBarBody></MessageBar>}
+      </>)}
       {step === 1 && (
         <Card style={cardStyle}>
           <Field label="Agent name" required><Input value={name} maxLength={256} onChange={(_, data) => setName(data.value)} placeholder="Support Copilot" /></Field>
@@ -99,14 +110,7 @@ export function RegisterAgent() {
             validationMessage={!validExternalId ? "Use letters, numbers, dots, hyphens, or underscores; start with a letter or number." : undefined}>
             <Input value={externalId} maxLength={128} onChange={(_, data) => setExternalId(data.value)} />
           </Field>
-          <Field label="Environment">
-            <Select value={environment} onChange={(_, data) => {
-              if (data.value === "Development" || data.value === "Test" || data.value === "Production") setEnvironment(data.value);
-            }}>
-              <option>Development</option><option>Test</option><option>Production</option>
-            </Select>
-          </Field>
-          <Button appearance="primary" disabled={!validName || !validExternalId} onClick={() => setStep(2)} style={{ alignSelf: "flex-start" }}>Next</Button>
+          <Button appearance="primary" disabled={!validName || !validExternalId || !registrationOpen} onClick={() => setStep(2)} style={{ alignSelf: "flex-start" }}>Next</Button>
         </Card>
       )}
       {step === 2 && (
@@ -144,7 +148,7 @@ export function RegisterAgent() {
           </MessageBarBody></MessageBar>}
           <div style={{ display: "flex", gap: 8 }}>
             <Button disabled={busy || uncertain} onClick={() => setStep(1)}>Back</Button>
-            <Button appearance="primary" disabled={busy || uncertain || !validBlueprint} onClick={() => void create()}>
+            <Button appearance="primary" disabled={busy || uncertain || !validBlueprint || !registrationOpen} onClick={() => void create()}>
               {busy ? "Working..." : "Create agent"}
             </Button>
           </div>

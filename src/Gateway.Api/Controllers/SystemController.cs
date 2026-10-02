@@ -1,6 +1,7 @@
 using Gateway.Api.Authorization;
 using Gateway.Api.Extensions;
 using Gateway.Api.Options;
+using Gateway.Agent365;
 using Gateway.Application.Configuration.Commands;
 using Gateway.Application.Configuration.Queries;
 using Gateway.Application.Protection;
@@ -142,7 +143,10 @@ public class SystemController : ControllerBase
         {
             ProvisioningExecutionEnabled = _provisioningAdmissionGate.IsRegistrationOpen,
             PurviewPolicyProvisioningEnabled = _purviewPolicyProvisioningClient.IsEnabled,
-            PromptShieldAvailable = _promptShieldClient.IsEnabled
+            PromptShieldAvailable = _promptShieldClient.IsEnabled,
+            RegistrationDefaults = new AgentRegistrationDefaultsDto(
+                Agent365RegistrationCapabilities.DefaultEnvironment,
+                Agent365RegistrationCapabilities.EnvironmentReason)
         };
 
     private Guid GetOperationCorrelationId()

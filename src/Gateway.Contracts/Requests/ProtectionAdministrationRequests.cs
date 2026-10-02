@@ -4,14 +4,21 @@ namespace Gateway.Contracts.Requests;
 
 public sealed record ReviewPurviewTenantConnectionRequest(
     Guid TenantId,
-    string ExpectedRowVersion);
+    string ExpectedRowVersion,
+    string? VerificationMode = null);
 
 public sealed record StartPurviewTenantConnectionOperationRequest(
     Guid TenantId,
     Guid ConfirmationTokenId,
     string ConfirmationToken,
     Guid IdempotencyKey,
-    string ExpectedRowVersion);
+    string ExpectedRowVersion,
+    string? VerificationMode = null);
+
+public static class PurviewConnectionVerificationModes
+{
+    public const string Gateway = "Gateway";
+}
 
 public sealed record CompletePurviewTenantConnectionOperationRequest(
     Guid ConfirmationTokenId,

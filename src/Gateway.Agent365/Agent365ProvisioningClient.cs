@@ -1304,7 +1304,10 @@ public sealed class Agent365ProvisioningClient : IAgent365ProvisioningClient
                 "The provisioning request is missing required values.");
         }
 
-        if (!string.Equals(request.Agent.Environment, "Development", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(
+                request.Agent.Environment,
+                Agent365RegistrationCapabilities.DefaultEnvironment,
+                StringComparison.OrdinalIgnoreCase))
         {
             throw Failure(
                 ErrorCodes.PROVISIONING_PREVIEW_DISABLED,

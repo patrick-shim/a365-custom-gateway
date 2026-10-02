@@ -1,4 +1,5 @@
 using FluentValidation;
+using Gateway.Contracts.Requests;
 
 namespace Gateway.Application.Protection;
 
@@ -8,6 +9,8 @@ public sealed class ReviewPurviewTenantConnectionCommandValidator
     public ReviewPurviewTenantConnectionCommandValidator()
     {
         RuleFor(command => command.Request.TenantId).NotEmpty();
+        RuleFor(command => command.Request.VerificationMode)
+            .Must(value => value is null or PurviewConnectionVerificationModes.Gateway);
         RuleFor(command => command.Request.ExpectedRowVersion)
             .Must(ProtectionValidatorRules.BeExpectedRowVersion);
     }
@@ -139,13 +142,18 @@ public sealed class ConfirmProtectionOperationReviewCommandValidator
 public sealed class StartPurviewTenantConnectionCommandValidator
     : AbstractValidator<StartPurviewTenantConnectionCommand>
 {
-    public StartPurviewTenantConnectionCommandValidator() =>
+    public StartPurviewTenantConnectionCommandValidator()
+    {
+        RuleFor(command => command.Request.TenantId).NotEmpty();
+        RuleFor(command => command.Request.VerificationMode)
+            .Must(value => value is null or PurviewConnectionVerificationModes.Gateway);
         ProtectionValidatorRules.AddMutationRules(
             this,
             command => command.Request.ConfirmationTokenId,
             command => command.Request.ConfirmationToken,
             command => command.Request.IdempotencyKey,
             command => command.Request.ExpectedRowVersion);
+    }
 }
 
 public sealed class CompletePurviewTenantConnectionCommandValidator

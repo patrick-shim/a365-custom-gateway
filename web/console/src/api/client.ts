@@ -1,13 +1,13 @@
 import { z } from "zod";
 import { getApiToken } from "../auth/msal";
 import { config } from "../runtime-config";
-import { ApiError } from "./errors";
+import { ApiError, readAuthorizationChallenge } from "./errors";
 import {
   acceptedOperationSchema, agentDetailSchema, agentListSchema, blueprintListSchema,
   capabilitiesSchema, confirmationSchema, connectionResponseSchema, credentialListSchema,
   dlpProfilesSchema, featuresUpdateSchema, inventorySchema, issuedCredentialSchema,
   operationResponseSchema, registrationSchema, reviewSchema, revokedCredentialSchema,
-  systemConfigSchema,
+  systemConfigSchema, registrationOperationSchema, registrationCompletionSchema,
   type ConnectionReview, type RegisterAgentRequest,
 } from "./types";
 
@@ -61,6 +61,9 @@ async function request(path: string, method = "GET", body?: unknown, headers?: H
     throw new ApiError(
       validation || problem.detail || problem.title || fallback,
       response.status, problem.errorCode, problem.correlationId, method !== "GET" && response.status >= 500,
+      response.status === 401 && problem.errorCode === "AGENT365_REGISTRY_DELEGATED_ACCESS_REQUIRED"
+        ? readAuthorizationChallenge(response.headers.get("WWW-Authenticate"))
+        : undefined,
     );
   }
   return response;
@@ -101,6 +104,23 @@ export const api = {
     return json(agentListSchema, `/api/v1/agents?${query}`);
   },
   getAgent: (id: string) => json(agentDetailSchema, `/api/v1/agents/${encodeURIComponent(id)}`),
+  async getRegistrationOperation(operationId: string, agentId: string) {
+    const result = await json(registrationOperationSchema, `/api/v1/operations/${encodeURIComponent(operationId)}`);
+    if (result.operationId !== operationId || result.agentId !== agentId) {
+      throw new ApiError("The operation does not belong to this agent. Refresh or contact your administrator.",
+        200, "OPERATION_MISMATCH");
+    }
+    return result;
+  },
+  async completeAgent365Registration(operationId: string, agentId: string) {
+    const result = await json(registrationCompletionSchema,
+      `/api/v1/operations/${encodeURIComponent(operationId)}:complete-agent365-registration`, "POST");
+    if (result.operationId !== operationId || result.agentId !== agentId) {
+      throw new ApiError("The completion response did not match this operation. Check current status before continuing.",
+        200, "OPERATION_MISMATCH", undefined, true);
+    }
+    return result;
+  },
   setPromptShield(id: string, enabled: boolean, expectedRowVersion: string) {
     const idempotencyKey = crypto.randomUUID();
     return json(featuresUpdateSchema, `/api/v1/agents/${encodeURIComponent(id)}/features`, "PATCH", {
@@ -124,24 +144,44 @@ export const api = {
   },
   async reviewPurviewConnection(expectedRowVersion: string): Promise<ConnectionReview> {
     const result = await json(reviewSchema, "/api/v1/protection/purview/connection-operations:review", "POST",
-      { tenantId: config.tenantId, expectedRowVersion }, { "If-Match": expectedRowVersion });
-    if (result.review.tenantId !== config.tenantId || result.review.operationType !== "ConnectPurviewTenant") {
-      throw new ApiError("The review did not match this tenant and action. Refresh and review again.", 200, "REVIEW_MISMATCH");
+      { tenantId: config.tenantId, expectedRowVersion, verificationMode: "Gateway" }, { "If-Match": expectedRowVersion });
+    if (result.review.tenantId !== config.tenantId || result.review.targetIdentifier !== config.tenantId ||
+      result.review.targetType !== "PurviewTenantConnection" ||
+      result.review.operationType !== "VerifyPurviewTenantConnection" || result.review.verificationMode !== "Gateway") {
+      throw new ApiError("The API did not review Gateway-owned verification for this tenant. Update the API and worker before continuing.",
+        200, "REVIEW_MISMATCH");
     }
     return { ...result, expectedRowVersion };
   },
   async confirmPurviewConnection(review: ConnectionReview) {
+    if (review.review.tenantId !== config.tenantId || review.review.targetIdentifier !== config.tenantId ||
+      review.review.targetType !== "PurviewTenantConnection" || review.review.operationType !== "VerifyPurviewTenantConnection" ||
+      review.review.verificationMode !== "Gateway") {
+      throw new ApiError("Review Gateway-owned verification again before confirming.", 400, "REVIEW_MISMATCH");
+    }
     const confirmation = await json(confirmationSchema, "/api/v1/protection/operation-reviews:confirm", "POST", {
       reviewTokenId: review.reviewTokenId, reviewToken: review.reviewToken,
     });
+    if (confirmation.confirmationTokenId !== review.reviewTokenId) {
+      throw new ApiError("The confirmation did not match this review. Start a new review.", 200, "REVIEW_MISMATCH");
+    }
     const idempotencyKey = crypto.randomUUID();
-    return json(acceptedOperationSchema, "/api/v1/protection/purview/connection-operations", "POST", {
+    const accepted = await json(acceptedOperationSchema, "/api/v1/protection/purview/connection-operations", "POST", {
       tenantId: review.review.tenantId, ...confirmation, idempotencyKey,
-      expectedRowVersion: review.expectedRowVersion,
+      expectedRowVersion: review.expectedRowVersion, verificationMode: "Gateway",
     }, mutationHeaders(review.expectedRowVersion, idempotencyKey));
+    if (accepted.operationId !== review.reviewTokenId || accepted.status !== "Pending" || accepted.companionLaunch != null) {
+      throw new ApiError("Gateway-owned verification was not confirmed. Check the reviewed operation; do not repeat the request.",
+        202, "OPERATION_MISMATCH", accepted.correlationId, true);
+    }
+    return accepted;
   },
   async getProtectionOperation(id: string) {
-    return (await json(operationResponseSchema, `/api/v1/protection/operations/${encodeURIComponent(id)}`)).operation;
+    const result = (await json(operationResponseSchema, `/api/v1/protection/operations/${encodeURIComponent(id)}`)).operation;
+    if (result.id !== id || result.tenantId !== config.tenantId) {
+      throw new ApiError("The operation did not match this tenant and request.", 200, "OPERATION_MISMATCH");
+    }
+    return result;
   },
   listSensitiveInformationTypes: () => json(inventorySchema, "/api/v1/protection/purview/sensitive-information-types"),
   async listDlpProfiles() {

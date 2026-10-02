@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using Gateway.Contracts.Requests;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 
@@ -12,6 +13,13 @@ internal static class ProtectionAdminIntentFingerprint
 
     public static string ForConnection(Guid tenantId) =>
         Compute(new PurviewTenantConnectionPayload(tenantId));
+
+    public static string ForGatewayConnection(Guid tenantId) =>
+        Compute(new
+        {
+            TenantId = tenantId,
+            VerificationMode = PurviewConnectionVerificationModes.Gateway
+        });
 
     public static string ForKnowYourData(
         PurviewKnowYourDataConfiguration configuration) =>

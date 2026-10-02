@@ -489,6 +489,7 @@ internal sealed class ProtectionAdminMessageHandler
     {
         switch (operation.Type)
         {
+            case ProtectionAdminOperationType.VerifyPurviewTenantConnection:
             case ProtectionAdminOperationType.ConnectPurviewTenant:
                 await DiscoverConnectionProviderStateAsync(
                     operation,
@@ -591,6 +592,7 @@ internal sealed class ProtectionAdminMessageHandler
     {
         switch (operation.Type)
         {
+            case ProtectionAdminOperationType.VerifyPurviewTenantConnection:
             case ProtectionAdminOperationType.ConnectPurviewTenant:
                 await RecordConnectionProviderReadbackAsync(
                     operation,
@@ -714,11 +716,15 @@ internal sealed class ProtectionAdminMessageHandler
             CancellationToken ct)
     {
         var connection = context.Connection;
+        var expectedAuthorityKind = operation.Type ==
+            ProtectionAdminOperationType.VerifyPurviewTenantConnection
+                ? PurviewTenantConnection.GatewayVerificationPendingAuthority(operation.Id)
+                : "InteractiveSubmissionUnverified";
         if (connection.Status !=
                 PurviewTenantConnectionStatus.PendingVerification ||
             !string.Equals(
                 connection.AuthorityKind,
-                "InteractiveSubmissionUnverified",
+                expectedAuthorityKind,
                 StringComparison.Ordinal) ||
             !string.Equals(
                 connection.CreatedByObjectId,
@@ -1167,6 +1173,7 @@ internal sealed class ProtectionAdminMessageHandler
         PurviewDlpProfile? profile = null;
         switch (operation.Type)
         {
+            case ProtectionAdminOperationType.VerifyPurviewTenantConnection:
             case ProtectionAdminOperationType.ConnectPurviewTenant:
             case ProtectionAdminOperationType.RefreshSensitiveInformationTypes:
                 connection = await _connectionRepository.GetByIdAsync(targetId, ct);
@@ -1200,9 +1207,9 @@ internal sealed class ProtectionAdminMessageHandler
         if (connection is null || connection.TenantId != operation.TenantId)
             throw Failure("PURVIEW_CONNECTION_TARGET_MISMATCH");
         var capabilityBinding = RequireExactPurviewCapabilityBinding(capability);
-        if (operation.Type != ProtectionAdminOperationType.ConnectPurviewTenant)
+        if (!IsConnectionVerification(operation.Type))
             EnsureConnectionAuthorityBinding(connection, capabilityBinding);
-        if (operation.Type == ProtectionAdminOperationType.ConnectPurviewTenant)
+        if (IsConnectionVerification(operation.Type))
         {
             var stagedInventoryId = connection.ActiveInventoryGenerationId ??
                 (operation.ReadbackReferenceId is { } readbackReference
@@ -1237,8 +1244,7 @@ internal sealed class ProtectionAdminMessageHandler
 
         if (connection.ActiveInventoryGenerationId is null)
             throw Failure("PURVIEW_INVENTORY_NOT_AVAILABLE");
-        if (operation.Type is not ProtectionAdminOperationType.ConnectPurviewTenant and
-                not ProtectionAdminOperationType.RefreshSensitiveInformationTypes &&
+        if (operation.Type != ProtectionAdminOperationType.RefreshSensitiveInformationTypes &&
             !connection.IsUsableAt(utcNow))
         {
             throw Failure("PURVIEW_CONNECTION_NOT_USABLE");
@@ -1301,6 +1307,8 @@ internal sealed class ProtectionAdminMessageHandler
     {
         var actual = operation.Type switch
         {
+            ProtectionAdminOperationType.VerifyPurviewTenantConnection =>
+                ProtectionAdminIntentFingerprint.ForGatewayConnection(operation.TenantId.Value),
             ProtectionAdminOperationType.ConnectPurviewTenant or
             ProtectionAdminOperationType.RefreshSensitiveInformationTypes =>
                 ProtectionAdminIntentFingerprint.ForConnection(
@@ -1444,8 +1452,7 @@ internal sealed class ProtectionAdminMessageHandler
             ? ProtectionRetryDisposition.RequiresManualIntervention
             : ProtectionRetryDisposition.Exhausted;
         operation.LastFailureCode = safeCode;
-        operation.RequiredAction = operation.Type ==
-            ProtectionAdminOperationType.ConnectPurviewTenant
+        operation.RequiredAction = IsConnectionVerification(operation.Type)
                 ? RequiredActionRetry
                 : requiresManualIntervention
                     ? RequiredActionReconcile
@@ -1504,20 +1511,27 @@ internal sealed class ProtectionAdminMessageHandler
             context.KnowYourData.LastFailureCode = safeCode;
             context.KnowYourData.UpdatedAtUtc = now;
         }
-        if (context is not null &&
-            operation.Type == ProtectionAdminOperationType.ConnectPurviewTenant)
+        var failedConnection = context?.Connection;
+        if (failedConnection is null &&
+            operation.Type == ProtectionAdminOperationType.VerifyPurviewTenantConnection &&
+            TryParseCanonicalGuid(operation.TargetIdentifier, out var connectionId))
         {
-            context.Connection.Status =
+            failedConnection = await _connectionRepository.GetByIdAsync(connectionId, ct);
+        }
+        if (failedConnection is not null &&
+            OwnsConnectionVerification(operation, failedConnection))
+        {
+            failedConnection.Status =
                 PurviewTenantConnectionStatus.VerificationFailed;
-            context.Connection.ActiveInventoryGenerationId = null;
-            context.Connection.AuthorityApplicationId = null;
-            context.Connection.AuthorityServicePrincipalObjectId = null;
-            context.Connection.AuthorityKind = "VerificationFailed";
-            context.Connection.AuthorizedAtUtc = null;
-            context.Connection.LastVerifiedAtUtc = null;
-            context.Connection.ExpiresAtUtc = null;
-            context.Connection.LastFailureCode = safeCode;
-            context.Connection.UpdatedAtUtc = now;
+            failedConnection.ActiveInventoryGenerationId = null;
+            failedConnection.AuthorityApplicationId = null;
+            failedConnection.AuthorityServicePrincipalObjectId = null;
+            failedConnection.AuthorityKind = "VerificationFailed";
+            failedConnection.AuthorizedAtUtc = null;
+            failedConnection.LastVerifiedAtUtc = null;
+            failedConnection.ExpiresAtUtc = null;
+            failedConnection.LastFailureCode = safeCode;
+            failedConnection.UpdatedAtUtc = now;
         }
 
         await _unitOfWork.SaveChangesAsync(ct);
@@ -1714,6 +1728,7 @@ internal sealed class ProtectionAdminMessageHandler
     {
         switch (operation.Type)
         {
+            case ProtectionAdminOperationType.VerifyPurviewTenantConnection:
             case ProtectionAdminOperationType.ConnectPurviewTenant:
                 FinalizeConnectionVerification(operation, context);
                 break;
@@ -1805,11 +1820,33 @@ internal sealed class ProtectionAdminMessageHandler
         connection.UpdatedAtUtc = UtcNow;
     }
 
+    private static bool IsConnectionVerification(ProtectionAdminOperationType type) =>
+        type is ProtectionAdminOperationType.ConnectPurviewTenant or
+            ProtectionAdminOperationType.VerifyPurviewTenantConnection;
+
+    private static bool OwnsConnectionVerification(
+        ProtectionAdminOperation operation,
+        PurviewTenantConnection connection) =>
+        IsConnectionVerification(operation.Type) &&
+        connection.Status is PurviewTenantConnectionStatus.PendingVerification or PurviewTenantConnectionStatus.Connected &&
+        connection.TenantId == operation.TenantId &&
+        string.Equals(connection.CreatedByObjectId, operation.ActorObjectId, StringComparison.Ordinal) &&
+        (string.Equals(
+            connection.AuthorityKind,
+            operation.Type == ProtectionAdminOperationType.VerifyPurviewTenantConnection
+                ? PurviewTenantConnection.GatewayVerificationPendingAuthority(operation.Id)
+                : "InteractiveSubmissionUnverified",
+            StringComparison.Ordinal) ||
+         (connection.AuthorityKind == "CertificateApplicationVerified" &&
+          operation.ReadbackReferenceId is { } generationId &&
+          connection.ActiveInventoryGenerationId?.Value == generationId));
+
     private static bool ShouldSkip(
         ProtectionAdminOperationType operationType,
         ProtectionAdminStepType stepType) =>
         operationType switch
         {
+            ProtectionAdminOperationType.VerifyPurviewTenantConnection or
             ProtectionAdminOperationType.ConnectPurviewTenant or
             ProtectionAdminOperationType.RefreshSensitiveInformationTypes =>
                 stepType is ProtectionAdminStepType.ApplyReviewedMutation or
@@ -1856,6 +1893,7 @@ internal sealed class ProtectionAdminMessageHandler
 
         var expectedTarget = operation.Type switch
         {
+            ProtectionAdminOperationType.VerifyPurviewTenantConnection or
             ProtectionAdminOperationType.ConnectPurviewTenant =>
                 ProtectionAdminTargetType.PurviewTenantConnection,
             ProtectionAdminOperationType.RefreshSensitiveInformationTypes =>

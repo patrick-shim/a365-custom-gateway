@@ -46,7 +46,27 @@ export const agentDetailSchema = agentSchema.extend({
     currentStep: nullableText,
     percentComplete: z.number(),
     lastError: nullableText,
+    operationId: text.nullish(),
   }).nullable(),
+});
+export const registrationOperationSchema = z.object({
+  operationId: text,
+  agentId: text,
+  type: text,
+  status: text,
+  currentStep: nullableText,
+  percentComplete: z.number(),
+  error: z.object({ code: nullableText, message: nullableText }).nullable(),
+  steps: z.array(z.object({ step: text, status: text })).nullable(),
+  pollingRecommended: z.boolean(),
+  requiredAction: nullableText,
+  agent365RegistrationCompletionAvailable: z.boolean(),
+});
+export const registrationCompletionSchema = z.object({
+  operationId: text,
+  agentId: text,
+  agent365RegistrationId: text,
+  status: z.literal("VerificationQueued"),
 });
 export const featuresUpdateSchema = z.object({
   agentId: text,
@@ -122,6 +142,11 @@ export const systemConfigSchema = z.object({
   defaultPromptShieldEnabled: z.boolean(),
   promptShieldAvailable: z.boolean(),
   rowVersion: nullableText,
+  registrationDefaults: z.object({
+    environment: z.enum(["Development", "Test", "Production"]),
+    reason: nullableText,
+  }).refine(value => value.environment === "Production" || !!value.reason?.trim(),
+    "A non-production registration default requires the server's reason."),
 });
 
 const credentialSchema = z.object({
@@ -163,7 +188,9 @@ export const reviewSchema = z.object({
   review: z.object({
     tenantId: text,
     operationType: text,
+    targetType: text,
     targetIdentifier: text,
+    verificationMode: nullableText.optional(),
     readinessDisclaimer: z.string(),
   }),
 });
@@ -175,10 +202,14 @@ export const acceptedOperationSchema = z.object({
   operationId: text,
   status: text,
   correlationId: text,
+  companionLaunch: z.unknown().nullable().optional(),
 });
 export const operationResponseSchema = z.object({
   operation: z.object({
     id: text,
+    type: text,
+    tenantId: text,
+    targetType: text,
     status: text,
     failureCode: nullableText,
     requiredAction: nullableText,

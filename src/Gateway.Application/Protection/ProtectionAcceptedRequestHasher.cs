@@ -9,7 +9,18 @@ internal static class ProtectionAcceptedRequestHasher
 {
     public static string Compute(
         StartPurviewTenantConnectionOperationRequest request) =>
-        ComputeCore(new
+        request.VerificationMode is not null
+        ? ComputeCore(new
+        {
+            operation = "VerifyPurviewTenantConnection",
+            request.TenantId,
+            request.ConfirmationTokenId,
+            request.ConfirmationToken,
+            request.IdempotencyKey,
+            request.ExpectedRowVersion,
+            request.VerificationMode
+        })
+        : ComputeCore(new
         {
             operation = "StartPurviewTenantConnection",
             request.TenantId,

@@ -81,6 +81,8 @@ internal sealed class ProtectionMutationHandler :
         ProtectionAdministrationRules.EnsureTenant(
             command.Actor,
             command.Request.TenantId);
+        var operationType = ProtectionAdministrationRules.ConnectionOperationType(
+            command.Request.VerificationMode);
         var acceptedRequestHash =
             ProtectionAcceptedRequestHasher.Compute(command.Request);
         var idempotencyKey = new ProtectionIdempotencyKey(
@@ -90,7 +92,7 @@ internal sealed class ProtectionMutationHandler :
             command.Request.ConfirmationTokenId,
             idempotencyKey,
             command.Request.ExpectedRowVersion,
-            ProtectionAdminOperationType.ConnectPurviewTenant,
+            operationType,
             acceptedRequestHash,
             cancellationToken);
         if (replay is not null)
@@ -100,18 +102,21 @@ internal sealed class ProtectionMutationHandler :
             command.Actor,
             command.Request.ConfirmationTokenId,
             cancellationToken);
+        if (operation.Type != operationType)
+        {
+            throw new DomainException(
+                "The requested verification mode does not match the confirmed review.",
+                ErrorCodes.PROTECTION_CONFIRMATION_INVALID);
+        }
         var validated = _tokens.ValidateConfirmation(
             operation,
             command.Actor,
             command.Request.ConfirmationToken,
             command.Request.ExpectedRowVersion);
-        var reviewed =
-            ProtectionAdministrationRules
-                .DeserializePayload<PurviewTenantConnectionReviewPayload>(
-                    validated.Payload);
         ProtectionAdministrationRules.EnsureTenant(
             command.Actor,
-            reviewed.TenantId);
+            ProtectionAdministrationRules.ReadConnectionReviewTenantId(
+                operationType, validated.Payload));
         await ProtectionAdministrationRules.RequirePurviewCapabilityAsync(
             _capabilities,
             cancellationToken);
@@ -125,6 +130,10 @@ internal sealed class ProtectionMutationHandler :
             connection?.Id ?? Guid.Empty,
             connection?.UpdatedAtUtc ?? default,
             connection?.RowVersion);
+        var gatewayVerification =
+            operationType == ProtectionAdminOperationType.VerifyPurviewTenantConnection;
+        if (gatewayVerification)
+            ProtectionAdministrationRules.EnsureGatewayConnectionCanStart(connection, command.Actor);
 
         var now = UtcNow();
         if (connection is null)
@@ -137,6 +146,31 @@ internal sealed class ProtectionMutationHandler :
                 CreatedAtUtc = now
             };
             await _connections.AddAsync(connection, cancellationToken);
+        }
+
+        if (gatewayVerification)
+        {
+            connection.Status = PurviewTenantConnectionStatus.PendingVerification;
+            connection.AuthorityKind = PurviewTenantConnection.GatewayVerificationPendingAuthority(operation.Id);
+            connection.AuthorityApplicationId = null;
+            connection.AuthorityServicePrincipalObjectId = null;
+            connection.ActiveInventoryGenerationId = null;
+            connection.AuthorizedAtUtc = null;
+            connection.LastVerifiedAtUtc = null;
+            connection.ExpiresAtUtc = null;
+            connection.LastFailureCode = null;
+            connection.UpdatedAtUtc = now;
+            ConsumeForAcceptance(
+                operation,
+                idempotencyKey,
+                operationType,
+                ProtectionAdminOperationStatus.Pending,
+                command.Request.ExpectedRowVersion,
+                acceptedRequestHash,
+                now);
+            operation.TargetIdentifier = connection.Id.ToString("D");
+            await QueueAsync(operation, "PurviewGatewayVerificationRequested", cancellationToken);
+            return Accepted(operation);
         }
 
         connection.Status = PurviewTenantConnectionStatus.AwaitingAdministrator;

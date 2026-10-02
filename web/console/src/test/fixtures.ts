@@ -56,6 +56,10 @@ export const inventory = {
 export const systemConfig = {
   provisioningMode: "Automatic", provisioningExecutionEnabled: true, defaultObservabilityMode: "Agent365",
   defaultPromptShieldEnabled: false, promptShieldAvailable: true, rowVersion,
+  registrationDefaults: {
+    environment: "Development",
+    reason: "This installed DirectRegistryPreview provider uses the Agent 365 beta registry and supports Development only.",
+  },
 };
 export const registration = {
   agentId, externalAgentId: agent.externalAgentId, name: agent.name, status: "Provisioning", operationId,
@@ -69,12 +73,24 @@ export const credentials = {
 export const review = {
   reviewTokenId: operationId, reviewToken: "test-only-review", reviewedPayloadHash: "test-hash",
   expiresAtUtc: "2099-01-01T00:00:00Z",
-  review: { tenantId, operationType: "ConnectPurviewTenant", targetIdentifier: tenantId, readinessDisclaimer: "Readback is required." },
+  review: { tenantId, operationType: "VerifyPurviewTenantConnection", targetIdentifier: tenantId,
+    targetType: "PurviewTenantConnection", verificationMode: "Gateway",
+    readinessDisclaimer: "The Gateway reads Purview using the installed certificate authority. Readback is required." },
 };
 export const operation = {
-  operation: { id: operationId, status: "Completed", failureCode: null, requiredAction: null,
+  operation: { id: operationId, type: "VerifyPurviewTenantConnection", tenantId, targetType: "PurviewTenantConnection",
+    status: "Completed", failureCode: null, requiredAction: null,
     requiresManualIntervention: false, correlationId: operationId, blockers: [],
     steps: [{ step: "RecordExactReadback", status: "Completed", failureCode: null }] },
+};
+export const approvalAgent = {
+  ...agent, status: "AwaitingAdminApproval",
+  provisioning: { operationId, currentStep: "RegisterAgent", percentComplete: 71, lastError: null },
+};
+export const registrationOperation = {
+  operationId, agentId, type: "ProvisionAgent", status: "AwaitingAdministratorAction", currentStep: "RegisterAgent", percentComplete: 71,
+  error: null, steps: [{ step: "RegisterAgent", status: "Pending" }],
+  pollingRecommended: false, requiredAction: "CompleteAgent365Registration", agent365RegistrationCompletionAvailable: true,
 };
 
 export interface CapturedRequest {
@@ -96,6 +112,10 @@ export function mockServer() {
     ["GET /health/checks", () => new Response("Healthy")],
     ["GET /api/v1/agents", () => ({ items: [agent], nextCursor: null, totalCount: 1 })],
     [`GET /api/v1/agents/${agentId}`, () => agent],
+    [`GET /api/v1/operations/${operationId}`, () => registrationOperation],
+    [`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () => ({
+      operationId, agentId, agent365RegistrationId: "12345678-1234-4234-8234-123456789012", status: "VerificationQueued",
+    })],
     ["GET /api/v1/agent-identity-blueprints", () => blueprints],
     ["GET /api/v1/protection/purview/connection", () => ({ connection: failedConnection })],
     ["GET /api/v1/protection/purview/sensitive-information-types", () => inventory],
@@ -110,7 +130,7 @@ export function mockServer() {
     [`DELETE /api/v1/agents/${agentId}/credentials/${credentials.items[0].keyId}`, () => ({ agentId, alreadyRevoked: false })],
     ["POST /api/v1/protection/purview/connection-operations:review", () => review],
     ["POST /api/v1/protection/operation-reviews:confirm", () => ({ confirmationTokenId: operationId, confirmationToken: "test-only-confirmation" })],
-    ["POST /api/v1/protection/purview/connection-operations", () => response({ operationId, status: "Submitted", correlationId: operationId }, 202)],
+    ["POST /api/v1/protection/purview/connection-operations", () => response({ operationId, status: "Pending", correlationId: operationId }, 202)],
     [`GET /api/v1/protection/operations/${operationId}`, () => operation],
   ]);
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {

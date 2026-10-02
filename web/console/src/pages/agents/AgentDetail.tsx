@@ -8,6 +8,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { StatusPill } from "../../components/StatusPill";
 import { ErrorState } from "../../components/ErrorState";
 import { AgentCredentials } from "./AgentCredentials";
+import { AgentRegistrationProgress } from "./AgentRegistrationProgress";
 
 export function AgentDetail() {
   const { id = "" } = useParams();
@@ -16,7 +17,7 @@ export function AgentDetail() {
   const agent = useQuery({
     queryKey: ["agent", id], queryFn: () => api.getAgent(id),
     refetchInterval: query => query.state.error ? false :
-      query.state.data && ["Draft", "Provisioning"].includes(query.state.data.status) ? 5000 : false,
+      query.state.data && ["Draft", "Provisioning", "AwaitingAdminApproval"].includes(query.state.data.status) ? 5000 : false,
   });
   const blueprints = useQuery({ queryKey: ["blueprints"], queryFn: api.listBlueprints });
   const shield = useMutation({
@@ -55,9 +56,13 @@ export function AgentDetail() {
           )}
           {a.status === "AwaitingAdminApproval" && (
             <MessageBar intent="warning" style={{ marginBottom: 16 }}>
-              <MessageBarBody>Agent 365 registration needs administrator approval. Completing that handoff is not available in this Console yet.</MessageBarBody>
+              <MessageBarBody>Agent 365 registration needs administrator approval.
+                {!a.provisioning?.operationId && " The Gateway did not report its operation ID. Refresh status or contact your Gateway administrator."}
+              </MessageBarBody>
             </MessageBar>
           )}
+          {a.provisioning?.operationId && <AgentRegistrationProgress key={a.provisioning.operationId}
+            agentId={id} operationId={a.provisioning.operationId} agentStatus={a.status} />}
           <TabList selectedValue={tab} onTabSelect={(_, data) => { if (typeof data.value === "string") setTab(data.value); }} style={{ marginBottom: 16 }}>
             <Tab value="protection">Prompt Shields</Tab><Tab value="identity">Identity</Tab>
             <Tab value="api">API key</Tab><Tab value="activity">Activity</Tab>

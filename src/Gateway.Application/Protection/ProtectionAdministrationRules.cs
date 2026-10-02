@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Gateway.Application.Exceptions;
 using Gateway.Contracts;
 using Gateway.Contracts.Dtos;
+using Gateway.Contracts.Requests;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
 using Gateway.Domain.Interfaces;
@@ -25,6 +26,50 @@ internal static class ProtectionAdministrationRules
         MaxDepth = 12,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
+
+    public static ProtectionAdminOperationType ConnectionOperationType(string? verificationMode) =>
+        verificationMode switch
+        {
+            null => ProtectionAdminOperationType.ConnectPurviewTenant,
+            PurviewConnectionVerificationModes.Gateway =>
+                ProtectionAdminOperationType.VerifyPurviewTenantConnection,
+            _ => throw Validation(
+                "VerificationMode",
+                "VerificationMode must be Gateway, or omitted for the legacy companion workflow.")
+        };
+
+    public static Guid ReadConnectionReviewTenantId(
+        ProtectionAdminOperationType operationType,
+        JsonElement payload)
+    {
+        if (operationType == ProtectionAdminOperationType.ConnectPurviewTenant)
+            return DeserializePayload<PurviewTenantConnectionReviewPayload>(payload).TenantId;
+        if (operationType == ProtectionAdminOperationType.VerifyPurviewTenantConnection)
+        {
+            var reviewed = DeserializePayload<GatewayPurviewTenantConnectionReviewPayload>(payload);
+            if (ConnectionOperationType(reviewed.VerificationMode) == operationType)
+                return reviewed.TenantId;
+        }
+        throw new DomainException(
+            "The verification mode does not match the review.",
+            ErrorCodes.PROTECTION_CONFIRMATION_INVALID);
+    }
+
+    public static void EnsureGatewayConnectionCanStart(
+        PurviewTenantConnection? connection,
+        ProtectionActor actor)
+    {
+        if (connection is null)
+            return;
+        if (!string.Equals(connection.CreatedByObjectId, actor.ObjectId, StringComparison.Ordinal))
+            throw new ProtectionAccessDeniedException();
+        if (connection.Status == PurviewTenantConnectionStatus.PendingVerification)
+        {
+            throw new ConflictException(
+                "Purview verification is already in progress. Read the current operation before starting another check.",
+                ErrorCodes.PROTECTION_CONFIRMATION_INVALID);
+        }
+    }
 
     public static async Task RequirePurviewCapabilityAsync(
         IProtectionCapabilityRepository capabilities,

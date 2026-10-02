@@ -79,6 +79,10 @@ public sealed record ValidatePurviewDlpProfileRuntimeCommand(
 
 internal sealed record PurviewTenantConnectionReviewPayload(Guid TenantId);
 
+internal sealed record GatewayPurviewTenantConnectionReviewPayload(
+    Guid TenantId,
+    string VerificationMode);
+
 internal sealed record PurviewTenantConnectionCompletionReviewPayload(
     Guid SourceOperationId,
     Guid InventoryGenerationId,

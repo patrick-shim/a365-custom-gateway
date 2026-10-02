@@ -2,6 +2,7 @@ using System.Text.Json;
 using Gateway.Application.Exceptions;
 using Gateway.Contracts;
 using Gateway.Contracts.Dtos;
+using Gateway.Contracts.Requests;
 using Gateway.Contracts.Responses;
 using Gateway.Domain.Entities;
 using Gateway.Domain.Enums;
@@ -83,6 +84,8 @@ internal sealed class ProtectionReviewHandler :
         ProtectionAdministrationRules.EnsureTenant(
             command.Actor,
             command.Request.TenantId);
+        var operationType = ProtectionAdministrationRules.ConnectionOperationType(
+            command.Request.VerificationMode);
         await ProtectionAdministrationRules.RequirePurviewCapabilityAsync(
             _capabilities,
             cancellationToken);
@@ -96,15 +99,23 @@ internal sealed class ProtectionReviewHandler :
             connection?.UpdatedAtUtc ?? default,
             connection?.RowVersion);
 
+        var gatewayVerification =
+            operationType == ProtectionAdminOperationType.VerifyPurviewTenantConnection;
+        if (gatewayVerification)
+            ProtectionAdministrationRules.EnsureGatewayConnectionCanStart(connection, command.Actor);
+
         var operation = CreateOperation(
             command.Actor,
-            ProtectionAdminOperationType.ConnectPurviewTenant,
+            operationType,
             ProtectionAdminTargetType.PurviewTenantConnection,
             command.Actor.TenantId.ToString("D"),
             command.Request.ExpectedRowVersion,
             command.CorrelationId);
-        var payload = new PurviewTenantConnectionReviewPayload(
-            command.Actor.TenantId);
+        object payload = gatewayVerification
+            ? new GatewayPurviewTenantConnectionReviewPayload(
+                command.Actor.TenantId,
+                PurviewConnectionVerificationModes.Gateway)
+            : new PurviewTenantConnectionReviewPayload(command.Actor.TenantId);
         return await PersistReviewAsync(
             operation,
             command.Request.ExpectedRowVersion,
@@ -122,7 +133,10 @@ internal sealed class ProtectionReviewHandler :
                 Actions: [],
                 ScopeType: "Tenant",
                 EnforcementPlane: PurviewEnforcementPlane.Application.ToString(),
-                ProtectionAdministrationRules.ReadinessDisclaimer),
+                gatewayVerification
+                    ? "The Gateway will read Purview twice using the installed certificate authority and refresh classifiers. This does not grant permissions or change policies."
+                    : ProtectionAdministrationRules.ReadinessDisclaimer,
+                VerificationMode: command.Request.VerificationMode),
             cancellationToken);
     }
 
@@ -556,16 +570,17 @@ internal sealed class ProtectionReviewHandler :
                     throw new DomainException("Runtime-test verification is unavailable.", ErrorCodes.PROTECTION_CONFIRMATION_INVALID);
                 await _runtimeTests.RecheckConfirmationAsync(operation, actor, expectedRowVersion, payload, cancellationToken);
                 break;
+            case ProtectionAdminOperationType.VerifyPurviewTenantConnection:
             case ProtectionAdminOperationType.ConnectPurviewTenant:
                 {
-                    var reviewed =
-                        ProtectionAdministrationRules
-                            .DeserializePayload<PurviewTenantConnectionReviewPayload>(
-                                payload);
-                    ProtectionAdministrationRules.EnsureTenant(actor, reviewed.TenantId);
+                    var reviewedTenant = ProtectionAdministrationRules.ReadConnectionReviewTenantId(
+                        operation.Type, payload);
+                    ProtectionAdministrationRules.EnsureTenant(actor, reviewedTenant);
                     var connection = await _connections.GetByTenantIdAsync(
                         new EntraTenantId(actor.TenantId),
                         cancellationToken);
+                    if (operation.Type == ProtectionAdminOperationType.VerifyPurviewTenantConnection)
+                        ProtectionAdministrationRules.EnsureGatewayConnectionCanStart(connection, actor);
                     EnsureExpected(
                         expectedRowVersion,
                         connection,

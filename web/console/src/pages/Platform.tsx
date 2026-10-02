@@ -51,6 +51,8 @@ export function Platform() {
           <ErrorState error={config.error} onRetry={() => void config.refetch()} />
         ) : (
           <>
+            <Body1>Registration environment: {config.data.registrationDefaults.environment}</Body1>
+            {config.data.registrationDefaults.reason && <Caption1>{config.data.registrationDefaults.reason}</Caption1>}
             <Switch checked={config.data.defaultPromptShieldEnabled}
               disabled={defaults.isPending || config.isFetching || !config.data.rowVersion || !config.data.promptShieldAvailable}
               label="Prompt Shields default" onChange={(_, data) => {

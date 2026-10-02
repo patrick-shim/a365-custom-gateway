@@ -21,6 +21,10 @@ public class PurviewTenantConnection
     public DateTime UpdatedAtUtc { get; set; }
     public byte[] RowVersion { get; set; } = [];
 
+    // Bind pending server verification to its operation without claiming provider authority.
+    public static string GatewayVerificationPendingAuthority(Guid operationId) =>
+        $"GatewayVerificationPending:{operationId:D}";
+
     public bool IsUsableAt(DateTime utcNow) =>
         utcNow.Kind == DateTimeKind.Utc &&
         Status == PurviewTenantConnectionStatus.Connected &&

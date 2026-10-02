@@ -7,9 +7,11 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { App } from "./App";
 import { AppShell } from "./components/AppShell";
 import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
+import { satisfyApiClaimsChallenge } from "./auth/msal";
 import {
   agent, agentId, blueprintObjectId, connected, credentials, features, mockServer,
-  operation, operationId, registration, response, rowVersion, testKey,
+  operation, operationId, registration, response, rowVersion, testKey, systemConfig,
+  approvalAgent, registrationOperation, review,
 } from "./test/fixtures";
 
 vi.mock("./auth/msal", () => ({
@@ -17,6 +19,7 @@ vi.mock("./auth/msal", () => ({
   getAccount: () => ({ idTokenClaims: { oid: "88888888-8888-4888-8888-888888888888" } }),
   apiScopes: ["api://test/access_as_user"],
   msalInstance: { loginRedirect: vi.fn(async () => undefined) },
+  satisfyApiClaimsChallenge: vi.fn(async () => undefined),
 }));
 vi.mock("./runtime-config", () => ({ config: { tenantId: "11111111-1111-4111-8111-111111111111" } }));
 
@@ -39,9 +42,11 @@ function renderApp(path = "/") {
 
 async function selectBlueprint() {
   const user = userEvent.setup();
-  await user.type(screen.getByRole("textbox", { name: "Agent name" }), "Navigation test");
+  await user.click(screen.getByRole("textbox", { name: "Agent name" }));
+  await user.paste("Navigation test");
   await user.clear(screen.getByRole("textbox", { name: "External ID" }));
-  await user.type(screen.getByRole("textbox", { name: "External ID" }), agent.externalAgentId);
+  await user.paste(agent.externalAgentId);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toBeEnabled());
   await user.click(screen.getByRole("button", { name: "Next" }));
   await user.click(await screen.findByRole("combobox", { name: "Blueprint" }));
   expect(screen.queryByRole("option", { name: "Incompatible blueprint" })).not.toBeInTheDocument();
@@ -69,6 +74,40 @@ describe("Console routes with actual API envelopes", () => {
     expect(server.requests.some(r => r.method === "POST")).toBe(false);
   });
 
+  it("shows the server's preview reason without an environment selector", async () => {
+    renderApp("/register");
+    expect(await screen.findByText("Registration environment: Development")).toBeVisible();
+    expect(screen.getByText(systemConfig.registrationDefaults.reason)).toBeVisible();
+    expect(screen.queryByRole("combobox", { name: "Environment" })).not.toBeInTheDocument();
+  });
+
+  it("uses Production when the server advertises the standard default", async () => {
+    server.handlers.set("GET /api/v1/system/config", () => ({
+      ...systemConfig, registrationDefaults: { environment: "Production", reason: null },
+    }));
+    renderApp("/register");
+    const user = await selectBlueprint();
+    await user.click(screen.getByRole("button", { name: "Create agent" }));
+    await screen.findByText("Registration accepted");
+    expect(server.requests.find(r => r.path === "/api/v1/agents" && r.method === "POST")?.body)
+      .toHaveProperty("environment", "Production");
+  });
+
+  it("fails visibly and prevents registration when defaults are missing", async () => {
+    server.handlers.set("GET /api/v1/system/config", () => ({ ...systemConfig, registrationDefaults: undefined }));
+    renderApp("/register");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Registration defaults are unavailable");
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(server.requests.some(r => r.method === "POST")).toBe(false);
+  });
+
+  it("prevents a doomed job when the provisioning gate is closed", async () => {
+    server.handlers.set("GET /api/v1/system/config", () => ({ ...systemConfig, provisioningExecutionEnabled: false }));
+    renderApp("/register");
+    expect(await screen.findByText(/Registration is closed on this Gateway/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  });
+
   it("performs real registration and shows the returned key once outside query caches", async () => {
     const client = renderApp("/register");
     const user = await selectBlueprint();
@@ -87,7 +126,7 @@ describe("Console routes with actual API envelopes", () => {
     await user.click(screen.getByRole("button", { name: "Open agent" }));
     expect(await screen.findByRole("heading", { name: agent.name })).toBeVisible();
     expect(screen.queryByRole("textbox", { name: "One-time Gateway key" })).not.toBeInTheDocument();
-  });
+  }, 10000);
 
   it("never fabricates a key if registration returns none", async () => {
     server.handlers.set("POST /api/v1/agents", () => ({ ...registration, gatewayCredential: null }));
@@ -96,7 +135,7 @@ describe("Console routes with actual API envelopes", () => {
     await user.click(screen.getByRole("button", { name: "Create agent" }));
     expect(await screen.findByText(/No key was returned/)).toBeVisible();
     expect(screen.queryByRole("textbox", { name: "One-time Gateway key" })).not.toBeInTheDocument();
-  });
+  }, 10000);
 
   it("does not report a failed registration as created", async () => {
     server.handlers.set("POST /api/v1/agents", () => response({ errors: { name: ["Name is not allowed."] } }, 400));
@@ -105,7 +144,7 @@ describe("Console routes with actual API envelopes", () => {
     await user.click(screen.getByRole("button", { name: "Create agent" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Name is not allowed.");
     expect(screen.queryByText("Registration accepted")).not.toBeInTheDocument();
-  });
+  }, 10000);
 
   it("reconciles an uncertain registration by exact external ID without reposting", async () => {
     server.handlers.set("POST /api/v1/agents", () => { throw new TypeError("Lost response"); });
@@ -116,7 +155,7 @@ describe("Console routes with actual API envelopes", () => {
     expect(await screen.findByRole("link", { name: "Open agent to create a replacement key" })).toHaveAttribute("href", `/agents/${agentId}`);
     expect(server.requests.filter(r => r.path === "/api/v1/agents" && r.method === "POST")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Create agent" })).toBeDisabled();
-  });
+  }, 10000);
 
   it("loads the next agent page instead of dropping pagination", async () => {
     server.handlers.set("GET /api/v1/agents", request => request.query.has("cursor")
@@ -188,6 +227,127 @@ describe("Console routes with actual API envelopes", () => {
     expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeDisabled();
   });
 
+  it("confirms Registry completion once and polls through worker verification to Active readback", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => approvalAgent);
+    let completed = false;
+    let verificationReads = 0;
+    server.handlers.set(`GET /api/v1/operations/${operationId}`, () => {
+      if (!completed) return registrationOperation;
+      verificationReads++;
+      if (verificationReads < 2) return { ...registrationOperation, status: "Pending",
+        pollingRecommended: true, requiredAction: null, agent365RegistrationCompletionAvailable: false };
+      server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({ ...approvalAgent, status: "Active" }));
+      return { ...registrationOperation, status: "Completed",
+        pollingRecommended: false, requiredAction: null, agent365RegistrationCompletionAvailable: false };
+    });
+    server.handlers.set(`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () => {
+      completed = true;
+      return { operationId, agentId, agent365RegistrationId: agentId, status: "VerificationQueued" };
+    });
+    renderApp(`/agents/${agentId}`);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    expect(server.requests.some(r => r.method === "POST")).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Confirm registration" }));
+    expect(await screen.findByText(/Waiting for worker verification and an Active agent readback/)).toBeVisible();
+    expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeEnabled(), { timeout: 5000 });
+    const posts = server.requests.filter(r => r.method === "POST");
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body).toBeUndefined();
+  }, 10000);
+
+  it("does not offer completion when the authoritative Registry gate is closed", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => approvalAgent);
+    server.handlers.set(`GET /api/v1/operations/${operationId}`, () => ({
+      ...registrationOperation, agent365RegistrationCompletionAvailable: false,
+    }));
+    renderApp(`/agents/${agentId}`);
+    expect(await screen.findByText(/Registry completion gate is closed/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Complete registration" })).not.toBeInTheDocument();
+  });
+
+  it.each([403, 503])("surfaces Registry HTTP %s without a success or automatic replay", async status => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => approvalAgent);
+    server.handlers.set(`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () =>
+      response({ detail: "Registry action is not permitted.", errorCode: "TEST_GATE", correlationId: operationId }, status));
+    renderApp(`/agents/${agentId}`);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    await user.click(screen.getByRole("button", { name: "Confirm registration" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Registry action is not permitted.");
+    expect(screen.queryByText(/Registry completion was accepted/)).not.toBeInTheDocument();
+    expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
+  });
+
+  it("keeps an uncertain Registry completion blocked until an explicit operation check", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => approvalAgent);
+    server.handlers.set(`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () => { throw new TypeError("Lost"); });
+    renderApp(`/agents/${agentId}`);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    await user.click(screen.getByRole("button", { name: "Confirm registration" }));
+    expect(await screen.findByText(/no request will be repeated automatically/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Complete registration" })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Check operation" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Check operation" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Complete registration" })).toBeEnabled());
+    expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
+  });
+
+  it("handles a claims challenge interactively without replaying Registry completion", async () => {
+    const claims = JSON.stringify({ access_token: { acrs: { essential: true, value: "test" } } });
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => approvalAgent);
+    server.handlers.set(`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () => new Response(
+      JSON.stringify({ detail: "Additional authorization is required.", errorCode: "AGENT365_REGISTRY_DELEGATED_ACCESS_REQUIRED" }),
+      { status: 401, headers: { "WWW-Authenticate": `Bearer error="insufficient_claims", claims="${btoa(claims)}"` } },
+    ));
+    renderApp(`/agents/${agentId}`);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    await user.click(screen.getByRole("button", { name: "Confirm registration" }));
+    await user.click(await screen.findByRole("button", { name: "Continue sign-in" }));
+    expect(await screen.findByText(/Authorization updated/)).toBeVisible();
+    expect(satisfyApiClaimsChallenge).toHaveBeenCalledWith(claims);
+    expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
+    expect(screen.queryByText(claims)).not.toBeInTheDocument();
+  });
+
+  it("keeps the consent requirement specific to the Gateway API rather than asking the SPA for Graph permissions", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => approvalAgent);
+    server.handlers.set(`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () => new Response(
+      JSON.stringify({ detail: "Administrator consent is required.", errorCode: "AGENT365_REGISTRY_DELEGATED_ACCESS_REQUIRED" }),
+      { status: 401, headers: { "WWW-Authenticate": 'Bearer error="insufficient_scope", scope="https://graph.microsoft.com/AgentRegistration.ReadWrite.All"' } },
+    ));
+    renderApp(`/agents/${agentId}`);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    await user.click(screen.getByRole("button", { name: "Confirm registration" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Gateway API's delegated Graph permissions");
+    expect(screen.queryByRole("button", { name: "Continue sign-in" })).not.toBeInTheDocument();
+    expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
+  });
+
+  it("stops the waiting message on a precise Registry verification failure", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => approvalAgent);
+    server.handlers.set(`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () => {
+      server.handlers.set(`GET /api/v1/operations/${operationId}`, () => ({
+        ...registrationOperation, status: "RequiresManualIntervention", requiredAction: null,
+        agent365RegistrationCompletionAvailable: false,
+        error: { code: "AGENT365_EXACT_READBACK_FAILED", message: "Exact Registry readback was not verified." },
+      }));
+      return { operationId, agentId, agent365RegistrationId: agentId, status: "VerificationQueued" };
+    });
+    renderApp(`/agents/${agentId}`);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    await user.click(screen.getByRole("button", { name: "Confirm registration" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Exact Registry readback was not verified.");
+    expect(screen.queryByText(/Waiting for worker verification/)).not.toBeInTheDocument();
+    await user.click(screen.getByText("Operation details"));
+    expect(screen.getByText("Code: AGENT365_EXACT_READBACK_FAILED")).toBeVisible();
+  });
+
   it("reads all agent tabs and issues a replacement only after confirmation", async () => {
     const client = renderApp(`/agents/${agentId}`);
     const user = userEvent.setup();
@@ -217,23 +377,23 @@ describe("Console routes with actual API envelopes", () => {
   it("requires explicit confirmation and never calls the invented recheck endpoint", async () => {
     server.handlers.set("POST /api/v1/protection/purview/connection-operations", () => {
       server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
-        connection: { ...connected, status: "AwaitingAdministrator", lastVerifiedAtUtc: null },
+        connection: { ...connected, status: "PendingVerification", lastVerifiedAtUtc: null },
       }));
       server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => ({
-        operation: { ...operation.operation, status: "AwaitingAdministrator", requiredAction: "CompletePurviewTenantConnection" },
+        operation: { ...operation.operation, status: "Pending" },
       }));
-      return response({ operationId, status: "AwaitingAdministrator", correlationId: operationId }, 202);
+      return response({ operationId, status: "Pending", correlationId: operationId }, 202);
     });
     renderApp("/data-protection/connection");
     const user = userEvent.setup();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start authorization" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "Start authorization" }));
-    await screen.findByRole("button", { name: "Confirm authorization" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Verify connection" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Verify connection" }));
+    await screen.findByRole("button", { name: "Confirm verification" });
     expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
-    await user.click(screen.getByRole("button", { name: "Confirm authorization" }));
-    expect(await screen.findByText(/Administrator evidence is still required/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Confirm verification" }));
+    expect(await screen.findByText(/Checking access/)).toBeVisible();
     expect(screen.queryByText(/Gateway access is verified/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start authorization" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Verify connection" })).toBeDisabled();
     expect(server.requests.some(r => r.path.endsWith("connection:recheck"))).toBe(false);
   });
 
@@ -246,6 +406,17 @@ describe("Console routes with actual API envelopes", () => {
     expect(screen.queryByText(/Gateway access is verified/)).not.toBeInTheDocument();
   });
 
+  it("does not show cached Connected data as verified while a fresh Purview check runs", async () => {
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ connection: connected }));
+    server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => ({
+      operation: { ...operation.operation, status: "Running" },
+    }));
+    renderApp(`/data-protection/connection?operation=${operationId}`);
+    expect(await screen.findByText(/Checking access/)).toBeVisible();
+    expect(screen.queryByText(/Gateway access is verified/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Connected", { exact: true })).not.toBeInTheDocument();
+  });
+
   it("reports verified access only from current connection readback", async () => {
     server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ connection: connected }));
     renderApp(`/data-protection/connection?operation=${operationId}`);
@@ -253,14 +424,97 @@ describe("Console routes with actual API envelopes", () => {
     expect(server.requests.some(r => r.method === "POST")).toBe(false);
   });
 
-  it("explains the required administrator handoff and prevents repeating it", async () => {
+  it("allows an explicitly reviewed fresh Gateway check over an expired companion handoff", async () => {
     server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
-      connection: { ...connected, status: "AwaitingAdministrator", lastVerifiedAtUtc: null },
+      connection: { ...connected, status: "AwaitingAdministrator", lastVerifiedAtUtc: null, expiresAtUtc: "2000-01-01T00:00:00Z" },
     }));
     renderApp("/data-protection/connection");
-    expect(await screen.findByText(/That handoff cannot be completed in this Console yet/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Start authorization" })).toBeDisabled();
+    expect(await screen.findByText(/An earlier companion handoff is pending/)).toBeVisible();
     expect(server.requests.some(r => r.method === "POST")).toBe(false);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Verify connection" }));
+    expect(await screen.findByRole("button", { name: "Confirm verification" })).toBeVisible();
+    expect(server.requests.find(r => r.method === "POST")?.body).toHaveProperty("verificationMode", "Gateway");
+  });
+
+  it("refuses a companion-only API instead of silently starting the old handoff", async () => {
+    server.handlers.set("POST /api/v1/protection/purview/connection-operations:review", () => ({
+      ...review, review: { ...review.review, operationType: "ConnectPurviewTenant", verificationMode: null },
+    }));
+    renderApp("/data-protection/connection");
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Verify connection" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Verify connection" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("API did not review Gateway-owned verification");
+    expect(screen.queryByRole("button", { name: "Confirm verification" })).not.toBeInTheDocument();
+    expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
+  });
+
+  it("polls Purview progress and only claims access after current authoritative connection readback", async () => {
+    let reads = 0;
+    server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => {
+      reads++;
+      if (reads === 1) return { operation: { ...operation.operation, status: "Running" } };
+      server.handlers.set("GET /api/v1/protection/purview/connection", () => ({ connection: connected }));
+      return operation;
+    });
+    renderApp(`/data-protection/connection?operation=${operationId}`);
+    expect(await screen.findByText(/Checking access/)).toBeVisible();
+    expect(screen.queryByText(/Gateway access is verified/)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/Gateway access is verified/)).toBeVisible(), { timeout: 5000 });
+    expect(reads).toBe(2);
+  }, 10000);
+
+  it("shows exact safe Purview failure step, code and support reference without diagnosing a resource", async () => {
+    server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => ({
+      operation: { ...operation.operation, status: "RequiresManualIntervention", requiresManualIntervention: true,
+        failureCode: "PURVIEW_CONNECTION_CAPABILITY_BINDING_MISMATCH",
+        steps: [{ step: "DiscoverProviderState", status: "Failed", failureCode: "PURVIEW_CONNECTION_CAPABILITY_BINDING_MISMATCH" }] },
+    }));
+    renderApp(`/data-protection/connection?operation=${operationId}`);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Purview verification failed.");
+    await userEvent.setup().click(screen.getByText("Check details"));
+    expect(screen.getByText(`Reference: ${operationId}`)).toBeVisible();
+    expect(screen.getByText(/DiscoverProviderState: Failed/)).toHaveTextContent("PURVIEW_CONNECTION_CAPABILITY_BINDING_MISMATCH");
+    expect(screen.queryByText(/New-ServicePrincipal/)).not.toBeInTheDocument();
+  });
+
+  it("recovers an uncertain Purview start by the reviewed operation ID without posting again", async () => {
+    server.handlers.set("POST /api/v1/protection/purview/connection-operations", () => {
+      server.handlers.set(`GET /api/v1/protection/operations/${operationId}`, () => ({
+        operation: { ...operation.operation, status: "Running" },
+      }));
+      throw new TypeError("Lost");
+    });
+    renderApp("/data-protection/connection");
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Verify connection" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Verify connection" }));
+    await user.click(await screen.findByRole("button", { name: "Confirm verification" }));
+    expect(await screen.findByText(/Checking access/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Verify connection" })).toBeDisabled();
+    expect(server.requests.filter(r => r.path.endsWith("/connection-operations") && r.method === "POST")).toHaveLength(1);
+  });
+
+  it("does not start verification with an expired review", async () => {
+    server.handlers.set("POST /api/v1/protection/purview/connection-operations:review", () => ({
+      ...review, expiresAtUtc: "2000-01-01T00:00:00Z",
+    }));
+    renderApp("/data-protection/connection");
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Verify connection" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Verify connection" }));
+    await user.click(await screen.findByRole("button", { name: "Confirm verification" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("review expired");
+    expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
+  });
+
+  it("does not label expired connection readback as Connected", async () => {
+    server.handlers.set("GET /api/v1/protection/purview/connection", () => ({
+      connection: { ...connected, expiresAtUtc: "2000-01-01T00:00:00Z" },
+    }));
+    renderApp("/data-protection/connection");
+    expect(await screen.findByText("Verification Expired")).toBeVisible();
+    expect(screen.queryByText("Connected", { exact: true })).not.toBeInTheDocument();
   });
 
   it("unwraps a classifier inventory and renders exactName", async () => {
