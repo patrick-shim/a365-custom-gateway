@@ -2,6 +2,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'GatewayUpgrade.psm1')
+Import-Module (Join-Path $PSScriptRoot 'GatewayUpgradeJson.psm1')
+Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'bootstrap\modules\Common.psm1') -DisableNameChecking
 
 function New-GatewayUpgradeCutoverContract {
     param($Request, $Scope)
@@ -273,26 +275,159 @@ function Set-GatewayUpgradeCutoverQueueHold {
     $null = Invoke-GatewayUpgradeCutoverArm $Context PUT $Id '2024-01-01' @{ properties = $properties }
 }
 
-function Assert-GatewayUpgradeEmptyQueueCounts {
-    param($Queue)
-    if ($Queue.properties -isnot [Collections.IDictionary] -or -not $Queue.properties.Contains('countDetails') -or
-        $Queue.properties.countDetails -isnot [Collections.IDictionary]) {
-        throw 'UpgradeCutoverUnknown: authoritative queue counts are unavailable for Purview human-wait preservation.'
+function Assert-GatewayUpgradeQueueShape {
+    param($Value, [string[]]$Keys)
+    & (Get-Module GatewayUpgrade) {
+        param($value, $keys)
+        Assert-GatewayUpgradeShape $value $keys 'queue quarantine evidence'
+    } $Value $Keys
+}
+
+function Assert-GatewayUpgradeQueueUtc {
+    param($Value)
+    $date = [DateTimeOffset]::MinValue
+    if ($Value -isnot [string] -or -not [DateTimeOffset]::TryParseExact($Value, 'O',
+            [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$date) -or
+        $date.Offset -ne [TimeSpan]::Zero -or $date.ToString('O') -cne $Value) {
+        throw 'UpgradeQueueQuarantineInvalid: a canonical UTC observation or creation identity is required.'
     }
-    foreach ($name in @('activeMessageCount', 'scheduledMessageCount', 'transferMessageCount',
-            'deadLetterMessageCount', 'transferDeadLetterMessageCount')) {
-        $counts = $Queue.properties.countDetails
-        if (-not $counts.Contains($name) -or
-            ($counts[$name] -isnot [int] -and $counts[$name] -isnot [long]) -or $counts[$name] -ne 0) {
-            throw 'UpgradeCutoverUnknown: exact zero active/scheduled/transfer/dead-letter queue counts are required; no purge or replay is authorized.'
+}
+
+function Assert-GatewayUpgradeQueueCounters {
+    param($Counters)
+    $keys = @('ActiveMessageCount', 'ScheduledMessageCount', 'TransferMessageCount',
+        'TransferDeadLetterMessageCount', 'DeadLetterMessageCount', 'MessageCount')
+    Assert-GatewayUpgradeQueueShape $Counters $keys
+    foreach ($key in $keys) {
+        if (($Counters[$key] -isnot [int] -and $Counters[$key] -isnot [long]) -or $Counters[$key] -lt 0) {
+            throw 'UpgradeQueueQuarantineInvalid: all six nonnegative integer counters are mandatory.'
         }
+    }
+    if ($Counters.ActiveMessageCount -ne 0 -or $Counters.ScheduledMessageCount -ne 0 -or
+        $Counters.TransferMessageCount -ne 0 -or $Counters.TransferDeadLetterMessageCount -ne 0 -or
+        $Counters.MessageCount -ne $Counters.DeadLetterMessageCount) {
+        throw 'UpgradeQueueQuarantineInvalid: executable/transfer work is forbidden and total count must equal normal DLQ count.'
+    }
+}
+
+function Get-GatewayUpgradeQueueQuarantineState {
+    param($Queue, [string]$Id, [ValidateSet('Active', 'ReceiveDisabled')][string]$Status)
+    if ($Queue -isnot [Collections.IDictionary] -or -not $Queue.Contains('id') -or -not $Queue.Contains('properties') -or
+        -not (Test-GatewayUpgradeResourceId $Queue.id $Id) -or $Queue.properties -isnot [Collections.IDictionary]) {
+        throw 'UpgradeQueueQuarantineInvalid: exact queue identity and properties are required.'
+    }
+    $properties = $Queue.properties
+    foreach ($name in @('status', 'createdAt', 'countDetails', 'messageCount')) {
+        if (-not $properties.Contains($name)) { throw 'UpgradeQueueQuarantineInvalid: required queue readback is missing.' }
+    }
+    if ($properties.status -cne $Status -or $properties.countDetails -isnot [Collections.IDictionary]) {
+        throw 'UpgradeQueueQuarantineInvalid: queue phase or counter readback is unknown.'
+    }
+    foreach ($name in @('forwardTo', 'forwardDeadLetteredMessagesTo')) {
+        if ($properties.Contains($name) -and $null -ne $properties[$name]) {
+            throw 'UpgradeQueueQuarantineInvalid: normal or dead-letter forwarding is forbidden.'
+        }
+    }
+    $created = [DateTimeOffset]::MinValue
+    if ($properties.createdAt -isnot [string] -or -not [DateTimeOffset]::TryParse($properties.createdAt,
+            [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$created) -or
+        $created.Offset -ne [TimeSpan]::Zero) {
+        throw 'UpgradeQueueQuarantineInvalid: queue creation identity is missing or malformed.'
+    }
+    $counts = @{ MessageCount = $properties.messageCount }
+    foreach ($key in @('ActiveMessageCount', 'ScheduledMessageCount', 'TransferMessageCount',
+            'TransferDeadLetterMessageCount', 'DeadLetterMessageCount')) {
+        $name = $key.Substring(0, 1).ToLowerInvariant() + $key.Substring(1)
+        if (-not $properties.countDetails.Contains($name)) { throw 'UpgradeQueueQuarantineInvalid: a queue counter is missing.' }
+        $counts[$key] = $properties.countDetails[$name]
+    }
+    Assert-GatewayUpgradeQueueCounters $counts
+    $configuration = Get-GatewayUpgradeCutoverQueueProperties $Queue
+    $configuration.status = 'Active'
+    return @{
+        ResourceId = $Id; CreatedAtUtc = $created.ToString('O')
+        ConfigurationFingerprint = Get-GatewayUpgradeFingerprint $configuration; Counters = $counts
+    }
+}
+
+function New-GatewayUpgradeQueueQuarantineBaseline {
+    param($Plan)
+    if ($Plan.request.schemaVersion -ne 2 -or $Plan.request.mode -cne 'SourceOnlyFull' -or
+        $Plan.Contains('queueQuarantineBaseline')) {
+        throw 'UpgradeQueueQuarantineInvalid: only a new source-only Plan may capture a baseline; rebaselining is forbidden.'
+    }
+    $queues = @(
+        foreach ($id in @($Plan.cutover.ProvisioningQueueResourceId, $Plan.cutover.ProtectionQueueResourceId)) {
+            $raw = Invoke-BootstrapCommand -FilePath 'az' -ArgumentList @('rest', '--method', 'GET',
+                '--subscription', $Plan.request.target.subscriptionId,
+                '--url', "https://management.azure.com$id`?api-version=2024-01-01", '--output', 'json', '--only-show-errors')
+            if ($raw -isnot [string] -or $raw.Length -gt 65536) { throw 'UpgradeQueueQuarantineInvalid: bounded queue readback is unavailable.' }
+            $queue = ConvertFrom-GatewayUpgradeArmJson -Json $raw
+            Get-GatewayUpgradeQueueQuarantineState $queue $id 'Active'
+        }
+    )
+    return @{
+        SchemaVersion = 1; EvidenceKind = 'NormalDeadLetterCountOnly'; Phase = 'PlanReadOnlyBaseline'; ReceiverSubQueue = 'None'
+        ObservedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
+        DeploymentOwnershipId = $Plan.request.target.deploymentOwnershipId
+        OriginalAcceptedSourceFingerprint = $Plan.original.acceptedSourceFingerprint
+        UpgradeSourceFingerprint = $Plan.content.sourceFingerprint; Queues = $queues
+    }
+}
+
+function Assert-GatewayUpgradeQueueQuarantineBaseline {
+    param($Plan)
+    if ($Plan.request.schemaVersion -ne 2 -or $Plan.request.mode -cne 'SourceOnlyFull' -or
+        -not $Plan.Contains('queueQuarantineBaseline')) {
+        throw 'UpgradeQueueQuarantineMissing: an immutable source-only Plan baseline is required.'
+    }
+    $baseline = $Plan.queueQuarantineBaseline
+    Assert-GatewayUpgradeQueueShape $baseline @('SchemaVersion', 'EvidenceKind', 'Phase', 'ReceiverSubQueue', 'ObservedAtUtc',
+        'DeploymentOwnershipId', 'OriginalAcceptedSourceFingerprint', 'UpgradeSourceFingerprint', 'Queues')
+    if (($baseline.SchemaVersion -isnot [int] -and $baseline.SchemaVersion -isnot [long]) -or $baseline.SchemaVersion -ne 1 -or
+        $baseline.EvidenceKind -cne 'NormalDeadLetterCountOnly' -or $baseline.Phase -cne 'PlanReadOnlyBaseline' -or
+        $baseline.ReceiverSubQueue -cne 'None' -or $baseline.DeploymentOwnershipId -cne $Plan.request.target.deploymentOwnershipId -or
+        $baseline.OriginalAcceptedSourceFingerprint -cne $Plan.original.acceptedSourceFingerprint -or
+        $baseline.UpgradeSourceFingerprint -cne $Plan.content.sourceFingerprint -or
+        $baseline.Queues -isnot [array] -or $baseline.Queues.Count -ne 2) {
+        throw 'UpgradeQueueQuarantineInvalid: source, purpose, receiver or exact queue-pair binding differs.'
+    }
+    Assert-GatewayUpgradeQueueUtc $baseline.ObservedAtUtc
+    $ids = @($Plan.cutover.ProvisioningQueueResourceId, $Plan.cutover.ProtectionQueueResourceId)
+    for ($index = 0; $index -lt 2; $index++) {
+        $queue = $baseline.Queues[$index]
+        Assert-GatewayUpgradeQueueShape $queue @('ResourceId', 'CreatedAtUtc', 'ConfigurationFingerprint', 'Counters')
+        Assert-GatewayUpgradeQueueUtc $queue.CreatedAtUtc
+        if ($queue.ResourceId -cne $ids[$index] -or
+            [string]::CompareOrdinal($queue.CreatedAtUtc, $baseline.ObservedAtUtc) -gt 0 -or
+            $queue.ConfigurationFingerprint -isnot [string] -or $queue.ConfigurationFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            throw 'UpgradeQueueQuarantineInvalid: queue creation or configuration binding differs.'
+        }
+        Assert-GatewayUpgradeQueueCounters $queue.Counters
+    }
+}
+
+function Assert-GatewayUpgradeQueueObservation {
+    param($Context, $Observation, [string]$Phase)
+    Assert-GatewayUpgradeQueueQuarantineBaseline $Context.plan
+    Assert-GatewayUpgradeQueueShape $Observation @('SchemaVersion', 'EvidenceKind', 'PlanFingerprint',
+        'UpgradeSourceFingerprint', 'BaselineFingerprint', 'ObservedAtUtc', 'Phase')
+    Assert-GatewayUpgradeQueueUtc $Observation.ObservedAtUtc
+    if (($Observation.SchemaVersion -isnot [int] -and $Observation.SchemaVersion -isnot [long]) -or $Observation.SchemaVersion -ne 1 -or
+        $Observation.EvidenceKind -cne 'NormalDeadLetterCountOnly' -or $Observation.Phase -cne $Phase -or
+        $Observation.PlanFingerprint -cne $Context.planFingerprint -or $Observation.UpgradeSourceFingerprint -cne $Context.plan.content.sourceFingerprint -or
+        $Observation.BaselineFingerprint -cne (Get-GatewayUpgradeFingerprint $Context.plan.queueQuarantineBaseline) -or
+        [string]::CompareOrdinal($Observation.ObservedAtUtc, $Context.plan.queueQuarantineBaseline.ObservedAtUtc) -lt 0) {
+        throw 'UpgradeQueueQuarantineMismatch: count-only observation differs from the exact Plan/source/baseline/phase.'
     }
 }
 
 function Assert-GatewayUpgradeCutoverHeld {
-    param($Context, [switch]$ZeroWriters, [switch]$AllowAbsentProtectionQueue, [switch]$RequireEmptyQueues)
+    param($Context, [switch]$ZeroWriters, [switch]$AllowAbsentProtectionQueue,
+        [ValidateSet('', 'SqlBefore', 'PreReopen', 'PreApiOpen')][string]$QueueQuarantinePhase = '')
     Assert-GatewayUpgradeCutoverAuthority $Context -ReadOnly
     $null = Get-GatewayUpgradeCutoverInventory $Context -ReadOnly
+    if ($QueueQuarantinePhase) { Assert-GatewayUpgradeQueueQuarantineBaseline $Context.plan }
     foreach ($component in @('api', 'worker')) {
         $entry = $Context.cutoverInventory.apps[$component]
         $app = Invoke-GatewayUpgradeCutoverArm $Context GET $entry.id '2025-01-01'
@@ -351,18 +486,34 @@ function Assert-GatewayUpgradeCutoverHeld {
     }
     foreach ($id in @($Context.plan.cutover.ProvisioningQueueResourceId, $Context.plan.cutover.ProtectionQueueResourceId)) {
         $queue = Invoke-GatewayUpgradeCutoverArm $Context GET $id '2024-01-01' -AllowNotFound
-        if ($null -eq $queue -and $AllowAbsentProtectionQueue -and -not $RequireEmptyQueues -and $id -ceq $Context.plan.cutover.ProtectionQueueResourceId -and
+        if ($null -eq $queue -and $AllowAbsentProtectionQueue -and -not $QueueQuarantinePhase -and $id -ceq $Context.plan.cutover.ProtectionQueueResourceId -and
             $null -eq $Context.cutoverInventory.queues[$id]) { continue }
         if ($null -eq $queue -or -not (Test-GatewayUpgradeResourceId $queue.id $id) -or $queue.properties.status -cne 'ReceiveDisabled') {
             throw 'UpgradeCutoverUnknown: management readback does not prove the queue receive hold.'
         }
-        if ($RequireEmptyQueues) { Assert-GatewayUpgradeEmptyQueueCounts $queue }
+        if ($QueueQuarantinePhase) {
+            $observed = Get-GatewayUpgradeQueueQuarantineState $queue $id 'ReceiveDisabled'
+            $baseline = @($Context.plan.queueQuarantineBaseline.Queues | Where-Object ResourceId -CEQ $id)
+            if ($baseline.Count -ne 1 -or (Get-GatewayUpgradeFingerprint $observed) -cne (Get-GatewayUpgradeFingerprint $baseline[0])) {
+                throw 'UpgradeQueueQuarantineMismatch: per-queue creation, configuration or counts changed; no rebaseline or cleanup is authorized.'
+            }
+        }
         $properties = Get-GatewayUpgradeCutoverQueueProperties $queue
         $properties.status = 'Active'
         $original = $Context.cutoverInventory.queues[$id]
         if ($null -ne $original -and (Get-GatewayUpgradeFingerprint $properties) -cne (Get-GatewayUpgradeFingerprint $original)) {
             throw 'UpgradeCutoverUnknown: protected queue configuration drifted.'
         }
+    }
+    if ($QueueQuarantinePhase) {
+        $observation = @{
+            SchemaVersion = 1; EvidenceKind = 'NormalDeadLetterCountOnly'; PlanFingerprint = $Context.planFingerprint
+            UpgradeSourceFingerprint = $Context.plan.content.sourceFingerprint
+            BaselineFingerprint = Get-GatewayUpgradeFingerprint $Context.plan.queueQuarantineBaseline
+            ObservedAtUtc = [DateTimeOffset]::UtcNow.ToString('O'); Phase = $QueueQuarantinePhase
+        }
+        Assert-GatewayUpgradeQueueObservation $Context $observation $QueueQuarantinePhase
+        return $observation
     }
 }
 
@@ -436,4 +587,5 @@ function Close-GatewayUpgradeCutover {
 Export-ModuleMember -Function New-GatewayUpgradeCutoverContract, Add-GatewayUpgradeCutoverScope, Get-GatewayUpgradeCutoverDenyRule,
     Get-GatewayUpgradeCutoverInventory, ConvertTo-GatewayUpgradeCutoverNormalizedConfiguration,
     Close-GatewayUpgradeCutover, Assert-GatewayUpgradeCutoverHeld, Set-GatewayUpgradeCutoverQueueHold,
-    Get-GatewayUpgradeCutoverRevisions
+    Get-GatewayUpgradeCutoverRevisions, New-GatewayUpgradeQueueQuarantineBaseline,
+    Assert-GatewayUpgradeQueueQuarantineBaseline, Assert-GatewayUpgradeQueueObservation

@@ -39,7 +39,9 @@ public sealed record DatabaseUpgradeManifest(
     IReadOnlyList<string>? CutoverOriginalRevisionResourceIds = null,
     string? CutoverApiImage = null,
     string? RollbackCompatibilityReviewFingerprint = null,
-    IReadOnlyDictionary<string, string>? RollbackImages = null);
+    IReadOnlyDictionary<string, string>? RollbackImages = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DatabaseUpgradeQueueQuarantineBaseline? QueueQuarantineBaseline = null);
 
 public sealed record DatabaseUpgradeIntent(
     int SchemaVersion,
@@ -49,7 +51,9 @@ public sealed record DatabaseUpgradeIntent(
     string PriorCapabilityFactsFingerprint,
     string PriorCapabilityFactsJson,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DatabaseUpgradePurviewPreservationStart? PurviewPreservation = null);
+    DatabaseUpgradePurviewPreservationStart? PurviewPreservation = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DatabaseUpgradeQueueQuarantineObservation? QueueQuarantine = null);
 
 public sealed record DatabaseUpgradeCommit(
     int SchemaVersion,
@@ -57,7 +61,9 @@ public sealed record DatabaseUpgradeCommit(
     string IntentFingerprint,
     string Status,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DatabaseUpgradePurviewPreservationProof? PurviewPreservation = null);
+    DatabaseUpgradePurviewPreservationProof? PurviewPreservation = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DatabaseUpgradeQueueQuarantineProof? QueueQuarantine = null);
 
 public interface IDatabaseUpgradeStore
 {
@@ -82,6 +88,8 @@ public interface IDatabaseUpgradeStore
         throw new InvalidOperationException("UpgradeSourceOnlyObserverMissing: explicit source-only preservation observation is required.");
     Task<DatabaseUpgradePurviewPreservationProof> AssertPurviewPreservedAsync(DatabaseUpgradePurviewPreservationStart before) =>
         throw new InvalidOperationException("UpgradePurviewPreservationMissing: exact before/after Purview preservation is required.");
+    Task<DatabaseUpgradeQueueQuarantineObservation> AssertSourceOnlyQueuesAsync(DatabaseUpgradeManifest manifest, string phase) =>
+        throw new InvalidOperationException("UpgradeQueueQuarantineMissing: both independent held observations are required.");
     Task CommitPreservationWindowAsync();
     Task ApplyAsync(string sql);
 }
@@ -203,6 +211,8 @@ public static class DatabaseUpgradeExecution
         if (!approvedOrder.SequenceEqual(manifest.Scripts.Select(script => script.Name), StringComparer.Ordinal))
             throw new ArgumentException("Upgrade scripts must retain the reviewed migrator order.");
         DatabaseUpgradeMigrationAdmission.AssertRequiredScripts(allowedScriptNames);
+        if (manifest.QueueQuarantineBaseline is not null)
+            DatabaseUpgradeQueueQuarantine.AssertBaseline(manifest);
     }
 
     private static void AssertMigrationMode(DatabaseUpgradeManifest manifest)
@@ -294,7 +304,7 @@ public static class DatabaseUpgradeExecution
                 var receiptIntent = receiptIntentJson is null ? null :
                     ParseIntent(receiptIntentJson);
                 if (receiptIntent?.ManifestFingerprint != manifestFingerprint ||
-                    await store.ReadMetadataAsync(commitName) != SerializeCommit(manifestFingerprint, receiptIntentJson!, receipt.PurviewPreservation))
+                    await store.ReadMetadataAsync(commitName) != SerializeCommit(manifestFingerprint, receiptIntentJson!, receipt.PurviewPreservation, receipt.QueueQuarantine))
                     throw new InvalidOperationException("UpgradeCutoverEvidenceMismatch: the verified receipt lacks this exact cutover boundary's intent and SQL commit.");
                 await store.AssertReceiptHistoryAsync(manifest, DatabaseUpgradeAttestation.Fingerprint(existingReceiptJson));
                 await store.AssertExactCurrentSchemaAndPrincipalsAsync();
@@ -318,7 +328,7 @@ public static class DatabaseUpgradeExecution
                         await store.ReadMetadataAsync(DatabaseUpgradeAttestation.OriginalMarkerName) != originalMarker ||
                         await store.ReadMetadataAsync(markerName) != existingReceiptJson ||
                         await store.ReadMetadataAsync(intentName) != receiptIntentJson ||
-                        await store.ReadMetadataAsync(commitName) != SerializeCommit(manifestFingerprint, receiptIntentJson!, receipt.PurviewPreservation))
+                        await store.ReadMetadataAsync(commitName) != SerializeCommit(manifestFingerprint, receiptIntentJson!, receipt.PurviewPreservation, receipt.QueueQuarantine))
                         throw new InvalidOperationException("UpgradeCutoverEvidenceMismatch: original receipt/intent/commit changed during observation.");
                 }
                 return receipt;
@@ -331,7 +341,7 @@ public static class DatabaseUpgradeExecution
                 AssertNoDuplicateProperties(commitDocument.RootElement);
                 var commit = JsonSerializer.Deserialize<DatabaseUpgradeCommit>(existingCommit, JsonOptions);
                 if (existingIntent is null || commit is null ||
-                    existingCommit != SerializeCommit(manifestFingerprint, existingIntent, commit.PurviewPreservation))
+                    existingCommit != SerializeCommit(manifestFingerprint, existingIntent, commit.PurviewPreservation, commit.QueueQuarantine))
                     throw new InvalidOperationException("UpgradeCommitEvidenceMismatch: SQL outcome requires review; no replay or rollback is authorized.");
                 throw new InvalidOperationException(
                     "UpgradeSqlCommittedWithoutVerifiedReceipt: schema changes were committed but completion is unverified. No automatic SQL replay or schema rollback is authorized.");
@@ -349,17 +359,24 @@ public static class DatabaseUpgradeExecution
             AssertPriorCapabilityFacts(priorCapabilityFacts, manifest);
             var priorCapabilityFingerprint = DatabaseUpgradeAttestation.Fingerprint(priorCapabilityFacts);
             await store.BeginPreservationWindowAsync();
-            await store.AssertPlatformCutoverBoundaryAsync(manifest);
+            DatabaseUpgradeQueueQuarantineObservation? queueBefore = null;
             DatabaseUpgradePurviewPreservationStart? purviewBefore = null;
             if (manifest.SchemaVersion == 2)
+            {
+                queueBefore = await store.AssertSourceOnlyQueuesAsync(manifest, "SqlBefore");
+                DatabaseUpgradeQueueQuarantine.AssertObservation(queueBefore, manifest, "SqlBefore");
                 // Preserve current receipt/configuration history, without authorizing ApplyAsync.
                 purviewBefore = await store.AssertSourceOnlyCutoverBoundaryAsync(manifest);
+            }
             else
+            {
+                await store.AssertPlatformCutoverBoundaryAsync(manifest);
                 await store.AssertDurableCutoverBoundaryAsync();
+            }
             purviewBefore?.AssertValid();
             var registrationsBefore = await store.ReadRegistrationIdentityFingerprintAsync();
             var intent = new DatabaseUpgradeIntent(1, manifestFingerprint, originalMarkerFingerprint, registrationsBefore,
-                priorCapabilityFingerprint, priorCapabilityFacts, purviewBefore);
+                priorCapabilityFingerprint, priorCapabilityFacts, purviewBefore, queueBefore);
             var intentJson = JsonSerializer.Serialize(intent, JsonOptions);
             await store.AddMetadataAsync(intentName, intentJson);
             if (!string.Equals(await store.ReadMetadataAsync(intentName), intentJson, StringComparison.Ordinal))
@@ -377,9 +394,12 @@ public static class DatabaseUpgradeExecution
                 throw new InvalidOperationException("Registration/credential identity state changed during the bounded migration; preservation requires review.");
             var purviewProof = purviewBefore is null ? null : await store.AssertPurviewPreservedAsync(purviewBefore);
             AssertPurviewProofBinding(purviewBefore, purviewProof);
+            var queueProof = queueBefore is null ? null : new DatabaseUpgradeQueueQuarantineProof(queueBefore,
+                await store.AssertSourceOnlyQueuesAsync(manifest, "SqlAfter"));
+            AssertQueueProofBinding(queueBefore, queueProof);
             await store.CommitPreservationWindowAsync();
             // Commit precedes Azure/platform verification. This checkpoint is not a completion receipt.
-            var commitJson = SerializeCommit(manifestFingerprint, intentJson, purviewProof);
+            var commitJson = SerializeCommit(manifestFingerprint, intentJson, purviewProof, queueProof);
             await store.AddMetadataAsync(commitName, commitJson);
             if (!string.Equals(await store.ReadMetadataAsync(commitName), commitJson, StringComparison.Ordinal))
                 throw new InvalidOperationException("UpgradeSqlCommittedWithoutVerifiedReceipt: committed SQL checkpoint could not be read back exactly.");
@@ -399,7 +419,7 @@ public static class DatabaseUpgradeExecution
                 manifest.PreviousReceiptFingerprint, manifest.BeforeSchemaFingerprint, schemaAfter,
                 SqlManifestFingerprint(manifest), manifest.ExecutionIntentId, manifest.Server, manifest.Database,
                 registrationsBefore, registrationsAfter, DateTimeOffset.UtcNow.ToString("O"), manifest.TargetModelFingerprint,
-                priorCapabilityFacts, priorCapabilityFingerprint, purviewProof);
+                priorCapabilityFacts, priorCapabilityFingerprint, purviewProof, queueProof);
             var completedJson = DatabaseUpgradeAttestation.Serialize(completed);
             await store.AddMetadataAsync(markerName, completedJson);
             if (!string.Equals(await store.ReadMetadataAsync(markerName), completedJson, StringComparison.Ordinal))
@@ -448,11 +468,13 @@ public static class DatabaseUpgradeExecution
     }
 
     private static string SerializeCommit(string manifestFingerprint, string intentJson,
-        DatabaseUpgradePurviewPreservationProof? purviewProof = null)
+        DatabaseUpgradePurviewPreservationProof? purviewProof = null, DatabaseUpgradeQueueQuarantineProof? queueProof = null)
     {
-        AssertPurviewProofBinding(ParseIntent(intentJson).PurviewPreservation, purviewProof);
+        var intent = ParseIntent(intentJson);
+        AssertPurviewProofBinding(intent.PurviewPreservation, purviewProof);
+        AssertQueueProofBinding(intent.QueueQuarantine, queueProof);
         return JsonSerializer.Serialize(new DatabaseUpgradeCommit(1, manifestFingerprint,
-            DatabaseUpgradeAttestation.Fingerprint(intentJson), "SqlCommittedPostVerificationPending", purviewProof), JsonOptions);
+            DatabaseUpgradeAttestation.Fingerprint(intentJson), "SqlCommittedPostVerificationPending", purviewProof, queueProof), JsonOptions);
     }
 
     private static DatabaseUpgradeIntent ParseIntent(string json)
@@ -462,6 +484,7 @@ public static class DatabaseUpgradeExecution
         var intent = JsonSerializer.Deserialize<DatabaseUpgradeIntent>(json, JsonOptions)
             ?? throw new InvalidOperationException("UpgradeCutoverEvidenceMismatch: the preservation intent is absent.");
         intent.PurviewPreservation?.AssertValid();
+        intent.QueueQuarantine?.AssertValid("SqlBefore");
         if (JsonSerializer.Serialize(intent, JsonOptions) != json)
             throw new InvalidOperationException("UpgradeCutoverEvidenceMismatch: the preservation intent is not canonical.");
         return intent;
@@ -476,9 +499,25 @@ public static class DatabaseUpgradeExecution
             throw new InvalidOperationException("UpgradePurviewPreservationMismatch: intent, commit and receipt must bind the same mandatory proof.");
     }
 
+    internal static void AssertQueueProofBinding(DatabaseUpgradeQueueQuarantineObservation? before,
+        DatabaseUpgradeQueueQuarantineProof? proof)
+    {
+        before?.AssertValid("SqlBefore");
+        proof?.AssertValid();
+        if (before != proof?.Before)
+            throw new InvalidOperationException("UpgradeQueueQuarantineMismatch: intent, commit and receipt must bind the same mandatory count-only proof.");
+    }
+
     private static void AssertReceiptBinding(DatabaseUpgradeReceipt receipt, DatabaseUpgradeManifest manifest, string markerFingerprint)
     {
         if (receipt.PurviewPreservation is not null) AssertSourceOnlyPreservationManifest(manifest);
+        if (receipt.QueueQuarantine is { } queues)
+        {
+            DatabaseUpgradeQueueQuarantine.AssertObservation(queues.Before, manifest, "SqlBefore");
+            DatabaseUpgradeQueueQuarantine.AssertObservation(queues.After, manifest, "SqlAfter");
+        }
+        else if (manifest.QueueQuarantineBaseline is not null)
+            throw new InvalidOperationException("UpgradeQueueQuarantineMissing: the Plan-bound quarantine proof is absent.");
         if (receipt.DeploymentOwnershipId != manifest.DeploymentOwnershipId ||
             receipt.OriginalAcceptedSourceFingerprint != manifest.OriginalAcceptedSourceFingerprint ||
             receipt.OriginalMarkerFingerprint != markerFingerprint || receipt.PlanFingerprint != manifest.PlanFingerprint ||
@@ -570,6 +609,8 @@ public sealed class SqlDatabaseUpgradeStore(
     private DatabaseUpgradePurviewScope? _purviewScope;
     private DatabaseUpgradePurviewPreservationStart? _purviewBefore;
     private bool _purviewPreservationVerified;
+    private DatabaseUpgradeQueueQuarantineObservation? _queueBefore;
+    private bool _queuePreservationVerified;
     private string? _registrationProjection;
     private string? _credentialProjection;
 
@@ -602,6 +643,8 @@ public sealed class SqlDatabaseUpgradeStore(
         _purviewScope = null;
         _purviewBefore = null;
         _purviewPreservationVerified = false;
+        _queueBefore = null;
+        _queuePreservationVerified = false;
         if (_preservationTransaction is not null)
         {
             await _preservationTransaction.RollbackAsync();
@@ -686,13 +729,16 @@ public sealed class SqlDatabaseUpgradeStore(
         _purviewScope = null;
         _purviewBefore = null;
         _purviewPreservationVerified = false;
+        _queueBefore = null;
+        _queuePreservationVerified = false;
         _preservationTransaction = (SqlTransaction)await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
     }
 
     public async Task AssertPlatformCutoverBoundaryAsync(DatabaseUpgradeManifest manifest)
-        => await AssertPlatformCutoverBoundaryAsync(manifest, requireEmptyQueues: false);
+        => await AssertPlatformCutoverBoundaryAsync(manifest, quarantine: null);
 
-    private async Task AssertPlatformCutoverBoundaryAsync(DatabaseUpgradeManifest manifest, bool requireEmptyQueues)
+    private async Task<DatabaseUpgradeQueueQuarantineObservation?> AssertPlatformCutoverBoundaryAsync(
+        DatabaseUpgradeManifest manifest, DatabaseUpgradeQueueQuarantineCheck? quarantine)
     {
         _platformCutoverObserved = false;
         _cutoverObserved = false;
@@ -705,23 +751,41 @@ public sealed class SqlDatabaseUpgradeStore(
         var maintenance = DatabaseUpgradeExecution.GetApiMaintenanceBinding(manifest);
         if ((platformClient is null) != (platformCredential is null))
             throw new InvalidOperationException("Both native platform transports must be supplied together.");
-        if (platformClient is not null)
-            await DatabaseUpgradePlatformObserver.AssertWithTransportAsync(manifest.Cutover!, manifest.DeploymentOwnershipId,
+        var observation = platformClient is not null
+            ? await DatabaseUpgradePlatformObserver.AssertWithTransportAsync(manifest.Cutover!, manifest.DeploymentOwnershipId,
                 manifest.OriginalAcceptedSourceFingerprint, platformClient, platformCredential!, manifest.CutoverOriginalRevisionResourceIds,
-                cancellationToken: deadline.Token, apiMaintenance: maintenance, requireEmptyQueues: requireEmptyQueues);
-        else
-            await DatabaseUpgradePlatformObserver.AssertPrivateAsync(manifest.Cutover!, manifest.DeploymentOwnershipId,
+                cancellationToken: deadline.Token, apiMaintenance: maintenance, quarantine: quarantine)
+            : await DatabaseUpgradePlatformObserver.AssertPrivateAsync(manifest.Cutover!, manifest.DeploymentOwnershipId,
                 manifest.OriginalAcceptedSourceFingerprint, manifest.CutoverOriginalRevisionResourceIds,
-                cancellationToken: deadline.Token, apiMaintenance: maintenance, requireEmptyQueues: requireEmptyQueues);
+                cancellationToken: deadline.Token, apiMaintenance: maintenance, quarantine: quarantine);
         _observedManifest = manifest;
         _platformCutoverObserved = true;
+        return observation;
+    }
+
+    public async Task<DatabaseUpgradeQueueQuarantineObservation> AssertSourceOnlyQueuesAsync(DatabaseUpgradeManifest manifest, string phase)
+    {
+        DatabaseUpgradeQueueQuarantine.AssertBaseline(manifest);
+        if (_preservationTransaction is null || phase is not ("SqlBefore" or "SqlAfter") ||
+            (phase == "SqlBefore" ? _queueBefore is not null : _queueBefore is null || _queuePreservationVerified))
+            throw new InvalidOperationException("UpgradeQueueQuarantineInvalid: an active held transaction and one immutable before/after observation are required.");
+        var observation = await AssertPlatformCutoverBoundaryAsync(manifest, new(manifest, phase))
+            ?? throw new InvalidOperationException("UpgradeQueueQuarantineMissing: private queue observation is absent.");
+        if (phase == "SqlBefore") _queueBefore = observation;
+        else
+        {
+            new DatabaseUpgradeQueueQuarantineProof(_queueBefore!, observation).AssertValid();
+            _queuePreservationVerified = true;
+            _platformCutoverObserved = false;
+        }
+        return observation;
     }
 
     public async Task<DatabaseUpgradePurviewPreservationStart?> AssertSourceOnlyCutoverBoundaryAsync(DatabaseUpgradeManifest manifest)
     {
         DatabaseUpgradeExecution.AssertSourceOnlyPreservationManifest(manifest);
         _cutoverObserved = false;
-        if (!_platformCutoverObserved || !ReferenceEquals(_observedManifest, manifest))
+        if (_queueBefore is null || !_platformCutoverObserved || !ReferenceEquals(_observedManifest, manifest))
             throw new InvalidOperationException("UpgradeCutoverPlatformObserverMissing: SourceOnlyFull requires its exact privately observed manifest.");
         if (_purviewScope is not null)
             throw new InvalidOperationException("UpgradePurviewPreservationInvalid: an existing before observation cannot be replaced.");
@@ -730,8 +794,6 @@ public sealed class SqlDatabaseUpgradeStore(
             ?? throw new InvalidOperationException("SourceOnlyFull observation requires the preservation transaction.");
         _purviewScope = await DatabaseUpgradeCutoverObserver.AssertSourceOnlySafeAsync(connection, transaction, manifest);
         if (_purviewScope is null) return null;
-        await AssertPlatformCutoverBoundaryAsync(manifest, requireEmptyQueues: true);
-        _platformCutoverObserved = false;
         _purviewBefore = new(1, "SafePreservedHumanWaits", _purviewScope.OperationIds.Length,
             await DatabaseUpgradePurviewPreservation.FingerprintAsync(connection, transaction, _purviewScope));
         return _purviewBefore;
@@ -748,8 +810,6 @@ public sealed class SqlDatabaseUpgradeStore(
         var proof = new DatabaseUpgradePurviewPreservationProof(1, "SafePreservedHumanWaits", before.OperationCount,
             before.BeforeFingerprint, await DatabaseUpgradePurviewPreservation.FingerprintAsync(connection, _preservationTransaction, _purviewScope));
         proof.AssertValid();
-        await AssertPlatformCutoverBoundaryAsync(_observedManifest, requireEmptyQueues: true);
-        _platformCutoverObserved = false;
         _purviewPreservationVerified = true;
         return proof;
     }
@@ -780,6 +840,8 @@ public sealed class SqlDatabaseUpgradeStore(
     {
         if (_purviewScope is not null && !_purviewPreservationVerified)
             throw new InvalidOperationException("UpgradePurviewPreservationMissing: commit requires exact after proof.");
+        if (_queueBefore is not null && !_queuePreservationVerified)
+            throw new InvalidOperationException("UpgradeQueueQuarantineMissing: commit requires its own matching after observation.");
         await using var transaction = _preservationTransaction
             ?? throw new InvalidOperationException("The upgrade preservation transaction is absent.");
         // Never ask ReleaseAsync to roll back an acknowledged or indeterminate commit.
@@ -791,6 +853,8 @@ public sealed class SqlDatabaseUpgradeStore(
         _purviewScope = null;
         _purviewBefore = null;
         _purviewPreservationVerified = false;
+        _queueBefore = null;
+        _queuePreservationVerified = false;
         await transaction.CommitAsync();
     }
 

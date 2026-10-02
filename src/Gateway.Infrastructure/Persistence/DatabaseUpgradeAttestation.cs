@@ -40,7 +40,9 @@ public sealed record DatabaseUpgradeReceipt(
     string? PriorCapabilityFactsJson = null,
     string? PriorCapabilityFactsFingerprint = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    DatabaseUpgradePurviewPreservationProof? PurviewPreservation = null);
+    DatabaseUpgradePurviewPreservationProof? PurviewPreservation = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DatabaseUpgradeQueueQuarantineProof? QueueQuarantine = null);
 
 public sealed record DatabaseUpgradePurviewPreservationStart(
     int SchemaVersion, string Classification, int OperationCount, string BeforeFingerprint)
@@ -142,14 +144,19 @@ public static partial class DatabaseUpgradeAttestation
     public static void AssertValid(DatabaseUpgradeReceipt receipt)
     {
         ArgumentNullException.ThrowIfNull(receipt);
-        if (receipt.PurviewPreservation is { } preservation)
+        receipt.PurviewPreservation?.AssertValid();
+        receipt.QueueQuarantine?.AssertValid();
+        if (receipt.PurviewPreservation is not null || receipt.QueueQuarantine is not null)
         {
-            preservation.AssertValid();
             if (receipt.BeforeSchemaFingerprint != receipt.AfterSchemaFingerprint ||
                 !IsFingerprint(receipt.TargetModelFingerprint) ||
                 receipt.SqlManifestFingerprint != Fingerprint(""))
                 throw new InvalidOperationException("UpgradePurviewPreservationInvalid: preservation requires unchanged schema/model binding and zero SQL.");
         }
+        if (receipt.QueueQuarantine is { } queues &&
+            (queues.Before.PlanFingerprint != receipt.PlanFingerprint ||
+                queues.Before.UpgradeSourceFingerprint != receipt.UpgradeSourceFingerprint))
+            throw new InvalidOperationException("UpgradeQueueQuarantineMismatch: receipt Plan/source differs from its queue evidence.");
         if (receipt.SchemaVersion != ContractVersion ||
             !IsCanonicalGuid(receipt.DeploymentOwnershipId) ||
             !IsCanonicalGuid(receipt.ExecutionIntentId) ||

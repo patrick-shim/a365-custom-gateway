@@ -62,6 +62,10 @@ function New-GatewayUpgradePlanV2 {
     $plan['independentReview'] = $review
     $plan['artifacts'] = $artifacts
     $plan['authorizedOperator'] = Get-GatewayUpgradeAuthenticatedOperator $Request.target.tenantId $Request.target.subscriptionId
+    if ($Request.schemaVersion -eq 2) {
+        $plan['queueQuarantineBaseline'] = New-GatewayUpgradeQueueQuarantineBaseline $plan
+        Assert-GatewayUpgradeQueueQuarantineBaseline $plan
+    }
     $plan['buildSupported'] = $null -ne $review
     if ($null -ne $review -and $null -ne $artifacts) {
         Assert-GatewayUpgradeSqlAdmission -SourceRoot $source -Database $Request.database -Mode $(if ($Request.schemaVersion -eq 2) { 'SourceOnlyFull' } else { 'CoreToFull' })
@@ -101,6 +105,7 @@ function Test-GatewayUpgradePlanV2 {
     if ($plan.Contains('rollbackContract') -or $plan.Contains('rollbackContractReference')) {
         $keys += @('rollbackContract', 'rollbackContractReference')
     }
+    if ($plan.request.schemaVersion -eq 2) { $keys += 'queueQuarantineBaseline' }
     if ($Envelope.Keys.Count -ne 2 -or @($Envelope.Keys | Where-Object { $_ -cnotin @('planFingerprint', 'plan') }).Count -ne 0 -or
         $plan.Keys.Count -ne $keys.Count -or @($plan.Keys | Where-Object { $_ -cnotin $keys }).Count -ne 0) {
         throw 'UpgradePlan: unsupported Plan field or missing contract.'
@@ -111,6 +116,7 @@ function Test-GatewayUpgradePlanV2 {
         throw 'UpgradePlan: exact approved v2 Plan integrity failed.'
     }
     Assert-GatewayUpgradeOperatorBinding $plan.authorizedOperator $plan.request.target.tenantId
+    if ($plan.request.schemaVersion -eq 2) { Assert-GatewayUpgradeQueueQuarantineBaseline $plan }
     if ((Get-GatewayUpgradeFingerprint $plan.cutover) -cne
         (Get-GatewayUpgradeFingerprint (New-GatewayUpgradeCutoverContract $plan.request $plan.scope))) {
         throw 'UpgradePlan: fixed quiescence, drain and reconciliation contract changed.'

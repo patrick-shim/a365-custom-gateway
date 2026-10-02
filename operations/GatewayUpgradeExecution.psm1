@@ -1066,7 +1066,7 @@ function Get-GatewayUpgradeSqlManifest {
     $scripts = @($database.scripts | ForEach-Object {
         @{ Name = [IO.Path]::GetFileName($_.path); Sha256 = [string]$_.sha256 }
     })
-    return [ordered]@{
+    $manifest = [ordered]@{
         SchemaVersion = $(if ($Context.plan.request.schemaVersion -eq 2) { 2 } else { 1 }); PlanFingerprint = $Context.planFingerprint
         UpgradeSourceFingerprint = $Context.plan.content.sourceFingerprint
         OriginalAcceptedSourceFingerprint = $Context.state.acceptedPlan.sourceFingerprint
@@ -1087,6 +1087,11 @@ function Get-GatewayUpgradeSqlManifest {
             @($Context.cutoverInventory.apps.api.revisions) + @($Context.cutoverInventory.apps.worker.revisions)
         } else { $null }
     }
+    if ($Context.plan.Contains('queueQuarantineBaseline')) {
+        Assert-GatewayUpgradeQueueQuarantineBaseline $Context.plan
+        $manifest.QueueQuarantineBaseline = $Context.plan.queueQuarantineBaseline
+    }
+    return $manifest
 }
 
 function Get-GatewayUpgradeGraphApplicationRoleId {
@@ -1343,6 +1348,20 @@ function Test-GatewayUpgradeDatabaseReceipt {
             $receipt.BeforeSchemaFingerprint -cne $receipt.AfterSchemaFingerprint) {
             throw 'UpgradeExecution: Purview human-wait proof is only valid for unchanged-schema SourceOnlyFull forward preservation.'
         }
+    }
+    if ($receipt.Contains('QueueQuarantine')) {
+        $receiptKeys += 'QueueQuarantine'
+        & (Get-Module GatewayUpgrade) {
+            param($proof) Assert-GatewayUpgradeShape $proof @('Before', 'After') 'queue quarantine proof'
+        } $receipt.QueueQuarantine
+        Assert-GatewayUpgradeQueueObservation $Context $receipt.QueueQuarantine.Before 'SqlBefore'
+        Assert-GatewayUpgradeQueueObservation $Context $receipt.QueueQuarantine.After 'SqlAfter'
+        if ([string]::CompareOrdinal($receipt.QueueQuarantine.Before.ObservedAtUtc, $receipt.QueueQuarantine.After.ObservedAtUtc) -gt 0) {
+            throw 'UpgradeQueueQuarantineMismatch: observation order differs.'
+        }
+    }
+    elseif ($Context.plan.Contains('queueQuarantineBaseline')) {
+        throw 'UpgradeQueueQuarantineMissing: the new Plan requires both SQL-bound queue observations.'
     }
     if ($receipt.Keys.Count -ne $receiptKeys.Count -or @($receipt.Keys | Where-Object { $_ -cnotin $receiptKeys }).Count -ne 0 -or
         $receipt.SchemaVersion -ne 1 -or $receipt.PlanFingerprint -cne $Context.planFingerprint -or
@@ -1719,8 +1738,8 @@ function Assert-GatewayUpgradeCutoverReaderRoles {
 function Invoke-GatewayUpgradeDatabase {
     param($Context, $Images, [switch]$ReadOnly, [switch]$ObserveForRollback)
     if ($Context.plan.Contains('cutover') -and (-not $ReadOnly -or $ObserveForRollback)) {
-        Assert-GatewayUpgradeCutoverHeld $Context -ZeroWriters -RequireEmptyQueues:(
-            -not $ReadOnly -and -not $ObserveForRollback -and $Context.plan.request.schemaVersion -eq 2)
+        $phase = if (-not $ReadOnly -and -not $ObserveForRollback -and $Context.plan.request.schemaVersion -eq 2) { 'SqlBefore' } else { '' }
+        $null = Assert-GatewayUpgradeCutoverHeld $Context -ZeroWriters -QueueQuarantinePhase $phase
     }
     $jobId = [string]@($Context.plan.scope.resources | Where-Object stage -CEQ 'DatabaseExpand')[0].resourceId
     $jobName = $jobId.Split('/')[-1]
@@ -2755,17 +2774,42 @@ function Open-GatewayUpgradeCutover {
     }
     if ($null -ne $result -or $ReadOnly) {
         if ($null -eq $result) { throw 'UpgradeCutover: no completed reopening is available for read-only verification.' }
+        if (-not $Rollback -and $Context.plan.Contains('queueQuarantineBaseline')) {
+            Assert-GatewayUpgradeQueueObservation $Context $intent.record.value.queueQuarantine 'PreReopen'
+            $retained = Read-GatewayUpgradeJson (Join-Path $Context.directory 'queue-quarantine-api-open.json')
+            & (Get-Module GatewayUpgrade) {
+                param($value) Assert-GatewayUpgradeShape $value @('record', 'fingerprint') 'queue opening evidence'
+            } $retained
+            if ((Get-GatewayUpgradeFingerprint $retained.record) -cne $retained.fingerprint) {
+                throw 'UpgradeQueueQuarantineMismatch: retained pre-opening evidence changed.'
+            }
+            Assert-GatewayUpgradeQueueObservation $Context $retained.record 'PreApiOpen'
+            if ([string]::CompareOrdinal($intent.record.value.queueQuarantine.ObservedAtUtc, $retained.record.ObservedAtUtc) -gt 0) {
+                throw 'UpgradeQueueQuarantineMismatch: reopening observation order differs.'
+            }
+        }
         $joint = Assert-GatewayUpgradeJointReadback $Context $DatabaseReceipt $Preparation $Environments -Rollback:$Rollback -ConsumersEnabled -ApiOpen
         Assert-GatewayUpgradeCutoverOpenControls $Context
         return $joint
     }
     $joint = Assert-GatewayUpgradeJointReadback $Context $DatabaseReceipt $Preparation $Environments -Rollback:$Rollback -ConsumersEnabled -RequireHeld
     Assert-GatewayUpgradeExecutionAuthority $Context $action
-    $null = Write-GatewayUpgradeExecutionRecord $Context $action 'intent' @{
+    $input = @{
         inputFingerprint = Get-GatewayUpgradeFingerprint $joint; input = $joint
     }
+    if (-not $Rollback -and $Context.plan.request.schemaVersion -eq 2) {
+        $input.queueQuarantine = Assert-GatewayUpgradeCutoverHeld $Context -QueueQuarantinePhase 'PreReopen'
+    }
+    $null = Write-GatewayUpgradeExecutionRecord $Context $action 'intent' $input
     try {
         $apiImage = if ($Rollback) { $Context.plan.rollbackContract.images.api } else { $Context.plan.request.images.api }
+        if (-not $Rollback -and $Context.plan.request.schemaVersion -eq 2) {
+            $queues = Assert-GatewayUpgradeCutoverHeld $Context -QueueQuarantinePhase 'PreApiOpen'
+            if ([string]::CompareOrdinal($input.queueQuarantine.ObservedAtUtc, $queues.ObservedAtUtc) -gt 0) {
+                throw 'UpgradeQueueQuarantineMismatch: reopening observation order differs.'
+            }
+            $null = Save-GatewayUpgradeNamedEvidence $Context 'queue-quarantine-api-open.json' $queues
+        }
         $null = Invoke-GatewayUpgradeWorkload $Context api $apiImage $Environments.api -OpenApi -Rollback:$Rollback
         $null = Assert-GatewayUpgradeJointReadback $Context $DatabaseReceipt $Preparation $Environments -Rollback:$Rollback -ConsumersEnabled -ApiOpen
         # Queues stay intact. Receives resume only for the jointly verified new contracts.

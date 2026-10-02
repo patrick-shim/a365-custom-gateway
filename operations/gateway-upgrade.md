@@ -281,9 +281,9 @@ Only explicit v2 `SourceOnlyFull` forward maintenance can classify an inert lega
 Purview handoff as `SafePreservedHumanWaits`, **not completed**. The private job
 requires zero SQL, the unchanged physical schema and approved compiled model,
 exact private platform closure, and serializable table locks. Both held queues
-must report authoritative zero active, scheduled, transfer, dead-letter and
-transfer-dead-letter message counts. `ReceiveDisabled` alone is insufficient;
-missing counts fail closed. No purge, acknowledgement or replay is authorized.
+must satisfy the separately Plan-bound count-only quarantine contract below.
+`ReceiveDisabled` alone is insufficient because it still permits sends.
+No purge, acknowledgement or replay is authorized.
 
 The admitted shape is only workflow-1 `ConnectPurviewTenant` in
 `AwaitingAdministrator`, with `CompletePurviewTenantConnection`, an uncompleted
@@ -315,6 +315,55 @@ tokens. Resolve those through separately reviewed supported workflows, never
 by relabeling rows. Corrected source bytes require fresh canonical
 Package/Prepare and independent approval; old candidates and receipts are not
 rewritten.
+
+### Count-only normal dead-letter quarantine
+
+Every new v2 `SourceOnlyFull` Plan captures one read-only
+`queueQuarantineBaseline`, included in its approval fingerprint. It binds the
+exact provisioning and protection queue IDs, creation timestamps, existing
+configuration fingerprints, all six integer counters, observation time, phase,
+original ownership/source and candidate source. Execution never captures a
+replacement baseline; changed counts or identity require stopping, not silently
+rebaselining an approved Plan.
+
+Both queues require zero active, scheduled, transfer and transfer-dead-letter
+messages. Each normal `deadLetterMessageCount` must equal **that queue's own**
+approved baseline, and `messageCount` must equal its normal DLQ count. Thus one
+retained DLQ item in each queue is not a combined allowance of two. All counters
+must be present, nonnegative integers. Missing values, increase/decrease,
+per-queue swaps, forwarding, recreated queues and configuration drift fail
+closed. `forwardTo` and `forwardDeadLetteredMessagesTo` must be unset (absent or
+null); no forwarding destination, including an empty supplied value, is adopted.
+Creation identity and configuration are checked separately from volatile counts;
+the existing configuration normalization and historical receipts are unchanged.
+
+The reviewed deployed/candidate receivers use the normal `SubQueue.None`
+contract, with no DLQ consumer, replay or recovery path. Exact held workloads,
+old-replica exclusion, closed API, normal receiver configuration and global SQL/
+outbox admission are still mandatory. The private migrator's existing management
+Reader scope supplies the observations; no data-plane inspection, new permission
+or network opening is needed. This exception is not used for Core-to-Full or
+rollback and adds no Failed/Cancelled SQL-operation allowance.
+
+Independent native held reads bracket the SQL preservation transaction, even
+when no Purview human wait exists. New optional `QueueQuarantine` intent/commit/
+receipt evidence binds the same immutable baseline, source, Plan, observation
+times and `SqlBefore`/`SqlAfter` phases. Both observations are mandatory before
+commit. Orchestration repeats held readback immediately before its reopen intent
+and again before API opening, retaining `PreReopen` and `PreApiOpen` evidence.
+An uncertain reopen is not replayed. Completed-opening verification checks the
+retained evidence without requiring empty normal queues after legitimate
+traffic resumes.
+
+**Evidence limit:** `NormalDeadLetterCountOnly` proves the reported per-queue
+counts and resource/configuration continuity at those boundaries. Equal counts
+do **not** prove packet membership, payload equality, or absence of same-count
+substitution by outside actors. No peek, receive, archive, settlement, deletion,
+purge or replay is authorized to produce this evidence. The stronger all-column
+Purview SQL proof remains separate; no packet-level claim is inferred from it.
+Old proofless receipt bytes still roundtrip unchanged. New forward execution
+requires a freshly approved Plan carrying this baseline and matching readers;
+old Plans or successful local tests do not authorize live cutover.
 
 After Build, update only the **separate request** with its returned digests.
 Repeat Plan with `-ArtifactBundlePath '<returned artifacts.json>'`, review its

@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Azure.Core;
 using Azure.Identity;
+using Gateway.Infrastructure.Persistence;
 
 namespace Gateway.DatabaseMigrator;
 
@@ -67,10 +68,10 @@ public static partial class DatabaseUpgradePlatformObserver
             throw new ArgumentException("UpgradeCutover: supplied original revision identities must cover both exact workloads.");
     }
 
-    public static async Task AssertPrivateAsync(DatabaseUpgradeCutoverContract contract,
+    public static async Task<DatabaseUpgradeQueueQuarantineObservation?> AssertPrivateAsync(DatabaseUpgradeCutoverContract contract,
         string deploymentOwnershipId, string originalAcceptedSourceFingerprint,
         IReadOnlyList<string>? originalRevisionResourceIds = null, CancellationToken cancellationToken = default,
-        DatabaseUpgradeApiMaintenanceBinding? apiMaintenance = null, bool requireEmptyQueues = false)
+        DatabaseUpgradeApiMaintenanceBinding? apiMaintenance = null, DatabaseUpgradeQueueQuarantineCheck? quarantine = null)
     {
         AssertContract(contract, originalRevisionResourceIds);
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("IDENTITY_ENDPOINT")))
@@ -78,19 +79,24 @@ public static partial class DatabaseUpgradePlatformObserver
         var credential = new ManagedIdentityCredential();
         using var handler = new HttpClientHandler { AllowAutoRedirect = false };
         using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
-        await AssertWithTransportAsync(contract, deploymentOwnershipId, originalAcceptedSourceFingerprint,
-            client, credential, originalRevisionResourceIds, cancellationToken, apiMaintenance, requireEmptyQueues);
+        return await AssertWithTransportAsync(contract, deploymentOwnershipId, originalAcceptedSourceFingerprint,
+            client, credential, originalRevisionResourceIds, cancellationToken, apiMaintenance, quarantine);
     }
 
     // Only HTTP and token transport are replaceable; resource selection, requests and classification
     // remain fixed here. The private-job entry point always uses ManagedIdentityCredential.
-    public static async Task AssertWithTransportAsync(DatabaseUpgradeCutoverContract contract,
+    public static async Task<DatabaseUpgradeQueueQuarantineObservation?> AssertWithTransportAsync(DatabaseUpgradeCutoverContract contract,
         string deploymentOwnershipId, string originalAcceptedSourceFingerprint,
         HttpClient client, TokenCredential credential,
         IReadOnlyList<string>? originalRevisionResourceIds = null, CancellationToken cancellationToken = default,
-        DatabaseUpgradeApiMaintenanceBinding? apiMaintenance = null, bool requireEmptyQueues = false)
+        DatabaseUpgradeApiMaintenanceBinding? apiMaintenance = null, DatabaseUpgradeQueueQuarantineCheck? quarantine = null)
     {
         AssertContract(contract, originalRevisionResourceIds);
+        var baseline = quarantine is null ? null : DatabaseUpgradeQueueQuarantine.AssertBaseline(quarantine.Manifest);
+        if (quarantine is not null && (quarantine.Manifest.Cutover != contract ||
+            quarantine.Manifest.DeploymentOwnershipId != deploymentOwnershipId ||
+            quarantine.Manifest.OriginalAcceptedSourceFingerprint != originalAcceptedSourceFingerprint))
+            throw Unknown();
         if (apiMaintenance is not null) AssertApiMaintenanceBinding(contract, apiMaintenance);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(contract.TimeoutSeconds));
@@ -121,7 +127,10 @@ public static partial class DatabaseUpgradePlatformObserver
             foreach (var queue in new[] { contract.ProvisioningQueueResourceId, contract.ProtectionQueueResourceId })
             {
                 using var observed = await ReadAsync(queue, QueueVersion);
-                AssertQueue(observed.RootElement, queue, requireEmptyQueues);
+                AssertQueue(observed.RootElement, queue);
+                if (baseline is not null)
+                    DatabaseUpgradeQueueQuarantine.AssertState(observed.RootElement,
+                        baseline.Queues.Single(state => state.ResourceId == queue));
             }
             foreach (var app in new[] { contract.ApiResourceId, contract.WorkerResourceId })
             {
@@ -163,6 +172,7 @@ public static partial class DatabaseUpgradePlatformObserver
                     AssertNoReplicas(replicas.RootElement);
                 }
             }
+            return quarantine is null ? null : DatabaseUpgradeQueueQuarantine.Observation(quarantine);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or OperationCanceledException or Azure.Identity.AuthenticationFailedException or
                                        InvalidOperationException or KeyNotFoundException or FormatException)
@@ -171,23 +181,12 @@ public static partial class DatabaseUpgradePlatformObserver
         }
     }
 
-    public static void AssertQueue(JsonElement observed, string resourceId, bool requireEmpty = false)
+    public static void AssertQueue(JsonElement observed, string resourceId)
     {
         Unique(observed);
         if (!ResourceIdEquals(Text(observed, "id"), resourceId) ||
             Text(Property(observed, "properties"), "status") != "ReceiveDisabled")
             throw Unknown();
-        if (requireEmpty)
-        {
-            var counts = Property(Property(observed, "properties"), "countDetails");
-            foreach (var name in new[] { "activeMessageCount", "scheduledMessageCount", "transferMessageCount",
-                         "deadLetterMessageCount", "transferDeadLetterMessageCount" })
-            {
-                var count = Property(counts, name);
-                if (count.ValueKind != JsonValueKind.Number || !count.TryGetInt64(out var value) || value != 0)
-                    throw Unknown();
-            }
-        }
     }
 
     public static void AssertApp(JsonElement observed, string resourceId, bool ingressRequired, string ruleName,
@@ -281,7 +280,7 @@ public static partial class DatabaseUpgradePlatformObserver
         value is not null && !value.Contains("/../", StringComparison.Ordinal) &&
         !value.Contains("/./", StringComparison.Ordinal) &&
         Regex.IsMatch(value, @"\A" + pattern + @"\z", RegexOptions.CultureInvariant);
-    private static bool ResourceIdEquals([NotNullWhen(true)] string? actual, string expected) =>
+    internal static bool ResourceIdEquals([NotNullWhen(true)] string? actual, string expected) =>
         actual is not null && string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
 
     private static bool RevisionOf(string? id, string appId)
@@ -309,6 +308,6 @@ public static partial class DatabaseUpgradePlatformObserver
     private static InvalidOperationException Unknown() => new(
         "UpgradeCutoverPlatformUnknown: private managed-identity readback did not prove an exact PreSchemaClosed API sentinel " +
         "or denied zero-replica API, receive-disabled queues and inactive zero-replica excluded revisions. " +
-        "Human-wait preservation additionally requires exact zero active/scheduled/transfer/dead-letter queue counts. " +
+        "Source-only preservation additionally requires exact Plan-bound normal-DLQ quarantine counts and zero executable/transfer work. " +
         "No schema migration or checkpoint repair is authorized.");
 }
