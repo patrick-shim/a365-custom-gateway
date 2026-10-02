@@ -7,6 +7,10 @@ Import-Module (Join-Path $PSScriptRoot 'GatewayUpgradeOperator.psm1')
 Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'bootstrap\modules\Common.psm1') -DisableNameChecking
 $script:AbortRoot = Split-Path -Parent $PSScriptRoot
 $script:AbortInventory = @('actions\coordination-container\intent.json', 'actions\coordination-container\result.json', 'lease.json')
+$script:AbortEnvironmentSnapshots = [ordered]@{
+    'source-only-api-environment.json' = 'api'
+    'source-only-worker-environment.json' = 'worker'
+}
 $script:AbortJournalNames = @('intent.json', 'renew-intent.json', 'renew-result.json', 'release-intent.json', 'release-result.json', 'terminal.json')
 
 function Assert-GatewayAbortShape {
@@ -171,6 +175,50 @@ function Test-GatewayUpgradeAbortOriginalPlan {
         validator = @{ root = $bundle; manifest = $verifiers; fingerprint = $plan.content.verifierFingerprint; origins = $origins.ToArray() } }
 }
 
+function Read-GatewayAbortSourceOnlySnapshot {
+    param($Original, [string]$Directory, [string]$Name, [string]$WorkspaceRoot)
+    if ($Name -cne 'source-only-capabilities.json' -and $Name -cnotin $script:AbortEnvironmentSnapshots.Keys) {
+        throw 'UpgradeAbort: unsupported preservation snapshot.'
+    }
+    $path = Resolve-GatewayAbortPath (Join-Path $Directory $Name) $WorkspaceRoot
+    $saved = Read-GatewayUpgradeJson $path
+    Assert-GatewayAbortShape $saved @('fingerprint','record')
+    Assert-GatewayAbortShape $saved.record @('planFingerprint','originalStateSha256','value')
+    Assert-GatewayAbortHash $saved.fingerprint
+    if ((Get-GatewayUpgradeFingerprint $saved.record) -cne $saved.fingerprint -or
+        $saved.record.planFingerprint -cne $Original.envelope.planFingerprint -or
+        $saved.record.originalStateSha256 -cne $Original.envelope.plan.original.stateSha256) {
+        throw 'UpgradeAbort: preservation snapshot hash, Plan or original state differs.'
+    }
+    $value = $saved.record.value
+    if ($Name -cin $script:AbortEnvironmentSnapshots.Keys) {
+        Assert-GatewayAbortHash $value
+    } else {
+        Assert-GatewayAbortShape $value @('account','site','plan','automation','roles','executorIdentity',
+            'config/authsettingsV2','basicPublishingCredentialsPolicies/ftp','basicPublishingCredentialsPolicies/scm','privateEndpoint','queue')
+        Assert-GatewayAbortShape $value.account @('id','sku','tags','properties')
+        Assert-GatewayAbortShape $value.site @('id','identity','tags','planId','subnetId','endpoint')
+        Assert-GatewayAbortShape $value.plan @('id','sku','tags','reserved')
+        Assert-GatewayAbortShape $value.executorIdentity @('applicationObjectId','applicationId','servicePrincipalId','roleAssignmentId')
+        Assert-GatewayAbortShape $value.automation @('enabled','status','organization','automationApplicationObjectId',
+            'automationApplicationId','automationServicePrincipalId','exchangeOnlineApplicationId','exchangeManageAsAppRoleId',
+            'complianceAdministratorRoleDefinitionId','keyCredentialId','certificateThumbprint','certificateSecretResourceId',
+            'certificateSecretUri','deploymentOwnershipId','sourceFingerprint','policyConfiguration','policyReadiness')
+        Assert-GatewayAbortShape $value.queue @('requiresSession','requiresDuplicateDetection','lockDuration','defaultMessageTimeToLive',
+            'maxDeliveryCount','deadLetteringOnMessageExpiration','maxSizeInMegabytes','enablePartitioning','enableExpress','autoDeleteOnIdle')
+        if ($value.roles -isnot [array]) { throw 'UpgradeAbort: preserved role inventory is not an array.' }
+        foreach ($role in $value.roles) {
+            Assert-GatewayAbortShape $role @('id','scope','principalId','roleDefinitionId','condition','conditionVersion')
+        }
+        foreach ($properties in @($value.account.sku, $value.account.tags, $value.account.properties, $value.site.identity,
+            $value.site.tags, $value.plan.sku, $value.plan.tags, $value['config/authsettingsV2'],
+            $value['basicPublishingCredentialsPolicies/ftp'], $value['basicPublishingCredentialsPolicies/scm'], $value.privateEndpoint)) {
+            if ($properties -isnot [Collections.IDictionary]) { throw 'UpgradeAbort: preserved provider properties are not an object.' }
+        }
+    }
+    return $value
+}
+
 function Get-GatewayAbortExecutionBinding {
     param($Original, [string]$WorkspaceRoot)
     $plan = $Original.envelope.plan
@@ -180,13 +228,25 @@ function Get-GatewayAbortExecutionBinding {
     $entries = @($files | ForEach-Object {
         @{ path = [IO.Path]::GetRelativePath($directory, $_.FullName); sha256 = (Get-GatewayAbortFileBinding $_.FullName $WorkspaceRoot).sha256 }
     } | Sort-Object path)
-    if ($entries.Count -ne 3 -or @($entries.path | Where-Object { $_ -cnotin $script:AbortInventory }).Count) {
-        throw 'UpgradeAbort: execution is not the exact three-file pre-cutover checkpoint.'
+    $snapshotNames = @('source-only-capabilities.json') + @($script:AbortEnvironmentSnapshots.Keys)
+    $withSnapshots = $entries.Count -eq 6
+    $expected = if ($withSnapshots) { $script:AbortInventory + $snapshotNames } else { $script:AbortInventory }
+    if ($entries.Count -ne $expected.Count -or @($entries.path | Where-Object { $_ -cnotin $expected }).Count -or
+        ($withSnapshots -and (
+            ($plan.schemaVersion -isnot [int] -and $plan.schemaVersion -isnot [long]) -or $plan.schemaVersion -ne 2 -or
+            ($plan.request.schemaVersion -isnot [int] -and $plan.request.schemaVersion -isnot [long]) -or
+            $plan.request.schemaVersion -ne 2 -or $plan.request.mode -cne 'SourceOnlyFull'))) {
+        throw 'UpgradeAbort: execution is not an exact three-file or six-file SourceOnlyFull pre-cutover checkpoint.'
     }
     foreach ($dir in @(Get-ChildItem -LiteralPath $directory -Recurse -Directory -Force)) {
         $relative = [IO.Path]::GetRelativePath($directory, $dir.FullName)
         if ($relative -cnotin @('actions','actions\coordination-container')) { throw 'UpgradeAbort: unexpected execution directory or active cutover.' }
         $null = Resolve-GatewayAbortPath $dir.FullName $WorkspaceRoot
+    }
+    if ($withSnapshots) {
+        foreach ($name in $snapshotNames) {
+            $null = Read-GatewayAbortSourceOnlySnapshot $Original $directory $name $WorkspaceRoot
+        }
     }
     $lease = Read-GatewayUpgradeJson (Join-Path $directory 'lease.json')
     Assert-GatewayAbortShape $lease @('schemaVersion','planFingerprint','leaseId','containerId','ownerFingerprint')
@@ -225,7 +285,7 @@ function Get-GatewayAbortBinding {
     param($Original, [string]$WorkspaceRoot)
     $plan = $Original.envelope.plan
     foreach ($entry in $Original.validator.manifest) {
-        if ($entry.path -cin @('operations\GatewayUpgradeExecution.psm1','operations\gateway-upgrade.ps1')) { continue }
+        if ($entry.path -cin @('operations\GatewayUpgradeExecution.psm1','operations\gateway-upgrade.ps1','operations\GatewayUpgradeAbort.psm1')) { continue }
         if ((Get-GatewayUpgradeFileHash (Join-Path $script:AbortRoot $entry.path)) -cne $entry.sha256) {
             throw 'UpgradeAbort: canonical baseline/operator/validator code in the current checkout changed from the original Plan.'
         }
@@ -339,6 +399,11 @@ function Get-GatewayAbortLiveBoundary {
         configPath = $Context.authority.config.path; configSha256 = $Context.authority.config.sha256 }
     $baseline = & (Get-Module GatewayUpgrade) { param($inputs) Invoke-GatewayUpgradeBaselineProcess $inputs } $inputs
     if ($baseline.status -cne 'Passed') { throw 'UpgradeAbort: independent original healthy baseline did not pass.' }
+    $withSnapshots = $Context.authority.execution.inventory.Count -eq 6
+    if ($withSnapshots) {
+        $executionModule = Import-Module (Join-Path $PSScriptRoot 'GatewayUpgradeExecution.psm1') -PassThru
+        $environmentIds = @{ api = $plan.cutover.ApiResourceId; worker = $plan.cutover.WorkerResourceId }
+    }
     $stable = @{}
     foreach ($id in @($plan.cutover.ApiResourceId, $plan.cutover.WorkerResourceId) +
         @($plan.scope.resources | Where-Object stage -CEQ 'Admin' | ForEach-Object resourceId)) {
@@ -364,6 +429,17 @@ function Get-GatewayAbortLiveBoundary {
         if (-not ([string]$app.id).Equals($id, [StringComparison]::OrdinalIgnoreCase) -or
             $app.properties.provisioningState -cne 'Succeeded') {
             throw 'UpgradeAbort: workload is not an untouched healthy pre-cutover application.'
+        }
+        if ($withSnapshots) {
+            foreach ($snapshot in $script:AbortEnvironmentSnapshots.GetEnumerator()) {
+                if ($id -cne $environmentIds[$snapshot.Value]) { continue }
+                $expected = Read-GatewayAbortSourceOnlySnapshot $Context.original $Context.authority.execution.directory $snapshot.Key $Context.workspace
+                $observed = & $executionModule {
+                    param($component, $app)
+                    Get-GatewayUpgradeSourceOnlyWorkloadFingerprint $component @{ raw = $app }
+                } $snapshot.Value $app
+                if ($observed -cne $expected) { throw 'UpgradeAbort: preserved original workload environment differs from fresh readback.' }
+            }
         }
         $environmentId = if ($app.properties.Contains('environmentId') -and $app.properties.environmentId) {
             $app.properties.environmentId
@@ -396,6 +472,29 @@ function Get-GatewayAbortLiveBoundary {
         ($deployments.Contains('nextLink') -and $deployments.nextLink) -or
         @($deployments.value | Where-Object { $_.name -clike "maintenance-*-$($Context.authority.originalPlanFingerprint.Substring(7,10))" }).Count) {
         throw 'UpgradeAbort: deployment absence is incomplete or a Plan mutation deployment exists.'
+    }
+    if ($withSnapshots) {
+        $state = Read-GatewayUpgradeJson $Context.authority.state.path
+        $config = Read-GatewayUpgradeJson $Context.authority.config.path
+        $readContext = @{
+            directory = $Context.authority.execution.directory; plan = $plan; planFingerprint = $Context.authority.originalPlanFingerprint
+            state = $state; config = $config; actor = @{ userObjectId = $plan.authorizedOperator.objectId }
+            runtime = $state.steps['Gateway runtime deployment'].evidence; foundation = $state.steps['Azure foundation'].evidence
+            database = $state.steps['Gateway database'].evidence
+        }
+        & $executionModule {
+            param($ctx)
+            Initialize-GatewayUpgradeExecutionHelpers
+            try {
+                Set-BootstrapAzureSubscriptionContext -SubscriptionId $ctx.config.subscriptionId -TenantId $ctx.config.tenantId
+                $identity = Invoke-GatewayUpgradeArm $ctx GET $ctx.foundation.runtimeImagePullIdentityId '2023-01-31'
+                if ($identity.properties.principalId -cne $ctx.foundation.runtimeImagePullIdentityPrincipalId) {
+                    throw 'UpgradeAbort: original Purview runtime identity changed.'
+                }
+                $ctx.purviewRuntime = @{ clientId = [string]$identity.properties.clientId; principalId = [string]$identity.properties.principalId }
+                $null = Get-GatewayUpgradeSourceOnlyCapabilities $ctx -ReadOnly
+            } finally { Clear-BootstrapAzureSubscriptionContext }
+        } $readContext
     }
     return @{ baseline = $baseline; stable = $stable; lease = Get-GatewayAbortLeaseState $Context }
 }

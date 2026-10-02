@@ -645,18 +645,31 @@ Plan whose execution directory contains exactly:
 - `actions\coordination-container\intent.json`
 - `actions\coordination-container\result.json`
 
-Any additional file/directory, partial record, cutover evidence, workload change,
+One additional exact schema-2 `SourceOnlyFull` checkpoint is supported: those
+three files plus **all three** of `source-only-capabilities.json`,
+`source-only-api-environment.json` and `source-only-worker-environment.json`.
+No subset, Admin UI/executor snapshot, wildcard or later-action directory is
+admitted. Every relative filename and raw-file hash remains authority-bound.
+The added snapshots require exact envelope/record keys, strict JSON, canonical
+self-hashes and the original Plan/state binding. Environment hashes use literal
+API/worker filename mappings; the capabilities value must have the existing
+protected-value shape. Fresh original-app projections and the existing
+read-only capabilities verifier must match them. The preservation initializer
+is never run, and missing snapshots are never recaptured.
+
+Any other file/directory, partial record, cutover evidence, workload change,
 SQL delegation, planned mutation job or Plan-scoped ARM deployment rejects this
 abort. Both queues must still be Active, the original SQL administrator must be
 unchanged, and the current canonical read-only bootstrap verifier must prove the
-original healthy deployment. Azure resource identity comparisons are ordinal
+original healthy deployment. Snapshot matches do not replace unheld-workload or
+any other independent live-boundary check. Azure resource identity comparisons are ordinal
 case-insensitive; the recorded source, Plan, operator and evidence fingerprints
 are not relaxed.
 
 ### Distinct authority, not reuse of the deployment approval
 
 The original executable Plan, its candidate, local build closure, artifacts,
-review, state/configuration and three checkpoint files are separately validated
+review, state/configuration and all three or six checkpoint files are separately validated
 and hash-bound. A fresh child validates the old Plan using a content-addressed
 **original-byte verifier bundle**, not patched validators masquerading as the old
 source. This bundle copies exactly the old Plan's verifier manifest. The sole
@@ -668,7 +681,11 @@ copy origin and resolved source path separately from the unchanged old manifest;
 no provenance file is inserted into the original-byte verifier bundle.
 
 Canonical baseline and operator code in the actual checkout must still match
-the original verifier manifest. The new dispatch/execution/abort driver code,
+the original verifier manifest, as do canonical hashing/JSON, Plan validation
+and every other dependency. Only the literal dispatch wrapper,
+`GatewayUpgradeExecution.psm1` and `GatewayUpgradeAbort.psm1` may differ from that
+old manifest; the original-byte child bundle still pins the old Abort module.
+The new dispatch/execution/abort driver code,
 its dependencies and the PowerShell executable are pinned under **new abort
 authority**. The original Member/operator, automation owner, local machine/SID,
 lease-file hash and exact owned private coordinator must match. A separate
