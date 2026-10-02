@@ -251,6 +251,10 @@ grant the worker certificate access, create a new executor, or change F0 to S0.
 The one reviewed executor deployment writes **only existing appsettings**, changing
 the package URL, manifest digest and execution-source/package binding. The complete
 remaining settings and protected workload environments are retained and rechecked.
+Component identities remain `api`, `worker` and `adminUi`; the immutable environment
+evidence writer and reader use lowercase filename segments, including
+`source-only-adminui-environment.json`. Strict evidence-name validation and
+create-only, exact-binding and drift checks remain unchanged.
 The publisher and private verification job are source-bound maintenance jobs,
 not replacement capability resources.
 

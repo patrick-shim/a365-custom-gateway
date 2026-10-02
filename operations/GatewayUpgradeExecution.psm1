@@ -3042,7 +3042,7 @@ function Get-GatewayUpgradeSourceOnlyWorkloadFingerprint {
 
 function Assert-GatewayUpgradeSourceOnlyWorkloadPreservation {
     param($Context, [string]$Component, $Snapshot)
-    $expected = Get-GatewayUpgradeSourceOnlyEvidence $Context "source-only-$Component-environment.json" $null -ReadOnly
+    $expected = Get-GatewayUpgradeSourceOnlyEvidence $Context "source-only-$($Component.ToLowerInvariant())-environment.json" $null -ReadOnly
     if ((Get-GatewayUpgradeSourceOnlyWorkloadFingerprint $Component $Snapshot) -cne $expected) {
         throw 'UpgradeSourceOnly: original capability, identity, endpoint or other workload environment changed.'
     }
@@ -3195,7 +3195,7 @@ function Initialize-GatewayUpgradeSourceOnlyPreservation {
     foreach ($component in @('api', 'worker', 'adminUi')) {
         $snapshot = Get-GatewayUpgradeWorkloadSnapshot $Context $component
         $hash = Get-GatewayUpgradeSourceOnlyWorkloadFingerprint $component $snapshot
-        $null = Get-GatewayUpgradeSourceOnlyEvidence $Context "source-only-$component-environment.json" $hash -ReadOnly:$ReadOnly
+        $null = Get-GatewayUpgradeSourceOnlyEvidence $Context "source-only-$($component.ToLowerInvariant())-environment.json" $hash -ReadOnly:$ReadOnly
     }
     $path = Join-Path $Context.directory 'source-only-executor-settings.json'
     if (Test-Path -LiteralPath $path) { $null = Get-GatewayUpgradeSourceOnlyEvidence $Context 'source-only-executor-settings.json' $null -ReadOnly; return }
