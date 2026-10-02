@@ -3,7 +3,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'GatewayUpgrade.psm1')
 
-$script:RetainedBuildFiles = @('Directory.Build.props', 'global.json', 'nuget.config', 'VERSION')
+$script:RequiredBuildFiles = @('global.json', 'nuget.config')
+$script:RetainedBuildFiles = $script:RequiredBuildFiles + @('Directory.Build.props', 'VERSION')
 $script:AllowedRootFiles = $script:RetainedBuildFiles
 $script:AllowedDirectories = @('src', 'tools\Gateway.DatabaseMigrator',
     'bootstrap\modules', 'bootstrap\infra', 'infrastructure\bicep', 'infrastructure\sql', 'operations')
@@ -101,7 +102,7 @@ function New-GatewayUpgradeCandidate {
             baselineSha256 = if ($null -ne $old) { $old.sha256 } else { $null }
         })
     }
-    foreach ($name in $script:RetainedBuildFiles) {
+    foreach ($name in $script:RequiredBuildFiles) {
         if ($name -cnotin @($entries.path)) { throw 'UpgradePackaging: a required build prerequisite is absent from both reviewed sources.' }
     }
     $allowedPaths = @($entries.path) + @('.dockerignore')

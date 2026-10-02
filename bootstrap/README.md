@@ -45,11 +45,15 @@ environment. Do not invoke deployment to discover missing build inputs.
 ## Prerequisites and configuration
 
 Build inputs include Git, the .NET SDK selected by [global.json](../global.json),
-[Directory.Build.props](../Directory.Build.props), [VERSION](../VERSION),
 [nuget.config](../nuget.config),
 PowerShell 7 and Azure CLI. The retained prerequisite checker defines its exact
 requirements. Local compilation and hosted deployment verification have different
 boundaries.
+
+Maintenance packaging treats `Directory.Build.props` and `VERSION` as optional
+retained inputs, not missing files to recreate. They are included when present
+in the working source or the reviewed retained baseline. See the
+[required and retained build-input rules](../operations/gateway-upgrade.md#authority-and-evidence).
 
 The Purview package contract requires Windows x64, Microsoft-signed PowerShell
 **7.6.5** and ExchangeOnlineManagement **3.10.1**. The package builder pins and

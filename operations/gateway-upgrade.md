@@ -17,9 +17,13 @@ current provider readback.
 Source builds or local tests alone do not authorize Azure mutation. For an
 eligible preserved environment, the retained sequence is:
 
-1. **Package** allowlisted working-tree source. Missing clean build prerequisites
-   may come from the explicitly selected retained packaging baseline. Their exact
-   hashes and origins are recorded; main-worktree deletions are never restored.
+1. **Package** allowlisted working-tree source. Required root build inputs
+   [global.json](../global.json) and [nuget.config](../nuget.config) must exist in
+   the working source or the explicitly selected retained packaging baseline.
+   `Directory.Build.props` and `VERSION` are optional retained inputs: include
+   them when present in either source, but do not invent them when absent from
+   both. Exact hashes and origins are recorded for every packaged input;
+   main-worktree deletions are never restored.
 2. **Prepare** an isolated local build and obtain the compiled EF-model
    fingerprint. The complete executable bundle, dependencies and runtime
    configuration are pinned, not just the entry DLL.
