@@ -3274,6 +3274,13 @@ function Invoke-GatewayUpgradePipeline {
                 Invoke-GatewayUpgradeCanonicalVerifier $inputs
             } $StatePath $ConfigPath $plan.request
         }
+        if ($Mode -ceq 'Execute') {
+            $api = Invoke-GatewayUpgradeArm $context GET $plan.cutover.ApiResourceId '2025-01-01'
+            if (-not (Test-GatewayUpgradeResourceId $api.id $plan.cutover.ApiResourceId)) {
+                throw 'UpgradeCutover: pre-lease API readback does not match the exact Plan resource.'
+            }
+            Assert-GatewayUpgradeCutoverHttpBoundary $api.properties.configuration
+        }
         if ($Mode -cne 'Verify') { Enter-GatewayUpgradeCloudLease $context }
         if ($Mode -ceq 'Build') {
             $images = [ordered]@{}

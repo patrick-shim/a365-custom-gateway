@@ -109,12 +109,21 @@ function Get-GatewayUpgradeCutoverQueueProperties {
 
 function Assert-GatewayUpgradeCutoverHttpBoundary {
     param($Configuration)
+    if ($Configuration -isnot [Collections.IDictionary] -or -not $Configuration.Contains('ingress') -or
+        $Configuration.ingress -isnot [Collections.IDictionary]) {
+        throw 'UpgradeCutover: an exact HTTP ingress configuration is required.'
+    }
     $ingress = $Configuration.ingress
-    if (($ingress.Contains('transport') -and $ingress.transport -cnotin @('auto', 'http', 'http2')) -or
+    if (($ingress.Contains('transport') -and
+            ($ingress.transport -isnot [string] -or
+                (-not [string]::Equals($ingress.transport, 'auto', [StringComparison]::OrdinalIgnoreCase) -and
+                    -not [string]::Equals($ingress.transport, 'http', [StringComparison]::OrdinalIgnoreCase) -and
+                    -not [string]::Equals($ingress.transport, 'http2', [StringComparison]::OrdinalIgnoreCase)))) -or
         ($ingress.Contains('additionalPortMappings') -and $null -ne $ingress.additionalPortMappings -and
-            @($ingress.additionalPortMappings).Count -ne 0) -or
+            ($ingress.additionalPortMappings -isnot [array] -or $ingress.additionalPortMappings.Count -ne 0)) -or
         ($Configuration.Contains('dapr') -and $null -ne $Configuration.dapr -and
-            ($Configuration.dapr.enabled -isnot [bool] -or $Configuration.dapr.enabled))) {
+            ($Configuration.dapr -isnot [Collections.IDictionary] -or
+                $Configuration.dapr.enabled -isnot [bool] -or $Configuration.dapr.enabled))) {
         throw 'UpgradeCutover: alternate TCP or Dapr admission paths are outside the verified HTTP ingress hold.'
     }
 }
@@ -585,7 +594,7 @@ function Close-GatewayUpgradeCutover {
 }
 
 Export-ModuleMember -Function New-GatewayUpgradeCutoverContract, Add-GatewayUpgradeCutoverScope, Get-GatewayUpgradeCutoverDenyRule,
-    Get-GatewayUpgradeCutoverInventory, ConvertTo-GatewayUpgradeCutoverNormalizedConfiguration,
+    Get-GatewayUpgradeCutoverInventory, ConvertTo-GatewayUpgradeCutoverNormalizedConfiguration, Assert-GatewayUpgradeCutoverHttpBoundary,
     Close-GatewayUpgradeCutover, Assert-GatewayUpgradeCutoverHeld, Set-GatewayUpgradeCutoverQueueHold,
     Get-GatewayUpgradeCutoverRevisions, New-GatewayUpgradeQueueQuarantineBaseline,
     Assert-GatewayUpgradeQueueQuarantineBaseline, Assert-GatewayUpgradeQueueObservation

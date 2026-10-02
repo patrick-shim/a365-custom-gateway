@@ -218,7 +218,10 @@ public static partial class DatabaseUpgradePlatformObserver
             return;
         }
         if (ingress.TryGetProperty("transport", out var transport) &&
-            (transport.ValueKind != JsonValueKind.String || transport.GetString() is not ("auto" or "http" or "http2")))
+            (transport.ValueKind != JsonValueKind.String ||
+                (!string.Equals(transport.GetString(), "auto", StringComparison.OrdinalIgnoreCase) &&
+                 !string.Equals(transport.GetString(), "http", StringComparison.OrdinalIgnoreCase) &&
+                 !string.Equals(transport.GetString(), "http2", StringComparison.OrdinalIgnoreCase))))
             throw Unknown();
         if (ingress.TryGetProperty("additionalPortMappings", out var mappings) &&
             mappings.ValueKind != JsonValueKind.Null &&

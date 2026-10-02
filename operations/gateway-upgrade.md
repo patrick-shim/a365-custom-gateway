@@ -275,6 +275,23 @@ duplicate, not two writers or replicas. This does not rewrite approved Plan or
 receipt bytes: ownership/principal bindings, source/image fingerprints, phases,
 health states and the original observations retain their separate exact checks.
 
+HTTP ingress transport values `auto`, `http` and `http2` must be strings and are
+compared ordinally, case-insensitively in both orchestration and the private
+observer, accepting Azure spellings such as `Auto`. Present null/non-string
+values, whitespace, unknown transports and TCP in any casing remain rejected.
+Omission of the optional transport field retains its existing handling. This
+does not normalize or rewrite configuration, snapshots or fingerprints, or relax
+Dapr, additional-port, ingress-hold, zero-writer or preservation checks. Malformed
+ingress/Dapr objects and malformed additional-port collections are also rejected.
+
+Immediately before `Execute` enters the cloud lease, a read-only ARM `2025-01-01`
+request checks the exact Plan API resource identity and this HTTP boundary. It
+captures no snapshot or checkpoint and does not require a fresh `Single` layout:
+a resumed execution may already have a reviewed `Multiple` hold. All later
+inventory and held-boundary checks remain in place to detect intervening changes.
+Build, Verify, Rollback and SQL-administrator restoration retain their existing
+lease/preflight behavior.
+
 The private SQL manifest uses version 2 with **zero scripts**. It verifies the
 compiled model and exact principals before and after its serialized preservation
 window, independently observes the held platform/durable work boundary, compares
@@ -645,17 +662,32 @@ Plan whose execution directory contains exactly:
 - `actions\coordination-container\intent.json`
 - `actions\coordination-container\result.json`
 
-One additional exact schema-2 `SourceOnlyFull` checkpoint is supported: those
+An exact six-file schema-2 `SourceOnlyFull` checkpoint is supported: those
 three files plus **all three** of `source-only-capabilities.json`,
 `source-only-api-environment.json` and `source-only-worker-environment.json`.
-No subset, Admin UI/executor snapshot, wildcard or later-action directory is
-admitted. Every relative filename and raw-file hash remains authority-bound.
+A separate exact nine-file variant adds **all three** of
+`source-only-adminui-environment.json`, `source-only-executor-settings.json` and
+`workload-baselines.json` to those six. Six-file admission does not require an
+Admin UI snapshot. Seven/eight-file subsets, substitutions, wildcards, cutover
+inventory/sentinels and later-action directories are not admitted.
+Every relative filename and raw-file hash remains authority-bound.
 The added snapshots require exact envelope/record keys, strict JSON, canonical
 self-hashes and the original Plan/state binding. Environment hashes use literal
-API/worker filename mappings; the capabilities value must have the existing
+API/worker/Admin UI filename mappings; the capabilities value must have the existing
 protected-value shape. Fresh original-app projections and the existing
-read-only capabilities verifier must match them. The preservation initializer
-is never run, and missing snapshots are never recaptured.
+read-only capabilities verifier must match them.
+
+Nine-file recovery also requires exactly three six-field workload baseline
+entries. The existing read-only baseline loader and fresh workload snapshot
+helpers compare every resource ID, image, principal, endpoint, protected
+configuration fingerprint and full deployment fingerprint. These reads use the
+same ARM versions as the original capture. The only executor settings request is
+the fixed read-only `POST .../config/appsettings/list` with an empty body; it is
+not general POST authority. The entire original settings map, including original
+binding and package fields, must match through the existing read-only preservation
+reader. Settings are not copied into Abort observations. The preservation
+initializer and executor promotion helper are never run, and missing snapshots
+are never recaptured or repaired.
 
 Any other file/directory, partial record, cutover evidence, workload change,
 SQL delegation, planned mutation job or Plan-scoped ARM deployment rejects this
@@ -669,7 +701,7 @@ are not relaxed.
 ### Distinct authority, not reuse of the deployment approval
 
 The original executable Plan, its candidate, local build closure, artifacts,
-review, state/configuration and all three or six checkpoint files are separately validated
+review, state/configuration and all three, six or nine checkpoint files are separately validated
 and hash-bound. A fresh child validates the old Plan using a content-addressed
 **original-byte verifier bundle**, not patched validators masquerading as the old
 source. This bundle copies exactly the old Plan's verifier manifest. The sole
@@ -683,9 +715,10 @@ no provenance file is inserted into the original-byte verifier bundle.
 Canonical baseline and operator code in the actual checkout must still match
 the original verifier manifest, as do canonical hashing/JSON, Plan validation
 and every other dependency. Only the literal dispatch wrapper,
-`GatewayUpgradeExecution.psm1` and `GatewayUpgradeAbort.psm1` may differ from that
-old manifest; the original-byte child bundle still pins the old Abort module.
-The new dispatch/execution/abort driver code,
+`GatewayUpgradeExecution.psm1`, `GatewayUpgradeAbort.psm1` and
+`GatewayUpgradeCutover.psm1` may differ from that old manifest; the original-byte
+child bundle still pins the old Abort and Cutover modules.
+The new dispatch/execution/abort/cutover driver code,
 its dependencies and the PowerShell executable are pinned under **new abort
 authority**. The original Member/operator, automation owner, local machine/SID,
 lease-file hash and exact owned private coordinator must match. A separate
