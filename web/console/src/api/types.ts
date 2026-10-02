@@ -5,6 +5,11 @@ import { utcTime } from "./display";
 // allowed so additive API changes do not break older Console releases.
 const text = z.string().min(1);
 const nullableText = z.string().nullable();
+const percentage = z.number().int().min(0).max(100);
+export const operationIdSchema = z.string().uuid().regex(/^[0-9a-f-]+$/)
+  .refine(value => value !== "00000000-0000-0000-0000-000000000000");
+const operationErrorSchema = z.object({ code: nullableText, message: nullableText }).nullable();
+const operationStepsSchema = z.array(z.object({ step: text, status: text })).nullable();
 
 export const featuresSchema = z.object({
   observabilityMode: nullableText,
@@ -44,23 +49,39 @@ export const agentDetailSchema = agentSchema.extend({
   ownerObjectId: text,
   provisioning: z.object({
     currentStep: nullableText,
-    percentComplete: z.number(),
+    percentComplete: percentage,
     lastError: nullableText,
     operationId: text.nullish(),
   }).nullable(),
 });
 export const registrationOperationSchema = z.object({
-  operationId: text,
-  agentId: text,
+  operationId: operationIdSchema,
+  agentId: operationIdSchema,
   type: text,
   status: text,
   currentStep: nullableText,
-  percentComplete: z.number(),
-  error: z.object({ code: nullableText, message: nullableText }).nullable(),
-  steps: z.array(z.object({ step: text, status: text })).nullable(),
+  percentComplete: percentage,
+  error: operationErrorSchema,
+  steps: operationStepsSchema,
+  workflowVersion: z.number().int().optional(),
+  legacy: z.boolean().optional(),
   pollingRecommended: z.boolean(),
   requiredAction: nullableText,
   agent365RegistrationCompletionAvailable: z.boolean(),
+});
+export const provisioningHistorySchema = z.object({
+  agentId: operationIdSchema,
+  jobs: z.array(z.object({
+    operationId: operationIdSchema,
+    type: text,
+    status: text,
+    percentComplete: percentage,
+    startedAtUtc: text,
+    completedAtUtc: nullableText,
+    error: operationErrorSchema,
+    steps: operationStepsSchema,
+  })).refine(jobs => new Set(jobs.map(job => job.operationId)).size === jobs.length,
+    "Provisioning job IDs must be unique."),
 });
 export const registrationCompletionSchema = z.object({
   operationId: text,
@@ -222,6 +243,7 @@ export const operationResponseSchema = z.object({
 
 export type Agent = z.infer<typeof agentSchema>;
 export type AgentDetail = z.infer<typeof agentDetailSchema>;
+export type RegistrationOperation = z.infer<typeof registrationOperationSchema>;
 export type Blueprint = z.infer<typeof blueprintListSchema>["items"][number];
 export type PurviewConnection = z.infer<typeof connectionSchema>;
 export type Registration = z.infer<typeof registrationSchema>;

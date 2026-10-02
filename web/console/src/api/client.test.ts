@@ -3,7 +3,7 @@ import { api } from "./client";
 import { ApiError, readAuthorizationChallenge } from "./errors";
 import {
   agent, agentId, blueprints, connected, failedConnection, features, mockServer,
-  response, review, rowVersion, tenantId, operationId, registrationOperation, systemConfig,
+  response, review, rowVersion, tenantId, operationId, registrationOperation, systemConfig, provisioningHistory,
 } from "../test/fixtures";
 import { connectionIsUsable } from "./types";
 
@@ -145,6 +145,57 @@ describe("Gateway wire contracts", () => {
   it("rejects operation readback belonging to a different agent", async () => {
     await expect(api.getRegistrationOperation(operationId, tenantId)).rejects.toMatchObject({ code: "OPERATION_MISMATCH" });
     expect(server.requests.every(r => r.method === "GET")).toBe(true);
+  });
+
+  it("discovers only the newest server-ordered job after binding history to the requested agent", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}/provisioning-history`, () => ({
+      ...provisioningHistory,
+      jobs: [provisioningHistory.jobs[0], { ...provisioningHistory.jobs[0], operationId: tenantId, startedAtUtc: "2099-01-01T00:00:00Z" }],
+    }));
+    expect(await api.findLatestProvisioningOperation(agentId)).toBe(operationId);
+    expect(server.requests).toHaveLength(1);
+    expect(server.requests[0].path).toBe(`/api/v1/agents/${agentId}/provisioning-history`);
+    expect(server.requests[0].method).toBe("GET");
+  });
+
+  it("does not guess an operation when the history has no jobs", async () => {
+    expect(await api.findLatestProvisioningOperation(agentId)).toBeNull();
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it("rejects another agent's history before reading any operation", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}/provisioning-history`, () => ({ ...provisioningHistory, agentId: tenantId }));
+    await expect(api.findLatestProvisioningOperation(agentId)).rejects.toMatchObject({ code: "PROVISIONING_HISTORY_MISMATCH" });
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it("binds the agent detail to its route ID before selecting any setup operation", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({ ...agent, agentId: tenantId }));
+    await expect(api.getAgent(agentId)).rejects.toMatchObject({ code: "AGENT_MISMATCH" });
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it.each([
+    { agentId, items: provisioningHistory.jobs },
+    { agentId, jobs: null },
+    { agentId, jobs: [provisioningHistory.jobs[0], provisioningHistory.jobs[0]] },
+    { agentId, jobs: [{ ...provisioningHistory.jobs[0], operationId: "../another-operation" }] },
+    { agentId, jobs: [{ ...provisioningHistory.jobs[0], operationId: "00000000-0000-0000-0000-000000000000" }] },
+    { agentId, jobs: [{ operationId }] },
+  ])("rejects incompatible or ambiguous history instead of reading a guessed operation", async history => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}/provisioning-history`, () => history);
+    await expect(api.findLatestProvisioningOperation(agentId)).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it("does not request an invalid reported operation ID", async () => {
+    await expect(api.getRegistrationOperation("not-an-operation-id", agentId)).rejects.toMatchObject({ code: "INVALID_OPERATION_ID" });
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it.each([-1, 101, 28.5, "28"])("rejects invalid progress %s rather than clamping or inventing a percentage", async percentComplete => {
+    server.handlers.set(`GET /api/v1/operations/${operationId}`, () => ({ ...registrationOperation, percentComplete }));
+    await expect(api.getRegistrationOperation(operationId, agentId)).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
   });
 
   it("does not accept Active as a fabricated completion response", async () => {

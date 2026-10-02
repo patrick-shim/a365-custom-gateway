@@ -43,7 +43,12 @@ export function AgentsList() {
                     <Text block size={200}>{agent.externalAgentId}</Text>
                   </TableCell>
                   <TableCell style={{ overflowWrap: "anywhere" }}>{blueprintName(agent, blueprints.data)}</TableCell>
-                  <TableCell><StatusPill value={agent.status} /></TableCell>
+                  <TableCell>
+                    <StatusPill value={agent.status} />
+                    {agent.status === "AwaitingAdminApproval" && <Text block size={200} style={{ marginTop: 8 }}>
+                      <Link to={`/agents/${agent.agentId}`} aria-label={`Review registration for ${agent.name}`}>Review registration</Link>
+                    </Text>}
+                  </TableCell>
                   <TableCell><StatusPill value={shieldLabel(agent)} /></TableCell>
                   <TableCell>{formatTime(agent.lastActivityAtUtc)}</TableCell>
                 </TableRow>

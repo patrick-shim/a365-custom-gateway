@@ -66,7 +66,20 @@ export function Platform() {
           </>
         )}
       </Card>
-      <Caption1>Registration, keys, protection changes, and defaults require the Gateway Administrator role.</Caption1>
+      <Card id="registration-access" style={{ gap: 12 }}>
+        <Text as="h2" size={400} weight="semibold">Agent 365 registration access</Text>
+        <Body1>Finishing registration adds an existing agent identity to Microsoft 365's Registry. It is not a Purview approval or an outside approval inbox.</Body1>
+        <Body1>The API requires a signed-in user with its <code>Gateway.Administrator</code> app role and delegated <code>access_as_user</code> scope.
+          <code> Gateway.Operator</code> can read provisioning progress but cannot confirm registration.</Body1>
+        <Caption1>To verify an assignment, open Microsoft Entra admin center, Enterprise applications, the Gateway API application, then Users and groups.
+          Check the API application, not just the Console SPA. Sign in again after an authorized assignment change. This Console does not grant roles.</Caption1>
+        <Body1>The Registry action also requires both deployment settings <code>Agent365:DelegatedRegistry:Enabled</code> and{" "}
+          <code>Agent365:DelegatedRegistry:AllowContinuousDevelopmentAccess</code>. The operation response reports whether that gate is open;
+          the provisioning-execution setting above is a separate gate. These settings are not editable here and do not authorize production use of a development-only provider.</Body1>
+        <Caption1>If an operation, its stages, or registration defaults are missing or incompatible, the deployment owner must verify matching API, worker and Console contracts.
+          Keep the agent and operation references from the setup card; do not re-register the agent. No progress or default environment is inferred.</Caption1>
+        <Caption1>Only a reported consent challenge calls for reviewing the Gateway API's delegated Graph consent. Signing in to the Console alone does not grant API consent.</Caption1>
+      </Card>
     </>
   );
 }

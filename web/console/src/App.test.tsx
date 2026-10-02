@@ -11,7 +11,7 @@ import { satisfyApiClaimsChallenge } from "./auth/msal";
 import {
   agent, agentId, blueprintObjectId, connected, credentials, features, mockServer,
   operation, operationId, registration, response, rowVersion, testKey, systemConfig,
-  approvalAgent, registrationOperation, review,
+  approvalAgent, registrationOperation, review, provisioningHistory, tenantId,
 } from "./test/fixtures";
 
 vi.mock("./auth/msal", () => ({
@@ -128,6 +128,30 @@ describe("Console routes with actual API envelopes", () => {
     expect(screen.queryByRole("textbox", { name: "One-time Gateway key" })).not.toBeInTheDocument();
   }, 10000);
 
+  it("uses registration-required language and a review destination in the agent list", async () => {
+    server.handlers.set("GET /api/v1/agents", () => ({ items: [approvalAgent], nextCursor: null, totalCount: 1 }));
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => approvalAgent);
+    renderApp("/agents");
+    expect(await screen.findByText("Registration required")).toBeVisible();
+    expect(screen.queryByText("Awaiting Admin Approval")).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("link", { name: `Review registration for ${approvalAgent.name}` }));
+    expect(await screen.findByRole("button", { name: "Finish Agent 365 registration" })).toBeVisible();
+    expect(screen.getAllByRole("region", { name: "Agent setup" })).toHaveLength(1);
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeVisible();
+  });
+
+  it("explains registration confirmation after acceptance without bypassing the one-time-key handoff", async () => {
+    server.handlers.set("POST /api/v1/agents", () => ({ ...registration, status: "AwaitingAdminApproval" }));
+    renderApp("/register");
+    const user = await selectBlueprint();
+    await user.click(screen.getByRole("button", { name: "Create agent" }));
+    expect(await screen.findByText("Registration required")).toBeVisible();
+    expect(screen.getByText(/Save the key, then open the agent to finish/)).toBeVisible();
+    expect(screen.queryByText("Awaiting Admin Approval")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open agent" })).toBeDisabled();
+    expect(server.requests.filter(request => request.method === "POST")).toHaveLength(1);
+  }, 10000);
+
   it("never fabricates a key if registration returns none", async () => {
     server.handlers.set("POST /api/v1/agents", () => ({ ...registration, gatewayCredential: null }));
     renderApp("/register");
@@ -204,7 +228,7 @@ describe("Console routes with actual API envelopes", () => {
     }));
     renderApp(`/agents/${agentId}`);
     expect(await screen.findByRole("alert")).toHaveTextContent("DirectRegistryPreview is restricted to Development.");
-    expect(screen.getByRole("alert")).toHaveTextContent("ResolveBlueprint");
+    expect(screen.getByRole("alert")).toHaveTextContent("Prepare the blueprint");
     expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeDisabled();
   });
 
@@ -214,17 +238,40 @@ describe("Console routes with actual API envelopes", () => {
       ...agent, status: ++reads === 1 ? "Draft" : "Active",
     }));
     renderApp(`/agents/${agentId}`);
-    expect(await screen.findByText(/Setting up the agent/)).toBeVisible();
+    expect(await screen.findByText("Queued for setup")).toBeVisible();
     expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeDisabled();
     await waitFor(() => expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeEnabled(), { timeout: 6500 });
     expect(reads).toBe(2);
   }, 10000);
 
-  it("explains the Registry approval blocker on the default agent tab", async () => {
+  it("explains a missing Registry action on the default agent tab without inventing an approval inbox", async () => {
     server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({ ...agent, status: "AwaitingAdminApproval" }));
     renderApp(`/agents/${agentId}`);
-    expect(await screen.findByText(/Agent 365 registration needs administrator approval/)).toBeVisible();
+    expect(await screen.findByText(/No provisioning job was reported/)).toBeVisible();
+    expect(screen.getAllByText("Registration required").length).toBeGreaterThan(0);
+    expect(screen.getByRole("link", { name: "Review registration access and compatibility" })).toHaveAttribute("href", "/platform#registration-access");
     expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeDisabled();
+  });
+
+  it("finds the existing Registry action after a direct reload with no detail operation ID", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({
+      ...approvalAgent, provisioning: { ...approvalAgent.provisioning, operationId: undefined },
+    }));
+    server.handlers.set(`GET /api/v1/agents/${agentId}/provisioning-history`, () => provisioningHistory);
+    renderApp(`/agents/${agentId}`);
+    expect(await screen.findByRole("button", { name: "Finish Agent 365 registration" })).toBeVisible();
+    expect(screen.getByText("Operation found in this agent's provisioning history.")).toBeVisible();
+    expect(server.requests.every(request => request.method === "GET")).toBe(true);
+    expect(screen.getAllByRole("region", { name: "Agent setup" })).toHaveLength(1);
+  });
+
+  it("does not follow an operation when the detail response is for a different route agent", async () => {
+    server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({ ...approvalAgent, agentId: tenantId }));
+    renderApp(`/agents/${agentId}`);
+    expect(await screen.findByRole("alert")).toHaveTextContent("does not match the requested agent");
+    expect(screen.queryByRole("region", { name: "Agent setup" })).not.toBeInTheDocument();
+    expect(server.requests.some(request => request.path.includes("/operations/") || request.path.endsWith("/provisioning-history"))).toBe(false);
+    expect(server.requests.every(request => request.method === "GET")).toBe(true);
   });
 
   it("confirms Registry completion once and polls through worker verification to Active readback", async () => {
@@ -235,9 +282,12 @@ describe("Console routes with actual API envelopes", () => {
       if (!completed) return registrationOperation;
       verificationReads++;
       if (verificationReads < 2) return { ...registrationOperation, status: "Pending",
+        currentStep: "VerifyAgent365Connection", percentComplete: 85,
+        steps: registrationOperation.steps.map((step, index) => ({ ...step, status: index < 6 ? "Completed" : "Pending" })),
         pollingRecommended: true, requiredAction: null, agent365RegistrationCompletionAvailable: false };
       server.handlers.set(`GET /api/v1/agents/${agentId}`, () => ({ ...approvalAgent, status: "Active" }));
-      return { ...registrationOperation, status: "Completed",
+      return { ...registrationOperation, status: "Completed", currentStep: null, percentComplete: 100,
+        steps: registrationOperation.steps.map(step => ({ ...step, status: "Completed" })),
         pollingRecommended: false, requiredAction: null, agent365RegistrationCompletionAvailable: false };
     });
     server.handlers.set(`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () => {
@@ -246,10 +296,11 @@ describe("Console routes with actual API envelopes", () => {
     });
     renderApp(`/agents/${agentId}`);
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    await user.click(await screen.findByRole("button", { name: "Finish Agent 365 registration" }));
     expect(server.requests.some(r => r.method === "POST")).toBe(false);
     await user.click(screen.getByRole("button", { name: "Confirm registration" }));
     expect(await screen.findByText(/Waiting for worker verification and an Active agent readback/)).toBeVisible();
+    expect(screen.getByRole("region", { name: "Agent setup" })).toHaveAttribute("data-state", "busy");
     expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeDisabled();
     await waitFor(() => expect(screen.getByRole("switch", { name: "Prompt Shields" })).toBeEnabled(), { timeout: 5000 });
     const posts = server.requests.filter(r => r.method === "POST");
@@ -264,7 +315,7 @@ describe("Console routes with actual API envelopes", () => {
     }));
     renderApp(`/agents/${agentId}`);
     expect(await screen.findByText(/Registry completion gate is closed/)).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Complete registration" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Finish Agent 365 registration" })).not.toBeInTheDocument();
   });
 
   it.each([403, 503])("surfaces Registry HTTP %s without a success or automatic replay", async status => {
@@ -273,7 +324,7 @@ describe("Console routes with actual API envelopes", () => {
       response({ detail: "Registry action is not permitted.", errorCode: "TEST_GATE", correlationId: operationId }, status));
     renderApp(`/agents/${agentId}`);
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    await user.click(await screen.findByRole("button", { name: "Finish Agent 365 registration" }));
     await user.click(screen.getByRole("button", { name: "Confirm registration" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Registry action is not permitted.");
     expect(screen.queryByText(/Registry completion was accepted/)).not.toBeInTheDocument();
@@ -285,13 +336,13 @@ describe("Console routes with actual API envelopes", () => {
     server.handlers.set(`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () => { throw new TypeError("Lost"); });
     renderApp(`/agents/${agentId}`);
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    await user.click(await screen.findByRole("button", { name: "Finish Agent 365 registration" }));
     await user.click(screen.getByRole("button", { name: "Confirm registration" }));
     expect(await screen.findByText(/no request will be repeated automatically/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "Complete registration" })).toBeDisabled();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Check operation" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "Check operation" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Complete registration" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Finish Agent 365 registration" })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh setup status" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Refresh setup status" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Finish Agent 365 registration" })).toBeEnabled());
     expect(server.requests.filter(r => r.method === "POST")).toHaveLength(1);
   });
 
@@ -304,7 +355,7 @@ describe("Console routes with actual API envelopes", () => {
     ));
     renderApp(`/agents/${agentId}`);
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    await user.click(await screen.findByRole("button", { name: "Finish Agent 365 registration" }));
     await user.click(screen.getByRole("button", { name: "Confirm registration" }));
     await user.click(await screen.findByRole("button", { name: "Continue sign-in" }));
     expect(await screen.findByText(/Authorization updated/)).toBeVisible();
@@ -321,7 +372,7 @@ describe("Console routes with actual API envelopes", () => {
     ));
     renderApp(`/agents/${agentId}`);
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    await user.click(await screen.findByRole("button", { name: "Finish Agent 365 registration" }));
     await user.click(screen.getByRole("button", { name: "Confirm registration" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Gateway API's delegated Graph permissions");
     expect(screen.queryByRole("button", { name: "Continue sign-in" })).not.toBeInTheDocument();
@@ -340,7 +391,7 @@ describe("Console routes with actual API envelopes", () => {
     });
     renderApp(`/agents/${agentId}`);
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Complete registration" }));
+    await user.click(await screen.findByRole("button", { name: "Finish Agent 365 registration" }));
     await user.click(screen.getByRole("button", { name: "Confirm registration" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Exact Registry readback was not verified.");
     expect(screen.queryByText(/Waiting for worker verification/)).not.toBeInTheDocument();

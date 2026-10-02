@@ -37,6 +37,7 @@ const toneByValue: Record<string, Tone> = {
   NotInstalled: "subtle",
   Draft: "informative",
   Provisioning: "informative",
+  AwaitingAdminApproval: "warning",
 };
 
 const colorByTone: Record<Tone, "success" | "warning" | "danger" | "informative" | "subtle"> = {
@@ -52,7 +53,7 @@ export function StatusPill({ value: supplied }: { value: string | null | undefin
   const tone = toneByValue[value] ?? "informative";
   return (
     <Badge appearance="filled" color={colorByTone[tone]}>
-      {humanize(value)}
+      {value === "AwaitingAdminApproval" ? "Registration required" : humanize(value)}
     </Badge>
   );
 }

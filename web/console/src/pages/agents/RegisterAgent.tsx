@@ -12,6 +12,7 @@ import { getAccount } from "../../auth/msal";
 import { PageHeader } from "../../components/PageHeader";
 import { CopyableCommand } from "../../components/CopyableCommand";
 import { ErrorState } from "../../components/ErrorState";
+import { StatusPill } from "../../components/StatusPill";
 
 export function RegisterAgent() {
   const navigate = useNavigate();
@@ -100,7 +101,8 @@ export function RegisterAgent() {
         <Body1 block style={{ marginBottom: 8 }}>Registration environment: {defaults?.environment}</Body1>
         {defaults?.reason && <Caption1 block style={{ marginBottom: 16 }}>{defaults.reason}</Caption1>}
         {!registrationOpen && <MessageBar intent="warning"><MessageBarBody>
-          Registration is closed on this Gateway. Your administrator must open the provisioning gate before you can continue.
+          Registration is closed on this Gateway because provisioning execution is disabled.{" "}
+          <Link to="/platform#registration-access">Review the reported provisioning setting and registration requirements on Platform</Link>.
         </MessageBarBody></MessageBar>}
       </>)}
       {step === 1 && (
@@ -158,7 +160,12 @@ export function RegisterAgent() {
       {step === 3 && result && (
         <Card style={cardStyle}>
           <Text weight="semibold" size={400}>Registration accepted</Text>
-          <Body1>Identity provisioning may still be running. The agent page shows its current status.</Body1>
+          <StatusPill value={result.status} />
+          <Body1>{result.status === "AwaitingAdminApproval"
+            ? "Registration is required for the existing agent identity. Save the key, then open the agent to finish Agent 365 registration."
+            : "Setup may still be running. Save the key, then open the agent for live progress and any required registration confirmation."}</Body1>
+          <Caption1>A signed-in Gateway Administrator confirms adding the existing identity to Microsoft 365's Registry on the agent page.
+            This is separate from Purview; there is no outside approval inbox.</Caption1>
           <CopyableCommand label="External ID" rows={1} command={result.externalAgentId} />
           {result.gatewayCredential ? (
             <>

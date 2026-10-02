@@ -8,6 +8,7 @@ import {
   dlpProfilesSchema, featuresUpdateSchema, inventorySchema, issuedCredentialSchema,
   operationResponseSchema, registrationSchema, reviewSchema, revokedCredentialSchema,
   systemConfigSchema, registrationOperationSchema, registrationCompletionSchema,
+  provisioningHistorySchema, operationIdSchema,
   type ConnectionReview, type RegisterAgentRequest,
 } from "./types";
 
@@ -103,8 +104,29 @@ export const api = {
     if (search) query.set("search", search);
     return json(agentListSchema, `/api/v1/agents?${query}`);
   },
-  getAgent: (id: string) => json(agentDetailSchema, `/api/v1/agents/${encodeURIComponent(id)}`),
+  async getAgent(id: string) {
+    const result = await json(agentDetailSchema, `/api/v1/agents/${encodeURIComponent(id)}`);
+    if (result.agentId !== id) {
+      throw new ApiError("The agent response does not match the requested agent. No setup operation was selected.",
+        200, "AGENT_MISMATCH");
+    }
+    return result;
+  },
+  async findLatestProvisioningOperation(agentId: string) {
+    const result = await json(provisioningHistorySchema, `/api/v1/agents/${encodeURIComponent(agentId)}/provisioning-history`);
+    if (result.agentId !== agentId) {
+      throw new ApiError("The provisioning history does not belong to this agent. No operation was selected.",
+        200, "PROVISIONING_HISTORY_MISMATCH");
+    }
+    // The API orders jobs by creation time, newest first. Do not guess from
+    // start time or fall back to an older job when the latest one is unsupported.
+    return result.jobs[0]?.operationId ?? null;
+  },
   async getRegistrationOperation(operationId: string, agentId: string) {
+    if (!operationIdSchema.safeParse(operationId).success) {
+      throw new ApiError("The Gateway did not supply a valid operation ID. No operation was requested.",
+        200, "INVALID_OPERATION_ID");
+    }
     const result = await json(registrationOperationSchema, `/api/v1/operations/${encodeURIComponent(operationId)}`);
     if (result.operationId !== operationId || result.agentId !== agentId) {
       throw new ApiError("The operation does not belong to this agent. Refresh or contact your administrator.",

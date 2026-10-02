@@ -89,8 +89,24 @@ export const approvalAgent = {
 };
 export const registrationOperation = {
   operationId, agentId, type: "ProvisionAgent", status: "AwaitingAdministratorAction", currentStep: "RegisterAgent", percentComplete: 71,
-  error: null, steps: [{ step: "RegisterAgent", status: "Pending" }],
+  workflowVersion: 3, legacy: false,
+  error: null, steps: [
+    { step: "ResolveBlueprint", status: "Completed" },
+    { step: "EnsureBlueprintPrincipal", status: "Completed" },
+    { step: "ConfigureGatewayFederation", status: "Completed" },
+    { step: "CreateAgentIdentity", status: "Completed" },
+    { step: "AssignAgent365Access", status: "Completed" },
+    { step: "RegisterAgent", status: "Pending" },
+    { step: "VerifyAgent365Connection", status: "Pending" },
+  ],
   pollingRecommended: false, requiredAction: "CompleteAgent365Registration", agent365RegistrationCompletionAvailable: true,
+};
+export const provisioningHistory = {
+  agentId,
+  jobs: [{
+    operationId, type: registrationOperation.type, status: registrationOperation.status, percentComplete: 71,
+    startedAtUtc: "2026-10-01T13:00:00", completedAtUtc: null, error: null, steps: registrationOperation.steps,
+  }],
 };
 
 export interface CapturedRequest {
@@ -112,6 +128,7 @@ export function mockServer() {
     ["GET /health/checks", () => new Response("Healthy")],
     ["GET /api/v1/agents", () => ({ items: [agent], nextCursor: null, totalCount: 1 })],
     [`GET /api/v1/agents/${agentId}`, () => agent],
+    [`GET /api/v1/agents/${agentId}/provisioning-history`, () => ({ agentId, jobs: [] })],
     [`GET /api/v1/operations/${operationId}`, () => registrationOperation],
     [`POST /api/v1/operations/${operationId}:complete-agent365-registration`, () => ({
       operationId, agentId, agent365RegistrationId: "12345678-1234-4234-8234-123456789012", status: "VerificationQueued",

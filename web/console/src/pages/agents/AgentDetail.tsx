@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Spinner, Card, Switch, Text, Body1, Caption1, TabList, Tab, Button, MessageBar, MessageBarBody } from "@fluentui/react-components";
+import { Spinner, Card, Switch, Text, Body1, Caption1, TabList, Tab, Button } from "@fluentui/react-components";
 import { api } from "../../api/client";
 import { blueprintName, formatTime, shieldLabel } from "../../api/display";
 import { PageHeader } from "../../components/PageHeader";
@@ -42,28 +42,9 @@ export function AgentDetail() {
         <ErrorState error={agent.error} onRetry={() => void agent.refetch()} />
       ) : a && (
         <>
-          {(a.status === "Failed" || a.status === "RequiresManualIntervention") && (
-            <MessageBar intent="error" role="alert" style={{ marginBottom: 16 }}>
-              <MessageBarBody>
-                <Text weight="semibold">Agent setup needs attention. </Text>
-                {a.provisioning?.lastError ?? "The Gateway has not provided a failure detail. Contact your Gateway administrator."}
-                {a.provisioning?.currentStep && <Caption1 block>Step: {a.provisioning.currentStep}</Caption1>}
-              </MessageBarBody>
-            </MessageBar>
-          )}
-          {["Draft", "Provisioning"].includes(a.status) && (
-            <Body1 role="status" style={{ marginBottom: 16 }}>Setting up the agent. {a.provisioning?.currentStep ?? "Waiting for the worker"}{a.provisioning ? ` (${a.provisioning.percentComplete}%)` : ""}</Body1>
-          )}
-          {a.status === "AwaitingAdminApproval" && (
-            <MessageBar intent="warning" style={{ marginBottom: 16 }}>
-              <MessageBarBody>Agent 365 registration needs administrator approval.
-                {!a.provisioning?.operationId && " The Gateway did not report its operation ID. Refresh status or contact your Gateway administrator."}
-              </MessageBarBody>
-            </MessageBar>
-          )}
-          {a.provisioning?.operationId && <AgentRegistrationProgress key={a.provisioning.operationId}
-            agentId={id} operationId={a.provisioning.operationId} agentStatus={a.status} />}
-          <TabList selectedValue={tab} onTabSelect={(_, data) => { if (typeof data.value === "string") setTab(data.value); }} style={{ marginBottom: 16 }}>
+          {(a.provisioning || ["Draft", "Provisioning", "AwaitingAdminApproval", "Failed", "RequiresManualIntervention"].includes(a.status)) &&
+            <AgentRegistrationProgress key={id} agent={a} />}
+          <TabList selectedValue={tab} onTabSelect={(_, data) => { if (typeof data.value === "string") setTab(data.value); }} style={{ marginBottom: 16, flexWrap: "wrap" }}>
             <Tab value="protection">Prompt Shields</Tab><Tab value="identity">Identity</Tab>
             <Tab value="api">API key</Tab><Tab value="activity">Activity</Tab>
           </TabList>

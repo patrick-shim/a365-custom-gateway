@@ -68,14 +68,46 @@ an image-pull error; changing registry permissions does not repair its platform.
   explicitly advertises Development and its beta-registry restriction. Missing
   defaults, a missing non-production reason, or a closed provisioning gate prevent
   submission. Existing agents retain their recorded environment.
-- Agent detail uses `provisioning.operationId` to read the actual provisioning
-  operation. A Registry action appears only when that operation advertises
-  `CompleteAgent365Registration` and completion availability. Explicit confirmation
+- Agent detail has one prominent setup card with the seven current workflow
+  stages, server-reported percentage, and distinct completed/current/future
+  states. A spinner indicates actual queued/running/verification work, not a
+  human wait. Reduced-motion preferences replace it with a static indicator and
+  disable progress-bar transitions. Paused and failed states do not animate;
+  status changes are announced politely and the progress bar has an accessible
+  server-value label. No elapsed-time estimates or invented progress are used.
+- Detail binds the returned agent to the requested route ID, then uses
+  `provisioning.operationId` to read the actual operation. If the
+  field is absent, the card explicitly reads the existing
+  `GET /api/v1/agents/{id}/provisioning-history` contract, binds its `agentId`,
+  validates unique canonical job IDs, and selects only the first job in the
+  API's newest-created-first order. It does not sort by start time, guess an ID,
+  select an older supported job, or recover a malformed reported ID through a
+  hidden fallback. Missing/mismatched history or unsupported workflows stay
+  visible with the agent/operation reference and a Platform destination.
+- The former "Awaiting Admin Approval" agent label is **Registration required**
+  in the list, detail and registration handoff. The list links to the setup
+  card. **Finish Agent 365 registration** appears only for the supported
+  operation's exact `CompleteAgent365Registration` action and open completion
+  gate. Its explanation and explicit confirmation identify the actual action:
+  a signed-in Gateway Administrator adds the **existing identity** to Microsoft
+  365's Registry. This creates no new identity or Gateway key; it is neither
+  Purview approval nor an outside approval inbox. Explicit confirmation
   sends a bodyless POST to the existing delegated-administrator endpoint. The API
   acquires the current user's Graph OBO token before persisting create intent;
   uncertain attempts remain exact-ID reconciliation, never a new registration.
   HTTP 200 queues verification, not an Active result. Operation progress and agent
-  readback remain authoritative, including failures and closed gates.
+  readback remain authoritative, including failures and closed gates. Even a
+  Completed/100% operation does not claim that the agent is Active.
+  Read-only waiting-state checks can observe another administrator's completion;
+  they never submit a mutation. A stale action is hidden once the agent is Active.
+- Closed Registry gates name `Agent365:DelegatedRegistry:Enabled` and
+  `Agent365:DelegatedRegistry:AllowContinuousDevelopmentAccess`, not the separate
+  provisioning-execution gate. Platform documents these read-only requirements,
+  the Gateway API's `Gateway.Administrator` role and delegated `access_as_user`
+  scope, and where to verify the API application's role assignments. It does not
+  edit gates, grant permissions or infer API authorization from a SPA ID token.
+  Operators may read progress; a refused confirmation retains the API error and
+  support reference. Unknown required actions are reported, not reinterpreted.
 - Prompt Shields uses `PATCH /agents/{id}/features`, including matching
   `If-Match` and idempotency headers/body fields. It never calls the agent
   enable/disable endpoints. Requested and effective states are distinct.
