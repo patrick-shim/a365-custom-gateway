@@ -72,7 +72,7 @@ public interface IDatabaseUpgradeStore
         throw new InvalidOperationException("UpgradeCutoverPlatformObserverMissing: private platform closure requires independent verification.");
     Task AssertDurableCutoverBoundaryAsync() =>
         throw new InvalidOperationException("UpgradeCutoverObserverMissing: durable SQL checkpoints require manual reconciliation.");
-    Task AssertPostUpgradeCutoverBoundaryAsync() =>
+    Task AssertPostUpgradeCutoverBoundaryAsync(bool forRollback = true) =>
         throw new InvalidOperationException("UpgradePostCutoverObserverMissing: compatible rollback requires current terminal-state observation.");
     Task CommitPreservationWindowAsync();
     Task ApplyAsync(string sql);
@@ -295,7 +295,7 @@ public static class DatabaseUpgradeExecution
                     observation.AssertBinding(manifest, receipt);
                     await store.BeginPreservationWindowAsync();
                     await store.AssertPlatformCutoverBoundaryAsync(manifest);
-                    await store.AssertPostUpgradeCutoverBoundaryAsync();
+                    await store.AssertPostUpgradeCutoverBoundaryAsync(forRollback: true);
                     await store.CommitPreservationWindowAsync();
                     if (DatabaseUpgradeAttestation.Serialize(receipt) != existingReceiptJson ||
                         await store.ReadMetadataAsync(DatabaseUpgradeAttestation.OriginalMarkerName) != originalMarker ||
@@ -331,7 +331,7 @@ public static class DatabaseUpgradeExecution
             await store.AssertPlatformCutoverBoundaryAsync(manifest);
             if (manifest.SchemaVersion == 2)
                 // Preserve current receipt/configuration history, without authorizing ApplyAsync.
-                await store.AssertPostUpgradeCutoverBoundaryAsync();
+                await store.AssertPostUpgradeCutoverBoundaryAsync(forRollback: false);
             else
                 await store.AssertDurableCutoverBoundaryAsync();
             var registrationsBefore = await store.ReadRegistrationIdentityFingerprintAsync();
@@ -652,14 +652,14 @@ public sealed class SqlDatabaseUpgradeStore(
         _cutoverObserved = true;
     }
 
-    public async Task AssertPostUpgradeCutoverBoundaryAsync()
+    public async Task AssertPostUpgradeCutoverBoundaryAsync(bool forRollback = true)
     {
         _cutoverObserved = false;
         if (!_platformCutoverObserved)
-            throw new InvalidOperationException("UpgradeCutoverPlatformObserverMissing: rollback classification requires private platform closure verification.");
+            throw new InvalidOperationException("UpgradeCutoverPlatformObserverMissing: post-upgrade classification requires private platform closure verification.");
         _platformCutoverObserved = false;
         await DatabaseUpgradeCutoverObserver.AssertPostUpgradeSafeAsync(connection, _preservationTransaction
-            ?? throw new InvalidOperationException("Rollback observation requires the preservation transaction."));
+            ?? throw new InvalidOperationException("Post-upgrade observation requires the preservation transaction."), forRollback);
         // This read-only classification deliberately does not authorize ApplyAsync.
     }
 

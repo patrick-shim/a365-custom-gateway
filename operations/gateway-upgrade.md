@@ -146,6 +146,11 @@ accepted fingerprint. Full evidence, executor ownership, identities, package,
 certificate and endpoints remain bound to that original source; they are never
 relabeled as the new source.
 
+Forward durable observation recognizes `VerifyPurviewTenantConnection` under the
+normal workflow-v1 `Completed` contract: eight exact completed/skipped steps,
+a completed final step, and a drained, exactly correlated outbox. Pending,
+retryable, malformed or unknown work still blocks maintenance.
+
 The v2 request admits a bootstrap-valid custom resource-group name only when it
 exactly matches the original accepted configuration and state. The v1
 Core-to-Full request retains its conventional `rg-<project>-<environment>` rule.
@@ -417,6 +422,13 @@ simulation submissions are classified separately from enforcement certification.
 In-flight, retryable, malformed or unknown outcomes
 still block. Historical certification expiry is not evidence of in-flight work;
 this observation never grants current policy readiness or consumes a receipt.
+
+Forward recognition does not establish old-image compatibility. Retained
+`VerifyPurviewTenantConnection` operations, even completed ones, block rollback
+with `ProtectionOperationNotRollbackCompatible`: older API/worker images cannot
+deserialize this enum value. The shared observer defaults to rollback; forward
+maintenance selects its mode explicitly. Independent exact-image/model review
+remains mandatory and is never inferred from a successful forward observation.
 
 All three workload baselines are captured together before any promotion.
 Rollback checks each workload against its original or exact attempted deployment.

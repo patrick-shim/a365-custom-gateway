@@ -13,12 +13,12 @@ namespace Gateway.DatabaseMigrator;
 public static class DatabaseUpgradeCutoverObserver
 {
     public static Task AssertSafeAsync(SqlConnection connection, SqlTransaction transaction) =>
-        AssertSafeCoreAsync(connection, transaction, postUpgrade: false);
+        AssertSafeCoreAsync(connection, transaction, postUpgrade: false, forRollback: false);
 
-    internal static Task AssertPostUpgradeSafeAsync(SqlConnection connection, SqlTransaction transaction) =>
-        AssertSafeCoreAsync(connection, transaction, postUpgrade: true);
+    internal static Task AssertPostUpgradeSafeAsync(SqlConnection connection, SqlTransaction transaction, bool forRollback = true) =>
+        AssertSafeCoreAsync(connection, transaction, postUpgrade: true, forRollback);
 
-    private static async Task AssertSafeCoreAsync(SqlConnection connection, SqlTransaction transaction, bool postUpgrade)
+    private static async Task AssertSafeCoreAsync(SqlConnection connection, SqlTransaction transaction, bool postUpgrade, bool forRollback)
     {
         if (transaction.Connection != connection ||
             transaction.IsolationLevel != System.Data.IsolationLevel.Serializable)
@@ -29,6 +29,7 @@ public static class DatabaseUpgradeCutoverObserver
         command.CommandTimeout = 60;
         command.CommandText = ObservationSql;
         command.Parameters.AddWithValue("@postUpgrade", postUpgrade);
+        command.Parameters.AddWithValue("@forRollback", forRollback);
         try
         {
             var blocker = await command.ExecuteScalarAsync();
@@ -194,6 +195,7 @@ public static class DatabaseUpgradeCutoverObserver
             UNION ALL SELECT Status FROM dbo.ProvisioningJobSteps
             UNION ALL SELECT StepType FROM dbo.ProvisioningJobSteps
             UNION ALL SELECT Status FROM dbo.ProtectionAdminOperations
+            UNION ALL SELECT Type FROM dbo.ProtectionAdminOperations
             UNION ALL SELECT RetryDisposition FROM dbo.ProtectionAdminOperations
             UNION ALL SELECT Status FROM dbo.ProtectionAdminOperationSteps
             UNION ALL SELECT StepType FROM dbo.ProtectionAdminOperationSteps
@@ -243,7 +245,8 @@ public static class DatabaseUpgradeCutoverObserver
                 OR o.Type COLLATE Latin1_General_100_BIN2 NOT IN
                     (N'ConnectPurviewTenant',N'RefreshSensitiveInformationTypes',N'CreateOrUpdateKnowYourData',
                      N'CreateOrUpdateDlpProfile',N'ReconcileDlpProfile',N'ValidateDlpRuntime',
-                     N'UpdateProtectionDefaults',N'CompletePurviewTenantConnection',N'TestDlpRuntime')
+                     N'UpdateProtectionDefaults',N'CompletePurviewTenantConnection',N'TestDlpRuntime',
+                     N'VerifyPurviewTenantConnection') OR o.Type IS NULL
                 OR o.RetryDisposition COLLATE Latin1_General_100_BIN2<>N'NotApplicable' OR o.RetryDisposition IS NULL
                 OR o.NextAttemptAtUtc IS NOT NULL OR o.LastFailureCode IS NOT NULL
                 OR ((@postUpgrade=0 OR o.Type<>N'TestDlpRuntime') AND
@@ -306,6 +309,9 @@ public static class DatabaseUpgradeCutoverObserver
                     NOT EXISTS (SELECT 1 FROM dbo.ProtectionAdminOperations o
                         WHERE o.Id=TRY_CONVERT(uniqueidentifier,COALESCE(JSON_VALUE(m.Payload,'$.OperationId'),JSON_VALUE(m.Payload,'$.operationId'))))))
             SELECT N'OutboxCheckpointNotCorrelated';
+        ELSE IF @forRollback=1 AND EXISTS (SELECT 1 FROM dbo.ProtectionAdminOperations
+            WHERE Type COLLATE Latin1_General_100_BIN2=N'VerifyPurviewTenantConnection')
+            SELECT N'ProtectionOperationNotRollbackCompatible';
         ELSE SELECT N'SafeTerminal';
         """;
 }
