@@ -6,6 +6,8 @@ using Gateway.Domain.Models;
 
 namespace Gateway.DatabaseMigrator;
 
+internal sealed class DatabaseUpgradeCutoverBlockedException(string message) : InvalidOperationException(message);
+
 /// <summary>
 /// Observes existing durable contracts, not the new schema or operator-supplied checkpoint flags.
 /// Successful historical work is retained; uncertain work is never replayed or repaired here.
@@ -18,30 +20,56 @@ public static class DatabaseUpgradeCutoverObserver
     internal static Task AssertPostUpgradeSafeAsync(SqlConnection connection, SqlTransaction transaction, bool forRollback = true) =>
         AssertSafeCoreAsync(connection, transaction, postUpgrade: true, forRollback);
 
-    private static async Task AssertSafeCoreAsync(SqlConnection connection, SqlTransaction transaction, bool postUpgrade, bool forRollback)
+    internal static Task<DatabaseUpgradePurviewScope?> AssertSourceOnlySafeAsync(
+        SqlConnection connection, SqlTransaction transaction, DatabaseUpgradeManifest manifest)
+    {
+        DatabaseUpgradeExecution.AssertSourceOnlyPreservationManifest(manifest);
+        return AssertSafeCoreAsync(connection, transaction, postUpgrade: true, forRollback: false, preserveHumanWaits: true);
+    }
+
+    private static async Task<DatabaseUpgradePurviewScope?> AssertSafeCoreAsync(
+        SqlConnection connection, SqlTransaction transaction, bool postUpgrade, bool forRollback, bool preserveHumanWaits = false)
     {
         if (transaction.Connection != connection ||
             transaction.IsolationLevel != System.Data.IsolationLevel.Serializable)
             throw new InvalidOperationException("The durable cutover observer requires the active serializable preservation transaction.");
 
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandTimeout = 60;
-        command.CommandText = ObservationSql;
-        command.Parameters.AddWithValue("@postUpgrade", postUpgrade);
-        command.Parameters.AddWithValue("@forRollback", forRollback);
         try
         {
+            DatabaseUpgradePurviewScope? scope = null;
+            Dictionary<Guid, string>? rejections = null;
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandTimeout = 60;
+            if (preserveHumanWaits)
+            {
+                if (!postUpgrade || forRollback)
+                    throw new InvalidOperationException("Purview human waits require explicit SourceOnlyFull forward observation.");
+                command.CommandText = LockSql;
+                await command.ExecuteNonQueryAsync();
+                (scope, rejections) = await DatabaseUpgradePurviewPreservation.ReadScopeAsync(connection, transaction);
+            }
+            command.CommandText = ObservationSql;
+            command.Parameters.AddWithValue("@postUpgrade", postUpgrade);
+            command.Parameters.AddWithValue("@forRollback", forRollback);
+            command.Parameters.Add("@preservedPurviewOperationIds", System.Data.SqlDbType.NVarChar, -1).Value = scope?.OperationIdsJson ?? "[]";
             var blocker = await command.ExecuteScalarAsync();
-            if (blocker is not string classification || classification != "SafeTerminal")
-                throw new InvalidOperationException(
+            var expected = scope is null ? "SafeTerminal" : "SafePreservedHumanWaits";
+            if (blocker is not string classification || classification != expected)
+            {
+                var diagnostics = await DatabaseUpgradePurviewPreservation.DiagnosticsAsync(connection, transaction,
+                    (scope?.OperationIds ?? []).ToHashSet(), rejections);
+                throw new DatabaseUpgradeCutoverBlockedException(
                     $"UpgradeCutoverManualReconciliationRequired: {blocker ?? "MissingObservation"}. " +
-                    "No upgrade SQL was started; no replay, deletion, or checkpoint repair is authorized.");
+                    "No upgrade SQL was started; no replay, deletion, or checkpoint repair is authorized. " +
+                    $"ProtectionBlockers={diagnostics}");
+            }
             await AssertProvisioningCheckpointsAsync(connection, transaction);
             if (postUpgrade)
                 await DatabaseUpgradePostCutoverObserver.AssertRetainedContractsAsync(connection, transaction);
             else
                 await AssertAdditiveContractsAsync(connection, transaction);
+            return scope;
         }
         catch (SqlException)
         {
@@ -176,7 +204,7 @@ public static class DatabaseUpgradeCutoverObserver
     // Table locks survive the observation through the schema commit, including empty tables.
     // A maintenance applock alone cannot fence application writers. The independent prelaunch
     // ingress/queue/zero-old-writer readback is bound by the manifest, not inferred from these locks.
-    private const string ObservationSql = """
+    private const string LockSql = """
         SET NOCOUNT ON;
         DECLARE @count bigint;
         SELECT @count=COUNT_BIG(*) FROM dbo.AgentRegistrations WITH (TABLOCKX,HOLDLOCK);
@@ -187,6 +215,10 @@ public static class DatabaseUpgradeCutoverObserver
         SELECT @count=COUNT_BIG(*) FROM dbo.ActivityReceipts WITH (TABLOCKX,HOLDLOCK);
         SELECT @count=COUNT_BIG(*) FROM dbo.AiInteractionRecords WITH (TABLOCKX,HOLDLOCK);
         SELECT @count=COUNT_BIG(*) FROM dbo.OutboxMessages WITH (TABLOCKX,HOLDLOCK);
+
+        """;
+
+    private const string ObservationSql = LockSql + """
 
         IF EXISTS (SELECT 1 FROM (
             SELECT Status AS Value FROM dbo.AgentRegistrations
@@ -240,7 +272,8 @@ public static class DatabaseUpgradeCutoverObserver
             OR EXISTS (SELECT 1 FROM dbo.ProvisioningJobSteps GROUP BY ProvisioningJobId,OrderIndex HAVING COUNT_BIG(*)<>1)
             SELECT N'ProvisioningCheckpointAmbiguous';
         ELSE IF EXISTS (SELECT 1 FROM dbo.ProtectionAdminOperations o
-            WHERE o.Status COLLATE Latin1_General_100_BIN2<>N'Completed' OR o.Status IS NULL
+            WHERE NOT EXISTS (SELECT 1 FROM OPENJSON(@preservedPurviewOperationIds) p WHERE TRY_CONVERT(uniqueidentifier,p.value)=o.Id)
+                AND (o.Status COLLATE Latin1_General_100_BIN2<>N'Completed' OR o.Status IS NULL
                 OR o.WorkflowVersion<>1 OR o.CompletedAtUtc IS NULL
                 OR o.Type COLLATE Latin1_General_100_BIN2 NOT IN
                     (N'ConnectPurviewTenant',N'RefreshSensitiveInformationTypes',N'CreateOrUpdateKnowYourData',
@@ -252,11 +285,12 @@ public static class DatabaseUpgradeCutoverObserver
                 OR ((@postUpgrade=0 OR o.Type<>N'TestDlpRuntime') AND
                     (SELECT COUNT_BIG(*) FROM dbo.ProtectionAdminOperationSteps s WHERE s.ProtectionAdminOperationId=o.Id)<>8)
                 OR (@postUpgrade=1 AND o.Type=N'TestDlpRuntime' AND
-                    EXISTS (SELECT 1 FROM dbo.ProtectionAdminOperationSteps s WHERE s.ProtectionAdminOperationId=o.Id)))
+                    EXISTS (SELECT 1 FROM dbo.ProtectionAdminOperationSteps s WHERE s.ProtectionAdminOperationId=o.Id))))
             SELECT N'ProtectionOperationNotProvenComplete';
         ELSE IF EXISTS (SELECT 1 FROM dbo.ProtectionAdminOperationSteps s
             LEFT JOIN dbo.ProtectionAdminOperations o ON o.Id=s.ProtectionAdminOperationId
-            WHERE o.Id IS NULL OR s.Status COLLATE Latin1_General_100_BIN2 NOT IN (N'Completed',N'Skipped')
+            WHERE NOT EXISTS (SELECT 1 FROM OPENJSON(@preservedPurviewOperationIds) p WHERE TRY_CONVERT(uniqueidentifier,p.value)=s.ProtectionAdminOperationId)
+                AND (o.Id IS NULL OR s.Status COLLATE Latin1_General_100_BIN2 NOT IN (N'Completed',N'Skipped')
                 OR s.Status IS NULL OR s.CompletedAtUtc IS NULL
                 OR s.RetryDisposition COLLATE Latin1_General_100_BIN2<>N'NotApplicable' OR s.RetryDisposition IS NULL
                 OR s.NextAttemptAtUtc IS NOT NULL OR s.FailureCode IS NOT NULL
@@ -266,8 +300,10 @@ public static class DatabaseUpgradeCutoverObserver
                     CASE s.OrderIndex WHEN 0 THEN N'ValidateReviewedIntent' WHEN 1 THEN N'DiscoverProviderState'
                     WHEN 2 THEN N'ApplyReviewedMutation' WHEN 3 THEN N'RecordExactReadback'
                     WHEN 4 THEN N'VerifyPropagation' WHEN 5 THEN N'AttestTokenRoles'
-                    WHEN 6 THEN N'ValidateRuntimeVerdict' WHEN 7 THEN N'Complete' ELSE N'' END)
-            OR EXISTS (SELECT 1 FROM dbo.ProtectionAdminOperationSteps GROUP BY ProtectionAdminOperationId,OrderIndex HAVING COUNT_BIG(*)<>1)
+                    WHEN 6 THEN N'ValidateRuntimeVerdict' WHEN 7 THEN N'Complete' ELSE N'' END))
+            OR EXISTS (SELECT 1 FROM dbo.ProtectionAdminOperationSteps s
+                WHERE NOT EXISTS (SELECT 1 FROM OPENJSON(@preservedPurviewOperationIds) p WHERE TRY_CONVERT(uniqueidentifier,p.value)=s.ProtectionAdminOperationId)
+                GROUP BY ProtectionAdminOperationId,OrderIndex HAVING COUNT_BIG(*)<>1)
             SELECT N'ProtectionCheckpointAmbiguous';
         ELSE IF EXISTS (SELECT 1 FROM dbo.ActivityReceipts
             WHERE ProcessingStatus COLLATE Latin1_General_100_BIN2<>N'Processed'
@@ -312,6 +348,8 @@ public static class DatabaseUpgradeCutoverObserver
         ELSE IF @forRollback=1 AND EXISTS (SELECT 1 FROM dbo.ProtectionAdminOperations
             WHERE Type COLLATE Latin1_General_100_BIN2=N'VerifyPurviewTenantConnection')
             SELECT N'ProtectionOperationNotRollbackCompatible';
+        ELSE IF EXISTS (SELECT 1 FROM OPENJSON(@preservedPurviewOperationIds))
+            SELECT N'SafePreservedHumanWaits';
         ELSE SELECT N'SafeTerminal';
         """;
 }

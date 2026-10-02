@@ -38,7 +38,34 @@ public sealed record DatabaseUpgradeReceipt(
     string VerifiedAtUtc,
     string? TargetModelFingerprint = null,
     string? PriorCapabilityFactsJson = null,
-    string? PriorCapabilityFactsFingerprint = null);
+    string? PriorCapabilityFactsFingerprint = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DatabaseUpgradePurviewPreservationProof? PurviewPreservation = null);
+
+public sealed record DatabaseUpgradePurviewPreservationStart(
+    int SchemaVersion, string Classification, int OperationCount, string BeforeFingerprint)
+{
+    public void AssertValid()
+    {
+        if (SchemaVersion != 1 || Classification != "SafePreservedHumanWaits" ||
+            OperationCount is < 1 or > 1000 || !DatabaseUpgradeAttestation.IsFingerprint(BeforeFingerprint))
+            throw new InvalidOperationException("UpgradePurviewPreservationInvalid: exact human-wait preservation evidence is required.");
+    }
+}
+
+public sealed record DatabaseUpgradePurviewPreservationProof(
+    int SchemaVersion, string Classification, int OperationCount, string BeforeFingerprint, string AfterFingerprint)
+{
+    [JsonIgnore]
+    public DatabaseUpgradePurviewPreservationStart Start => new(SchemaVersion, Classification, OperationCount, BeforeFingerprint);
+
+    public void AssertValid()
+    {
+        Start.AssertValid();
+        if (BeforeFingerprint != AfterFingerprint)
+            throw new InvalidOperationException("UpgradePurviewPreservationMismatch: retained Purview records changed; no completion is authorized.");
+    }
+}
 
 public static partial class DatabaseUpgradeAttestation
 {
@@ -115,6 +142,14 @@ public static partial class DatabaseUpgradeAttestation
     public static void AssertValid(DatabaseUpgradeReceipt receipt)
     {
         ArgumentNullException.ThrowIfNull(receipt);
+        if (receipt.PurviewPreservation is { } preservation)
+        {
+            preservation.AssertValid();
+            if (receipt.BeforeSchemaFingerprint != receipt.AfterSchemaFingerprint ||
+                !IsFingerprint(receipt.TargetModelFingerprint) ||
+                receipt.SqlManifestFingerprint != Fingerprint(""))
+                throw new InvalidOperationException("UpgradePurviewPreservationInvalid: preservation requires unchanged schema/model binding and zero SQL.");
+        }
         if (receipt.SchemaVersion != ContractVersion ||
             !IsCanonicalGuid(receipt.DeploymentOwnershipId) ||
             !IsCanonicalGuid(receipt.ExecutionIntentId) ||

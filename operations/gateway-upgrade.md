@@ -275,6 +275,47 @@ readback requires both that projection and the new source-bound database receipt
 Rollback still requires independently reviewed compatible immutable API/worker/Admin
 images; it retains the upgraded executor package, schema, rows and evidence.
 
+### Expired Purview human-wait preservation
+
+Only explicit v2 `SourceOnlyFull` forward maintenance can classify an inert legacy
+Purview handoff as `SafePreservedHumanWaits`, **not completed**. The private job
+requires zero SQL, the unchanged physical schema and approved compiled model,
+exact private platform closure, and serializable table locks. Both held queues
+must report authoritative zero active, scheduled, transfer, dead-letter and
+transfer-dead-letter message counts. `ReceiveDisabled` alone is insufficient;
+missing counts fail closed. No purge, acknowledgement or replay is authorized.
+
+The admitted shape is only workflow-1 `ConnectPurviewTenant` in
+`AwaitingAdministrator`, with `CompletePurviewTenantConnection`, an uncompleted
+operation, consumed and exactly bound review confirmation, and an expired launch
+validated by the existing companion contract. Its eight ordered steps must be
+`Completed`, `AwaitingAdministrator`, then six `Pending` steps, with zero attempts
+and no provider evidence, failures, scheduled retries or correlated outbox history.
+The operation's legacy `Retryable` label is inert in this state; the steps remain
+`NotApplicable`. The linked tenant connection identity must match, but later
+genuine Gateway verification may have changed its connection status or authority.
+
+A separate deterministic Purview proof covers admitted operations, all their
+steps, linked connections and correlated outbox membership, including every
+persisted column, raw JSON and rowversion. Before/after hashes are captured under
+the held transaction and must match. Only hashes/counts are persisted in the new
+optional `PurviewPreservation` intent/commit/receipt fields; no secret snapshots
+are retained. Proof is mandatory when a human wait was admitted. Missing,
+partial, mismatched or uncertain evidence cannot produce verified completion or
+authorize replay. Historical proofless evidence retains its exact bytes and
+fingerprints; existing registration/credential hash semantics do not change.
+
+This is preservation at cutover, not a claim of current Purview connectivity,
+provider success or policy readiness. Generic, Core-to-Full and rollback
+classification stay strict, as do all agent/job/checkpoint rules. Other historical
+Failed/Cancelled states and running, queued, retrying or ambiguous work still
+block. Diagnostics identify relevant protection operation IDs, types, workflow
+versions, states and safe step/retry classifications without raw evidence or
+tokens. Resolve those through separately reviewed supported workflows, never
+by relabeling rows. Corrected source bytes require fresh canonical
+Package/Prepare and independent approval; old candidates and receipts are not
+rewritten.
+
 After Build, update only the **separate request** with its returned digests.
 Repeat Plan with `-ArtifactBundlePath '<returned artifacts.json>'`, review its
 resources/roles/costs and approve the new fingerprint. Run Execute or Verify with
@@ -429,6 +470,9 @@ with `ProtectionOperationNotRollbackCompatible`: older API/worker images cannot
 deserialize this enum value. The shared observer defaults to rollback; forward
 maintenance selects its mode explicitly. Independent exact-image/model review
 remains mandatory and is never inferred from a successful forward observation.
+The source-only expired-Purview preservation classification is likewise never
+used for rollback. Retained human waits still block the strict rollback observer;
+a forward preservation proof does not attest old-image compatibility.
 
 All three workload baselines are captured together before any promotion.
 Rollback checks each workload against its original or exact attempted deployment.

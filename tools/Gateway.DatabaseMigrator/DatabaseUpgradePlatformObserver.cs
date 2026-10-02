@@ -70,7 +70,7 @@ public static partial class DatabaseUpgradePlatformObserver
     public static async Task AssertPrivateAsync(DatabaseUpgradeCutoverContract contract,
         string deploymentOwnershipId, string originalAcceptedSourceFingerprint,
         IReadOnlyList<string>? originalRevisionResourceIds = null, CancellationToken cancellationToken = default,
-        DatabaseUpgradeApiMaintenanceBinding? apiMaintenance = null)
+        DatabaseUpgradeApiMaintenanceBinding? apiMaintenance = null, bool requireEmptyQueues = false)
     {
         AssertContract(contract, originalRevisionResourceIds);
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("IDENTITY_ENDPOINT")))
@@ -79,7 +79,7 @@ public static partial class DatabaseUpgradePlatformObserver
         using var handler = new HttpClientHandler { AllowAutoRedirect = false };
         using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
         await AssertWithTransportAsync(contract, deploymentOwnershipId, originalAcceptedSourceFingerprint,
-            client, credential, originalRevisionResourceIds, cancellationToken, apiMaintenance);
+            client, credential, originalRevisionResourceIds, cancellationToken, apiMaintenance, requireEmptyQueues);
     }
 
     // Only HTTP and token transport are replaceable; resource selection, requests and classification
@@ -88,7 +88,7 @@ public static partial class DatabaseUpgradePlatformObserver
         string deploymentOwnershipId, string originalAcceptedSourceFingerprint,
         HttpClient client, TokenCredential credential,
         IReadOnlyList<string>? originalRevisionResourceIds = null, CancellationToken cancellationToken = default,
-        DatabaseUpgradeApiMaintenanceBinding? apiMaintenance = null)
+        DatabaseUpgradeApiMaintenanceBinding? apiMaintenance = null, bool requireEmptyQueues = false)
     {
         AssertContract(contract, originalRevisionResourceIds);
         if (apiMaintenance is not null) AssertApiMaintenanceBinding(contract, apiMaintenance);
@@ -121,7 +121,7 @@ public static partial class DatabaseUpgradePlatformObserver
             foreach (var queue in new[] { contract.ProvisioningQueueResourceId, contract.ProtectionQueueResourceId })
             {
                 using var observed = await ReadAsync(queue, QueueVersion);
-                AssertQueue(observed.RootElement, queue);
+                AssertQueue(observed.RootElement, queue, requireEmptyQueues);
             }
             foreach (var app in new[] { contract.ApiResourceId, contract.WorkerResourceId })
             {
@@ -171,12 +171,23 @@ public static partial class DatabaseUpgradePlatformObserver
         }
     }
 
-    public static void AssertQueue(JsonElement observed, string resourceId)
+    public static void AssertQueue(JsonElement observed, string resourceId, bool requireEmpty = false)
     {
         Unique(observed);
         if (!ResourceIdEquals(Text(observed, "id"), resourceId) ||
             Text(Property(observed, "properties"), "status") != "ReceiveDisabled")
             throw Unknown();
+        if (requireEmpty)
+        {
+            var counts = Property(Property(observed, "properties"), "countDetails");
+            foreach (var name in new[] { "activeMessageCount", "scheduledMessageCount", "transferMessageCount",
+                         "deadLetterMessageCount", "transferDeadLetterMessageCount" })
+            {
+                var count = Property(counts, name);
+                if (count.ValueKind != JsonValueKind.Number || !count.TryGetInt64(out var value) || value != 0)
+                    throw Unknown();
+            }
+        }
     }
 
     public static void AssertApp(JsonElement observed, string resourceId, bool ingressRequired, string ruleName,
@@ -298,5 +309,6 @@ public static partial class DatabaseUpgradePlatformObserver
     private static InvalidOperationException Unknown() => new(
         "UpgradeCutoverPlatformUnknown: private managed-identity readback did not prove an exact PreSchemaClosed API sentinel " +
         "or denied zero-replica API, receive-disabled queues and inactive zero-replica excluded revisions. " +
+        "Human-wait preservation additionally requires exact zero active/scheduled/transfer/dead-letter queue counts. " +
         "No schema migration or checkpoint repair is authorized.");
 }

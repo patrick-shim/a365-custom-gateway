@@ -1335,6 +1335,15 @@ function Test-GatewayUpgradeDatabaseReceipt {
         'SqlManifestFingerprint', 'ExecutionIntentId', 'Server', 'Database', 'RegistrationIdentityFingerprintBefore',
         'RegistrationIdentityFingerprintAfter', 'VerifiedAtUtc', 'TargetModelFingerprint',
         'PriorCapabilityFactsJson', 'PriorCapabilityFactsFingerprint')
+    if ($receipt.Contains('PurviewPreservation')) {
+        $receiptKeys += 'PurviewPreservation'
+        Assert-GatewayUpgradePurviewPreservationProof $receipt.PurviewPreservation
+        if ($Context.plan.request.schemaVersion -ne 2 -or $Context.plan.request.mode -cne 'SourceOnlyFull' -or
+            @($Context.plan.request.database.scripts).Count -ne 0 -or
+            $receipt.BeforeSchemaFingerprint -cne $receipt.AfterSchemaFingerprint) {
+            throw 'UpgradeExecution: Purview human-wait proof is only valid for unchanged-schema SourceOnlyFull forward preservation.'
+        }
+    }
     if ($receipt.Keys.Count -ne $receiptKeys.Count -or @($receipt.Keys | Where-Object { $_ -cnotin $receiptKeys }).Count -ne 0 -or
         $receipt.SchemaVersion -ne 1 -or $receipt.PlanFingerprint -cne $Context.planFingerprint -or
         $receipt.DeploymentOwnershipId -cne $Context.state.deploymentOwnershipId -or
@@ -1376,6 +1385,24 @@ function Test-GatewayUpgradeDatabaseReceipt {
         schemaFingerprint = $receipt.AfterSchemaFingerprint; beforeSchemaFingerprint = $receipt.BeforeSchemaFingerprint
         sqlManifestFingerprint = $receipt.SqlManifestFingerprint; jobName = $JobName; executionName = $ExecutionName
         priorCapabilityFactsFingerprint = $receipt.PriorCapabilityFactsFingerprint
+    }
+}
+
+function Assert-GatewayUpgradePurviewPreservationProof {
+    param($Proof)
+    $keys = @('SchemaVersion', 'Classification', 'OperationCount', 'BeforeFingerprint', 'AfterFingerprint')
+    & (Get-Module GatewayUpgrade) {
+        param($value, $fields)
+        Assert-GatewayUpgradeShape $value $fields 'Purview preservation proof'
+    } $Proof $keys
+    if (($Proof.SchemaVersion -isnot [int] -and $Proof.SchemaVersion -isnot [long]) -or
+        $Proof.SchemaVersion -ne 1 -or $Proof.Classification -cne 'SafePreservedHumanWaits' -or
+        ($Proof.OperationCount -isnot [int] -and $Proof.OperationCount -isnot [long]) -or
+        $Proof.OperationCount -lt 1 -or $Proof.OperationCount -gt 1000 -or
+        $Proof.BeforeFingerprint -isnot [string] -or $Proof.AfterFingerprint -isnot [string] -or
+        $Proof.BeforeFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        $Proof.AfterFingerprint -cne $Proof.BeforeFingerprint) {
+        throw 'UpgradeExecution: Purview human-wait preservation proof is missing, malformed or changed.'
     }
 }
 
@@ -1692,7 +1719,8 @@ function Assert-GatewayUpgradeCutoverReaderRoles {
 function Invoke-GatewayUpgradeDatabase {
     param($Context, $Images, [switch]$ReadOnly, [switch]$ObserveForRollback)
     if ($Context.plan.Contains('cutover') -and (-not $ReadOnly -or $ObserveForRollback)) {
-        Assert-GatewayUpgradeCutoverHeld $Context -ZeroWriters
+        Assert-GatewayUpgradeCutoverHeld $Context -ZeroWriters -RequireEmptyQueues:(
+            -not $ReadOnly -and -not $ObserveForRollback -and $Context.plan.request.schemaVersion -eq 2)
     }
     $jobId = [string]@($Context.plan.scope.resources | Where-Object stage -CEQ 'DatabaseExpand')[0].resourceId
     $jobName = $jobId.Split('/')[-1]

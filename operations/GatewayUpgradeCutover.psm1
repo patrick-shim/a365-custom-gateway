@@ -273,8 +273,24 @@ function Set-GatewayUpgradeCutoverQueueHold {
     $null = Invoke-GatewayUpgradeCutoverArm $Context PUT $Id '2024-01-01' @{ properties = $properties }
 }
 
+function Assert-GatewayUpgradeEmptyQueueCounts {
+    param($Queue)
+    if ($Queue.properties -isnot [Collections.IDictionary] -or -not $Queue.properties.Contains('countDetails') -or
+        $Queue.properties.countDetails -isnot [Collections.IDictionary]) {
+        throw 'UpgradeCutoverUnknown: authoritative queue counts are unavailable for Purview human-wait preservation.'
+    }
+    foreach ($name in @('activeMessageCount', 'scheduledMessageCount', 'transferMessageCount',
+            'deadLetterMessageCount', 'transferDeadLetterMessageCount')) {
+        $counts = $Queue.properties.countDetails
+        if (-not $counts.Contains($name) -or
+            ($counts[$name] -isnot [int] -and $counts[$name] -isnot [long]) -or $counts[$name] -ne 0) {
+            throw 'UpgradeCutoverUnknown: exact zero active/scheduled/transfer/dead-letter queue counts are required; no purge or replay is authorized.'
+        }
+    }
+}
+
 function Assert-GatewayUpgradeCutoverHeld {
-    param($Context, [switch]$ZeroWriters, [switch]$AllowAbsentProtectionQueue)
+    param($Context, [switch]$ZeroWriters, [switch]$AllowAbsentProtectionQueue, [switch]$RequireEmptyQueues)
     Assert-GatewayUpgradeCutoverAuthority $Context -ReadOnly
     $null = Get-GatewayUpgradeCutoverInventory $Context -ReadOnly
     foreach ($component in @('api', 'worker')) {
@@ -335,11 +351,12 @@ function Assert-GatewayUpgradeCutoverHeld {
     }
     foreach ($id in @($Context.plan.cutover.ProvisioningQueueResourceId, $Context.plan.cutover.ProtectionQueueResourceId)) {
         $queue = Invoke-GatewayUpgradeCutoverArm $Context GET $id '2024-01-01' -AllowNotFound
-        if ($null -eq $queue -and $AllowAbsentProtectionQueue -and $id -ceq $Context.plan.cutover.ProtectionQueueResourceId -and
+        if ($null -eq $queue -and $AllowAbsentProtectionQueue -and -not $RequireEmptyQueues -and $id -ceq $Context.plan.cutover.ProtectionQueueResourceId -and
             $null -eq $Context.cutoverInventory.queues[$id]) { continue }
         if ($null -eq $queue -or -not (Test-GatewayUpgradeResourceId $queue.id $id) -or $queue.properties.status -cne 'ReceiveDisabled') {
             throw 'UpgradeCutoverUnknown: management readback does not prove the queue receive hold.'
         }
+        if ($RequireEmptyQueues) { Assert-GatewayUpgradeEmptyQueueCounts $queue }
         $properties = Get-GatewayUpgradeCutoverQueueProperties $queue
         $properties.status = 'Active'
         $original = $Context.cutoverInventory.queues[$id]

@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Gateway.Infrastructure\Gateway.Infrastructure.csproj" />
+    <Compile Include="..\..\src\Gateway.Application\Protection\PurviewCompanionLaunchContract.cs"
+             Link="Contracts\PurviewCompanionLaunchContract.cs" />
   </ItemGroup>
 
   <ItemGroup>
