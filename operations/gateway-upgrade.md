@@ -181,6 +181,15 @@ readbacks. Expiry still kills its process tree and accepts no result. This
 does not extend the independent 600-second live cutover boundary or authorize
 any partial verification, mutation retry or lease break.
 
+The read-only Key Vault credential-control check accepts the stronger canonical
+`Deny`/`AzureServices` ACL pair alongside the original `Allow`/`AzureServices`
+pair and paired omission, only with `publicNetworkAccess=Disabled` and every
+existing identity, recovery, deployment and source control exact. This is not
+generalized drift forgiveness; configuration-fingerprint comparisons are
+unchanged. The trusted-service bypass still applies with public access disabled,
+as described in [Key Vault network security](https://learn.microsoft.com/en-us/azure/key-vault/general/network-security).
+This check does not establish provider readiness or claim that bypass is disabled.
+
 The request otherwise retains the v1 field names:
 
 ```json

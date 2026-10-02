@@ -601,7 +601,7 @@ function Assert-GatewayExactAzureLocalCredentialControls {
     $vaultDefaultAction = [string]$vault.defaultAction
     $vaultBypass = [string]$vault.bypass
     $vaultNetworkAclsAreExact =
-        ($vaultDefaultAction -ceq 'Allow' -and $vaultBypass -ceq 'AzureServices') -or
+        ($vaultDefaultAction -cin @('Allow', 'Deny') -and $vaultBypass -ceq 'AzureServices') -or
         ([string]::IsNullOrEmpty($vaultDefaultAction) -and [string]::IsNullOrEmpty($vaultBypass))
     if (-not ([string]$vault.tenantId).Equals([string]$Config.tenantId, [StringComparison]::OrdinalIgnoreCase) -or
         $vault.enableRbacAuthorization -ne $true -or $vault.enableSoftDelete -ne $true -or
