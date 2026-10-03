@@ -1,12 +1,14 @@
 # Gateway API contract
 
-The checked-in [OpenAPI document](openapi.yaml) is the machine-readable contract.
-This page explains the authorization, safety, and lifecycle rules that are easy to
-miss when reading individual operations.
+HTTP rules for the control plane (Entra) and data plane (Gateway key). Product
+objective, scope, and expected behaviors are defined in the
+[product brief](../spec/product-brief.md). The checked-in
+[OpenAPI document](openapi.yaml) is the machine-readable schema.
 
-This guide describes the source contract. Local fixtures, live health,
-authorization-boundary probes and signed-in product journeys have different
-scopes; one must not be substituted for another.
+This page covers authorization, safety, and lifecycle rules that are easy to
+miss when reading individual operations. Local fixtures, live health checks,
+and signed-in product journeys have different scopes; do not substitute one for
+another.
 
 ## HTTPS ingress
 
@@ -37,8 +39,11 @@ and [reserved network ranges](https://learn.microsoft.com/azure/container-apps/c
 | Control plane | signed-in tenant user | Entra bearer token | Configuration, registrations, operations, credentials |
 | Data plane | external agent | Gateway key | Activities, interactions, prompt evaluation |
 
-Control-plane routes are rooted at `/api/v1`. The Admin UI is a client of these
-routes; page-level role checks never replace API authorization.
+Control-plane routes are rooted at `/api/v1`. Clients include the legacy Blazor
+Admin UI and the React Console (and, after migration, the React Setup UI for
+install-time flows that call the API). Page-level role checks never replace API
+authorization. All new UI work follows the
+[UI design system](../console/design.md); the backend remains C#.
 
 The source implements the additive
 [protection settings](../architecture/protection-settings-plan.md) control plane

@@ -1,8 +1,15 @@
 # A365 Gateway Console
 
-React and TypeScript SPA using the existing .NET Gateway REST API.
-It is the replacement direction for the Blazor Admin UI, not yet full feature
-parity. See the [Console design](../../docs/console/design.md).
+React + TypeScript + Fluent UI SPA on the existing **C# / .NET** Gateway REST API.
+
+This package is the **target hosted operator UI** in the product-wide UI
+modernization: **all** Gateway UIs (Console and guided Setup) move to this stack.
+Product contracts: [product brief](../../docs/spec/product-brief.md).  
+UI platform: [UI design](../../docs/console/design.md).
+
+Today: not yet full feature parity with Blazor Admin UI, and **not** part of
+bootstrap deploy/open/upgrade. Blazor remains deployed until cutover. Setup UI
+modernization is a separate but same-stack track.
 
 ## Run locally against an API
 
@@ -62,6 +69,9 @@ an image-pull error; changing registry permissions does not repair its platform.
   and explicit revocation.
 - Registration returning HTTP 202 means accepted, not provisioned. Lost responses
   are checked by exact external ID instead of automatically replaying creation.
+- Target Console IA: registration is name → blueprint → key; Prompt Shields on
+  the agent; DLP under Data protection. Legacy Admin UI may still offer protection
+  choices during registration.
 - Registration has no environment selector. `GET /api/v1/system/config` supplies
   read-only `registrationDefaults.environment` and `reason`. Production is the
   standard contract default; the installed DirectRegistryPreview provider
@@ -131,6 +141,7 @@ an image-pull error; changing registry permissions does not repair its platform.
   provider verification.
 - Policies is currently **read-only**. Policy editing, behavior tests, and
   runtime enforcement management are not yet implemented in the React Console.
+  That gap blocks Blazor Settings retirement.
 - Platform reports API health, actual capabilities, and persisted Prompt Shields
   defaults. API health is not worker health; installation is not enforcement.
 - Agent setup failures retain the API's provisioning step and failure detail.
@@ -172,6 +183,7 @@ installed provider, delegated authorization and final readback. A generic
 `PURVIEW_CONNECTION_PROVIDER_UNVERIFIED` code is not a diagnosis and never
 justifies recreating a provider reference or widening permissions.
 
-The legacy Admin UI remains deployed. This Console is not yet part of the
-canonical bootstrap workflow. A successful build or smoke test is not human
-acceptance of the full product.
+The Blazor Admin UI remains bootstrap-deployed until Console parity and install
+cutover. A successful build or smoke test is not human acceptance of the full
+product. Guided Setup UI modernization uses this same React + Fluent stack over
+the existing PowerShell bootstrap engine; it is tracked separately from this package.

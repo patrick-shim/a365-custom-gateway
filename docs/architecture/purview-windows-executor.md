@@ -1,10 +1,12 @@
 # Purview Windows execution boundary
 
-This guide describes the executor, worker transport and packaging source.
+Executor, worker transport, and packaging source. Remains a **C# / Windows**
+boundary even as all operator UIs move to React + Fluent
+([product brief](../spec/product-brief.md), [UI design](../console/design.md)).
 Windows/package qualification is distinct from a compliance provider connection
-or DLP readiness. A private authenticated health response
-must match the expected source and package; bootstrap's Installed status alone
-does not establish that runtime result or policy enforcement.
+or DLP readiness. A private authenticated health response must match the expected
+source and package; bootstrap's Installed status alone does not establish that
+runtime result or policy enforcement.
 
 ## Responsibilities
 

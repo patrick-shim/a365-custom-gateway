@@ -1,31 +1,45 @@
 # A365 Custom Gateway architecture
 
-The Gateway connects external agents to a tenant-owned Azure control plane. Each
-registration binds a generated external agent ID, a reusable Agent Identity
-blueprint, a distinct child Entra Agent ID, and a Gateway credential lifecycle.
+How the system is built. For **why** it exists, what is in/out of scope, and the
+product contracts, see the [product brief](../spec/product-brief.md).
 
-This guide describes the source architecture. Current deployment and provider
-readiness must be verified against the selected installation's exact bindings.
+## Objective (architecture view)
+
+The Gateway is a tenant-owned Azure control plane. Each registration binds:
+
+- a generated external agent ID;
+- a reusable Agent Identity blueprint;
+- a distinct child Entra Agent ID;
+- a Gateway credential lifecycle.
+
+External agents keep hosting and model calls. The Gateway owns registration,
+ingress credentials, evaluate/ingest receipts, durable provisioning, and
+optional Prompt Shields / Purview administration.
+
+This guide describes the **source** architecture. Verify deployment and provider
+readiness against the selected installation's exact bindings.
 
 ## System context
 
 ```mermaid
 flowchart LR
-    Operator[Administrator] -->|Entra sign-in| Admin[Admin UI]
-    Admin -->|delegated access_as_user| Api[Gateway API]
+    Operator[Administrator] -->|Entra sign-in| Ui[Hosted UI Admin today / Console target]
+    Deployer[Deployer] --> Setup[Setup UI legacy today / React Fluent target]
+    Setup --> Bootstrap[PowerShell bootstrap engine]
+    Ui -->|delegated access_as_user| Api[Gateway API C#]
     External[External agent] -->|external ID and Gateway key| Api
     Api --> Sql[(Azure SQL)]
     Sql --> Relay[Transactional outbox relay]
     Relay --> RegistrationQueue[Registration queue v3]
     Relay --> ProtectionQueue[Protection administration queue v1]
-    RegistrationQueue --> Worker[Provisioning worker]
+    RegistrationQueue --> Worker[Provisioning worker C#]
     ProtectionQueue --> Worker
     Worker --> Sql
     Worker -->|managed identity| Graph[Microsoft Graph]
     Api -->|delegated OBO| Registry[Agent 365 Registry beta]
     Api -->|managed identity| Shield[Azure AI Content Safety]
     Api -->|managed identity| Purview[Purview Graph runtime APIs]
-    Worker -->|private authenticated transport| Executor[Windows Purview executor]
+    Worker -->|private authenticated transport| Executor[Windows Purview executor C#]
     Executor -->|certificate authentication| Compliance[Security and Compliance PowerShell]
 ```
 
@@ -37,7 +51,7 @@ the Gateway key and external ID; they do not choose a Microsoft managed identity
 
 | Actor | Authentication and boundary |
 |---|---|
-| Administrator in Admin UI | Entra OpenID Connect; the API enforces delegated scope, tenant, user and role |
+| Administrator in hosted UI (Admin today / Console target) | Entra OpenID Connect; the API enforces delegated scope, tenant, user and role |
 | API to Registry | User-only on-behalf-of token with reviewed delegated Registry scopes |
 | Worker to Graph | Managed identity with the reviewed Agent Identity application-role allowlist |
 | External agent | Gateway credential bound to one registration |
@@ -57,11 +71,22 @@ HTTPS. The Container Apps contract supplies the platform ingress range; canonica
 verification checks the effective public origin. See the
 [HTTPS ingress contract](../api/api-contract.md#https-ingress).
 
-The Blazor Admin UI described below is the UI that bootstrap still deploys, opens
-and upgrades. A React + TypeScript **Console** is the replacement direction
-(see the [Console design system](../console/design.md)); it consumes the same
-`/api/v1` control plane with the same Entra sign‑in and role enforcement, but is
-not yet part of the canonical install path and is not at full feature parity.
+### UI clients (current vs target)
+
+Product requirement: **all** Gateway UIs modernize to React + TypeScript + Fluent
+UI v9 — hosted Console **and** guided Setup. Backend stays C# / .NET. See the
+[product brief](../spec/product-brief.md) and [UI design](../console/design.md).
+
+| Client | Role |
+|---|---|
+| **Blazor Admin UI** (below) | Still what bootstrap deploys/opens/upgrades today — **legacy**, to retire |
+| **React Console** (`web/console`) | Target hosted operator UI on the same `/api/v1` + Entra roles — cutover unfinished |
+| **Guided Setup** (`Gateway.Setup` today) | Legacy install UI — target is React + Fluent over the same PowerShell engine |
+
+Both Admin UI and Console are control-plane clients; page-level role checks never
+replace API authorization.
+
+### Legacy Admin UI behavior (still deployed)
 
 The Admin UI uses global InteractiveServer routing and head rendering, retaining
 prerendering and page authorization. Registration controls and lifecycle mutations
@@ -83,6 +108,9 @@ registration back to lookup without another create. Lost keys require replacemen
 Operation polling pauses after five minutes without declaring the durable work
 failed; unknown results remain recorded-status recovery, not mutation replay.
 
+Target Console IA separates registration (name → blueprint → key) from Prompt
+Shields (agent) and DLP (Data protection); see [UI design](../console/design.md).
+
 ## Deployment and lifecycle
 
 The retained bootstrap engine implements Plan, Apply, Resume and Verify. Guided
@@ -91,8 +119,9 @@ Prompt Shields use remains optional. Purview prerequisites remain independently
 selected. Setup prepares capabilities; tenant policy configuration belongs to the
 authenticated application.
 
-The guided Setup and DatabaseMigrator projects in the solution are the installer
-entry points that bootstrap invokes. Existing binaries are not replacement source
+The guided Setup UI and DatabaseMigrator projects are what bootstrap invokes
+today. Setup UI is scheduled for React + Fluent replacement; the PowerShell
+engine and DatabaseMigrator remain. Existing binaries are not replacement source
 or evidence for a later hosted acceptance.
 
 Registration and protection are separate lifecycles:

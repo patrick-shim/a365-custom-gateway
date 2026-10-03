@@ -1,8 +1,14 @@
 # Protection configuration architecture
 
-This guide describes the bootstrap, registration, Settings and runtime protection
-contracts. Configuration, current readiness and observed provider behavior remain
-separate facts.
+Bootstrap, registration, hosted UI Settings / Data protection, and runtime
+protection contracts. Product-level scope, expected behaviors, and UI platform
+(React + Fluent for all UIs; C# backend) are in the
+[product brief](../spec/product-brief.md) and [UI design](../console/design.md).
+
+Much of the Settings wording below still describes the **legacy Blazor Admin UI**
+tasks that bootstrap deploys today. Target Console IA places the same contracts
+under Data protection / Platform. Configuration, current readiness, and observed
+provider behavior remain separate facts.
 
 ## Ownership
 
@@ -21,7 +27,6 @@ change SKU or remove the service from a fresh guided plan.
 
 Bootstrap prepares capabilities and verifies their exact resource/identity
 bindings. It does not select sensitive information types or author tenant policies.
-The guided Setup source and deterministic fixtures are restored under M1.
 Local configuration tests do not establish provider or hosted workflow readiness.
 
 ## Focused Settings tasks

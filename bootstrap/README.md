@@ -1,17 +1,27 @@
 # Gateway bootstrap
 
-The root `gateway` and `gateway.cmd` launchers are the canonical installation
-entry points. Their retained PowerShell engine coordinates configuration, Azure
-What-If, reviewed deployment, identity preparation, database initialization,
-workload deployment and verification. Individual modules and templates are inputs
-to that lifecycle, not alternate installers.
+Canonical installation for the product defined in the
+[product brief](../docs/spec/product-brief.md). Root `gateway` / `gateway.cmd`
+launchers coordinate configuration, Azure What-If, reviewed deployment, identity
+preparation, database initialization, workload deployment, and verification.
+Individual modules and templates are inputs to that lifecycle, not alternate
+installers.
+
+**UI platform:** the guided Setup experience is part of the product-wide move to
+**React + TypeScript + Fluent UI v9** ([UI design](../docs/console/design.md)).
+Today `gateway setup` still starts the legacy `Gateway.Setup` app. The PowerShell
+engine, plan/apply/verify contracts, and C# DatabaseMigrator remain; only the
+Setup **UI** is to be replaced. Hosted operator UI likewise moves from Blazor
+Admin UI to the React Console.
 
 ## Source and target
 
-The installer uses the authored [Setup](../tools/Gateway.Setup) and
-[DatabaseMigrator](../tools/Gateway.DatabaseMigrator) projects. Build the production
-solution before installation. Generated output does not replace source, and a
-local build does not establish deployment or provider readiness.
+The installer currently uses the authored [Setup](../tools/Gateway.Setup) UI and
+[DatabaseMigrator](../tools/Gateway.DatabaseMigrator) projects. Setup UI is
+legacy relative to the React + Fluent target; DatabaseMigrator stays on C#.
+Build the production solution before installation. Generated output does not
+replace source, and a local build does not establish deployment or provider
+readiness.
 
 Select the intended tenant, subscription and environment in configuration.
 Plan and Apply bind their exact source and target. An old checkpoint does not
@@ -19,8 +29,8 @@ authorize recreating a deleted environment.
 
 ## Intended installation
 
-The guided commands start the local Setup application. Deployment requires a
-current target-bound plan:
+The guided commands start the local Setup UI (legacy today; React + Fluent
+target). Deployment requires a current target-bound plan:
 
 ```bash
 ./gateway setup
@@ -148,7 +158,7 @@ Use `gateway.cmd` in place of `./gateway` on Windows.
 | `resume` | Reconcile and continue eligible work for the same accepted deployment. |
 | `status` | Inspect local operational checkpoint/readiness state. |
 | `verify` | Read back the live deployment boundary. |
-| `open` | Open the recorded verified Admin UI endpoint. |
+| `open` | Open the recorded verified hosted UI endpoint (Admin UI today; Console after cutover). |
 | `diagnose` | Write a sanitized local diagnostic bundle. |
 
 Bounded database recovery and Admin UI upgrade commands also exist. They require
@@ -224,13 +234,15 @@ Fresh planning must report that distinction without silently upgrading the SKU.
 
 ## After a verified installation
 
-Use verified API/Admin endpoints to sign in and open the Admin UI's Getting
-started page (`/getting-started`, with `/setup` retained as an alias). This deployed
-application page is not the local Setup installer. Review registration, then
-securely store and acknowledge its endpoint/ID/one-time-key handoff before Registry
-completion. Inspect the actual registration state before connecting the external
-agent. Settings now separates tenant connection/inventory, shared policy, runtime
-testing, optional collection and registration defaults into focused tasks.
+Use verified API/Admin endpoints to sign in and open the hosted operator UI
+(today: Admin UI Getting started at `/getting-started`, with `/setup` retained as
+an alias; target: React Console). That deployed page is not the local Setup
+installer. Review registration, then securely store and acknowledge its
+endpoint/ID/one-time-key handoff before Registry completion. Inspect the actual
+registration state before connecting the external agent. Legacy Admin UI Settings
+separates tenant connection/inventory, shared policy, runtime testing, optional
+collection and registration defaults into focused tasks; Console Data protection
+is the long-term home for those journeys.
 Intentionally Off per-agent protections are not an incomplete registration;
 deployment capabilities still follow the accepted configuration. Keep policy
 readback, propagation and runtime evidence separate throughout.

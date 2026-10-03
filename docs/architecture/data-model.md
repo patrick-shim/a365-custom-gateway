@@ -1,10 +1,13 @@
 # Data model
 
-Azure SQL is the authoritative store for Gateway registrations, provisioning,
-credentials, protection configuration, audit, idempotency and dispatch state.
-This guide describes the EF model and persistence contracts. Local SQL behavior
-does not establish Azure identity, private networking or a different deployment's
-migration and receipt state.
+Persistence for the product described in the
+[product brief](../spec/product-brief.md). UI clients (legacy Admin UI, React
+Console, future React Setup) do not own this model — the **C#** API and worker
+do. Azure SQL is authoritative for registrations, provisioning, credentials,
+protection configuration, audit, idempotency, and dispatch state. This guide
+covers the EF model and persistence contracts. Local SQL behavior does not
+establish Azure identity, private networking, or another deployment's migration
+and receipt state.
 
 ## Core relationships
 

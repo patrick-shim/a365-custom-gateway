@@ -1,14 +1,21 @@
 # Gateway operations
 
-Use the root launcher for routine administration. Installation is documented in
-the [bootstrap guide](../bootstrap/README.md); these commands operate on an
-explicitly selected configuration and its preserved deployment state.
+Routine administration for an installed Gateway. Product objective, expected
+behaviors, and UI platform (React + Fluent for all UIs; C# backend):
+[product brief](../docs/spec/product-brief.md) ·
+[UI design](../docs/console/design.md). Fresh install:
+[bootstrap guide](../bootstrap/README.md). These commands use an explicitly
+selected configuration and its preserved deployment state.
+
+Hosted UI commands below still refer to the **Admin UI** while bootstrap deploys
+Blazor; after Console cutover they target the React Console image instead.
+`upgrade-admin-ui` is the transitional Admin UI-only promotion path.
 
 | Command | Boundary |
 |---|---|
 | `gateway status` | Read local deployment state. |
 | `gateway verify` | Read back current Azure, identity, database and endpoint bindings. |
-| `gateway open` | Open the recorded verified Admin UI endpoint. |
+| `gateway open` | Open the recorded verified hosted UI endpoint (Admin UI today; Console after cutover). |
 | `gateway diagnose` | Create a bounded, sanitized diagnostic bundle. |
 | `gateway resume` | Reconcile eligible interrupted work for the same accepted plan. |
 | `gateway upgrade-admin-ui` | Perform a source-bound Admin UI-only promotion. |

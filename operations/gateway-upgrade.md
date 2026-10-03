@@ -8,6 +8,12 @@ Validate the actual frozen candidate and its prerequisites before using this
 workflow. A historical receipt or another installation's result does not
 establish current deployment authority.
 
+Product UI platform (React + Fluent for **all** UIs including Setup; C# backend)
+is defined in the [product brief](../docs/spec/product-brief.md) and
+[UI design](../docs/console/design.md). Sections below that name **Admin UI**
+images/promotions describe the **currently deployed** hosted UI path until
+Console cutover; they are not a decision to keep Blazor permanently.
+
 ## Authority and evidence
 
 Use the selected target and existing administrator authorization. The source-bound

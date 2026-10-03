@@ -1,9 +1,15 @@
 # Infrastructure assets
 
-This directory contains the declarative Azure and SQL assets consumed by the
+Declarative Azure and SQL assets for the product in the
+[product brief](../docs/spec/product-brief.md). Consumed by the
 [bootstrap lifecycle](../bootstrap/README.md) and
 [existing-environment operations](../operations/README.md). Templates and SQL
 files are inputs to those workflows, not independent installation instructions.
+
+Hosted UI modules still provision the **Admin UI** Container App today. Console
+cutover and React Setup packaging will extend these assets; they do not change
+the C# API/worker/executor ownership. UI platform:
+[UI design](../docs/console/design.md).
 
 Build the [production solution](../src/A365Gateway.slnx) and deploy through the
 canonical installer. Existing outputs or historical receipts alone do not prove

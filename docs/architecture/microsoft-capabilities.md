@@ -1,9 +1,10 @@
 # Microsoft provider contracts
 
-This guide records the contracts used by the retained Gateway adapters and
-deployment source. It is not a fresh provider-documentation review or proof of a
-live tenant's capabilities. Revalidate provider availability and permissions
-during deployment planning.
+Contracts used by the retained **C#** Gateway adapters and deployment source.
+UI modernization (React + Fluent Console/Setup) does not change these provider
+boundaries. Product scope: [product brief](../spec/product-brief.md). This is not
+a fresh provider-documentation review or proof of a live tenant's capabilities.
+Revalidate provider availability and permissions during deployment planning.
 
 ## Agent Identity and Agent 365
 
