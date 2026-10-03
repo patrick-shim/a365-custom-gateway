@@ -1,11 +1,13 @@
 # A365 Custom Gateway architecture
 
-How the system is built. For **why** it exists, what is in/out of scope, and the
-product contracts, see the [product brief](../spec/product-brief.md).
+How the system is built. For **why** it exists, scope, UI platform, and
+**portable runtime** requirements, see the [product brief](../spec/product-brief.md).
 
 ## Objective (architecture view)
 
-The Gateway is a tenant-owned Azure control plane. Each registration binds:
+The Gateway is a control plane whose **sole purpose** is connecting independently
+hosted agents to **Entra, Graph, Agent 365, Purview, and Prompt Shields**. Each
+registration binds:
 
 - a generated external agent ID;
 - a reusable Agent Identity blueprint;
@@ -14,298 +16,214 @@ The Gateway is a tenant-owned Azure control plane. Each registration binds:
 
 External agents keep hosting and model calls. The Gateway owns registration,
 ingress credentials, evaluate/ingest receipts, durable provisioning, and
-optional Prompt Shields / Purview administration.
+Purview / Prompt Shields administration.
 
-This guide describes the **source** architecture. Verify deployment and provider
-readiness against the selected installation's exact bindings.
+**Product logic stays intact.** The **running environment** has **zero Microsoft
+infrastructure dependence** — same containers on AWS, GCP, or on-prem must work
+without Azure SQL, Service Bus, Key Vault, Container Apps, ACR, or Blob.
+
+This guide describes the **target** architecture and notes where the legacy Azure
+infra profile still exists in source.
+
+## Infrastructure (zero Microsoft dependence)
+
+| Concern | Target technology | Role |
+|---|---|---|
+| Relational state | **PostgreSQL** | Authoritative Gateway state (EF Core) |
+| Local/dev DB option | **SQLite** | Single-node developer convenience only |
+| Messaging | **RabbitMQ** | Registration + protection work queues after transactional outbox |
+| Secrets | **OpenBao** / **HashiCorp Vault** | Certificates, connection material, non-Entra secrets |
+| Content store | **S3-compatible** (MinIO or cloud S3/GCS/Blob-via-S3) | Protected interaction content |
+| Compute | **Docker Compose** and/or **Kubernetes** | API, worker, Console, optional Purview executor |
+| Images | Any **OCI** registry | Immutable digests |
+| Telemetry mirror | **OpenTelemetry** | Optional sanitized monitoring export |
+| Ingress | Standard TLS reverse proxy / cloud LB | HTTPS termination; trusted proxy CIDRs |
+
+### Essential Microsoft product services (not infrastructure)
+
+| Integration | Why it is essential |
+|---|---|
+| Entra ID / MSAL | Operator sign-in and API authorization |
+| Microsoft Graph + Agent 365 Registry | Identity blueprints, child Agent IDs, Registry |
+| Agent 365 observability | Default sanitized activity export |
+| Purview + Windows executor | Microsoft 365 DLP/KYD and runtime evidence |
+| Prompt Shields | Pre-model prompt-attack evaluation |
+
+These are SaaS/API dependencies for the product's purpose. They do **not** put
+the Gateway's database, bus, secrets, or compute on Microsoft infrastructure.
+
+### Legacy Azure infrastructure profile (transitional)
+
+Existing Bicep/bootstrap assets may still provision Azure SQL, Service Bus, Key
+Vault, Container Apps, ACR, and Blob. That is **legacy infrastructure only** —
+not the product end state. Target: Compose/Kubernetes with zero Microsoft infra.
+See [infrastructure](../../infrastructure/README.md) and
+[bootstrap](../../bootstrap/README.md).
 
 ## System context
 
 ```mermaid
 flowchart LR
-    Operator[Administrator] -->|Entra sign-in| Ui[Hosted UI Admin today / Console target]
-    Deployer[Deployer] --> Setup[Setup UI legacy today / React Fluent target]
-    Setup --> Bootstrap[PowerShell bootstrap engine]
+    Operator[Administrator] -->|Entra sign-in| Ui[Hosted UI Console target]
+    Deployer[Deployer] --> Setup[Setup UI React Fluent target]
+    Setup --> Bootstrap[Bootstrap engine portable profiles]
     Ui -->|delegated access_as_user| Api[Gateway API C#]
     External[External agent] -->|external ID and Gateway key| Api
-    Api --> Sql[(Azure SQL)]
-    Sql --> Relay[Transactional outbox relay]
-    Relay --> RegistrationQueue[Registration queue v3]
-    Relay --> ProtectionQueue[Protection administration queue v1]
+    Api --> Db[(PostgreSQL)]
+    Db --> Relay[Transactional outbox relay]
+    Relay --> RegistrationQueue[RabbitMQ registration queue]
+    Relay --> ProtectionQueue[RabbitMQ protection queue]
     RegistrationQueue --> Worker[Provisioning worker C#]
     ProtectionQueue --> Worker
-    Worker --> Sql
-    Worker -->|managed identity| Graph[Microsoft Graph]
+    Worker --> Db
+    Api --> Vault[OpenBao / Vault]
+    Worker --> Vault
+    Api --> Objects[S3-compatible content store]
+    Worker -->|workload credential| Graph[Microsoft Graph]
     Api -->|delegated OBO| Registry[Agent 365 Registry beta]
-    Api -->|managed identity| Shield[Azure AI Content Safety]
-    Api -->|managed identity| Purview[Purview Graph runtime APIs]
-    Worker -->|private authenticated transport| Executor[Windows Purview executor C#]
-    Executor -->|certificate authentication| Compliance[Security and Compliance PowerShell]
+    Api --> Shield[Prompt Shields Microsoft content safety]
+    Api --> Purview[Purview Graph runtime APIs]
+    Worker -->|private transport| Executor[Windows Purview executor]
+    Executor -->|certificate from Vault| Compliance[Security and Compliance PowerShell]
 ```
 
 ## Identity and authority
 
-One Gateway manages many registrations, and a blueprint can be shared. Each
+One Gateway manages many registrations; a blueprint can be shared. Each
 registration has its own child identity and ingress key. External callers present
-the Gateway key and external ID; they do not choose a Microsoft managed identity.
+the Gateway key and external ID; they do not choose a cloud managed identity.
 
 | Actor | Authentication and boundary |
 |---|---|
-| Administrator in hosted UI (Admin today / Console target) | Entra OpenID Connect; the API enforces delegated scope, tenant, user and role |
-| API to Registry | User-only on-behalf-of token with reviewed delegated Registry scopes |
-| Worker to Graph | Managed identity with the reviewed Agent Identity application-role allowlist |
+| Administrator in hosted UI | Entra OpenID Connect; API enforces delegated scope, tenant, user, role |
+| API to Registry | User-only on-behalf-of token with reviewed Registry scopes |
+| Worker to Graph | Workload credential (Vault/K8s/cloud WI) with reviewed application-role allowlist |
 | External agent | Gateway credential bound to one registration |
-| API to Prompt Shields | API managed identity with resource-scoped Content Safety access |
-| Purview runtime | Prepared workload managed identity and exact runtime binding |
+| API to Prompt Shields | Workload credential to the configured provider |
+| Purview runtime | Prepared workload credential and exact runtime binding |
 | Worker to Windows executor | Dedicated application role and exact caller binding |
-| Windows executor to compliance provider | Prepared certificate resolved from the exact Key Vault secret |
+| Windows executor to compliance | Certificate resolved from Vault/OpenBao (not Azure Key Vault as a requirement) |
 
-Gateway keys are ingress credentials. Their clear value is returned once; storage
-contains a salted verifier and lifecycle metadata. UI role visibility supplements
-API authorization and does not replace it.
+Gateway keys are ingress credentials. Clear value returned once; storage keeps a
+salted verifier. UI role visibility never replaces API authorization.
 
-The API explicitly admits forwarded scheme information only from its reviewed
-ingress proxy networks, before authentication. It does not trust forwarded host
-or client-IP values, and an empty proxy configuration does not promote HTTP to
-HTTPS. The Container Apps contract supplies the platform ingress range; canonical
-verification checks the effective public origin. See the
+The API admits forwarded scheme information only from reviewed trusted proxy
+networks (`GatewayIngress:TrustedProxyNetworks`), before authentication. Empty
+lists trust no forwarded scheme; direct HTTPS remains supported. See the
 [HTTPS ingress contract](../api/api-contract.md#https-ingress).
 
 ### UI clients (current vs target)
 
-Product requirement: **all** Gateway UIs modernize to React + TypeScript + Fluent
-UI v9 — hosted Console **and** guided Setup. Backend stays C# / .NET. See the
-[product brief](../spec/product-brief.md) and [UI design](../console/design.md).
-
 | Client | Role |
 |---|---|
-| **Blazor Admin UI** (below) | Still what bootstrap deploys/opens/upgrades today — **legacy**, to retire |
-| **React Console** (`web/console`) | Target hosted operator UI on the same `/api/v1` + Entra roles — cutover unfinished |
-| **Guided Setup** (`Gateway.Setup` today) | Legacy install UI — target is React + Fluent over the same PowerShell engine |
+| **Blazor Admin UI** | Legacy hosted UI still present in the Azure profile |
+| **React Console** | Target hosted operator UI on `/api/v1` |
+| **Guided Setup** | Legacy Setup app → React + Fluent over portable bootstrap |
 
-Both Admin UI and Console are control-plane clients; page-level role checks never
-replace API authorization.
+See [UI design](../console/design.md).
 
-### Legacy Admin UI behavior (still deployed)
+### Legacy Admin UI behavior (still in source)
 
-The Admin UI uses global InteractiveServer routing and head rendering, retaining
-prerendering and page authorization. Registration controls and lifecycle mutations
-wait for `RendererInfo.IsInteractive`; the page header's `aria-busy` exposes that
-renderer readiness, not Gateway or provider health. Prerendered registration
-inputs cannot accept edits that hydration would discard. Internal navigation stays
-within the interactive route tree so the unsaved-key `NavigationLock` guard is
-not bypassed by navigation between static page islands.
-
-The current Admin UI offers Getting started and reviews registration identity,
-blueprint and feature choices before dispatch. Endpoint/ID/key handoff precedes
-Registry completion. Its saved-key acknowledgement is a circuit-only, one-use
-operation/agent permit for eligible automatic completion, not durable authority
-or a saved key. API role, admission and exact identity checks still apply.
-The browser must acknowledge retention of the non-secret `pendingExternalId`
-recovery URL before registration is dispatched; failure to obtain that
-acknowledgement sends no create. The retained URL directs refreshed or interrupted
-registration back to lookup without another create. Lost keys require replacement.
-Operation polling pauses after five minutes without declaring the durable work
-failed; unknown results remain recorded-status recovery, not mutation replay.
-
-Target Console IA separates registration (name → blueprint → key) from Prompt
-Shields (agent) and DLP (Data protection); see [UI design](../console/design.md).
+Blazor InteractiveServer details, Getting started, circuit-only key acknowledgement,
+and `pendingExternalId` recovery URL behavior remain documented for the legacy UI
+until Console cutover. Target Console IA: registration name → blueprint → key;
+Prompt Shields on the agent; DLP under Data protection.
 
 ## Deployment and lifecycle
 
-The retained bootstrap engine implements Plan, Apply, Resume and Verify. Guided
-fresh setup includes shared Azure AI Content Safety in every preset; each agent's
-Prompt Shields use remains optional. Purview prerequisites remain independently
-selected. Setup prepares capabilities; tenant policy configuration belongs to the
+Bootstrap implements Plan, Apply, Resume, and Verify against the **selected
+deploy profile** (portable Compose/Kubernetes target; Azure PaaS profile
+transitional). Prompt Shields and Purview remain independently selectable.
+Setup prepares capabilities; tenant policy configuration belongs to the
 authenticated application.
 
-The guided Setup UI and DatabaseMigrator projects are what bootstrap invokes
-today. Setup UI is scheduled for React + Fluent replacement; the PowerShell
-engine and DatabaseMigrator remain. Existing binaries are not replacement source
-or evidence for a later hosted acceptance.
-
-Registration and protection are separate lifecycles:
+Registration and protection remain separate lifecycles:
 
 1. Persist the registration, provisioning job and outbox work.
-2. Resolve or create the reusable blueprint and its principal, configure
-   federation, create the child identity and assign observability access.
+2. Resolve or create the reusable blueprint and principal, configure federation,
+   create the child identity, assign observability access.
 3. Pause for the signed-in Administrator's delegated Registry completion.
-4. Reverify the identity, federation, observability and token mapping before
-   marking the registration Active.
-5. Configure optional protection through reviewed application operations, either
-   during registration or afterward.
+4. Reverify identity, federation, observability and token mapping before Active.
+5. Configure optional protection through reviewed application operations.
 
-The seven persisted registration stages remain independent of protection
+The seven persisted registration stages stay independent of protection
 administration. The worker never creates a Registry registration. Before its one
-delegated POST, the API persists a creator-bound planned Registry ID. An unknown
-outcome permits exact readback of that ID, never another POST. Registry acceptance
-queues final verification rather than repeating creation.
+delegated POST, the API persists a creator-bound planned Registry ID. Unknown
+outcomes permit exact-ID readback only. Registry acceptance queues final
+verification rather than repeating creation.
 
-The source treats Registry beta as a gated development capability; staging and
-production admission remain closed. Current provider availability must be
-verified for the selected tenant when deployment work resumes.
+Registry beta remains a gated development capability; staging and production
+admission stay closed.
 
-Bootstrap and maintenance authorize different lifecycles. Bootstrap binds its
-19 stages to the accepted source, configuration, ownership and target. A started
-external mutation with an uncertain result becomes readback-only; a new invocation
-does not gain permission to repeat it. Maintenance packages a separate candidate
-and requires its own plan, live baseline and artifact approvals. Neither lifecycle
-can adopt a deliberately deleted environment by changing checkpoint fields.
+Bootstrap and maintenance authorize different lifecycles. Neither may adopt a
+deliberately deleted environment by editing checkpoint fields.
 
 ## Registration and shared protection
 
-Registration can carry an explicitly reviewed and confirmed Purview configuration.
-For an existing blueprint, the shared profile operation binds to that blueprint.
-For a new blueprint, the operation waits in **AwaitingBlueprint**. After core
-provisioning reaches Active, an internal continuation verifies the original
-consent, actor, registration, new blueprint, connection and inventory before
-queuing policy work. Conflict or expired authority requires renewed review.
+Registration may carry explicitly reviewed Purview configuration. For a new
+blueprint, policy work waits in **AwaitingBlueprint** until Active, then continues
+with original consent checks. Know Your Data uses the fixed tenant-wide Group
+`ee1680d0-702f-4090-b26c-c49091e86531`. DLP uses the blueprint application as an
+Individual location. Configuration, simulation, disabled state, and verified
+enforcement remain distinct. See [protection guide](protection-settings-plan.md).
 
-Know Your Data uses the fixed tenant-wide enterprise-AI-apps Group
-`ee1680d0-702f-4090-b26c-c49091e86531`. DLP uses the reusable blueprint application
-as an Individual location. Both use the Application plane. Individual is a policy
-scope, not per-agent isolation: changing a blueprint policy can affect other
-agents, while switching one agent off does not delete or disable the shared policy.
-
-The source supports multiple tenant-backed sensitive information types, count and
-confidence thresholds, and four policy modes. Configuration, simulation, disabled
-state and verified enforcement are distinct. See the
-[protection guide](protection-settings-plan.md) for those contracts.
-
-Settings guides connection, shared policy, behavior testing and agent choices
-through four ordered steps; overview, optional collection and defaults are
-separate tools. Connection shows inventory count rather than an unused selector.
-The shared-policy editor separates type selection from per-type thresholds and
-preserves saved/draft values. A shared projection/snapshot component gives
-Overview, list, details and Settings the same capability/saved-choice/current-state
-wording. Intentionally Off is neutral. Profile state remains separate from
-configuration-operation status, and known readiness expiry bounds invalidate
-positive cached labels without granting authority or preventing earlier drift.
-
-An outcome layer explains each task's result, purpose, remaining limits and
-permitted next action. Pending retained operations are observed through
-cancellation-bound GET reads every three seconds for at most five minutes.
-Terminal operation readback refreshes the relevant current state; the same
-task-scoped dependency predicates select reads and evaluate their success.
-Incomplete refresh cannot reuse earlier readiness, and unrelated retained errors
-cannot trap recovery on another task. Observation stops on read error,
-disposal or route replacement and never starts, confirms or retries a mutation.
-Exact profile links preserve policy-to-test context. Runtime results update the
-parent summary and its effective expiry schedule without rebinding the active
-private browser sample session;
-historical receipt validity and current readiness remain distinct.
-
-Visible activity represents actual awaited UI work or the bounded GET observation
-session, not a provider heartbeat, percentage or completion estimate. Normal
-motion and reduced-motion displays retain the same accessible state. A fresh
-connection generation does not itself rebind saved policy. An explicitly
-accepted new reconciliation review can bind unchanged settings to that current
-inventory and clear prior runtime proof; downstream reconciliation still only
-reads Microsoft objects.
-
-Settings waits for browser acknowledgement of the execution/recovery ID before
-confirmation or mutation. This is the review ID for ordinary starts, but the
-original connection ID for separately approved companion completion. The API
-returns that original ID; the Submitted approval references it for guarded
-read-only recovery. Unknown outcomes use GET, not replacement consent or another
-connection/policy create. Same-actor GET can return an already accepted companion
-launch with its original identity, generation and expiry; no new launch authority
-is created.
-Same-page shortcuts may update the browser fragment without updating Blazor's
-server navigation URI. Recovery preserves that fragment while enforcing the
-same document, non-recovery query context and exact recovery ID. Connection and
-shared-policy submission use the same pre-dispatch failure handling: no confirmed
-browser acknowledgment means no authorization/mutation request, explicit
-reload/status/review guidance and safe operation-ID/error-type logging. Unknown
-results after dispatch retain their separate GET-only recovery semantics.
+Legacy Admin UI Settings task flows and companion paste paths remain transitional
+UI detail; Console Data protection is the long-term home. Protection mutations
+still use review → confirm → start with HTTP 202 and exact readback recovery.
 
 ## Data plane and prompt receipts
 
 The API authenticates the Gateway credential before trusting the external ID.
-Registration-scoped idempotency and SQL locks protect repeated submissions.
-Approved interaction content goes to the configured Blob content store;
-observability and queue records contain sanitized metadata.
+Registration-scoped idempotency and database locks protect repeated submissions.
+Approved interaction content goes to the configured **S3-compatible** content
+store; observability and queue records contain sanitized metadata only.
 
-The external agent calls prompt evaluation before its model. Prompt Shields or
-Purview Enforce requires a trusted allow receipt before protected ingestion. The
-receipt is short-lived, single-use and bound to the registration, interaction,
-tenant user, content type, salted prompt hash and current protection context.
-
-That context includes protection revision, shared profile, mode, classifiers,
-thresholds, capability, inventory and runtime certification. The client checks an
-allowed, unexpired receipt immediately before generation; ingestion rechecks its
-current context and one-time consumption. A protection change during generation
-can reject ingestion but cannot stop a model call that has already started.
-Simulation does not claim enforcement; offline processing cannot establish
-response-side blocking.
+Prompt evaluation before the model, allow-receipt binding, single-use consumption,
+and fail-closed enforcement semantics are unchanged. Simulation does not claim
+enforcement; offline processing cannot establish response-side blocking.
 
 ## Durability and operational boundaries
 
-Azure SQL owns Gateway state. State transitions and dispatch records use a
-transactional outbox. Registration work uses `gateway-provisioning-v3`; ordinary
-protection administration uses `gateway-protection-admin-v1` and its separate
-eight-step workflow. Consumers handle duplicate delivery and reconcile uncertain
-provider outcomes by exact readback.
+**PostgreSQL** (target) owns Gateway state. State transitions and dispatch records
+use a transactional outbox. Logical queues remain:
 
-Approved runtime sample tests use a separate synchronous API execution path so raw
-samples remain ephemeral. Durable operations retain consent hashes and sanitized
-outcomes for status and recovery.
+- registration: `gateway-provisioning-v3`
+- protection administration: `gateway-protection-admin-v1`
 
-The browser holds those samples in private JavaScript, not Blazor circuit state.
-Its dedicated HTTPS portal requires the administrator role and antiforgery before
-forwarding one confirmed execution to the API. Bounded-clock execution and strict
-safe-report validation preserve explicit failure/unknown outcomes. Historical
-reports and current readiness are rendered separately; local synthetic transports
-through this real portal do not establish live Entra or Purview acceptance.
+Transport target is **RabbitMQ**; consumers stay duplicate-safe and recover
+uncertain provider outcomes by exact readback. Legacy Azure Service Bus bindings
+are profile-specific, not the product end state.
 
-Telemetry has a narrower delivery guarantee than the SQL outbox. The Azure Monitor
-mirror records a durable attempt marker before creating a local span. Redelivery
-suppresses that attempt, including after a crash between marker persistence and
-emission. A local span or aggregate Processed/Completed status is not remote
-delivery proof. Agent 365 endpoint acceptance likewise does not establish every
-Microsoft 365, DSPM or XDR destination. Keep these current limits visible until the
-delivery/recovery acceptance work addresses them.
+Approved runtime sample tests keep ephemeral raw samples; durable operations keep
+consent hashes and sanitized outcomes.
 
-Retained [upgrade operations](../../operations/gateway-upgrade.md) support bounded
-existing-installation workflows. They preserve original bootstrap state and bind a
-separate plan to exact source, resources, identities and schema. Their existence
-does not establish a current upgrade target or bypass release-tooling validation.
+Telemetry has a narrower delivery guarantee than the outbox. An OpenTelemetry
+mirror (target) or legacy Azure Monitor mirror may record a durable attempt marker
+before emission; a local span is not remote delivery proof. Agent 365 acceptance
+does not establish every Microsoft 365 / DSPM / XDR destination.
+
+Upgrade/maintenance for the legacy Azure profile is documented in
+[gateway-upgrade.md](../../operations/gateway-upgrade.md). Portable-profile
+maintenance follows Compose/Kubernetes image+schema contracts without Azure
+What-If as a requirement.
 
 ## Current management and ingestion boundaries
 
-Agent listing uses a shared opaque creation-time/ID cursor and stable ascending
-ordering. Name/external-ID substring search is case-insensitive and combines with
-status/environment filters. The filtered count is computed before the cursor.
-The Admin UI navigates 100-item pages, resets history on filter changes and offers
-restart for invalid cursors. Overview reads full-query totals independently of
-its bounded task preview; absent totals stay unavailable. Separate queries and
-pages do not form an atomic fleet snapshot, so lifecycle changes can alter counts
-while a user browses. Overview recognizes liveness `Healthy` and readiness `Ready`
-as distinct checks; neither establishes protection or downstream delivery.
-
-Lifecycle actions bind confirmations and results to the selected registration.
-Replacement keys use the guarded one-time handoff, old-key revocation requires
-explicit acknowledgement, and uncertain actions require metadata readback.
-Credential, audit and provisioning views retain their existing role boundaries.
-
-Activity intake accepts fields richer than its stored/exported metadata. Tool
-details and arbitrary attributes do not appear automatically in telemetry.
-Custom activity is supported by the Azure Monitor mirror but not the Agent 365
-exporter. Single and batch validation differ, and duplicate new IDs within one
-batch can reach the database uniqueness constraint. Baseline tests of supported
-journeys do not turn those known limitations into accepted behavior guarantees.
+Agent listing cursor/filter semantics, role boundaries, and activity intake
+limitations are unchanged. Custom activity may be supported by the OTel/Monitor
+mirror path but not necessarily by the Agent 365 exporter. Duplicate new IDs in
+one batch can still hit uniqueness constraints.
 
 ## Security invariants
 
-Role-specific UI visibility never replaces API authorization. Registration
-status, protection readiness and telemetry delivery remain independent observations.
-
-- Entra-only SQL authentication and scoped workload identities.
+- Workload credentials and delegated Entra access are least-privilege.
 - Delegated Administrator-only Registry completion with one POST per lineage.
-- Reviewed confirmation, concurrency and exact scope checks for shared policy changes.
-- No clear credentials, tokens or raw content in logs, queues or operational receipts.
+- Reviewed confirmation, concurrency, and exact scope checks for shared policy.
+- No clear credentials, tokens, or raw content in logs, queues, or operational receipts.
+- Secrets live in Vault/OpenBao (target), not in config files or images.
 - Safe RFC 9457 errors and correlation IDs.
 - Fail-closed enforcement when required provider proof is missing or stale.
+- No required dependency on Azure PaaS for database, bus, secrets, or compute.
 
 See the [data model](data-model.md), [API contract](../api/api-contract.md),
 [provider contracts](microsoft-capabilities.md) and

@@ -1,79 +1,65 @@
 # Gateway operations
 
-Routine administration for an installed Gateway. Product objective, expected
-behaviors, and UI platform (React + Fluent for all UIs; C# backend):
-[product brief](../docs/spec/product-brief.md) ·
-[UI design](../docs/console/design.md). Fresh install:
-[bootstrap guide](../bootstrap/README.md). These commands use an explicitly
-selected configuration and its preserved deployment state.
+Routine administration for an installed Gateway.
 
-Hosted UI commands below still refer to the **Admin UI** while bootstrap deploys
-Blazor; after Console cutover they target the React Console image instead.
-`upgrade-admin-ui` is the transitional Admin UI-only promotion path.
+- Product / platforms: [product brief](../docs/spec/product-brief.md)
+- UI: [UI design](../docs/console/design.md)
+- Runtime: [system architecture](../docs/architecture/system-architecture.md)
+- Fresh install: [bootstrap](../bootstrap/README.md)
+
+Commands use an explicitly selected configuration and its preserved deployment
+state. Prefer the **zero-Microsoft-infra** profile (Compose/Kubernetes +
+PostgreSQL + RabbitMQ + Vault/OpenBao + S3). Essential product services remain
+Entra / Graph / Agent 365 / Purview / Prompt Shields. Legacy Azure infrastructure
+operations remain only for installations that still use that transitional profile.
+
+## Launcher commands
 
 | Command | Boundary |
 |---|---|
-| `gateway status` | Read local deployment state. |
-| `gateway verify` | Read back current Azure, identity, database and endpoint bindings. |
-| `gateway open` | Open the recorded verified hosted UI endpoint (Admin UI today; Console after cutover). |
-| `gateway diagnose` | Create a bounded, sanitized diagnostic bundle. |
-| `gateway resume` | Reconcile eligible interrupted work for the same accepted plan. |
-| `gateway upgrade-admin-ui` | Perform a source-bound Admin UI-only promotion. |
-| `gateway recover-database` | Reconcile an eligible interrupted database operation. |
-| `gateway repair-database` | Run the exact reviewed database repair contract. |
+| `gateway status` | Read local deployment state |
+| `gateway verify` | Read back current bindings for the selected profile |
+| `gateway open` | Open the recorded verified hosted UI endpoint |
+| `gateway diagnose` | Create a bounded, sanitized diagnostic bundle |
+| `gateway resume` | Reconcile eligible interrupted work for the same accepted plan |
+| `gateway upgrade-admin-ui` | Transitional Admin UI-only promotion (legacy Azure profile) |
+| `gateway recover-database` | Reconcile an eligible interrupted database operation |
+| `gateway repair-database` | Run the exact reviewed database repair contract |
 
 On Windows use `.\gateway.cmd`; on macOS/Linux use `./gateway`.
 Run `gateway --help` for arguments. Never edit a checkpoint to force progress,
-reuse a deleted target or replay a create whose provider outcome is unknown.
+reuse a deleted target, or replay a create whose provider outcome is unknown.
 
 ## Supported implementation files
 
-- [Provisioning preflight](verify-provisioning-prerequisites.ps1) is a read-only
-  deployment prerequisite checker called by the canonical verifier.
-- [Full maintenance](gateway-upgrade.ps1) supports Package, Prepare, reviewed
-  Plan, Build, Execute and Verify, with bounded recovery and compatible rollback.
-  Read the [upgrade contract](gateway-upgrade.md) before using it.
-- [Admin UI promotion](upgrade-bootstrap-admin-ui.ps1) is called by the root
-  launcher. Its readback helper preserves the verified predecessor separately
-  from the original bootstrap image.
-- [Windows package builder](build-purview-executor-package.ps1) is an installer
-  dependency, not an alternative deployment path.
-- `GatewayUpgrade*.psm1` and `GatewayAdminUiReadback.psm1` are internal modules.
-  Do not run them as standalone repair scripts.
+- [Provisioning preflight](verify-provisioning-prerequisites.ps1) — read-only
+  prerequisite checker used by the canonical verifier
+- [Admin UI promotion](upgrade-bootstrap-admin-ui.ps1) — transitional hosted-UI
+  promotion for the legacy profile; Console cutover replaces this path
+- [Windows package builder](build-purview-executor-package.ps1) — Purview executor
+  packaging when that optional capability is enabled
+- [Upgrade orchestration](gateway-upgrade.ps1) / [upgrade contract](gateway-upgrade.md) —
+  **legacy Azure-profile** source-bound maintenance; portable-profile maintenance
+  uses image digest + PostgreSQL migrator contracts without Azure What-If
 
-## Protection recovery
+## Purview automation reference prerequisite
 
-Registration, installed capability, saved policy, current enforcement and
-telemetry delivery are separate states. Both protections Off is valid.
+Before the first Purview tenant connection, ensure the Security & Compliance
+service-principal reference exists for the installed automation application.
+This is a Microsoft 365 provider prerequisite, independent of whether the Gateway
+runs on AWS, GCP, Azure, or on-prem. Follow the exact AppId / ObjectId checks
+required by the installed deployment; do not rewrite bootstrap receipts when
+repairing an external prerequisite.
 
-Read the exact saved operation before taking action. A completed historical
-connection can have expired current readiness. A failed policy operation with
-missing provider IDs does not prove no policy exists in Microsoft.
+## Portable vs legacy maintenance
 
-Connection refresh requires a fresh review and a fresh companion result.
-**Review existing policy check** can reconcile the exact existing policy against
-current inventory without repeating creation. It does not silently enable an
-agent or renew earlier runtime proof.
+| Concern | Portable target | Legacy Azure profile |
+|---|---|---|
+| Plan dry-run | Compose/Kubernetes manifests | Bicep What-If |
+| Database | PostgreSQL migrator | Azure SQL migrator path |
+| Queues | RabbitMQ | Service Bus |
+| Secrets | Vault/OpenBao | Key Vault |
+| Images | Any OCI registry digests | ACR digests |
 
-### Purview automation reference prerequisite
-
-The automation app's Entra service principal and its Security & Compliance
-reference are separate prerequisites. A successful human sign-in or classifier
-read does not establish the Gateway app's access. Settings must independently
-verify the configured app, certificate and exact tenant binding. Do not register
-another reference or broaden permissions merely to hide a failed read.
-
-## Preservation and diagnostics
-
-Ignored `.bootstrap/` and `.maintenance/` directories contain source-bound
-operational journals, accepted inputs and immutable receipts. They are not
-alternative source trees to develop in. Preserve the records needed by a live
-installation and resolve uncertain provider outcomes by exact readback.
-
-Keep passwords, tokens, ingress keys, raw prompts, responses and certificate
-material out of logs and ordinary configuration. Capture bounded status,
-operation IDs and safe source coordinates rather than raw provider bodies.
-
-For API and protection semantics, see the [API contract](../docs/api/api-contract.md),
-[protection architecture](../docs/architecture/protection-settings-plan.md) and
-[Windows executor boundary](../docs/architecture/purview-windows-executor.md).
+Product logic (outbox, workflow versions, exact-ID recovery) is identical across
+profiles.

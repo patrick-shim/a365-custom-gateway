@@ -4,12 +4,17 @@ React + TypeScript + Fluent UI SPA on the existing **C# / .NET** Gateway REST AP
 
 This package is the **target hosted operator UI** in the product-wide UI
 modernization: **all** Gateway UIs (Console and guided Setup) move to this stack.
+The API it talks to runs on **non-Microsoft infrastructure** (PostgreSQL,
+RabbitMQ, Vault/OpenBao, S3, Compose/Kubernetes on AWS/GCP/on-prem). Product
+calls still use Entra, Graph, Agent 365, Purview, and Prompt Shields.
+
 Product contracts: [product brief](../../docs/spec/product-brief.md).  
-UI platform: [UI design](../../docs/console/design.md).
+UI platform: [UI design](../../docs/console/design.md).  
+Runtime: [system architecture](../../docs/architecture/system-architecture.md).
 
 Today: not yet full feature parity with Blazor Admin UI, and **not** part of
-bootstrap deploy/open/upgrade. Blazor remains deployed until cutover. Setup UI
-modernization is a separate but same-stack track.
+bootstrap deploy/open/upgrade. Blazor may remain on the legacy Azure profile until
+cutover. Setup UI modernization is a separate but same-stack track.
 
 ## Run locally against an API
 
@@ -48,8 +53,9 @@ directory as the Docker context. `SOURCE_REVISION` can label the immutable image
 with its source commit. Publish the image to the existing registry and deploy by
 digest; do not recreate the Gateway or its Entra registrations for a UI update.
 
-Azure Container Apps requires the Linux x64 runtime image, even when developing
-on Windows ARM. The Node build stage runs natively; its output is static assets.
+Hosted Linux x64 (`linux/amd64`) is required for typical Compose/Kubernetes or
+cloud container hosts, even when developing on Windows ARM. The Node build stage
+runs natively; its output is static assets.
 
 ```powershell
 docker buildx build --platform linux/amd64 --provenance=false --load `
@@ -126,7 +132,7 @@ an image-pull error; changing registry permissions does not repair its platform.
   It verifies both that mode and `VerifyPurviewTenantConnection` in the review;
   an older companion-only API is a visible error, never a fallback. Confirmation
   queues the independent verifier using the installed application, service
-  principal, Key Vault and certificate binding. Two exact provider reads and the
+  principal, Vault/OpenBao (or legacy Key Vault) certificate binding. Two exact provider reads and the
   final check are required before Connected. No local script or pasted evidence
   is involved, and no provider permissions are granted or changed.
 - A fresh Gateway check can replace an expired `AwaitingAdministrator` handoff

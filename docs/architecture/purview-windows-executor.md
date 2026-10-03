@@ -1,18 +1,23 @@
 # Purview Windows execution boundary
 
 Executor, worker transport, and packaging source. Remains a **C# / Windows**
-boundary even as all operator UIs move to React + Fluent
+boundary for **essential** Microsoft Purview automation — independent of whether
+the Linux Gateway runs on AWS, GCP, or on-prem (zero Microsoft infrastructure)
 ([product brief](../spec/product-brief.md), [UI design](../console/design.md)).
 Windows/package qualification is distinct from a compliance provider connection
 or DLP readiness. A private authenticated health response must match the expected
 source and package; bootstrap's Installed status alone does not establish that
 runtime result or policy enforcement.
 
+Secrets (automation certificates) resolve from **Vault/OpenBao** on the portable
+profile (legacy Azure Key Vault only on the transitional Azure profile).
+
 ## Responsibilities
 
-The Linux worker owns SQL, outbox, dedicated queues and durable protection
-operations. Certificate-backed Security & Compliance PowerShell runs through a
-private Windows App Service. The fixed command set is:
+The Linux worker owns PostgreSQL state, outbox, RabbitMQ queues (target), and
+durable protection operations. Certificate-backed Security & Compliance PowerShell
+runs on a private Windows host (container or VM — not Azure App Service as a
+requirement). The fixed command set is:
 
 | Command | Purpose |
 |---|---|
@@ -75,14 +80,14 @@ has expired.
 ## Caller and certificate authority
 
 A dedicated single-tenant API application exposes Purview.Executor.Invoke to the
-exact worker system managed identity. App Service authentication and application
+exact worker caller identity. Host authentication and application
 authorization independently check the caller. The application checks signature,
 issuer, audience, tenant, principal, client application, role and lifetime, and
 rejects delegated scope tokens.
 
 The executor identity is distinct from API, worker and Purview runtime identities.
 It reads the exact certificate secret and package container, and writes its
-dedicated durable claim container. It has no SQL, Service Bus, Graph or Registry
+dedicated durable claim container. It has no database, message bus, Graph or Registry
 authority. Certificate bytes stay within the Windows provider.
 
 The Windows host configuration requires WEBSITE_LOAD_USER_PROFILE=1 and verifies
@@ -128,16 +133,13 @@ their original hosting receipt. The
 can verify an approved, already-existing B1/B2 change without resizing or
 rewriting that history.
 
-The source provisions dedicated VNet integration, private endpoint and DNS for
-application/SCM names. Public network access and basic publishing credentials are
-disabled. App Service loads a SHA256-addressed ZIP from private Blob Storage using
-its system identity.
+**Portable target:** package the executor as a digest-pinned Windows container or
+ZIP artifact in S3-compatible storage; load credentials from Vault/OpenBao; publish
+with a one-shot job that has create-only semantics and no automatic retries.
 
-A manual Container Apps job publishes the fixed ZIP embedded in an immutable
-publisher image. It has one replica, bounded duration, no automatic retries and
-package-container Blob Data Contributor authority only. That role includes
-deletion capability; the publisher implements create-only behavior with a
-conditional write.
+**Legacy Azure profile (transitional):** may still use private App Service + Blob
++ a manual Container Apps publisher job with VNet/private endpoint bindings.
+Those Azure-specific hosting choices are not product requirements.
 
 The package inspector verifies the source receipt, archive digest, runtime
 manifest and every file hash. Counted reads bound actual expanded size. Windows

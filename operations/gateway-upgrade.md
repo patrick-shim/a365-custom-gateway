@@ -1,12 +1,22 @@
-# Versioned in-place Gateway upgrade
+# Versioned in-place Gateway upgrade (legacy Azure profile)
+
+> **Scope:** this document describes **legacy Azure PaaS profile** maintenance
+> (ACR, Azure SQL, Service Bus, Key Vault, Container Apps, Bicep What-If).
+> The product target is **zero Microsoft infrastructure** — PostgreSQL, RabbitMQ,
+> Vault/OpenBao, S3-compatible storage, Compose/Kubernetes on AWS/GCP/on-prem —
+> while Entra/Graph/Agent 365/Purview/Prompt Shields stay essential product APIs.
+> See [product brief](../docs/spec/product-brief.md) and
+> [system architecture](../docs/architecture/system-architecture.md).
+> Portable upgrades use digest-pinned OCI images + PostgreSQL migrator contracts;
+> they do not require this Azure What-If path.
 
 [`gateway-upgrade.ps1`](gateway-upgrade.ps1) is the retained v2 maintenance
-orchestration: Package, Prepare, Plan, Build, Execute, Verify and compatible Rollback,
-with a separate original-only SQL administrator compensation mode. It does not
-invoke Setup, Resume, recovery commands or the old database initialization job.
-Validate the actual frozen candidate and its prerequisites before using this
-workflow. A historical receipt or another installation's result does not
-establish current deployment authority.
+orchestration for the legacy Azure profile: Package, Prepare, Plan, Build,
+Execute, Verify and compatible Rollback, with a separate original-only SQL
+administrator compensation mode. It does not invoke Setup, Resume, recovery
+commands or the old database initialization job. Validate the actual frozen
+candidate and its prerequisites before using this workflow. A historical receipt
+or another installation's result does not establish current deployment authority.
 
 Product UI platform (React + Fluent for **all** UIs including Setup; C# backend)
 is defined in the [product brief](../docs/spec/product-brief.md) and

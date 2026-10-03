@@ -1,10 +1,17 @@
 # Microsoft provider contracts
 
-Contracts used by the retained **C#** Gateway adapters and deployment source.
-UI modernization (React + Fluent Console/Setup) does not change these provider
-boundaries. Product scope: [product brief](../spec/product-brief.md). This is not
-a fresh provider-documentation review or proof of a live tenant's capabilities.
-Revalidate provider availability and permissions during deployment planning.
+Contracts for the **essential Microsoft product services** this Gateway exists
+to use: **Entra, Graph, Agent 365, Purview, and Prompt Shields**.
+
+These are **not** infrastructure. Gateway hosting must have **zero Microsoft
+dependence** (PostgreSQL, RabbitMQ, Vault/OpenBao, S3, Compose/Kubernetes on
+AWS/GCP/on-prem). Do not require Azure SQL, Service Bus, Key Vault, Container
+Apps, ACR, or Blob to run.
+
+UI modernization does not change these provider boundaries. Product scope:
+[product brief](../spec/product-brief.md). This is not a fresh provider-docs
+review or proof of a live tenant's capabilities. Revalidate permissions during
+deployment planning.
 
 ## Agent Identity and Agent 365
 
@@ -122,44 +129,39 @@ Provider references:
 [DLP rule](https://learn.microsoft.com/powershell/module/exchangepowershell/new-dlpcompliancerule?view=exchange-ps),
 [module platform support](https://learn.microsoft.com/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps#supported-operating-systems-for-the-exchange-online-powershell-module).
 
-## Azure AI Content Safety
+## Prompt Shields (essential product service)
 
-Prompt Shields calls POST /contentsafety/text:shieldPrompt with API version
-2024-09-01. The retained adapter uses ManagedIdentityCredential and resource-scoped
-Cognitive Services User authority; it does not fall back to account keys or a
-developer credential chain. An attack decision blocks, while required protection
-fails closed on transport, authorization or schema ambiguity.
+Prompt Shields is an **essential** Gateway capability. The adapter calls Microsoft
+content safety `POST /contentsafety/text:shieldPrompt` (API version 2024-09-01)
+as a **product API**, not as a reason to host the Gateway on Azure infrastructure.
+Portable runtimes authenticate with Vault-issued or non-Microsoft workload
+credentials suitable for that API; the legacy Azure infra profile may still use
+ManagedIdentityCredential. Account-key fallbacks are not used. An attack decision
+blocks; required protection fails closed on transport, authorization, or schema
+ambiguity.
 
-Guided fresh setup includes shared Content Safety in every preset. Per-agent
-Prompt Shields usage is independent and optional. The source retains legacy
-disabled capability configurations for bound recovery. Resource installation
-alone does not prove a successful runtime decision.
+Per-agent On/Off is a usage control, not a statement that Prompt Shields is
+optional to the product. API reachability alone does not prove a successful
+runtime decision.
 
-Provider references:
+Provider references (when using Azure AI Content Safety as the provider):
 [Prompt Shields operation](https://learn.microsoft.com/rest/api/contentsafety/text-operations/shield-prompt?view=rest-contentsafety-2024-09-01),
 [Entra authentication](https://learn.microsoft.com/azure/ai-services/authentication).
 
-## Azure deployment boundaries
+## Deployment boundaries (portable vs legacy)
 
-| Area | Source requirement |
-|---|---|
-| Region discovery | Target subscription's ARM location inventory; retain canonical region names and validate provider/SKU availability separately |
-| SQL | Entra-only authentication and private access |
-| Key Vault | Scoped identity/RBAC access and exact certificate secret binding |
-| Container Apps | Managed identities and immutable candidate image bindings |
-| Service Bus | Separate registration and protection queues with duplicate-safe consumers |
-| Windows executor | Private application/SCM access, package integrity and exact worker caller |
-| Upgrade | Preserved bootstrap state plus a separate exact source/resource/schema-bound plan |
+| Area | Portable target | Legacy Azure profile (transitional) |
+|---|---|---|
+| Database | PostgreSQL (+ SQLite local/dev) | Azure SQL |
+| Queues | RabbitMQ; duplicate-safe consumers | Service Bus |
+| Secrets | OpenBao / HashiCorp Vault | Key Vault |
+| Compute / images | Compose/Kubernetes; any OCI registry digests | Container Apps + ACR |
+| Windows executor | Private Windows host; package integrity; exact worker caller | Windows App Service variant of the same contract |
+| Upgrade | Image + schema plan for the portable profile | [Azure upgrade tooling](../../operations/gateway-upgrade.md) |
 
-All Azure operations use the exact tenant and subscription bound by the accepted
-configuration and plan. Historical configuration does not establish a current
-target. The
-[upgrade tooling](../../operations/gateway-upgrade.md) must satisfy its own
-prerequisites and actual verification limits.
-
-Provider references:
-[ARM location inventory](https://learn.microsoft.com/rest/api/resources/subscriptions/list-locations?view=rest-resources-2022-12-01),
-[managed identity authorization considerations](https://learn.microsoft.com/entra/identity/managed-identities-azure-resources/managed-identity-best-practice-recommendations#limitation-of-using-managed-identities-for-authorization).
+Historical configuration does not establish a current target. Microsoft Graph /
+Registry / Purview API operations use the exact Entra tenant bound by the accepted
+configuration regardless of where containers run.
 
 ## Unsupported assumptions
 

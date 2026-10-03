@@ -1,73 +1,76 @@
 # Infrastructure assets
 
-Declarative Azure and SQL assets for the product in the
-[product brief](../docs/spec/product-brief.md). Consumed by the
-[bootstrap lifecycle](../bootstrap/README.md) and
-[existing-environment operations](../operations/README.md). Templates and SQL
-files are inputs to those workflows, not independent installation instructions.
+Declarative and schema assets for the product in the
+[product brief](../docs/spec/product-brief.md). Consumed by
+[bootstrap](../bootstrap/README.md) and [operations](../operations/README.md).
 
-Hosted UI modules still provision the **Admin UI** Container App today. Console
-cutover and React Setup packaging will extend these assets; they do not change
-the C# API/worker/executor ownership. UI platform:
-[UI design](../docs/console/design.md).
+## Product direction
 
-Build the [production solution](../src/A365Gateway.slnx) and deploy through the
-canonical installer. Existing outputs or historical receipts alone do not prove
-the current Azure, identity or database state.
+**Infrastructure target: zero Microsoft dependence.** PostgreSQL, RabbitMQ,
+OpenBao/Vault, S3-compatible storage, Docker Compose and/or Kubernetes, any OCI
+registry. Take the same images to **AWS (ECS/EKS), GCP, or on-prem** and they
+must run without Azure SQL, Service Bus, Key Vault, Container Apps, ACR, or Blob.
 
-## Layout
+**Product services stay Microsoft and essential:** Entra, Graph, Agent 365,
+Purview, Prompt Shields. Those are APIs — not the running environment.
+
+Architecture: [system architecture](../docs/architecture/system-architecture.md).
+**Logic stays the same** (outbox, queue names, migrator, C# API/worker).
+
+## Profiles
+
+| Profile | Status | Assets |
+|---|---|---|
+| **Portable** (Compose / Kubernetes) | **Product target** | To be the canonical install path — PostgreSQL, RabbitMQ, Vault/OpenBao, MinIO/S3, OCI images |
+| **Legacy Azure PaaS** | Transitional | Existing `bicep/` and `bootstrap/infra/` templates |
+
+Do not treat Bicep success as the long-term product shape.
+
+## Layout (repository today)
 
 | Path | Purpose |
 |---|---|
-| `bicep/main.bicep` | Workload composition for an existing foundation. |
-| `bicep/admin-ui.bicep` | Bounded Admin UI deployment. |
-| `bicep/modules/` | Shared Azure resource modules. |
-| `bicep/parameters/` | Environment parameter inputs. |
-| `bicep/maintenance-*.bicep` | Bounded inputs to the maintenance lifecycle. |
-| `sql/` | Forward schema changes whose order and checksums must be bound by the migration workflow. |
+| `bicep/main.bicep` | Legacy Azure workload composition |
+| `bicep/admin-ui.bicep` | Legacy Admin UI Container App |
+| `bicep/modules/` | Legacy Azure resource modules |
+| `bicep/parameters/` | Legacy environment parameters |
+| `bicep/maintenance-*.bicep` | Legacy maintenance inputs |
+| `sql/` | Forward schema scripts bound by the migrator (engine-portable intent: PostgreSQL target) |
+| *(planned)* `compose/`, `kubernetes/` | Portable profile manifests |
 
-Bootstrap-specific subscription, foundation, private-endpoint and database-job
-composition lives under `bootstrap/infra/`.
+Bootstrap-specific Azure foundation templates live under `bootstrap/infra/` and
+are legacy-profile inputs.
 
-## Azure boundary
+## Portable boundary (target)
 
-The retained templates describe Container Apps, Container Registry, SQL, Service
-Bus, Blob storage, Key Vault, networking, managed identities, role assignments,
-Application Insights and protection dependencies. Purview execution also uses a
-Windows App Service and its runtime/package infrastructure.
+| Concern | Target |
+|---|---|
+| Database | PostgreSQL (+ SQLite for local/dev only) |
+| Queues | RabbitMQ; logical names `gateway-provisioning-v3`, `gateway-protection-admin-v1` |
+| Secrets | OpenBao or HashiCorp Vault |
+| Content | S3-compatible bucket |
+| Apps | Containers for API, worker, Console; optional Windows executor where Purview is enabled |
+| Images | Digest-pinned OCI artifacts from any registry |
 
-New bootstrap configurations require the shared Azure AI Content Safety resource
-for Prompt Shields; per-agent use remains optional. The templates disable local
-authentication and assign the Gateway API managed identity the required
-data-plane role, without provisioning an account key. Accepted older
-configurations may retain their earlier capability choices.
+Purview policy objects still belong to Microsoft 365 and are not created by
+infra templates. Successful infra deploy never proves policy enforcement.
 
-Purview policy objects belong to Microsoft 365 and are not created by Azure
-Bicep. The authorized Security & Compliance PowerShell integration manages a
-fixed tenant-wide `Group` location for Know Your Data and a blueprint-specific
-`Individual` location for DLP. Azure assets supply the integration's runtime
-dependencies; successful infrastructure deployment does not prove policy
-configuration or effective protection.
+## Legacy Azure boundary (transitional)
 
-## SQL boundary
+Existing templates may still describe Container Apps, ACR, Azure SQL, Service
+Bus, Blob, Key Vault, managed identities, Application Insights, and Windows App
+Service for the Purview executor. Read those as the **legacy profile** only.
+New documentation and new work prefer the portable profile.
 
-The retained orchestration expects `tools/Gateway.DatabaseMigrator` to apply
-source-bound schema changes and verify the database. Its restored source must
-retain exact manifest ordering, checksums and model/readback contracts.
-Local transaction fixtures create the current EF schema; they do not replace
-the complete migration and preserved-environment acceptance.
+## Database / migrator boundary
 
-Empty-database initialization is intended only when SQL reports zero user tables.
-Existing environments require the maintenance lifecycle and exact database
-readback. Do not apply individual SQL files manually or infer completion from
-their filenames. Preserve the original initialization evidence and user data;
+`tools/Gateway.DatabaseMigrator` applies source-bound schema changes and verifies
+the database. Target engine is **PostgreSQL**. Do not apply individual SQL files
+manually or infer completion from filenames. Preserve data across upgrades;
 rollback uses compatible code on the expanded schema.
 
 ## Validation boundary
 
-Validation includes template compilation, configuration contracts, migration
-ordering, real schema and preservation checks. Build and provider verification
-must use the same immutable source and artifact bindings.
-
-An authorized live deployment requires a current target-bound plan and What-If.
-Local compilation or test results do not prove Azure, tenant or database state.
+Validation includes template/manifest compilation, configuration contracts,
+migration ordering, and real schema/preservation checks for the **selected
+profile**. Local compilation does not prove live cloud or on-prem state.

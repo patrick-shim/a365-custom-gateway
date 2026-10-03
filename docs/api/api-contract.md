@@ -1,14 +1,16 @@
 # Gateway API contract
 
 HTTP rules for the control plane (Entra) and data plane (Gateway key). Product
-objective, scope, and expected behaviors are defined in the
+objective, scope, UI/runtime platforms, and expected behaviors are defined in the
 [product brief](../spec/product-brief.md). The checked-in
 [OpenAPI document](openapi.yaml) is the machine-readable schema.
 
 This page covers authorization, safety, and lifecycle rules that are easy to
 miss when reading individual operations. Local fixtures, live health checks,
 and signed-in product journeys have different scopes; do not substitute one for
-another.
+another. Hosting is **platform-agnostic** (PostgreSQL, RabbitMQ, Vault/OpenBao,
+Compose/Kubernetes on AWS/GCP/on-prem). Essential product APIs remain Entra /
+Graph / Agent 365 / Purview / Prompt Shields.
 
 ## HTTPS ingress
 
@@ -20,16 +22,19 @@ scheme; direct HTTPS remains supported. Invalid, duplicate, noncanonical or
 trust-all CIDRs fail startup instead of silently broadening the boundary.
 A missing network peer cannot establish forwarding authority either.
 
-The supported Container Apps deployment binds the reviewed platform ingress
-range `100.100.0.0/17`; public peers and the separately observed workload range
-are not trusted by that setting. IPv4-mapped peers use the same boundary.
-Forwarded host and client-IP headers do not gain authority from this configuration.
-Container Apps overwrites client-supplied protocol headers at its TLS terminator.
-Canonical verification checks the request-derived public HTTPS origin even when
-the client supplies misleading forwarding headers. A changed platform hop requires
-reviewed configuration and new verification, not clearing the proxy allowlist.
-See the platform's [ingress-header contract](https://learn.microsoft.com/azure/container-apps/ingress-overview#http-headers)
-and [reserved network ranges](https://learn.microsoft.com/azure/container-apps/custom-virtual-networks#subnet).
+**Portable profile:** configure trusted CIDRs for the actual reverse proxy or
+load balancer (nginx, Traefik, cloud LB, ingress controller). Forwarded host and
+client-IP headers do not gain authority from this setting. Canonical verification
+checks the request-derived public HTTPS origin even when the client supplies
+misleading forwarding headers. A changed hop requires reviewed configuration and
+new verification, not clearing the proxy allowlist.
+
+**Legacy Azure Container Apps profile (transitional):** may bind the reviewed
+platform ingress range `100.100.0.0/17`; public peers and the separately observed
+workload range are not trusted by that setting. See Azure Container Apps
+[ingress headers](https://learn.microsoft.com/azure/container-apps/ingress-overview#http-headers)
+and [reserved ranges](https://learn.microsoft.com/azure/container-apps/custom-virtual-networks#subnet)
+only when using that legacy profile.
 
 ## API surfaces
 
@@ -43,7 +48,8 @@ Control-plane routes are rooted at `/api/v1`. Clients include the legacy Blazor
 Admin UI and the React Console (and, after migration, the React Setup UI for
 install-time flows that call the API). Page-level role checks never replace API
 authorization. All new UI work follows the
-[UI design system](../console/design.md); the backend remains C#.
+[UI design system](../console/design.md); the backend remains C#; runtime hosting
+follows the portable profile in the [product brief](../spec/product-brief.md).
 
 The source implements the additive
 [protection settings](../architecture/protection-settings-plan.md) control plane
@@ -419,7 +425,7 @@ Idempotency-Key: {uuid-v4}
 ```
 
 The Gateway determines which services apply using the current registration.
-Disabling Prompt Shields skips its Azure AI Content Safety call; it does not skip
+Disabling Prompt Shields skips its configured content-safety provider call; it does not skip
 this Gateway route. Purview DLP can still require prompt-side evaluation while
 Prompt Shields is off. Administrators can change either protection without changing
 client flags, keys, or deployment. Clients must not guess the effective policy from
@@ -561,7 +567,7 @@ generation after expiry or context rejection.
 
 The current activity DTO also accepts tool details and custom attributes that
 are not retained by the receipt/outbox telemetry projection. Custom activity has
-an Azure Monitor mapping but no Agent 365 mapping. Single-activity validation is
+an OpenTelemetry / legacy Azure Monitor mapping but no Agent 365 mapping. Single-activity validation is
 not yet identical to batch validation; duplicate new IDs in the same batch can
 fail at SQL uniqueness enforcement rather than return per-item rejection.
 Do not infer rich tool analytics or all-destination delivery from acceptance.

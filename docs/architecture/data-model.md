@@ -1,13 +1,13 @@
 # Data model
 
 Persistence for the product described in the
-[product brief](../spec/product-brief.md). UI clients (legacy Admin UI, React
-Console, future React Setup) do not own this model — the **C#** API and worker
-do. Azure SQL is authoritative for registrations, provisioning, credentials,
-protection configuration, audit, idempotency, and dispatch state. This guide
-covers the EF model and persistence contracts. Local SQL behavior does not
-establish Azure identity, private networking, or another deployment's migration
-and receipt state.
+[product brief](../spec/product-brief.md). UI clients do not own this model —
+the **C#** API and worker do.
+
+**Target engine: PostgreSQL** (SQLite optional for single-node local/dev). The
+relational schema, EF model, transactional outbox, and idempotency contracts stay
+intact; Azure SQL is only a legacy deploy-profile binding. Local DB behavior does
+not establish live identity, networking, or another deployment's migration state.
 
 ## Core relationships
 
@@ -65,7 +65,7 @@ permission to POST again.
 ## Idempotency, locks and dispatch
 
 Data-plane idempotency binds registration, normalized endpoint and canonical
-UUIDv4 key to the request hash. SQL application locks serialize the scope.
+UUIDv4 key to the request hash. Database application locks serialize the scope.
 Matching requests can replay a safe stored result; a changed hash conflicts.
 One-time secret responses are not cached for replay.
 
@@ -92,10 +92,11 @@ older-step messages retain their existing completion/dead-letter dispositions.
 Producers and workers therefore require matching releases; see the
 [upgrade compatibility boundary](../../operations/gateway-upgrade.md#protection-transport-compatibility).
 
-The `AzureMonitorMirrorScheduled` audit event is an attempt-suppression marker,
-not a per-destination delivery receipt. It precedes span emission and can therefore
-survive a crash without a delivered span. The current data model does not retain
-independently confirmed landing for every downstream telemetry destination.
+Telemetry mirror attempt-suppression markers (legacy `AzureMonitorMirrorScheduled`
+or the portable OpenTelemetry equivalent) are not per-destination delivery
+receipts. They may precede span emission and can survive a crash without a
+delivered span. The data model does not retain independently confirmed landing
+for every downstream telemetry destination.
 
 Protection operations also bind actor, tenant, target, reviewed payload, accepted
 request, confirmation verifier, idempotency key and row version. Provider work
@@ -122,8 +123,8 @@ Recovery reads the existing records without renewing consent or launch expiry.
 | ProtectionAdminOperations and steps | Reviewed intent, deferred binding, durable progress, safe failures, runtime consent/result and recovery disposition |
 
 Capability startup synchronization uses deployment/source/time-bound attestation,
-a SQL application lock and a serializable transaction. The normal bootstrap path
-requires either zero or all three capability rows, preserves unchanged row
+a database application lock and a serializable transaction. The normal bootstrap
+path requires either zero or all three capability rows, preserves unchanged row
 versions and rejects installed-fact drift. A separate preparation-history path
 requires its matching authorization; old bootstrap configuration cannot bypass
 an upgraded projection's receipt requirements.

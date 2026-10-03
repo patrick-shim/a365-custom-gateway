@@ -1,29 +1,30 @@
 # Protection configuration architecture
 
 Bootstrap, registration, hosted UI Settings / Data protection, and runtime
-protection contracts. Product-level scope, expected behaviors, and UI platform
-(React + Fluent for all UIs; C# backend) are in the
+protection contracts. Product-level scope (essential Entra/Graph/Agent 365/
+Purview/Prompt Shields; **zero Microsoft infrastructure**) is in the
 [product brief](../spec/product-brief.md) and [UI design](../console/design.md).
 
 Much of the Settings wording below still describes the **legacy Blazor Admin UI**
-tasks that bootstrap deploys today. Target Console IA places the same contracts
-under Data protection / Platform. Configuration, current readiness, and observed
-provider behavior remain separate facts.
+tasks. Target Console IA places the same contracts under Data protection /
+Platform. Configuration, current readiness, and observed provider behavior remain
+separate facts. Capability preparation uses Vault/OpenBao + workload credentials
+on the portable profile (legacy Azure Key Vault / managed identity only on the
+transitional Azure profile).
 
 ## Ownership
 
 | Area | Capability preparation | Application configuration |
 |---|---|---|
 | Agent 365 Registry beta | Deployment-wide environment and identity admission | Display capability; signed-in Administrator completes each registration |
-| Prompt Shields | Shared Content Safety resource, managed-identity role, endpoint and readback | Deployment defaults, independent per-agent use and effective status |
-| Purview | Runtime/automation identities, permissions, certificate, Windows execution path and capability readback | Tenant connection, inventory, KYD, shared blueprint policy, reviewed configuration and runtime tests |
+| Prompt Shields | Configured content-safety provider endpoint + workload credential readback | Deployment defaults, independent per-agent use and effective status |
+| Purview | Runtime/automation identities, permissions, certificate in Vault/OpenBao, Windows execution path and capability readback | Tenant connection, inventory, KYD, shared blueprint policy, reviewed configuration and runtime tests |
 
-Guided fresh setup includes shared Azure AI Content Safety for all presets.
+Guided fresh setup may include a shared Prompt Shields provider when selected.
 **Full evaluation** includes Purview prerequisites; **Core Gateway** omits Purview
 prerequisites; **Custom** chooses Purview independently. Agent-level Prompt Shields
-use remains optional. The source retains disabled legacy Content Safety
-configuration for source-bound recovery. An unavailable quota does not silently
-change SKU or remove the service from a fresh guided plan.
+use remains optional. Legacy Azure AI Content Safety SKUs/quotas apply only to
+the transitional Azure profile and must not silently change portable plans.
 
 Bootstrap prepares capabilities and verifies their exact resource/identity
 bindings. It does not select sensitive information types or author tenant policies.

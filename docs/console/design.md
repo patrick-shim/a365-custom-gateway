@@ -2,12 +2,14 @@
 
 Authoritative UI platform for **every** Gateway user interface: hosted Console,
 guided Setup/bootstrap, and any future operator surface. Product objective,
-scope, and behaviors stay in the [product brief](../spec/product-brief.md).
+scope, behaviors, essential Microsoft product services, and
+**zero-Microsoft infrastructure** stay in the
+[product brief](../spec/product-brief.md).
 
-> TL;DR — **All UIs** move to one **React + TypeScript + Fluent UI v9** stack:
-> reactive, sleek, flexible, fast, and responsive. **C# / .NET stays** for API,
-> worker, Purview executor, and migrator. PowerShell stays for bootstrap
-> orchestration. Blazor Admin UI and the legacy Setup app are transitional only.
+> TL;DR — **All UIs** → React + TypeScript + Fluent UI v9. **C#** stays for API,
+> worker, Purview executor, migrator. **Infra** → PostgreSQL/RabbitMQ/Vault/S3 on
+> AWS/GCP/on-prem (no Microsoft infra). **Product APIs** → Entra, Graph, Agent 365,
+> Purview, Prompt Shields remain essential. Blazor/legacy Setup are transitional.
 
 ---
 
@@ -19,6 +21,8 @@ scope, and behaviors stay in the [product brief](../spec/product-brief.md).
 | **Hosted Console** | Replace `Gateway.AdminUi` after feature cutover into bootstrap. | Same `/api/v1` contract; Fluent SPA is the long-term operator UI. |
 | **Guided Setup UI** | Replace `Gateway.Setup` UI with the same React + Fluent stack; keep PowerShell plan/apply/verify engine. | Install is part of the product experience; it must match Console quality. |
 | **Backend** | Keep C# / .NET API, worker, Windows Purview executor, DatabaseMigrator. | Control plane is solid; Purview executor must stay Windows + PowerShell. |
+| **Infrastructure** | Zero Microsoft dependence: PostgreSQL, RabbitMQ, Vault/OpenBao, S3, Compose/Kubernetes on AWS/GCP/on-prem. | Azure SQL / Service Bus / Key Vault / Container Apps forbidden as requirements. |
+| **Product APIs** | Keep Entra, Graph, Agent 365, Purview, Prompt Shields. | These are the Gateway's purpose — not hosting. |
 | **Contract** | Hosted Console uses MSAL-acquired delegated bearer on `/api/v1/*`. | API authorization remains authoritative. |
 
 **New UI is React + Fluent only.** Do not expand Blazor or the legacy Setup UI

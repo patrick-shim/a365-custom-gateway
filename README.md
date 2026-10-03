@@ -1,50 +1,64 @@
 # A365 Custom Gateway
 
-Tenant-owned Azure control plane that connects **independently hosted** AI agents
-to **Microsoft Agent 365** identity and observability, with optional **Prompt
-Shields** and **Microsoft Purview** protection.
+Control plane that connects **independently hosted** AI agents to the Microsoft
+services that are this product's purpose: **Entra**, **Graph**, **Agent 365**,
+**Purview**, and **Prompt Shields**.
 
 External agents keep their own hosting and model calls. The Gateway manages
 registration, one-time ingress keys, pre-model evaluation receipts, activity /
-interaction intake, and optional protection workflows.
+interaction intake, and protection workflows.
+
+**Two layers:**
+
+| Layer | Rule |
+|---|---|
+| **Product services** | Entra, Graph, Agent 365, Purview, Prompt Shields — **essential** |
+| **Infrastructure** | **Zero Microsoft dependence** — PostgreSQL, RabbitMQ, Vault/OpenBao, S3/MinIO, OCI images on **AWS / GCP / on-prem** containers must just work |
+
+No Azure SQL, Service Bus, Key Vault, Container Apps, ACR, or Blob as runtime
+requirements.
 
 **Product definition:** [docs/spec/product-brief.md](docs/spec/product-brief.md)  
-**UI platform:** [docs/console/design.md](docs/console/design.md) — React + Fluent
-for **all** UIs (Console and Setup); **C# / .NET** remains the backend.
+**UI platform:** [docs/console/design.md](docs/console/design.md) — React + Fluent for all UIs; C# backend  
+**Runtime platform:** [docs/architecture/system-architecture.md](docs/architecture/system-architecture.md) — PostgreSQL, RabbitMQ, Vault/OpenBao, S3-compatible storage, Compose/Kubernetes
 
 ## What you get
 
 | Capability | Role |
 |---|---|
-| Guided install | Deploy API, worker, hosted UI, SQL, Service Bus, Key Vault |
+| Guided install | Deploy API, worker, hosted UI, PostgreSQL, RabbitMQ, Vault/OpenBao, object storage |
 | Agent registration | Reusable blueprint → distinct child Agent ID → Gateway key |
 | Registry handoff | Signed-in Administrator completes Agent 365 Registry (Development preview) |
 | Data plane | Evaluate prompts → call your model → submit activities / interactions |
-| Optional protection | Prompt Shields and/or Purview DLP with review → confirm → execute |
-| Optional telemetry | Agent 365 observability (default) and/or Azure Monitor mirror |
-| Modern UI platform | React + TypeScript + Fluent UI v9 for Console and Setup (migration in progress) |
+| Protection | Purview + Prompt Shields (essential product services; per-agent usage controls) |
+| Telemetry | Agent 365 observability (essential); OpenTelemetry ops mirror (non-Microsoft) |
+| Modern UI | React + TypeScript + Fluent UI v9 for Console and Setup (migration in progress) |
+| Infra | Same images on AWS ECS/EKS, GCP, or on-prem — **no Microsoft infrastructure** |
 
 **Not in scope:** proxying the model, production Registry admission, deleting
-linked Microsoft resources on Gateway registration removal, or rewriting the
-C# control plane into another backend language.
+linked Microsoft resources on Gateway registration removal, rewriting the C#
+backend, or requiring any Microsoft-hosted infrastructure to run.
 
 ## Platform direction
 
 | Layer | Direction |
 |---|---|
-| Backend | Stay on C# / .NET (API, worker, Purview executor, migrator) |
-| Installer engine | Stay on PowerShell bootstrap (`gateway` / `gateway.cmd`) |
-| All UIs | Move completely to React + Fluent — including guided Setup |
+| Backend | Stay on C# / .NET |
+| All UIs | React + Fluent (Console + Setup) |
+| Product APIs | Entra, Graph, Agent 365, Purview, Prompt Shields — **keep** |
+| Database | PostgreSQL (SQLite local/dev) — **not** Azure SQL |
+| Messaging | RabbitMQ — **not** Azure Service Bus |
+| Secrets | OpenBao / HashiCorp Vault — **not** Azure Key Vault |
+| Content | S3-compatible (e.g. MinIO / AWS S3) |
+| Compute | Docker Compose / Kubernetes (ECS/EKS/GKE/…) — **not** Container Apps |
+| Images | Any OCI registry (ECR, GCR, GHCR, Harbor, …) |
 
-Today, bootstrap still deploys the **Blazor Admin UI** and launches the legacy
-**Setup** app. Those are transitional. New UI work follows the
-[UI design system](docs/console/design.md).
+Legacy Azure PaaS templates in-repo are transitional only.
 
 ## Build and install
 
-Requirements: Git, PowerShell 7, Azure CLI, and the .NET SDK from
-[global.json](global.json). Windows Purview packaging needs the exact signed
-runtimes in the [bootstrap guide](bootstrap/README.md).
+Requirements: Git, PowerShell 7, the .NET SDK from [global.json](global.json),
+and Docker (portable profile). Legacy Azure profile additionally needs Azure CLI.
 
 ```powershell
 dotnet build .\src\A365Gateway.slnx --configuration Release
@@ -58,18 +72,18 @@ doctor -> init -> plan -> apply -> verify
                           resume after an eligible interruption
 ```
 
-Registry provisioning is an explicitly acknowledged **Development-only** preview.
-Staging and production admission remain closed. Deployment health does not prove
-telemetry delivery or policy enforcement.
+Choose the deploy profile during setup (portable Compose/Kubernetes target;
+legacy Azure only while still supported). Registry provisioning is an explicitly
+acknowledged **Development-only** preview. Staging and production admission remain
+closed. Deployment health does not prove telemetry delivery or policy enforcement.
 
 ## Connect an external agent
 
-1. Sign in to the hosted operator UI (today: bootstrap-deployed **Blazor Admin UI**;
-   target: **React Console**) and open **Getting started** / Agents.
+1. Sign in to the hosted operator UI (today may still be Blazor Admin UI on the
+   legacy profile; target is React Console) and open Getting started / Agents.
 2. Register an agent on a new or compatible existing identity blueprint.
 3. Review optional telemetry and protection choices when the UI offers them
-   (legacy Admin UI may include them at registration; target Console keeps
-   registration to name → blueprint → key and places controls on Agents / Data protection).
+   (target Console: name → blueprint → key; controls on Agents / Data protection).
 4. Save the API endpoint, external agent ID, and one-time Gateway key securely.
 5. Complete the signed-in administrator handoff for Agent 365 Registry creation.
 6. Wait for the provisioning worker to verify the registration (**Active**).
@@ -102,10 +116,6 @@ Replace the stub with your model callback while preserving that gate. A valid,
 matching, unexpired allow receipt is required before generation and is consumed
 once during ingestion.
 
-Do not auto-retry uncertain ingestion or invent replacement proof after
-generation. Keep secrets and real prompt/response content out of command
-arguments and logs.
-
 See the [API guide](docs/api/api-contract.md) and [OpenAPI](docs/api/openapi.yaml).
 
 ## Optional protection and telemetry
@@ -113,38 +123,32 @@ See the [API guide](docs/api/api-contract.md) and [OpenAPI](docs/api/openapi.yam
 | Capability | Purpose |
 |---|---|
 | Agent 365 observability | Registration-scoped sanitized activity export |
-| Azure Monitor mirror | Independently selected sanitized monitoring telemetry |
+| OpenTelemetry mirror | Sanitized monitoring telemetry to operator-chosen backends |
 | Prompt Shields | Prompt-attack evaluation before the external model call |
 | Microsoft Purview | Tenant connection, shared blueprint DLP, runtime evidence |
 
-Both protections Off is a complete core registration. Requested On defaults are
-not silently rewritten when prerequisites are unavailable.
-
-Purview setup follows: **Connect tenant** → **Set shared policy** →
-**Test behavior** → **Review agent choices**. Simulation and saved configuration
-do not prove current enforcement. Shared DLP uses the blueprint Individual scope;
-optional Know Your Data uses its fixed tenant-wide Group. Runtime samples need
-explicit review and approval.
+Both protections Off is a complete core registration. Simulation and saved
+configuration do not prove current enforcement.
 
 ## Repository layout
 
 | Directory | Contents |
 |---|---|
-| [src](src) | Gateway API, worker, Blazor Admin UI (legacy hosted UI), providers, sample client |
-| [web/console](web/console) | React + Fluent Console (target hosted UI; bootstrap cutover unfinished) |
-| [tools](tools) | Legacy Setup UI, database migrator, installer helpers (Setup UI to be replaced) |
-| [bootstrap](bootstrap) | PowerShell installer engine, configuration, foundation templates |
-| [infrastructure](infrastructure) | Workload Bicep and ordered SQL assets |
-| [operations](operations) | Maintenance and read-only deployment verification |
+| [src](src) | Gateway API, worker, legacy Blazor Admin UI, providers, sample client |
+| [web/console](web/console) | React + Fluent Console (target hosted UI) |
+| [tools](tools) | Legacy Setup UI, database migrator, installer helpers |
+| [bootstrap](bootstrap) | Installer engine (portable profiles target; Azure profile transitional) |
+| [infrastructure](infrastructure) | Portable-target docs + legacy Bicep/SQL assets |
+| [operations](operations) | Maintenance and verification |
 | [docs](docs/README.md) | Product, architecture, UI, and API documentation |
 
 ## Documentation map
 
 | Need | Start here |
 |---|---|
-| Objective, scope, features, behaviors, UI platform | [Product brief](docs/spec/product-brief.md) |
-| UI stack and design system (all UIs) | [UI design](docs/console/design.md) |
-| Components and workflows | [System architecture](docs/architecture/system-architecture.md) |
-| Installer details | [Bootstrap](bootstrap/README.md) |
-| Existing installation | [Operations](operations/README.md) |
+| Objective, scope, features, platforms | [Product brief](docs/spec/product-brief.md) |
+| Portable runtime architecture | [System architecture](docs/architecture/system-architecture.md) |
+| UI stack (all UIs) | [UI design](docs/console/design.md) |
+| Installer / profiles | [Bootstrap](bootstrap/README.md) |
+| Infrastructure profiles | [Infrastructure](infrastructure/README.md) |
 | Full index | [docs/README.md](docs/README.md) |
