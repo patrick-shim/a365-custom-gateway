@@ -248,8 +248,9 @@ internal sealed class ProtectionEffectiveFeatureEvaluator
         };
 
     private bool IsPromptShieldReady(ProtectionCapability? capability) =>
-        IsInstalled(capability) &&
-        _promptShieldBinding?.IsExact(capability) == true;
+        (IsInstalled(capability) &&
+         _promptShieldBinding?.IsExact(capability) == true) ||
+        _promptShieldBinding?.IsApiKeyRuntimeReady() == true;
 
     private bool IsPurviewCapabilityReady(ProtectionCapability? capability) =>
         IsInstalled(capability) && _purviewBinding?.IsExact(capability) == true;

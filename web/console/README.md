@@ -12,9 +12,12 @@ Product contracts: [product brief](../../docs/spec/product-brief.md).
 UI platform: [UI design](../../docs/console/design.md).  
 Runtime: [system architecture](../../docs/architecture/system-architecture.md).
 
-Today: not yet full feature parity with Blazor Admin UI, and **not** part of
-bootstrap deploy/open/upgrade. Blazor may remain on the legacy Azure profile until
-cutover. Setup UI modernization is a separate but same-stack track.
+**Portable bootstrap deploys this Console** (Compose service `console`, default
+host port `5081`). See [portable handoff](../../docs/portable/README.md).
+
+Feature parity with Blazor Admin UI is still incomplete (especially Policies).
+Blazor may remain on the **legacy Azure** profile until cutover. Setup UI
+modernization is a separate but same-stack track.
 
 ## Run locally against an API
 

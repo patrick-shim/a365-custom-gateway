@@ -71,7 +71,7 @@ if ($OutputFormat -eq 'Json') {
     $InformationPreference = 'SilentlyContinue'
 }
 
-foreach ($module in @('Common', 'Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'PurviewRecovery', 'Verification', 'PublisherRecovery')) {
+foreach ($module in @('Common', 'Experience', 'Prerequisites', 'Azure', 'Entra', 'Agent365', 'Database', 'Purview', 'PurviewRecovery', 'Verification', 'PublisherRecovery', 'Portable')) {
     Import-Module (Join-Path $PSScriptRoot "modules/$module.psm1") -Force -DisableNameChecking
 }
 foreach ($module in @('PurviewPackage', 'PurviewExecutor')) {
@@ -1370,7 +1370,12 @@ if ($Mode -eq 'Up' -and -not (Test-Path -LiteralPath $Config)) {
 $script:GatewayFailureStage = 'Configuration'
 $script:GatewayFailureCode = 'configuration'
 if (-not (Test-Path -LiteralPath $Config)) {
-    throw "Bootstrap configuration '$Config' does not exist. Run gateway init, or supply -Config with a reviewed non-secret configuration."
+    throw "Bootstrap configuration '$Config' does not exist. Run gateway init (guided TUI) or gateway setup (GUI), then plan/apply. Do not hand-edit JSON."
+}
+
+$configLeaf = [IO.Path]::GetFileName([string]$Config)
+if ($configLeaf -match '(?i)^config\.example') {
+    throw "Refusing example configuration '$Config'. Run 'gateway init' or 'gateway up' with no --config so the guided wizard creates your real bootstrap/config.json."
 }
 
 $configuration = if ($expectedConfigurationFileFingerprintSupplied) {
@@ -1380,6 +1385,9 @@ $configuration = if ($expectedConfigurationFileFingerprintSupplied) {
 }
 else {
     Read-BootstrapConfig -Path $Config
+}
+if ([string]::IsNullOrWhiteSpace([string]$configuration.deployProfile)) {
+    $configuration | Add-Member -NotePropertyName deployProfile -NotePropertyValue 'azureLegacy' -Force
 }
 $script:GatewayFailureStage = 'Bootstrap state'
 $script:GatewayFailureCode = 'state'
@@ -1391,6 +1399,110 @@ $legacyPurviewStateMigrated = Convert-GatewayLegacyPurviewPolicyStep `
     -Config $configuration
 if ($legacyPurviewStateMigrated) {
     Write-GatewayExperienceEvent -Type Warning -Message 'Legacy Purview policy checkpoint detected. Its evidence is preserved for Gateway Settings migration; bootstrap will not reconnect, author, update, or verify policy.' -OutputFormat $OutputFormat
+}
+
+if ((Test-GatewayPortableDeployProfile -Config $configuration) -and $Mode -in @('Plan', 'Apply', 'Up', 'Verify')) {
+    $script:GatewayFailureStage = 'Portable profile'
+    $script:GatewayFailureCode = 'portable'
+    if ($Mode -eq 'Verify') {
+        $runtime = $state.steps['Portable runtime'].evidence
+        if ($null -eq $runtime) {
+            throw 'Portable verification requires a completed Portable runtime checkpoint. Run gateway apply first.'
+        }
+        $null = Test-GatewayPortableRuntimeHealth `
+            -HealthUrl ([string]$runtime.apiHealthUrl) `
+            -ReadyUrl ([string]$runtime.apiReadyUrl) `
+            -ConsoleConfigUrl ([string]$runtime.consoleConfigUrl) `
+            -ConsoleProxyHealthUrl ([string]$runtime.consoleProxyHealthUrl) `
+            -TimeoutSeconds 60
+        Write-GatewayExperienceEvent -Type Result -Message "Portable verification passed. Console: $($runtime.consoleUrl)" -OutputFormat $OutputFormat
+        return
+    }
+
+    if ($Mode -in @('Plan', 'Up')) {
+        $plan = Invoke-GatewayPortablePlanWorkflow `
+            -Configuration $configuration `
+            -State $state `
+            -StatePath $statePath `
+            -Format $OutputFormat `
+            -InstallLocalPrerequisites:$InstallPrerequisites `
+            -StreamOnly:$EventStreamOnly
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedPlanFingerprint) -and
+            $ExpectedPlanFingerprint -cne [string]$plan.planFingerprint) {
+            Clear-BootstrapAcceptedPlan -State $state -StatePath $statePath | Out-Null
+            throw 'Expected plan fingerprint mismatch.'
+        }
+        if ($Mode -eq 'Plan') {
+            $acceptPlan = $Yes
+            if (-not $NonInteractive -and -not $Yes) {
+                $acceptPlan = Read-GatewayYesNo -Prompt 'Accept this exact portable plan for Apply' -Default $false
+            }
+            if ($NonInteractive -and -not $Yes) {
+                Write-GatewayExperienceEvent -Type Info -Message 'Non-interactive Plan was not accepted; rerun with -Yes after review.' -OutputFormat $OutputFormat
+                return
+            }
+            if (-not $acceptPlan) {
+                Clear-BootstrapAcceptedPlan -State $state -StatePath $statePath | Out-Null
+                Write-GatewayExperienceEvent -Type Info -Message 'Portable plan was not accepted.' -OutputFormat $OutputFormat
+                return
+            }
+            Set-BootstrapAcceptedPlan `
+                -State $state `
+                -StatePath $statePath `
+                -PlanFingerprint ([string]$plan.planFingerprint) `
+                -ConfigurationFingerprint ([string]$plan.configurationFingerprint) `
+                -SourceFingerprint ([string]$plan.sourceFingerprint) `
+                -BootstrapClientIpv4 ([string]$plan.bootstrapClientIpv4) | Out-Null
+            Write-GatewayExperienceEvent -Type Result -Message "Portable plan accepted: $($plan.planFingerprint)" -OutputFormat $OutputFormat
+            return
+        }
+    }
+
+    if ($Mode -in @('Apply', 'Up')) {
+        if (-not ($state.Contains('acceptedPlan') -and $state.acceptedPlan -is [System.Collections.IDictionary])) {
+            if ($Mode -eq 'Apply') {
+                throw 'Portable Apply requires an accepted plan. Run gateway plan -Yes first, or use gateway up.'
+            }
+            if ($null -eq $plan) {
+                throw 'Portable Up did not compute a plan before apply.'
+            }
+            $acceptUp = $Yes.IsPresent -or $Yes -eq $true
+            if ($NonInteractive.IsPresent -and -not $acceptUp) {
+                throw 'Non-interactive portable Up requires -Yes to accept the computed plan and apply it.'
+            }
+            if (-not $NonInteractive.IsPresent -and -not $acceptUp) {
+                $acceptUp = Read-GatewayYesNo -Prompt 'Accept this portable plan and apply it now' -Default $false
+            }
+            if (-not $acceptUp) {
+                Write-GatewayExperienceEvent -Type Info -Message 'Portable Up stopped before apply; plan was not accepted.' -OutputFormat $OutputFormat
+                return
+            }
+            Set-BootstrapAcceptedPlan `
+                -State $state `
+                -StatePath $statePath `
+                -PlanFingerprint ([string]$plan.planFingerprint) `
+                -ConfigurationFingerprint ([string]$plan.configurationFingerprint) `
+                -SourceFingerprint ([string]$plan.sourceFingerprint) `
+                -BootstrapClientIpv4 ([string]$plan.bootstrapClientIpv4) | Out-Null
+        }
+        if (-not $Yes -and $Mode -eq 'Apply' -and -not $NonInteractive) {
+            $proceed = Read-GatewayYesNo -Prompt 'Apply the accepted portable plan now' -Default $false
+            if (-not $proceed) { return }
+        }
+        if ($NonInteractive -and -not $Yes -and $Mode -eq 'Apply') {
+            throw 'Non-interactive portable Apply requires -Yes.'
+        }
+
+        $null = Invoke-GatewayPortableApplyWorkflow `
+            -Configuration $configuration `
+            -State $state `
+            -StatePath $statePath `
+            -Format $OutputFormat `
+            -InstallLocalPrerequisites:$InstallPrerequisites `
+            -NonInteractive:([bool]$NonInteractive) `
+            -AcceptedPlanFingerprint ([string]$state.acceptedPlan.planFingerprint)
+        return
+    }
 }
 
 if ($Mode -eq 'Status') {

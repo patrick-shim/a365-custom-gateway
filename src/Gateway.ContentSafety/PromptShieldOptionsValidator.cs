@@ -35,6 +35,44 @@ internal sealed class PromptShieldOptionsValidator : IValidateOptions<PromptShie
         {
             return ValidateOptionsResult.Fail("PromptShield:Endpoint must be a plain HTTPS Azure AI Content Safety endpoint.");
         }
+
+        if (options.UsesApiKey)
+        {
+            if (string.IsNullOrWhiteSpace(options.ApiKey))
+                return ValidateOptionsResult.Fail("PromptShield:ApiKey is required when AuthMode is ApiKey.");
+            if (!string.IsNullOrWhiteSpace(options.ManagedIdentityClientId))
+                return ValidateOptionsResult.Fail("PromptShield:ManagedIdentityClientId must be empty when AuthMode is ApiKey.");
+            return ValidateOptionsResult.Success;
+        }
+
+        if (options.UsesClientSecret)
+        {
+            if (string.IsNullOrWhiteSpace(options.TenantId) ||
+                !Guid.TryParse(options.TenantId, out var tenantId) ||
+                tenantId == Guid.Empty)
+            {
+                return ValidateOptionsResult.Fail("PromptShield:TenantId must be a non-empty GUID when AuthMode is ClientSecret.");
+            }
+
+            if (string.IsNullOrWhiteSpace(options.ClientId) ||
+                !Guid.TryParse(options.ClientId, out var appClientId) ||
+                appClientId == Guid.Empty)
+            {
+                return ValidateOptionsResult.Fail("PromptShield:ClientId must be a non-empty GUID when AuthMode is ClientSecret.");
+            }
+
+            if (string.IsNullOrWhiteSpace(options.ClientSecret))
+                return ValidateOptionsResult.Fail("PromptShield:ClientSecret is required when AuthMode is ClientSecret.");
+
+            if (!string.IsNullOrWhiteSpace(options.ManagedIdentityClientId))
+                return ValidateOptionsResult.Fail("PromptShield:ManagedIdentityClientId must be empty when AuthMode is ClientSecret.");
+
+            return ValidateOptionsResult.Success;
+        }
+
+        if (!string.Equals(options.AuthMode, PromptShieldOptions.AuthModeManagedIdentity, StringComparison.OrdinalIgnoreCase))
+            return ValidateOptionsResult.Fail("PromptShield:AuthMode must be ManagedIdentity, ApiKey, or ClientSecret.");
+
         if (!_runtimeBinding.IsConfigurationExact(options))
         {
             return ValidateOptionsResult.Fail(

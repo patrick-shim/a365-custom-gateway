@@ -60,18 +60,39 @@ public sealed class PromptShieldClient : IPromptShieldClient
 
         try
         {
-            _runtimeBinding.EnsureConfigurationExact(
-                _options,
-                _httpClient.BaseAddress);
+            if (!_options.UsesPortableAuth)
+            {
+                _runtimeBinding.EnsureConfigurationExact(
+                    _options,
+                    _httpClient.BaseAddress);
+            }
+            else if (_httpClient.BaseAddress is not null &&
+                     !string.Equals(
+                         _httpClient.BaseAddress.AbsoluteUri.TrimEnd('/') + "/",
+                         (_options.Endpoint.EndsWith("/", StringComparison.Ordinal)
+                             ? _options.Endpoint
+                             : _options.Endpoint + "/"),
+                         StringComparison.Ordinal))
+            {
+                throw new PromptShieldException(
+                    "PROMPT_SHIELD_ENDPOINT_MISMATCH",
+                    "Prompt Shields endpoint does not match the configured Azure AI Content Safety origin.");
+            }
+
             var token = await _tokenProvider.GetTokenAsync(cancellationToken);
-            _runtimeBinding.EnsureTokenIdentity(token);
+            if (!_options.UsesPortableAuth)
+                _runtimeBinding.EnsureTokenIdentity(token);
+
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,
                 $"contentsafety/text:shieldPrompt?api-version={Uri.EscapeDataString(_options.ApiVersion)}")
             {
                 Content = JsonContent.Create(new { userPrompt = prompt })
             };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+            if (_options.UsesApiKey)
+                request.Headers.TryAddWithoutValidation("Ocp-Apim-Subscription-Key", token.Token);
+            else
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
 
             using var response = await _httpClient.SendAsync(
                 request,

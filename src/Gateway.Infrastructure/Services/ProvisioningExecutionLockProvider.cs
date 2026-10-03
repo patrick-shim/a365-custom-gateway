@@ -5,6 +5,7 @@ using Gateway.Domain.Interfaces;
 using Gateway.Infrastructure.Persistence;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace Gateway.Infrastructure.Services;
 
@@ -33,6 +34,9 @@ internal sealed class ProvisioningExecutionLockProvider : IProvisioningExecution
         if (string.Equals(providerName, SqlServerProviderName, StringComparison.Ordinal))
             return await AcquireSqlServerLeaseAsync(jobId, ct);
 
+        if (PostgresAdvisoryLock.IsNpgsql(_dbContext))
+            return await AcquirePostgresLeaseAsync(jobId, ct);
+
         if (string.Equals(providerName, InMemoryProviderName, StringComparison.Ordinal))
         {
             var semaphore = InMemoryLocks.GetOrAdd(jobId, static _ => new SemaphoreSlim(1, 1));
@@ -42,6 +46,15 @@ internal sealed class ProvisioningExecutionLockProvider : IProvisioningExecution
 
         throw new NotSupportedException(
             $"Provisioning execution locking is not supported by the configured EF provider '{providerName ?? "unknown"}'.");
+    }
+
+    private async Task<IProvisioningExecutionLease> AcquirePostgresLeaseAsync(
+        Guid jobId,
+        CancellationToken ct)
+    {
+        var resource = $"a365gw:provisioning:job:{jobId:D}";
+        var connection = await PostgresAdvisoryLock.AcquireSessionLockAsync(_dbContext, resource, ct);
+        return new PostgresProvisioningExecutionLease(connection, resource);
     }
 
     private async Task<IProvisioningExecutionLease> AcquireSqlServerLeaseAsync(
@@ -160,6 +173,42 @@ internal sealed class ProvisioningExecutionLockProvider : IProvisioningExecution
             _disposed = true;
             _semaphore.Release();
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class PostgresProvisioningExecutionLease : IProvisioningExecutionLease
+    {
+        private readonly NpgsqlConnection _connection;
+        private readonly string _resource;
+        private bool _disposed;
+
+        public PostgresProvisioningExecutionLease(NpgsqlConnection connection, string resource)
+        {
+            _connection = connection;
+            _resource = resource;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            try
+            {
+                await PostgresAdvisoryLock.ReleaseSessionLockAsync(
+                    _connection,
+                    _resource,
+                    CancellationToken.None);
+            }
+            catch (NpgsqlException)
+            {
+                // Closing the session releases the advisory lock.
+            }
+            finally
+            {
+                await _connection.DisposeAsync();
+            }
         }
     }
 }

@@ -47,6 +47,8 @@ public class GatewayDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(GatewayDbContext).Assembly);
+        if (PostgresAdvisoryLock.IsNpgsql(this))
+            PostgresModelCustomizer.Apply(modelBuilder);
     }
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)

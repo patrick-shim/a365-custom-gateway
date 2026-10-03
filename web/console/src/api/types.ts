@@ -53,6 +53,15 @@ export const agentDetailSchema = agentSchema.extend({
     lastError: nullableText,
     operationId: text.nullish(),
   }).nullable(),
+  retryProvisioning: z.object({
+    supported: z.boolean(),
+    reason: text,
+  }).nullish(),
+});
+export const retryProvisioningSchema = z.object({
+  agentId: text,
+  status: nullableText,
+  operationId: operationIdSchema,
 });
 export const registrationOperationSchema = z.object({
   operationId: operationIdSchema,

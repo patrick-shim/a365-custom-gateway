@@ -97,30 +97,37 @@ internal sealed class PromptEvaluationRepository : IPromptEvaluationRepository
         await _dbContext.PromptEvaluationRecords.AddAsync(record, cancellationToken);
 
     private bool IsSqlServer => _dbContext.Database.ProviderName == "Microsoft.EntityFrameworkCore.SqlServer";
+    private bool IsNpgsql => _dbContext.Database.ProviderName == "Npgsql.EntityFrameworkCore.PostgreSQL";
 
     private async Task<PromptProtectionContext?> ReadContextAsync(Guid agentId, bool lockRows, CancellationToken ct,
         PromptProtectionContext? expectedContext = null)
     {
-        if (lockRows && IsSqlServer && _dbContext.Database.CurrentTransaction is null)
+        if (lockRows && (IsSqlServer || IsNpgsql) && _dbContext.Database.CurrentTransaction is null)
             throw new InvalidOperationException("A transaction is required for atomic prompt protection context validation.");
-        if (!IsSqlServer && _dbContext.Database.ProviderName != "Microsoft.EntityFrameworkCore.InMemory")
+        if (!IsSqlServer && !IsNpgsql && _dbContext.Database.ProviderName != "Microsoft.EntityFrameworkCore.InMemory")
             throw new NotSupportedException("The configured database provider does not support prompt protection context validation.");
-        var locked = lockRows && IsSqlServer;
+        var lockedSqlServer = lockRows && IsSqlServer;
+        var lockedPostgres = lockRows && IsNpgsql;
+        var locked = lockedSqlServer || lockedPostgres;
 
-        var agents = locked ? _dbContext.AgentRegistrations.FromSqlInterpolated(
+        var agents = lockedSqlServer ? _dbContext.AgentRegistrations.FromSqlInterpolated(
             $"SELECT * FROM dbo.AgentRegistrations WITH (HOLDLOCK) WHERE Id = {agentId}")
+            : lockedPostgres ? _dbContext.AgentRegistrations.FromSqlInterpolated(
+                $"SELECT * FROM \"AgentRegistrations\" WHERE \"Id\" = {agentId} FOR UPDATE")
             : _dbContext.AgentRegistrations.Where(agent => agent.Id == agentId);
         var agent = await agents.AsNoTracking().SingleOrDefaultAsync(ct);
         if (agent is null)
             return null;
-        var features = locked ? _dbContext.AgentFeatureConfigurations.FromSqlInterpolated(
+        var features = lockedSqlServer ? _dbContext.AgentFeatureConfigurations.FromSqlInterpolated(
             $"SELECT * FROM dbo.AgentFeatureConfigurations WITH (HOLDLOCK) WHERE AgentRegistrationId = {agentId}")
+            : lockedPostgres ? _dbContext.AgentFeatureConfigurations.FromSqlInterpolated(
+                $"SELECT * FROM \"AgentFeatureConfigurations\" WHERE \"AgentRegistrationId\" = {agentId} FOR UPDATE")
             : _dbContext.AgentFeatureConfigurations.Where(feature => feature.AgentRegistrationId == agentId);
         var feature = await features.AsNoTracking().SingleOrDefaultAsync(ct);
         if (feature is null)
             return null;
         agent.FeatureConfiguration = feature;
-        if (locked && expectedContext?.MatchesAgent(agent) != true)
+        if ((lockedSqlServer || lockedPostgres) && expectedContext?.MatchesAgent(agent) != true)
             return null;
 
         PurviewDlpProfile? profile = null;

@@ -288,9 +288,24 @@ function Assert-Agent365SeedBlueprintSurface {
         throw 'The seed blueprint managerApplications do not exactly match the independently reviewed configuration. No provider-discovered authority was accepted.'
     }
 
-    foreach ($property in @('identifierUris', 'tags', 'appRoles', 'requiredResourceAccess', 'passwordCredentials', 'keyCredentials')) {
+    foreach ($property in @('identifierUris', 'tags', 'appRoles', 'requiredResourceAccess', 'keyCredentials')) {
         if (@(Get-Agent365RequiredProperty -InputObject $Blueprint -Name $property -Label 'Agent ID blueprint').Count -ne 0) {
             throw "The Agent ID blueprint has an unexpected $property authority surface."
+        }
+    }
+
+    $passwordCredentials = @(Get-Agent365RequiredProperty -InputObject $Blueprint -Name 'passwordCredentials' -Label 'Agent ID blueprint')
+    if ($passwordCredentials.Count -ne 0) {
+        # Portable Compose may attach exactly one bootstrap blueprint secret for local FMI.
+        # Azure pristine/runtime surfaces must remain secret-free.
+        $portableSecrets = @($passwordCredentials | Where-Object {
+            [string]$_.displayName -ceq 'a365gw-bootstrap-portable-blueprint'
+        })
+        $portableAllowed = -not [string]::IsNullOrWhiteSpace($GatewayManagedIdentityPrincipalId) -and
+            -not $RequirePristineAuthoritySurface -and
+            $portableSecrets.Count -eq $passwordCredentials.Count
+        if (-not $portableAllowed) {
+            throw 'The Agent ID blueprint has an unexpected passwordCredentials authority surface.'
         }
     }
     $api = Get-Agent365RequiredProperty -InputObject $Blueprint -Name 'api' -Label 'Agent ID blueprint'

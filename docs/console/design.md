@@ -35,7 +35,7 @@ React surface reaches acceptance (§8).
 
 | Surface | Users | Today | Target |
 |---|---|---|---|
-| **Console** (`web/console`) | Administrator, Operator, Auditor, Support | Partial React SPA; not in bootstrap; Policies incomplete | Bootstrap-deployed Fluent Console; full Admin UI parity then Blazor retired |
+| **Console** (`web/console`) | Administrator, Operator, Auditor, Support | Deployed by **portable** bootstrap on Compose (`:5081`); Agents + Registry finish work; Policies still incomplete vs Blazor | Full Admin UI parity on portable + legacy Azure cutover; then Blazor retired |
 | **Setup** (today `tools/Gateway.Setup`) | Deployer during install | Legacy guided Setup app | React + Fluent Setup shell driving the same bootstrap engine |
 | **External developer** | Integrators | API + sample client | Unchanged (no operator UI) |
 

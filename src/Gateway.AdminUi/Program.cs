@@ -30,6 +30,11 @@ builder.Services
     .EnableTokenAcquisitionToCallDownstreamApi(gatewayApiScopes)
     .AddInMemoryTokenCaches();
 
+var portableLoopback = builder.Environment.IsEnvironment("Portable");
+var cookieSecurePolicy = portableLoopback
+    ? CookieSecurePolicy.SameAsRequest
+    : CookieSecurePolicy.Always;
+
 builder.Services.Configure<CookieAuthenticationOptions>(
     CookieAuthenticationDefaults.AuthenticationScheme,
     options =>
@@ -37,7 +42,7 @@ builder.Services.Configure<CookieAuthenticationOptions>(
         options.AccessDeniedPath = "/access-denied";
         options.Cookie.HttpOnly = true;
         options.Cookie.SameSite = SameSiteMode.Lax;
-        options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+        options.Cookie.SecurePolicy = cookieSecurePolicy;
         options.ExpireTimeSpan = TimeSpan.FromHours(8);
         options.SlidingExpiration = true;
     });
@@ -66,7 +71,7 @@ builder.Services.AddFluentUIComponents();
 builder.Services.AddAntiforgery(options =>
 {
     options.HeaderName = "X-Gateway-CSRF";
-    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.Cookie.SecurePolicy = cookieSecurePolicy;
 });
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IGatewayAccessTokenProvider, GatewayAccessTokenProvider>();
@@ -81,8 +86,10 @@ builder.Services
         $"{GatewayApiOptions.SectionName}:BaseUrl must be an absolute URI.")
     .Validate(
         options => options.BaseUrl is not null &&
-            (options.BaseUrl.Scheme == Uri.UriSchemeHttps || options.BaseUrl.IsLoopback),
-        $"{GatewayApiOptions.SectionName}:BaseUrl must use HTTPS unless it targets loopback.")
+            (options.BaseUrl.Scheme == Uri.UriSchemeHttps ||
+             options.BaseUrl.IsLoopback ||
+             portableLoopback),
+        $"{GatewayApiOptions.SectionName}:BaseUrl must use HTTPS unless it targets loopback or a portable compose host.")
     .Validate(
         options => options.Scopes is { Length: > 0 } &&
             options.Scopes.All(scope => !string.IsNullOrWhiteSpace(scope)),
@@ -117,7 +124,10 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
-app.UseHttpsRedirection();
+if (!portableLoopback)
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseAuthentication();
 app.UseAuthorization();

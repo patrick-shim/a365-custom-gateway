@@ -23,7 +23,24 @@ public static class DependencyInjection
         services.AddSingleton<IBootstrapPromptShieldRuntimeBinding>(serviceProvider =>
             serviceProvider.GetRequiredService<BootstrapPromptShieldRuntimeBinding>());
         services.AddSingleton<IValidateOptions<PromptShieldOptions>, PromptShieldOptionsValidator>();
-        services.AddSingleton<IPromptShieldTokenProvider, ManagedIdentityPromptShieldTokenProvider>();
+        services.AddSingleton<IPromptShieldTokenProvider>(serviceProvider =>
+        {
+            var options = serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>().Value;
+            if (options.UsesApiKey)
+            {
+                return new ApiKeyPromptShieldTokenProvider(
+                    serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>());
+            }
+
+            if (options.UsesClientSecret)
+            {
+                return new ClientSecretPromptShieldTokenProvider(
+                    serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>());
+            }
+
+            return new ManagedIdentityPromptShieldTokenProvider(
+                serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>());
+        });
         services.AddHttpClient(nameof(PromptShieldClient), (serviceProvider, client) =>
         {
             var options = serviceProvider.GetRequiredService<IOptions<PromptShieldOptions>>().Value;

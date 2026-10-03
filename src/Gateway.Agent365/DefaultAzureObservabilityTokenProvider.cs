@@ -41,6 +41,7 @@ internal sealed class DefaultAzureObservabilityTokenProvider :
     private readonly TokenCredential _managedIdentityCredential;
     private readonly Guid? _managedIdentityPrincipalId;
     private readonly Guid? _managedIdentityClientId;
+    private readonly string? _blueprintClientSecret;
 
     public DefaultAzureObservabilityTokenProvider(
         IOptions<Agent365Options> options,
@@ -49,7 +50,8 @@ internal sealed class DefaultAzureObservabilityTokenProvider :
             CreateCredential(options.Value),
             httpClientFactory,
             options.Value.ProvisioningManagedIdentityPrincipalId,
-            options.Value.ProvisioningManagedIdentityClientId)
+            options.Value.ProvisioningManagedIdentityClientId,
+            options.Value.BlueprintClientSecret)
     {
     }
 
@@ -57,7 +59,8 @@ internal sealed class DefaultAzureObservabilityTokenProvider :
         TokenCredential managedIdentityCredential,
         IHttpClientFactory httpClientFactory,
         string? managedIdentityPrincipalId,
-        string? managedIdentityClientId = null)
+        string? managedIdentityClientId = null,
+        string? blueprintClientSecret = null)
     {
         _managedIdentityCredential = managedIdentityCredential;
         _httpClientFactory = httpClientFactory;
@@ -67,6 +70,9 @@ internal sealed class DefaultAzureObservabilityTokenProvider :
         _managedIdentityClientId = ParseOptionalGuid(
             managedIdentityClientId,
             "InvalidProvisioningManagedIdentityClientId");
+        _blueprintClientSecret = string.IsNullOrWhiteSpace(blueprintClientSecret)
+            ? null
+            : blueprintClientSecret.Trim();
     }
 
     public ValueTask<AccessToken> GetTokenAsync(
@@ -134,17 +140,10 @@ internal sealed class DefaultAzureObservabilityTokenProvider :
         }
     }
 
-    private static TokenCredential CreateCredential(Agent365Options options)
-    {
-        if (string.IsNullOrWhiteSpace(options.ProvisioningManagedIdentityClientId))
-            return new ManagedIdentityCredential();
-
-        var clientId = ParseRequiredGuid(
-            options.ProvisioningManagedIdentityClientId,
-            "InvalidProvisioningManagedIdentityClientId");
-        return new ManagedIdentityCredential(
-            ManagedIdentityId.FromUserAssignedClientId(clientId.ToString("D")));
-    }
+    private static TokenCredential CreateCredential(Agent365Options options) =>
+        // Portable Compose uses the workload app client secret; Azure uses managed identity.
+        // Both acquire api://AzureADTokenExchange assertions for blueprint FMI.
+        ProvisioningManagedIdentityCredentialFactory.Create(options);
 
     private bool TryGetCachedToken(TokenCacheKey key, out AccessToken token)
     {
@@ -166,67 +165,89 @@ internal sealed class DefaultAzureObservabilityTokenProvider :
         ValidatedResourceTokenRequest resource,
         CancellationToken cancellationToken)
     {
-        AccessToken managedIdentityAssertion;
-        try
-        {
-            managedIdentityAssertion = await _managedIdentityCredential.GetTokenAsync(
-                ManagedIdentityTokenRequest,
-                cancellationToken);
-        }
-        catch (Exception exception) when (IsTransient(exception))
-        {
-            throw new Agent365ObservabilityTransientException(
-                "ManagedIdentityTokenAcquisitionTransient",
-                exception);
-        }
-        catch (CredentialUnavailableException exception)
-        {
-            throw new Agent365ObservabilityConfigurationException(
-                "ManagedIdentityCredentialUnavailable",
-                exception);
-        }
-        catch (AuthenticationFailedException exception)
-        {
-            throw new Agent365ObservabilityConfigurationException(
-                "ManagedIdentityTokenAcquisitionFailed",
-                exception);
-        }
-        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new Agent365ObservabilityTransientException(
-                "ManagedIdentityTokenAcquisitionTimeout",
-                exception);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            throw new Agent365ObservabilityConfigurationException(
-                "ManagedIdentityTokenAcquisitionFailed",
-                exception);
-        }
-
-        if (string.IsNullOrWhiteSpace(managedIdentityAssertion.Token))
-            throw new Agent365ObservabilityConfigurationException("EmptyManagedIdentityAssertion");
-
-        if (managedIdentityAssertion.ExpiresOn <= DateTimeOffset.UtcNow.Add(MinimumTokenLifetime))
-            throw new Agent365ObservabilityTransientException("ManagedIdentityAssertionExpired");
-
-        ValidateManagedIdentityAssertion(managedIdentityAssertion.Token, tenantId);
-
         var tenantTokenEndpoint = new Uri(
             $"https://login.microsoftonline.com/{tenantId:D}/oauth2/v2.0/token");
-        var blueprintToken = await RequestTokenAsync(
-            tenantTokenEndpoint,
-            new Dictionary<string, string>(StringComparer.Ordinal)
+
+        // Portable/local: authenticate as the blueprint with its client secret (Microsoft's
+        // documented development FMI path). Azure: managed-identity assertion + FIC.
+        OAuthAccessToken blueprintToken;
+        if (_blueprintClientSecret is not null)
+        {
+            blueprintToken = await RequestTokenAsync(
+                tenantTokenEndpoint,
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["client_id"] = blueprintClientId.ToString("D"),
+                    ["scope"] = TokenExchangeScope,
+                    ["fmi_path"] = agentIdentityClientId.ToString("D"),
+                    ["client_secret"] = _blueprintClientSecret,
+                    ["grant_type"] = "client_credentials"
+                },
+                "BlueprintToken",
+                cancellationToken);
+        }
+        else
+        {
+            AccessToken managedIdentityAssertion;
+            try
             {
-                ["client_id"] = blueprintClientId.ToString("D"),
-                ["scope"] = TokenExchangeScope,
-                ["fmi_path"] = agentIdentityClientId.ToString("D"),
-                ["client_assertion_type"] = ClientAssertionType,
-                ["client_assertion"] = managedIdentityAssertion.Token,
-                ["grant_type"] = "client_credentials"
-            },
-            "BlueprintToken",
-            cancellationToken);
+                managedIdentityAssertion = await _managedIdentityCredential.GetTokenAsync(
+                    ManagedIdentityTokenRequest,
+                    cancellationToken);
+            }
+            catch (Exception exception) when (IsTransient(exception))
+            {
+                throw new Agent365ObservabilityTransientException(
+                    "ManagedIdentityTokenAcquisitionTransient",
+                    exception);
+            }
+            catch (CredentialUnavailableException exception)
+            {
+                throw new Agent365ObservabilityConfigurationException(
+                    "ManagedIdentityCredentialUnavailable",
+                    exception);
+            }
+            catch (AuthenticationFailedException exception)
+            {
+                throw new Agent365ObservabilityConfigurationException(
+                    "ManagedIdentityTokenAcquisitionFailed",
+                    exception);
+            }
+            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new Agent365ObservabilityTransientException(
+                    "ManagedIdentityTokenAcquisitionTimeout",
+                    exception);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                throw new Agent365ObservabilityConfigurationException(
+                    "ManagedIdentityTokenAcquisitionFailed",
+                    exception);
+            }
+
+            if (string.IsNullOrWhiteSpace(managedIdentityAssertion.Token))
+                throw new Agent365ObservabilityConfigurationException("EmptyManagedIdentityAssertion");
+
+            if (managedIdentityAssertion.ExpiresOn <= DateTimeOffset.UtcNow.Add(MinimumTokenLifetime))
+                throw new Agent365ObservabilityTransientException("ManagedIdentityAssertionExpired");
+
+            ValidateManagedIdentityAssertion(managedIdentityAssertion.Token, tenantId);
+
+            blueprintToken = await RequestTokenAsync(
+                tenantTokenEndpoint,
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["client_id"] = blueprintClientId.ToString("D"),
+                    ["scope"] = TokenExchangeScope,
+                    ["fmi_path"] = agentIdentityClientId.ToString("D"),
+                    ["client_assertion_type"] = ClientAssertionType,
+                    ["client_assertion"] = managedIdentityAssertion.Token,
+                    ["grant_type"] = "client_credentials"
+                },
+                "BlueprintToken",
+                cancellationToken);
+        }
 
         var agentToken = await RequestTokenAsync(
             tenantTokenEndpoint,

@@ -8,6 +8,7 @@ using Gateway.Infrastructure.Persistence;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Npgsql;
 
 namespace Gateway.Infrastructure.Services;
 
@@ -55,6 +56,8 @@ internal sealed class ProtectionAdminOperationLockProvider
         var providerName = _dbContext.Database.ProviderName;
         if (string.Equals(providerName, SqlServerProviderName, StringComparison.Ordinal))
             return await AcquireSqlIdempotencyAsync(resource, ct);
+        if (PostgresAdvisoryLock.IsNpgsql(_dbContext))
+            return await AcquirePostgresIdempotencyAsync(resource, ct);
         if (string.Equals(providerName, InMemoryProviderName, StringComparison.Ordinal))
         {
             var semaphore = InMemoryLocks.GetOrAdd(
@@ -76,6 +79,14 @@ internal sealed class ProtectionAdminOperationLockProvider
         var providerName = _dbContext.Database.ProviderName;
         if (string.Equals(providerName, SqlServerProviderName, StringComparison.Ordinal))
             return await AcquireSqlExecutionAsync(resource, ct);
+        if (PostgresAdvisoryLock.IsNpgsql(_dbContext))
+        {
+            var connection = await PostgresAdvisoryLock.AcquireSessionLockAsync(
+                _dbContext,
+                resource,
+                ct);
+            return new PostgresExecutionLease(connection, resource);
+        }
         if (string.Equals(providerName, InMemoryProviderName, StringComparison.Ordinal))
         {
             var semaphore = InMemoryLocks.GetOrAdd(
@@ -86,6 +97,23 @@ internal sealed class ProtectionAdminOperationLockProvider
         }
 
         throw UnsupportedProvider(providerName);
+    }
+
+    private async Task<IProtectionAdminIdempotencyLease> AcquirePostgresIdempotencyAsync(
+        string resource,
+        CancellationToken ct)
+    {
+        if (_dbContext.Database.CurrentTransaction is not null)
+        {
+            throw new InvalidOperationException(
+                "The protection idempotency scope must own its database transaction.");
+        }
+
+        var connection = await PostgresAdvisoryLock.AcquireSessionLockAsync(
+            _dbContext,
+            resource,
+            ct);
+        return new PostgresIdempotencyLease(connection, resource);
     }
 
     private async Task<IProtectionAdminIdempotencyLease> AcquireSqlIdempotencyAsync(
@@ -348,6 +376,81 @@ internal sealed class ProtectionAdminOperationLockProvider
             _disposed = true;
             _semaphore.Release();
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class PostgresIdempotencyLease : IProtectionAdminIdempotencyLease
+    {
+        private readonly NpgsqlConnection _connection;
+        private readonly string _resource;
+        private bool _disposed;
+
+        public PostgresIdempotencyLease(NpgsqlConnection connection, string resource)
+        {
+            _connection = connection;
+            _resource = resource;
+        }
+
+        public Task CompleteAsync(CancellationToken ct)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ct.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            try
+            {
+                await PostgresAdvisoryLock.ReleaseSessionLockAsync(
+                    _connection,
+                    _resource,
+                    CancellationToken.None);
+            }
+            catch (NpgsqlException)
+            {
+            }
+            finally
+            {
+                await _connection.DisposeAsync();
+            }
+        }
+    }
+
+    private sealed class PostgresExecutionLease : IAsyncDisposable
+    {
+        private readonly NpgsqlConnection _connection;
+        private readonly string _resource;
+        private bool _disposed;
+
+        public PostgresExecutionLease(NpgsqlConnection connection, string resource)
+        {
+            _connection = connection;
+            _resource = resource;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            try
+            {
+                await PostgresAdvisoryLock.ReleaseSessionLockAsync(
+                    _connection,
+                    _resource,
+                    CancellationToken.None);
+            }
+            catch (NpgsqlException)
+            {
+            }
+            finally
+            {
+                await _connection.DisposeAsync();
+            }
         }
     }
 }

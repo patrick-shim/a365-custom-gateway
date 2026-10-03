@@ -5,7 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace Gateway.Infrastructure.Outbox;
 
-internal sealed class ServiceBusPublisher : IServiceBusPublisher
+internal sealed class ServiceBusPublisher : IOutboxQueuePublisher
 {
     private readonly ServiceBusClient _client;
     private readonly string _provisioningQueueName;

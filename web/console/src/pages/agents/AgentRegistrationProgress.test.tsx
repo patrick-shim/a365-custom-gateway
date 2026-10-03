@@ -112,6 +112,26 @@ describe("Authoritative, accessible agent setup", () => {
     expect(server.requests.every(request => request.method === "GET")).toBe(true);
   });
 
+  it("keeps Finish available when the pause reason is carried in operation.error", async () => {
+    server.handlers.set(`GET /api/v1/operations/${operationId}`, () => ({
+      ...registrationOperation,
+      error: {
+        code: "AGENT365_REGISTRY_ACTION_REQUIRED",
+        message: "A signed-in administrator must complete Agent 365 Registry registration.",
+      },
+    }));
+    renderSetup({
+      ...approvalAgent,
+      provisioning: {
+        ...approvalAgent.provisioning!,
+        lastError: "A signed-in administrator must complete Agent 365 Registry registration.",
+      },
+    });
+    expect(await screen.findByRole("button", { name: "Finish Agent 365 registration" })).toBeEnabled();
+    expect(setupCard()).toHaveAttribute("data-state", "waiting");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("does not increment progress during repeated unchanged server reads", async () => {
     server.handlers.set(`GET /api/v1/operations/${operationId}`, () => running(2));
     renderSetup({ ...approvalAgent, status: "Provisioning" });

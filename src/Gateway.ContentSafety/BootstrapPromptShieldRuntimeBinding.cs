@@ -29,6 +29,29 @@ internal sealed class BootstrapPromptShieldRuntimeBinding
         _runtimeOptions = runtimeOptions;
     }
 
+    public bool IsApiKeyRuntimeReady()
+    {
+        var runtime = _runtimeOptions();
+        if (!runtime.Enabled ||
+            !Uri.TryCreate(runtime.Endpoint, UriKind.Absolute, out var endpoint) ||
+            endpoint.Scheme != Uri.UriSchemeHttps)
+        {
+            return false;
+        }
+
+        if (runtime.UsesApiKey)
+            return !string.IsNullOrWhiteSpace(runtime.ApiKey);
+
+        if (runtime.UsesClientSecret)
+        {
+            return !string.IsNullOrWhiteSpace(runtime.TenantId) &&
+                !string.IsNullOrWhiteSpace(runtime.ClientId) &&
+                !string.IsNullOrWhiteSpace(runtime.ClientSecret);
+        }
+
+        return false;
+    }
+
     public bool IsExact(ProtectionCapability? capability)
     {
         if (!TryRead(out var attestation) ||

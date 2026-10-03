@@ -41,7 +41,8 @@ internal sealed class AgentProtectionWriteGuard
             .OrderBy(id => id.ToString("D"), StringComparer.Ordinal).ToArray();
     }
 
-    public bool RequiresSqlTransaction => _ids.Length > 0 && _db.Database.IsSqlServer();
+    public bool RequiresSqlTransaction =>
+        _ids.Length > 0 && (_db.Database.IsSqlServer() || PostgresAdvisoryLock.IsNpgsql(_db));
 
     public void Prepare()
     {
@@ -77,6 +78,16 @@ internal sealed class AgentProtectionWriteGuard
                 $"SELECT * FROM dbo.AgentRegistrations WITH (XLOCK, HOLDLOCK) WHERE Id = {id}")
                 .IgnoreQueryFilters().AsNoTracking();
         }
+
+        if (PostgresAdvisoryLock.IsNpgsql(_db))
+        {
+            if (_db.Database.CurrentTransaction is null)
+                throw new InvalidOperationException("Agent writes require a transaction for registration-first locking.");
+            return _db.AgentRegistrations.FromSqlInterpolated(
+                $"SELECT * FROM \"AgentRegistrations\" WHERE \"Id\" = {id} FOR UPDATE")
+                .IgnoreQueryFilters().AsNoTracking();
+        }
+
         return _db.AgentRegistrations.IgnoreQueryFilters().AsNoTracking().Where(agent => agent.Id == id);
     }
 

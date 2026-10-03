@@ -163,10 +163,22 @@ Historical configuration does not establish a current target. Microsoft Graph /
 Registry / Purview API operations use the exact Entra tenant bound by the accepted
 configuration regardless of where containers run.
 
+## Portable credential notes
+
+| Concern | Portable Compose | Azure profile |
+|---|---|---|
+| Worker → Graph | Workload **client secret** (`Agent365:ProvisioningClientSecret`) | Managed identity |
+| API → Registry OBO | API app **client secret** confidential client + **user** assertion | Managed identity / federated assertion for the API app + user assertion |
+| Observability FMI proof | Blueprint **client secret** + `fmi_path` (dev path) | Managed identity assertion + blueprint FIC |
+| Registry create | Still **delegated administrator** only (never app-only) | Same |
+
+See [portable handoff](../portable/README.md).
+
 ## Unsupported assumptions
 
 The retained design does not assume ordinary applications can be converted into
-typed blueprints, worker/app-only Registry creation, client-secret OBO fallback,
-an unvalidated REST replacement for compliance policy authoring, or write-only
-Purview APIs providing analytics retrieval. Provider readback, runtime
-certification and project milestone completion serve different purposes.
+typed blueprints, **worker/app-only Registry creation**, replacing the **user**
+assertion in OBO with a client secret, an unvalidated REST replacement for
+compliance policy authoring, or write-only Purview APIs providing analytics
+retrieval. Provider readback, runtime certification and project milestone
+completion serve different purposes.

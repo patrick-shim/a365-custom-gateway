@@ -425,10 +425,10 @@ echo Usage: gateway.cmd [command] [options]
 echo.
 echo Commands:
 echo   setup       Start the temporary loopback-only Fluent setup UI
-echo   up          Configure, plan, confirm, deploy/resume, and verify
-echo   init        Create a reviewed non-secret configuration
+echo   up          Guided TUI (if needed) then plan, confirm, deploy/resume, verify
+echo   init        Guided TUI wizard — writes bootstrap/config.json (do not edit JSON)
 echo   doctor      Check tools, configuration, and Azure sign-in readiness
-echo   plan        Compile Bicep, show operations, and run Azure What-If
+echo   plan        Review the exact plan for the guided configuration
 echo   apply       Apply an accepted current plan
 echo   resume      Resume an interrupted accepted plan
 echo   recover-database

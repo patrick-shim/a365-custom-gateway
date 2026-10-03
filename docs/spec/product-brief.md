@@ -102,7 +102,7 @@ or other Azure infrastructure.
 
 | Area | Today (legacy) | Target |
 |---|---|---|
-| Hosted UI | Blazor Admin UI | React + Fluent Console |
+| Hosted UI | Blazor Admin UI (legacy Azure profile) | React + Fluent Console (**portable Compose default**) |
 | Setup UI | `Gateway.Setup` | React + Fluent Setup |
 | Infrastructure | Azure Bicep + Azure PaaS | Compose/Kubernetes + PostgreSQL/RabbitMQ/Vault/S3 — **zero Microsoft infra** |
 | Product services | Entra, Graph, Agent 365, Purview, Prompt Shields | **Unchanged — still essential** |
@@ -263,6 +263,7 @@ authorization) remain as before — only the **hosting dependencies** change.
 | Need | Document |
 |---|---|
 | Build, install, sample client | [Project README](../../README.md) |
+| Portable Compose E2E handoff | [Portable profile](../portable/README.md) |
 | Components and portable runtime | [System architecture](../architecture/system-architecture.md) |
 | HTTP rules and lifecycle | [API contract](../api/api-contract.md) · [OpenAPI](../api/openapi.yaml) |
 | Protection ownership and proof | [Protection architecture](../architecture/protection-settings-plan.md) |

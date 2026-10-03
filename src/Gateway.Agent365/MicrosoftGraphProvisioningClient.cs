@@ -485,7 +485,11 @@ internal sealed class MicrosoftGraphProvisioningClient
         if (allowNotFound && response.StatusCode == HttpStatusCode.NotFound)
             return default;
 
-        EnsureSuccess(response.StatusCode, mutation);
+        if ((int)response.StatusCode is < 200 or > 299)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw MapGraphFailure(response.StatusCode, mutation, errorBody);
+        }
 
         try
         {
@@ -565,71 +569,112 @@ internal sealed class MicrosoftGraphProvisioningClient
         }
     }
 
-    private static void EnsureSuccess(HttpStatusCode statusCode, bool mutation)
+    private static Exception MapGraphFailure(HttpStatusCode statusCode, bool mutation, string? errorBody)
     {
+        var detail = SummarizeGraphError(errorBody);
         var status = (int)statusCode;
-        if (status is >= 200 and <= 299)
-            return;
 
         if (statusCode == HttpStatusCode.Unauthorized)
         {
-            throw Failure(
+            return Failure(
                 "MICROSOFT_GRAPH_UNAUTHORIZED",
-                "Microsoft Graph rejected the provisioning identity.");
+                AppendGraphDetail("Microsoft Graph rejected the provisioning identity.", detail));
         }
 
         if (statusCode == HttpStatusCode.Forbidden)
         {
-            throw Failure(
+            return Failure(
                 "MICROSOFT_GRAPH_FORBIDDEN",
-                "The provisioning identity lacks a required Microsoft Graph permission.");
+                AppendGraphDetail(
+                    "The provisioning identity lacks a required Microsoft Graph permission.",
+                    detail));
         }
 
         if (statusCode == HttpStatusCode.Conflict)
         {
-            throw Failure(
+            return Failure(
                 "MICROSOFT_GRAPH_CONFLICT",
-                "Microsoft Graph reported a conflicting resource state.",
+                AppendGraphDetail("Microsoft Graph reported a conflicting resource state.", detail),
                 isTransient: true);
         }
 
         if (statusCode == HttpStatusCode.TooManyRequests)
         {
-            throw Failure(
+            return Failure(
                 mutation
                     ? "MICROSOFT_GRAPH_OUTCOME_UNKNOWN"
                     : "MICROSOFT_GRAPH_THROTTLED",
-                mutation
-                    ? "The Microsoft Graph operation outcome is unknown and requires reconciliation."
-                    : "Microsoft Graph throttled the provisioning request.",
+                AppendGraphDetail(
+                    mutation
+                        ? "The Microsoft Graph operation outcome is unknown and requires reconciliation."
+                        : "Microsoft Graph throttled the provisioning request.",
+                    detail),
                 isTransient: !mutation,
                 requiresManualIntervention: mutation);
         }
 
         if (status == 408 || status >= 500)
         {
-            throw Failure(
+            return Failure(
                 mutation
                     ? "MICROSOFT_GRAPH_OUTCOME_UNKNOWN"
                     : "MICROSOFT_GRAPH_TRANSIENT",
-                mutation
-                    ? "The Microsoft Graph operation outcome is unknown and requires reconciliation."
-                    : "Microsoft Graph is temporarily unavailable.",
+                AppendGraphDetail(
+                    mutation
+                        ? "The Microsoft Graph operation outcome is unknown and requires reconciliation."
+                        : "Microsoft Graph is temporarily unavailable.",
+                    detail),
                 isTransient: !mutation,
                 requiresManualIntervention: mutation);
         }
 
         if (statusCode == HttpStatusCode.NotFound)
         {
-            throw Failure(
+            return Failure(
                 "MICROSOFT_GRAPH_RESOURCE_NOT_FOUND",
-                "A required Microsoft resource wasn't found.");
+                AppendGraphDetail("A required Microsoft resource wasn't found.", detail));
         }
 
-        throw Failure(
+        return Failure(
             "MICROSOFT_GRAPH_REQUEST_REJECTED",
-            "Microsoft Graph rejected the provisioning request.");
+            AppendGraphDetail("Microsoft Graph rejected the provisioning request.", detail));
     }
+
+    private static string SummarizeGraphError(string? errorBody)
+    {
+        if (string.IsNullOrWhiteSpace(errorBody))
+            return string.Empty;
+
+        try
+        {
+            using var document = JsonDocument.Parse(errorBody);
+            if (document.RootElement.TryGetProperty("error", out var error))
+            {
+                var code = error.TryGetProperty("code", out var codeElement)
+                    ? codeElement.GetString()
+                    : null;
+                var message = error.TryGetProperty("message", out var messageElement)
+                    ? messageElement.GetString()
+                    : null;
+                if (!string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(message))
+                    return $"{code}: {message}";
+                if (!string.IsNullOrWhiteSpace(message))
+                    return message;
+                if (!string.IsNullOrWhiteSpace(code))
+                    return code;
+            }
+        }
+        catch (JsonException)
+        {
+            // Fall through to a truncated raw body.
+        }
+
+        var trimmed = errorBody.Trim();
+        return trimmed.Length <= 240 ? trimmed : trimmed[..240];
+    }
+
+    private static string AppendGraphDetail(string summary, string detail) =>
+        string.IsNullOrWhiteSpace(detail) ? summary : $"{summary} {detail}";
 
     private static string EscapeODataString(string value)
     {

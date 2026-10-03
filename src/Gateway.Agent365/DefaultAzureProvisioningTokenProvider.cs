@@ -96,6 +96,30 @@ internal static class ProvisioningManagedIdentityCredentialFactory
 {
     public static TokenCredential Create(Agent365Options options)
     {
+        if (!string.IsNullOrWhiteSpace(options.ProvisioningClientSecret))
+        {
+            if (string.IsNullOrWhiteSpace(options.TenantId) ||
+                !Guid.TryParse(options.TenantId, out var tenantId) ||
+                tenantId == Guid.Empty)
+            {
+                throw new InvalidOperationException(
+                    "Agent365:TenantId must be a non-empty GUID when ProvisioningClientSecret is configured.");
+            }
+
+            if (string.IsNullOrWhiteSpace(options.ProvisioningManagedIdentityClientId) ||
+                !Guid.TryParse(options.ProvisioningManagedIdentityClientId, out var clientId) ||
+                clientId == Guid.Empty)
+            {
+                throw new InvalidOperationException(
+                    "Agent365:ProvisioningManagedIdentityClientId must be the portable workload app client id when ProvisioningClientSecret is configured.");
+            }
+
+            return new ClientSecretCredential(
+                tenantId.ToString("D"),
+                clientId.ToString("D"),
+                options.ProvisioningClientSecret);
+        }
+
         return string.IsNullOrWhiteSpace(options.ProvisioningManagedIdentityClientId)
             ? new ManagedIdentityCredential()
             : new ManagedIdentityCredential(options.ProvisioningManagedIdentityClientId);

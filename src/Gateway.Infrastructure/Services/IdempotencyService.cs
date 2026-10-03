@@ -10,6 +10,7 @@ using Gateway.Infrastructure.Persistence;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Npgsql;
 
 namespace Gateway.Infrastructure.Services;
 
@@ -37,8 +38,18 @@ internal sealed class IdempotencyService : IIdempotencyService
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         if (_dbContext.Database.ProviderName == InMemoryProviderName)
             return await AcquireScopeAsync(agentRegistrationId, endpoint, key, ct);
-        if (_dbContext.Database.ProviderName != SqlServerProviderName || _dbContext.Database.CurrentTransaction is not null)
-            throw new InvalidOperationException("Data-plane serialization requires SQL Server without an existing transaction.");
+        if (_dbContext.Database.CurrentTransaction is not null)
+            throw new InvalidOperationException("Data-plane serialization requires no existing transaction.");
+
+        if (PostgresAdvisoryLock.IsNpgsql(_dbContext))
+        {
+            var resource = CreateOpaqueResourceName(agentRegistrationId, endpoint, key);
+            var pg = await PostgresAdvisoryLock.AcquireSessionLockAsync(_dbContext, resource, ct);
+            return new PostgresDataPlaneScopeLease(_dbContext, pg, resource);
+        }
+
+        if (_dbContext.Database.ProviderName != SqlServerProviderName)
+            throw new InvalidOperationException("Data-plane serialization requires SQL Server or PostgreSQL without an existing transaction.");
 
         // A dedicated unpooled session owns only the opaque idempotency lock during I/O.
         // Logging out releases it even after cancellation; no transaction or protection rows are held.
@@ -91,6 +102,15 @@ internal sealed class IdempotencyService : IIdempotencyService
 
         if (string.Equals(providerName, SqlServerProviderName, StringComparison.Ordinal))
             return await AcquireSqlServerScopeAsync(resourceName, ct);
+
+        if (PostgresAdvisoryLock.IsNpgsql(_dbContext))
+        {
+            var connection = await PostgresAdvisoryLock.AcquireSessionLockAsync(
+                _dbContext,
+                resourceName,
+                ct);
+            return new PostgresIdempotencyScopeLease(connection, resourceName);
+        }
 
         if (string.Equals(providerName, InMemoryProviderName, StringComparison.Ordinal))
         {
@@ -490,6 +510,121 @@ internal sealed class IdempotencyService : IIdempotencyService
             }
             finally
             {
+                await lockConnection.DisposeAsync();
+            }
+        }
+    }
+
+    private sealed class PostgresIdempotencyScopeLease(
+        NpgsqlConnection connection,
+        string resourceName) : IIdempotencyScopeLease
+    {
+        private bool _disposed;
+
+        public Task BeginCommitAsync(CancellationToken ct)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ct.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task CompleteAsync(CancellationToken ct)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ct.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            try
+            {
+                await PostgresAdvisoryLock.ReleaseSessionLockAsync(
+                    connection,
+                    resourceName,
+                    CancellationToken.None);
+            }
+            catch (NpgsqlException)
+            {
+            }
+            finally
+            {
+                await connection.DisposeAsync();
+            }
+        }
+    }
+
+    private sealed class PostgresDataPlaneScopeLease(
+        GatewayDbContext dbContext,
+        NpgsqlConnection lockConnection,
+        string resourceName) : IIdempotencyScopeLease
+    {
+        private IDbContextTransaction? _transaction;
+        private bool _completed;
+        private bool _disposed;
+
+        public async Task BeginCommitAsync(CancellationToken ct)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_transaction is null)
+                _transaction = await dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        }
+
+        public async Task CompleteAsync(CancellationToken ct)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_completed)
+                return;
+            if (_transaction is null)
+                throw new InvalidOperationException("The data-plane commit phase has not started.");
+            await _transaction.CommitAsync(ct);
+            _completed = true;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            try
+            {
+                if (_transaction is not null)
+                {
+                    try
+                    {
+                        if (!_completed)
+                        {
+                            try
+                            {
+                                await _transaction.RollbackAsync(CancellationToken.None);
+                            }
+                            catch (InvalidOperationException)
+                            {
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        await _transaction.DisposeAsync();
+                    }
+                }
+            }
+            finally
+            {
+                try
+                {
+                    await PostgresAdvisoryLock.ReleaseSessionLockAsync(
+                        lockConnection,
+                        resourceName,
+                        CancellationToken.None);
+                }
+                catch (NpgsqlException)
+                {
+                }
+
                 await lockConnection.DisposeAsync();
             }
         }

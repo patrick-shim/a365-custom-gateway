@@ -116,8 +116,8 @@ lists trust no forwarded scheme; direct HTTPS remains supported. See the
 
 | Client | Role |
 |---|---|
-| **Blazor Admin UI** | Legacy hosted UI still present in the Azure profile |
-| **React Console** | Target hosted operator UI on `/api/v1` |
+| **React Console** | **Portable default** hosted operator UI (`web/console` on Compose `:5081`) |
+| **Blazor Admin UI** | Legacy hosted UI still present on the Azure profile only |
 | **Guided Setup** | Legacy Setup app → React + Fluent over portable bootstrap |
 
 See [UI design](../console/design.md).

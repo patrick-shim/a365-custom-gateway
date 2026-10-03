@@ -1082,12 +1082,15 @@ function Get-GatewaySetupIdentityDefaults {
 
 function Read-GatewayBootstrapCapabilities {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][ValidateSet('dev', 'staging', 'prod')][string]$Environment)
+    param(
+        [Parameter(Mandatory)][ValidateSet('dev', 'staging', 'prod')][string]$Environment,
+        [ValidateSet('portable', 'azureLegacy')][string]$DeployProfile = 'azureLegacy'
+    )
 
     Write-Host ''
     Write-Host 'Capabilities to install' -ForegroundColor Cyan
     $capabilityChoices = @()
-    if ($Environment -eq 'dev') {
+    if ($Environment -eq 'dev' -and $DeployProfile -ceq 'azureLegacy') {
         $capabilityChoices += [ordered]@{
             label = 'Full evaluation'
             description = 'Recommended. Includes Agent 365 Registry beta, shared Prompt Shields, and Purview prerequisites.'
@@ -1097,12 +1100,16 @@ function Read-GatewayBootstrapCapabilities {
     $capabilityChoices += @(
         [ordered]@{
             label = 'Core Gateway'
-            description = 'Includes shared Prompt Shields without Purview prerequisites. Registry beta is available only in development.'
+            description = $(if ($DeployProfile -ceq 'portable') {
+                'Gateway host on Docker Compose. Prompt Shields optional; Purview packaging deferred.'
+            } else {
+                'Includes shared Prompt Shields without Purview prerequisites. Registry beta is available only in development.'
+            })
             value = 'coreGateway'
         },
         [ordered]@{
             label = 'Custom'
-            description = 'Includes shared Prompt Shields; choose Purview prerequisites independently. Registry beta remains closed outside development.'
+            description = 'Choose Prompt Shields and Purview independently. Registry beta remains closed outside development.'
             value = 'custom'
         }
     )
@@ -1110,43 +1117,59 @@ function Read-GatewayBootstrapCapabilities {
         -Prompt 'Choose capabilities to install' `
         -Choices $capabilityChoices `
         -DefaultIndex 0).value
-    $registryPreview = $Environment -eq 'dev'
+    $registryPreview = $Environment -eq 'dev' -and $DeployProfile -ceq 'azureLegacy' -and $capabilityPreset -eq 'fullEvaluation'
     $purviewEnabled = $capabilityPreset -eq 'fullEvaluation'
     if ($capabilityPreset -eq 'custom') {
         $purviewEnabled = Read-GatewayYesNo `
-            -Prompt 'Prepare Microsoft Purview identities, RBAC, certificate path, and runtime wiring' `
+            -Prompt 'Prepare Microsoft Purview identities / packaging prerequisites' `
             -Default $false
     }
 
     $registryBetaAcknowledged = $false
-    if ($registryPreview) {
+    if ($Environment -eq 'dev' -and $DeployProfile -ceq 'azureLegacy') {
         Write-Host ''
         Write-Host 'Agent 365 Registry is a beta, Global-cloud-only dependency that Microsoft does not support for production. Each registration still requires a signed-in Gateway Administrator OBO action.' -ForegroundColor Yellow
         $registryBetaAcknowledged = Read-GatewayYesNo `
-            -Prompt 'Acknowledge the Agent 365 Registry beta boundary' `
-            -Default $false
-        if (-not $registryBetaAcknowledged) {
-            throw 'Agent 365 Registry beta was not acknowledged.'
+            -Prompt 'Enable and acknowledge the Agent 365 Registry beta boundary' `
+            -Default ($capabilityPreset -eq 'fullEvaluation')
+        $registryPreview = $registryBetaAcknowledged
+        if ($capabilityPreset -eq 'fullEvaluation' -and -not $registryBetaAcknowledged) {
+            throw 'Full evaluation requires Agent 365 Registry beta acknowledgement.'
         }
     }
 
-    Write-Host 'Every new gateway includes shared Azure AI Content Safety Prompt Shields. Turn usage On or Off for each agent at registration or edit; Off does not remove this shared service.' -ForegroundColor Cyan
-    Write-Host 'F0 has limited subscription quota, soft-deleted accounts can retain that quota, and S0 plus service usage can incur Azure cost. If unavailable, setup stops for review; it never silently changes SKU or omits Prompt Shields.' -ForegroundColor Yellow
-    $skuChoice = Read-GatewayChoice -Prompt 'Choose the Content Safety SKU' -Choices @(
-        [ordered]@{ label = 'F0'; description = 'Requests the free tier, subject to regional availability and subscription limits.'; value = 'F0' },
-        [ordered]@{ label = 'S0'; description = 'Uses the paid standard tier; Azure charges apply.'; value = 'S0' }
-    ) -DefaultIndex 0
-    $promptShieldCostAndQuotaAcknowledged = Read-GatewayYesNo `
-        -Prompt "Acknowledge the Prompt Shields quota and cost boundary for $($skuChoice.value)" `
-        -Default $false
-    if (-not $promptShieldCostAndQuotaAcknowledged) {
-        throw 'Prompt Shields quota and cost requirements were not acknowledged.'
+    $promptShieldEnabled = $true
+    $promptShieldSku = 'F0'
+    $promptShieldCostAndQuotaAcknowledged = $false
+    if ($DeployProfile -ceq 'portable' -or $capabilityPreset -eq 'custom') {
+        Write-Host ''
+        Write-Host 'Prompt Shields uses Azure AI Content Safety (product API). The gateway host itself does not require Azure compute.' -ForegroundColor Cyan
+        $promptShieldEnabled = Read-GatewayYesNo `
+            -Prompt 'Provision Azure AI Content Safety for Prompt Shields in the selected subscription' `
+            -Default ($DeployProfile -ceq 'azureLegacy')
+    }
+    if ($promptShieldEnabled) {
+        Write-Host 'F0 has limited subscription quota; soft-deleted accounts can retain that quota; S0 plus usage can incur Azure cost.' -ForegroundColor Yellow
+        $skuChoice = Read-GatewayChoice -Prompt 'Choose the Content Safety SKU' -Choices @(
+            [ordered]@{ label = 'F0'; description = 'Free tier, subject to regional availability and subscription limits.'; value = 'F0' },
+            [ordered]@{ label = 'S0'; description = 'Paid standard tier; Azure charges apply.'; value = 'S0' }
+        ) -DefaultIndex 0
+        $promptShieldSku = [string]$skuChoice.value
+        $promptShieldCostAndQuotaAcknowledged = Read-GatewayYesNo `
+            -Prompt "Acknowledge the Prompt Shields quota and cost boundary for $promptShieldSku" `
+            -Default $false
+        if (-not $promptShieldCostAndQuotaAcknowledged) {
+            throw 'Prompt Shields quota and cost requirements were not acknowledged.'
+        }
+    }
+    else {
+        $promptShieldSku = 'F0'
+        $promptShieldCostAndQuotaAcknowledged = $false
     }
 
     $purviewAuthorityRequirementsAcknowledged = $false
     if ($purviewEnabled) {
-        Write-Host 'Purview capability preparation requires tenant-approved identity, Graph/compliance RBAC, certificate, and Key Vault authority. Bootstrap does not connect a compliance session, select a sensitive information type, author policy, or claim readiness.' -ForegroundColor Yellow
-        Write-Host 'After deployment, a Gateway Administrator completes tenant connection and policy work in Settings. Any required Security & Compliance PowerShell companion remains interactive and Windows-only.' -ForegroundColor DarkGray
+        Write-Host 'Purview capability preparation requires tenant-approved identity and a Windows packaging handoff. Bootstrap does not author policy or claim readiness.' -ForegroundColor Yellow
         $purviewAuthorityRequirementsAcknowledged = Read-GatewayYesNo `
             -Prompt 'Acknowledge the Purview authority and post-deployment administration requirements' `
             -Default $false
@@ -1160,8 +1183,8 @@ function Read-GatewayBootstrapCapabilities {
         registryPreview = $registryPreview
         registryBetaAcknowledged = $registryBetaAcknowledged
         promptShield = [ordered]@{
-            enabled = $true
-            skuName = [string]$skuChoice.value
+            enabled = $promptShieldEnabled
+            skuName = $promptShieldSku
             costAndQuotaAcknowledged = $promptShieldCostAndQuotaAcknowledged
         }
         purview = [ordered]@{
@@ -1203,13 +1226,41 @@ function New-GatewayBootstrapConfiguration {
 
     Write-Host ''
     Write-Host 'A365 Custom Gateway setup' -ForegroundColor Cyan
-    Write-Host 'This wizard stores only non-secret deployment choices. Azure tokens and credentials are never written to configuration.'
+    Write-Host 'Guided setup only — you should not hand-edit JSON. Tokens and passwords are never written to configuration.'
+    Write-Host ''
+
+    $deployProfileChoice = Read-GatewayChoice -Prompt 'Where should the Gateway host run' -Choices @(
+        [ordered]@{
+            label = 'Portable (recommended)'
+            description = 'Docker Compose on this machine / any cloud. Entra + optional Content Safety only — no Azure SQL/Service Bus/Container Apps.'
+            value = 'portable'
+        },
+        [ordered]@{
+            label = 'Legacy Azure PaaS'
+            description = 'Transitional profile: Azure Container Apps, SQL, Service Bus, Key Vault, ACR.'
+            value = 'azureLegacy'
+        }
+    ) -DefaultIndex 0
+    $deployProfile = [string]$deployProfileChoice.value
+
+    if ($deployProfile -ceq 'portable') {
+        $portableModule = Join-Path $PSScriptRoot 'Portable.psm1'
+        Import-Module $portableModule -Force -DisableNameChecking
+        try { Assert-GatewayPortablePrerequisites -Install:$false | Out-Null }
+        catch {
+            Write-Host $_.Exception.Message -ForegroundColor Yellow
+            if (-not (Read-GatewayYesNo -Prompt 'Docker is required for portable. Start Docker, then continue' -Default $true)) {
+                throw 'Portable setup requires Docker Engine with the compose plugin.'
+            }
+            Assert-GatewayPortablePrerequisites -Install:$false | Out-Null
+        }
+    }
 
     $subscriptions = @()
     try { $subscriptions = @(Get-GatewayAzureSubscriptions) } catch { }
     if ($subscriptions.Count -eq 0) {
         if (-not (Read-GatewayYesNo -Prompt 'No usable Azure CLI session was found. Sign in now' -Default $true)) {
-            throw 'Azure sign-in is required to discover a subscription.'
+            throw 'Azure sign-in is required to discover tenant/subscription for Entra (and optional Content Safety).'
         }
         & az login --output none --only-show-errors
         if ($LASTEXITCODE -ne 0) { throw 'Azure CLI sign-in did not complete.' }
@@ -1224,27 +1275,27 @@ function New-GatewayBootstrapConfiguration {
             value = $_
         }
     })
-    $subscriptionChoice = Read-GatewayChoice -Prompt 'Choose an Azure subscription' -Choices $subscriptionChoices -DefaultIndex 0
+    $subscriptionChoice = Read-GatewayChoice -Prompt 'Choose an Azure subscription / tenant' -Choices $subscriptionChoices -DefaultIndex 0
     $subscription = $subscriptionChoice.value
 
     $profiles = @(
         [ordered]@{
             label = 'Quick development'
-            description = 'Defaults to the recommended Full evaluation capabilities; Registry beta still requires explicit acknowledgement.'
+            description = 'Development environment defaults.'
             environment = 'dev'
         },
         [ordered]@{
             label = 'Staging foundation'
-            description = 'Deploys staging with Registry creation closed.'
+            description = 'Staging with Registry creation closed.'
             environment = 'staging'
         },
         [ordered]@{
             label = 'Production-safe foundation'
-            description = 'Deploys the production foundation while the preview Registry dependency remains closed.'
+            description = 'Production foundation; Registry preview remains closed.'
             environment = 'prod'
         }
     )
-    $profile = Read-GatewayChoice -Prompt 'Choose a deployment profile' -Choices $profiles -DefaultIndex 0
+    $profile = Read-GatewayChoice -Prompt 'Choose an environment' -Choices $profiles -DefaultIndex 0
     $environment = [string]$profile.environment
     $randomProject = 'gw' + [guid]::NewGuid().ToString('N').Substring(0, 5)
     $identityDefaults = Get-GatewaySetupIdentityDefaults `
@@ -1257,19 +1308,50 @@ function New-GatewayBootstrapConfiguration {
         Write-Host "Reusing the recorded deployment identity '$($identityDefaults.projectName)' in $environment. Accepting these defaults reconfigures that deployment; entering a different project name provisions a separate one." -ForegroundColor Cyan
     }
     $projectName = Read-GatewayText -Prompt 'Short project name (used for tenant/global resource isolation)' -Default $identityDefaults.projectName -Pattern '^[a-z][a-z0-9]{1,7}$' -ValidationMessage 'Use 2-8 lowercase letters/digits, starting with a letter.'
-    $configuredLocation = [string]$identityDefaults.location
-    $location = Read-GatewayAzureLocation `
-        -SubscriptionId ([string]$subscription.id) `
-        -ConfiguredLocation $configuredLocation
-    $defaultResourceGroupName = "rg-$projectName-$environment"
-    # Only offer the recorded resource group back when the project name was
-    # kept as well, otherwise the default would name another deployment's group.
-    if ($identityDefaults.sameDeployment -and
-        $projectName -ceq [string]$identityDefaults.projectName -and
-        -not [string]::IsNullOrWhiteSpace([string]$identityDefaults.resourceGroupName)) {
-        $defaultResourceGroupName = [string]$identityDefaults.resourceGroupName
+
+    $capabilities = Read-GatewayBootstrapCapabilities -Environment $environment -DeployProfile $deployProfile
+    $capabilityPreset = $capabilities.capabilityPreset
+    $registryPreview = $capabilities.registryPreview
+    $registryBetaAcknowledged = $capabilities.registryBetaAcknowledged
+    $promptShieldEnabled = $capabilities.promptShield.enabled
+    $promptShieldSku = $capabilities.promptShield.skuName
+    $promptShieldCostAndQuotaAcknowledged = $capabilities.promptShield.costAndQuotaAcknowledged
+    $purviewEnabled = $capabilities.purview.enabled
+    $purviewAuthorityRequirementsAcknowledged = $capabilities.purview.authorityRequirementsAcknowledged
+
+    $location = ''
+    $resourceGroupName = ''
+    if ($deployProfile -ceq 'azureLegacy' -or $promptShieldEnabled) {
+        $configuredLocation = [string]$identityDefaults.location
+        $location = Read-GatewayAzureLocation `
+            -SubscriptionId ([string]$subscription.id) `
+            -ConfiguredLocation $configuredLocation
+        $defaultResourceGroupName = "rg-$projectName-$environment"
+        if ($identityDefaults.sameDeployment -and
+            $projectName -ceq [string]$identityDefaults.projectName -and
+            -not [string]::IsNullOrWhiteSpace([string]$identityDefaults.resourceGroupName)) {
+            $defaultResourceGroupName = [string]$identityDefaults.resourceGroupName
+        }
+        $rgPrompt = if ($deployProfile -ceq 'portable') {
+            'Azure resource group for Content Safety (Prompt Shields only)'
+        }
+        else {
+            'Resource group name'
+        }
+        $resourceGroupName = Read-GatewayText -Prompt $rgPrompt -Default $defaultResourceGroupName -Pattern '^[A-Za-z0-9._()\-]{1,90}$' -ValidationMessage 'Enter a valid Azure resource group name (1-90 characters).'
     }
-    $resourceGroupName = Read-GatewayText -Prompt 'Resource group name' -Default $defaultResourceGroupName -Pattern '^[A-Za-z0-9._()\-]{1,90}$' -ValidationMessage 'Enter a valid Azure resource group name (1-90 characters).'
+
+    $apiHostPort = 5080
+    $consoleHostPort = 5081
+    if ($deployProfile -ceq 'portable') {
+        $portText = Read-GatewayText -Prompt 'Local API host port' -Default '5080' -Pattern '^[1-9][0-9]{0,4}$' -ValidationMessage 'Enter a TCP port from 1 to 65535.'
+        $apiHostPort = [int]$portText
+        if ($apiHostPort -gt 65535) { throw 'API host port must be <= 65535.' }
+        $consolePortText = Read-GatewayText -Prompt 'Local React Console host port' -Default '5081' -Pattern '^[1-9][0-9]{0,4}$' -ValidationMessage 'Enter a TCP port from 1 to 65535.'
+        $consoleHostPort = [int]$consolePortText
+        if ($consoleHostPort -gt 65535) { throw 'Console host port must be <= 65535.' }
+        if ($consoleHostPort -eq $apiHostPort) { throw 'Console host port must differ from the API host port.' }
+    }
 
     $suggestedEmail = ''
     try {
@@ -1289,16 +1371,6 @@ function New-GatewayBootstrapConfiguration {
         catch { Write-Host $_.Exception.Message -ForegroundColor Yellow }
     }
 
-    $capabilities = Read-GatewayBootstrapCapabilities -Environment $environment
-    $capabilityPreset = $capabilities.capabilityPreset
-    $registryPreview = $capabilities.registryPreview
-    $registryBetaAcknowledged = $capabilities.registryBetaAcknowledged
-    $promptShieldEnabled = $capabilities.promptShield.enabled
-    $promptShieldSku = $capabilities.promptShield.skuName
-    $promptShieldCostAndQuotaAcknowledged = $capabilities.promptShield.costAndQuotaAcknowledged
-    $purviewEnabled = $capabilities.purview.enabled
-    $purviewAuthorityRequirementsAcknowledged = $capabilities.purview.authorityRequirementsAcknowledged
-
     $root = Get-RepositoryRoot
     $schemaPath = Join-Path $root 'bootstrap/config.schema.json'
     $configurationDirectory = Split-Path -Parent $resolvedPath
@@ -1306,15 +1378,13 @@ function New-GatewayBootstrapConfiguration {
     if (-not $relativeSchema.StartsWith('.')) { $relativeSchema = "./$relativeSchema" }
     $configuration = [ordered]@{
         '$schema' = $relativeSchema
+        deployProfile = $deployProfile
         subscriptionId = [string]$subscription.id
         tenantId = [string]$subscription.tenantId
         environment = $environment
-        location = $location
         projectName = $projectName
-        resourceGroupName = $resourceGroupName
         alertEmail = $alertEmail
         capabilityPreset = $capabilityPreset
-        sql = [ordered]@{ skuName = 'Basic'; skuTier = 'Basic' }
         agent365 = [ordered]@{
             seedBlueprintName = "A365 Gateway $projectName $environment"
             allowDevelopmentRegistryPreview = $registryPreview
@@ -1331,18 +1401,40 @@ function New-GatewayBootstrapConfiguration {
             authorityRequirementsAcknowledged = $purviewAuthorityRequirementsAcknowledged
         }
     }
+    if (-not [string]::IsNullOrWhiteSpace($location)) {
+        $configuration.location = $location
+    }
+    if (-not [string]::IsNullOrWhiteSpace($resourceGroupName)) {
+        $configuration.resourceGroupName = $resourceGroupName
+    }
+    if ($deployProfile -ceq 'portable') {
+        $configuration.portable = [ordered]@{
+            apiHostPort = $apiHostPort
+            consoleHostPort = $consoleHostPort
+        }
+    }
+    else {
+        $configuration.sql = [ordered]@{ skuName = 'Basic'; skuTier = 'Basic' }
+    }
 
     Write-Host ''
     Write-Host "Deployment: $projectName-$environment" -ForegroundColor Cyan
-    Write-Host "Subscription: $($subscriptionChoice.label)"
-    Write-Host "Region:       $location"
-    Write-Host "Resource group: $resourceGroupName"
-    Write-Host "Capabilities:    $capabilityPreset"
+    Write-Host "Host profile:  $deployProfile"
+    Write-Host "Subscription:  $($subscriptionChoice.label)"
+    if (-not [string]::IsNullOrWhiteSpace($location)) {
+        Write-Host "Region:        $location"
+        Write-Host "Resource group: $resourceGroupName"
+    }
+    if ($deployProfile -ceq 'portable') {
+        Write-Host "API port:      $apiHostPort"
+        Write-Host "Console port:  $consoleHostPort"
+    }
+    Write-Host "Capabilities:  $capabilityPreset"
     Write-Host "Registry preview: $registryPreview"
     Write-Host "Reviewed Agent 365 manager IDs: $($reviewedManagerApplicationIds -join ', ')"
-    Write-Host "Prompt Shields:   $promptShieldEnabled ($promptShieldSku)"
+    Write-Host "Prompt Shields:   $promptShieldEnabled $(if ($promptShieldEnabled) { "($promptShieldSku)" } else { '' })"
     Write-Host "Purview:           $purviewEnabled"
-    if (-not (Read-GatewayYesNo -Prompt 'Write this non-secret configuration' -Default $true)) {
+    if (-not (Read-GatewayYesNo -Prompt 'Accept and continue (writes non-secret configuration, then you can run plan/apply)' -Default $true)) {
         throw 'Configuration was not written.'
     }
 
@@ -1362,6 +1454,7 @@ function New-GatewayBootstrapConfiguration {
         deploymentId = "$projectName-$environment"
         subscriptionId = [string]$subscription.id
         tenantId = [string]$subscription.tenantId
+        deployProfile = $deployProfile
         profile = [string]$profile.label
         registryPreviewEnabled = $registryPreview
         promptShieldEnabled = $promptShieldEnabled

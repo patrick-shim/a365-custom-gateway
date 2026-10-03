@@ -16,7 +16,9 @@ features, expected behaviors, and the non-negotiable split:
 | UI stack and design system (Console + Setup) | [UI design](console/design.md) · [Console README](../web/console/README.md) |
 | Portable runtime and components | [System architecture](architecture/system-architecture.md) |
 | Build, install, connect an agent | [Project README](../README.md) |
+| Portable Compose E2E (auth, FMI, Registry, Active) | [Portable profile handoff](portable/README.md) |
 | Installer commands and deploy profiles | [Bootstrap](../bootstrap/README.md) |
+| Compose files / ports | [deploy/portable](../deploy/portable/README.md) |
 | Infrastructure profiles (portable vs legacy Azure) | [Infrastructure](../infrastructure/README.md) |
 | Existing-installation operation and recovery | [Operations](../operations/README.md) |
 | Legacy Azure-profile maintenance | [Upgrade contract](../operations/gateway-upgrade.md) |

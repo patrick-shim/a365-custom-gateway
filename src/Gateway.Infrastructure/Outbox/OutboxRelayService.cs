@@ -75,7 +75,7 @@ internal sealed class OutboxRelayService : BackgroundService
 
         using var scope = _scopeFactory.CreateScope();
         var outboxRepository = scope.ServiceProvider.GetRequiredService<IOutboxRepository>();
-        var publisher = scope.ServiceProvider.GetRequiredService<IServiceBusPublisher>();
+        var publisher = scope.ServiceProvider.GetRequiredService<IOutboxQueuePublisher>();
 
         // Claim immediately before each send. This prevents later rows in a slow
         // batch from exhausting their leases while earlier sends are still active.
@@ -102,7 +102,7 @@ internal sealed class OutboxRelayService : BackgroundService
 
     private async Task PublishClaimedMessageAsync(
         IOutboxRepository outboxRepository,
-        IServiceBusPublisher publisher,
+        IOutboxQueuePublisher publisher,
         OutboxMessage message,
         CancellationToken ct)
     {

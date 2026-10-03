@@ -79,13 +79,19 @@ closed. Deployment health does not prove telemetry delivery or policy enforcemen
 
 ## Connect an external agent
 
-1. Sign in to the hosted operator UI (today may still be Blazor Admin UI on the
-   legacy profile; target is React Console) and open Getting started / Agents.
-2. Register an agent on a new or compatible existing identity blueprint.
-3. Review optional telemetry and protection choices when the UI offers them
-   (target Console: name → blueprint → key; controls on Agents / Data protection).
+**Portable (recommended):** after `.\gateway.cmd up`, open the React Console at
+`http://127.0.0.1:5081`. Full portable auth / Registry / Active notes:
+[docs/portable/README.md](docs/portable/README.md).
+
+1. Sign in to the hosted operator UI — **React Console on portable**; Blazor Admin
+   UI only on the legacy Azure profile until cutover.
+2. Register an agent on a new or compatible existing identity blueprint
+   (Console: name → blueprint → key).
+3. Review optional telemetry and protection choices when offered (Prompt Shields
+   on the agent; DLP under Data protection).
 4. Save the API endpoint, external agent ID, and one-time Gateway key securely.
-5. Complete the signed-in administrator handoff for Agent 365 Registry creation.
+5. Complete the signed-in administrator handoff for Agent 365 Registry
+   (**Finish Agent 365 registration** → Confirm). This is not Purview approval.
 6. Wait for the provisioning worker to verify the registration (**Active**).
 7. From the external agent: evaluate each prompt → call your model → submit the
    interaction with the same evaluation receipt.
@@ -150,5 +156,6 @@ configuration do not prove current enforcement.
 | Portable runtime architecture | [System architecture](docs/architecture/system-architecture.md) |
 | UI stack (all UIs) | [UI design](docs/console/design.md) |
 | Installer / profiles | [Bootstrap](bootstrap/README.md) |
+| Portable Compose E2E handoff | [Portable profile](docs/portable/README.md) |
 | Infrastructure profiles | [Infrastructure](infrastructure/README.md) |
 | Full index | [docs/README.md](docs/README.md) |

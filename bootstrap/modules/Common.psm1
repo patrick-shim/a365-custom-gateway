@@ -2926,29 +2926,74 @@ function Read-BootstrapConfig {
             $config.purview | Add-Member -MemberType NoteProperty -Name $entry.Key -Value $entry.Value
         }
     }
-    foreach ($name in @('subscriptionId', 'tenantId', 'environment', 'location', 'projectName', 'resourceGroupName', 'alertEmail')) {
+    $deployProfile = [string]$config.deployProfile
+    if ([string]::IsNullOrWhiteSpace($deployProfile)) {
+        $deployProfile = 'azureLegacy'
+        $config | Add-Member -MemberType NoteProperty -Name deployProfile -Value $deployProfile -Force
+    }
+    if ($deployProfile -cnotin @('portable', 'azureLegacy')) {
+        throw "deployProfile must be portable or azureLegacy."
+    }
+
+    $requiresAzureProductResources =
+        $deployProfile -ceq 'azureLegacy' -or
+        $config.promptShield.enabled -eq $true
+
+    foreach ($name in @('tenantId', 'environment', 'projectName', 'alertEmail')) {
         if ([string]::IsNullOrWhiteSpace([string]$config.$name)) { throw "Config property '$name' is required." }
     }
-    Assert-GuidValue -Value ([string]$config.subscriptionId) -Label 'subscriptionId'
+    if ($requiresAzureProductResources) {
+        foreach ($name in @('subscriptionId', 'location', 'resourceGroupName')) {
+            if ([string]::IsNullOrWhiteSpace([string]$config.$name)) {
+                throw "Config property '$name' is required for this deploy profile / Prompt Shields selection."
+            }
+        }
+    }
+
     Assert-GuidValue -Value ([string]$config.tenantId) -Label 'tenantId'
-    $config.subscriptionId = ([guid][string]$config.subscriptionId).ToString('D')
     $config.tenantId = ([guid][string]$config.tenantId).ToString('D')
+    if (-not [string]::IsNullOrWhiteSpace([string]$config.subscriptionId)) {
+        Assert-GuidValue -Value ([string]$config.subscriptionId) -Label 'subscriptionId'
+        $config.subscriptionId = ([guid][string]$config.subscriptionId).ToString('D')
+    }
     if ([string]$config.environment -notin @('dev', 'staging', 'prod')) { throw 'environment must be dev, staging, or prod.' }
     if ([string]$config.projectName -notmatch '^[a-z][a-z0-9]{1,7}$') { throw 'projectName must be 2-8 lowercase alphanumeric characters starting with a letter so every generated Key Vault name remains valid.' }
-    if ([string]$config.resourceGroupName -notmatch '^(?=.{1,90}$)[A-Za-z0-9._()\-]*[A-Za-z0-9_()\-]$') { throw 'resourceGroupName is invalid or ends with a period.' }
-    if ([string]$config.location -notmatch '^[a-z0-9]+$') { throw 'location must be an Azure region name such as koreacentral.' }
-    if ([string]$config.alertEmail -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { throw 'alertEmail must be a valid email address.' }
-    if ([string]$config.sql.skuName -notin @('Basic', 'S0', 'S1', 'S2', 'S3', 'P1', 'P2', 'GP_S_Gen5_1', 'GP_S_Gen5_2')) { throw 'sql.skuName is unsupported by the deployment template.' }
-    if ([string]$config.sql.skuTier -notin @('Basic', 'Standard', 'Premium', 'GeneralPurpose')) { throw 'sql.skuTier is unsupported by the deployment template.' }
-    $expectedSqlTier = switch -Regex ([string]$config.sql.skuName) {
-        '^Basic$' { 'Basic'; break }
-        '^S[0-3]$' { 'Standard'; break }
-        '^P[12]$' { 'Premium'; break }
-        '^GP_S_Gen5_[12]$' { 'GeneralPurpose'; break }
-        default { $null }
+    if (-not [string]::IsNullOrWhiteSpace([string]$config.resourceGroupName) -and
+        [string]$config.resourceGroupName -notmatch '^(?=.{1,90}$)[A-Za-z0-9._()\-]*[A-Za-z0-9_()\-]$') {
+        throw 'resourceGroupName is invalid or ends with a period.'
     }
-    if ([string]$config.sql.skuTier -ne $expectedSqlTier) {
-        throw 'sql.skuName and sql.skuTier must describe the same supported Azure SQL service tier.'
+    if (-not [string]::IsNullOrWhiteSpace([string]$config.location) -and
+        [string]$config.location -notmatch '^[a-z0-9]+$') {
+        throw 'location must be an Azure region name such as koreacentral.'
+    }
+    if ([string]$config.alertEmail -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { throw 'alertEmail must be a valid email address.' }
+
+    if ($deployProfile -ceq 'portable') {
+        if ($null -eq $config.portable -or [string]::IsNullOrWhiteSpace([string]$config.portable.apiHostPort)) {
+            throw 'portable.apiHostPort is required for the portable deploy profile.'
+        }
+        $apiHostPort = 0
+        if (-not [int]::TryParse([string]$config.portable.apiHostPort, [ref]$apiHostPort) -or
+            $apiHostPort -lt 1 -or $apiHostPort -gt 65535) {
+            throw 'portable.apiHostPort must be an integer between 1 and 65535.'
+        }
+    }
+    else {
+        if ($null -eq $config.sql) {
+            throw 'sql is required for the azureLegacy deploy profile.'
+        }
+        if ([string]$config.sql.skuName -notin @('Basic', 'S0', 'S1', 'S2', 'S3', 'P1', 'P2', 'GP_S_Gen5_1', 'GP_S_Gen5_2')) { throw 'sql.skuName is unsupported by the deployment template.' }
+        if ([string]$config.sql.skuTier -notin @('Basic', 'Standard', 'Premium', 'GeneralPurpose')) { throw 'sql.skuTier is unsupported by the deployment template.' }
+        $expectedSqlTier = switch -Regex ([string]$config.sql.skuName) {
+            '^Basic$' { 'Basic'; break }
+            '^S[0-3]$' { 'Standard'; break }
+            '^P[12]$' { 'Premium'; break }
+            '^GP_S_Gen5_[12]$' { 'GeneralPurpose'; break }
+            default { $null }
+        }
+        if ([string]$config.sql.skuTier -ne $expectedSqlTier) {
+            throw 'sql.skuName and sql.skuTier must describe the same supported Azure SQL service tier.'
+        }
     }
     if ([string]::IsNullOrWhiteSpace([string]$config.agent365.seedBlueprintName) -or ([string]$config.agent365.seedBlueprintName).Length -gt 100) { throw 'agent365.seedBlueprintName must contain 1-100 characters.' }
     $reviewedManagerIds = [Collections.Generic.List[string]]::new()
@@ -3021,6 +3066,11 @@ function Read-BootstrapConfig {
 function Get-BootstrapStatePath {
     param([Parameter(Mandatory)]$Config)
     $root = Get-RepositoryRoot
+    $profile = [string]$Config.deployProfile
+    if ($profile -ceq 'portable') {
+        return Join-Path $root ".bootstrap/state/portable-$($Config.tenantId)-$($Config.projectName)-$($Config.environment).json"
+    }
+
     return Join-Path $root ".bootstrap/state/$($Config.subscriptionId)-$($Config.resourceGroupName)-$($Config.environment).json"
 }
 
@@ -3028,15 +3078,24 @@ function New-BootstrapState {
     param([Parameter(Mandatory)]$Config)
 
     $source = Get-BootstrapSourceMetadata
+    $profile = [string]$Config.deployProfile
+    if ([string]::IsNullOrWhiteSpace($profile)) { $profile = 'azureLegacy' }
+    $deploymentKey = if ($profile -ceq 'portable') {
+        "portable/$($Config.tenantId)/$($Config.projectName)/$($Config.environment)"
+    }
+    else {
+        "$($Config.subscriptionId)/$($Config.resourceGroupName)/$($Config.environment)"
+    }
     return [ordered]@{
         schemaVersion = $script:BootstrapStateSchemaVersion
         bootstrapVersion = $script:BootstrapVersion
-        deploymentKey = "$($Config.subscriptionId)/$($Config.resourceGroupName)/$($Config.environment)"
+        deploymentKey = $deploymentKey
         deploymentOwnershipId = [guid]::NewGuid().ToString('D')
         configurationFingerprint = Get-BootstrapConfigurationFingerprint -Config $Config
         createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
         updatedAtUtc = [DateTimeOffset]::UtcNow.ToString('O')
         configuration = [ordered]@{
+            deployProfile = $profile
             subscriptionId = [string]$Config.subscriptionId
             tenantId = [string]$Config.tenantId
             environment = [string]$Config.environment
@@ -3323,7 +3382,14 @@ function Read-BootstrapState {
         throw "Bootstrap state '$Path' must contain a JSON object."
     }
 
-    $expected = "$($Config.subscriptionId)/$($Config.resourceGroupName)/$($Config.environment)"
+    $profile = [string]$Config.deployProfile
+    if ([string]::IsNullOrWhiteSpace($profile)) { $profile = 'azureLegacy' }
+    $expected = if ($profile -ceq 'portable') {
+        "portable/$($Config.tenantId)/$($Config.projectName)/$($Config.environment)"
+    }
+    else {
+        "$($Config.subscriptionId)/$($Config.resourceGroupName)/$($Config.environment)"
+    }
     $recordedDeploymentKey = if ($state.Contains('deploymentKey')) { [string]$state['deploymentKey'] } else { '' }
     if ($recordedDeploymentKey -ne $expected) { throw "State belongs to '$recordedDeploymentKey', not '$expected'." }
 

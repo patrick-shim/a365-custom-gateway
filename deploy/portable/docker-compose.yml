@@ -1,0 +1,68 @@
+# Zero-Microsoft infrastructure for local / AWS / GCP / on-prem.
+# Product APIs (Entra, Graph, Agent 365, Purview, Prompt Shields) stay external.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - gateway_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: gateway
+      RABBITMQ_DEFAULT_PASS: gateway
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # S3-compatible API (MinIO Hub pulls are often blocked; Cloudserver works offline-friendly).
+  s3:
+    image: zenko/cloudserver:latest
+    ports:
+      - "9000:8000"
+    environment:
+      REMOTE_MANAGEMENT_DISABLE: "1"
+      SCALITY_ACCESS_KEY_ID: gateway
+      SCALITY_SECRET_ACCESS_KEY: gatewaysecret
+      S3DATA: file
+      S3BACKEND: file
+    volumes:
+      - gateway_s3:/usr/src/app/localData
+      - gateway_s3_meta:/usr/src/app/localMetadata
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8000/',r=>process.exit(r.statusCode?0:1)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  vault:
+    image: hashicorp/vault:1.17
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: gateway-dev-token
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "8200:8200"
+    command: server -dev
+
+volumes:
+  gateway_pg:
+  gateway_s3:
+  gateway_s3_meta:

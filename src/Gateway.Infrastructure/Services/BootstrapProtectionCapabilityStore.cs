@@ -66,6 +66,31 @@ internal sealed class BootstrapProtectionCapabilityStore
             return;
         }
 
+        if (PostgresAdvisoryLock.IsNpgsql(_dbContext))
+        {
+            var connection = await PostgresAdvisoryLock.AcquireSessionLockAsync(
+                _dbContext,
+                LockResource,
+                cancellationToken);
+            try
+            {
+                await SynchronizeCoreAsync(
+                    attestation,
+                    authorization,
+                    utcNow,
+                    cancellationToken);
+            }
+            finally
+            {
+                await PostgresAdvisoryLock.ReleaseSessionLockAsync(
+                    connection,
+                    LockResource,
+                    CancellationToken.None);
+            }
+
+            return;
+        }
+
         if (!string.Equals(
                 provider,
                 SqlServerProviderName,

@@ -70,7 +70,7 @@ function Assert-GatewayApplicationNamespacePlanBoundary {
         if ($Config.purview.enabled -isnot [bool]) { throw 'Unknown optional capability selection.' }
         $suffix = "$($Config.projectName)-$($Config.environment)"
         $apiName = "A365 Gateway API - $suffix"
-        $names = @($apiName, "A365 Gateway Admin UI - $suffix")
+        $names = @($apiName, "A365 Gateway Console - $suffix", "A365 Gateway Admin UI - $suffix")
         if ($Config.purview.enabled) { $names += "A365 Gateway Purview Automation - $suffix" }
         $apiObjectId = ''
         foreach ($name in $names) {
@@ -1748,13 +1748,23 @@ function Ensure-AdminUiApplication {
     Assert-ExactAdminUiGatewayRoleContract `
         -AppRoles @($application.appRoles) `
         -DeploymentOwnershipId $DeploymentOwnershipId | Out-Null
+    $redirectUris = @($application.web.redirectUris | ForEach-Object { [string]$_ })
+    $logoutUrl = [string]$application.web.logoutUrl
+    $portableRedirectsExact = $false
+    if ((Get-Command Test-GatewayPortableDeployProfile -ErrorAction SilentlyContinue) -and
+        (Test-GatewayPortableDeployProfile -Config $Config)) {
+        $portableBase = "http://127.0.0.1:$([int]$Config.portable.adminUiHostPort)"
+        $portableRedirectsExact = $redirectUris.Count -eq 1 -and
+            $redirectUris[0] -ceq "$portableBase/signin-oidc" -and
+            $logoutUrl -ceq "$portableBase/signout-callback-oidc"
+    }
+    $redirectSurfaceExact = ($redirectUris.Count -eq 0 -and [string]::IsNullOrWhiteSpace($logoutUrl)) -or $portableRedirectsExact
     if ([string]$application.displayName -cne $displayName -or
         [string]$application.signInAudience -cne 'AzureADMyOrg' -or
         @($application.identifierUris).Count -ne 0 -or
         @($application.api.oauth2PermissionScopes).Count -ne 0 -or
         @($application.keyCredentials).Count -ne 0 -or
-        @($application.web.redirectUris).Count -ne 0 -or
-        -not [string]::IsNullOrWhiteSpace([string]$application.web.logoutUrl) -or
+        -not $redirectSurfaceExact -or
         -not [string]::IsNullOrWhiteSpace([string]$application.web.homePageUrl) -or
         @($application.spa.redirectUris).Count -ne 0 -or
         @($application.publicClient.redirectUris).Count -ne 0 -or
@@ -1861,6 +1871,203 @@ function Set-AdminUiRedirectUris {
         }
     } | Out-Null
     return [ordered]@{ signInRedirectUri = "$base/signin-oidc"; signedOutCallbackUri = "$base/signout-callback-oidc" }
+}
+
+function Set-PortableAdminUiRedirectUris {
+    param(
+        [Parameter(Mandatory)]$AdminIdentity,
+        [Parameter(Mandatory)][int]$AdminUiHostPort
+    )
+
+    if ($AdminUiHostPort -lt 1 -or $AdminUiHostPort -gt 65535) {
+        throw 'Portable Admin UI host port is out of range.'
+    }
+
+    $base = "http://127.0.0.1:$AdminUiHostPort"
+    Invoke-GraphJsonBody -Method 'PATCH' -Url "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)" -Body @{
+        isFallbackPublicClient = $false
+        web = @{
+            redirectUris = @("$base/signin-oidc")
+            logoutUrl = "$base/signout-callback-oidc"
+            implicitGrantSettings = @{
+                enableAccessTokenIssuance = $false
+                enableIdTokenIssuance = $false
+            }
+        }
+    } | Out-Null
+    return [ordered]@{
+        adminUiUrl = $base
+        signInRedirectUri = "$base/signin-oidc"
+        signedOutCallbackUri = "$base/signout-callback-oidc"
+    }
+}
+
+function New-PortableAdminUiClientSecret {
+    param(
+        [Parameter(Mandatory)]$AdminIdentity,
+        [Parameter(Mandatory)][string]$SecretPath
+    )
+
+    $secretDirectory = Split-Path -Parent $SecretPath
+    if (-not (Test-Path -LiteralPath $secretDirectory)) {
+        New-Item -ItemType Directory -Path $secretDirectory -Force | Out-Null
+    }
+
+    $application = Invoke-AzJson -Arguments @(
+        'rest', '--method', 'GET', '--url',
+        "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)?`$select=id,appId,passwordCredentials"
+    )
+    $credentials = @($application.passwordCredentials)
+    if ($credentials.Count -gt 1 -or
+        ($credentials.Count -eq 1 -and [string]$credentials[0].displayName -cne 'a365gw-bootstrap-admin-ui')) {
+        throw 'Portable Admin UI credential surface is outside the bootstrap-owned secret boundary.'
+    }
+
+    if ($credentials.Count -eq 1 -and (Test-Path -LiteralPath $SecretPath)) {
+        $existing = [IO.File]::ReadAllText($SecretPath).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($existing)) {
+            return [ordered]@{
+                adminUiClientSecret = $existing
+                credentialKeyId = [string]$credentials[0].keyId
+                reused = $true
+            }
+        }
+    }
+
+    if ($credentials.Count -eq 1) {
+        Invoke-GraphJsonBody `
+            -Method 'POST' `
+            -Url "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)/removePassword" `
+            -Body @{ keyId = [string]$credentials[0].keyId } | Out-Null
+    }
+
+    $credential = Invoke-GraphJsonBody `
+        -Method 'POST' `
+        -Url "https://graph.microsoft.com/v1.0/applications/$($AdminIdentity.adminUiApplicationObjectId)/addPassword" `
+        -Body @{
+            passwordCredential = @{
+                displayName = 'a365gw-bootstrap-admin-ui'
+                endDateTime = [DateTimeOffset]::UtcNow.AddYears(1).ToString('O')
+            }
+        }
+
+    $secretText = [string]$credential.secretText
+    if ([string]::IsNullOrWhiteSpace($secretText)) {
+        throw 'Microsoft Graph did not return the one-time portable Admin UI credential.'
+    }
+
+    Set-Content -LiteralPath $SecretPath -Value $secretText -Encoding utf8 -NoNewline
+    return [ordered]@{
+        adminUiClientSecret = $secretText
+        credentialKeyId = [string]$credential.keyId
+        reused = $false
+    }
+}
+
+function Ensure-PortableConsoleApplication {
+    param(
+        [Parameter(Mandatory)]$Config,
+        [Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$DeploymentOwnershipId,
+        [Parameter(Mandatory)][int]$ConsoleHostPort
+    )
+
+    if ($ConsoleHostPort -lt 1 -or $ConsoleHostPort -gt 65535) {
+        throw 'Portable Console host port is out of range.'
+    }
+
+    $displayName = "A365 Gateway Console - $($Config.projectName)-$($Config.environment)"
+    $consoleOrigin = "http://127.0.0.1:$ConsoleHostPort"
+    $expectedTags = @(Get-BootstrapApplicationTags -DeploymentOwnershipId $DeploymentOwnershipId)
+    $application = Get-ExactApplicationByDisplayName -DisplayName $displayName
+    if (-not $application) {
+        $application = Invoke-GraphJsonBody -Method 'POST' -Url 'https://graph.microsoft.com/v1.0/applications' -Body @{
+            displayName = $displayName
+            signInAudience = 'AzureADMyOrg'
+            tags = $expectedTags
+            isFallbackPublicClient = $false
+            spa = @{ redirectUris = @($consoleOrigin) }
+            web = @{ implicitGrantSettings = @{ enableAccessTokenIssuance = $false; enableIdTokenIssuance = $false } }
+            api = @{ acceptMappedClaims = $false; preAuthorizedApplications = @(); knownClientApplications = @() }
+            requiredResourceAccess = @(@{
+                resourceAppId = [string]$Identity.gatewayApiClientId
+                resourceAccess = @(@{ id = [string]$Identity.gatewayApiAccessScopeId; type = 'Scope' })
+            })
+        }
+    }
+
+    $application = Invoke-AzJson -Arguments @(
+        'rest', '--method', 'GET', '--url',
+        "https://graph.microsoft.com/v1.0/applications/$($application.id)?`$select=id,appId,displayName,signInAudience,identifierUris,tags,api,appRoles,requiredResourceAccess,passwordCredentials,keyCredentials,web,spa,publicClient,isFallbackPublicClient"
+    )
+    Assert-ExactApplicationAuthenticationSurface -Application $application -ApplicationLabel 'Portable Console application' | Out-Null
+
+    $spaRedirects = @($application.spa.redirectUris | ForEach-Object { [string]$_ })
+    $apiRequirements = @($application.requiredResourceAccess)
+    $exactRequiredScope = $apiRequirements.Count -eq 1 -and
+        ([string]$apiRequirements[0].resourceAppId).Equals([string]$Identity.gatewayApiClientId, [StringComparison]::OrdinalIgnoreCase) -and
+        @($apiRequirements[0].resourceAccess).Count -eq 1 -and
+        ([string]$apiRequirements[0].resourceAccess[0].id).Equals([string]$Identity.gatewayApiAccessScopeId, [StringComparison]::OrdinalIgnoreCase) -and
+        [string]$apiRequirements[0].resourceAccess[0].type -ceq 'Scope'
+
+    if ([string]$application.displayName -cne $displayName -or
+        [string]$application.signInAudience -cne 'AzureADMyOrg' -or
+        @($application.identifierUris).Count -ne 0 -or
+        @($application.passwordCredentials).Count -ne 0 -or
+        @($application.keyCredentials).Count -ne 0 -or
+        @($application.web.redirectUris).Count -ne 0 -or
+        @($application.publicClient.redirectUris).Count -ne 0 -or
+        -not $exactRequiredScope) {
+        throw 'Portable Console application does not match the exact SPA, permission, and credential-free boundary.'
+    }
+
+    if ($spaRedirects.Count -ne 1 -or $spaRedirects[0] -cne $consoleOrigin) {
+        Invoke-GraphJsonBody -Method 'PATCH' -Url "https://graph.microsoft.com/v1.0/applications/$($application.id)" -Body @{
+            spa = @{ redirectUris = @($consoleOrigin) }
+        } | Out-Null
+    }
+
+    Assert-BootstrapApplicationOwnership `
+        -Application $application `
+        -DeploymentOwnershipId $DeploymentOwnershipId `
+        -OwnerObjectId ([string]$Identity.userObjectId) `
+        -AllowAddMissingOwner | Out-Null
+
+    $principal = Ensure-ServicePrincipal `
+        -AppId ([string]$application.appId) `
+        -ServicePrincipalNames @([string]$application.appId) `
+        -Tags $expectedTags
+
+    $grantUrl = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId%20eq%20'$($principal.id)'&`$select=id,clientId,resourceId,consentType,scope"
+    $grant = @(Get-BoundedGraphCollection -InitialUrl $grantUrl)
+    if ($grant.Count -eq 0) {
+        Invoke-GraphJsonBody -Method 'POST' -Url 'https://graph.microsoft.com/v1.0/oauth2PermissionGrants' -Body @{
+            clientId = [string]$principal.id
+            consentType = 'AllPrincipals'
+            resourceId = [string]$Identity.gatewayApiServicePrincipalId
+            scope = 'access_as_user'
+        } | Out-Null
+        $grant = @(Get-BoundedGraphCollection -InitialUrl $grantUrl)
+    }
+    $grantScopes = if ($grant.Count -eq 1) {
+        @(([string]$grant[0].scope).Split(' ', [StringSplitOptions]::RemoveEmptyEntries -bor [StringSplitOptions]::TrimEntries))
+    }
+    else { @() }
+    if ($grant.Count -ne 1 -or
+        -not ([string]$grant[0].resourceId).Equals([string]$Identity.gatewayApiServicePrincipalId, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$grant[0].consentType -cne 'AllPrincipals' -or
+        -not (Test-ExactStringSet -Actual $grantScopes -Expected @('access_as_user'))) {
+        throw 'Portable Console delegated consent must be exactly one tenant-wide access_as_user grant to this Gateway API.'
+    }
+
+    return [ordered]@{
+        consoleApplicationObjectId = [string]$application.id
+        consoleClientId = [string]$application.appId
+        consoleServicePrincipalId = [string]$principal.id
+        consoleUrl = $consoleOrigin
+        apiScope = "$([string]$Identity.gatewayApiScopeBaseUri)/access_as_user"
+        deploymentOwnershipId = ([guid]$DeploymentOwnershipId).ToString('D')
+    }
 }
 
 function Get-BootstrapDeterministicRoleAssignmentName {

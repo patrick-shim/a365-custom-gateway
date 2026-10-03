@@ -40,21 +40,33 @@ Select the intended Entra tenant, deploy profile (portable vs legacy Azure), and
 environment in configuration. Plan and Apply bind their exact source and target.
 An old checkpoint does not authorize recreating a deleted environment.
 
-## Intended installation
+## Intended installation (guided — do not edit JSON)
 
-```bash
-./gateway setup
-```
+Operators must not hand-edit configuration files. Use the guided surfaces:
 
 ```powershell
-.\gateway.cmd setup
+.\gateway.cmd up
 ```
+
+That launches the **TUI wizard** when `bootstrap/config.json` is missing
+(deploy profile → Azure login/subscription → environment → capabilities →
+confirm), writes non-secret `bootstrap/config.json`, then plans/applies.
+
+```powershell
+.\gateway.cmd init          # wizard only (writes config)
+.\gateway.cmd setup         # temporary Fluent GUI Setup host
+.\gateway.cmd doctor        # prerequisite check
+```
+
+`config.example.json` / `config.example.portable.json` are **schema samples for
+developers**, not operator inputs. `gateway` refuses `--config` pointing at
+those filenames.
 
 Terminal lifecycle (all profiles):
 
 ```text
-doctor → init → plan → apply → verify
-                       ↘ resume after an eligible interruption
+doctor → init (guided) → plan → apply → verify
+                              ↘ resume after an eligible interruption
 ```
 
 This is a workflow description, not an instruction to resume a deleted
@@ -97,13 +109,28 @@ still require separate validation.
 
 ### Portable profile (target)
 
-- Containers for API, worker, and Console (Setup local or containerized)
-- PostgreSQL, RabbitMQ, Vault/OpenBao, S3-compatible storage
-- OCI images pinned by digest
-- Entra applications, app roles, federation, and a seed Agent Identity blueprint
-- Database initialization through the C# migrator against PostgreSQL
-- Prompt Shields (Microsoft content safety) configuration
-- Purview identities, certificate in Vault/OpenBao, Windows executor
+Choose **Portable (recommended)** in the guided wizard (`gateway up` / `gateway init`).
+
+Bootstrap then owns:
+
+- **Entra** app registration, app roles, and administrator assignment (Graph)
+- **Optional Azure AI Content Safety** in the selected subscription RG/location
+  when you enable Prompt Shields (product API — not gateway host infra)
+- **Docker Compose** deploy of PostgreSQL, RabbitMQ, Vault, S3-compatible storage,
+  API, Worker, and **React Console** under `deploy/portable/`
+- Local image build from the repo Dockerfiles
+- Portable Entra workload + API OBO + **blueprint FMI** client secrets (gitignored
+  `.env.runtime` / `.bootstrap/secrets/`) so Registry OBO and Active verification
+  work without Azure managed identity
+
+Purview Windows executor packaging remains a post-compose Microsoft 365 handoff.
+Legacy Container Apps / Azure SQL / Service Bus / Key Vault are **not** required.
+
+```powershell
+.\gateway.cmd up
+```
+
+Engineer handoff (FMI, consent, gates, rebuild): [docs/portable](../docs/portable/README.md).
 
 ### Legacy Azure profile (transitional)
 
@@ -168,12 +195,19 @@ readback instead of Azure What-If.
 
 ## After a verified installation
 
-Sign in to the hosted operator UI (legacy Admin UI or target React Console) and
-complete registration → key handoff → Registry → optional protection. Intentionally
-Off per-agent protections are not an incomplete registration. Keep policy
-readback, propagation and runtime evidence separate.
+**Portable:** open the React Console (default `http://127.0.0.1:5081`), sign in,
+register → one-time key → **Finish Agent 365 registration** (signed-in admin) →
+wait for **Active**. Details:
+[portable handoff](../docs/portable/README.md).
+
+**Legacy Azure:** hosted UI may still be Blazor Admin UI until cutover; same
+registration → key → Registry → optional protection contract.
+
+Intentionally Off per-agent protections are not an incomplete registration. Keep
+policy readback, propagation and runtime evidence separate.
 
 See [connect an agent](../README.md#connect-an-external-agent),
 [API contract](../docs/api/api-contract.md),
-[Purview executor](../docs/architecture/purview-windows-executor.md), and
+[Purview executor](../docs/architecture/purview-windows-executor.md),
+[portable runtime](../deploy/portable/README.md), and
 [infrastructure](../infrastructure/README.md).

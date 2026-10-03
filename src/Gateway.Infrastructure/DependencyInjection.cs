@@ -1,8 +1,11 @@
+using Amazon.Runtime;
+using Amazon.S3;
 using Azure.Identity;
 using Azure.Messaging.ServiceBus;
 using Azure.Storage.Blobs;
 using Gateway.Application.Configuration;
 using Gateway.Domain.Interfaces;
+using Gateway.Infrastructure.Messaging;
 using Gateway.Infrastructure.Outbox;
 using Gateway.Infrastructure.Persistence;
 using Gateway.Infrastructure.Persistence.Repositories;
@@ -23,8 +26,12 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        services.AddDbContext<GatewayDbContext>(options =>
-            options.UseSqlServer(configuration.GetConnectionString("GatewayDb")));
+        var provider = InfrastructureProvider.Resolve(configuration);
+        if (provider == InfrastructureProvider.Portable)
+            AddPortablePersistence(services, configuration);
+        else
+            AddAzurePersistence(services, configuration);
+
         services.AddMemoryCache();
         services
             .AddOptions<DatabaseAttestationOptions>()
@@ -75,6 +82,40 @@ public static class DependencyInjection
             .ValidateOnStart();
         services.AddScoped<IAgentIngressCredentialService, AgentIngressCredentialService>();
 
+        if (provider == InfrastructureProvider.Portable)
+            AddPortableMessagingAndStorage(services, configuration);
+        else
+            AddAzureMessagingAndStorage(services, configuration);
+
+        services.Configure<OutboxRelayOptions>(
+            configuration.GetSection("OutboxRelay"));
+        services.AddHostedService<OutboxRelayService>();
+
+        return services;
+    }
+
+    private static void AddAzurePersistence(IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddDbContext<GatewayDbContext>(options =>
+            options.UseSqlServer(configuration.GetConnectionString("GatewayDb")));
+    }
+
+    private static void AddPortablePersistence(IServiceCollection services, IConfiguration configuration)
+    {
+        var connectionString = configuration.GetConnectionString("GatewayDb")
+            ?? throw new InvalidOperationException(
+                "Portable infrastructure requires ConnectionStrings:GatewayDb (PostgreSQL).");
+
+        services.AddDbContext<GatewayDbContext>(options =>
+            options.UseNpgsql(connectionString)
+                .AddInterceptors(new PostgresRowVersionInterceptor()));
+        services.AddHostedService<PortableSchemaInitializer>();
+    }
+
+    private static void AddAzureMessagingAndStorage(
+        IServiceCollection services,
+        IConfiguration configuration)
+    {
         services.Configure<BlobStorageOptions>(
             configuration.GetSection("BlobStorage"));
 
@@ -111,13 +152,47 @@ public static class DependencyInjection
                 "ServiceBus:FullyQualifiedNamespace for managed identity.");
         });
 
-        services.AddSingleton<IServiceBusPublisher, ServiceBusPublisher>();
+        services.AddSingleton<IOutboxQueuePublisher, ServiceBusPublisher>();
+    }
 
-        services.Configure<OutboxRelayOptions>(
-            configuration.GetSection("OutboxRelay"));
+    private static void AddPortableMessagingAndStorage(
+        IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services
+            .AddOptions<ObjectStorageOptions>()
+            .Bind(configuration.GetSection(ObjectStorageOptions.SectionName))
+            .Validate(
+                options =>
+                    !string.IsNullOrWhiteSpace(options.ServiceUrl) &&
+                    !string.IsNullOrWhiteSpace(options.AccessKey) &&
+                    !string.IsNullOrWhiteSpace(options.SecretKey) &&
+                    !string.IsNullOrWhiteSpace(options.BucketName),
+                "ObjectStorage requires ServiceUrl, AccessKey, SecretKey, and BucketName.")
+            .ValidateOnStart();
 
-        services.AddHostedService<OutboxRelayService>();
+        services.AddSingleton<IAmazonS3>(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<ObjectStorageOptions>>().Value;
+            var config = new AmazonS3Config
+            {
+                ServiceURL = options.ServiceUrl,
+                ForcePathStyle = options.ForcePathStyle,
+                AuthenticationRegion = "us-east-1"
+            };
+            return new AmazonS3Client(
+                new BasicAWSCredentials(options.AccessKey, options.SecretKey),
+                config);
+        });
+        services.AddScoped<IInteractionContentStore, S3InteractionContentStore>();
 
-        return services;
+        services
+            .AddOptions<RabbitMqOptions>()
+            .Bind(configuration.GetSection(RabbitMqOptions.SectionName))
+            .Validate(
+                options => !string.IsNullOrWhiteSpace(options.ConnectionUri),
+                "RabbitMq:ConnectionUri is required for portable infrastructure.")
+            .ValidateOnStart();
+        services.AddSingleton<IOutboxQueuePublisher, RabbitMqOutboxPublisher>();
     }
 }

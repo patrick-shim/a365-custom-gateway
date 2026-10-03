@@ -105,6 +105,9 @@ export function AgentRegistrationProgress({ agent }: { agent: AgentDetail }) {
   const finishButton = useRef<HTMLButtonElement>(null);
   const [posting, setPosting] = useState(false);
   const postingRef = useRef(false);
+  const [retrying, setRetrying] = useState(false);
+  const retryingRef = useRef(false);
+  const [retryError, setRetryError] = useState<unknown>();
   const [attempt, setAttempt] = useState<{ operationId: string; submitted: boolean; uncertain: boolean; error?: unknown }>();
   const current = operation.isSuccess ? operation.data : undefined;
   const active = agent.status === "Active";
@@ -112,8 +115,11 @@ export function AgentRegistrationProgress({ agent }: { agent: AgentDetail }) {
   const error = active ? undefined : currentAttempt?.error;
   const readError = operationId ? operation.error : history.error;
   const supported = !!current && isSupportedSetup(current);
+  // AwaitingAdministratorAction persists ErrorCode/Summary as the pause reason
+  // (e.g. AGENT365_REGISTRY_ACTION_REQUIRED). That is a wait state, not a failure.
   const failed = ["Failed", "RequiresManualIntervention"].includes(agent.status) ||
-    !!current && (["Failed", "RequiresManualIntervention"].includes(current.status) || !!current.error);
+    !!current && ["Failed", "RequiresManualIntervention"].includes(current.status);
+  const canRetry = failed && agent.retryProvisioning?.supported === true;
   const waiting = settingUp && (current
     ? current.status === "AwaitingAdministratorAction" || !!current.requiredAction
     : agent.status === "AwaitingAdminApproval");
@@ -179,6 +185,28 @@ export function AgentRegistrationProgress({ agent }: { agent: AgentDetail }) {
     }
   }
 
+  async function retryProvisioning() {
+    if (!canRetry || retryingRef.current || postingRef.current) return;
+    retryingRef.current = true;
+    setRetrying(true);
+    setRetryError(undefined);
+    setAttempt(undefined);
+    try {
+      await api.retryProvisioning(agentId);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["agent", agentId] }),
+        qc.invalidateQueries({ queryKey: ["agents"] }),
+        qc.invalidateQueries({ queryKey: ["agent-summary"] }),
+        qc.invalidateQueries({ queryKey: ["provisioning-history", agentId] }),
+      ]);
+    } catch (failure) {
+      setRetryError(failure);
+    } finally {
+      retryingRef.current = false;
+      setRetrying(false);
+    }
+  }
+
   return <Card className={styles.card} role="region" aria-labelledby={titleId}
     data-state={active ? "active" : blocked ? "error" : working ? "busy" : waiting ? "waiting" : "idle"}
     data-motion={working && !reducedMotion ? "animated" : "static"}>
@@ -237,11 +265,18 @@ export function AgentRegistrationProgress({ agent }: { agent: AgentDetail }) {
         : "The API has not advertised a supported registration action for this paused operation."}{" "}
       No confirmation is available. Refresh setup status and review API compatibility on Platform using the operation reference.
     </MessageBarBody></MessageBar>}
-    {!active && (failed || current?.error) && <MessageBar intent="error" role="alert"><MessageBarBody>
+    {!active && failed && <MessageBar intent="error" role="alert"><MessageBarBody>
       <Text weight="semibold">Agent setup needs attention. </Text>
       {current?.error?.message ?? agent.provisioning?.lastError ?? "The Gateway reported a failure without a diagnostic message. Use the support reference below to investigate."}
       <Caption1 block>Stage: {setupStageName(current?.currentStep ?? agent.provisioning?.currentStep)}</Caption1>
+      {canRetry && <Caption1 block>{agent.retryProvisioning?.reason}</Caption1>}
+      {!canRetry && agent.retryProvisioning?.reason && <Caption1 block>{agent.retryProvisioning.reason}</Caption1>}
     </MessageBarBody></MessageBar>}
+    {canRetry && <Button appearance="primary" size="large" disabled={retrying || posting}
+      style={{ alignSelf: "flex-start" }} onClick={() => void retryProvisioning()}>
+      {retrying ? "Retrying provisioning..." : "Retry provisioning"}
+    </Button>}
+    {retryError !== undefined && <ErrorState title="Provisioning retry was not accepted" error={retryError} />}
     {error !== undefined && <ErrorState title="Registration confirmation was not accepted" error={error} />}
     {error instanceof ApiError && error.status === 403 && <Body1>
       This signed-in session was refused. Confirmation requires the Gateway API role <code>Gateway.Administrator</code> and delegated{" "}

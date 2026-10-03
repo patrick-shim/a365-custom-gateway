@@ -21,7 +21,7 @@ Architecture: [system architecture](../docs/architecture/system-architecture.md)
 
 | Profile | Status | Assets |
 |---|---|---|
-| **Portable** (Compose / Kubernetes) | **Product target** | To be the canonical install path — PostgreSQL, RabbitMQ, Vault/OpenBao, MinIO/S3, OCI images |
+| **Portable** (Compose / Kubernetes) | **Product target** | Canonical install — see [deploy/portable](../deploy/portable/README.md) and [docs/portable](../docs/portable/README.md) |
 | **Legacy Azure PaaS** | Transitional | Existing `bicep/` and `bootstrap/infra/` templates |
 
 Do not treat Bicep success as the long-term product shape.
@@ -30,13 +30,15 @@ Do not treat Bicep success as the long-term product shape.
 
 | Path | Purpose |
 |---|---|
+| [`../deploy/portable/`](../deploy/portable/README.md) | **Portable Compose** — postgres, rabbitmq, s3, vault, api, worker, console |
+| `bicep/portable-content-safety.bicep` | Optional Azure AI Content Safety account for portable Prompt Shields |
 | `bicep/main.bicep` | Legacy Azure workload composition |
 | `bicep/admin-ui.bicep` | Legacy Admin UI Container App |
 | `bicep/modules/` | Legacy Azure resource modules |
 | `bicep/parameters/` | Legacy environment parameters |
 | `bicep/maintenance-*.bicep` | Legacy maintenance inputs |
 | `sql/` | Forward schema scripts bound by the migrator (engine-portable intent: PostgreSQL target) |
-| *(planned)* `compose/`, `kubernetes/` | Portable profile manifests |
+| *(planned)* `kubernetes/` | Multi-node portable profile manifests |
 
 Bootstrap-specific Azure foundation templates live under `bootstrap/infra/` and
 are legacy-profile inputs.

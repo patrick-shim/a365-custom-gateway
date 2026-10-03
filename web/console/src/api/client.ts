@@ -8,7 +8,7 @@ import {
   dlpProfilesSchema, featuresUpdateSchema, inventorySchema, issuedCredentialSchema,
   operationResponseSchema, registrationSchema, reviewSchema, revokedCredentialSchema,
   systemConfigSchema, registrationOperationSchema, registrationCompletionSchema,
-  provisioningHistorySchema, operationIdSchema,
+  provisioningHistorySchema, operationIdSchema, retryProvisioningSchema,
   type ConnectionReview, type RegisterAgentRequest,
 } from "./types";
 
@@ -140,6 +140,18 @@ export const api = {
     if (result.operationId !== operationId || result.agentId !== agentId) {
       throw new ApiError("The completion response did not match this operation. Check current status before continuing.",
         200, "OPERATION_MISMATCH", undefined, true);
+    }
+    return result;
+  },
+  async retryProvisioning(agentId: string) {
+    const result = await json(
+      retryProvisioningSchema,
+      `/api/v1/agents/${encodeURIComponent(agentId)}:retry-provisioning`,
+      "POST",
+    );
+    if (result.agentId !== agentId) {
+      throw new ApiError("The retry response did not match this agent. Refresh before trying again.",
+        200, "AGENT_MISMATCH", undefined, true);
     }
     return result;
   },

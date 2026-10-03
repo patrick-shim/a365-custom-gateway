@@ -10,6 +10,20 @@ public sealed class Agent365Options
     public string TenantId { get; set; } = string.Empty;
     public string? ProvisioningManagedIdentityClientId { get; set; }
     public string? ProvisioningManagedIdentityPrincipalId { get; set; }
+
+    /// <summary>
+    /// Portable compose host: confidential-client secret for Graph application permissions.
+    /// When set with <see cref="ProvisioningManagedIdentityClientId"/> (app client id) and
+    /// <see cref="TenantId"/>, provisioning uses ClientSecretCredential instead of managed identity.
+    /// </summary>
+    public string? ProvisioningClientSecret { get; set; }
+
+    /// <summary>
+    /// Portable compose host: client secret on the Agent Identity blueprint used for local FMI
+    /// token exchange (Microsoft's documented development path). Azure deployments leave this empty
+    /// and use managed-identity federated credentials instead.
+    /// </summary>
+    public string? BlueprintClientSecret { get; set; }
     public string ObservabilityApplicationClientId { get; set; } =
         "9b975845-388f-4429-889e-eab1ef63949c";
     public string ObservabilityAppRoleValue { get; set; } =
