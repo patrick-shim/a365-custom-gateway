@@ -11,7 +11,6 @@
 | Source-bound maintenance | [Upgrade contract](../operations/gateway-upgrade.md) |
 | Azure and SQL asset map | [Infrastructure](../infrastructure/README.md) |
 | Product purpose and supported boundaries | [Product brief](spec/product-brief.md) |
-| Supplied product specification | [Gateway specification](spec/a365-gateway-specification.pdf) |
 
 ## Architecture and integration
 

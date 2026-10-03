@@ -57,11 +57,11 @@ HTTPS. The Container Apps contract supplies the platform ingress range; canonica
 verification checks the effective public origin. See the
 [HTTPS ingress contract](../api/api-contract.md#https-ingress).
 
-The user interface is being replaced by a modern React + TypeScript single‑page
-**Console** (see the [Console design system](../console/design.md)); it consumes the
-same `/api/v1` control plane with the same Entra sign‑in and role enforcement. The
-legacy Blazor Admin UI described below is retained only until the Console migration
-completes.
+The Blazor Admin UI described below is the UI that bootstrap still deploys, opens
+and upgrades. A React + TypeScript **Console** is the replacement direction
+(see the [Console design system](../console/design.md)); it consumes the same
+`/api/v1` control plane with the same Entra sign‑in and role enforcement, but is
+not yet part of the canonical install path and is not at full feature parity.
 
 The Admin UI uses global InteractiveServer routing and head rendering, retaining
 prerendering and page authorization. Registration controls and lifecycle mutations
@@ -91,10 +91,9 @@ Prompt Shields use remains optional. Purview prerequisites remain independently
 selected. Setup prepares capabilities; tenant policy configuration belongs to the
 authenticated application.
 
-The guided Setup, DatabaseMigrator and LiveVerification projects referenced by the
-solution are restored from authored source, with a bounded new local test suite.
-M1 owns their reproducible baseline; existing binaries are not replacement source
-or evidence for the later frozen-candidate and hosted acceptance.
+The guided Setup and DatabaseMigrator projects in the solution are the installer
+entry points that bootstrap invokes. Existing binaries are not replacement source
+or evidence for a later hosted acceptance.
 
 Registration and protection are separate lifecycles:
 

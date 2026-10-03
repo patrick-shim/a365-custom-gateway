@@ -1,11 +1,12 @@
 # A365 Gateway Console — design system & frontend direction
 
-Authoritative design and engineering direction for the Gateway's user interface.
-This supersedes the Blazor Admin UI. New UI work follows this document.
+Design and engineering direction for the Gateway Console. New UI work follows
+this document. The Blazor Admin UI remains the bootstrap-deployed UI until
+Console parity and install cutover are complete (§8).
 
-> TL;DR — We are moving **entirely off Razor/Blazor** to a modern **React + TypeScript**
-> single‑page app on the **existing .NET REST API**. The UI is organised by **persona**,
-> every page does **one job**, copy is **plain and short**, and interactions are **instant**.
+> TL;DR — Target UI is a **React + TypeScript** SPA on the **existing .NET REST
+> API**. Organised by **persona**, one job per page, plain short copy, instant
+> interactions. Blazor stays live until cutover.
 
 ---
 
@@ -13,12 +14,13 @@ This supersedes the Blazor Admin UI. New UI work follows this document.
 
 | Area | Decision | Why |
 |---|---|---|
-| **Frontend** | **Replace Blazor with a React + TypeScript SPA.** Retire `Gateway.AdminUi` (Blazor Server) and later `Gateway.Setup`. | Blazor Server round‑trips every click over SignalR → visibly laggy. A SPA is instant, reactive, modern and flexible. |
-| **Backend** | **Keep the .NET REST API, worker and Windows Purview executor.** | The API is already fast and secure; the Purview executor *must* be Windows + PowerShell (`Connect-IPPSSession`). A Node rewrite adds months of risk for no user benefit. |
+| **Frontend** | **Replace Blazor with a React + TypeScript SPA** when the Console reaches parity and enters bootstrap. | Blazor Server round‑trips every click over SignalR → visibly laggy. A SPA is instant, reactive and flexible. |
+| **Backend** | **Keep the .NET REST API, worker, Windows Purview executor and guided Setup.** | The API is already the control plane; the Purview executor *must* be Windows + PowerShell (`Connect-IPPSSession`). Setup remains the install entry point. |
 | **Contract** | The SPA consumes `/api/v1/*` with an MSAL-acquired delegated bearer token. | The API is the authoritative contract; an OIDC browser session alone is not API authentication. |
 
-**No more Razor.** Blazor components are frozen; all new UI is React. The Blazor
-Admin UI is decommissioned at the end of the migration (§8).
+**New UI is React.** Prefer Console work for new surfaces. Do not expand Blazor
+except for critical deploy-path fixes. Decommission Admin UI only after §8
+cutover criteria are met.
 
 ---
 
